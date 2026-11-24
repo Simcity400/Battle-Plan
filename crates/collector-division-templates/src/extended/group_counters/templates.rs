@@ -247,11 +247,14 @@ impl Store {
         result
     }
     pub fn value(&self, group: u64) -> Option<Arc<TemplateHqContext>> {
+        self.value_ref(group).cloned()
+    }
+    pub fn value_ref(&self, group: u64) -> Option<&Arc<TemplateHqContext>> {
         self.entries
             .binary_search_by_key(&group, |entry| entry.group)
             .ok()
             .filter(|&at| self.entries[at].valid)
-            .and_then(|at| self.entries[at].value.clone())
+            .and_then(|at| self.entries[at].value.as_ref())
     }
 }
 

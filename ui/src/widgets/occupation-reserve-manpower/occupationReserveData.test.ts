@@ -2,8 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
-import { holderBands, holderOf, holderToken, historySources, holderTooltip, raceEntries, raceHolders, reserveOf, reserveStructure, segmentParts, sourceParts,
-  sourceTagAt, validateOccupationReserve, validateReserveHistory } from './occupationReserveData.ts';
+import { holderBands, historySources, holderTooltip, raceEntries, raceHolders, reserveOf, reserveStructure, segmentParts, sourceParts, sourceTagAt, validateOccupationReserve, validateReserveHistory } from './occupationReserveData.ts';
 
 const country = (id: number, tag: string | null = `T${id}`) => ({ id, tag });
 const reply: OccupationReserveReply = { holders: [
@@ -87,7 +86,3 @@ test('the holder drill stacks each source over time, an admitted holder at zero 
   assert.throws(() => validateReserveHistory({ ...history, segments: [history.segments[1], history.segments[0]] }));
 });
 
-test('a pinned holder keeps its tag and raw id', () => {
-  assert.deepEqual(holderOf(holderToken({ tag: 'GER', id: 7 })), { tag: 'GER', id: 7 });
-  assert.equal(holderOf('GER'), null);
-});

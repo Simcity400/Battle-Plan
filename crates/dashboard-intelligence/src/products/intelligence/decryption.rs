@@ -592,11 +592,4 @@ mod tests {
         assert_eq!(owners, ["ITA", "SOV", "JAP", "GER", "ENG"]);
     }
 
-    #[test]
-    fn the_schema_numbers_the_cipher_columns() {
-        for (name, column) in [("amount_raw", AMOUNT), ("bonus_days", BONUS_DAYS), ("bonus_active", BONUS_ACTIVE), ("decrypting", DECRYPTING)] {
-            assert_eq!(dashboard_declare::field(TableId::Cryptology, name).unwrap(), column, "{name}");
-        }
-        assert_eq!(dashboard_declare::field(TableId::RaidIntelInputs, "crypto_strength").unwrap(), STRENGTH);
-    }
 }

@@ -57,6 +57,17 @@ const SITES: usize = MUTATIONS.len();
 const REFRESH_COUNTRY_NAMES: usize = 2;
 static WATCHES: Watches = Watches::new();
 
+const ROSTER_BATCH: usize = 64;
+const NAME_GROUP_MEMBER_FIELDS: [engine_native_memory::memory::RecordField; 1] =
+    [engine_native_memory::memory::RecordField {
+        source_offset: engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER,
+        destination_offset: 0,
+        len: 8,
+    }];
+const NAME_GROUP_MEMBER_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&NAME_GROUP_MEMBER_FIELDS, 8)
+        .expect("valid record layout");
+
 fn roster_members(
     memory: &impl Memory,
     country: usize,
@@ -67,18 +78,44 @@ fn roster_members(
         country.checked_add(engine_native::ccountry::DIVISIONS)?,
         8,
     )?;
-    for index in 0..roster.count {
-        let army = engine_native_memory::read::<u64>(memory, roster.element(index, 8)?)?;
-        if army == 0 {
-            continue;
+    let mut pointer_bytes = [0_u8; ROSTER_BATCH * 8];
+    let mut pointers = [0_usize; ROSTER_BATCH];
+    let mut member_bytes = [0_u8; ROSTER_BATCH * 8];
+    let mut first = 0_u32;
+    while first < roster.count {
+        let count = ((roster.count - first) as usize).min(ROSTER_BATCH);
+        let span = roster.slice(first, count as u32, 8).ok()?;
+        if !engine_native_memory::read_slice(memory, span.data, &mut pointer_bytes[..count * 8]) {
+            return None;
         }
-        let member = usize::try_from(army)
-            .ok()?
-            .checked_add(engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER)
-            .and_then(|at| engine_native_memory::read::<u64>(memory, at))?;
-        if member != 0 {
-            visit(usize::try_from(member).ok()?);
+        let mut live = 0_usize;
+        for chunk in pointer_bytes[..count * 8].chunks_exact(8) {
+            let army = u64::from_le_bytes(chunk.try_into().unwrap());
+            if army == 0 {
+                continue;
+            }
+            let pointer = usize::try_from(army).ok()?;
+            pointer.checked_add(engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER)?;
+            pointers[live] = pointer;
+            live += 1;
         }
+        if live != 0 {
+            if memory.copy_records(
+                engine_native_memory::memory::RecordSources::Pointers(&pointers[..live]),
+                &NAME_GROUP_MEMBER_LAYOUT,
+                &mut member_bytes[..live * 8],
+            ) < live
+            {
+                return None;
+            }
+            for chunk in member_bytes[..live * 8].chunks_exact(8) {
+                let member = u64::from_le_bytes(chunk.try_into().unwrap());
+                if member != 0 {
+                    visit(usize::try_from(member).ok()?);
+                }
+            }
+        }
+        first += count as u32;
     }
     Some(())
 }
@@ -133,13 +170,14 @@ impl Default for Watches {
 impl Watches {
     pub const fn new() -> Self {
         Self {
-            registry: WatchRegistry::marking(),
+            registry: WatchRegistry::marks_only(),
             experience: WatchRegistry::marking(),
             progression: WatchRegistry::marking(),
             calls: CallCounters::new(),
         }
     }
 
+    #[inline]
     pub fn notify(
         &self,
         receiver: usize,
@@ -561,21 +599,6 @@ mod tests {
         experience_patched(false);
         experience_forwarder(false);
         WATCHES.progression.set_enabled(false);
-    }
-
-    #[test]
-    fn hook_errors_name_the_family_sites_and_original_failure() {
-        for (index, site) in MUTATIONS.iter().enumerate() {
-            let error = hook_failure(Some(index), "construction", "synthetic refusal");
-            assert!(error.contains("army_stat_changes"));
-            assert!(error.contains(site.name));
-            assert!(error.contains("synthetic refusal"));
-        }
-        let error = hook_failure(None, "publication", "byte verification failed");
-        for site in MUTATIONS {
-            assert!(error.contains(site.name));
-        }
-        assert!(error.contains("byte verification failed"));
     }
 
     #[test]

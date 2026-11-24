@@ -1,10 +1,9 @@
 use super::*;
 use replay_data::event_feed_rows::decisions::{DecisionChange, Operation};
-fn access(
+fn access_raw(
     candidate: bool,
     observe: impl FnOnce(
         &mut Store,
-        &native::provenance::World<'_, engine_native_memory::memory::LiveMemory>,
         &engine_native_memory::memory::LiveMemory,
         usize,
         u64,
@@ -21,9 +20,7 @@ fn access(
             return;
         }
         let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
-        let result = native::provenance::World::new(&memory, owner.base)
-            .and_then(|world| observe(store, &world, &memory, owner.base, generation));
-        if let Err(reason) = result {
+        if let Err(reason) = observe(store, &memory, owner.base, generation) {
             store.decisions.invalidate();
             store.reject(reason);
         }
@@ -35,17 +32,43 @@ fn access(
         owner.observe(Role::DecisionWriter, publish)
     };
 }
+fn access(
+    candidate: bool,
+    observe: impl FnOnce(
+        &mut Store,
+        &native::provenance::World<'_, engine_native_memory::memory::LiveMemory>,
+        &engine_native_memory::memory::LiveMemory,
+        usize,
+        u64,
+    ) -> Result<(), &'static str>,
+) {
+    access_raw(candidate, |store, memory, base, generation| {
+        let world = native::provenance::World::new(memory, base)?;
+        observe(store, &world, memory, base, generation)
+    });
+}
 fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'static str> {
-    if engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
-        .is_none_or(|vtable| engine_native_memory::read::<u64>(memory, status) != Some(vtable as u64))
-    {
+    let expected = engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
+        .ok_or("decision writer owner status differs")? as u64;
+    let Some(country_addr) = status.checked_add(engine_decisions::cdecision_status::COUNTRY) else {
+        if engine_native_memory::read::<u64>(memory, status) != Some(expected) {
+            return Err("decision writer owner status differs");
+        }
+        return Err("decision writer owner unreadable");
+    };
+    let mut vtable_bytes = [0u8; 8];
+    let mut country_bytes = [0u8; 8];
+    let copied = memory.copy_scattered(
+        [status, country_addr],
+        &mut [&mut vtable_bytes[..], &mut country_bytes[..]],
+    );
+    if copied == 0 || u64::from_le_bytes(vtable_bytes) != expected {
         return Err("decision writer owner status differs");
     }
-    status
-        .checked_add(engine_decisions::cdecision_status::COUNTRY)
-        .and_then(|p| engine_native_memory::read::<u64>(memory, p))
-        .map(|p| p as usize)
-        .ok_or("decision writer owner unreadable")
+    if copied < 2 {
+        return Err("decision writer owner unreadable");
+    }
+    Ok(u64::from_le_bytes(country_bytes) as usize)
 }
 pub fn instance(status: usize, pointer: usize, container: u8, operation: Operation, flags: u8) {
     access(false, |store, world, memory, base, generation| {
@@ -69,12 +92,13 @@ pub fn instance(status: usize, pointer: usize, container: u8, operation: Operati
     });
 }
 pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
-    access(false, |store, world, memory, base, generation| {
+    access_raw(false, |store, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
+        let world = native::provenance::World::new(memory, base)?;
         store.decision_selected(
-            world,
+            &world,
             memory,
             base,
             generation,
@@ -87,12 +111,13 @@ pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
     });
 }
 pub fn cut(pointer: usize) {
-    access(false, |store, world, memory, base, generation| {
+    access_raw(false, |store, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
+        let world = native::provenance::World::new(memory, base)?;
         store.decision_selected(
-            world,
+            &world,
             memory,
             base,
             generation,
@@ -105,8 +130,13 @@ pub fn cut(pointer: usize) {
     });
 }
 pub fn retire(pointer: usize, swap: bool, visited: bool) {
-    access(false, |store, world, memory, base, generation| {
-        store.decision_retire(world, memory, base, generation, pointer, swap, visited)
+    access_raw(false, |store, memory, base, generation| {
+        if store.decisions.find(pointer).is_none() && store.decisions.uncertified(pointer).is_none()
+        {
+            return Ok(());
+        }
+        let world = native::provenance::World::new(memory, base)?;
+        store.decision_retire(&world, memory, base, generation, pointer, swap, visited)
     });
 }
 pub fn marker(status: usize, operation: Operation, container: u8, ordinal: u32, flags: u8) {
@@ -177,28 +207,46 @@ pub fn taken_erase(status: usize, definition: usize, ordinal: Option<u32>, swap:
         store.script_known(memory, base, generation, world.hour()?, value)
     });
 }
-pub fn candidate(status: usize, kind: u8, definition: usize, target: u32, root: u32) {
+pub fn candidates(
+    status: usize,
+    kind: u8,
+    items: &[(usize, u32, u32)],
+) {
+    if items.is_empty() {
+        return;
+    }
     access(true, |store, world, memory, base, generation| {
-        store.decision_key(
-            world,
-            memory,
-            base,
-            generation,
-            country(memory, base, status)?,
-            DecisionChange {
-                operation: Operation::Candidate,
-                container: kind,
-                flags: 0,
-                ordinal: target,
-                political_power: None,
-            },
-            engine_native_memory::msvc_string::Descriptor::read(
+        let country_ptr = country(memory, base, status)?;
+        let owner = world.country_object(country_ptr)?;
+        let hour = world.hour()?;
+        for &(definition, target, root) in items {
+            let token = engine_native_memory::msvc_string::Descriptor::read(
                 memory,
                 definition + engine_decisions::cdecision::TOKEN,
-            )?,
-            Some(root),
-        )
+            )?;
+            store.decision_key_resolved(
+                world,
+                memory,
+                base,
+                generation,
+                owner,
+                hour,
+                DecisionChange {
+                    operation: Operation::Candidate,
+                    container: kind,
+                    flags: 0,
+                    ordinal: target,
+                    political_power: None,
+                },
+                token,
+                Some(root),
+            )?;
+        }
+        Ok(())
     });
+}
+pub fn candidate(status: usize, kind: u8, definition: usize, target: u32, root: u32) {
+    candidates(status, kind, &[(definition, target, root)]);
 }
 pub fn ignored(country: usize, token: usize, ignored: bool) {
     access(false, |store, world, memory, base, generation| {
@@ -237,10 +285,11 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
     let Some((ignored, removed)) = committed_flags(ignored, removed) else {
         return;
     };
-    access(false, |store, world, memory, base, generation| {
+    access_raw(false, |store, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
+        let world = native::provenance::World::new(memory, base)?;
         let flags = if ignored == Some(true) {
             replay_data::event_feed_rows::decisions::IGNORED
         } else {
@@ -251,7 +300,7 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
             0
         };
         store.decision_selected(
-            world,
+            &world,
             memory,
             base,
             generation,
@@ -302,9 +351,14 @@ pub fn write_result(
     source: replay_data::event_feed_rows::EventFeedSource,
 ) -> bool {
     let mut recorded = false;
-    access(false, |store, world, memory, base, generation| {
+    access_raw(false, |store, memory, base, generation| {
+        if store.decisions.find(pointer).is_none() && store.decisions.uncertified(pointer).is_none()
+        {
+            return Ok(());
+        }
+        let world = native::provenance::World::new(memory, base)?;
         recorded = store.decision_result(
-            world,
+            &world,
             memory,
             base,
             generation,

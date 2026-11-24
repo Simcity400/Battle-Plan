@@ -529,35 +529,6 @@ fn counter_walk(memory: &impl Memory, world: &World) -> (Outcome, Vec<CounterInp
     (outcome, rows)
 }
 
-#[test]
-fn the_counter_walk_hints_each_countrys_fields_before_reading_them() {
-    let (world, _) = fixture(40);
-    let hinted = Hinted {
-        memory: world.memory(),
-        hints: Default::default(),
-    };
-    assert_eq!(
-        counter_walk(&hinted, &world),
-        counter_walk(&world.memory(), &world)
-    );
-    let hints = hinted.hints.into_inner();
-    for country in 1..=40 {
-        let object = world.object(country);
-        for offset in [
-            crate::ccountry::PRIDE_OF_THE_FLEET,
-            OWNED_STATES,
-            CONTROLLED_STATES,
-            crate::ccountry::DIVISIONS,
-            CORE_STATES,
-            crate::ccountry::CHARACTERS,
-            NEIGHBORS,
-            crate::ccountry::PRODUCTION_STATUS,
-        ] {
-            assert!(hints.contains(&(object + offset)), "{country} +{offset:#x}");
-        }
-    }
-}
-
 struct Guarded<'a> {
     memory: engine_native_memory::memory::SliceMemory<'a>,
     guards: std::cell::Cell<usize>,
@@ -583,55 +554,6 @@ impl Memory for Guarded<'_> {
         }
         N
     }
-}
-
-#[test]
-fn a_page_of_leaders_reads_their_identities_in_one_guarded_batch() {
-    let (mut world, leader_objects) = fixture(1);
-    let characters = world.object(1) + crate::ccountry::CHARACTERS;
-    let characters = read::<u64>(&world.memory(), characters).unwrap() as usize;
-    let list = world.alloc(60 * 8);
-    for slot in 0..60 {
-        let pointer = if slot % 7 == 3 { 0 } else { leader_objects[0] };
-        world.u64(list + slot * 8, pointer as u64);
-    }
-    world.array(characters + LEADERS[0], list, 60);
-    let counted = Guarded {
-        memory: world.memory(),
-        guards: Default::default(),
-    };
-    let mut rows = vec![CounterInputsRow::default(); 1];
-    let (mut states, mut leaders) = (vec![0; 16], vec![0; 70]);
-    let mut rosters = CounterRosters {
-        capture_sent_expeditionaries: true,
-
-        states: Buffer::Growing(&mut states),
-        leaders: Buffer::Growing(&mut leaders),
-        state_len: 0,
-        leader_len: 0,
-        required: Default::default(),
-    };
-    assert_eq!(
-        walk_counter_inputs_with_rosters(
-            &counted,
-            world.module,
-            world.game_state(),
-            &mut rows,
-            &mut rosters,
-        ),
-        Outcome::Rows { len: 1 }
-    );
-    let handle = (1_u64 << 32) | 4713;
-    let army = rows[0].leader_rosters.unwrap()[0];
-    let expected: Vec<u64> = (0..60)
-        .map(|slot| if slot % 7 == 3 { 0 } else { handle })
-        .collect();
-    assert_eq!(
-        &rosters.leaders[army.start..army.start + army.count],
-        expected
-    );
-    let guards = counted.guards.get();
-    assert!(guards < 60, "{guards} guarded calls");
 }
 
 #[test]

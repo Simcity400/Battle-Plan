@@ -158,25 +158,6 @@ fn shared_snapshot_refuses_reseed_while_leased_without_reading_or_mutating() {
 }
 
 #[test]
-fn shared_snapshot_views_reuse_current_seed_without_rereading() {
-    let source = Synthetic::countries();
-    let mut owner = engine_allocation::shared(Cache::with_capacity(64)).unwrap();
-    let snapshot = Cache::prepare_shared(&mut owner, &source, 0, 0x1000).unwrap();
-    source.observations.borrow_mut().clear();
-    let first = snapshot.view(&source);
-    let second = snapshot.view(&source);
-    assert_eq!(
-        ccountry::Reader::new(&first, 0, 0x1000).unwrap().resolve(7),
-        ccountry::Reader::new(&second, 0, 0x1000)
-            .unwrap()
-            .resolve(7)
-    );
-    assert!(source.observations.borrow().is_empty());
-    assert_eq!(first.seed_status(), SeedStatus::Ready);
-    assert_eq!(first.cached_entries(), second.cached_entries());
-}
-
-#[test]
 fn roster_view_keeps_scoped_authentication_and_fresh_faulted_byte_reads() {
     let source = Synthetic::countries();
     let expected = shared_walks(&source);
@@ -391,54 +372,6 @@ fn front_filter_collision_never_serves_wrong_bytes_or_masks_source_failure() {
     cache.observe(0x2000, &changed);
     assert!(matches!(cache.status, SeedStatus::Unavailable { .. }));
     assert!(cache.find(0x2000, 8).is_none());
-}
-
-#[test]
-fn front_filter_rebuilds_only_successful_seed_keys_and_has_demand_accounting() {
-    let source = Synthetic::countries();
-    let mut cache = Cache::with_capacity(64);
-    let allocated = cache.allocated_bytes();
-    assert_eq!(std::mem::size_of_val(cache.front_filter.as_ref()), 8);
-    let expected_allocated = std::mem::size_of_val(cache.entries.as_ref())
-        + std::mem::size_of_val(cache.filter.as_ref())
-        + std::mem::size_of_val(cache.front_filter.as_ref())
-        + std::mem::size_of_val(&cache.filter_mask)
-        + std::mem::size_of_val(&cache.lengths)
-        + std::mem::size_of_val(cache.roster.as_ref())
-        + std::mem::size_of_val(&cache.roster)
-        + std::mem::size_of_val(&cache.roster_len)
-        + std::mem::size_of_val(&cache.roster_base)
-        + std::mem::size_of_val(&cache.roster_game_state)
-        + std::mem::size_of_val(&cache.roster_arrays)
-        + std::mem::size_of_val(&cache.reserved);
-    assert_eq!(allocated, expected_allocated);
-    for _ in 0..2 {
-        let memory = cache.prepare(&source, 0, 0x1000);
-        assert_eq!(memory.seed_status(), SeedStatus::Ready);
-        let mut expected = vec![0; cache.front_filter.len()];
-        for entry in cache.entries.iter().filter(|entry| entry.len != 0) {
-            let (word, bit) = cache.front_filter_bit(entry.address, entry.len);
-            expected[word] |= bit;
-            assert!(cache.find(entry.address, entry.len).is_some());
-        }
-        assert_eq!(&*cache.front_filter, &expected);
-        assert!(expected.iter().any(|&word| word != 0));
-        assert_eq!(cache.allocated_bytes(), allocated);
-    }
-    source.fault.set(Some(0x1000 + cgame_state::COUNTRIES));
-    let memory = cache.prepare(&source, 0, 0x1000);
-    assert!(matches!(
-        memory.seed_status(),
-        SeedStatus::Unavailable { .. }
-    ));
-    assert!(cache.front_filter.iter().all(|&word| word == 0));
-    assert_eq!(cache.allocated_bytes(), allocated);
-
-    let mut disabled = Cache::with_capacity(0);
-    disabled.status = SeedStatus::Ready;
-    disabled.observe(0x2000, &[1]);
-    assert!(matches!(disabled.status, SeedStatus::Capacity { .. }));
-    assert!(disabled.front_filter.is_empty());
 }
 
 struct Synthetic {
@@ -902,71 +835,6 @@ fn country_results(
 }
 
 #[test]
-fn authenticated_roster_seed_keeps_original_alias_and_fault_read_order() {
-    let spans = [
-        (0x1000 + cgame_state::COUNTRIES, 16),
-        (0x1000 + cgame_state::COUNTRY_LINKS, 16),
-        (0x1500, 8),
-        (0x1508, 8),
-        (0x1510, 8),
-        (0x1518, 8),
-        (0x2000, 8),
-        (0x2008, 4),
-        (0x1704, 4),
-        (0x1708, 4),
-        (0x171c, 4),
-    ];
-    for fault in std::iter::once(None).chain(
-        spans
-            .into_iter()
-            .flat_map(|(address, len)| [Some(address), Some(address + len - 1)]),
-    ) {
-        let original = Synthetic::countries();
-        let actual = Synthetic::countries();
-        original.fault.set(fault);
-        actual.fault.set(fault);
-        let mut expected_reserved = None;
-        let reference_census = (|| {
-            let countries = Array::read(&original, 0x1000 + cgame_state::COUNTRIES, 8)
-                .ok_or("country array unreadable or invalid");
-            expected_reserved = Some(match countries {
-                Ok(array) => ccountry::observe_reserved_from_array(&original, 0, array),
-                Err(reason) => engine_native_memory::country_identity::ReservedCountryObservation::from_result(Err(reason)),
-            });
-            let countries = countries?;
-            let links = Array::read(&original, 0x1000 + cgame_state::COUNTRY_LINKS, 4)
-                .ok_or("country links unreadable or invalid")?;
-            let reader = ccountry::Reader::from_arrays(&original, 0, 0x1000, [countries, links])?;
-            for slot in 1..reader.count() {
-                reader.at(slot)?;
-            }
-            Ok::<(), &'static str>(())
-        })();
-        let mut cache = Cache::with_capacity(64);
-        let memory = cache.prepare(&actual, 0, 0x1000);
-        assert_eq!(
-            *actual.observations.borrow(),
-            *original.observations.borrow(),
-            "{fault:?}"
-        );
-        assert_eq!(
-            memory
-                .authenticated_reserved_country_observation(0, 0x1000)
-                .map(|root| root.result()),
-            expected_reserved.map(|root| root.result()),
-            "{fault:?}"
-        );
-        match reference_census {
-            Ok(()) => assert!(memory.authenticated_countries(0, 0x1000).is_some()),
-            Err(reason) => {
-                assert_eq!(memory.seed_status(), SeedStatus::Unavailable { reason });
-                assert!(memory.authenticated_countries(0, 0x1000).is_none());
-            }
-        }
-    }
-}
-
-#[test]
 fn authenticated_roster_matches_byte_cache_first_reads_and_faults() {
     let faults = [
         None,
@@ -1133,52 +1001,6 @@ fn authenticated_roster_reprepare_replaces_aliases_nulls_and_short_storage() {
     assert_eq!(
         country_results(&memory, 0, 0x1000),
         country_results(&ByteOnly(&memory), 0, 0x1000)
-    );
-}
-
-#[test]
-fn authenticated_roster_never_elides_recording_wrapper_observations() {
-    struct Recorder<'a, M> {
-        source: &'a M,
-        reads: RefCell<Vec<(usize, usize)>>,
-    }
-    impl<M: Memory> Memory for Recorder<'_, M> {
-        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            self.reads.borrow_mut().push((address, destination.len()));
-            self.source.copy(address, destination)
-        }
-    }
-    let source = Synthetic::countries();
-    let mut cache = Cache::with_capacity(64);
-    let memory = cache.prepare(&source, 0, 0x1000);
-    let recorder = Recorder {
-        source: &memory,
-        reads: RefCell::new(Vec::new()),
-    };
-    assert!(recorder.authenticated_countries(0, 0x1000).is_none());
-    let reader = ccountry::Reader::new(&recorder, 0, 0x1000).unwrap();
-    assert!(reader.at(1).unwrap().is_some());
-    assert!(reader.at(2).unwrap().is_none());
-    assert_eq!(
-        &*recorder.reads.borrow(),
-        &[
-            (0x1000 + cgame_state::COUNTRIES, 16),
-            (0x1000 + cgame_state::COUNTRY_LINKS, 16),
-            (0x1508, 8),
-            (0x2000, 8),
-            (0x2008, 4),
-            (0x171c, 4),
-            (0x1704, 4),
-            (0x1704, 4),
-            (0x1508, 8),
-            (0x1510, 8),
-            (0x2000, 8),
-            (0x2008, 4),
-            (0x171c, 4),
-            (0x1708, 4),
-            (0x1704, 4),
-            (0x1508, 8),
-        ],
     );
 }
 

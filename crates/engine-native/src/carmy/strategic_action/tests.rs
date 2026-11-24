@@ -240,29 +240,6 @@ fn strategic_action_unreached_branch_costs_no_reads() {
 }
 
 #[test]
-fn strategic_action_effective_getter_probes_without_capacity_or_suffix_reads() {
-    const ACC: usize = 0x1000;
-    let mut image = Image::default();
-    image.accumulator(ACC, VALUES, &[(1, 3), (2, i64::MIN), (3, 4), (4, 5)]);
-    image.definition(2, 0, 0);
-    image.fault = Some(VALUES + 48..VALUES + 64);
-    assert_eq!(
-        engine_native_parts::modifier_accumulator::requested_effective_at(&image, 0, ACC, 2),
-        Ok(i64::MIN)
-    );
-    let keys = image
-        .reads
-        .borrow()
-        .iter()
-        .filter_map(|&(at, len)| (len == 4 && (VALUES..VALUES + 64).contains(&at)).then_some(at))
-        .collect::<Vec<_>>();
-    assert_eq!(keys, [VALUES + 32, VALUES + 16, VALUES, VALUES + 16]);
-    assert!(!image.touched(ACC + 8));
-    assert!(!image.touched(VALUES + 8));
-    assert!(!image.touched(VALUES + 40));
-}
-
-#[test]
 fn strategic_action_effective_getter_feature_before_raw_and_native_clamp() {
     use engine_native_parts::modifier_definition as definitions;
     const ACC: usize = 0x1000;

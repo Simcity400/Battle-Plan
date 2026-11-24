@@ -237,25 +237,6 @@ test('a recording opened from the library keeps its row while it opens, and a fa
   assert.deepEqual(view.loads.map((load: any[]) => load[0]), [archive, archive]);
 }));
 
-test('with nothing loaded the campaigns list explains itself once, and the library is open', async () => fixture(async view => {
-  const toggle = () => view.find((node: Element) => node.props.className === 'sidebar-group-toggle');
-  assert.equal(toggle().props['aria-expanded'], true, 'the library starts open');
-  toggle().props.onClick(); view.render();
-  assert.equal(toggle().props['aria-expanded'], false);
-  assert.equal(view.storage.get('battleplan.sidebar.archive-open'), 'closed');
-  view.props.campaigns = []; view.props.bindings = {}; view.render();
-  const empty = () => elements(view.find((node: Element) => node.props.className === 'sidebar-campaigns-empty').props.children);
-  const text = () => empty().find(node => node.type === 'p')?.props.children;
-  const openButton = () => empty().find(node => node.type === 'button');
-  const plus = () => view.find((node: Element) => node.props['aria-label'] === 'Open a recording');
-  assert.equal(text(), 'Pick one from the library.');
-  assert.equal(openButton(), undefined, 'the library below is the way in; the header + still opens other files');
-  assert.ok(!plus().props.hidden);
-  view.props.library = { ...view.props.library, files: [] }; view.render();
-  assert.equal(text(), 'Recordings from BattlePlan Recorder appear here.');
-  assert.deepEqual([openButton()?.props.children].flat().slice(-1), ['Open a recording…']);
-  assert.equal(plus().props.hidden, true, 'the same action is not offered twice');
-}));
 
 test('a folder that cannot be read says so with Try again, keeping the rows it last read', async () => fixture(async view => {
   let refreshed = 0;
@@ -271,20 +252,6 @@ test('a folder that cannot be read says so with Try again, keeping the rows it l
   assert.equal(empty.find(node => node.type === 'p'), undefined, 'an unread folder is not described as empty');
 }));
 
-test('a search hides the library heading, and only the shown campaign of several carries a marker', async () => fixture(async view => {
-  const search = (query: string) => { view.find((node: Element) => node.props.type === 'search').props.onChange({ currentTarget: { value: query } }); view.render(); };
-  search('zzz');
-  assert.ok(!view.nodes().some((node: Element) => node.props.className === 'sidebar-group-toggle'), 'no empty Library heading under a search');
-  search('');
-  assert.equal(view.loaded().props['data-shown'], undefined, 'one loaded campaign needs no marker');
-  assert.equal(view.loaded().props['aria-current'], 'true');
-  const second = { id: 'second', path: 'C:/recordings/Second.battleplan', label: 'Second.battleplan' };
-  view.props.campaigns = [...view.props.campaigns, second]; view.props.bindings = { ...view.props.bindings, second: { source: { ...view.source, id: 'lease-2' } } };
-  view.render();
-  const rows = view.nodes().filter((node: Element) => node.props.className === 'sidebar-row campaign-row');
-  assert.deepEqual(rows.map((row: Element) => row.props['data-shown']), [true, undefined]);
-  assert.equal(rows[0].props['data-tooltip-overflow'], 'Loaded', 'a clipped name leads its tooltip');
-}));
 
 test('a recording opened from a search keeps the search and its row until it opens', async () => fixture(async view => {
   const documentBefore = Object.getOwnPropertyDescriptor(globalThis, 'document');

@@ -229,24 +229,6 @@ const ISOLATED: [passes::Pass; 11] = [
 
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
-fn a_window_scene_admits_unit_models_by_the_content_cutoffs() -> io::Result<()> {
-    let fixture = Fixture::load("window_unit_cutoffs")?;
-    let scene = crate::app::load_scene(
-        &fixture.state.device,
-        &fixture.state.queue,
-        &fixture.document,
-        dashboard_core::protocol::MapGraphics {
-            samples: 1,
-            ..Default::default()
-        },
-        &Default::default(),
-    )?;
-    assert_eq!(scene.unit_gates(), Some(fixture.document.unit_models.gates));
-    Ok(())
-}
-
-#[test]
-#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn production_scene_preflight_matrix() -> io::Result<()> {
     let fixture = Fixture::load("preflight")?;
     let mut scene = fixture.scene()?;

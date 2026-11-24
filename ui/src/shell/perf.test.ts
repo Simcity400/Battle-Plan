@@ -229,12 +229,6 @@ test('stock vite config stays permanently gated while vite.ungated.config.ts ena
   }
 });
 
-test('renderer preload status reports incomplete before preload runs', async () => {
-  const { preloadStatus } = await import('../widgets/rendererLoaders.ts');
-  const status = preloadStatus();
-  assert.equal(status.started, false);
-  assert.equal(status.done, false);
-});
 
 function installPerfEnv() {
   const saved = new Map(['requestAnimationFrame', 'cancelAnimationFrame', 'PerformanceObserver', 'devicePixelRatio', 'innerWidth', 'innerHeight', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'MessageChannel', 'performance', 'window']

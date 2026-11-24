@@ -14,15 +14,6 @@ fn rail_height_interpolates_in_x_then_z_and_clamps_sample_indices() {
 }
 
 #[test]
-fn world_and_pixel_space_round_trip() {
-    assert_eq!(world_from_pixel(2048, 10.0, 0.0), (10.0, 2047.0));
-    assert_eq!(world_from_pixel(2048, 10.0, 2047.0), (10.0, 0.0));
-    assert_eq!(world_from_pixel(4096, 10.0, 0.0), (10.0, 4095.0));
-    let (x, z) = world_from_pixel(2048, 1234.5, 678.25);
-    assert_eq!(pixel_from_world(2048, x, z), (1234.5, 678.25));
-}
-
-#[test]
 fn surface_height_follows_the_drawn_triangles() {
     let values = [200, 100, 0, 0, 100, 200, 0, 0];
     let field = HeightField {

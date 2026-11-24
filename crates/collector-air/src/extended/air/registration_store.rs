@@ -1,17 +1,88 @@
 pub use collector_observers::air_base_carry_changes::registration::Counts;
 use collector_raw::raw::Span;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_SEGMENT: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CarriedRaw {
+    pub spans: Vec<Span>,
+    pub bytes: Vec<u8>,
+    pub dense_count: usize,
+}
+
+impl CarriedRaw {
+    pub(crate) fn memory<'a, M: engine_native_memory::Memory>(
+        &'a self,
+        fallback: &'a M,
+    ) -> CarriedMemory<'a, M> {
+        CarriedMemory {
+            raw: self,
+            fallback,
+        }
+    }
+}
+
+pub(crate) struct CarriedMemory<'a, M> {
+    raw: &'a CarriedRaw,
+    fallback: &'a M,
+}
+
+impl<M: engine_native_memory::Memory> engine_native_memory::Memory for CarriedMemory<'_, M> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let Some(end) = address.checked_add(output.len()) else {
+            return false;
+        };
+        for span in self.raw.spans.iter().rev() {
+            if span.ok
+                && let Some(span_end) = span.addr.checked_add(span.len as usize)
+                && address >= span.addr
+                && end <= span_end
+            {
+                let offset = span.start as usize + (address - span.addr);
+                if let Some(slice) = self.raw.bytes.get(offset..offset + output.len()) {
+                    output.copy_from_slice(slice);
+                    return true;
+                }
+            }
+        }
+        self.fallback.copy(address, output)
+    }
+}
+
+fn dense_count_from_spans(pointer: usize, spans: &[Span], bytes: &[u8]) -> usize {
+    let Some(target) = pointer.checked_add(engine_native_air::cair_base::REGISTERED_CONTAINERS) else {
+        return 0;
+    };
+    let Some(target_end) = target.checked_add(16) else {
+        return 0;
+    };
+    for span in spans.iter().rev() {
+        if span.ok
+            && let Some(span_end) = span.addr.checked_add(span.len as usize)
+            && target >= span.addr
+            && target_end <= span_end
+        {
+            let offset = span.start as usize + (target - span.addr);
+            if let Some(slice) = bytes.get(offset..offset + 16) {
+                let mut raw = [0u8; 16];
+                raw.copy_from_slice(slice);
+                return engine_native_memory::cpdx_array::Array::from_header(raw, 8)
+                    .map_or(0, |array| array.count as usize);
+            }
+        }
+    }
+    0
+}
 
 #[derive(Debug)]
 struct Held {
     pointer: usize,
     certificate: (u64, u64),
     planned: bool,
-    spans: Vec<Span>,
-    bytes: Vec<u8>,
+    raw: Arc<CarriedRaw>,
     links: Vec<(u32, u32)>,
     demand: [usize; 2],
     pass: u64,
@@ -32,8 +103,7 @@ pub struct RegistrationStore {
 }
 
 pub struct Carried<'a> {
-    pub spans: &'a [Span],
-    pub bytes: &'a [u8],
+    pub raw: Arc<CarriedRaw>,
     pub links: &'a [(u32, u32)],
     pub demand: [usize; 2],
     pub segment: u64,
@@ -136,8 +206,7 @@ impl RegistrationStore {
         }
         held.pass = pass;
         Some(Carried {
-            spans: &held.spans,
-            bytes: &held.bytes,
+            raw: Arc::clone(&held.raw),
             links: &held.links,
             demand: held.demand,
             segment: held.segment,
@@ -170,36 +239,43 @@ impl RegistrationStore {
         else {
             return;
         };
-        let mut held = Held {
-            pointer,
-            certificate,
-            planned,
-            spans: Vec::new(),
-            bytes: Vec::new(),
-            links: Vec::new(),
-            demand: fresh.demand,
-            pass: self.pass,
-            segment: NEXT_SEGMENT.fetch_add(1, Ordering::Relaxed),
-        };
-        let spans = fresh.held().count();
-        let bytes = fresh.held().map(|span| span.len as usize).sum::<usize>();
+        let mut spans = Vec::new();
+        let mut bytes = Vec::new();
+        let mut links = Vec::new();
+        let span_count = fresh.held().count();
+        let byte_count = fresh.held().map(|span| span.len as usize).sum::<usize>();
         let stored = engine_allocation::advisory(|| {
             engine_allocation::reserve_map(&mut self.held, 1)?;
-            engine_allocation::reserve(&mut held.spans, spans)?;
-            engine_allocation::reserve(&mut held.bytes, bytes)?;
-            engine_allocation::reserve(&mut held.links, fresh.links.len())
+            engine_allocation::reserve(&mut spans, span_count)?;
+            engine_allocation::reserve(&mut bytes, byte_count)?;
+            engine_allocation::reserve(&mut links, fresh.links.len())
         });
         if stored.is_err() {
             return;
         }
         for span in fresh.held() {
-            held.spans.push(Span {
-                start: held.bytes.len() as u32,
+            spans.push(Span {
+                start: bytes.len() as u32,
                 ..*span
             });
-            fresh.consumed(span, &mut held.bytes);
+            fresh.consumed(span, &mut bytes);
         }
-        held.links.extend_from_slice(fresh.links);
+        let dense_count = dense_count_from_spans(pointer, &spans, &bytes);
+        links.extend_from_slice(fresh.links);
+        let held = Held {
+            pointer,
+            certificate,
+            planned,
+            raw: Arc::new(CarriedRaw {
+                spans,
+                bytes,
+                dense_count,
+            }),
+            links,
+            demand: fresh.demand,
+            pass: self.pass,
+            segment: NEXT_SEGMENT.fetch_add(1, Ordering::Relaxed),
+        };
         self.held.insert(handle, held);
     }
 
@@ -228,8 +304,9 @@ impl RegistrationStore {
                 .held
                 .values()
                 .map(|held| {
-                    held.spans.capacity() * size_of::<Span>()
-                        + held.bytes.capacity()
+                    size_of::<CarriedRaw>()
+                        + held.raw.spans.capacity() * size_of::<Span>()
+                        + held.raw.bytes.capacity()
                         + held.links.capacity() * size_of::<(u32, u32)>()
                 })
                 .sum::<usize>();

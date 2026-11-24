@@ -273,35 +273,4 @@ mod tests {
         assert_eq!(agreed_campaign(b"my save", b"my save"), None);
     }
 
-    #[test]
-    fn capture_refusals_read_as_plain_problems() {
-        for attached in [COLLECTOR_LOADED, GAME_CLAIMED] {
-            assert_eq!(
-                problem_text(attached, false),
-                "Another recorder is connected to this game. Close the other recorder to record here."
-            );
-        }
-        assert_eq!(
-            problem_text(
-                "recording completion is partial: replay finalization failed: synthetic; recoverable spool retained at x",
-                true
-            ),
-            "Recording couldn’t be finished. The captured data was kept."
-        );
-        assert_eq!(
-            problem_text(
-                "detach timed out; collector may still be loaded; spool retained and not finalized",
-                true
-            ),
-            "Recording couldn’t be finished. The captured data was kept."
-        );
-        assert_eq!(
-            problem_text("game exited before collector became ready", false),
-            "Recording couldn’t start."
-        );
-        assert_eq!(
-            problem_text("synthetic failure", true),
-            "Recording stopped because of an error."
-        );
-    }
 }

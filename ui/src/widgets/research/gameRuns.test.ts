@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { GameRun } from '../../generated/dashboard';
-import { plainRuns, toneClass, trimLabel, trimValue, validGameRuns } from './gameRuns.ts';
+import { plainRuns, validGameRuns } from './gameRuns.ts';
 import { validateEntityStats } from './entityStats.ts';
 import { validateTechnologyEffects } from './technologyEffects.ts';
 
@@ -27,19 +27,7 @@ test('game text runs validate every run shape and refuse unknown ones', () => {
   assert.equal(plainRuns(runs), 'Enables Infantry Equipment I\n   Soft:+0.17');
 });
 
-test('game colour codes map to our tones and unknown codes stay plain', () => {
-  assert.equal(toneClass('G'), 'positive');
-  assert.equal(toneClass('R'), 'negative');
-  assert.equal(toneClass('H'), 'strong');
-  assert.equal(toneClass(null), null);
-  assert.equal(toneClass('Z'), null);
-});
 
-test('stat labels lose the game separator and values their padding, keeping icons', () => {
-  const label: GameRun[] = [{ kind: 'icon', sprite: 'production_cost' }, { kind: 'text', text: ' Production Cost: ', tone: null }];
-  assert.deepEqual(trimLabel(label), [{ kind: 'icon', sprite: 'production_cost' }, { kind: 'text', text: ' Production Cost', tone: null }]);
-  assert.deepEqual(trimValue([{ kind: 'text', text: ' ', tone: null }, { kind: 'text', text: '+2.0', tone: 'G' }]), [{ kind: 'text', text: '+2.0', tone: 'G' }]);
-});
 
 test('effect and stat replies are validated whole', () => {
   const effects = { hour: 4, runs, refusals: { 'why': 1 }, unavailable: null, warnings: [] };

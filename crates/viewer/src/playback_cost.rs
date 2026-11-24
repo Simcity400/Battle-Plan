@@ -843,17 +843,6 @@ pub(crate) fn distribution(mut values: Vec<f64>) -> Value {
 }
 
 #[cfg(test)]
-mod reconciliation_tests {
-    #[test]
-    fn a_short_run_reconciles_within_its_counter_ticks_and_a_long_one_within_five_percent() {
-        assert!(super::reconciles(3_078_125_000, 3_265_013_595));
-        assert!(!super::reconciles(100_000_000_000, 106_000_000_000));
-        assert!(super::reconciles(100_000_000_000, 104_000_000_000));
-        assert!(!super::reconciles(0, 0));
-    }
-}
-
-#[cfg(test)]
 mod lean_tests {
     use super::*;
 

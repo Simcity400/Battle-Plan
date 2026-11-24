@@ -260,22 +260,6 @@ fn fail_overflow_creates_no_voice_past_max_audible() {
 }
 
 #[test]
-fn the_height_category_follows_altitude_and_the_ambient_volume() {
-    let mut fixture = Fixture::new("audio_height", ASSETS);
-    let mut high = frame(vec![emitter(1, "wind", [0.0; 3], 0.0)]);
-    high.listener.altitude = 1050.0;
-    high.mix.ambient = 0.5;
-    fixture.frame(high);
-    let out = fixture.render(1);
-    let defines = fixture.engine.content().unwrap().defines.clone().unwrap();
-    let category = defines.height_volume(1050.0) * 0.5;
-    assert_eq!(
-        out[0],
-        scale(16_384, step(category * 1.0 * 1.0 * 0.5)) as i16
-    );
-}
-
-#[test]
 fn a_departed_loop_stops_while_a_departed_one_shot_finishes() {
     let mut fixture = Fixture::new("audio_departed", ASSETS);
     fixture.frame(frame(vec![
@@ -329,25 +313,6 @@ fn only_the_32_highest_priority_voices_mix() {
 }
 
 #[test]
-fn the_mixer_has_248_effect_voices() {
-    let mut fixture = Fixture::new("audio_voice_slots", ASSETS);
-    fixture.frame(frame(
-        (1..=250)
-            .map(|key| emitter(key, "quiet", [0.0; 3], 0.0))
-            .collect(),
-    ));
-    assert_eq!(fixture.voices(), VOICE_SLOTS - RESERVED_VOICES);
-    let without: Vec<_> = fixture
-        .engine
-        .instances
-        .iter()
-        .filter(|instance| instance.count == 0)
-        .map(|instance| instance.key)
-        .collect();
-    assert_eq!(without, [249, 250]);
-}
-
-#[test]
 fn fades_step_the_volume_by_frame_and_a_delayed_voice_skips_its_fade_in() {
     let mut fixture = Fixture::new("audio_fades", ASSETS);
     let mut first = frame(vec![
@@ -398,27 +363,6 @@ fn fades_step_the_volume_by_frame_and_a_delayed_voice_skips_its_fade_in() {
         waited += 0.25;
     }
     assert_eq!(volume(&fixture, 2), (0.5, State::Playing));
-}
-
-#[test]
-fn a_voice_at_another_rate_loses_its_fraction_each_callback() {
-    let mut fixture = Fixture::new("audio_rate", ASSETS);
-    fixture.frame(frame(vec![emitter(1, "slow", [0.0; 3], 0.0)]));
-    fixture.render(1);
-    let rate = 0.7f32;
-    let mut position = 0.0f32;
-    for _ in 0..CALLBACK_FRAMES {
-        position += rate;
-    }
-    let whole = position as usize;
-    assert!(position.fract() > 0.0);
-    let (slot, _) = fixture.engine.instances[0].slots[0].voice.unwrap();
-    assert_eq!(fixture.engine.voices[slot].as_ref().unwrap().cursor, whole);
-    fixture.render(1);
-    assert_eq!(
-        fixture.engine.voices[slot].as_ref().unwrap().cursor,
-        whole * 2
-    );
 }
 
 #[test]

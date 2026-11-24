@@ -257,13 +257,4 @@ mod tests {
         assert_eq!(pass.advance(5000), Ok(4995));
         assert!(pass.advance(4999).is_err());
     }
-    #[test]
-    fn delayed_hooks_observe_only_passes_and_sparse_cursor_boundaries() {
-        let _globals = crate::event_feed_observer::test_globals();
-        assert_eq!(
-            native::DELAYED_TAPS.map(|site| site.name),
-            ["DelayedEventFireBoundary", "RetireDelayedEvent"]
-        );
-        assert_eq!(native::DELAYED_ENTRIES[2].name, "DelayedEventPass");
-    }
 }

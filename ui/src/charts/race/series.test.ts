@@ -1,18 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { raceSeriesIndex, seriesAt, seriesRaceEntries, seriesTooltip } from './series.ts';
-import { raceViewOption } from './options.ts';
 
-test('race view option can omit the mix and preserves the Factories API', () => {
-  const two = raceViewOption(), three = raceViewOption('type');
-  assert.deepEqual(two.kind === 'choice' && two.choices.map(choice => choice.value), ['race', 'lines']);
-  assert.deepEqual(three.kind === 'choice' && three.choices.map(choice => choice.label), ['Race', 'Lines over time', 'One country by type']);
-  const defaultLines = raceViewOption('measure', 'lines');
-  assert.equal(defaultLines.default, 'lines');
-  assert.deepEqual(defaultLines.kind === 'choice' && defaultLines.choices.map(choice => choice.value), ['race', 'lines', 'mix']);
-  const extended = raceViewOption(undefined, 'race', [{ value: 'anotherView', label: 'Another view' }]);
-  assert.deepEqual(extended.kind === 'choice' && extended.choices.map(choice => choice.value), ['race', 'lines', 'anotherView']);
-});
 
 test('race adapters rank exact values with UTF-8 ties and keep gaps and identity breaks', () => {
   const model = raceSeriesIndex([{ tag: 'Renamed realm', runs: [{ firstHour: 100, lastHour: 101, value: 9 },

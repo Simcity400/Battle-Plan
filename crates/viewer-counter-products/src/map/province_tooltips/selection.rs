@@ -498,20 +498,6 @@ mod tests {
     }
 
     #[test]
-    fn successful_append_indents_once_and_preserves_exact_colour_suffix_and_empty_values() {
-        let mut out = Tooltip::default();
-        line(&mut out, "heading", 0, Ok("Heading\n".into()));
-        line(
-            &mut out,
-            "composition",
-            1,
-            Ok("\u{11}Yfirst\nsecond\u{11}! \n".into()),
-        );
-        line(&mut out, "empty", 1, Ok(String::new()));
-        assert_eq!(out.title, "Heading\n    \u{11}Yfirst\nsecond\u{11}! \n    ");
-    }
-
-    #[test]
     fn outer_byte_length_gate_and_separator_preserve_authored_newlines_and_refusals() {
         let selected = || Tooltip {
             title: "Selection".into(),

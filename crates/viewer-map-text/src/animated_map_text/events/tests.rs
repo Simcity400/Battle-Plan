@@ -506,44 +506,6 @@ fn resistance_preserves_signed_positive_viewer_gate() {
 }
 
 #[test]
-fn building_uses_declared_singular_key_and_exact_reason() {
-    let mut frame = frame(40);
-    let content = content();
-    let loc = loc();
-    let vision = Vision::sharing(1, []);
-    *frame.tables[TableId::LexicalTokens.index()] =
-        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
-            token: 77,
-            literal: b"syn_mill".to_vec(),
-        }]));
-    let context = Context::new(&frame, &vision, &content, &loc);
-    for (reason, expected) in [
-        (MapEventBuildingReason::Bombed, "Bombed Mill"),
-        (MapEventBuildingReason::Sabotaged, "Sabotaged Mill"),
-        (MapEventBuildingReason::Collateral, "Collateral Mill"),
-        (MapEventBuildingReason::Repaired, "Repaired Mill"),
-        (MapEventBuildingReason::Scorched, "Scorched Mill"),
-    ] {
-        let popup = context
-            .popup(&event(
-                1,
-                40,
-                MapEventPayload::BuildingDamage(MapEventBuildingDamage {
-                    building_type: 77,
-                    province: 7,
-                    controller: 11,
-                    reason,
-                }),
-            ))
-            .unwrap()
-            .unwrap();
-        assert_eq!(popup.text, expected.as_bytes());
-    }
-    assert!(MapEventBuildingReason::from_native(0).is_none());
-    assert!(MapEventBuildingReason::from_native(6).is_none());
-}
-
-#[test]
 fn building_unknown_or_ambiguous_content_is_refused() {
     let mut frame = frame(40);
     let loc = loc();

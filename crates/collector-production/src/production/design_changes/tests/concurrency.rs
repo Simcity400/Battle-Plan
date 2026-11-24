@@ -465,7 +465,7 @@ fn a_repair_rechecks_the_revision_after_its_live_reads() {
     impl Memory for Changed<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if !self.1.replace(true) {
-                REVISION.fetch_add(1, Ordering::AcqRel);
+                DESIGN_GATE.mark_dirty();
             }
             self.0.memory().copy(address, output)
         }

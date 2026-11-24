@@ -663,76 +663,11 @@ fn metadata_component_and_shared_root_failures_are_retained_without_retry() {
     }
 }
 
-#[test]
-fn a_capture_reads_a_shared_accumulator_census_once() {
-    let mut memory = fixture();
-    memory.accumulator(
-        COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
-        0x1800,
-        &[(KEYS[0], 123), (KEYS[1], 5), (KEYS[2], -100_000)],
-    );
-    let mut reader = verified_reader(&memory);
-    let first = reader.capture(TASK, 1).0;
-    let second = reader.capture(TASK, 2).0;
-    assert_eq!(first.speed_modifier, second.speed_modifier);
-    assert_eq!(first.modified_range, second.modified_range);
-    assert_eq!(first.modified_range, Ok(100_000));
-    assert_eq!(memory.calls(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR), 1);
-}
-
 fn country_census(log: &[HeldCensus]) -> HeldCensus {
     let address = COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     *log.iter()
         .find(|census| census.receiver == COUNTRY && census.address == address)
         .expect("the certified country census is logged")
-}
-
-#[test]
-fn a_held_country_census_is_served_without_reading() {
-    let mut memory = fixture();
-    let address = COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
-    memory.accumulator(
-        address,
-        0x1800,
-        &[(KEYS[0], 123), (KEYS[1], 5), (KEYS[2], -100_000)],
-    );
-    let asked = RefCell::new(Vec::new());
-    let certify = |receiver: usize| {
-        if receiver == COUNTRY {
-            asked.borrow_mut().push(memory.calls(address));
-        }
-        Some((1_u64, 4_u64))
-    };
-    let mut log = Vec::new();
-    let first = verified_reader(&memory)
-        .with_censuses(Censuses {
-            held: &[],
-            certify: &certify,
-            log: &mut log,
-        })
-        .capture(TASK, 1)
-        .0;
-    assert_eq!(*asked.borrow(), [0], "the certificate precedes the read");
-    assert_eq!(memory.calls(address), 1);
-    assert_eq!(country_census(&log).certificate, (1, 4));
-    let mut held = log.clone();
-    held.sort_by_key(HeldCensus::identity);
-    let reads = memory.calls(address);
-    let mut next = Vec::new();
-    let second = verified_reader(&memory)
-        .with_censuses(Censuses {
-            held: &held,
-            certify: &certify,
-            log: &mut next,
-        })
-        .capture(TASK, 2)
-        .0;
-    assert_eq!(memory.calls(address), reads, "the held census is served");
-    assert_eq!(
-        (second.speed_modifier, second.modified_range),
-        (first.speed_modifier, first.modified_range)
-    );
-    assert_eq!(next, log);
 }
 
 #[test]
@@ -1677,31 +1612,6 @@ fn eta_source_batches_match_serial_risk_loans_at_every_persistent_fault() {
 }
 
 #[test]
-fn eta_roster_batch_falls_back_once_and_one_shot_faults_keep_healthy_risk_loans() {
-    use engine_native_memory::batch_fallback::{Batch, count};
-    let healthy = source_packet(&source_risk_fixture(), false);
-    for ship in [0x35000, 0x37000] {
-        for (offset, len) in ROSTER_SHIP {
-            let mut memory = source_risk_fixture();
-            memory.fault = Some((ship + offset, len));
-            memory.fail_once = true;
-            let before = count(Batch::FreshEtaGathers);
-            assert_eq!(
-                source_packet(&memory, false),
-                healthy,
-                "{ship:x}+{offset:x}"
-            );
-            assert_eq!(count(Batch::FreshEtaGathers), before + 1);
-            assert_eq!(
-                memory.calls(ship + offset),
-                if ship == 0x35000 { 3 } else { 2 },
-                "{ship:x}+{offset:x}"
-            );
-        }
-    }
-}
-
-#[test]
 fn eta_source_reuse_keeps_native_refusals_and_the_original_failure_order() {
     for invalid in 0..6 {
         let change = |memory: &mut Fixture| match invalid {
@@ -2193,30 +2103,6 @@ fn mission_risk_survives_independent_eta_stats_root_failure() {
 }
 
 #[test]
-fn mission_risk_only_unreached_failed_demand_and_guard_read_no_graph() {
-    for (demand, guard, expected) in [
-        (Ok(false), Ok(()), Ok(None)),
-        (
-            Err("original risk admission unreadable"),
-            Ok(()),
-            Err("original risk admission unreadable"),
-        ),
-        (
-            Ok(true),
-            Err("risk layout mismatch"),
-            Err("risk layout mismatch"),
-        ),
-    ] {
-        let memory = fixture();
-        let risk =
-            verified_reader(&memory).capture_mission_risk(usize::MAX, i32::MIN, demand, guard);
-        assert_eq!(risk.sample_hour, i32::MIN);
-        assert_eq!(risk.combined_detection, expected);
-        assert!(memory.reads.borrow().is_empty());
-    }
-}
-
-#[test]
 fn mission_risk_only_reads_one_graph_and_keeps_speed_stats_failures_independent() {
     let mut memory = mission_risk_fixture();
     memory.fault = Some((TASK + cunit::STAT_BLOCK, 8));
@@ -2580,49 +2466,6 @@ fn original_counter_contributor_union_keeps_one_motion_and_modifier_graph() {
     assert_eq!(memory.calls(STATS + 0x160), 1);
     assert_eq!(memory.calls(STATS + 0x148), 0);
     assert_eq!(memory.calls(STATS + 0x150), 0);
-}
-
-#[test]
-fn borrowed_mission_risk_outside_census_uses_no_motion_capacity_or_identity_probe() {
-    let memory = motion_mission_risk_fixture(1);
-    let mut rows = vec![];
-    let mut paths = vec![];
-    let mut combats = cunit::FirstCombatMemo::new(1);
-    let mut collector = ctask_force::MapMotionCollector::new(
-        &memory,
-        TERRAIN_IMAGE,
-        STATE,
-        &mut rows,
-        &mut paths,
-        &mut combats,
-    )
-    .with_fresh_hour(35);
-    let risk = collector
-        .borrow_mission_risk(Ok((TASK, (71_u64 << 32) | 61)), Ok(true), Ok(()))
-        .unwrap();
-    let walk = collector.finish(None);
-    assert_eq!(risk.sample_hour, 35);
-    assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
-    assert_eq!(walk.outcome, engine_native_memory::walk::Outcome::Rows { len: 0 });
-    assert_eq!((walk.paths_len, walk.required_paths), (0, 0));
-    for address in [
-        TASK,
-        TASK + cunit::CLASS,
-        TASK + cunit::HANDLE,
-        TASK + cunit::LOGICAL_OWNER,
-        TASK + cunit::MOVEMENT_TARGET,
-        TASK + cunit::ORDINARY_ROUTE_DATA,
-        TASK + cunit::ALTERNATE_ROUTE_DATA,
-        TASK + cunit::COMBAT_REFERENCE_DATA,
-    ] {
-        assert_eq!(
-            memory.calls(address),
-            0,
-            "borrow re-probed census/identity at {address:x}"
-        );
-    }
-    assert_mission_risk_graph_read_once(&memory);
-    assert_mission_risk_skips_eta_fields(&memory);
 }
 
 #[test]

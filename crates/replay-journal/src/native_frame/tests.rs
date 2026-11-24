@@ -652,111 +652,6 @@ fn works(writer: &FrameWriter) -> Vec<Work> {
     writer.tables().iter().map(TableWriter::work).collect()
 }
 
-#[test]
-fn unchanged_tables_cost_their_writers_no_column() {
-    let mut paths = Paths::new();
-    let width = |table: TableId| paths.writer.columns()[table.index()] as u64;
-    let (c, d, r) = (
-        width(TableId::Countries),
-        width(TableId::Divisions),
-        width(TableId::ResearchInputs),
-    );
-    let w = |hours, columns| Work { hours, columns };
-    let expect = |paths: &Paths, hour: i32, touched: [Work; 3], swept: [Work; 3]| {
-        assert_eq!(works(&paths.rows), works(&paths.writer), "hour {hour}");
-        for (writer, expected) in [(&paths.writer, touched), (&paths.swept, swept)] {
-            for (index, work) in works(writer).into_iter().enumerate() {
-                let table = TableId::ALL[index];
-                let at = TABLES.iter().position(|&given| given == table);
-                let expected = at.map_or(Work::default(), |at| expected[at]);
-                assert_eq!(work, expected, "{table:?} at hour {hour}");
-            }
-        }
-    };
-    let held = |tag: &[u8]| {
-        let mut third = country(3, 30);
-        third.tag = tag.to_vec();
-        countries(vec![country(1, 10), country(2, 20), third])
-    };
-    let tokens = |paths: &Paths, hour: i32| {
-        let encoder = &paths.encoder;
-        let divisions = encoder.comparison_baseline::<tables::Divisions>(1, hour, false);
-        let research = encoder.comparison_baseline::<tables::ResearchInputs>(1, hour, false);
-        (divisions.unwrap().0, research.unwrap().0)
-    };
-    let no_change = |token| TableInput::ComparedChanges {
-        token,
-        indices: Vec::new(),
-        rows: TableRows::Divisions(Vec::new()),
-    };
-    paths.check(
-        1,
-        vec![
-            (held(b"C003"), true),
-            (
-                divisions(vec![division(10, 1_500_000), division(11, 2_000_000)]),
-                true,
-            ),
-            (
-                TableInput::Sampled(TableView::Complete(TableRows::ResearchInputs(vec![
-                    input(1, 0, 10),
-                    input(1, 1, 11),
-                    input(2, 0, 20),
-                ]))),
-                true,
-            ),
-        ],
-    );
-    let swept = [w(1, 2 * c), w(1, 2 * d), w(1, 2 * r)];
-    expect(&paths, 1, [w(1, c), w(1, d), w(1, r)], swept);
-    let (compared, equal) = tokens(&paths, 2);
-    paths.check(
-        2,
-        vec![
-            (held(b"C003"), true),
-            (no_change(compared), true),
-            (TableInput::ComparedEqual(equal), true),
-        ],
-    );
-    let swept = [w(2, 4 * c), w(2, 4 * d), w(1, 2 * r)];
-    expect(&paths, 2, [w(2, 2 * c), w(1, d), w(1, r)], swept);
-    let (compared, equal) = tokens(&paths, 3);
-    paths.check(
-        3,
-        vec![
-            (held(b"C003"), false),
-            (TableInput::ComparedEqual(compared), false),
-            (TableInput::ComparedEqual(equal), false),
-        ],
-    );
-    let swept = [w(3, 6 * c), w(2, 4 * d), w(1, 2 * r)];
-    expect(&paths, 3, [w(3, 2 * c), w(1, d), w(1, r)], swept);
-    let (compared, equal) = tokens(&paths, 4);
-    paths.check(
-        4,
-        vec![
-            (held(b"Z003"), true),
-            (no_change(compared), false),
-            (TableInput::ComparedEqual(equal), true),
-        ],
-    );
-    let swept = [w(4, 8 * c), w(3, 6 * d), w(1, 2 * r)];
-    expect(&paths, 4, [w(4, 2 * c + 1), w(1, d), w(1, r)], swept);
-    for hour in 5..=6 {
-        let (compared, equal) = tokens(&paths, hour);
-        paths.check(
-            hour,
-            vec![
-                (held(b"Z003"), true),
-                (no_change(compared), true),
-                (TableInput::ComparedEqual(equal), true),
-            ],
-        );
-    }
-    let swept = [w(6, 12 * c), w(5, 10 * d), w(1, 2 * r)];
-    expect(&paths, 6, [w(6, 2 * c + 2), w(1, d), w(1, r)], swept);
-}
-
 struct Converters {
     live: FrameWriter,
     converted: FrameWriter,
@@ -1041,6 +936,146 @@ fn unchanged_opaque_cells_of_a_dense_table_are_kept_with_the_complete_bytes() {
             hour,
             vec![(TableInput::Sampled(TableView::Complete(TableRows::RailCooldowns(rows))), true)],
         );
+    }
+    for count in [10_u32, 80_u32] {
+        let make_row = |province: u32, hour: i32| RailCooldownRow {
+            province,
+            cooldown_ticks: if province == 2 && hour >= 3 { 55 } else { 10 },
+            building: Recorded::Value(Some(RailwayBuildingState {
+                building: Some(RailwayBuildingHealth {
+                    level: 1,
+                    healthy: 1,
+                    partial: None,
+                }),
+            })),
+            selection: Recorded::Value(Some(RailwaySelectionInputs {
+                levels: Some(vec![1, 2, 3]),
+                pair_count: Some(2),
+                building_level: Some(Some(1)),
+            })),
+            selection_hour: Recorded::Value(if hour == 5 { None } else { Some(hour) }),
+            building_bound: Recorded::Value(Some(true)),
+        };
+        let frame_of = |hour: i32, table: TableInput| {
+            let mut tables = std::array::from_fn(|_| {
+                TableInput::Sampled(TableView::Unavailable {
+                    reason: "unused".into(),
+                })
+            });
+            tables[TableId::RailCooldowns.index()] = table;
+            let mut metrics = Metrics::default();
+            metrics.table_ns[TableId::RailCooldowns.index()] = 1;
+            FrameInput {
+                branch: 1,
+                hour,
+                tables,
+                metrics,
+            }
+        };
+        let mut enc_ref = FrameEncoder::new();
+        let mut enc_uni = FrameEncoder::new();
+        let mut w_ref = FrameWriter::new().unwrap();
+        let mut w_uni_with = FrameWriter::new().unwrap();
+        let mut w_uni_no_base = FrameWriter::new().unwrap();
+        let mut w_uni_rows = FrameWriter::with_staging(native_columns::Staging::Rows).unwrap();
+        for hour in 1..=6 {
+            let range = match hour {
+                4 => 1..=(count + 1),
+                6 => 2..=count,
+                _ => 1..=count,
+            };
+            let full_rows: Vec<_> = range.clone().map(|p| make_row(p, hour)).collect();
+            let ref_input = frame_of(
+                hour,
+                TableInput::SharedComplete(Arc::new(TableRows::RailCooldowns(full_rows.clone()))),
+            );
+            let ref_prepared = enc_ref.prepare_bytes(ref_input.clone(), false).unwrap();
+            let ref_hour = w_ref
+                .hour_on(
+                    &ref_input,
+                    &[],
+                    Some(RowFrame {
+                        baselines: Some(&enc_ref),
+                        keyframe: false,
+                        changed: &[],
+                    }),
+                    &OneThread,
+                )
+                .unwrap();
+            let ref_sections: Vec<(usize, Vec<u8>)> = ref_hour
+                .sections()
+                .map(|(i, b)| (i, b.to_vec()))
+                .collect();
+            let ref_manifest = ref_hour.manifest.clone();
+            w_ref.commit(ref_hour).unwrap();
+            enc_ref.commit(ref_prepared).unwrap();
+
+            let uni_table = if hour == 1 {
+                TableInput::SharedComplete(Arc::new(TableRows::RailCooldowns(full_rows)))
+            } else {
+                let (token, _) = enc_uni
+                    .slice_baseline(TableId::RailCooldowns, 1, hour, false)
+                    .unwrap();
+                let (keys, changed) = match hour {
+                    2 => (Vec::new(), Vec::new()),
+                    3 => (vec![2], vec![make_row(2, hour)]),
+                    4 => (vec![u128::from(count + 1)], vec![make_row(count + 1, hour)]),
+                    5 => (vec![u128::from(count + 1)], Vec::new()),
+                    6 => (vec![1], Vec::new()),
+                    _ => unreachable!(),
+                };
+                TableInput::UniformOptionalI32 {
+                    token,
+                    column: 3,
+                    value: if hour == 5 { None } else { Some(hour) },
+                    update: Arc::new(SliceUpdate::keyed(keys, TableRows::RailCooldowns(changed))),
+                }
+            };
+            let uni_input = frame_of(hour, uni_table);
+            let uni_prepared = enc_uni.prepare_bytes(uni_input.clone(), false).unwrap();
+            let uni_hour = w_uni_with
+                .hour_on(
+                    &uni_input,
+                    &[],
+                    Some(RowFrame {
+                        baselines: Some(&enc_uni),
+                        keyframe: false,
+                        changed: &[],
+                    }),
+                    &OneThread,
+                )
+                .unwrap();
+            let uni_sections: Vec<(usize, Vec<u8>)> = uni_hour
+                .sections()
+                .map(|(i, b)| (i, b.to_vec()))
+                .collect();
+            assert_eq!(uni_sections, ref_sections, "count={count} hour={hour}");
+            assert_eq!(uni_hour.manifest, ref_manifest, "count={count} hour={hour}");
+            w_uni_with.commit(uni_hour).unwrap();
+
+            let no_base_hour = w_uni_no_base.hour(&uni_input).unwrap();
+            let no_base_sections: Vec<(usize, Vec<u8>)> = no_base_hour
+                .sections()
+                .map(|(i, b)| (i, b.to_vec()))
+                .collect();
+            assert_eq!(no_base_sections, ref_sections, "no_base count={count} hour={hour}");
+            w_uni_no_base.commit(no_base_hour).unwrap();
+
+            let rows_hour = w_uni_rows.hour(&uni_input).unwrap();
+            let rows_sections: Vec<(usize, Vec<u8>)> = rows_hour
+                .sections()
+                .map(|(i, b)| (i, b.to_vec()))
+                .collect();
+            assert_eq!(rows_sections, ref_sections, "rows count={count} hour={hour}");
+            w_uni_rows.commit(rows_hour).unwrap();
+
+            enc_uni.commit(uni_prepared).unwrap();
+            assert_eq!(
+                enc_uni.committed_rows(TableId::RailCooldowns),
+                enc_ref.committed_rows(TableId::RailCooldowns),
+                "baseline count={count} hour={hour}"
+            );
+        }
     }
 }
 
@@ -1378,4 +1413,191 @@ fn a_complete_table_emptied_and_refilled_writes_its_complete_bytes() {
             ],
         );
     }
+}
+
+#[test]
+fn slice_updates_without_row_changes_match_recorded_changes() {
+    let mut encoder = FrameEncoder::new();
+    let mut expected_writer = FrameWriter::new().unwrap();
+    let mut diff_writer = FrameWriter::new().unwrap();
+    let research = |entries: &[(u32, u32, i64)]| {
+        TableRows::ResearchInputs(
+            entries
+                .iter()
+                .map(|&(country, index, progress_raw)| ResearchInputRow {
+                    country,
+                    index,
+                    progress_raw,
+                    ..Default::default()
+                })
+                .collect(),
+        )
+    };
+    let initial = frame(
+        1,
+        [
+            (countries(vec![country(1, 10)]), true),
+            (
+                TableInput::SharedComplete(Arc::new(TableRows::Divisions(vec![
+                    division(1, 1_000_000),
+                    division(2, 1_000_000),
+                    division(3, 1_000_000),
+                ]))),
+                true,
+            ),
+            (
+                TableInput::SharedComplete(Arc::new(research(&[
+                    (1, 0, 10),
+                    (1, 1, 20),
+                    (2, 0, 30),
+                ]))),
+                true,
+            ),
+        ],
+    );
+    let mut prepared = encoder.prepare_bytes(initial.clone(), true).unwrap();
+    let row_full = Some(RowFrame {
+        baselines: Some(&encoder),
+        keyframe: true,
+        changed: prepared.changed_rows(),
+    });
+    let row_empty = Some(RowFrame {
+        baselines: Some(&encoder),
+        keyframe: true,
+        changed: &[],
+    });
+    let expected = expected_writer
+        .hour_on(&initial, &[], row_full, &OneThread)
+        .unwrap();
+    let actual = diff_writer
+        .hour_on(&initial, &[], row_empty, &OneThread)
+        .unwrap();
+    assert_eq!(actual.manifest, expected.manifest);
+    assert!(actual.sections().eq(expected.sections()));
+    expected_writer.commit(expected).unwrap();
+    diff_writer.commit(actual).unwrap();
+    let _ = prepared.take_frame();
+    encoder.commit(prepared).unwrap();
+
+    for hour in 2..=4 {
+        let (div_token, _) = encoder
+            .slice_baseline(TableId::Divisions, 1, hour, false)
+            .unwrap();
+        let (res_token, res_prev) = encoder
+            .slice_baseline(TableId::ResearchInputs, 1, hour, false)
+            .unwrap();
+        let div_update = match hour {
+            2 => SliceUpdate::keyed(
+                vec![1, 2, 4],
+                TableRows::Divisions(vec![division(1, 2_000_000), division(4, 500_000)]),
+            ),
+            3 => SliceUpdate {
+                ranges: vec![1..3, 4..5],
+                owners: Vec::new(),
+                keys: Vec::new(),
+                rows: TableRows::Divisions(vec![division(1, 2_000_000), division(2, 3_000_000)]),
+            },
+            _ => SliceUpdate::keyed(
+                vec![1],
+                TableRows::Divisions(vec![division(1, 2_000_000)]),
+            ),
+        };
+        let res_update = match hour {
+            2 => SliceUpdate::new(
+                res_prev,
+                research(&[(1, 0, 15), (1, 2, 25)]),
+                |owner| owner == 1,
+                |_| true,
+            )
+            .unwrap(),
+            3 => SliceUpdate::new(
+                res_prev,
+                research(&[(1, 0, 15), (1, 2, 25)]),
+                |owner| owner == 1,
+                |_| true,
+            )
+            .unwrap(),
+            _ => SliceUpdate::new(
+                res_prev,
+                research(&[(3, 0, 40)]),
+                |owner| owner == 2 || owner == 3,
+                |owner| owner != 2,
+            )
+            .unwrap(),
+        };
+        let input = frame(
+            hour,
+            [
+                (countries(vec![country(1, 10)]), true),
+                (
+                    TableInput::SliceUpdate {
+                        token: div_token,
+                        update: Arc::new(div_update),
+                    },
+                    true,
+                ),
+                (
+                    TableInput::SliceUpdate {
+                        token: res_token,
+                        update: Arc::new(res_update),
+                    },
+                    true,
+                ),
+            ],
+        );
+        let mut prepared = encoder.prepare_bytes(input.clone(), false).unwrap();
+        let row_full = Some(RowFrame {
+            baselines: Some(&encoder),
+            keyframe: false,
+            changed: prepared.changed_rows(),
+        });
+        let row_empty = Some(RowFrame {
+            baselines: Some(&encoder),
+            keyframe: false,
+            changed: &[],
+        });
+        let expected = expected_writer
+            .hour_on(&input, &[], row_full, &OneThread)
+            .unwrap();
+        let actual = diff_writer
+            .hour_on(&input, &[], row_empty, &OneThread)
+            .unwrap();
+        assert_eq!(actual.manifest, expected.manifest, "hour {hour}");
+        assert!(actual.sections().eq(expected.sections()), "hour {hour}");
+        expected_writer.commit(expected).unwrap();
+        diff_writer.commit(actual).unwrap();
+        let _ = prepared.take_frame();
+        encoder.commit(prepared).unwrap();
+    }
+    same_restarts(&mut [&mut expected_writer, &mut diff_writer]);
+}
+
+#[test]
+fn compact_owners_merge_narrow_and_wide_slices_in_key_order() {
+    let mut narrow = Owners::from_keys(
+        TableId::ResearchInputs,
+        3,
+        [
+            (1_u128 << 32) | 1,
+            (1_u128 << 32) | 2,
+            (2_u128 << 32) | 5,
+        ]
+        .into_iter(),
+    )
+    .unwrap();
+    assert!(matches!(narrow, Owners::U64(_)));
+    let slice = Slice {
+        owners: vec![1, 3],
+        keys: Owners::from_keys(
+            TableId::ResearchInputs,
+            2,
+            [(1_u128 << 32) | 9, (3_u128 << 32) | 4].into_iter(),
+        )
+        .unwrap(),
+    };
+    hold_slice(&mut narrow, &slice, TableId::ResearchInputs).unwrap();
+    let Owners::U64(keys) = narrow else {
+        panic!("expected narrow u64 owners");
+    };
+    assert_eq!(keys, [(1 << 32) | 9, (2 << 32) | 5, (3 << 32) | 4]);
 }

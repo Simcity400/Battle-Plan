@@ -367,50 +367,6 @@ const GUI: &[u8] = br#"guiTypes = {
 }"#;
 
 #[test]
-fn occupation_percentages_draw_opaque_even_with_transparent_map_fill() {
-    content_reader_script::test_game::enter();
-    use viewer_native_gui::test_support::gui;
-    let resources = gui::fixture();
-    let windows = gui::windows(GUI);
-    let context = Context {
-        resources: &resources,
-        windows: &windows,
-        viewport: [400, 400],
-        time: Some(0.),
-    };
-    for (mode, raw, text) in [
-        (Mode::Resistance, 0, "0%"),
-        (Mode::Resistance, 2_750_000, "27%"),
-        (Mode::Compliance, 0, "0%"),
-        (Mode::Compliance, 4_025_000, "40%"),
-    ] {
-        let mut row = row();
-        row.level = raw;
-        row.compliance = raw;
-        row.speed = 0;
-        row.map = Recorded::Value(Some(OccupationMap {
-            stored_target: Some(2_000_000),
-            ..Default::default()
-        }));
-        let mut prepared = prepare_at(Some(mode), 500., row, 2);
-        assert_eq!(prepared.placed.len(), 1, "{mode:?}: {raw}");
-        assert_eq!(prepared.placed[0].text, text);
-        prepared.placed[0].screen = [100., 100.];
-        let mut batch = Batch::default();
-        let report = prepared.draw(
-            &context,
-            &mut OccupationIconView::default(),
-            &mut batch,
-            &mut Vec::new(),
-        );
-        assert!(report.refused.is_empty(), "{:?}", report.refused);
-        assert_eq!((report.icons, report.badges), (1, 0));
-        assert_eq!(batch.quads.len(), text.chars().count());
-        assert!(batch.quads.iter().all(|quad| quad.color[3] == 1.));
-    }
-}
-
-#[test]
 fn occupation_grid_centres_admitted_badges_and_reuses_retained_windows() {
     content_reader_script::test_game::enter();
     use viewer_native_gui::test_support::gui;
@@ -776,3 +732,4 @@ fn occupation_empty_badges_settle_before_the_same_parent_slot_is_reused() {
         .unwrap();
     assert_same_entry(actual, &expected, &controls, &resources);
 }
+

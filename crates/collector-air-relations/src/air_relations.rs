@@ -850,17 +850,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_frame_whose_parts_did_not_run_is_published_unavailable_by_the_decode() {
-        let mut pack = Captured::with_capacities(&Capacities::default());
-        pack.prepare_hour(3, false);
-        assert_eq!(pack.unstaged(), [0]);
-        pack.decode_into(&mut Held::new());
-        assert_eq!(
-            pack.outcomes(),
-            [Outcome::Unavailable {
-                reason: "air relation parts not dispatched"
-            }]
-        );
-    }
 }

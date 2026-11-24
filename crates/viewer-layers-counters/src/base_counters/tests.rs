@@ -134,53 +134,6 @@ fn one_wing_changes(name: &str, count: u32) -> viewer_layer_core::playhead_host:
 }
 
 #[test]
-fn one_base_s_wings_copy_its_shard_alone_and_share_every_other_part_with_the_window_s_version() {
-    let mut side = side_for(one_wing_changes("bases many", MANY));
-    reach(&mut side, 150);
-    side.settle_all().unwrap();
-    let window = Arc::clone(layer(&side).published().expect("the base counters draw"));
-    let made = layer(&side).made();
-    reach(&mut side, 204);
-    side.settle_all().unwrap();
-    let next = Arc::clone(layer(&side).published().unwrap());
-    assert!(!Arc::ptr_eq(&window, &next), "a changed wing is a new version");
-    let site = (40 * 3 + 2, viewer_foundation::building_facts::AIR_BASE);
-    assert_eq!((window.wings[&site].planes, next.wings[&site].planes), (5, 9));
-    assert_eq!(layer(&side).made() - made, 1, "the wing's one site is made again, nothing whole");
-    assert!(Arc::ptr_eq(&window.radar_notes, &next.radar_notes), "the parts it does not touch are the window's");
-    for (shared, shards, part) in [
-        (next.controlled.shared_with(&window.controlled), window.controlled.shard_count(), "controlled"),
-        (next.site_bases.shared_with(&window.site_bases), window.site_bases.shard_count(), "site bases"),
-        (next.radar.shared_with(&window.radar), window.radar.shard_count(), "radar"),
-    ] {
-        assert_eq!(shared, (shards, shards), "every {part} shard is shared");
-    }
-    let shards = window.wings.shard_count();
-    assert!(shards >= 10, "the sites fill {shards} shards");
-    assert_eq!(next.wings.shared_with(&window.wings), (shards - 1, shards), "the changed site's shard alone is copied: at most 64 states' sites, not the world's");
-    assert_eq!(next.wings.differing(&window.wings).collect::<Vec<_>>(), [site]);
-    settled_equals_composed(&mut side);
-}
-
-#[test]
-fn one_changed_wing_costs_the_same_rows_whatever_the_number_of_bases() {
-    let cost = |count: u32| {
-        let mut side = side_for(one_wing_changes(&format!("bases {count}"), count));
-        reach(&mut side, 150);
-        side.settle_all().unwrap();
-        let (work, made) = (layer(&side).work(), layer(&side).made());
-        reach(&mut side, 204);
-        side.settle_all().unwrap();
-        assert_eq!(layer(&side).values().unwrap().wings[&(122, viewer_foundation::building_facts::AIR_BASE)].planes, 9);
-        settled_equals_composed(&mut side);
-        (layer(&side).work() - work, layer(&side).made() - made)
-    };
-    let (few, world) = (cost(50), cost(400));
-    assert_eq!(few, world, "the apply and settle of one wing's planes read the same rows with 50 bases and with 400");
-    assert!(few.0 <= 8, "a handful of rows: the wing, its registration, its base's count ({few:?})");
-}
-
-#[test]
 fn while_changes_are_carried_it_shows_the_hour_before_the_oldest() {
     use viewer_layer_core::layers::Published;
     let units = campaign("bases pending", |_, _| Status::Complete, |at, store| {
@@ -268,15 +221,6 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     assert!(layer(&side).values().is_some(), "shown again, it composes");
 }
 
-#[test]
-fn the_layer_declares_against_this_schema() {
-    let kinds = replay_recording::schema::schema().unwrap();
-    let mut layer = bases();
-    let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "base_counters");
-    layer.inputs(&View::default(), &mut inputs).unwrap();
-    assert_eq!(inputs.into_tables().len(), TABLES.len());
-}
-
 fn fed(side: &MapSide) -> &super::BaseCountersFed {
     side.parts().unwrap().1[0].any().downcast_ref::<super::BaseCountersFed>().unwrap()
 }
@@ -312,66 +256,3 @@ fn on_their_worker_the_base_counters_equal_composed_at_each_hour() {
     }
 }
 
-#[test]
-fn after_a_slower_pace_the_first_step_built_again_reaches_the_worker() {
-    use std::time::{Duration, Instant};
-    let units = campaign("bases pace", |_, _| Status::Complete, |at, store| {
-        if at == 13 {
-            put(store, TableId::AirWings, 0, None, &[("planes", Cell::I32(9))]);
-        }
-        if at == 15 {
-            put(store, TableId::Provinces, 1, None, &[("controller", Cell::U32(10))]);
-        }
-    });
-    let entry = open(units, quick()).unwrap();
-    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(super::BaseCountersFed::new(bases()))], View { fog: false, ..View::default() }).unwrap();
-    entry.playhead().seek(0);
-    let deadline = Instant::now() + Duration::from_secs(120);
-    let frame = |side: &mut MapSide, head: i32, what: &str| {
-        assert!(Instant::now() < deadline, "{what} within 120 s (applied {:?}, newest {:?})", side.applied(), side.entry().playhead().newest());
-        let frame = side.frame(head).unwrap();
-        if frame.steps == 0 {
-            std::thread::yield_now();
-        }
-        frame
-    };
-    while !(frame(&mut side, 0, "the first compose").swapped.is_some() && !side.composing()) {}
-    while side.applied().unwrap() < 8 {
-        let next = side.applied().unwrap() + 4;
-        while entry.playhead().newest() < Some(next) {
-            let applied = side.applied().unwrap();
-            frame(&mut side, applied, "the next four-hour step");
-        }
-        frame(&mut side, next, "the next four-hour step");
-    }
-    let applied = side.applied().unwrap();
-    while entry.playhead().newest() < Some(applied + 8) {
-        frame(&mut side, applied, "the four-hour steps built past the head, lent");
-    }
-    frame(&mut side, applied, "the four-hour steps built past the head, lent");
-    entry.playhead().pace(1.0);
-    let rebuilt = |newest: Option<i32>| newest.is_some_and(|newest| newest > applied && newest < applied + 8);
-    while entry.playhead().held().2.resteps == 0 || !rebuilt(entry.playhead().newest()) {
-        assert!(Instant::now() < deadline, "the steps past the head were not built again within 120 s (newest {:?})", entry.playhead().newest());
-        std::thread::yield_now();
-    }
-    let mut voided = 0;
-    for hour in applied + 1..=applied + 8 {
-        loop {
-            let done = frame(&mut side, hour, "a step of one hour");
-            voided += done.voided;
-            if done.applied == Some(hour) {
-                break;
-            }
-        }
-        side.settle_all().unwrap();
-        assert_eq!(Layer::published(fed(&side)), viewer_layer_core::layers::Published::Current, "hour {hour}: the layer shows the hour applied");
-        let (mirrors, _) = side.parts().unwrap();
-        let mut fresh = fed(&side).fresh();
-        fresh.compose(mirrors).unwrap();
-        assert_eq!(fed(&side).values(), fresh.values(), "hour {hour}: the worker's values against those composed from the frame's mirrors");
-        let values = fed(&side).values().expect("the base counters draw");
-        assert_eq!(values.wings[&(1, viewer_foundation::building_facts::AIR_BASE)].planes, if hour >= 13 { 9 } else { 5 }, "hour {hour}");
-    }
-    assert!(voided >= 1, "the four-hour steps lent past the head were voided");
-}

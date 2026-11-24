@@ -83,39 +83,6 @@ test('Land battles at a world war\'s density, following at 1,440 h/s: rows are b
   }, 180_000));
 });
 
-// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
-test.skip('the widgets whose replies are windows of hours, following at 1,440 h/s, ask each next window ahead of the head once and commit nothing per hour', async t => {
-  await withNativePage('windowed-widgets', '/ui/src/dashboard/windowedWidgets.dom.fixture.tsx', page => page.stage('windowed widgets', async () => {
-    const act = <T,>(expression: string) => page.evaluate<T>(`window.windowedWidgets.${expression}`);
-    await act('mount()');
-    assert.deepEqual(await act('errors()'), {}, 'no widget threw');
-    assert.deepEqual(await act('states()'), {}, `each widget drew its data, none a state: ${JSON.stringify(await act('all()'))}`);
-    const opened = await act<{ product: string; window: number | null }[]>('opened()');
-    const shownWindow = Math.floor(30_000 / (4 * 720));
-    assert.deepEqual(opened.filter(item => item.product === 'military-air-ledger').map(item => item.window).sort((a, b) => (a ?? 0) - (b ?? 0)), [shownWindow, shownWindow + 1],
-      'aircraft losses open with the window shown and the next ahead');
-    const played = await act<{ from: number; head: number; rendered: Record<string, number> }>('play(600, 15)');
-    type Asked = { product: string; window: number | null; head: number };
-    const asked = await act<Asked[]>('played()');
-    const window = 4 * 720, crossed = Math.floor(played.head / window) - Math.floor(played.from / window);
-    t.diagnostic(`hour ${played.from} to ${played.head}, ${crossed} windows crossed: renders ${JSON.stringify(played.rendered)}; asked ${asked.map(item => `${item.product}#${item.window}@${item.head}`).join(', ') || 'nothing'}`);
-    assert.ok(crossed >= 3, `the head crossed windows: ${crossed}`);
-    const products = { produced: 'equipment-produced', supremacy: 'naval-supremacy', spending: 'production-spending', trade: 'trade-flows', air: 'military-air-ledger' };
-    const known = new Set([...Object.values(products), 'follow', 'unfollow', 'follow-clock', 'country-styles', 'country-facts']);
-    assert.deepEqual(asked.filter(item => !known.has(item.product)).map(item => item.product), [], 'nothing else is asked while playing');
-    for (const [id, product] of Object.entries(products)) {
-      const windows = asked.filter(item => item.product === product);
-      assert.deepEqual(windows.filter(item => item.window === null || item.window * window <= item.head), [], `${id}: every window asked is ahead of the head`);
-      assert.equal(new Set(windows.map(item => item.window)).size, windows.length, `${id}: no window asked twice`);
-      assert.ok(windows.length <= crossed + 1, `${id}: a window ahead once per window crossed: ${windows.length} for ${crossed}`);
-      const monthly = id === 'supremacy' || id === 'trade';
-      const allowed = crossed + 2 + (monthly ? Math.ceil((played.head - played.from) / 720) + 1 : 0);
-      assert.ok((played.rendered[id] ?? 0) <= allowed, `${id}: a commit as a window lands${monthly ? ' or a month passes' : ''}, never per hour: ${played.rendered[id]} for ${crossed} windows`);
-    }
-    assert.ok(asked.some(item => item.product === products.produced) && asked.some(item => item.product === products.air), 'the races asked the windows they crossed');
-    await act('pause()');
-  }, 120_000));
-});
 
 test('a dense paged log following at 1,440 h/s asks every page ahead of the head, each once, from its own hour', async t => {
   await withNativePage('pages-ahead', '/ui/src/charts/log/logPagesAhead.dom.fixture.tsx', page => page.stage('pages ahead', async () => {

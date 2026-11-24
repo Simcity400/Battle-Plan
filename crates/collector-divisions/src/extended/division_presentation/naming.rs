@@ -66,6 +66,7 @@ struct Keep {
     member: usize,
     span: [u8; INPUT_SPAN],
     text: Span,
+    stamp: u64,
 }
 
 pub struct NamingPart {
@@ -151,21 +152,8 @@ impl NamingPart {
         self.keeps.clear();
         self.lookups = 0;
         self.failed = false;
-        if self.groups.capacities() != carry.groups
-            && let Ok(groups) = GroupKeys::try_with_capacity(carry.groups[0], carry.groups[1])
-                .map_err(collector_memory::terminal::io)
-        {
-            self.groups = groups;
-        }
-        self.groups.reset();
         let first = self.range.start.min(seeds.len());
         let seeds = &seeds[first..self.range.end.clamp(first, seeds.len())];
-        if !grow_vec(&mut self.rows, seeds.len())
-            || engine_allocation::reserve(&mut self.keeps, seeds.len()).is_err()
-        {
-            self.failed = true;
-            return;
-        }
         let share = |total: usize| {
             total
                 .saturating_mul(2)
@@ -173,6 +161,31 @@ impl NamingPart {
                 .div_ceil(carry.seeds.max(1))
                 .min(total)
         };
+        let group_target = |total: usize| {
+            if total == 0 {
+                0
+            } else {
+                share(total)
+                    .max(64)
+                    .min(total)
+                    .checked_next_power_of_two()
+                    .unwrap_or(total)
+            }
+        };
+        let target_groups = [group_target(carry.groups[0]), group_target(carry.groups[1])];
+        if self.groups.capacities() != target_groups
+            && let Ok(groups) = GroupKeys::try_with_capacity(target_groups[0], target_groups[1])
+                .map_err(collector_memory::terminal::io)
+        {
+            self.groups = groups;
+        }
+        self.groups.reset();
+        if !grow_vec(&mut self.rows, seeds.len())
+            || engine_allocation::reserve(&mut self.keeps, seeds.len()).is_err()
+        {
+            self.failed = true;
+            return;
+        }
         engine_allocation::advisory(|| {
             grow_vec(&mut self.names.first, share(carry.bytes[0]));
             grow_vec(&mut self.cached.first, share(carry.bytes[1]));
@@ -297,6 +310,11 @@ impl NamingPart {
                 Err(reason) => row.cached_failure = Some(reason),
             }
             row.held = held.is_some();
+            let stamp = held.map_or(0, |held| held.stamp);
+            row.held_stamp = match (held, row.inputs, row.cached_name) {
+                (Some(held), Some(_), Some(_)) => held.stamp,
+                _ => 0,
+            };
             if let (true, true, Ok((pointer, Ok(span))), Some(text)) =
                 (store.is_some(), registered, member, row.cached_name)
             {
@@ -306,6 +324,7 @@ impl NamingPart {
                     member: pointer,
                     span,
                     text,
+                    stamp,
                 });
             }
             self.len += 1;
@@ -492,12 +511,12 @@ impl Captured {
         if let Some(store) = store {
             for keep in first.keeps.iter().take_while(|keep| keep.index < len) {
                 let text = &self.cached_names.first[keep.text.0..keep.text.0 + keep.text.1];
-                store.keep_name(keep.division, keep.member, &keep.span, text);
+                store.keep_name(keep.division, keep.member, &keep.span, text, keep.stamp);
             }
             for part in rest.iter() {
                 for keep in part.keeps.iter().take_while(|keep| keep.index < len) {
                     let text = &part.cached.first[keep.text.0..keep.text.0 + keep.text.1];
-                    store.keep_name(keep.division, keep.member, &keep.span, text);
+                    store.keep_name(keep.division, keep.member, &keep.span, text, keep.stamp);
                 }
             }
         }

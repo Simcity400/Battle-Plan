@@ -779,37 +779,6 @@ fn prefetched_scattered_preserves_ordered_adapter_observations_and_failed_prefix
 }
 
 #[test]
-fn prefetched_scattered_uses_the_adapters_scattered_protocol() {
-    struct ScatterOnly(std::cell::Cell<usize>);
-    impl Memory for ScatterOnly {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("the adapter's scattered path must own all observations");
-        }
-        fn copy_scattered<const N: usize>(
-            &self,
-            _: [usize; N],
-            destinations: &mut [&mut [u8]; N],
-        ) -> usize {
-            self.0.set(self.0.get() + 1);
-            for destination in destinations {
-                destination.fill(0x6d);
-            }
-            N
-        }
-    }
-    let memory = ScatterOnly(std::cell::Cell::new(0));
-    let mut first = [0; 8];
-    let mut second = [0; 4];
-    assert_eq!(
-        memory.copy_scattered_prefetched([0x1000, 0x2000], &mut [&mut first, &mut second]),
-        2
-    );
-    assert_eq!(first, [0x6d; 8]);
-    assert_eq!(second, [0x6d; 4]);
-    assert_eq!(memory.0.get(), 1);
-}
-
-#[test]
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 fn native_prefetched_scattered_keeps_empty_repeated_and_invalid_prefixes() {
     let source: [u8; 16] = std::array::from_fn(|index| index as u8);

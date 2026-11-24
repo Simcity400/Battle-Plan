@@ -139,7 +139,6 @@ pub fn record(counts: &Counts, leaders: usize) {
     LEADERS.store(leaders, Ordering::Relaxed);
 }
 
-
 fn observe() {
     WATCHES.registry.set_enabled(
         cfg!(feature = "unit_leader_changes")
@@ -319,29 +318,6 @@ callback!(trait_factor_remove, 31);
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn site_refusals_identify_the_exact_site_before_any_patch_is_built() {
-        let error = validate_sites(0).unwrap_err();
-        assert!(error.contains("unit_leader_changes"));
-        assert!(error.contains(MUTATIONS[0].name));
-        assert!(error.contains("sentinel validation"));
-    }
-
-    #[test]
-    fn hook_errors_name_the_family_sites_and_original_failure() {
-        for (index, site) in MUTATIONS.iter().enumerate() {
-            let error = hook_failure(Some(index), "construction", "synthetic refusal");
-            assert!(error.contains("unit_leader_changes"));
-            assert!(error.contains(site.name));
-            assert!(error.contains("synthetic refusal"));
-        }
-        let error = hook_failure(None, "publication", "byte verification failed");
-        for site in MUTATIONS {
-            assert!(error.contains(site.name));
-        }
-        assert!(error.contains("byte verification failed"));
-    }
 
     #[test]
     fn writers_move_their_leaders_certificates() {

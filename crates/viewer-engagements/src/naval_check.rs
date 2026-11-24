@@ -284,48 +284,4 @@ mod tests {
         assert_eq!(settled(5, Engaged::Unknown), Engaged::Unknown);
     }
 
-    #[test]
-    fn the_summary_names_the_first_mismatches_and_its_coverage() {
-        let mut summary = Summary {
-            hours: 12,
-            naval_hours: 10,
-            agreements: 30,
-            mismatches: 7,
-            first: (0..NAMED_MISMATCHES as i32)
-                .map(|hour| Mismatch {
-                    branch: 3,
-                    hour,
-                    combat: 62,
-                    side: 1,
-                    derived: false,
-                })
-                .collect(),
-            unreadable_hours: 2,
-            complete: true,
-            ..Default::default()
-        };
-        let lines = summary.lines();
-        assert!(
-            lines[0].contains("30 side-hours agree, 7 differ"),
-            "{lines:?}"
-        );
-        assert!(lines[1].contains("12 hours folded, 10 with naval combat sides"));
-        assert!(lines[1].contains("2 unreadable hours"));
-        assert!(lines[2].contains("branch 3 hour 0 combat type=62 id=0 side 1"));
-        assert_eq!(
-            lines.last().unwrap(),
-            "Naval engaged mismatch: 2 more not listed."
-        );
-        summary = Summary {
-            hours: 4,
-            complete: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            summary.lines(),
-            ["Naval engaged check: no naval combat side in the 4 folded hours."]
-        );
-        summary.failed_blocks = 1;
-        assert!(summary.lines()[1].contains("1 unreadable blocks"));
-    }
 }

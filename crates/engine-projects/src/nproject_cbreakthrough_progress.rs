@@ -4,9 +4,22 @@ pub const VTABLE_RVA: Rva = Rva(0x02aa_49b0);
 pub const TREE_HEADER: usize = 0x08;
 pub const TREE_SIZE: usize = 0x10;
 
-use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native_memory::{
+    Memory,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read, walk::Outcome,
+};
 use engine_native::ccountry;
 use crate::{nproject_breakthrough_node::{self as node, Links}, nproject_cprogram_status};
+
+const SENTINEL_LEN: usize = node::IS_NIL + 1;
+const SENTINEL_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: SENTINEL_LEN,
+}];
+const SENTINEL_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&SENTINEL_FIELDS, SENTINEL_LEN).expect("valid breakthrough sentinel layout");
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -37,27 +50,116 @@ pub fn walk_buffer(
 ) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let expected_bt =
+            engine_sites::at(base, VTABLE_RVA).ok_or("breakthrough vtable overflow")? as u64;
         let mut found_country = false;
         let mut len = 0;
         let mut unread_rows = 0_u32;
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
-            };
-            found_country = true;
-            let status = nproject_cprogram_status::from_country(memory, base, country, &countries)?;
-            match walk_status_buffer(memory, base, status, country.id, output.suffix(len)) {
-                Outcome::Rows { len: count } => len += count,
-                Outcome::Truncated {
-                    len: count,
-                    unread_rows: omitted,
-                } => {
-                    len += count;
-                    unread_rows = unread_rows
-                        .checked_add(omitted)
-                        .ok_or("breakthrough omitted count overflow")?;
+        let mut batch_countries = [engine_native_memory::country_identity::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; nproject_cprogram_status::BATCH];
+        let mut statuses = [nproject_cprogram_status::BatchedStatus::EMPTY;
+            nproject_cprogram_status::BATCH];
+        let mut header_ptrs = [0_usize; nproject_cprogram_status::BATCH];
+        let mut header_slots = [0_usize; nproject_cprogram_status::BATCH];
+        let mut sentinel_bytes = [0_u8; nproject_cprogram_status::BATCH * SENTINEL_LEN];
+        let mut slot = 1_u32;
+        while slot < countries.count() {
+            let mut n = 0_usize;
+            let mut batch_err = None;
+            while slot < countries.count() && n < nproject_cprogram_status::BATCH {
+                let cur = slot;
+                slot += 1;
+                let country = match countries.at(cur) {
+                    Ok(Some(country)) => country,
+                    Ok(None) => continue,
+                    Err(err) => {
+                        batch_err = Some(err);
+                        break;
+                    }
+                };
+                found_country = true;
+                batch_countries[n] = country;
+                n += 1;
+            }
+            if n > 0 {
+                let (ok_len, status_err) = nproject_cprogram_status::read_batch(
+                    memory,
+                    base,
+                    &countries,
+                    &batch_countries[..n],
+                    &mut statuses,
+                );
+                let mut header_count = 0_usize;
+                let mut parsed = [None; nproject_cprogram_status::BATCH];
+                for (i, entry) in statuses[..ok_len].iter().enumerate() {
+                    if let Some(block) = &entry.block {
+                        let bt = &block[nproject_cprogram_status::BREAKTHROUGH..];
+                        if u64::from_le_bytes(bt[..8].try_into().unwrap()) == expected_bt {
+                            let header = usize::try_from(u64::from_le_bytes(
+                                bt[TREE_HEADER..TREE_HEADER + 8].try_into().unwrap(),
+                            ))
+                            .ok();
+                            let count = u32::try_from(u64::from_le_bytes(
+                                bt[TREE_SIZE..TREE_SIZE + 8].try_into().unwrap(),
+                            ))
+                            .ok();
+                            if let (Some(header), Some(count)) = (header, count)
+                                && header != 0
+                                && header.checked_add(SENTINEL_LEN).is_some()
+                            {
+                                parsed[i] = Some((header, count));
+                                header_ptrs[header_count] = header;
+                                header_slots[header_count] = i;
+                                header_count += 1;
+                            }
+                        }
+                    }
                 }
-                Outcome::Unavailable { reason } => return Err(reason),
+                let sentinels_copied = if header_count > 0 {
+                    memory.copy_records(
+                        RecordSources::Pointers(&header_ptrs[..header_count]),
+                        &SENTINEL_LAYOUT,
+                        &mut sentinel_bytes[..header_count * SENTINEL_LEN],
+                    )
+                } else {
+                    0
+                };
+                let mut sentinel_index = [usize::MAX; nproject_cprogram_status::BATCH];
+                for k in 0..sentinels_copied {
+                    sentinel_index[header_slots[k]] = k;
+                }
+                for (i, entry) in statuses[..ok_len].iter().enumerate() {
+                    let outcome = if let (Some((header, count)), k) = (parsed[i], sentinel_index[i])
+                        && k != usize::MAX
+                    {
+                        let raw = &sentinel_bytes[k * SENTINEL_LEN..(k + 1) * SENTINEL_LEN];
+                        walk_with_sentinel(memory, header, count, raw, entry.country.id, output.suffix(len))
+                    } else {
+                        walk_status_buffer(memory, base, entry.status, entry.country.id, output.suffix(len))
+                    };
+                    match outcome {
+                        Outcome::Rows { len: count } => len += count,
+                        Outcome::Truncated {
+                            len: count,
+                            unread_rows: omitted,
+                        } => {
+                            len += count;
+                            unread_rows = unread_rows
+                                .checked_add(omitted)
+                                .ok_or("breakthrough omitted count overflow")?;
+                        }
+                        Outcome::Unavailable { reason } => return Err(reason),
+                    }
+                }
+                if let Some(err) = status_err {
+                    return Err(err);
+                }
+            }
+            if let Some(err) = batch_err {
+                return Err(err);
             }
         }
         if !found_country {
@@ -67,6 +169,84 @@ pub fn walk_buffer(
             Outcome::Rows { len }
         } else {
             Outcome::Truncated { len, unread_rows }
+        })
+    })();
+    result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+fn walk_with_sentinel(
+    memory: &impl Memory,
+    header: usize,
+    count: u32,
+    raw: &[u8],
+    owner: u32,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+) -> Outcome {
+    let result = (|| {
+        let nil_byte = raw[node::IS_NIL];
+        if nil_byte > 1 {
+            return Err("breakthrough tree nil flag invalid");
+        }
+        let ptr = |offset| {
+            usize::try_from(u64::from_le_bytes(
+                raw[offset..offset + 8].try_into().unwrap(),
+            ))
+            .map_err(|_| "breakthrough tree pointer overflow")
+        };
+        let sentinel = Links {
+            left: ptr(node::LEFT)?,
+            parent: ptr(node::PARENT)?,
+            right: ptr(node::RIGHT)?,
+            nil: nil_byte != 0,
+        };
+        if !sentinel.nil {
+            return Err("breakthrough tree sentinel is not nil");
+        }
+        if count == 0 {
+            if sentinel.left != header || sentinel.parent != header || sentinel.right != header {
+                return Err("empty breakthrough tree has live links");
+            }
+            return Ok(Outcome::Rows { len: 0 });
+        }
+        let root = Links::read(memory, sentinel.parent)?;
+        if root.nil || root.parent != header {
+            return Err("breakthrough root parent mismatch");
+        }
+        output.ensure(count as usize)?;
+        let mut current = sentinel.left;
+        let mut previous_key = None;
+        for ordinal in 0..count {
+            if current == header {
+                return Err("breakthrough tree shorter than declared size");
+            }
+            if ordinal as usize == output.len() {
+                return Ok(Outcome::Truncated {
+                    len: output.len(),
+                    unread_rows: count - ordinal,
+                });
+            }
+            let links = Links::read(memory, current)?;
+            if links.nil {
+                return Err("breakthrough tree reached foreign sentinel");
+            }
+            let (specialization, points) = node::value(memory, current)?;
+            if previous_key.is_some_and(|key| key >= specialization as i32) {
+                return Err("breakthrough keys duplicated or unordered");
+            }
+            output[ordinal as usize] = Row {
+                owner,
+                specialization,
+                points,
+            };
+            previous_key = Some(specialization as i32);
+            let last = current;
+            current = successor(memory, header, current, links)?;
+            if ordinal + 1 == count && (current != header || sentinel.right != last) {
+                return Err("breakthrough tree exceeds declared size or maximum differs");
+            }
+        }
+        Ok(Outcome::Rows {
+            len: count as usize,
         })
     })();
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })

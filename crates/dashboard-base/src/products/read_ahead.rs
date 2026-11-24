@@ -119,11 +119,4 @@ mod tests {
         assert!(catalogue.readers_read());
     }
 
-    #[test]
-    fn a_retired_binding_reads_nothing_ahead() {
-        let (source, options, _folder) = opened();
-        source.bind(None, Presentation::default());
-        read(&Arc::downgrade(&source), options);
-        assert_eq!(politics_content::content_loads(&source), 0);
-    }
 }

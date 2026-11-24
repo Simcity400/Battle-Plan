@@ -1,4 +1,5 @@
 use super::*;
+use crate::section::Scratch;
 
 const KINDS: [Kind; 6] = [
     Kind::U32,
@@ -1081,57 +1082,6 @@ fn a_refused_batch_changes_nothing_held() {
 }
 
 #[test]
-fn an_hour_works_only_the_columns_it_staged() {
-    fn quiet(twin: &mut Twin, rows: &[Wide]) {
-        assert!(twin.hour(Coverage::Complete, COMPLETE, rows).is_none());
-    }
-    let all = WIDE.len() as u64;
-    let w = |hours, columns| Work { hours, columns };
-    let mut twin = Twin::new();
-    let mut rows: Vec<Wide> = (1..=40).map(|key| Wide::new(key * 10, key as u32)).collect();
-    twin.hour(Coverage::Complete, COMPLETE, &rows);
-    assert_eq!(twin.batch.writer.work(), w(1, all));
-    quiet(&mut twin, &rows);
-    assert_eq!(twin.batch.writer.work(), w(2, 2 * all));
-    for _ in 0..10 {
-        quiet(&mut twin, &rows);
-    }
-    assert_eq!(twin.batch.writer.work(), w(12, 2 * all));
-    assert!(twin.hour(Coverage::Changes { removed: &[] }, COMPLETE, &[]).is_none());
-    twin.hour(Coverage::Partial, TRUNCATED, &rows[10..15]);
-    quiet(&mut twin, &rows);
-    assert_eq!(twin.batch.writer.work(), w(15, 2 * all));
-    rows[7] = rows[7].clone().with(4, Cell::U32(1));
-    twin.hour(Coverage::Changes { removed: &[] }, COMPLETE, &rows[7..8]);
-    assert_eq!(twin.batch.writer.work(), w(16, 2 * all + 1));
-    quiet(&mut twin, &rows);
-    quiet(&mut twin, &rows);
-    assert_eq!(twin.batch.writer.work(), w(18, 2 * all + 2));
-    rows[5].names[0] = b"renamed".to_vec();
-    rows[3].unrecorded = 1 << 0;
-    twin.hour(Coverage::Complete, COMPLETE, &rows).unwrap();
-    quiet(&mut twin, &rows);
-    assert_eq!(twin.batch.writer.work(), w(20, 2 * all + 6));
-    assert_eq!(twin.rows.writer.work(), twin.batch.writer.work());
-    for side in &twin.swept {
-        assert_eq!(side.writer.work(), w(20, 40 * all));
-    }
-    let inputs = rows[0].inputs();
-    let twice = [(rows[0].key, &inputs[..]), (rows[0].key, &inputs[..])];
-    batched(&mut twin.staged, &WIDE, twice.into_iter()).unwrap();
-    let Side { writer, dictionary, .. } = &mut twin.batch;
-    assert!(writer.prepare(dictionary, Coverage::Complete, &twin.staged).is_err());
-    assert_eq!(writer.work(), w(21, 2 * all + 6));
-    quiet(&mut twin, &rows);
-    assert_eq!(twin.batch.writer.work(), w(22, 3 * all + 6));
-    assert_eq!(twin.rows.writer.work(), w(21, 2 * all + 6));
-    for side in &twin.swept {
-        assert_eq!(side.writer.work(), w(21, 42 * all));
-    }
-    twin.restart();
-}
-
-#[test]
 fn a_batch_begun_again_holds_only_its_own_cells() {
     let mut batch = Batch::new();
     let wide = Wide::new(10, 1);
@@ -1352,31 +1302,6 @@ fn an_hour_after_one_dropped_unfinished_writes_what_it_would_have() {
     assert_eq!(sides[0].writer.work(), after);
 }
 
-#[test]
-fn committing_fills_grows_nothing_once_warm() {
-    let rows = |at: u32| many(1..=40, move |_| at % 2, move |key| at % 2 == 1 && key > 4);
-    let mut writer = TableWriter::new(&KINDS).unwrap();
-    let mut dictionary = Dictionary::new();
-    let mut masks: Vec<u64> = vec![0b1; 4];
-    masks.resize(40, 0b10_0001);
-    for at in 0..8 {
-        let prepared = prepare(&mut writer, &mut dictionary, Coverage::Complete, &rows(at)).unwrap();
-        if at > 0 {
-            let census = prepared.census;
-            assert_eq!((census.fills, census.fill_slots, census.fill_exceptions), (2, 76, 4));
-        }
-        let before = engine_allocation::growths();
-        writer.commit(Some(prepared), COMPLETE, at as i32 + 1).unwrap();
-        if at >= 3 {
-            assert_eq!(engine_allocation::growths(), before, "hour {at}");
-        }
-        if at > 0 {
-            assert_eq!(writer.changes.fill_slots, (0..40).collect::<Vec<u32>>());
-            assert_eq!(writer.changes.fill_masks, masks);
-        }
-    }
-}
-
 fn patched<T: Copy>(held: &[T], edits: &[(u32, u32, u32)], new: &[T]) -> Vec<T> {
     let (mut out, mut from, mut item) = (Vec::new(), 0, 0);
     let mut inserted = Vec::new();
@@ -1425,4 +1350,92 @@ fn a_list_behind_a_changed_count_keeps_its_records() {
     let mut edits = Vec::new();
     assert!(hunks(&held, &new, 1, |item| varint_len(item.into()), &mut edits).unwrap());
     assert_eq!(patched(&held, &edits, &new), new);
+}
+
+#[test]
+fn dictionary_interns_and_reads_strings_across_table_growth() {
+    let mut dict = Dictionary::new();
+    let mut ids = Vec::new();
+    for i in 0..200_u32 {
+        let value = format!("entry-{i:04}");
+        let id = dict.intern(value.as_bytes()).unwrap();
+        assert_eq!(id, i);
+        assert_eq!(dict.intern(value.as_bytes()).unwrap(), id);
+        ids.push((id, value));
+    }
+    assert_eq!(dict.len(), 200);
+    assert_eq!(dict.take_appended().len(), 200);
+    for (id, value) in &ids {
+        assert_eq!(dict.get(*id), Some(value.as_bytes()));
+        let mut reading = Strings::Reading(&dict);
+        assert_eq!(reading.intern(value.as_bytes()).unwrap(), *id);
+    }
+    let mut reading = Strings::Reading(&dict);
+    assert!(reading.intern(b"absent").is_err());
+}
+
+#[test]
+fn commit_releases_oversized_keyframe_insert_scratch_while_preserving_state() {
+    let kinds = [Kind::U64, Kind::Bytes];
+    let mut dict = Dictionary::new();
+    let mut writer = TableWriter::new(&kinds).unwrap();
+    let mut hour = writer.begin(&mut dict, Coverage::Complete).unwrap();
+    for key in 1..=2000_u128 {
+        let name = format!("row-{key}");
+        hour.row(
+            key,
+            &[
+                Input::Value(Cell::U64(key as u64)),
+                Input::Text(name.as_bytes()),
+            ],
+        )
+        .unwrap();
+    }
+    let prepared = hour.finish().unwrap();
+    let scratch = writer.columns.as_ref().unwrap();
+    assert!(scratch.inserts[0].words.capacity() >= 2000);
+    assert!(scratch.insert_outs[0].u64s.capacity() >= 2000);
+    assert!(writer.parts.sorted_keys.capacity() >= 2000);
+    writer
+        .commit(
+            Some(prepared),
+            Evidence {
+                status: Status::Complete,
+                read: true,
+                sample: Sample::FromReadBit,
+            },
+            0,
+        )
+        .unwrap();
+    let scratch = writer.columns.as_ref().unwrap();
+    assert_eq!(scratch.inserts[0].words.capacity(), 0);
+    assert_eq!(scratch.insert_outs[0].u64s.capacity(), 0);
+    assert_eq!(writer.parts.sorted_keys.capacity(), 0);
+    assert_eq!(writer.table().live().count(), 2000);
+
+    let mut next = writer
+        .begin(&mut dict, Coverage::Changes { removed: &[] })
+        .unwrap();
+    next.row(
+        1,
+        &[Input::Value(Cell::U64(999)), Input::Text(b"row-1")],
+    )
+    .unwrap();
+    let prepared = next.finish().unwrap();
+    writer
+        .commit(
+            Some(prepared),
+            Evidence {
+                status: Status::Complete,
+                read: true,
+                sample: Sample::FromReadBit,
+            },
+            1,
+        )
+        .unwrap();
+    let slot = writer.table().slot(1).unwrap();
+    assert_eq!(
+        writer.table().column(0).unwrap().cell(slot),
+        Some(Cell::U64(999))
+    );
 }

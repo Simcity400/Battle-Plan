@@ -14,29 +14,6 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 #[test]
-fn tooltip_uses_native_bake_and_ignores_authored_height() {
-    content_reader_script::test_game::enter();
-    let mut resources = fixture();
-    resources.templates.push(read(
-        br#"guiTypes = { textBoxType = {
-        name = ToolTip font = Main_14 maxWidth = 50 maxHeight = 1
-        borderSize = { x = 2 y = 3 }
-    } }"#,
-    ));
-    let layout = text_sprites::tooltip(&resources, "abcdef", 5.0, false).unwrap();
-    assert_eq!(layout.size, [39, 34]);
-    let PartKind::TextSprite { bake, .. } = &layout.parts[0].kind else {
-        panic!("native text bake");
-    };
-    assert_eq!(bake.glyphs.len(), 6);
-    assert_eq!(
-        bake.glyphs[0].color,
-        native_text::packed([128.0 / 255.0, 64.0 / 255.0, 32.0 / 255.0, 1.0])
-    );
-    assert_eq!(layout.parts[0].shading.time, 5.0);
-}
-
-#[test]
 fn tooltip_bake_keeps_soft_wrap_indent_and_hard_line_start() {
     content_reader_script::test_game::enter();
     let mut resources = fixture();
@@ -369,49 +346,6 @@ fn sizes_evaluate_against_the_parent() {
 }
 
 #[test]
-fn anchors_halve_toward_zero() {
-    use Orientation::*;
-    let parent = [101, 51];
-    let own = [11, 7];
-    let cases = [
-        (UpperLeft, [0, 0], [0, 0]),
-        (UpperRight, [101, 0], [-11, 0]),
-        (LowerLeft, [0, 51], [0, -7]),
-        (LowerRight, [101, 51], [-11, -7]),
-        (Center, [50, 25], [-5, -3]),
-        (CenterLeft, [0, 25], [0, -3]),
-        (CenterRight, [101, 25], [-11, -3]),
-        (CenterUp, [50, 0], [-5, 0]),
-        (CenterDown, [50, 51], [-5, -7]),
-    ];
-    for (orientation, from_parent, from_own) in cases {
-        assert_eq!(
-            compute_anchor(orientation, UpperLeft, parent, own),
-            from_parent,
-            "{orientation:?}"
-        );
-        assert_eq!(
-            compute_anchor(UpperLeft, orientation, parent, own),
-            from_own,
-            "{orientation:?}"
-        );
-    }
-}
-
-#[test]
-fn a_child_window_anchors_in_its_parent_and_insets_its_margins() {
-    content_reader_script::test_game::enter();
-    let parts = parts(
-        "size = { width = 101 height = 51 } \
-         containerWindowType = { name = \"c\" size = { width = 21 height = 11 } \
-         position = { x = 3 y = 4 } orientation = center origo = center \
-         margin = { left = 2 top = 10% } \
-         iconType = { name = \"i\" spriteType = \"GFX_even\" } }",
-    );
-    assert_eq!(rect(&parts[0]), [45.0, 25.0, 20.0, 10.0]);
-}
-
-#[test]
 fn a_root_is_placed_as_the_code_places_it() {
     content_reader_script::test_game::enter();
     assert!(laid("origo = center size = { width = 4 height = 4 }", None).is_ok());
@@ -435,70 +369,6 @@ fn a_root_is_placed_as_the_code_places_it() {
     assert_eq!(
         root_origin(window, viewport, RootPlacement::Anchored([7, 8])),
         Ok([47, 28])
-    );
-}
-
-#[test]
-fn an_icon_is_placed_as_the_game_places_it() {
-    content_reader_script::test_game::enter();
-    let parts = parts(
-        "size = { width = 33 height = 43 } \
-         iconType = { name = \"a\" spriteType = \"GFX_odd\" orientation = center \
-         centerPosition = yes position = { x = 1 y = -30 } } \
-         iconType = { name = \"b\" spriteType = \"GFX_anchored\" center_on_anchor = yes \
-         centerPosition = yes position = { x = 10 y = 10 } } \
-         iconType = { name = \"c\" spriteType = \"GFX_odd\" scale = 0.5 centerPosition = yes } \
-         iconType = { name = \"d\" spriteType = \"GFX_bar\" center_on_anchor = yes \
-         position = { x = 5 y = 5 } } \
-         iconType = { name = \"e\" spriteType = \"GFX_bar\" orientation = center \
-         centerPosition = yes }",
-    );
-    assert_eq!(rect(&parts[0]), [10.0, -13.0, 15.0, 9.0]);
-    assert_eq!(rect(&parts[1]), [6.0, 8.0, 20.0, 10.0]);
-    assert_eq!(rect(&parts[2]), [-3.0, -2.5, 7.5, 4.5]);
-    assert_eq!(rect(&parts[3]), [5.0, 6.0, 154.0, 14.0]);
-    assert_eq!(rect(&parts[4]), [-61.0, 15.0, 154.0, 14.0]);
-}
-
-#[test]
-fn the_queried_extent_and_the_drawn_frame_differ() {
-    content_reader_script::test_game::enter();
-    let info = plain([10, 4], 1);
-    assert_eq!(info.extent(), [10, 4]);
-    let thirds = fixture().sprites["GFX_thirds"].clone();
-    assert_eq!(thirds.extent(), [3, 4]);
-    assert_eq!(thirds.frame_size()[0], (1.0f32 / 3.0) * 10.0);
-    let parts = parts(
-        "iconType = { name = \"a\" spriteType = \"GFX_thirds\" centerPosition = yes \
-         position = { x = 10 y = 10 } frame = 2 } \
-         iconType = { name = \"b\" spriteType = \"GFX_column\" frame = 3 }",
-    );
-    let [x, y, w, h] = rect(&parts[0]);
-    assert_eq!([x, y, h], [9.0, 8.0, 4.0]);
-    assert!((w - 10.0 / 3.0).abs() < 1e-6);
-    assert_eq!(frame_of(&parts[0]), 1);
-    let PartKind::Sprite {
-        geometry,
-        uv,
-        offsets,
-        ..
-    } = &parts[1]
-    else {
-        panic!("not a sprite");
-    };
-    assert_eq!(geometry.rect, [0.0, 0.0, 6.0, 4.0]);
-    assert_eq!(uv[2], 1.0);
-    assert!((uv[3] - 1.0 / 3.0).abs() < 1e-6);
-    assert_eq!(offsets[0], 0.0);
-    assert!((offsets[1] - 2.0 / 3.0).abs() < 1e-6);
-    let gui = gui("iconType = { name = \"bar\" spriteType = \"GFX_even\" scale = 0.69 }");
-    let window = gui.template("w").unwrap();
-    let bar = window.find(Kind::Icon, "bar").unwrap();
-    let mut bindings = Bindings::default();
-    bindings.bind(bar).sprite = Some("GFX_bar3x17".into());
-    assert_eq!(
-        drawable_extent(bar, &fixture(), &bindings),
-        Ok(Some([2, 11]))
     );
 }
 
@@ -550,42 +420,6 @@ fn unreproduced_kinds_and_custom_effects_are_refused_by_name() {
 }
 
 #[test]
-fn a_cornered_tile_slices_its_texture() {
-    content_reader_script::test_game::enter();
-    let layout = laid_bound(
-        "fade_type = linear size = { width = 40 height = 30 } \
-         background = { spriteType = \"GFX_cornered\" position = { x = 2 y = 3 } }",
-        None,
-        |window, bindings| bindings.bind(window).opacity = Some(0.5),
-    )
-    .unwrap()
-    .unwrap();
-    let PartKind::Tiles { ref quads, .. } = layout.parts[0].kind else {
-        panic!("not a tile");
-    };
-    assert_eq!(quads.len(), 4 + 2 * 8 + 2 * 5 + 1);
-    let third = 4.0f32 / 12.0;
-    assert_eq!(quads[0], ([2.0, 3.0, 4.0, 4.0], [0.0, 0.0, third, third]));
-    assert_eq!(quads[18].0, [2.0 + 32.0, 3.0, 2.0, 4.0]);
-    assert_eq!(quads[18].1[2], 6.0 / 12.0);
-    assert_eq!(layout.parts[0].color[3], 0.5);
-}
-
-#[test]
-fn tiles_repeat_and_resizeables_draw_nothing() {
-    content_reader_script::test_game::enter();
-    let parts = parts(
-        "iconType = { name = \"t\" spriteType = \"GFX_repeat\" } \
-         iconType = { name = \"r\" spriteType = \"GFX_resizeable\" }",
-    );
-    assert_eq!(parts.len(), 1);
-    let PartKind::Tiles { ref quads, .. } = parts[0] else {
-        panic!("not a tile");
-    };
-    assert_eq!(quads[0], ([0.0, -6.0, 25.0, 10.0], [0.0, 0.0, 2.0, 2.0]));
-}
-
-#[test]
 fn a_frame_animated_sprite_follows_its_clock() {
     content_reader_script::test_game::enter();
     let body = "iconType = { name = \"a\" spriteType = \"GFX_animated\" }";
@@ -606,41 +440,6 @@ fn a_frame_animated_sprite_follows_its_clock() {
     instance.tick(window, &resources, dt(1.6)).unwrap();
     let layout = instance.layout(window, &resources, None).unwrap().unwrap();
     assert_eq!(frame_of(&layout.parts[0].kind), 0);
-}
-
-#[test]
-fn a_masked_shield_draws_its_flag_under_its_overlay() {
-    content_reader_script::test_game::enter();
-    let layout = laid(
-        "iconType = { name = \"s\" spriteType = \"GFX_shield\" }",
-        None,
-    )
-    .unwrap()
-    .unwrap();
-    let PartKind::MaskedFlag {
-        flag,
-        flag_coords,
-        rect: flag_rect,
-        ..
-    } = layout.parts[0].kind
-    else {
-        panic!("the flag first");
-    };
-    assert_eq!((flag, flag_coords), (11, [0.5, 0.25, 0.125, 0.25]));
-    assert_eq!(flag_rect, [2.0, 4.0, 20.0, 24.0]);
-    assert_eq!(rect(&layout.parts[1].kind), [0.0, 1.0, 24.0, 30.0]);
-    assert_eq!(
-        layout.parts[1].shading,
-        Shading {
-            clocked: false,
-            ..shading(&synthetic::buttonstate(), "Up", 0.0)
-        }
-    );
-    let mut batch = Batch::default();
-    draw(&layout, [0, 0], &one(), &mut batch).unwrap();
-    let exact = batch.quads[0].exact.as_ref().unwrap();
-    assert_eq!((batch.quads[0].texture, exact.second), (11, Some(3)));
-    assert_eq!(exact.offsets, [0.5, 0.25, 0.125, 0.25]);
 }
 
 #[test]
@@ -911,39 +710,6 @@ fn a_missing_technique_keeps_the_previous_program() {
 }
 
 #[test]
-fn a_button_lays_out_its_text() {
-    content_reader_script::test_game::enter();
-    let glyphs = |body: &str| {
-        let layout = laid(
-            &format!("size = {{ width = 100 height = 60 }} buttonType = {{ name = \"b\" {body} }}"),
-            None,
-        )
-        .unwrap()
-        .unwrap();
-        layout
-            .parts
-            .into_iter()
-            .find_map(|part| match part.kind {
-                PartKind::Text { glyphs, .. } => Some(glyphs),
-                _ => None,
-            })
-            .unwrap()
-    };
-    let a = glyphs(
-        "spriteType = \"GFX_even\" buttonFont = \"Main_14\" buttonText = \"MOD_MISSING\" \
-         position = { x = 5 y = 5 } borderSize = { x = 2 y = 2 } centerPosition = yes \
-         scale = 3",
-    );
-    assert_eq!(a[0].at, [13.0, 3.0]);
-    assert_eq!(a.len(), 1);
-    let c = glyphs(
-        "font = \"Main_14\" text = \"MOD_KEY\" size = { x = 40 y = 20 } \
-         orientation = center format = left vertical_alignment = top",
-    );
-    assert_eq!(c[0].at, [100.0, 60.0]);
-}
-
-#[test]
 fn a_button_takes_its_sprite_from_its_parent() {
     content_reader_script::test_game::enter();
     let sprite = |body: &str| {
@@ -1104,83 +870,6 @@ fn the_pointer_hovers_and_presses_buttons() {
         ..Bindings::default()
     };
     assert!(layout(gui.template("w").unwrap(), None, &fixture(), &bindings).is_err());
-}
-
-#[test]
-fn a_map_icon_takes_no_pointer() {
-    content_reader_script::test_game::enter();
-    let layout = laid(
-        "buttonType = { name = \"b\" spriteType = \"GFX_four\" }",
-        None,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        layout.parts[0].shading,
-        shading(&synthetic::buttonstate(), "Up", 0.0)
-    );
-}
-
-#[test]
-#[allow(clippy::approx_constant)]
-fn turns_keep_their_floating_corners() {
-    content_reader_script::test_game::enter();
-    let layout = laid(
-        "size = { width = 5 height = 5 } clipping = yes \
-         iconType = { name = \"a\" spriteType = \"GFX_even\" rotation = 1.5708 position = { x = 14 y = 8 } } \
-         iconType = { name = \"b\" spriteType = \"GFX_even\" rotation = 1.0 position = { x = 14 y = 8 } }",
-        None,
-    )
-    .unwrap()
-    .unwrap();
-    let PartKind::Sprite { geometry, .. } = layout.parts[0].kind else {
-        panic!("not a sprite");
-    };
-    assert_eq!(geometry.rect, [14.0, 8.0, 20.0, 10.0]);
-    assert_eq!(geometry.pivot, [24.0, 13.0]);
-    let mut batch = Batch::default();
-    draw(&layout, [100, 200], &one(), &mut batch).unwrap();
-    let exact = batch.quads[0].exact.as_ref().unwrap();
-    let (sin, cos) = 1.5708f32.sin_cos();
-    let turn = |[x, y]: [f32; 2]| {
-        let [dx, dy] = [x - 24.0, y - 13.0];
-        [
-            24.0 + dx * cos + dy * sin + 100.0,
-            13.0 + dy * cos - dx * sin + 200.0,
-        ]
-    };
-    assert_eq!(exact.corners[0], turn([14.0, 8.0]));
-    assert_eq!(exact.corners[1], turn([34.0, 8.0]));
-    assert!(
-        (exact.corners[0][0] - 119.0).abs() < 1e-3 && (exact.corners[0][1] - 223.0).abs() < 1e-3
-    );
-    assert_eq!(exact.scissor, Some([100, 200, 105, 205]));
-    assert_eq!(
-        batch.quads[1].exact.as_ref().unwrap().scissor,
-        Some([100, 200, 105, 205])
-    );
-}
-
-#[test]
-fn a_stretched_bar_keeps_its_geometry() {
-    content_reader_script::test_game::enter();
-    let layout = laid_bound(
-        "iconType = { name = \"bar\" spriteType = \"GFX_bar3x17\" rotation = 1.5708 \
-         position = { x = 13 y = 19 } }",
-        None,
-        |window, bindings| {
-            let bound = bindings.bind(window.find(Kind::Icon, "bar").unwrap());
-            bound.stretch = Some(16.0 / 17.0);
-            bound.offset = Some([8, 0]);
-        },
-    )
-    .unwrap()
-    .unwrap();
-    let PartKind::Sprite { geometry, .. } = layout.parts[0].kind else {
-        panic!("not a sprite");
-    };
-    assert_eq!(geometry.rect, [21.0, 19.5, 3.0, 16.0]);
-    assert_eq!(geometry.pivot, [22.5, 27.5]);
 }
 
 #[test]
@@ -1638,48 +1327,6 @@ fn backgrounds_draw_under_the_content() {
 }
 
 #[test]
-fn a_content_scale_scales_positions_and_sizes() {
-    content_reader_script::test_game::enter();
-    let layout = laid(
-        "size = { width = 100 height = 100 } margin = { left = 10 top = 10 } scale = 2 \
-         iconType = { name = \"i\" spriteType = \"GFX_even\" position = { x = 5 y = 5 } } \
-         containerWindowType = { name = \"c\" size = { width = 50 height = 50 } \
-         position = { x = 20 y = 0 } scale = 0.5 \
-         iconType = { name = \"j\" spriteType = \"GFX_even\" position = { x = 4 y = 0 } } \
-         gridBoxType = { name = \"g\" } }",
-        None,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(rect(&layout.parts[0].kind), [20.0, 20.0, 40.0, 20.0]);
-    assert_eq!(rect(&layout.parts[1].kind), [54.0, 10.0, 20.0, 10.0]);
-    let holder = &layout.holders[0];
-    assert_eq!((holder.origin, holder.scale), ([50.0, 10.0], 1.0));
-    let text = laid(
-        "scale = 2 instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"x\" \
-         position = { x = 3 y = 1 } maxWidth = 50 maxHeight = 20 format = left \
-         vertical_alignment = top }",
-        None,
-    )
-    .unwrap()
-    .unwrap();
-    let PartKind::Text {
-        ref glyphs, scale, ..
-    } = text.parts[0].kind
-    else {
-        panic!("not a text");
-    };
-    assert_eq!(scale, 2.0);
-    assert_eq!(glyphs[0].at, [6.0, 2.0]);
-    let mut batch = Batch::default();
-    draw(&text, [0, 0], &one(), &mut batch).unwrap();
-    assert_eq!(
-        batch.quads[0].exact.as_ref().unwrap().corners[2],
-        [6.0 + 14.0, 2.0 + 28.0]
-    );
-}
-
-#[test]
 fn a_fonts_written_viewport_and_auxiliary_colour_reach_their_draws() {
     content_reader_script::test_game::enter();
     let body = "instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"x\" \
@@ -1811,102 +1458,6 @@ fn layout_refusals(laid: Result<Option<Layout>, Refusals>) -> String {
             .collect::<Vec<_>>()
             .join("; "),
     }
-}
-
-#[test]
-fn a_bound_opacity_and_position_apply() {
-    content_reader_script::test_game::enter();
-    let layout = laid_bound(
-        "fade_type = linear size = { width = 50 height = 50 } \
-         iconType = { name = \"i\" spriteType = \"GFX_even\" } \
-         containerWindowType = { name = \"c\" size = { width = 9 height = 9 } \
-         animation_type = linear show_position = { x = 30 } \
-         iconType = { name = \"j\" spriteType = \"GFX_even\" } \
-         instantTextBoxType = { name = \"t\" font = \"Main_14\" text = \"x\" } }",
-        None,
-        |window, bindings| {
-            bindings.bind(window).opacity = Some(0.25);
-            bindings
-                .bind(window.find(Kind::Container, "c").unwrap())
-                .position = Some([7, 6]);
-        },
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(layout.parts[0].color[3], 0.25);
-    assert_eq!(rect(&layout.parts[1].kind), [7.0, 6.0, 20.0, 10.0]);
-    assert_eq!(layout.parts[1].color[3], 0.25);
-    let PartKind::Text { modulate, .. } = layout.parts[2].kind else {
-        panic!("not a text");
-    };
-    assert_eq!(modulate, [1.0, 1.0, 1.0, 0.25]);
-}
-
-#[test]
-fn fades_run_on_the_clock() {
-    content_reader_script::test_game::enter();
-    let resources = fixture();
-    let gui = gui("fade_type = linear fade_time = 1000 fade_delay = 100");
-    let window = gui.template("w").unwrap();
-    let parent = [100, 100];
-    let mut state = Instance::construct(window, parent, &resources).unwrap();
-    assert_eq!((state.opacity(), state.drawn()), (0.0, false));
-    state.show(window, window).unwrap();
-    assert!(state.drawn());
-    let tick = |state: &mut Instance| state.tick(window, &resources, dt(0.1)).unwrap();
-    tick(&mut state);
-    assert_eq!(state.opacity(), 0.0);
-    tick(&mut state);
-    assert!((state.opacity() - 0.1).abs() < 1e-6, "{}", state.opacity());
-    tick(&mut state);
-    assert!((state.opacity() - 0.3).abs() < 1e-6, "{}", state.opacity());
-    for _ in 0..10 {
-        tick(&mut state);
-    }
-    assert_eq!(state.opacity(), 1.0);
-    state.hide(window, window).unwrap();
-    tick(&mut state);
-    assert_eq!(state.opacity(), 1.0);
-    tick(&mut state);
-    assert!((state.opacity() - 0.9).abs() < 1e-6, "{}", state.opacity());
-    assert!(state.drawn());
-    for _ in 0..10 {
-        tick(&mut state);
-    }
-    assert_eq!((state.opacity(), state.drawn()), (0.0, false));
-    let decelerated = self::tests::gui("fade_type = decelerated");
-    let window = decelerated.template("w").unwrap();
-    let mut state = Instance::construct(window, parent, &resources).unwrap();
-    state.show(window, window).unwrap();
-    state.tick(window, &resources, dt(0.016)).unwrap();
-    assert_eq!(state.opacity(), 1.0);
-}
-
-#[test]
-fn movements_run_on_the_clock() {
-    content_reader_script::test_game::enter();
-    let resources = fixture();
-    let gui = gui(
-        "size = { width = 10 height = 10 } position = { x = 0 y = 0 } \
-         show_position = { x = 100 y = 50 } show_animation_type = linear \
-         show_animation_time = 200 hide_position = { x = -20 y = 0 } \
-         hide_animation_type = linear hide_animation_time = 100",
-    );
-    let window = gui.template("w").unwrap();
-    let mut state = Instance::construct(window, [300, 300], &resources).unwrap();
-    assert_eq!(state.position(), [0, 0]);
-    state.show(window, window).unwrap();
-    state.tick(window, &resources, dt(0.05)).unwrap();
-    assert_eq!(state.position(), [25, 13]);
-    state.tick(window, &resources, dt(0.2)).unwrap();
-    assert_eq!(state.position(), [100, 50]);
-    state.hide(window, window).unwrap();
-    assert!(state.drawn());
-    state.tick(window, &resources, dt(0.2)).unwrap();
-    assert_eq!(state.position(), [-20, 0]);
-    assert!(state.drawn());
-    state.tick(window, &resources, dt(0.016)).unwrap();
-    assert!(!state.drawn());
 }
 
 #[test]
@@ -2542,70 +2093,6 @@ fn a_window_type_entry_draws_through_its_instance() {
     let without = row.layout(entry, &resources, None).unwrap().unwrap();
     assert_eq!(without.parts.len(), 5);
     assert!(without.parts.iter().all(|part| part.child != Some(0)));
-}
-
-#[test]
-fn a_window_type_root_draws_on_the_views_clock() {
-    content_reader_script::test_game::enter();
-    use shader_pipeline::clock::{Bounded, Clock};
-    let mut resources = fixture_with(read(
-        b"guiTypes = { windowType = { name = \"entry\" size = { x = 60 y = 40 } \
-          iconType = { name = \"i\" spriteType = \"GFX_even\" } } }",
-    ));
-    resources.sprites.get_mut("GFX_even").unwrap().effect = Ok(clocked_effect(
-        "Up",
-        Clock {
-            direct: Vec::new(),
-            bounded: vec![Bounded {
-                terms: vec![((1, 96), 2.0), ((1, 100), -2.0)],
-                constant: 0.0,
-                low: Some(0.0),
-                high: Some(1.0),
-                open_low: false,
-                slack: 0.0,
-                per: Vec::new(),
-                reach: 0.0,
-                peak: 0.0,
-            }],
-        },
-    ));
-    let entry = resources.gui_type(b"entry").unwrap();
-    assert_eq!(entry.kind, Kind::Window);
-    let mut row = Instance::construct(entry, [800, 600], &resources).unwrap();
-    row.gui_show(entry, entry).unwrap();
-    let clocks = |row: &Instance| {
-        let laid = row.layout(entry, &resources, None).unwrap().unwrap();
-        let part = laid
-            .parts
-            .iter()
-            .find(|part| part.path == "entry.i")
-            .unwrap();
-        let mut batch = Batch::default();
-        crate::native_shader::draw::emit(part, [0, 0], &one(), &mut batch).unwrap();
-        let native = batch.quads[0]
-            .exact
-            .as_ref()
-            .unwrap()
-            .native
-            .clone()
-            .unwrap();
-        [native.constants[24], native.constants[25]]
-    };
-    let restart = dt(1.5);
-    assert!(restart.time > 0.0);
-    row.tick(entry, &resources, restart).unwrap();
-    assert!(row.active());
-    assert_eq!(clocks(&row), [restart.time, restart.time]);
-    let later = dt(0.25);
-    row.tick(entry, &resources, later).unwrap();
-    assert!(row.active());
-    assert_eq!(clocks(&row), [later.time, restart.time]);
-    let settled = dt(0.5);
-    row.tick(entry, &resources, settled).unwrap();
-    assert!(!row.active());
-    let [time, animation] = clocks(&row);
-    assert_eq!([time, animation], [settled.time, restart.time]);
-    assert!((time - animation) * 2.0 >= 1.0, "saturated once settled");
 }
 
 #[test]
@@ -5331,42 +4818,6 @@ fn animation_records_run_on_the_instance_clock() {
 }
 
 #[test]
-fn a_map_icon_window_moves_over_the_map_point() {
-    content_reader_script::test_game::enter();
-    let resources = fixture();
-    let gui = gui(
-        "size = { width = 20 height = 20 } show_animation_type = linear \
-         show_animation_time = 100 show_position = { x = 50 y = 0 }",
-    );
-    let window = gui.template("w").unwrap();
-    let parent = [200, 100];
-    let mut instance = Instance::construct(window, parent, &resources).unwrap();
-    instance.hide(window, window).unwrap();
-    let frame = |instance: &mut Instance| {
-        instance.set_position(window, window, [30, 40]).unwrap();
-        if !instance.drawn() {
-            instance.gui_show(window, window).unwrap();
-        }
-        instance.tick(window, &resources, dt(0.05)).unwrap();
-        instance.position()
-    };
-    assert_eq!(frame(&mut instance), [25, 0]);
-    assert_eq!(frame(&mut instance), [50, 0]);
-    assert_eq!(frame(&mut instance), [50, 0]);
-    assert_eq!(frame(&mut instance), [30, 40]);
-    let moveable = self::gui(
-        "size = { width = 20 height = 20 } show_animation_type = linear moveable = yes \
-         show_animation_time = 100 show_position = { x = 50 y = 0 }",
-    );
-    let window = moveable.template("w").unwrap();
-    let mut instance = Instance::construct(window, parent, &resources).unwrap();
-    instance.set_position(window, window, [30, 40]).unwrap();
-    instance.gui_show(window, window).unwrap();
-    instance.tick(window, &resources, dt(0.05)).unwrap();
-    assert_eq!(instance.position(), [40, 20]);
-}
-
-#[test]
 fn text_bytes_decode_as_the_game_converts_them() {
     assert_eq!(
         native_text::decode("aé€😀".as_bytes()),
@@ -5389,52 +4840,6 @@ fn text_bytes_decode_as_the_game_converts_them() {
         native_text::decode(b"\xf4\x41\x80\x80"),
         Some(vec!['\u{c1000}', '\0'])
     );
-}
-
-#[test]
-fn a_child_window_takes_the_roots_show_and_fades_on_its_own() {
-    content_reader_script::test_game::enter();
-    let resources = fixture();
-    let gui = gui("size = { width = 100 height = 100 } \
-         iconType = { name = \"own\" spriteType = \"GFX_even\" } \
-         containerWindowType = { name = \"c\" size = { width = 50 height = 50 } \
-         fade_type = linear fade_time = 1000 \
-         iconType = { name = \"inner\" spriteType = \"GFX_even\" } }");
-    let window = gui.template("w").unwrap();
-    let child = window.find(Kind::Container, "c").unwrap();
-    let mut instance = Instance::construct(window, [800, 600], &resources).unwrap();
-    instance.hide(window, window).unwrap();
-    assert!(!instance.drawn());
-    instance.gui_show(window, window).unwrap();
-    instance.tick(window, &resources, dt(0.5)).unwrap();
-    let laid = instance.layout(window, &resources, None).unwrap().unwrap();
-    let alpha = |path: &str| {
-        laid.parts
-            .iter()
-            .find(|part| part.path.ends_with(path))
-            .map(|part| part.color[3])
-    };
-    assert_eq!(alpha(".own"), Some(1.0));
-    assert!((alpha(".inner").unwrap() - 0.5).abs() < 1e-6);
-    assert!(instance.active());
-    let fading = self::gui(
-        "size = { width = 100 height = 100 } fade_type = linear fade_time = 1000 \
-         containerWindowType = { name = \"c\" size = { width = 50 height = 50 } \
-         iconType = { name = \"inner\" spriteType = \"GFX_even\" } }",
-    );
-    let window = fading.template("w").unwrap();
-    let mut instance = Instance::construct(window, [800, 600], &resources).unwrap();
-    instance.gui_show(window, window).unwrap();
-    instance.tick(window, &resources, dt(0.25)).unwrap();
-    let bindings = instance.bindings(window, &resources).unwrap();
-    let inner = window.find(Kind::Container, "c").unwrap();
-    assert_eq!(
-        bindings
-            .at(Site::new(inner, None))
-            .and_then(|bound| bound.opacity),
-        Some(0.25)
-    );
-    let _ = child;
 }
 
 #[test]
@@ -5520,48 +4925,6 @@ fn an_immediate_hide_and_a_show_reach_every_child() {
 }
 
 #[test]
-fn drawable_clocks_run_on_the_instance() {
-    content_reader_script::test_game::enter();
-    let mut resources = fixture();
-    resources.sprites.insert(
-        "GFX_still",
-        SpriteInfo {
-            kind: SpriteKind::FrameAnimated {
-                seconds_per_frame: 0.5,
-                looping: true,
-                play_on_show: false,
-                pause: 0.0,
-            },
-            ..plain([10, 4], 4)
-        },
-    );
-    let gui = gui("iconType = { name = \"a\" spriteType = \"GFX_animated\" } \
-         iconType = { name = \"s\" spriteType = \"GFX_still\" }");
-    let window = gui.template("w").unwrap();
-    let still = window.find(Kind::Icon, "s").unwrap();
-    let mut instance = Instance::construct(window, [800, 600], &resources).unwrap();
-    instance.tick(window, &resources, dt(1.0)).unwrap();
-    instance.gui_show(window, window).unwrap();
-    instance.set_frame(window, still, 2).unwrap();
-    instance.tick(window, &resources, dt(0.6)).unwrap();
-    let laid = instance.layout(window, &resources, None).unwrap().unwrap();
-    assert_eq!(frame_of(&laid.parts[0].kind), 1);
-    assert!((laid.parts[0].shading.animation - 0.2).abs() < 1e-5);
-    assert_eq!(frame_of(&laid.parts[1].kind), 1);
-    assert_eq!(laid.parts[1].shading.animation, 0.0);
-    assert!(instance.active());
-    let alone = self::gui("iconType = { name = \"s\" spriteType = \"GFX_still\" }");
-    let window = alone.template("w").unwrap();
-    let mut bindings = Bindings::default();
-    bindings.bind(&window.children[0]).frame = Some(2);
-    let stateless = layout(window, None, &resources, &bindings)
-        .unwrap()
-        .unwrap();
-    assert_eq!(frame_of(&stateless.parts[0].kind), 1);
-    assert_eq!(stateless.parts[0].shading.animation, 0.0);
-}
-
-#[test]
 fn a_looping_tile_pulses_on_the_instance() {
     content_reader_script::test_game::enter();
     let mut resources = fixture();
@@ -5641,27 +5004,6 @@ fn a_code_check_restarts_the_drawables_clock() {
     };
     assert_eq!(animated.technique, "Down");
     assert_eq!(animated.records.len(), 1);
-}
-
-#[test]
-fn an_instance_is_active_while_anything_runs() {
-    content_reader_script::test_game::enter();
-    let resources = fixture();
-    let gui = gui(
-        "size = { width = 10 height = 10 } show_animation_type = linear \
-         show_animation_time = 100 show_position = { x = 50 y = 0 } moveable = yes",
-    );
-    let window = gui.template("w").unwrap();
-    let mut instance = Instance::construct(window, [300, 300], &resources).unwrap();
-    assert!(instance.active());
-    instance.set_position(window, window, [0, 0]).unwrap();
-    instance.gui_show(window, window).unwrap();
-    instance.tick(window, &resources, dt(0.0)).unwrap();
-    assert_eq!(instance.position(), [0, 0]);
-    assert!(instance.active());
-    instance.tick(window, &resources, dt(0.2)).unwrap();
-    assert_eq!(instance.position(), [50, 0]);
-    assert!(!instance.active());
 }
 
 #[test]

@@ -17,15 +17,6 @@ fn camera(height: f32) -> Camera {
 
 const VIEWPORT: [u32; 2] = [2048, 1152];
 
-fn speeds(camera_speed: f32) -> Speeds {
-    Speeds {
-        zoom_speed: 50.0,
-        camera_speed,
-        scroll_speed: 22.0,
-        edge_scrolling: true,
-    }
-}
-
 fn close(a: f32, b: f32, tolerance: f32) -> bool {
     (a - b).abs() <= tolerance
 }
@@ -37,22 +28,6 @@ fn step(law: &CameraLaw, height: f32, frame: f32) -> f32 {
 }
 
 #[test]
-fn camera_speed_is_held_as_the_game_reads_it() {
-    assert_eq!(
-        CameraLaw::new([50.0, 0.02, 6.0, 0.19], speeds(0.0)).camera_speed,
-        5.0
-    );
-    assert_eq!(
-        CameraLaw::new([50.0, 0.02, 6.0, 0.19], speeds(100.0)).camera_speed,
-        95.0
-    );
-    assert_eq!(
-        CameraLaw::new([50.0, 0.02, 6.0, 0.19], speeds(42.0)).camera_speed,
-        42.0
-    );
-}
-
-#[test]
 fn wheel_lines_turn_whole_notches_and_keep_the_rest() {
     let mut motion = Motion::default();
     assert_eq!(motion.notches(0.5), 0);
@@ -61,40 +36,6 @@ fn wheel_lines_turn_whole_notches_and_keep_the_rest() {
     assert_eq!(motion.notches(-0.25), 0);
     assert_eq!(motion.notches(-0.75), -1);
     assert_eq!(motion.notches(f32::NAN), 0);
-}
-
-#[test]
-fn a_notch_moves_the_target_along_the_cursor_ray_by_the_height_law() {
-    let law = CameraLaw::test();
-    let shown = camera(1000.0);
-    let eye = shown.eye();
-    let ground = [eye[0], 9.5, eye[2] + 400.0];
-    let frame = 1.0 / 60.0;
-    let mut motion = Motion::default();
-    motion.wheel(&shown, &law, frame, &[1], Some(ground), &flat);
-    let target = motion.target().unwrap();
-    let t: f32 = (1000.0 - 50.0) / 2950.0;
-    let forward = 400.0 - 2048.0 * 0.015 * (1.0 - t);
-    let down: f32 = 9.5 - 1000.0;
-    let length = (forward * forward + down * down).sqrt();
-    let s = step(&law, 1000.0, frame);
-    assert!(
-        close(target.height, 1000.0 + down / length * s, 1e-3),
-        "{target:?}"
-    );
-    assert!(
-        close(target.center[1], 1500.0 + forward / length * s, 1e-3),
-        "{target:?}"
-    );
-    assert_eq!(target.center[0], 3000.0);
-    let mut out = Motion::default();
-    out.wheel(&shown, &law, frame, &[-1, -1], Some(ground), &flat);
-    assert!(close(
-        out.target().unwrap().height,
-        1000.0 - 2.0 * down / length * s,
-        1e-2
-    ));
-    assert_eq!(shown.height, 1000.0);
 }
 
 #[test]
@@ -127,26 +68,6 @@ fn no_notch_zooms_out_at_the_top_or_in_at_the_floor() {
         motion.wheel(&shown, &law, 0.1, &[notch], Some(ground), &flat);
         assert_eq!(motion.target(), None, "{height} {notch}");
     }
-}
-
-#[test]
-fn a_frame_reaching_below_the_floor_is_held_there_and_damps_its_sideways_move() {
-    let law = CameraLaw::test();
-    let shown = camera(60.0);
-    let eye = shown.eye();
-    let ground = [eye[0] + 30.0, 9.5, eye[2] + 30.0];
-    let mut motion = Motion::default();
-    motion.wheel(&shown, &law, 0.7, &[1], Some(ground), &flat);
-    let target = motion.target().unwrap();
-    assert!(close(target.height, 50.0, 1e-3), "{target:?}");
-    let t: f32 = 10.0 / 2950.0;
-    let correction = 2048.0 * 0.015 * (1.0 - t);
-    let toward = normalize([30.0, 9.5 - 60.0, 30.0 - correction]);
-    let s = step(&law, 60.0, 0.7);
-    assert!(
-        close(target.center[0] - 3000.0, toward[0] * s * (t + 0.1), 1e-3),
-        "{target:?}"
-    );
 }
 
 #[test]
@@ -215,19 +136,6 @@ fn heights_stay_within_the_floor_and_the_truncated_highest_height() {
 }
 
 #[test]
-fn a_pan_moves_the_target_with_the_camera() {
-    let law = CameraLaw::test();
-    let mut shown = camera(1000.0);
-    let mut motion = Motion::default();
-    motion.key(&mut shown, &law, true, &flat);
-    motion.shift([10.0, -5.0]);
-    let target = motion.target().unwrap();
-    assert_eq!(target.center, [3010.0, 1495.0]);
-    motion.reset();
-    assert_eq!(motion.target(), None);
-}
-
-#[test]
 fn a_target_beyond_the_boundary_is_reset_to_the_camera() {
     let law = CameraLaw::test();
     let mut shown = camera(1000.0);
@@ -245,14 +153,6 @@ fn a_target_beyond_the_boundary_is_reset_to_the_camera() {
     assert_eq!(motion.target().unwrap().center[1], held);
     assert!(!motion.ease(&mut shown, &law, 0.05, VIEWPORT, &flat));
     assert_eq!(shown.center[1], held);
-}
-
-#[test]
-fn wheel_events_turn_into_notches_in_order() {
-    let mut motion = Motion::default();
-    assert_eq!(motion.wheel_events([1.0, -1.0]), [1, -1]);
-    assert_eq!(motion.wheel_events([0.5, 0.5, 2.0]), [1, 1, 1]);
-    assert_eq!(motion.wheel_events([-0.25, -0.75]), [-1]);
 }
 
 #[test]

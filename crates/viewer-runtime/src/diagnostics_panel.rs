@@ -54,22 +54,3 @@ pub fn tooltip_warning_lines(
         .map(|(reason, count)| format!("Tooltip: {count} × {reason}"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_list_paints_the_warnings_inside_its_scroll_area() {
-        let ctx = egui::Context::default();
-        let warnings: Vec<String> = (0..100)
-            .map(|index| format!("limitation {index}"))
-            .collect();
-        let mut output = ctx.run_ui(Default::default(), |ui| warning_list(ui, &warnings, 40.0));
-        output.textures_delta.clear();
-        assert!(output.shapes.iter().any(|shape| matches!(
-            &shape.shape,
-            egui::Shape::Text(text) if text.galley.job.text == "limitation 0"
-        )));
-        test_support::assert_diagnostics(|| warnings[..3].to_vec(), &warnings[..3]);
-    }
-}

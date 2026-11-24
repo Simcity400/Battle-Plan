@@ -297,10 +297,12 @@ fn target_bytes(out: &mut Vec<u8>, target: &Target) {
         out.extend_from_slice(&value.to_bits().to_le_bytes());
     }
 }
+
 fn blob(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
     out.extend_from_slice(bytes);
 }
+
 fn records(sources: &Sources) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(sources.candidates.len() as u64).to_le_bytes());

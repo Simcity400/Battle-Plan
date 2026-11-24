@@ -11,12 +11,13 @@ use engine_native::{
     crelation::status as crelation_status,
     cship,
 };
+use collector_projection::projection::{Projection, project_table, scalar_table};
 use engine_native_parts::creference_registry;
 use replay_data::rows::{
     CountryAttackModifiers, CountryCivilWarRow, CountryCounterInputRow, CountryMovementModifiers,
-    ManpowerReferences, Recorded, Retired, TableId, Witnessed, tables,
+    ManpowerReferences, Recorded, Retired, RowCodec, TableId, Witnessed, tables,
 };
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
 
 mod carry;
 pub use carry::CounterStore;
@@ -34,6 +35,13 @@ pub struct Navies {
 }
 
 impl Navies {
+    pub fn vacant() -> Self {
+        Self {
+            holder: naval::Captured::new(Default::default()),
+            ticks: None,
+        }
+    }
+
     pub fn allocated_bytes(&self) -> usize {
         self.holder.allocated_bytes()
     }
@@ -554,6 +562,32 @@ impl Captured {
         [self.rows.outcome, self.civil_wars.outcome]
     }
 
+    pub fn table_inputs(
+        &self,
+        mut projection: Option<&mut Projection<'_>>,
+    ) -> [TableInput; N] {
+        [
+            self.counter_input(projection.as_deref_mut()),
+            scalar_table::<tables::CountryCivilWars, _>(
+                projection,
+                self.civil_wars.outcome,
+                &self.civil_wars.rows,
+                |r| {
+                    RowCodec::key(&CountryCivilWarRow {
+                        country: r.country,
+                        ordinal: r.ordinal,
+                        target: r.target,
+                    })
+                },
+                |r| CountryCivilWarRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    target: r.target,
+                },
+            ),
+        ]
+    }
+
     pub fn tables(&self) -> [TableView; N] {
         [
             self.counter_table(),
@@ -567,6 +601,301 @@ impl Captured {
                 },
             ),
         ]
+    }
+
+    fn counter_row(&self, index: usize, r: &ccountry::CounterInputsRow) -> CountryCounterInputRow {
+        let relation = self
+            .relations
+            .first
+            .get(index)
+            .filter(|_| index < self.relations.len);
+        CountryCounterInputRow {
+            directed_wars: Recorded::Value(None),
+            country: r.country,
+            recruitment_modifiers: Recorded::Value(r.recruitment_modifiers),
+            air_modifiers: Recorded::Value(r.air_modifiers),
+            air_combat_modifiers_known: (r.air_combat_modifiers.is_some()).into(),
+            air_superiority_efficiency: (r
+                .air_combat_modifiers
+                .and_then(|values| values[0]))
+            .into(),
+            air_intercept_efficiency: (r.air_combat_modifiers.and_then(|values| values[1])).into(),
+            air_cas_efficiency: (r.air_combat_modifiers.and_then(|values| values[2])).into(),
+            air_nav_efficiency: (r.air_combat_modifiers.and_then(|values| values[3])).into(),
+            air_attack_factor: (r.air_combat_modifiers.and_then(|values| values[4])).into(),
+            air_defence_factor: (r.air_combat_modifiers.and_then(|values| values[5])).into(),
+            air_strategic_bomber_defence_factor: (r
+                .air_combat_modifiers
+                .and_then(|values| values[6]))
+            .into(),
+            mines_effect_reduction: Recorded::Value(r.mines_effect_reduction),
+            naval_detection: Recorded::Value(r.naval_detection),
+            attack: Recorded::Value(Witnessed(None)),
+            attack_modifiers: Recorded::Value(r.attack_modifiers.map(|[night, bunker]| {
+                CountryAttackModifiers {
+                    land_night_attack: night,
+                    land_bunker_effectiveness_factor: bunker,
+                }
+            })),
+            combat_width_factor: Recorded::Value(
+                r.movement_modifiers.and_then(|entries| entries[6]),
+            ),
+            movement_modifiers: Recorded::Value(r.movement_modifiers.map(
+                |[
+                    army_speed_factor,
+                    army_armor_speed_factor,
+                    attrition,
+                    winter_attrition_factor,
+                    heat_attrition_factor,
+                    out_of_supply_factor,
+                    _combat_width_factor,
+                    special_forces_out_of_supply_factor,
+                    army_attack_speed_factor,
+                    army_retreat_speed_factor,
+                ]| CountryMovementModifiers {
+                    army_speed_factor,
+                    army_armor_speed_factor,
+                    attrition,
+                    winter_attrition_factor,
+                    heat_attrition_factor,
+                    out_of_supply_factor,
+                    special_forces_out_of_supply_factor,
+                    army_attack_speed_factor,
+                    army_retreat_speed_factor,
+                },
+            )),
+            pride_of_the_fleet: r.pride_of_the_fleet,
+            owned_state_count: r.owned_state_count,
+            controlled_state_count: r.controlled_state_count,
+            first_division: r.first_division,
+            owned_states: Recorded::Value(r.state_rosters.map(|spans| self.state_list(spans[0]))),
+            controlled_states: Recorded::Value(
+                r.state_rosters.map(|spans| self.state_list(spans[1])),
+            ),
+            core_states: Recorded::Value(r.state_rosters.map(|spans| self.state_list(spans[2]))),
+            army_leaders: Recorded::Value(r.leader_rosters.map(|spans| self.leader_list(spans[0]))),
+            sent_expeditionaries: Recorded::Value(
+                r.sent_expeditionaries
+                    .and_then(|span| self.manpower_reference_list(r.country, span)),
+            ),
+            navy_leaders: Recorded::Value(r.leader_rosters.map(|spans| self.leader_list(spans[1]))),
+            mio_policies: Recorded::Value(
+                r.mio_policies
+                    .and_then(|span| self.effect_list(&self.policies, span)),
+            ),
+            neighbors: Recorded::Value(
+                r.neighbors
+                    .and_then(|span| self.effect_list(&self.neighbors, span)),
+            ),
+            co_belligerents: Recorded::Value(
+                relation
+                    .and_then(|row| row.co_belligerents)
+                    .and_then(|span| self.effect_list(&self.co_belligerents, span)),
+            ),
+            zero_war: Recorded::Value(relation.and_then(|row| row.zero_war)),
+            movement: Recorded::Value(Retired),
+            zero_subject: Recorded::Value(relation.and_then(|row| row.zero_subject)),
+            forward_visibility: Recorded::Value(relation.and_then(|row| row.forward_visibility)),
+            pride_name: Recorded::Value(relation.and_then(|row| row.pride_name).and_then(
+                |(start, count)| {
+                    valid_span(&self.pride_names, start, count).then(|| {
+                        engine_allocation::owned_vec(engine_allocation::copy_vec(
+                            &self.pride_names.first[start..start + count],
+                        ))
+                    })
+                },
+            )),
+        }
+    }
+
+    fn counter_row_matches(
+        &self,
+        index: usize,
+        r: &ccountry::CounterInputsRow,
+        previous: &CountryCounterInputRow,
+    ) -> bool {
+        let relation = self
+            .relations
+            .first
+            .get(index)
+            .filter(|_| index < self.relations.len);
+        fn opt_slice(arena: &Arena<u32>, span: Option<ccountry::RosterSpan>) -> Option<&[u32]> {
+            let span = span?;
+            valid_span(arena, span.start, span.count)
+                .then(|| &arena.first[span.start..span.start + span.count])
+        }
+        let eq_opt_vec = |expected: Option<&[u32]>, actual: &Recorded<Option<Vec<u32>>>| match actual
+        {
+            Recorded::Value(actual) => actual.as_deref() == expected,
+            Recorded::NotRecorded => false,
+        };
+        let eq_opt_u64 = |expected: Option<&[u64]>, actual: &Recorded<Option<Vec<u64>>>| match actual
+        {
+            Recorded::Value(actual) => actual.as_deref() == expected,
+            Recorded::NotRecorded => false,
+        };
+        let eq_opt_refs =
+            |expected: Option<&[u64]>, actual: &Recorded<Option<ManpowerReferences>>| match actual {
+                Recorded::Value(actual) => actual.as_deref() == expected,
+                Recorded::NotRecorded => false,
+            };
+        let eq_opt_bytes =
+            |expected: Option<&[u8]>, actual: &Recorded<Option<Vec<u8>>>| match actual {
+                Recorded::Value(actual) => actual.as_deref() == expected,
+                Recorded::NotRecorded => false,
+            };
+        previous.country == r.country
+            && previous.pride_of_the_fleet == r.pride_of_the_fleet
+            && previous.owned_state_count == r.owned_state_count
+            && previous.controlled_state_count == r.controlled_state_count
+            && previous.first_division == r.first_division
+            && previous.directed_wars == Recorded::Value(None)
+            && previous.attack == Recorded::Value(Witnessed(None))
+            && previous.movement == Recorded::Value(Retired)
+            && previous.recruitment_modifiers == Recorded::Value(r.recruitment_modifiers)
+            && previous.air_modifiers == Recorded::Value(r.air_modifiers)
+            && previous.air_combat_modifiers_known == Recorded::Value(r.air_combat_modifiers.is_some())
+            && previous.air_superiority_efficiency
+                == Recorded::Value(r.air_combat_modifiers.and_then(|v| v[0]))
+            && previous.air_intercept_efficiency
+                == Recorded::Value(r.air_combat_modifiers.and_then(|v| v[1]))
+            && previous.air_cas_efficiency
+                == Recorded::Value(r.air_combat_modifiers.and_then(|v| v[2]))
+            && previous.air_nav_efficiency
+                == Recorded::Value(r.air_combat_modifiers.and_then(|v| v[3]))
+            && previous.air_attack_factor
+                == Recorded::Value(r.air_combat_modifiers.and_then(|v| v[4]))
+            && previous.air_defence_factor
+                == Recorded::Value(r.air_combat_modifiers.and_then(|v| v[5]))
+            && previous.air_strategic_bomber_defence_factor
+                == Recorded::Value(r.air_combat_modifiers.and_then(|v| v[6]))
+            && previous.mines_effect_reduction == Recorded::Value(r.mines_effect_reduction)
+            && previous.naval_detection == Recorded::Value(r.naval_detection)
+            && previous.attack_modifiers
+                == Recorded::Value(r.attack_modifiers.map(|[night, bunker]| {
+                    CountryAttackModifiers {
+                        land_night_attack: night,
+                        land_bunker_effectiveness_factor: bunker,
+                    }
+                }))
+            && previous.combat_width_factor
+                == Recorded::Value(r.movement_modifiers.and_then(|entries| entries[6]))
+            && previous.movement_modifiers
+                == Recorded::Value(r.movement_modifiers.map(
+                    |[
+                        army_speed_factor,
+                        army_armor_speed_factor,
+                        attrition,
+                        winter_attrition_factor,
+                        heat_attrition_factor,
+                        out_of_supply_factor,
+                        _combat_width_factor,
+                        special_forces_out_of_supply_factor,
+                        army_attack_speed_factor,
+                        army_retreat_speed_factor,
+                    ]| CountryMovementModifiers {
+                        army_speed_factor,
+                        army_armor_speed_factor,
+                        attrition,
+                        winter_attrition_factor,
+                        heat_attrition_factor,
+                        out_of_supply_factor,
+                        special_forces_out_of_supply_factor,
+                        army_attack_speed_factor,
+                        army_retreat_speed_factor,
+                    },
+                ))
+            && previous.zero_war == Recorded::Value(relation.and_then(|row| row.zero_war))
+            && previous.zero_subject == Recorded::Value(relation.and_then(|row| row.zero_subject))
+            && previous.forward_visibility
+                == Recorded::Value(relation.and_then(|row| row.forward_visibility))
+            && eq_opt_vec(
+                r.state_rosters
+                    .map(|spans| &self.states.first[spans[0].start..spans[0].start + spans[0].count]),
+                &previous.owned_states,
+            )
+            && eq_opt_vec(
+                r.state_rosters
+                    .map(|spans| &self.states.first[spans[1].start..spans[1].start + spans[1].count]),
+                &previous.controlled_states,
+            )
+            && eq_opt_vec(
+                r.state_rosters
+                    .map(|spans| &self.states.first[spans[2].start..spans[2].start + spans[2].count]),
+                &previous.core_states,
+            )
+            && eq_opt_u64(
+                r.leader_rosters
+                    .map(|spans| &self.leaders.first[spans[0].start..spans[0].start + spans[0].count]),
+                &previous.army_leaders,
+            )
+            && eq_opt_refs(
+                r.sent_expeditionaries.and_then(|span| {
+                    valid_span(&self.leaders, span.start, span.count)
+                        .then(|| &self.leaders.first[span.start..span.start + span.count])
+                }),
+                &previous.sent_expeditionaries,
+            )
+            && eq_opt_u64(
+                r.leader_rosters
+                    .map(|spans| &self.leaders.first[spans[1].start..spans[1].start + spans[1].count]),
+                &previous.navy_leaders,
+            )
+            && eq_opt_vec(opt_slice(&self.policies, r.mio_policies), &previous.mio_policies)
+            && eq_opt_vec(opt_slice(&self.neighbors, r.neighbors), &previous.neighbors)
+            && eq_opt_vec(
+                opt_slice(
+                    &self.co_belligerents,
+                    relation.and_then(|row| row.co_belligerents),
+                ),
+                &previous.co_belligerents,
+            )
+            && eq_opt_bytes(
+                relation
+                    .and_then(|row| row.pride_name)
+                    .and_then(|(start, count)| {
+                        valid_span(&self.pride_names, start, count)
+                            .then(|| &self.pride_names.first[start..start + count])
+                    }),
+                &previous.pride_name,
+            )
+    }
+
+    fn counter_input(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+    ) -> TableInput {
+        let Some(rows) = self.rows.rows.get(..self.rows.outcome.len()) else {
+            return unavailable("country counter row count exceeds allocated buffer").into();
+        };
+        for row in rows {
+            if row.state_rosters.is_some_and(|spans| {
+                spans
+                    .iter()
+                    .any(|span| !valid_span(&self.states, span.start, span.count))
+            }) {
+                return unavailable("country state roster span outside acquired arena").into();
+            }
+            if row.leader_rosters.is_some_and(|spans| {
+                spans
+                    .iter()
+                    .any(|span| !valid_span(&self.leaders, span.start, span.count))
+            }) {
+                return unavailable("country leader roster span outside acquired arena").into();
+            }
+        }
+        let base = rows.as_ptr() as usize;
+        let stride = size_of::<ccountry::CounterInputsRow>();
+        let index_of =
+            |r: &ccountry::CounterInputsRow| (std::ptr::from_ref(r) as usize - base) / stride;
+        project_table::<tables::CountryCounterInputs, _>(
+            projection,
+            self.rows.outcome,
+            rows,
+            |r| u128::from(r.country),
+            |r, previous| self.counter_row_matches(index_of(r), r, previous),
+            |r| self.counter_row(index_of(r), r),
+        )
     }
 
     fn counter_table(&self) -> TableView {
@@ -592,124 +921,7 @@ impl Captured {
         table_iter::<tables::CountryCounterInputs, _>(
             self.rows.outcome,
             rows.iter().enumerate(),
-            |(index, r)| {
-                let relation = self
-                    .relations
-                    .first
-                    .get(index)
-                    .filter(|_| index < self.relations.len);
-                CountryCounterInputRow {
-                    directed_wars: Recorded::Value(None),
-                    country: r.country,
-                    recruitment_modifiers: Recorded::Value(r.recruitment_modifiers),
-                    air_modifiers: Recorded::Value(r.air_modifiers),
-                    air_combat_modifiers_known: (r.air_combat_modifiers.is_some()).into(),
-                    air_superiority_efficiency: (r
-                        .air_combat_modifiers
-                        .and_then(|values| values[0]))
-                    .into(),
-                    air_intercept_efficiency: (r.air_combat_modifiers.and_then(|values| values[1]))
-                        .into(),
-                    air_cas_efficiency: (r.air_combat_modifiers.and_then(|values| values[2]))
-                        .into(),
-                    air_nav_efficiency: (r.air_combat_modifiers.and_then(|values| values[3]))
-                        .into(),
-                    air_attack_factor: (r.air_combat_modifiers.and_then(|values| values[4])).into(),
-                    air_defence_factor: (r.air_combat_modifiers.and_then(|values| values[5]))
-                        .into(),
-                    air_strategic_bomber_defence_factor: (r
-                        .air_combat_modifiers
-                        .and_then(|values| values[6]))
-                    .into(),
-                    mines_effect_reduction: Recorded::Value(r.mines_effect_reduction),
-                    naval_detection: Recorded::Value(r.naval_detection),
-                    attack: Recorded::Value(Witnessed(None)),
-                    attack_modifiers: Recorded::Value(r.attack_modifiers.map(|[night, bunker]| {
-                        CountryAttackModifiers {
-                            land_night_attack: night,
-                            land_bunker_effectiveness_factor: bunker,
-                        }
-                    })),
-                    combat_width_factor: Recorded::Value(
-                        r.movement_modifiers.and_then(|entries| entries[6]),
-                    ),
-                    movement_modifiers: Recorded::Value(r.movement_modifiers.map(
-                        |[
-                            army_speed_factor,
-                            army_armor_speed_factor,
-                            attrition,
-                            winter_attrition_factor,
-                            heat_attrition_factor,
-                            out_of_supply_factor,
-                            _combat_width_factor,
-                            special_forces_out_of_supply_factor,
-                            army_attack_speed_factor,
-                            army_retreat_speed_factor,
-                        ]| CountryMovementModifiers {
-                            army_speed_factor,
-                            army_armor_speed_factor,
-                            attrition,
-                            winter_attrition_factor,
-                            heat_attrition_factor,
-                            out_of_supply_factor,
-                            special_forces_out_of_supply_factor,
-                            army_attack_speed_factor,
-                            army_retreat_speed_factor,
-                        },
-                    )),
-                    pride_of_the_fleet: r.pride_of_the_fleet,
-                    owned_state_count: r.owned_state_count,
-                    controlled_state_count: r.controlled_state_count,
-                    first_division: r.first_division,
-                    owned_states: Recorded::Value(
-                        r.state_rosters.map(|spans| self.state_list(spans[0])),
-                    ),
-                    controlled_states: Recorded::Value(
-                        r.state_rosters.map(|spans| self.state_list(spans[1])),
-                    ),
-                    core_states: Recorded::Value(
-                        r.state_rosters.map(|spans| self.state_list(spans[2])),
-                    ),
-                    army_leaders: Recorded::Value(
-                        r.leader_rosters.map(|spans| self.leader_list(spans[0])),
-                    ),
-                    sent_expeditionaries: Recorded::Value(
-                        r.sent_expeditionaries
-                            .and_then(|span| self.manpower_reference_list(r.country, span)),
-                    ),
-                    navy_leaders: Recorded::Value(
-                        r.leader_rosters.map(|spans| self.leader_list(spans[1])),
-                    ),
-                    mio_policies: Recorded::Value(
-                        r.mio_policies
-                            .and_then(|span| self.effect_list(&self.policies, span)),
-                    ),
-                    neighbors: Recorded::Value(
-                        r.neighbors
-                            .and_then(|span| self.effect_list(&self.neighbors, span)),
-                    ),
-                    co_belligerents: Recorded::Value(
-                        relation
-                            .and_then(|row| row.co_belligerents)
-                            .and_then(|span| self.effect_list(&self.co_belligerents, span)),
-                    ),
-                    zero_war: Recorded::Value(relation.and_then(|row| row.zero_war)),
-                    movement: Recorded::Value(Retired),
-                    zero_subject: Recorded::Value(relation.and_then(|row| row.zero_subject)),
-                    forward_visibility: Recorded::Value(
-                        relation.and_then(|row| row.forward_visibility),
-                    ),
-                    pride_name: Recorded::Value(relation.and_then(|row| row.pride_name).and_then(
-                        |(start, count)| {
-                            valid_span(&self.pride_names, start, count).then(|| {
-                                engine_allocation::owned_vec(engine_allocation::copy_vec(
-                                    &self.pride_names.first[start..start + count],
-                                ))
-                            })
-                        },
-                    )),
-                }
-            },
+            |(index, r)| self.counter_row(index, r),
         )
     }
 
@@ -1519,16 +1731,6 @@ mod tests {
                 target: 0x8000_0002,
             }]
         );
-    }
-
-    #[test]
-    fn civil_war_capacity_follows_the_live_entry_total() {
-        let mut capacity = Capacities::default();
-        capacity.raise_for_civil_wars(3_000);
-        assert!(capacity.civil_wars >= 4_000);
-        let raised = capacity;
-        capacity.raise_for_civil_wars(1);
-        assert!(capacity == raised);
     }
 
     #[test]

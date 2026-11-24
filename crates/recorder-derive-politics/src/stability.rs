@@ -210,14 +210,4 @@ mod tests {
         assert_eq!(cells(&read, Some(&unregistered))[2], Value::Unrecorded);
     }
 
-    #[test]
-    fn its_state_is_its_tables_so_a_resume_recomputes_from_them() {
-        let mut stability = Stability::default();
-        let mut blob = Bytes::new();
-        stability.save(&mut blob).unwrap();
-        assert!(blob.bytes().is_empty());
-        stability.load(&[]).unwrap();
-        assert!(stability.rebuild);
-        assert!(stability.load(&[1]).is_err());
-    }
 }

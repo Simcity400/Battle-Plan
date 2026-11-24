@@ -1,5 +1,5 @@
 use crate::{
-    fuel_awards::{self, Entry},
+    fuel_awards::{self, CompactEntry, CompactPayload, NO_NAME, RootData},
     output_log::Drained,
     table_capture::{grow_capacity, grow_vec},
 };
@@ -22,7 +22,8 @@ pub struct Capacities {
 
 collector_primitives::capacity_max!(Capacities { entries, names });
 pub struct Captured {
-    entries: Vec<Entry>,
+    entries: Vec<CompactEntry>,
+    roots: Vec<RootData>,
     names: Vec<u8>,
     drained: Option<Result<(Drained, usize, usize), &'static str>>,
 }
@@ -37,18 +38,22 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             entries: owned_vec(default_vec(capacity.entries)),
+            roots: Vec::new(),
             names: owned_vec(engine_allocation::filled(capacity.names, 0)),
             drained: None,
         }
     }
     pub fn reset(&mut self) {
+        self.roots.clear();
         self.drained = None;
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.entries.capacity() * size_of::<Entry>() + self.names.capacity()
+        self.entries.capacity() * size_of::<CompactEntry>()
+            + self.roots.capacity() * size_of::<RootData>()
+            + self.names.capacity()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        let (entries, names) = fuel_awards::capacities();
+        let (entries, names) = fuel_awards::drained_capacities();
         grow_capacity(&mut capacity.entries, entries);
         grow_capacity(&mut capacity.names, names);
         if let Some(Ok((drained, _, required))) = self.drained {
@@ -59,8 +64,9 @@ impl Captured {
         grow_vec(&mut self.names, capacity.names);
     }
     pub fn drain(&mut self) {
-        self.drained = Some(fuel_awards::drain(
+        self.drained = Some(fuel_awards::drain_compact(
             &mut self.entries,
+            &mut self.roots,
             &mut self.names,
         ));
     }
@@ -181,7 +187,7 @@ impl Windows {
                 .get(country)
                 .is_some_and(|(_, pointer)| pointer == status)
         });
-        let mut recipients: HashMap<u64, Vec<&Entry>> = HashMap::new();
+        let mut recipients: HashMap<u64, Vec<&CompactEntry>> = HashMap::new();
         let entries = captured
             .entries
             .get(..drained.copied)
@@ -193,7 +199,7 @@ impl Windows {
                 .count();
         let ends = entries
             .iter()
-            .filter(|entry| entry.recipient.is_none() && !entry.reset)
+            .filter(|entry| matches!(entry.payload, CompactPayload::Root { .. }))
             .count();
         reserve_map(&mut recipients, roots)?;
         let mut completed = HashMap::new();
@@ -202,22 +208,30 @@ impl Windows {
         reserve_map(&mut self.identities, ends)?;
         reserve_map(&mut self.status_owners, ends)?;
         for entry in entries {
-            if entry.reset {
-                if let Some(country) = self.status_owners.remove(&entry.started.status) {
-                    self.countries.remove(&country);
-                    self.identities.remove(&country);
+            let (country, root_index) = match entry.payload {
+                CompactPayload::Reset { status, .. } => {
+                    if let Some(country) = self.status_owners.remove(&status) {
+                        self.countries.remove(&country);
+                        self.identities.remove(&country);
+                    }
+                    continue;
                 }
+                CompactPayload::Recipient { .. } => {
+                    let root = recipients.entry(entry.root).or_default();
+                    engine_allocation::reserve(root, 1)?;
+                    root.push(entry);
+                    continue;
+                }
+                CompactPayload::Root { country, index } => (country, index as usize),
+            };
+            let Some(root_data) = captured.roots.get(root_index) else {
+                self.countries.remove(&country);
+                recipients.remove(&entry.root);
                 continue;
-            }
-            if entry.recipient.is_some() {
-                let root = recipients.entry(entry.root).or_default();
-                engine_allocation::reserve(root, 1)?;
-                root.push(entry);
-                continue;
-            }
-            let repeated = completed.insert(entry.country, entry.root).is_some();
-            if repeated || entry.refused {
-                self.countries.remove(&entry.country);
+            };
+            let repeated = completed.insert(country, entry.root).is_some();
+            if repeated || root_data.refused {
+                self.countries.remove(&country);
                 recipients.remove(&entry.root);
                 continue;
             }
@@ -227,17 +241,27 @@ impl Windows {
             let mut received = [0_i64; 3];
             let mut valid = true;
             for part in part {
-                let Some(recipient) = part.recipient else {
+                let CompactPayload::Recipient {
+                    reference,
+                    amount,
+                    name_reason: part_name_reason,
+                    country: part_country,
+                    owner,
+                    host,
+                    name_start,
+                    name_len,
+                    kind,
+                } = part.payload
+                else {
                     continue;
                 };
-                if part.country != entry.country || recipient.kind > 2 {
+                if part_country != country || kind > 2 {
                     valid = false;
                     break;
                 }
-                received[recipient.kind as usize] =
-                    received[recipient.kind as usize].wrapping_add(part.amount);
-                let name = part
-                    .name
+                received[kind as usize] = received[kind as usize].wrapping_add(amount);
+                let name = (name_start != NO_NAME)
+                    .then_some((name_start as usize, name_len as usize))
                     .and_then(|(start, len)| {
                         start
                             .checked_add(len)
@@ -245,43 +269,43 @@ impl Windows {
                     })
                     .map(copy_vec)
                     .transpose()?;
-                let name_reason = part.name_reason.or_else(|| {
-                    (recipient.kind != 1 && name.is_none())
+                let name_reason = part_name_reason.or_else(|| {
+                    (kind != 1 && name.is_none())
                         .then_some("fuel recipient stored name not recorded")
                 });
                 rows.push(FuelAwardRecipient {
-                    kind: recipient.kind,
-                    reference: recipient.reference,
-                    owner: recipient.owner,
-                    host: recipient.host,
-                    amount_raw: part.amount,
+                    kind,
+                    reference,
+                    owner,
+                    host,
+                    amount_raw: amount,
                     name,
                     name_reason: copy_vec(name_reason.unwrap_or("").as_bytes())?,
                 });
             }
-            if !valid || received != entry.settled.received {
-                self.countries.remove(&entry.country);
+            if !valid || received != root_data.settled.received {
+                self.countries.remove(&country);
                 continue;
             }
-            let identity = (entry.started.country_instance, entry.started.status);
-            let old = self.identities.insert(entry.country, identity);
+            let identity = (root_data.started.country_instance, root_data.started.status);
+            let old = self.identities.insert(country, identity);
             if old.map(|(_, status)| status) != Some(identity.1) {
                 if let Some((_, status)) = old {
                     self.status_owners.remove(&status);
                 }
-                self.countries.remove(&entry.country);
+                self.countries.remove(&country);
             }
             if let Some(old) = self
                 .status_owners
-                .insert(entry.started.status, entry.country)
-                && old != entry.country
+                .insert(root_data.started.status, country)
+                && old != country
             {
                 self.countries.remove(&old);
                 self.identities.remove(&old);
             }
             let (start, history) = self
                 .countries
-                .entry(entry.country)
+                .entry(country)
                 .or_insert_with(|| (hour, VecDeque::new()));
             if history
                 .back()
@@ -293,29 +317,29 @@ impl Windows {
             reserve_history(history)?;
             history.push_back(FuelAwardHour {
                 hour,
-                gains_raw: entry.settled.gains,
-                own_gain_raw: entry.settled.own_gain,
-                transfers_raw: entry.settled.transfers,
-                consumed_raw: entry.settled.consumed,
-                received_raw: entry.settled.received,
+                gains_raw: root_data.settled.gains,
+                own_gain_raw: root_data.settled.own_gain,
+                transfers_raw: root_data.settled.transfers,
+                consumed_raw: root_data.settled.consumed,
+                received_raw: root_data.settled.received,
                 recipients: rows,
-                history_index: entry.started.history_index,
-                remaining_hours: entry.started.remaining_hours,
+                history_index: root_data.started.history_index,
+                remaining_hours: root_data.started.remaining_hours,
                 pending_raw: [
-                    entry
+                    root_data
                         .started
                         .pending_gain
-                        .wrapping_add(entry.settled.own_gain),
-                    entry
+                        .wrapping_add(root_data.settled.own_gain),
+                    root_data
                         .started
                         .pending_consumed
-                        .wrapping_add(entry.settled.consumed),
-                    entry
+                        .wrapping_add(root_data.settled.consumed),
+                    root_data
                         .started
                         .pending_other
-                        .wrapping_add(entry.settled.transfers[3]),
+                        .wrapping_add(root_data.settled.transfers[3]),
                 ],
-                current_raw: entry.settled.current,
+                current_raw: root_data.settled.current,
             });
             while history.len() > 24 {
                 history.pop_front();

@@ -1073,8 +1073,6 @@ use movement::movement_route_prefixes;
 #[cfg(test)]
 pub use movement::{walk_movement, walk_movement_with_inputs};
 
-#[cfg(test)]
-pub(crate) use cunit::FirstCombatKey as MovementCombatKey;
 pub(crate) use cunit::FirstCombatMemo as MovementCombats;
 
 fn movement_seed_value<T>(value: Option<T>) -> Result<T, &'static str> {
@@ -2504,6 +2502,7 @@ impl StatusPacket {
             experience,
             prepared,
             false,
+            true,
         )
     }
 
@@ -2708,6 +2707,7 @@ impl StatusPacket {
         experience: &[Option<i64>],
         prepared: Result<(usize, ccountry::Reader<'_, M>), &'static str>,
         defer_children: bool,
+        build_border_index: bool,
     ) -> Outcome {
         let mut entries = self.acclimatization.take();
         let result = prepared.and_then(|(count, countries)| {
@@ -2810,21 +2810,23 @@ impl StatusPacket {
         if defer_children {
             return self.outcome;
         }
-        if self.units.len() > self.border_index.capacity() {
-            if matches!(self.outcome, Outcome::Rows { .. }) {
-                self.outcome = Outcome::Unavailable {
-                    reason: "border division index packet capacity exceeded",
-                };
+        if build_border_index {
+            if self.units.len() > self.border_index.capacity() {
+                if matches!(self.outcome, Outcome::Rows { .. }) {
+                    self.outcome = Outcome::Unavailable {
+                        reason: "border division index packet capacity exceeded",
+                    };
+                }
+                return self.outcome;
             }
-            return self.outcome;
+            self.border_index.extend(
+                self.units
+                    .iter()
+                    .enumerate()
+                    .map(|(index, unit)| (unit.division, index)),
+            );
+            self.border_index.sort_unstable_by_key(|entry| entry.0);
         }
-        self.border_index.extend(
-            self.units
-                .iter()
-                .enumerate()
-                .map(|(index, unit)| (unit.division, index)),
-        );
-        self.border_index.sort_unstable_by_key(|entry| entry.0);
         self.capture_status_children(memory, seeds);
         self.outcome
     }
@@ -3701,12 +3703,6 @@ pub use presentation_demand::{PresentationDemand, presentation_demand};
 mod border_tests;
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
-mod bench;
-
-#[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
-mod status_bench;
 
 pub use game_model::movement::army::{MovementSpeedInputs, NormalEdgeOperands, NormalSpeedOperands, PreparedNormalSpeed};
 

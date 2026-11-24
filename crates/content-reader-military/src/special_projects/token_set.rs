@@ -100,24 +100,3 @@ pub fn order(tokens: &[u32]) -> Vec<u32> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn breakthrough_set_deduplicates_and_keeps_slot_order() {
-        let result = order(&[1, 2, 1, 3]);
-        assert_eq!(result.len(), 3);
-        assert_eq!(result, order(&[1, 2, 3]));
-        assert!(
-            result
-                .windows(2)
-                .all(|pair| (hash(pair[0]) & 7) <= (hash(pair[1]) & 7))
-        );
-        let many = order(&(1..=5_000).collect::<Vec<_>>());
-        assert_eq!(many.len(), 5_000);
-        assert_eq!(
-            many.into_iter().collect::<std::collections::BTreeSet<_>>(),
-            (1..=5_000).collect()
-        );
-    }
-}

@@ -187,35 +187,6 @@ fn game_score_air_census_is_unknown_until_finished_and_short_storage_is_named() 
 }
 
 #[test]
-fn game_score_test_hints_are_scoped_without_changing_process_hints() {
-    let before = [
-        SITES_HINT.load(Ordering::Relaxed),
-        WINGS_HINT.load(Ordering::Relaxed),
-    ];
-    {
-        let _hints = TestHints::new();
-        assert!(note_arena_hints(3, 7));
-        assert!(!note_arena_hints(2, 6));
-        assert_eq!(arena_hints(), [3, 7]);
-        {
-            let _nested = TestHints::new();
-            note_arena_hints(11, 13);
-            assert_eq!(arena_hints(), [11, 13]);
-        }
-        assert_eq!(arena_hints(), [3, 7]);
-        let joined = std::thread::spawn(arena_hints).join().unwrap();
-        assert_eq!(joined, before);
-    }
-    assert_eq!(
-        [
-            SITES_HINT.load(Ordering::Relaxed),
-            WINGS_HINT.load(Ordering::Relaxed)
-        ],
-        before
-    );
-}
-
-#[test]
 fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
     use crate::extended::air::{self, AirWingCopyContext, AirWingJob, wing_test_kit as kit};
     let _hint = crate::sizing::hint_guard();

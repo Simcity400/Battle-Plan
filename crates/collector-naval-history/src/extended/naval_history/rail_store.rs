@@ -1,4 +1,5 @@
 use collector_observers::rail_changes::{COUNTDOWN, Changes, Counts};
+use collector_projection::projection::{Witness, generation};
 use engine_allocation as allocation;
 use engine_railways::{
     cprovince_railway_info as info, crailway_manager::HeldBatch, crailway_manager::InfoOutputs,
@@ -6,6 +7,26 @@ use engine_railways::{
     crailway_manager::RailLocation, crailway_manager::fresh_inputs::RailwayBuildingRow,
     rail_neighbor,
 };
+use std::sync::Arc;
+
+pub struct CleanRails {
+    pub(crate) witness: Witness,
+    pub(crate) cooldowns: Vec<info::Row>,
+    pub(crate) edges: Vec<rail_neighbor::Row>,
+    pub(crate) buildings: Vec<RailwayBuildingRow>,
+    pub(crate) levels: Vec<i32>,
+    pub(crate) buildings_required: usize,
+    pub(crate) levels_required: usize,
+}
+
+impl CleanRails {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.cooldowns.capacity() * size_of::<info::Row>()
+            + self.edges.capacity() * size_of::<rail_neighbor::Row>()
+            + self.buildings.capacity() * size_of::<RailwayBuildingRow>()
+            + self.levels.capacity() * size_of::<i32>()
+    }
+}
 
 const BATCH: u32 = PROVINCE_BATCH as u32;
 
@@ -140,6 +161,7 @@ pub struct RailStore {
     list: Vec<u32>,
     listed: bool,
     batches: Vec<Batch>,
+    clean: Option<Arc<CleanRails>>,
 
     take: Option<u64>,
     tables: Option<RailHeader>,
@@ -180,6 +202,7 @@ impl RailStore {
         self.header = None;
         self.list.clear();
         self.listed = false;
+        self.clean = None;
         for batch in &mut self.batches {
             batch.forget();
         }
@@ -188,6 +211,7 @@ impl RailStore {
     fn measure(&self) -> usize {
         self.batches.iter().map(Batch::measure).sum::<usize>()
             + self.batches.capacity() * size_of::<Batch>()
+            + self.clean.as_ref().map_or(0, |clean| clean.allocated_bytes())
             + self.scratch.measure()
             + (self.list.capacity() + self.list_now.capacity() + self.marked.capacity())
                 * size_of::<u32>()
@@ -298,11 +322,39 @@ impl<'a> RailReuse<'a> {
         Self { store }
     }
 
+    pub fn clean_hit(&mut self, header: RailHeader) -> Option<Arc<CleanRails>> {
+        let store = &mut *self.store;
+        if !store.observing || !store.marked.is_empty() || store.header != Some(header) {
+            store.clean = None;
+            return None;
+        }
+        let batches = (header.rail.count as usize).div_ceil(PROVINCE_BATCH);
+        if store.batches.len() < batches || !store.batches[..batches].iter().all(|b| b.whole) {
+            store.clean = None;
+            return None;
+        }
+        let clean = store.clean.as_ref()?.clone();
+        store.tables = Some(header);
+        store.counts.carried_batches = batches as u64;
+        store.counts.reused = clean.cooldowns.len() as u64;
+        store.counts.reused_edges = clean.edges.len() as u64;
+        Some(clean)
+    }
+
     pub fn finish(self, complete: bool) {
+        self.finish_with_clean(complete, |_| None);
+    }
+
+    pub fn finish_with_clean(
+        self,
+        complete: bool,
+        build: impl FnOnce(Witness) -> Option<CleanRails>,
+    ) -> Option<Witness> {
         let store = self.store;
         let slots = store.tables.map(|header| header.rail.count as usize);
         let walked = complete && slots.is_some();
         let held = walked && !store.lost && store.take.is_some();
+        let mut witness = None;
         if held {
             store.epoch = store.take;
             store.header = store.tables;
@@ -310,6 +362,15 @@ impl<'a> RailReuse<'a> {
             store.listed = store.listed_now;
             let batches = slots.unwrap_or(0).div_ceil(PROVINCE_BATCH);
             store.batches.truncate(batches);
+            if let Some(clean) = &store.clean {
+                witness = Some(clean.witness);
+            } else if store.batches.len() == batches && store.batches.iter().all(|b| b.whole) {
+                let candidate = Witness::generation(generation());
+                if let Some(clean) = build(candidate) {
+                    witness = Some(clean.witness);
+                    store.clean = Some(Arc::new(clean));
+                }
+            }
         } else {
             store.forget_held();
         }
@@ -318,6 +379,7 @@ impl<'a> RailReuse<'a> {
         store.scratch.reset();
         store.bytes = store.measure();
         collector_observers::rail_changes::record(&store.counts, slots.filter(|_| walked));
+        witness
     }
 }
 

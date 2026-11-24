@@ -5,11 +5,64 @@ use std::{
     sync::{Arc, Weak},
 };
 
-pub(crate) const SHIFT: u32 = 10;
+pub(crate) const SHIFT: u32 = 8;
 pub const PAGE: usize = 1 << SHIFT;
 const MASK: usize = PAGE - 1;
 
 type Page<T> = Arc<Box<[T]>>;
+
+#[derive(Clone, Debug)]
+enum SlotPage<T> {
+    Uniform(T),
+    Dense(Page<T>),
+}
+
+impl<T: Copy> SlotPage<T> {
+    fn ensure_dense(&mut self, cap: usize, count: usize, fill: T) -> io::Result<&mut [T]> {
+        if let Self::Uniform(current) = *self {
+            let mut items = engine_allocation::vec(cap)?;
+            items.resize(count, current);
+            items.resize(cap, fill);
+            *self = Self::Dense(Arc::new(engine_allocation::boxed_slice(items)?));
+        }
+        let Self::Dense(arc) = self else {
+            unreachable!()
+        };
+        unique(arc)
+    }
+
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Uniform(_) => 0,
+            Self::Dense(page) => page_bytes(page),
+        }
+    }
+
+    fn owned_bytes(&self) -> usize {
+        match self {
+            Self::Uniform(_) => 0,
+            Self::Dense(page) if Arc::strong_count(page) == 1 => page_bytes(page),
+            Self::Dense(_) => 0,
+        }
+    }
+}
+
+enum IterPage<'a, T> {
+    Uniform(std::iter::RepeatN<&'a T>),
+    Dense(std::slice::Iter<'a, T>),
+}
+
+impl<'a, T> Iterator for IterPage<'a, T> {
+    type Item = &'a T;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Uniform(iter) => iter.next(),
+            Self::Dense(iter) => iter.next(),
+        }
+    }
+}
 
 fn page<T: Copy>(from: &[T], len: usize, fill: T) -> io::Result<Page<T>> {
     let mut items = engine_allocation::vec(len)?;
@@ -19,7 +72,12 @@ fn page<T: Copy>(from: &[T], len: usize, fill: T) -> io::Result<Page<T>> {
 }
 
 fn page_len(start: usize, len: usize) -> usize {
-    (len - start).min(PAGE).next_power_of_two().min(PAGE)
+    let need = (len - start).min(PAGE);
+    if need <= 16 {
+        need.next_power_of_two()
+    } else {
+        need.next_multiple_of(16).min(PAGE)
+    }
 }
 
 fn unique<T: Copy>(page: &mut Page<T>) -> io::Result<&mut [T]> {
@@ -27,7 +85,7 @@ fn unique<T: Copy>(page: &mut Page<T>) -> io::Result<&mut [T]> {
         let copied = engine_allocation::copy_vec(&page[..])?;
         *page = Arc::new(engine_allocation::boxed_slice(copied)?);
     }
-    Ok(&mut Arc::get_mut(page).expect("a page just copied is held once")[..])
+    Ok(&mut **Arc::get_mut(page).expect("a page just copied is held once"))
 }
 
 fn page_bytes<T>(page: &Page<T>) -> usize {
@@ -36,7 +94,7 @@ fn page_bytes<T>(page: &Page<T>) -> usize {
 
 #[derive(Clone, Debug)]
 pub struct Paged<T> {
-    pages: Vec<Page<T>>,
+    pages: Vec<SlotPage<T>>,
     len: usize,
     fill: T,
 }
@@ -65,11 +123,14 @@ impl<T: Copy> Index<usize> for Paged<T> {
     #[inline]
     fn index(&self, at: usize) -> &T {
         assert!(at < self.len, "slot {at} past {} slots", self.len);
-        &self.pages[at >> SHIFT][at & MASK]
+        match &self.pages[at >> SHIFT] {
+            SlotPage::Uniform(value) => value,
+            SlotPage::Dense(page) => &page[at & MASK],
+        }
     }
 }
 
-impl<T: Copy> Paged<T> {
+impl<T: Copy + PartialEq> Paged<T> {
     pub(crate) fn filled(len: usize, fill: T) -> io::Result<Self> {
         let mut paged = Self {
             pages: Vec::new(),
@@ -83,7 +144,17 @@ impl<T: Copy> Paged<T> {
     pub(crate) fn from_slice(values: &[T], fill: T) -> io::Result<Self> {
         let mut pages = engine_allocation::vec(values.len().div_ceil(PAGE))?;
         for (index, chunk) in values.chunks(PAGE).enumerate() {
-            pages.push(page(chunk, page_len(index << SHIFT, values.len()), fill)?);
+            if let Some(&first) = chunk.first()
+                && chunk.iter().all(|&value| value == first)
+            {
+                pages.push(SlotPage::Uniform(first));
+            } else {
+                pages.push(SlotPage::Dense(page(
+                    chunk,
+                    page_len(index << SHIFT, values.len()),
+                    fill,
+                )?));
+            }
         }
         Ok(Self {
             pages,
@@ -92,6 +163,221 @@ impl<T: Copy> Paged<T> {
         })
     }
 
+    pub(crate) fn matches_prefix(&self, prefix: &[T]) -> bool {
+        if prefix.len() > self.len {
+            return false;
+        }
+        let mut offset = 0;
+        for (index, slot) in self.pages.iter().enumerate() {
+            let take = (prefix.len() - offset).min((self.len - (index << SHIFT)).min(PAGE));
+            if take == 0 {
+                break;
+            }
+            let slice = &prefix[offset..offset + take];
+            let matched = match slot {
+                SlotPage::Uniform(value) => slice.iter().all(|item| item == value),
+                SlotPage::Dense(page) => page[..take] == *slice,
+            };
+            if !matched {
+                return false;
+            }
+            offset += take;
+            if offset == prefix.len() {
+                break;
+            }
+        }
+        offset == prefix.len()
+    }
+
+    pub(crate) fn resize(&mut self, len: usize) -> io::Result<()> {
+        if len <= self.len {
+            return Ok(());
+        }
+        let start = self.pages.len().saturating_sub(1) << SHIFT;
+        if let Some(last) = self.pages.last_mut() {
+            let want = page_len(start, len);
+            match last {
+                SlotPage::Uniform(value) => {
+                    let used = self.len - start;
+                    if used < PAGE && *value != self.fill {
+                        let mut items = engine_allocation::vec(want)?;
+                        items.resize(used, *value);
+                        items.resize(want, self.fill);
+                        *last = SlotPage::Dense(Arc::new(engine_allocation::boxed_slice(items)?));
+                    }
+                }
+                SlotPage::Dense(page_arc) => {
+                    if want > page_arc.len() {
+                        *page_arc = page(&page_arc[..], want, self.fill)?;
+                    }
+                }
+            }
+        }
+        let count = len.div_ceil(PAGE);
+        let missing = count - self.pages.len();
+        engine_allocation::reserve(&mut self.pages, missing)?;
+        while self.pages.len() < count {
+            self.pages.push(SlotPage::Uniform(self.fill));
+        }
+        self.len = len;
+        Ok(())
+    }
+
+    pub(crate) fn write_each(
+        &mut self,
+        slots: &[u32],
+        past: impl Fn(u32) -> io::Error,
+        mut value: impl FnMut(usize) -> io::Result<T>,
+    ) -> io::Result<()> {
+        let mut index = 0;
+        while index < slots.len() {
+            let first_slot = slots[index] as usize;
+            if first_slot >= self.len {
+                return Err(past(slots[index]));
+            }
+            let number = first_slot >> SHIFT;
+            let mut end = index + 1;
+            while let Some(&slot) = slots.get(end) {
+                let at = slot as usize;
+                if at >> SHIFT != number {
+                    break;
+                }
+                if at >= self.len {
+                    return Err(past(slot));
+                }
+                end += 1;
+            }
+            let base = number << SHIFT;
+            let count = (self.len - base).min(PAGE);
+            let cap = page_len(base, self.len);
+            if end - index == count {
+                let first = value(index)?;
+                let mut diverged = None;
+                for cursor in (index + 1)..end {
+                    let next = value(cursor)?;
+                    if next != first {
+                        diverged = Some((cursor, next));
+                        break;
+                    }
+                }
+                if let Some((cursor, next)) = diverged {
+                    let buf = self.pages[number].ensure_dense(cap, count, self.fill)?;
+                    for &slot in &slots[index..cursor] {
+                        buf[slot as usize & MASK] = first;
+                    }
+                    buf[slots[cursor] as usize & MASK] = next;
+                    for item in (cursor + 1)..end {
+                        buf[slots[item] as usize & MASK] = value(item)?;
+                    }
+                } else {
+                    self.pages[number] = SlotPage::Uniform(first);
+                }
+            } else {
+                match self.pages[number] {
+                    SlotPage::Uniform(current) => {
+                        let mut diverged = None;
+                        for cursor in index..end {
+                            let next = value(cursor)?;
+                            if next != current {
+                                diverged = Some((cursor, next));
+                                break;
+                            }
+                        }
+                        if let Some((cursor, next)) = diverged {
+                            let buf = self.pages[number].ensure_dense(cap, count, self.fill)?;
+                            buf[slots[cursor] as usize & MASK] = next;
+                            for item in (cursor + 1)..end {
+                                buf[slots[item] as usize & MASK] = value(item)?;
+                            }
+                        }
+                    }
+                    SlotPage::Dense(_) => {
+                        let buf = self.pages[number].ensure_dense(cap, count, self.fill)?;
+                        for item in index..end {
+                            buf[slots[item] as usize & MASK] = value(item)?;
+                        }
+                    }
+                }
+            }
+            index = end;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn write_each_optional(
+        &mut self,
+        slots: &[u32],
+        past: impl Fn(u32) -> io::Error,
+        mut value: impl FnMut(usize) -> io::Result<Option<T>>,
+    ) -> io::Result<()> {
+        let mut index = 0;
+        while index < slots.len() {
+            let first_slot = slots[index] as usize;
+            if first_slot >= self.len {
+                return Err(past(slots[index]));
+            }
+            let number = first_slot >> SHIFT;
+            let mut end = index + 1;
+            while let Some(&slot) = slots.get(end) {
+                let at = slot as usize;
+                if at >> SHIFT != number {
+                    break;
+                }
+                if at >= self.len {
+                    return Err(past(slot));
+                }
+                end += 1;
+            }
+            let base = number << SHIFT;
+            let count = (self.len - base).min(PAGE);
+            let cap = page_len(base, self.len);
+            match self.pages[number] {
+                SlotPage::Uniform(current) => {
+                    let mut diverged = None;
+                    for cursor in index..end {
+                        if let Some(next) = value(cursor)?
+                            && next != current
+                        {
+                            diverged = Some((cursor, next));
+                            break;
+                        }
+                    }
+                    if let Some((cursor, next)) = diverged {
+                        let buf = self.pages[number].ensure_dense(cap, count, self.fill)?;
+                        buf[slots[cursor] as usize & MASK] = next;
+                        for item in (cursor + 1)..end {
+                            if let Some(next) = value(item)? {
+                                buf[slots[item] as usize & MASK] = next;
+                            }
+                        }
+                    }
+                }
+                SlotPage::Dense(_) => {
+                    let mut first_write = None;
+                    for cursor in index..end {
+                        if let Some(next) = value(cursor)? {
+                            first_write = Some((cursor, next));
+                            break;
+                        }
+                    }
+                    if let Some((cursor, next)) = first_write {
+                        let buf = self.pages[number].ensure_dense(cap, count, self.fill)?;
+                        buf[slots[cursor] as usize & MASK] = next;
+                        for item in (cursor + 1)..end {
+                            if let Some(next) = value(item)? {
+                                buf[slots[item] as usize & MASK] = next;
+                            }
+                        }
+                    }
+                }
+            }
+            index = end;
+        }
+        Ok(())
+    }
+}
+
+impl<T: Copy> Paged<T> {
     pub fn len(&self) -> usize {
         self.len
     }
@@ -102,47 +388,33 @@ impl<T: Copy> Paged<T> {
 
     #[inline]
     pub fn get(&self, at: usize) -> Option<&T> {
-        (at < self.len).then(|| &self.pages[at >> SHIFT][at & MASK])
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
-        self.chunks().flatten()
-    }
-
-    pub fn chunks(&self) -> impl Iterator<Item = &[T]> + '_ {
-        self.pages.iter().enumerate().map(|(index, page)| {
-            let start = index << SHIFT;
-            &page[..(self.len - start).min(PAGE)]
+        (at < self.len).then(|| match &self.pages[at >> SHIFT] {
+            SlotPage::Uniform(value) => value,
+            SlotPage::Dense(page) => &page[at & MASK],
         })
     }
 
-    pub(crate) fn resize(&mut self, len: usize) -> io::Result<()> {
-        if len <= self.len {
-            return Ok(());
-        }
-        let start = self.pages.len().saturating_sub(1) << SHIFT;
-        if let Some(last) = self.pages.last_mut() {
-            let want = page_len(start, len);
-            if want > last.len() {
-                *last = page(&last[..], want, self.fill)?;
+    pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
+        self.pages.iter().enumerate().flat_map(|(index, slot)| {
+            let count = (self.len - (index << SHIFT)).min(PAGE);
+            match slot {
+                SlotPage::Uniform(value) => IterPage::Uniform(std::iter::repeat_n(value, count)),
+                SlotPage::Dense(page) => IterPage::Dense(page[..count].iter()),
             }
-        }
-        let count = len.div_ceil(PAGE);
-        let missing = count - self.pages.len();
-        engine_allocation::reserve(&mut self.pages, missing)?;
-        while self.pages.len() < count {
-            let start = self.pages.len() << SHIFT;
-            self.pages.push(page(&[], page_len(start, len), self.fill)?);
-        }
-        self.len = len;
-        Ok(())
+        })
     }
 
     pub(crate) fn get_mut(&mut self, at: usize) -> io::Result<Option<&mut T>> {
         if at >= self.len {
             return Ok(None);
         }
-        Ok(Some(&mut unique(&mut self.pages[at >> SHIFT])?[at & MASK]))
+        let number = at >> SHIFT;
+        let base = number << SHIFT;
+        let count = (self.len - base).min(PAGE);
+        let cap = page_len(base, self.len);
+        Ok(Some(
+            &mut self.pages[number].ensure_dense(cap, count, self.fill)?[at & MASK],
+        ))
     }
 
     pub(crate) fn each_mut(
@@ -158,7 +430,10 @@ impl<T: Copy> Paged<T> {
                 return Err(past(slots[index]));
             }
             let number = at >> SHIFT;
-            let page = unique(&mut self.pages[number])?;
+            let base = number << SHIFT;
+            let count = (self.len - base).min(PAGE);
+            let cap = page_len(base, self.len);
+            let page = self.pages[number].ensure_dense(cap, count, self.fill)?;
             while let Some(&slot) = slots.get(index) {
                 let at = slot as usize;
                 if at >> SHIFT != number {
@@ -183,26 +458,27 @@ impl<T: Copy> Paged<T> {
     }
 
     pub fn held_bytes(&self) -> usize {
-        self.pages.capacity() * size_of::<Page<T>>()
-            + self.pages.iter().map(page_bytes).sum::<usize>()
+        self.pages.capacity() * size_of::<SlotPage<T>>()
+            + self.pages.iter().map(SlotPage::bytes).sum::<usize>()
     }
 
     pub fn owned_bytes(&self) -> usize {
-        self.pages.capacity() * size_of::<Page<T>>()
-            + self
-                .pages
-                .iter()
-                .filter(|page| Arc::strong_count(page) == 1)
-                .map(page_bytes)
-                .sum::<usize>()
+        self.pages.capacity() * size_of::<SlotPage<T>>()
+            + self.pages.iter().map(SlotPage::owned_bytes).sum::<usize>()
     }
 
     pub fn shared_bytes(&self, other: &Self) -> usize {
         self.pages
             .iter()
             .zip(&other.pages)
-            .filter(|(mine, theirs)| Arc::strong_count(mine) == 2 && Arc::ptr_eq(mine, theirs))
-            .map(|(page, _)| page_bytes(page))
+            .filter_map(|(mine, theirs)| match (mine, theirs) {
+                (SlotPage::Dense(mine), SlotPage::Dense(theirs))
+                    if Arc::strong_count(mine) == 2 && Arc::ptr_eq(mine, theirs) =>
+                {
+                    Some(page_bytes(mine))
+                }
+                _ => None,
+            })
             .sum()
     }
 
@@ -210,14 +486,21 @@ impl<T: Copy> Paged<T> {
         self.pages
             .iter()
             .zip(&other.pages)
-            .filter(|(mine, theirs)| Arc::ptr_eq(mine, theirs))
-            .map(|(page, _)| page_bytes(page))
+            .filter_map(|(mine, theirs)| match (mine, theirs) {
+                (SlotPage::Dense(mine), SlotPage::Dense(theirs)) if Arc::ptr_eq(mine, theirs) => {
+                    Some(page_bytes(mine))
+                }
+                _ => None,
+            })
             .sum()
     }
 
     pub(crate) fn downgrade(&self) -> io::Result<WeakPaged<T>> {
         Ok(WeakPaged {
-            pages: engine_allocation::collect_vec(self.pages.iter().map(Arc::downgrade))?,
+            pages: engine_allocation::collect_vec(self.pages.iter().map(|slot| match slot {
+                SlotPage::Uniform(value) => WeakSlotPage::Uniform(*value),
+                SlotPage::Dense(page) => WeakSlotPage::Dense(Arc::downgrade(page)),
+            }))?,
             len: self.len,
             fill: self.fill,
         })
@@ -225,8 +508,14 @@ impl<T: Copy> Paged<T> {
 }
 
 #[derive(Debug)]
+enum WeakSlotPage<T> {
+    Uniform(T),
+    Dense(Weak<Box<[T]>>),
+}
+
+#[derive(Debug)]
 pub(crate) struct WeakPaged<T> {
-    pages: Vec<Weak<Box<[T]>>>,
+    pages: Vec<WeakSlotPage<T>>,
     len: usize,
     fill: T,
 }
@@ -234,11 +523,16 @@ pub(crate) struct WeakPaged<T> {
 impl<T: Copy> WeakPaged<T> {
     pub(crate) fn upgrade(&self) -> io::Result<Option<Paged<T>>> {
         let mut pages = engine_allocation::vec(self.pages.len())?;
-        for page in &self.pages {
-            let Some(page) = page.upgrade() else {
-                return Ok(None);
-            };
-            pages.push(page);
+        for slot in &self.pages {
+            match slot {
+                WeakSlotPage::Uniform(value) => pages.push(SlotPage::Uniform(*value)),
+                WeakSlotPage::Dense(page) => {
+                    let Some(page) = page.upgrade() else {
+                        return Ok(None);
+                    };
+                    pages.push(SlotPage::Dense(page));
+                }
+            }
         }
         Ok(Some(Paged {
             pages,
@@ -249,8 +543,8 @@ impl<T: Copy> WeakPaged<T> {
 
     pub(crate) fn alive(&self) -> bool {
         self.pages
-            .first()
-            .is_some_and(|page| page.strong_count() > 0)
+            .iter()
+            .any(|slot| matches!(slot, WeakSlotPage::Dense(page) if page.strong_count() > 0))
     }
 }
 
@@ -294,6 +588,9 @@ impl PagedBits {
     }
 
     pub(crate) fn put(&mut self, bit: u32, value: bool) -> io::Result<()> {
+        if self.get(bit) == value {
+            return Ok(());
+        }
         let word = bit as usize / 64;
         if value {
             self.words.resize(word + 1)?;
@@ -310,27 +607,33 @@ impl PagedBits {
         bits: &[u32],
         mut value: impl FnMut(usize) -> io::Result<bool>,
     ) -> io::Result<()> {
-        if let Some(&last) = bits.last() {
-            self.words.resize(last as usize / 64 + 1)?;
-        }
         let mut index = 0;
         while index < bits.len() {
             let word = bits[index] as usize / 64;
-            let held = self
-                .words
-                .get_mut(word)?
-                .expect("the words were grown to the last bit");
+            let mut set = 0u64;
+            let mut clear = 0u64;
             while let Some(&bit) = bits.get(index) {
                 if bit as usize / 64 != word {
                     break;
                 }
-                let mask = 1 << (bit % 64);
-                *held = if value(index)? {
-                    *held | mask
+                let mask = 1u64 << (bit % 64);
+                if value(index)? {
+                    set |= mask;
                 } else {
-                    *held & !mask
-                };
+                    clear |= mask;
+                }
                 index += 1;
+            }
+            let old = self.words.get(word).copied().unwrap_or(0);
+            let updated = (old | set) & !clear;
+            if updated != old {
+                if word >= self.words.len() {
+                    self.words.resize(word + 1)?;
+                }
+                *self
+                    .words
+                    .get_mut(word)?
+                    .expect("the words were grown to the updated word") = updated;
             }
         }
         Ok(())
@@ -498,7 +801,7 @@ struct Edits<T> {
     items: Vec<T>,
 }
 
-const KEPT_EDIT_BYTES: usize = 64 << 10;
+const KEPT_EDIT_BYTES: usize = 0;
 
 impl<T> Default for Edits<T> {
     fn default() -> Self {
@@ -552,15 +855,32 @@ impl<T: Copy> Edits<T> {
         if self.items.capacity() * size_of::<T>() > KEPT_EDIT_BYTES {
             self.items = Vec::new();
         }
+        if self.cells.capacity() * size_of::<Edit>() > 1024 {
+            self.cells = Vec::new();
+        }
     }
 }
 
 impl<T: Copy> ListPage<T> {
-    fn empty(slots: usize) -> io::Result<Self> {
-        Ok(Self {
-            ends: engine_allocation::filled(slots, 0)?,
-            items: Vec::new(),
-        })
+    fn from_edits(slots: usize, edits: &mut Edits<T>) -> io::Result<Self> {
+        let mut ends = engine_allocation::filled(slots, 0u32)?;
+        let mut filled = 0usize;
+        let mut current = 0u32;
+        for edit in &edits.cells {
+            let offset = edit.offset as usize;
+            ends[filled..offset].fill(current);
+            ends[offset] = edit.new;
+            current = edit.new;
+            filled = offset + 1;
+        }
+        ends[filled..].fill(current);
+        let mut items = std::mem::take(&mut edits.items);
+        if items.capacity() > items.len().saturating_add(items.len() / 8).max(16)
+            && let Ok(compact) = engine_allocation::copy_vec(&items)
+        {
+            items = compact;
+        }
+        Ok(Self { ends, items })
     }
 
     #[inline]
@@ -623,6 +943,9 @@ impl<T: Copy> ListPage<T> {
         for moving in &mut ends[shifted..] {
             *moving = moved(*moving, shift) as u32;
         }
+        if items.capacity() > items.len().saturating_add(items.len() / 8).max(16) {
+            items = engine_allocation::copy_vec(&items)?;
+        }
         Ok(Self { ends, items })
     }
 
@@ -653,6 +976,11 @@ impl<T: Copy> ListPage<T> {
         }
         let end = self.start(filled);
         self.ends[filled..].fill(end);
+        if self.items.capacity() > self.items.len().saturating_add(self.items.len() / 8).max(16)
+            && let Ok(compact) = engine_allocation::copy_vec(&self.items)
+        {
+            self.items = compact;
+        }
         Ok(())
     }
 
@@ -674,7 +1002,8 @@ impl<T: Copy> ListPage<T> {
         let len = (held as isize + total) as usize;
         items_end(len)?;
         if len > held {
-            engine_allocation::resize(&mut self.items, len, T::default())?;
+            engine_allocation::reserve_exact(&mut self.items, len - held)?;
+            self.items.resize(len, T::default());
         }
         let mut shift = 0;
         for at in 0..cells.len() {
@@ -710,7 +1039,7 @@ impl<T: Copy> ListPage<T> {
         }
         if len < held {
             self.items.truncate(len);
-            if self.items.capacity() / 4 > len {
+            if self.items.capacity() > len.saturating_add(len / 8).max(16) {
                 self.items = engine_allocation::copy_vec(&self.items)?;
             }
         }
@@ -741,7 +1070,7 @@ fn edit_page<T: Copy + Default>(
 
 #[derive(Debug)]
 pub struct Lists<T> {
-    pages: Vec<Arc<ListPage<T>>>,
+    pages: Vec<Option<Arc<ListPage<T>>>>,
     len: usize,
     edits: Edits<T>,
 }
@@ -794,11 +1123,17 @@ impl<T: Copy> Lists<T> {
 
     #[inline]
     pub fn get(&self, at: usize) -> Option<&[T]> {
-        (at < self.len).then(|| self.pages[at >> SHIFT].cell(at & MASK))
+        (at < self.len).then(|| match &self.pages[at >> SHIFT] {
+            Some(page) => page.cell(at & MASK),
+            None => &[],
+        })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &[T]> + '_ {
-        (0..self.len).map(|at| self.pages[at >> SHIFT].cell(at & MASK))
+        (0..self.len).map(|at| match &self.pages[at >> SHIFT] {
+            Some(page) => page.cell(at & MASK),
+            None => &[],
+        })
     }
 
     pub(crate) fn resize(&mut self, len: usize) -> io::Result<()> {
@@ -806,7 +1141,7 @@ impl<T: Copy> Lists<T> {
             return Ok(());
         }
         let start = self.pages.len().saturating_sub(1) << SHIFT;
-        if let Some(last) = self.pages.last_mut() {
+        if let Some(Some(last)) = self.pages.last_mut() {
             let want = page_len(start, len);
             if want > last.ends.len() {
                 match Arc::get_mut(last) {
@@ -819,9 +1154,7 @@ impl<T: Copy> Lists<T> {
         let missing = count - self.pages.len();
         engine_allocation::reserve(&mut self.pages, missing)?;
         while self.pages.len() < count {
-            let start = self.pages.len() << SHIFT;
-            self.pages
-                .push(Arc::new(ListPage::empty(page_len(start, len))?));
+            self.pages.push(None);
         }
         self.len = len;
         Ok(())
@@ -836,19 +1169,26 @@ impl<T: Copy> Lists<T> {
     }
 
     pub fn held_bytes(&self) -> usize {
-        self.pages.capacity() * size_of::<usize>()
-            + self.edits.bytes()
-            + self.pages.iter().map(|page| page.bytes()).sum::<usize>()
-    }
-
-    pub fn owned_bytes(&self) -> usize {
-        self.pages.capacity() * size_of::<usize>()
+        self.pages.capacity() * size_of::<Option<Arc<ListPage<T>>>>()
             + self.edits.bytes()
             + self
                 .pages
                 .iter()
-                .filter(|page| Arc::strong_count(page) == 1)
-                .map(|page| page.bytes())
+                .filter_map(|page| page.as_ref().map(|page| page.bytes()))
+                .sum::<usize>()
+    }
+
+    pub fn owned_bytes(&self) -> usize {
+        self.pages.capacity() * size_of::<Option<Arc<ListPage<T>>>>()
+            + self.edits.bytes()
+            + self
+                .pages
+                .iter()
+                .filter_map(|page| {
+                    page.as_ref()
+                        .filter(|page| Arc::strong_count(page) == 1)
+                        .map(|page| page.bytes())
+                })
                 .sum::<usize>()
     }
 
@@ -856,8 +1196,14 @@ impl<T: Copy> Lists<T> {
         self.pages
             .iter()
             .zip(&other.pages)
-            .filter(|(mine, theirs)| Arc::strong_count(mine) == 2 && Arc::ptr_eq(mine, theirs))
-            .map(|(page, _)| page.bytes())
+            .filter_map(|(mine, theirs)| match (mine, theirs) {
+                (Some(mine), Some(theirs))
+                    if Arc::strong_count(mine) == 2 && Arc::ptr_eq(mine, theirs) =>
+                {
+                    Some(mine.bytes())
+                }
+                _ => None,
+            })
             .sum()
     }
 
@@ -865,14 +1211,18 @@ impl<T: Copy> Lists<T> {
         self.pages
             .iter()
             .zip(&other.pages)
-            .filter(|(mine, theirs)| Arc::ptr_eq(mine, theirs))
-            .map(|(page, _)| page.bytes())
+            .filter_map(|(mine, theirs)| match (mine, theirs) {
+                (Some(mine), Some(theirs)) if Arc::ptr_eq(mine, theirs) => Some(mine.bytes()),
+                _ => None,
+            })
             .sum()
     }
 
     pub(crate) fn downgrade(&self) -> io::Result<WeakLists<T>> {
         Ok(WeakLists {
-            pages: engine_allocation::collect_vec(self.pages.iter().map(Arc::downgrade))?,
+            pages: engine_allocation::collect_vec(
+                self.pages.iter().map(|page| page.as_ref().map(Arc::downgrade)),
+            )?,
             len: self.len,
         })
     }
@@ -885,7 +1235,7 @@ impl<T: Copy + Default> Lists<T> {
         past: impl Fn(u32) -> io::Error,
         mut cell: impl FnMut(usize, &[T], &mut Vec<T>) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.each_page(slots, past, |_, _| true, &mut cell)
+        self.each_page(slots, past, true, |_, _| true, &mut cell)
     }
 
     pub(crate) fn clear(
@@ -896,6 +1246,7 @@ impl<T: Copy + Default> Lists<T> {
         self.each_page(
             slots,
             past,
+            false,
             |page, (base, run)| {
                 run.iter()
                     .any(|&slot| !page.cell(slot as usize - base).is_empty())
@@ -908,6 +1259,7 @@ impl<T: Copy + Default> Lists<T> {
         &mut self,
         slots: &[u32],
         past: impl Fn(u32) -> io::Error,
+        write_empty: bool,
         wanted: impl Fn(&ListPage<T>, (usize, &[u32])) -> bool,
         cell: &mut impl Rewrite<T>,
     ) -> io::Result<()> {
@@ -928,14 +1280,37 @@ impl<T: Copy + Default> Lists<T> {
                 end += 1;
             }
             let (base, run) = (number << SHIFT, &slots[index..end]);
-            if wanted(&self.pages[number], (base, run)) {
-                edit_page(
-                    &mut self.pages[number],
-                    &mut self.edits,
-                    (base, index),
-                    run,
-                    cell,
-                )?;
+            match &mut self.pages[number] {
+                Some(page) => {
+                    if wanted(page, (base, run)) {
+                        edit_page(page, &mut self.edits, (base, index), run, cell)?;
+                        if page.items.is_empty() {
+                            self.pages[number] = None;
+                        }
+                    }
+                }
+                None if write_empty => {
+                    self.edits.cells.clear();
+                    self.edits.items.clear();
+                    engine_allocation::reserve(&mut self.edits.cells, run.len())?;
+                    for (cursor, &slot) in (index..).zip(run) {
+                        let offset = (slot as usize - base) as u32;
+                        cell(cursor, &[], &mut self.edits.items)?;
+                        self.edits.cells.push(Edit {
+                            offset,
+                            start: 0,
+                            end: 0,
+                            new: items_end(self.edits.items.len())?,
+                        });
+                    }
+                    if !self.edits.items.is_empty() {
+                        let cap = page_len(base, self.len);
+                        let built = ListPage::from_edits(cap, &mut self.edits)?;
+                        self.pages[number] = Some(Arc::new(built));
+                    }
+                    self.edits.done();
+                }
+                None => {}
             }
             index = end;
         }
@@ -945,7 +1320,7 @@ impl<T: Copy + Default> Lists<T> {
 
 #[derive(Debug)]
 pub(crate) struct WeakLists<T> {
-    pages: Vec<Weak<ListPage<T>>>,
+    pages: Vec<Option<Weak<ListPage<T>>>>,
     len: usize,
 }
 
@@ -953,10 +1328,15 @@ impl<T: Copy> WeakLists<T> {
     pub(crate) fn upgrade(&self) -> io::Result<Option<Lists<T>>> {
         let mut pages = engine_allocation::vec(self.pages.len())?;
         for page in &self.pages {
-            let Some(page) = page.upgrade() else {
-                return Ok(None);
-            };
-            pages.push(page);
+            match page {
+                Some(page) => {
+                    let Some(page) = page.upgrade() else {
+                        return Ok(None);
+                    };
+                    pages.push(Some(page));
+                }
+                None => pages.push(None),
+            }
         }
         Ok(Some(Lists {
             pages,

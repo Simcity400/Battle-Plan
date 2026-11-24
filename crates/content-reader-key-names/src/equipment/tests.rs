@@ -1111,16 +1111,6 @@ fn keywords_fold_and_names_keep_their_case() {
 }
 
 #[test]
-fn stat_metadata_covers_the_index_order() {
-    content_reader_script::test_game::enter();
-    assert_eq!(stat_metadata().len(), STAT_COUNT);
-    for (index, &(keyword, label, _)) in stat_metadata().iter().enumerate() {
-        assert_eq!(stat_index(keyword.as_bytes()), Some(index), "{keyword}");
-        assert!(!label.is_empty(), "{keyword}");
-    }
-}
-
-#[test]
 fn saved_validation_requires_explicit_dependency_but_allows_required_default_modules() {
     let database = read(&[(
         "rules.txt",

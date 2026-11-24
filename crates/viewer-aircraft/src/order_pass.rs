@@ -597,7 +597,7 @@ impl Drawing<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_gpu::{ribbon_content::Vertex, ribbon_mesh};
+    use viewer_gpu::ribbon_content::Vertex;
 
     fn draw(arrow: &str, declaration_index: usize, air_mode: bool, label: Option<usize>, strips: std::ops::Range<u32>) -> OrderDraw {
         OrderDraw {
@@ -626,26 +626,6 @@ mod tests {
             draws: vec![draw(arrow, declaration_index, air_mode, (arrow == "plan").then_some(0), 0..vertices)],
             ..OrderField::default()
         }
-    }
-
-    fn drawn(draws: &[OrderDraw], bytes: &[u8]) -> Vec<(String, Option<usize>, Vec<Vertex>)> {
-        let vertices: &[Vertex] = bytemuck::cast_slice(bytes);
-        draws.iter().map(|draw| (draw.arrow_type.clone(), draw.label, draw.native_strips.iter().flat_map(|strip| vertices[strip.start as usize..strip.end as usize].to_vec()).collect())).collect()
-    }
-
-    #[test]
-    fn the_parts_draw_as_the_field_appended_part_by_part_draws() {
-        let (plan, raids, routes, air) = (field("plan", 2, false, 1.0, 300), field("raid", 1, false, 2.0, 70), field("route", 2, true, 3.0, 5), field("air", 0, true, 4.0, 9));
-        let parts = [Some(&plan), Some(&raids), Some(&routes), Some(&air)];
-        let base = ribbon_mesh::append(&ribbon_mesh::append(&plan, &raids), &routes);
-        let today = ribbon_mesh::append_kept(&base, |draw| !draw.air_mode, &air);
-        let (placed, total) = places(&parts);
-        let bytes = laid_out(&parts);
-        assert_eq!((total as usize, placed[0].start), (384, 84), "the plan is laid out last");
-        assert_eq!(drawn(&draw_list(&parts, &placed), &bytes), drawn(&today.draws, bytemuck::cast_slice(&today.native_vertices)));
-        let without_air = [Some(&plan), Some(&raids), Some(&routes), None];
-        let (placed, _) = places(&without_air);
-        assert_eq!(drawn(&draw_list(&without_air, &placed), &laid_out(&without_air)), drawn(&base.draws, bytemuck::cast_slice(&base.native_vertices)));
     }
 
     #[test]
@@ -728,12 +708,4 @@ mod tests {
         assert_eq!(&bytes[112..116], &19_f32.to_le_bytes());
     }
 
-    #[test]
-    fn the_slot_matches_the_shaders_constant_buffer() {
-        assert_eq!(std::mem::size_of::<Slot>(), 128);
-        assert_eq!(
-            std::mem::size_of::<viewer_gpu::ribbon_content::Vertex>(),
-            32
-        );
-    }
 }

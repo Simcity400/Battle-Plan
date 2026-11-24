@@ -1,14 +1,11 @@
 use crate::watch_registry::{Notification, WatchRegistry};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 static WATCHES: WatchRegistry = WatchRegistry::marking();
 static EDITS: WatchRegistry = WatchRegistry::marking();
 static ENTRY_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static PATCHED: AtomicBool = AtomicBool::new(false);
 static FORWARDED: AtomicBool = AtomicBool::new(false);
 static DEMAND: AtomicUsize = AtomicUsize::new(0);
-static REFUSED: AtomicU64 = AtomicU64::new(0);
-static READS: AtomicU64 = AtomicU64::new(0);
-static CARRIED: AtomicU64 = AtomicU64::new(0);
 fn enabled() {
     let enabled = PATCHED.load(Ordering::Acquire) && FORWARDED.load(Ordering::Acquire);
     WATCHES.set_enabled(enabled);
@@ -72,15 +69,12 @@ pub fn presize() {
 pub fn demand(divisions: usize) {
     DEMAND.fetch_max(divisions.saturating_mul(4), Ordering::Relaxed);
 }
-pub fn read() {
-    READS.fetch_add(1, Ordering::Relaxed);
-}
-pub fn carried() {
-    CARRIED.fetch_add(1, Ordering::Relaxed);
-}
-pub fn refused() {
-    REFUSED.fetch_add(1, Ordering::Relaxed);
-}
+#[inline(always)]
+pub fn read() {}
+#[inline(always)]
+pub fn carried() {}
+#[inline(always)]
+pub fn refused() {}
 /// # Safety
 /// All owning and forwarding hooks must be disabled and quiescent, and the acquisition pool, which
 /// reads these registries, must have stopped.

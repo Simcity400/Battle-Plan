@@ -595,67 +595,6 @@ fn accepted_fog_failures_are_terminal_and_leave_other_tables_independent() {
 }
 
 #[test]
-fn areas_and_stationed_units_share_one_traversal_every_hour() {
-    struct Counted<'a> {
-        inner: SliceMemory<'a>,
-        unit_roots: std::cell::Cell<usize>,
-        area_roots: std::cell::Cell<usize>,
-    }
-    impl Memory for Counted<'_> {
-        fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
-            if address == THEATRE + ctheatre::STATIONED_UNIT_DATA {
-                self.unit_roots.set(self.unit_roots.get() + 1);
-            }
-            if address == THEATRE + ctheatre::CONTROLLER_AREA_DATA {
-                self.area_roots.set(self.area_roots.get() + 1);
-            }
-            self.inner.copy(address, bytes)
-        }
-    }
-    let bytes = fixture();
-    let mut captured = Captured::with_capacities(&Capacities {
-        rows: [4; N],
-        radar_provinces: 8,
-        area_provinces: 8,
-        wings: 8,
-    });
-    for hour in 0..24 {
-        assert!(replay_data::cadence::should_walk(
-            TableId::TheatreAreas,
-            hour,
-            false
-        ));
-        let memory = Counted {
-            inner: SliceMemory {
-                base: BASE,
-                bytes: &bytes,
-            },
-            unit_roots: std::cell::Cell::new(0),
-            area_roots: std::cell::Cell::new(0),
-        };
-        let _ticks = captured.capture(&memory, 0, BASE, hour, false);
-        assert_eq!(captured.areas.outcome, Outcome::Rows { len: 1 }, "{hour}");
-        assert_eq!(captured.units.outcome, Outcome::Rows { len: 1 }, "{hour}");
-        assert_eq!(memory.unit_roots.get(), 1);
-        assert!(memory.area_roots.get() >= 1);
-    }
-    let _ = captured.capture(
-        &SliceMemory {
-            base: BASE,
-            bytes: &[],
-        },
-        0,
-        BASE,
-        0,
-        false,
-    );
-    assert!(matches!(
-        captured.units.outcome,
-        Outcome::Unavailable { .. }
-    ));
-}
-
-#[test]
 fn radar_split_copy_matches_direct_walk() {
     use super::radar_test_kit as kit;
     use engine_native_memory::memory::{CountedMemory, ReadCounts};

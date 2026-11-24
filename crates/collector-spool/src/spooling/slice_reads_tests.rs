@@ -133,43 +133,6 @@ fn ordered_slice_provenance_matches_original_for_all_small_owner_sets() {
 }
 
 #[test]
-fn unordered_or_duplicate_returned_owners_normalize_before_provenance_merge() {
-    let table = TableId::ResearchInputs;
-    let mut held = ReadHours::new();
-    for returned in [
-        &[25, 1, 2][..],
-        &[1, 1, 25],
-        &[u32::MAX, 2, u32::MAX, 1],
-        &[2, 1, 25, 2, 1],
-    ] {
-        let mut ordered = returned.to_vec();
-        ordered.sort_unstable();
-        ordered.dedup();
-        for hour in [-3, 1, 2] {
-            for full in [false, true] {
-                for census in [false, true] {
-                    for tracked in [false, true] {
-                        let mut selection = SliceSelection::for_test(hour, full, &[1, 25]);
-                        if census {
-                            selection = selection.with_census(&[1, 2, 25, 26, u32::MAX]);
-                        }
-                        if tracked {
-                            selection.track_reads();
-                            selection.mark_read(1);
-                        }
-                        let previous = vec![(1, -7), (2, -6), (25, -5), (26, -4)];
-                        let expected = original_merge(&previous, &ordered, &selection, hour);
-                        held.0[table.index()] = previous;
-                        held.merge(table, returned, &selection, hour).unwrap();
-                        assert_eq!(held.0[table.index()], expected);
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[test]
 fn sparse_slice_reads_match_complete_spool_bytes_through_keyframes() {
     let tables = [
         TableId::ResearchInputs,

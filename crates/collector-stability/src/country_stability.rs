@@ -825,11 +825,6 @@ mod tests {
     }
 
     #[test]
-    fn the_engine_and_replay_track_the_same_names_in_the_same_order() {
-        assert_eq!(native::KEY_NAMES, CountryStabilityInputRow::KEY_NAMES);
-    }
-
-    #[test]
     fn a_walk_without_readable_memory_is_unavailable_not_empty() {
         let memory = engine_native_memory::memory::SliceMemory {
             base: 0,

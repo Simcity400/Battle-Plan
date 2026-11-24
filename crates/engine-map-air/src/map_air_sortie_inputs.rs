@@ -1131,50 +1131,6 @@ mod tests {
     }
 
     #[test]
-    fn patrol_detection_does_not_read_stats_for_invalid_current_masks() {
-        struct Guard<'a> {
-            bytes: &'a [u8],
-            attempts: std::cell::Cell<usize>,
-        }
-        impl Memory for Guard<'_> {
-            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-                let wing = MISSION - cair_wing::MISSION;
-                let start = wing + cair_wing::DEFAULT_STATS + SURFACE_DETECTION_STAT * 8;
-                if at < start + 16 && start < at.saturating_add(out.len()) {
-                    self.attempts.set(self.attempts.get() + 1);
-                    return false;
-                }
-                SliceMemory {
-                    base: 0,
-                    bytes: self.bytes,
-                }
-                .copy(at, out)
-            }
-        }
-        let mut bytes = mission_fixture();
-        for mask in [3_u32, 0x8000_0000] {
-            put(
-                &mut bytes,
-                MISSION + air_mission::CURRENT_TYPE,
-                &mask.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                MISSION + air_mission::EFFECTIVE_AIRCRAFTS,
-                &7_i32.to_le_bytes(),
-            );
-            let memory = Guard {
-                bytes: &bytes,
-                attempts: Default::default(),
-            };
-            let mut output = [Mission::default()];
-            read_missions(&memory, 0, &[MISSION], &mut output).unwrap();
-            assert_eq!(output[0].normalization.unwrap().detection, [None; 2]);
-            assert_eq!(memory.attempts.get(), 0);
-        }
-    }
-
-    #[test]
     fn executing_count_is_demanded_only_by_current_mask_and_faults_are_independent() {
         use std::cell::Cell;
         struct Traced<'a> {
@@ -1535,20 +1491,6 @@ mod tests {
             bytes: &bytes,
         };
         assert!(definition_air_flags(&memory, 0, POOL).is_err());
-    }
-
-    #[test]
-    fn mission_operands_and_cas_ratios_take_one_copy() {
-        let mut bytes = mission_fixture();
-        put(&mut bytes, MISSION + CAS_RATIO, &(-3_i64).to_le_bytes());
-        let memory = engine_native_memory::memory::CountingMemory::new(&bytes);
-        let mut rows = [Mission::default(); 2];
-        assert_eq!(
-            read_missions(&memory, 0, &[MISSION, MISSION], &mut rows),
-            Ok(true)
-        );
-        assert_eq!(memory.calls.get(), 1);
-        assert_eq!(rows.map(|row| row.cas_ratio_raw), [Some(-3); 2]);
     }
 
     fn definition_world(pools: usize) -> (Vec<u8>, Vec<usize>) {

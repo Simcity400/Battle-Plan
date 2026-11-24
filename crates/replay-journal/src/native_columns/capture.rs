@@ -64,6 +64,27 @@ impl RowCells {
         self.staging
     }
 
+    pub fn release_scratch(&mut self) {
+        const LIMIT: usize = 32 * 1024;
+        self.batch.release_scratch();
+        self.entries.clear();
+        if self.entries.capacity().saturating_mul(size_of::<Entry>()) > LIMIT {
+            self.entries = Vec::new();
+        }
+        self.bytes.clear();
+        if self.bytes.capacity() > LIMIT {
+            self.bytes = Vec::new();
+        }
+        self.u32s.clear();
+        if self.u32s.capacity().saturating_mul(size_of::<u32>()) > LIMIT {
+            self.u32s = Vec::new();
+        }
+        self.u64s.clear();
+        if self.u64s.capacity().saturating_mul(size_of::<u64>()) > LIMIT {
+            self.u64s = Vec::new();
+        }
+    }
+
     fn batch_row<R: RowCodec>(&mut self, row: &R, kept: u64) -> io::Result<()> {
         let batch = &mut self.batch;
         batch.key(row.key())?;
@@ -239,6 +260,23 @@ fn put(batch: &mut Batch, column: usize, field: Field<'_>) -> io::Result<()> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pair {
+    pub row: u32,
+    pub previous: Option<u32>,
+    pub diff: u64,
+}
+
+impl Pair {
+    pub const fn new(row: u32, previous: Option<u32>) -> Self {
+        Self {
+            row,
+            previous,
+            diff: u64::MAX,
+        }
+    }
+}
+
 pub enum TableInput<'a, R> {
     Same { read: bool, sample: Sample },
     Changes {
@@ -257,8 +295,9 @@ pub enum TableInput<'a, R> {
     Paired {
         rows: &'a [R],
         previous: &'a [R],
-        pairs: &'a [(u32, Option<u32>)],
+        pairs: &'a [Pair],
         removed: &'a [u128],
+        uniform_optional_i32: Option<(usize, Option<i32>)>,
         read: bool,
         sample: Sample,
     },
@@ -290,7 +329,16 @@ fn visit<R: RowCodec>(
     coverage: Coverage<'_>,
     rows: &[R],
 ) -> io::Result<Prepared> {
-    stage(writer, dictionary, cells, coverage, rows.len(), rows.iter().map(|row| Ok((row, None))))
+    stage(
+        writer,
+        dictionary,
+        cells,
+        coverage,
+        rows.len(),
+        false,
+        None,
+        rows.iter().map(|row| Ok((row, None, u64::MAX))),
+    )
 }
 
 fn visit_keyed<R: RowCodec>(
@@ -303,44 +351,103 @@ fn visit_keyed<R: RowCodec>(
 ) -> io::Result<Prepared> {
     let changed = keys.iter().map(|&key| {
         rows.binary_search_by_key(&key, R::key)
-            .map(|at| (&rows[at], None))
+            .map(|at| (&rows[at], None, u64::MAX))
             .map_err(|_| invalid_static("A changed key names no row"))
     });
-    stage(writer, dictionary, cells, Coverage::Changes { removed }, keys.len(), changed)
+    stage(
+        writer,
+        dictionary,
+        cells,
+        Coverage::Changes { removed },
+        keys.len(),
+        false,
+        None,
+        changed,
+    )
 }
 
+#[allow(clippy::too_many_arguments, reason = "internal staging helper")]
 fn stage<'r, R: RowCodec + 'r>(
     writer: &mut TableWriter,
     dictionary: Strings<'_>,
     cells: &mut RowCells,
     coverage: Coverage<'_>,
     count: usize,
-    rows: impl Iterator<Item = io::Result<(&'r R, Option<&'r R>)>>,
+    sparse: bool,
+    uniform_optional_i32: Option<(usize, Option<i32>)>,
+    rows: impl Iterator<Item = io::Result<(&'r R, Option<&'r R>, u64)>>,
 ) -> io::Result<Prepared> {
     let heavy = heavy(writer.kinds());
-    let kept = |row: &R, previous: Option<&R>| -> io::Result<u64> {
+    let kept = |row: &R, previous: Option<&R>, precomputed: u64| -> io::Result<u64> {
         match previous {
             Some(previous) if previous.key() != row.key() => {
                 Err(invalid_static("A row's previous row has another key"))
             }
-            Some(previous) if heavy != 0 => Ok(!row.differing_fields(previous) & heavy),
+            Some(previous) if heavy != 0 => {
+                let diff = if precomputed != u64::MAX {
+                    precomputed
+                } else {
+                    row.differing_fields(previous)
+                };
+                Ok(!diff & heavy)
+            }
             _ => Ok(0),
         }
     };
+    if (cells.staging == Staging::Columns && sparse) || uniform_optional_i32.is_some() {
+        let kinds = writer.kinds();
+        let wide = kinds.len() > MAX_FIELDS;
+        cells.batch.begin_sparse(kinds, count)?;
+        if let Some((column, value)) = uniform_optional_i32 {
+            cells.batch.fill_optional_i32(column, value)?;
+        }
+        let uniform_mask = uniform_optional_i32
+            .filter(|&(col, _)| col < MAX_FIELDS)
+            .map_or(0, |(col, _)| 1_u64 << col);
+        for row in rows {
+            let (row, previous, precomputed) = row?;
+            cells.batch.key(row.key())?;
+            match previous {
+                Some(previous) => {
+                    if previous.key() != row.key() {
+                        return Err(invalid_static("A row's previous row has another key"));
+                    }
+                    let mut diff = if precomputed != u64::MAX {
+                        precomputed
+                    } else {
+                        row.differing_fields(previous)
+                    };
+                    diff &= !uniform_mask;
+                    if diff != 0 || wide {
+                        row.visit_wire_masked(diff, &mut |column, field| {
+                            if uniform_optional_i32.is_some_and(|(col, _)| col == column) {
+                                return Ok(());
+                            }
+                            put(&mut cells.batch, column, field)
+                        })?;
+                    }
+                }
+                None => {
+                    row.visit_wire(&mut |column, field| put(&mut cells.batch, column, field))?;
+                }
+            }
+        }
+        return writer.prepare(dictionary, coverage, &cells.batch);
+    }
     match cells.staging {
         Staging::Columns => {
             cells.batch.begin(writer.kinds(), count)?;
             for row in rows {
-                let (row, previous) = row?;
-                cells.batch_row(row, kept(row, previous)?)?;
+                let (row, previous, precomputed) = row?;
+                cells.batch_row(row, kept(row, previous, precomputed)?)?;
             }
             writer.prepare(dictionary, coverage, &cells.batch)
         }
         Staging::Rows => {
             let mut hour = writer.begin(dictionary, coverage)?;
             for row in rows {
-                let (row, previous) = row?;
-                cells.row(&mut hour, row, kept(row, previous)?)?;
+                let (row, previous, precomputed) = row?;
+                cells.row(&mut hour, row, kept(row, previous, precomputed)?)?;
             }
             hour.finish()
         }
@@ -374,7 +481,12 @@ pub fn table_hour<'d, R: RowCodec>(
         && match &input {
             TableInput::Changes { rows, removed, .. } => rows.is_empty() && removed.is_empty(),
             TableInput::Keyed { keys, removed, .. } => keys.is_empty() && removed.is_empty(),
-            TableInput::Paired { pairs, removed, .. } => pairs.is_empty() && removed.is_empty(),
+            TableInput::Paired {
+                pairs,
+                removed,
+                uniform_optional_i32,
+                ..
+            } => pairs.is_empty() && removed.is_empty() && uniform_optional_i32.is_none(),
             _ => false,
         };
     Ok(match input {
@@ -422,14 +534,15 @@ pub fn table_hour<'d, R: RowCodec>(
             previous,
             pairs,
             removed,
+            uniform_optional_i32,
             read,
             sample,
         } => {
-            let changed = pairs.iter().map(|&(at, before)| {
+            let changed = pairs.iter().map(|&pair| {
                 let row = rows
-                    .get(at as usize)
+                    .get(pair.row as usize)
                     .ok_or_else(|| invalid_static("A changed row is past the table"))?;
-                let previous = match before {
+                let previous = match pair.previous {
                     Some(before) => Some(
                         previous
                             .get(before as usize)
@@ -437,7 +550,7 @@ pub fn table_hour<'d, R: RowCodec>(
                     ),
                     None => None,
                 };
-                Ok((row, previous))
+                Ok((row, previous, pair.diff))
             });
             TableHour {
                 prepared: Some(stage(
@@ -446,6 +559,8 @@ pub fn table_hour<'d, R: RowCodec>(
                     cells,
                     Coverage::Changes { removed },
                     pairs.len(),
+                    true,
+                    uniform_optional_i32,
                     changed,
                 )?),
                 evidence: evidence(Status::Complete, read, sample),
@@ -465,7 +580,7 @@ pub fn table_hour<'d, R: RowCodec>(
             let aligned = rows
                 .iter()
                 .zip(previous)
-                .map(|(row, previous)| Ok((row, Some(previous))));
+                .map(|(row, previous)| Ok((row, Some(previous), u64::MAX)));
             TableHour {
                 prepared: Some(stage(
                     writer,
@@ -473,6 +588,8 @@ pub fn table_hour<'d, R: RowCodec>(
                     cells,
                     Coverage::Complete,
                     rows.len(),
+                    true,
+                    None,
                     aligned,
                 )?),
                 evidence: evidence(Status::Complete, read, sample),

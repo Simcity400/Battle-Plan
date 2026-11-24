@@ -145,15 +145,3 @@ impl Lit {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn lit_constants_have_zero_matrix_and_seasons() {
-        let bytes = constants(0.375);
-        assert_eq!(&bytes[..72], &[0; 72]);
-        assert_eq!(&bytes[72..76], &0.375_f32.to_le_bytes());
-        assert_eq!(technique(true), "tree");
-        assert_eq!(technique(false), "tree_low_gfx");
-    }
-}

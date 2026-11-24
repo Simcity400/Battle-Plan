@@ -385,3 +385,4 @@ fn stats_mirror_gathers_preserve_invalid_addresses() {
         assert_logs_and_growth(actual, scalar);
     }
 }
+

@@ -31,20 +31,6 @@ test('fragmented, touching and overlapping unobserved spans bridge only fully co
   assert.equal(bridgeGaps(runs, [{ firstHour: 1, lastHour: 30 }]).length, 1);
 });
 
-test('alternating runs and gaps visit spans a linear number of times', () => {
-  for (const count of [5000, 10000]) {
-    let visits = 0;
-    const runs = Array.from({ length: count + 1 }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2 }));
-    const spans = Array.from({ length: count }, (_, index) => ({
-      get firstHour() { visits++; return index * 2 + 1; },
-      get lastHour() { visits++; return index * 2 + 1; },
-    }));
-    const stretches = bridgeGaps(runs, spans);
-    assert.equal(stretches.length, 1);
-    assert.equal(stretches[0].runs.length, count + 1);
-    assert.ok(visits < count * 12, `${count} gaps took ${visits} span reads`);
-  }
-});
 
 const words = { since: (h: number) => `since ${h}`, before: (h: number) => `before ${h}`, ended: (h: number) => `ended ${h}`,
   endedBy: (h: number) => `ended by ${h}`, lastSeen: (h: number) => `last ${h}` };

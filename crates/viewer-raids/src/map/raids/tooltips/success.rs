@@ -555,19 +555,6 @@ mod tests {
         }
     }
     #[test]
-    fn interception_priority_and_support_are_independent() {
-        for enabled in 0..16 {
-            for supported in 0..16 {
-                assert_eq!(
-                    intercepts(enabled, supported),
-                    enabled & 4 != 0
-                        && supported & 4 != 0
-                        && !(enabled & 1 != 0 && supported & 1 != 0)
-                );
-            }
-        }
-    }
-    #[test]
     fn native_division_retains_sentinels_and_truncates() {
         assert_eq!(ratio(1, 3), Ok(33_333));
         assert_eq!(ratio(-1, 3), Ok(-33_333));

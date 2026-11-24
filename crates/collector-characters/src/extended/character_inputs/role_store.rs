@@ -399,7 +399,7 @@ impl RoleStore {
         } else {
             self.current.clear();
         }
-        self.previous.clear();
+        self.previous = Held::default();
         self.measure();
         collector_observers::character_changes::record(
             collector_observers::character_changes::Table::CharacterRoleTraits,
@@ -471,6 +471,8 @@ impl RoleStore {
             std::mem::swap(scientist_rows, fresh_rows);
             std::mem::swap(scientist_values, fresh_values);
         }
+        *fresh_rows = Vec::new();
+        *fresh_values = Vec::new();
         if counts.carried as usize != self.breaks.len() || !counts.held {
             self.content = fresh_content();
         }

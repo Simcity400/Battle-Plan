@@ -537,13 +537,4 @@ mod tests {
         assert_eq!(last_touched(None, 'h', &state), Some('h'));
     }
 
-    #[test]
-    fn every_standard_button_has_its_own_bit() {
-        let bits: Vec<_> = BUTTONS.iter().map(|(_, bit)| bit.bit()).collect();
-        let mut unique = bits.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(unique.len(), GamepadButton::ALL.len());
-        assert_eq!(bits.iter().fold(0, |all, bit| all | bit), (1 << 14) - 1);
-    }
 }

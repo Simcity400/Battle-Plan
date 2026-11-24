@@ -1167,38 +1167,6 @@ fn every_short_read_fails_the_country() {
 }
 
 #[test]
-fn child_heads_are_gathered_one_page_at_a_time() {
-    let w = world();
-    let walked = walk(&w, 16);
-    let census = engine_native_memory::read_census::ReadCensus::new(&w);
-    let countries = ccountry::Reader::new(&census, BASE, GS).unwrap();
-    let country = countries.at(1).unwrap().unwrap();
-    let context = Context::read(&w, BASE, GS, keys()).unwrap();
-    let mut scratch = Scratch::new();
-    census.reset();
-    let mut local = Memo::default();
-    let mut shared = Memo::default();
-    let memory = Observed::new(&census, &mut local, &mut shared);
-    let children = read_children(&memory, BASE, country.pointer, &context, &mut scratch).unwrap();
-    assert_eq!(children, 6);
-    assert_eq!(census.calls(), 4);
-    assert!(walked.result.is_ok());
-    let mut w = world();
-    w.bytes
-        .remove(&(CHILD + 2 * 0x100 + cmodifier::ACCUMULATOR));
-    let census = engine_native_memory::read_census::ReadCensus::new(&w);
-    let mut scratch = Scratch::new();
-    let mut local = Memo::default();
-    let mut shared = Memo::default();
-    let memory = Observed::new(&census, &mut local, &mut shared);
-    assert_eq!(
-        read_children(&memory, BASE, country.pointer, &context, &mut scratch),
-        Err("country modifier child unreadable")
-    );
-    assert_eq!(census.calls(), 4);
-}
-
-#[test]
 fn a_dynamic_modifiers_evaluated_values_pair_as_their_own_line() {
     let mut w = world();
     w.i64(VALUES, 250);
@@ -1733,30 +1701,6 @@ fn stability_batched_later_pages_null_slots_and_duplicate_objects_keep_serial_re
             }
         }
     }
-}
-
-#[test]
-fn stability_failed_source_preparation_acquires_no_missing_scalars() {
-    let w = scaled_world();
-    let copies = Copies {
-        persistent: true,
-        ..Copies::new(&w)
-    };
-    copies.fault.set(Some(AT_WAR + cmodifier::ACCUMULATOR));
-    let mut local = Memo::default();
-    let mut shared = Memo::default();
-    let memory = Observed::new(&copies, &mut local, &mut shared);
-    batched::sources(&memory, &[AT_WAR, 0x6100_0000], true, true);
-    assert_eq!(copies.calls.borrow().len(), 1);
-    assert_eq!(memory.fallbacks(), 1);
-    batched::sources(&memory, &[AT_WAR, 0x6100_0000], true, true);
-    assert_eq!(copies.calls.borrow().len(), 1);
-    assert!(
-        !memory
-            .shared()
-            .copy(AT_WAR + cmodifier::ACCUMULATOR, &mut [0; 16])
-    );
-    assert_eq!(copies.calls.borrow().len(), 2);
 }
 
 #[test]

@@ -34,7 +34,7 @@ pub struct DecodedCounts {
 #[derive(Debug, Default)]
 pub struct DecodedRegistrations {
     kept: HashMap<u64, Kept>,
-    segments: HashMap<u64, (usize, u64)>,
+    segments: HashMap<u64, (usize, u64, bool)>,
     walking: Option<(u64, usize, u64)>,
     countries: Vec<u32>,
     pass: u64,
@@ -55,8 +55,10 @@ impl DecodedRegistrations {
             return false;
         }
         for segment in segments {
-            self.segments
-                .insert(segment.handle, (segment.pointer, segment.id));
+            self.segments.insert(
+                segment.handle,
+                (segment.pointer, segment.id, segment.carried_raw.is_some()),
+            );
         }
         true
     }
@@ -85,7 +87,7 @@ impl DecodedRegistrations {
             })
             .sum::<usize>();
         (self.kept.capacity() * size_of::<(u64, Kept)>()
-            + self.segments.capacity() * size_of::<(u64, (usize, u64))>()
+            + self.segments.capacity() * size_of::<(u64, (usize, u64, bool))>()
             + self.countries.capacity() * size_of::<u32>()
             + kept) as u64
     }
@@ -93,8 +95,8 @@ impl DecodedRegistrations {
     fn reported(&self, handle: u64, pointer: usize) -> Option<u64> {
         self.segments
             .get(&handle)
-            .filter(|(at, _)| *at == pointer)
-            .map(|&(_, segment)| segment)
+            .filter(|(at, _, _)| *at == pointer)
+            .map(|&(_, segment, _)| segment)
     }
 
     fn keep(&mut self, handle: u64, pointer: usize, segment: u64, output: WalkedBase<'_>) -> bool {
@@ -158,6 +160,18 @@ impl RegistrationReuse for DecodedRegistrations {
             },
             countries: &kept.countries,
         })
+    }
+
+    fn trusted_carried(&self, handle: u64, pointer: usize) -> bool {
+        let Some(&(at, segment, carried)) = self.segments.get(&handle) else {
+            return false;
+        };
+        carried
+            && at == pointer
+            && self
+                .kept
+                .get(&handle)
+                .is_some_and(|kept| kept.pointer == pointer && kept.segment == segment)
     }
 
     fn reused(&mut self, handle: u64, _pointer: usize) {

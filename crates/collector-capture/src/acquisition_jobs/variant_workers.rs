@@ -20,10 +20,37 @@ pub enum Work {
     Projects {
         part: projects::ProjectPart,
         game_state: usize,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     },
     TemplateWalk(collector_division_templates::extended::division_templates::WalkPart),
-    ProjectsRest(Box<projects::Rest>),
+    ProjectsRestPrimary {
+        rest: Box<projects::RestPrimary>,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
+    },
+    ProjectsRestAux {
+        rest: Box<projects::RestAux>,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
+    },
+    ProjectsRestPaths {
+        rest: Box<projects::RestPaths>,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
+    },
     Buildings(Box<super::BuildingsPart>),
+    RaidStateInputs(Box<super::RaidStateInputsPart>),
+    Rails(Box<super::RailsPart>),
+    IntelResidualAux {
+        part: Box<intel::ResidualAux>,
+        countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
+    },
+    NaviesBegin(Box<super::NaviesBeginPart>),
+    SpeedTermsEntries {
+        part: Box<division_presentation::SpeedTermsEntriesWork>,
+        countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
+    },
+    SpeedTermsAux {
+        part: Box<division_presentation::SpeedTermsAuxWork>,
+        countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
+    },
 }
 impl Work {
     pub(super) fn role(&self) -> Role {
@@ -31,8 +58,17 @@ impl Work {
             Self::Technology(_) => Role::Governance,
             Self::Projects { .. } => Role::GatedProjects,
             Self::TemplateWalk(_) => Role::Templates,
-            Self::ProjectsRest(_) => Role::GatedProjects,
+            Self::ProjectsRestPrimary { .. }
+            | Self::ProjectsRestAux { .. }
+            | Self::ProjectsRestPaths { .. } => Role::GatedProjects,
             Self::Buildings(_) => Role::Governance,
+            Self::RaidStateInputs(_) => Role::RaidState,
+            Self::Rails(_) => Role::ScoresRails,
+            Self::IntelResidualAux { .. } => Role::IntelResidual,
+            Self::NaviesBegin(_) => Role::OrdinaryNavies,
+            Self::SpeedTermsEntries { .. } | Self::SpeedTermsAux { .. } => {
+                Role::PresentationSpeedTerms
+            }
             _ => Role::Variants,
         }
     }
@@ -50,14 +86,63 @@ impl Work {
                 part.capture(&mut |parts| workers.setup(parts, memory, base));
             }
             Self::Technology(part) => part.capture(memory, base),
-            Self::Projects { part, game_state } => part.capture(memory, base, *game_state),
+            Self::Projects {
+                part,
+                game_state,
+                countries,
+            } => {
+                if let Some(countries) = countries {
+                    let roster = countries.roster_view(memory);
+                    part.capture(&roster, base, *game_state);
+                } else {
+                    part.capture(memory, base, *game_state);
+                }
+            }
             Self::TemplateWalk(part) => part.capture(
                 memory,
                 base,
                 &collector_division_templates::template_changes::Observer,
             ),
-            Self::ProjectsRest(rest) => rest.capture(memory, base),
+            Self::ProjectsRestPrimary { rest, countries } => {
+                if let Some(countries) = countries {
+                    let roster = countries.roster_view(memory);
+                    rest.capture(&roster, base);
+                } else {
+                    rest.capture(memory, base);
+                }
+            }
+            Self::ProjectsRestAux { rest, countries } => {
+                if let Some(countries) = countries {
+                    let roster = countries.roster_view(memory);
+                    rest.capture(&roster, base);
+                } else {
+                    rest.capture(memory, base);
+                }
+            }
+            Self::ProjectsRestPaths { rest, countries } => {
+                if let Some(countries) = countries {
+                    let roster = countries.roster_view(memory);
+                    rest.capture(&roster, base);
+                } else {
+                    rest.capture(memory, base);
+                }
+            }
             Self::Buildings(part) => part.capture(memory),
+            Self::RaidStateInputs(part) => part.capture(memory, base),
+            Self::Rails(part) => part.capture(memory, base),
+            Self::IntelResidualAux { part, countries } => {
+                let cached = countries.view(memory);
+                part.capture(&cached);
+            }
+            Self::NaviesBegin(part) => part.capture(memory, base),
+            Self::SpeedTermsEntries { part, countries } => {
+                let cached = countries.roster_view(memory);
+                part.capture(&cached, base);
+            }
+            Self::SpeedTermsAux { part, countries } => {
+                let cached = countries.roster_view(memory);
+                part.capture(&cached, base);
+            }
         }
     }
 }
@@ -111,11 +196,12 @@ impl Dispatch {
         base: usize,
         run: &mut dyn FnMut(),
     ) {
-        let executor = self.executor.upgrade().filter(|_| self.workers > 1);
+        let lanes = self.lanes();
+        let executor = self.executor.upgrade().filter(|_| lanes > 1);
         let fanout = self
             .calibration
             .as_ref()
-            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, self.workers));
+            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, lanes));
         let tickets = engine_allocation::advisory(|| engine_allocation::vec(1).ok());
         if let (Some(executor), Some(_fanout), Some(tickets)) = (executor, fanout, tickets) {
             let mut pending = Children {
@@ -155,11 +241,12 @@ impl Dispatch {
         wait: collector_workers::hour_stages::Part,
         run: &mut dyn FnMut(),
     ) -> Option<Work> {
-        let executor = self.executor.upgrade().filter(|_| self.workers > 1);
+        let lanes = self.lanes();
+        let executor = self.executor.upgrade().filter(|_| lanes > 1);
         let fanout = self
             .calibration
             .as_ref()
-            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, self.workers));
+            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, lanes));
         let tickets = engine_allocation::advisory(|| engine_allocation::vec(1).ok());
         if let (Some(executor), Some(_fanout), Some(tickets)) = (executor, fanout, tickets) {
             let mut pending = Children {
@@ -205,8 +292,201 @@ impl Dispatch {
         run();
         Some(work)
     }
+    pub(super) fn beside_pair(
+        &self,
+        mut first: Work,
+        mut second: Work,
+        memory: &impl engine_native_memory::Memory,
+        base: usize,
+        wait: collector_workers::hour_stages::Part,
+        run: &mut dyn FnMut(),
+    ) -> (Option<Work>, Option<Work>) {
+        let lanes = self.lanes();
+        let executor = self.executor.upgrade().filter(|_| lanes > 1);
+        let fanout = self
+            .calibration
+            .as_ref()
+            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, lanes));
+        let tickets = engine_allocation::advisory(|| engine_allocation::vec(2).ok());
+        if let (Some(executor), Some(_fanout), Some(tickets)) = (executor, fanout, tickets) {
+            let mut pending = Children {
+                executor: &executor,
+                calibration: self.calibration.as_deref().unwrap(),
+                tickets,
+            };
+            let mut local_first = None;
+            let mut local_second = None;
+            let submit_one = |work: Work| -> Result<Ticket, Work> {
+                let role = work.role();
+                let mut request = Some(Job::VariantPart(Request { base, part: work }));
+                // SAFETY: this parent drains every submitted child before returning its live lease.
+                let submitted = unsafe {
+                    executor.submit_with_priority(&mut request, self.priority, true, true)
+                };
+                note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());
+                match submitted {
+                    Ok(ticket) => Ok(ticket),
+                    Err(_) => {
+                        let Some(Job::VariantPart(request)) = request else {
+                            unreachable!()
+                        };
+                        Err(request.part)
+                    }
+                }
+            };
+            let t0 = match submit_one(first) {
+                Ok(ticket) => {
+                    let index = pending.tickets.len();
+                    pending.tickets.push(Some(ticket));
+                    Some(index)
+                }
+                Err(work) => {
+                    local_first = Some(work);
+                    None
+                }
+            };
+            let t1 = match submit_one(second) {
+                Ok(ticket) => {
+                    let index = pending.tickets.len();
+                    pending.tickets.push(Some(ticket));
+                    Some(index)
+                }
+                Err(work) => {
+                    local_second = Some(work);
+                    None
+                }
+            };
+            if let Some(mut work) = local_first {
+                work.capture(memory, base);
+                local_first = Some(work);
+            }
+            if let Some(mut work) = local_second {
+                work.capture(memory, base);
+                local_second = Some(work);
+            }
+            run();
+            let waited = collector_primitives::clock::qpc();
+            for ticket in pending.tickets.iter().flatten() {
+                executor.run_unclaimed_child(*ticket);
+            }
+            let mut collect = |slot: Option<usize>, fallback: Option<Work>| -> Option<Work> {
+                let Some(index) = slot else {
+                    return fallback;
+                };
+                let mut completed = None;
+                executor.finish_worker_into(pending.tickets[index].take().unwrap(), &mut completed);
+                let completed = completed?;
+                account_completion(pending.calibration, &completed);
+                match (completed.report, completed.request) {
+                    (Ok(Report::VariantPart), Job::VariantPart(request)) => Some(request.part),
+                    _ => None,
+                }
+            };
+            let out_first = collect(t0, local_first);
+            let out_second = collect(t1, local_second);
+            collector_workers::hour_stages::record_part(
+                wait,
+                waited,
+                collector_primitives::clock::qpc(),
+            );
+            return (out_first, out_second);
+        }
+        first.capture(memory, base);
+        second.capture(memory, base);
+        run();
+        (Some(first), Some(second))
+    }
+    pub(super) fn beside_triple(
+        &self,
+        mut first: Work,
+        mut second: Work,
+        mut third: Work,
+        memory: &impl engine_native_memory::Memory,
+        base: usize,
+        wait: collector_workers::hour_stages::Part,
+        run: &mut dyn FnMut(),
+    ) -> (Option<Work>, Option<Work>, Option<Work>) {
+        let lanes = self.lanes();
+        let executor = self.executor.upgrade().filter(|_| lanes > 1);
+        let fanout = self
+            .calibration
+            .as_ref()
+            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, lanes));
+        let tickets = engine_allocation::advisory(|| engine_allocation::vec(3).ok());
+        if let (Some(executor), Some(_fanout), Some(tickets)) = (executor, fanout, tickets) {
+            let mut pending = Children {
+                executor: &executor,
+                calibration: self.calibration.as_deref().unwrap(),
+                tickets,
+            };
+            let mut submit = |work: Work| -> (Option<usize>, Option<Work>) {
+                let role = work.role();
+                let mut request = Some(Job::VariantPart(Request { base, part: work }));
+                // SAFETY: this parent drains every submitted child before returning its live lease.
+                let submitted = unsafe {
+                    executor.submit_with_priority(&mut request, self.priority, true, true)
+                };
+                note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());
+                match submitted {
+                    Ok(ticket) => {
+                        let index = pending.tickets.len();
+                        pending.tickets.push(Some(ticket));
+                        (Some(index), None)
+                    }
+                    Err(_) => {
+                        let Some(Job::VariantPart(request)) = request else {
+                            unreachable!()
+                        };
+                        (None, Some(request.part))
+                    }
+                }
+            };
+            let (t0, mut local0) = submit(first);
+            let (t1, mut local1) = submit(second);
+            let (t2, mut local2) = submit(third);
+            for local in [&mut local0, &mut local1, &mut local2] {
+                if let Some(work) = local.as_mut() {
+                    work.capture(memory, base);
+                }
+            }
+            run();
+            let waited = collector_primitives::clock::qpc();
+            for ticket in pending.tickets.iter().flatten() {
+                executor.run_unclaimed_child(*ticket);
+            }
+            let mut collect = |slot: Option<usize>, fallback: Option<Work>| -> Option<Work> {
+                let Some(index) = slot else {
+                    return fallback;
+                };
+                let mut completed = None;
+                executor.finish_worker_into(pending.tickets[index].take().unwrap(), &mut completed);
+                let completed = completed?;
+                account_completion(pending.calibration, &completed);
+                match (completed.report, completed.request) {
+                    (Ok(Report::VariantPart), Job::VariantPart(request)) => Some(request.part),
+                    _ => None,
+                }
+            };
+            let out0 = collect(t0, local0);
+            let out1 = collect(t1, local1);
+            let out2 = collect(t2, local2);
+            collector_workers::hour_stages::record_part(
+                wait,
+                waited,
+                collector_primitives::clock::qpc(),
+            );
+            return (out0, out1, out2);
+        }
+        first.capture(memory, base);
+        second.capture(memory, base);
+        third.capture(memory, base);
+        run();
+        (Some(first), Some(second), Some(third))
+    }
     pub fn lanes(&self) -> usize {
-        self.workers.max(1)
+        self.workers
+            .min(crate::capture_point::beside_readers())
+            .max(1)
     }
     #[cfg(test)]
     pub fn priority(&self) -> u8 {
@@ -273,12 +553,13 @@ impl Dispatch {
         memory: &impl engine_native_memory::Memory,
         base: usize,
         game_state: usize,
+        countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     ) -> Result<Vec<projects::ProjectPart>, &'static str> {
-        let parts = engine_allocation::collect_vec(
-            parts
-                .into_iter()
-                .map(|part| Work::Projects { part, game_state }),
-        )
+        let parts = engine_allocation::collect_vec(parts.into_iter().map(|part| Work::Projects {
+            part,
+            game_state,
+            countries: countries.clone(),
+        }))
         .map_err(|_| "project worker allocation failed")?;
         let parts = self.acquire_work(parts, memory, base)?;
         engine_allocation::collect_vec(parts.into_iter().map(|part| {
@@ -352,7 +633,8 @@ impl Dispatch {
         memory: &impl engine_native_memory::Memory,
         base: usize,
     ) -> Result<Vec<Work>, &'static str> {
-        let Some(executor) = self.executor.upgrade().filter(|_| self.workers > 1) else {
+        let lanes = self.lanes();
+        let Some(executor) = self.executor.upgrade().filter(|_| lanes > 1) else {
             let mut parts = parts;
             for part in &mut parts {
                 part.capture(memory, base);
@@ -360,7 +642,7 @@ impl Dispatch {
             return Ok(parts);
         };
         let calibration = self.calibration.as_deref().unwrap();
-        let Some(_fanout) = Fanout::enter(&calibration.cold_parents, self.workers) else {
+        let Some(_fanout) = Fanout::enter(&calibration.cold_parents, lanes) else {
             let mut parts = parts;
             for part in &mut parts {
                 part.capture(memory, base);

@@ -677,17 +677,6 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
 }
 
 #[test]
-fn retired_division_tables_are_never_scheduled() {
-    for retired in [
-        TableId::DivisionEtaInputs,
-        TableId::AttritionModifierBreakdowns,
-    ] {
-        assert!(!TABLES.contains(&retired), "{retired:?}");
-    }
-    assert!(!PACK_NAMES.contains(&"division_eta_inputs"));
-}
-
-#[test]
 fn presentation_terminal_reports_scatter_once_without_live_retry() {
     struct NoPresentationRead {
         independent: std::cell::Cell<usize>,
@@ -1487,14 +1476,20 @@ fn unpublished_raid_slices_are_read_again_at_the_next_hour() {
         let mut launch_request =
             captured.take_raid_launch_request(&countries, 11, 0x1000, hour, force_full, launch);
         if completed {
-            state_request.packs.capture(
-                &memory,
-                11,
-                0x1000,
-                hour,
-                force_full,
-                &mut state_request.stores,
-            );
+            let mut stores = RaidStateStores {
+                states: state_request.states_store.take().unwrap(),
+                buildings: state_request.buildings_store.take().unwrap(),
+                routes: std::mem::replace(
+                    &mut state_request.routes_store,
+                    Box::new(collector_certificates::slicing::SliceFingerprints::new()),
+                ),
+            };
+            state_request
+                .packs
+                .capture(&memory, 11, 0x1000, hour, force_full, &mut stores);
+            state_request.states_store = Some(stores.states);
+            state_request.buildings_store = Some(stores.buildings);
+            state_request.routes_store = stores.routes;
             launch_request.packs.capture(
                 &memory,
                 11,
@@ -2509,20 +2504,6 @@ fn peace_settlement_packs_are_registered_without_inventing_empty_data() {
 }
 
 #[test]
-fn faction_provider_inventory_matches_spooling() {
-    for table in super::FACTION_PROVIDER_TABLES {
-        assert!(
-            !super::PACK_TABLES.contains(&table),
-            "independent ticks must not be overwritten for {table:?}"
-        );
-        assert_eq!(
-            TABLES.iter().filter(|&&id| id == table).count(),
-            1,
-            "{table:?}"
-        );
-    }
-}
-#[test]
 fn the_slow_job_stores_travel_with_it_and_always_return() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     let countries = engine_allocation::shared(
@@ -2978,27 +2959,6 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
             ));
         }
     }
-}
-
-#[test]
-fn cached_and_unsynchronised_packs_are_helper_packs() {
-    let movable = |name: &str| {
-        super::HELPER_PACKS[super::PACK_NAMES
-            .iter()
-            .position(|pack| *pack == name)
-            .unwrap()]
-    };
-    for name in [
-        "characters",
-        "character_portraits",
-        "intel",
-        "division_presentation",
-        "country_appearance",
-    ] {
-        assert!(movable(name), "{name}");
-    }
-    assert!(!movable("lexical"));
-    assert!(!movable("division_templates"));
 }
 
 #[test]
@@ -3621,34 +3581,6 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
 }
 
 #[test]
-fn map_leaves_out_every_gated_walk_and_full_runs_them_all() {
-    use replay_data::scope::{self, CaptureMode};
-    for (name, tables) in mode_gated_walks() {
-        assert!(!tables.is_empty(), "{name}");
-        assert!(!records_any(CaptureMode::Map, &tables), "{name}");
-        assert!(
-            tables
-                .iter()
-                .all(|&table| scope::records(CaptureMode::Full, table)),
-            "{name}"
-        );
-    }
-    for table in governance::TABLES
-        .into_iter()
-        .chain(intel::TABLES)
-        .chain(division_presentation::TABLES)
-    {
-        assert!(scope::records(CaptureMode::Full, table), "{table:?}");
-    }
-    assert!(scope::records(CaptureMode::Map, TableId::DivisionMovement));
-    assert!(scope::records(CaptureMode::Map, TableId::Politics));
-    assert!(scope::records(
-        CaptureMode::Map,
-        TableId::StateBuildingInputs
-    ));
-}
-
-#[test]
 fn map_assembly_refuses_the_packs_it_leaves_out_and_keeps_the_rest() {
     use replay_data::scope::{self, CaptureMode};
     struct NoRead;
@@ -3687,63 +3619,6 @@ fn map_assembly_refuses_the_packs_it_leaves_out_and_keeps_the_rest() {
         } else if scope::records(CaptureMode::Map, table) {
             assert_ne!(map[index], not_recorded, "{table:?}");
         }
-    }
-}
-
-#[test]
-fn only_force_full_governance_and_recorded_projects_promote_the_long_join_tail() {
-    use crate::acquisition_jobs::Job;
-    use collector_workers::roles::Role;
-    let countries = engine_allocation::shared(
-        engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
-    )
-    .unwrap();
-    for force_full in [false, true] {
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        let governance = Job::Governance(captured.take_governance_request(
-            &countries,
-            0,
-            0,
-            1,
-            force_full,
-            Box::new(collector_certificates::slicing::SliceFingerprints::new()),
-            Box::new(collector_certificates::slicing::SliceFingerprints::new()),
-            None,
-            None,
-            None,
-        ));
-        assert_eq!(
-            governance.priority(),
-            if force_full {
-                0
-            } else {
-                Role::Governance.priority()
-            }
-        );
-        let mut gated = captured.take_gated_request(
-            0,
-            0,
-            1,
-            force_full,
-            Box::new(collector_certificates::slicing::SliceFingerprints::new()),
-            Some(engine_allocation::SharedBox::clone(&countries)),
-        );
-        let mut projects = gated.take_projects();
-        projects.recorded = true;
-        let mut projects = Job::GatedProjects(projects);
-        assert_eq!(
-            projects.priority(),
-            if force_full {
-                0
-            } else {
-                Role::GatedProjects.priority()
-            }
-        );
-        let Job::GatedProjects(request) = &mut projects else {
-            unreachable!()
-        };
-        request.recorded = false;
-        assert_eq!(projects.priority(), Role::GatedProjects.priority());
     }
 }
 

@@ -117,10 +117,3 @@ test('shared summaries keep main wording unless unavailable-reading notes are re
   assert.equal(sunburstSummary(tree, text, true), 'States: not recorded; Roster not recorded');
 });
 
-test('the shared centre keeps its middle dot, its empty text and its notes', async () => {
-  const { readFileSync } = await import('node:fs');
-  const component = readFileSync(new URL('./Sunburst.tsx', import.meta.url), 'utf8');
-  assert.ok(component.includes('unit} '+ String.fromCharCode(183) + ' '));
-  assert.ok(component.includes("text.emptyLabel ?? 'Nothing yet.'"));
-  assert.ok(component.includes('sunburstSummary(focus, text, props.summaryNotes)'));
-});

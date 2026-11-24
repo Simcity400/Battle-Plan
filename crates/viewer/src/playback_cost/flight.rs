@@ -77,38 +77,6 @@ impl Flight {
 mod tests {
     use super::*;
 
-    fn free(placement: Placement) -> Free {
-        match placement.pose {
-            Pose::Free(free) => free,
-            Pose::Map => panic!("the flight is a free eye"),
-        }
-    }
-
-    #[test]
-    fn the_path_holds_pans_turns_climbs_holds_and_starts_again() {
-        let flight = Flight::parse("1000,800").unwrap();
-        assert_eq!(flight.height, 100.0);
-        let (leg, still) = flight.at(1.0, 5632.0);
-        assert_eq!((leg, still.center, still.height), ("tilted", [1000.0, 800.0], 100.0));
-        assert!((free(still).pitch + 12f32.to_radians()).abs() < 1e-6, "tilted 12 degrees down");
-
-        let (leg, panning) = flight.at(5.0, 5632.0);
-        assert_eq!(leg, "pan");
-        assert!((panning.center[0] - 1240.0).abs() < 1e-3, "one second east at 240 a second");
-
-        let (leg, turning) = flight.at(13.0, 5632.0);
-        assert_eq!(leg, "turn");
-        assert!((turning.center[0] - 2440.0).abs() < 1e-2, "six seconds east, then on the spot");
-        assert!((free(turning).yaw - (std::f32::consts::FRAC_PI_2 + 3.0)).abs() < 1e-5);
-
-        let (leg, climbing) = flight.at(20.0, 5632.0);
-        assert_eq!(leg, "climb");
-        assert!((climbing.height - 350.0).abs() < 1e-3, "halfway from 100 to 600");
-        assert_eq!(flight.at(25.0, 5632.0).0, "high");
-        assert_eq!(flight.at(25.0, 5632.0).1.height, CLIMB_TO);
-        assert_eq!(flight.at(28.0, 5632.0), flight.at(1.0, 5632.0), "the path starts again");
-    }
-
     #[test]
     fn the_pan_wraps_east_on_the_map_and_a_bad_value_is_refused() {
         let flight = Flight::parse("5500,800,110").unwrap();

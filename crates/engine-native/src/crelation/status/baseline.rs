@@ -170,12 +170,6 @@ impl Baseline {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(super) fn shorten_updates(&mut self, len: usize) {
-        self.updates.truncate(len);
-        self.updates.shrink_to_fit();
-    }
-
     pub fn allocated_bytes(&self) -> usize {
         self.owners.capacity() * size_of::<Identity>()
             + self
@@ -647,23 +641,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod demand_tests {
-    use super::*;
-    #[test]
-    fn empty_baseline_stays_empty_and_grows_to_original_demand() {
-        let mut baseline = Baseline::default();
-        baseline.grow().unwrap();
-        assert!(baseline.owners.is_empty());
-        assert!(baseline.scratch.is_empty());
-        baseline.required = [5_001, 5_001, 5_001];
-        baseline.grow().unwrap();
-        assert_eq!(baseline.owners.len(), 5_001);
-        assert_eq!(baseline.scratch.len(), 5_001);
-        assert_eq!(baseline.take.len(), 5_001);
-        baseline.demand[5_000] = [5_001, 5_001];
-        baseline.grow().unwrap();
-        assert_eq!(baseline.pending[5_000].capacity(), 5_001);
-        assert_eq!(baseline.rows[5_000].capacity(), 5_001);
-    }
-}

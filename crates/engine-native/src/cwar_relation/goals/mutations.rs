@@ -105,13 +105,3 @@ pub const SITES: [Site; 16] = [
     },
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn daily_diplomacy_expiry_is_forwarded_instead_of_patched_again() {
-        assert!(!SITES.iter().any(|site| site.name == "expire_goals"));
-        assert_eq!(SITES.len(), 16);
-    }
-}

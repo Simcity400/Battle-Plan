@@ -50,6 +50,8 @@ pub struct Captured {
     hour: Option<i32>,
     reason: Option<&'static str>,
     navy_reason: Option<&'static str>,
+    daily_released: bool,
+    last_capacity: Capacities,
 }
 impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -93,6 +95,8 @@ impl Captured {
             hour: None,
             reason: None,
             navy_reason: None,
+            daily_released: false,
+            last_capacity: *capacity,
         }
     }
     pub fn reset(&mut self) {
@@ -129,10 +133,44 @@ impl Captured {
             + self.group_names.capacity() * size_of::<native::Name>()
             + self.group_countries.capacity() * size_of::<Option<u32>>()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities) {
-        for (available, required) in capacity.rows.iter_mut().zip(self.required) {
-            grow_capacity(available, required);
+    pub fn release_daily(&mut self) {
+        let current = [
+            self.countries.len(),
+            self.divisions.len(),
+            self.fleets.len(),
+            self.tasks.len(),
+            self.sites.len(),
+            self.wings.len(),
+            self.weather.len(),
+            self.contexts.len(),
+            self.names.len(),
+            self.groups.len(),
+            self.members.len(),
+            self.children.len(),
+        ];
+        for (saved, len) in self.last_capacity.rows.iter_mut().zip(current) {
+            *saved = (*saved).max(len);
         }
+        self.countries = Vec::new();
+        self.divisions = Vec::new();
+        self.fleets = Vec::new();
+        self.tasks = Vec::new();
+        self.sites = Vec::new();
+        self.wings = Vec::new();
+        self.weather = Vec::new();
+        self.contexts = Vec::new();
+        self.context_slots = Vec::new();
+        self.names = Vec::new();
+        self.roots = Vec::new();
+        self.groups = Vec::new();
+        self.members = Vec::new();
+        self.children = Vec::new();
+        self.scratch = Vec::new();
+        self.group_names = Vec::new();
+        self.group_countries = Vec::new();
+        self.daily_released = true;
+    }
+    fn allocate_rows(&mut self, rows: [usize; N]) {
         let [
             countries,
             divisions,
@@ -146,7 +184,7 @@ impl Captured {
             groups,
             members,
             children,
-        ] = capacity.rows;
+        ] = rows;
         grow_vec(&mut self.countries, countries);
         grow_vec(&mut self.divisions, divisions);
         grow_vec(&mut self.fleets, fleets);
@@ -172,6 +210,22 @@ impl Captured {
         grow_vec(&mut self.group_names, groups);
         grow_vec(&mut self.group_countries, groups);
     }
+    pub fn rehydrate_daily(&mut self) {
+        if self.daily_released {
+            self.daily_released = false;
+            self.allocate_rows(self.last_capacity.rows);
+        }
+    }
+    pub fn grow(&mut self, capacity: &mut Capacities) {
+        for (available, required) in capacity.rows.iter_mut().zip(self.required) {
+            grow_capacity(available, required);
+        }
+        self.last_capacity = *capacity;
+        if self.daily_released {
+            return;
+        }
+        self.allocate_rows(capacity.rows);
+    }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize, hour: i32) {
         self.capture_buffers(memory, base, state, hour);
     }
@@ -183,6 +237,7 @@ impl Captured {
         hour: i32,
     ) {
         self.reset();
+        self.rehydrate_daily();
         self.hour = Some(hour);
         self.context_slots.fill(0);
         let mut out = native::Buffers {

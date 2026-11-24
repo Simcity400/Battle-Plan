@@ -787,93 +787,6 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     }
 }
 
-#[test]
-#[ignore = "synthetic template fallback capture and encoded delta costs"]
-fn border_effect_template_key_scale_bench() {
-    use replay_data::rows::RowCodec;
-    use std::time::Instant;
-
-    for templates in [193, 1_500, 5_000] {
-        let list = 0xa000;
-        let objects = (list + templates * 8 + 15) & !15;
-        let mut memory = fixture();
-        let template = memory.bytes[0x5000..0x5240].to_vec();
-        memory.bytes.resize(objects + templates * 0x240, 0);
-        memory.bytes[0x3000 + ccountry::DIVISION_TEMPLATES..][..8]
-            .copy_from_slice(&(list as u64).to_le_bytes());
-        for offset in [8, 12] {
-            memory.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + offset..][..4]
-                .copy_from_slice(&(templates as u32).to_le_bytes());
-        }
-        for index in 0..templates {
-            let object = objects + index * 0x240;
-            memory.bytes[object..object + 0x240].copy_from_slice(&template);
-            memory.bytes[list + index * 8..][..8].copy_from_slice(&(object as u64).to_le_bytes());
-            memory.bytes[object + 8..][..8].copy_from_slice(
-                &(((index as u64 + 1) << 32) | u64::from(native::REFERENCE_TYPE)).to_le_bytes(),
-            );
-        }
-        let mut capacities = capacity();
-        capacities.rows = templates;
-        capacities.icon_rows = templates;
-        capacities.bytes = templates * 16;
-        capacities.icon_bytes = templates * 32;
-        capacities.counts = templates;
-        let mut captured = Captured::with_capacities(&capacities);
-        let rows = |captured: &Captured| {
-            let TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(rows)) =
-                captured.tables().into_iter().next().unwrap()
-            else {
-                panic!("complete template dictionary");
-            };
-            rows
-        };
-        for (shape, changed) in [("quiet", 0), ("typical", 1), ("all_changed", templates)] {
-            // SAFETY: Unit test runs against an isolated fixture.
-            unsafe { captured.capture(&memory, 0, 0x1000, 3, true) };
-            let mut previous = rows(&captured);
-            let mut times = Vec::new();
-            let mut delta_sizes = Vec::new();
-            for pass in 0..5 {
-                for index in 0..changed {
-                    memory.bytes[objects + index * 0x240 + native::NAME_KEY + 7] = b'0' + pass;
-                }
-                let started = Instant::now();
-                // SAFETY: Unit test runs against an isolated fixture.
-                unsafe { captured.capture(&memory, 0, 0x1000, 3, true) };
-                times.push(started.elapsed());
-                let current = rows(&captured);
-                let mut bytes = Vec::new();
-                let mut key = 0;
-                for (row, old) in current.iter().zip(&previous) {
-                    if row.encode_change(Some(old), key, &mut bytes).unwrap() {
-                        assert_eq!(row.delta(Some(old)).unwrap().unwrap().mask, 1 << 3);
-                        key = row.key();
-                    }
-                }
-                previous = current;
-                delta_sizes.push(bytes.len());
-            }
-            times.sort_unstable();
-            assert!(delta_sizes.iter().all(|size| *size == delta_sizes[0]));
-            let counted = CountedMemory::new(memory);
-            let accounting = collector_memory::read_accounting::Capture::new();
-            // SAFETY: Unit test runs against an isolated fixture.
-            unsafe { captured.capture(&counted, 0, 0x1000, 3, true) };
-            let requests = accounting.finish()[TABLES[0].index()];
-            println!(
-                "TEMPLATE_KEY_BENCH templates={templates} shape={shape} whole_capture_p50_us={} dictionary_requests={requests:?} added_header_bytes={} prior_requested_bytes={} baseline_delta_bytes=0 delta_bytes={} initial_field_bytes={}",
-                times[times.len() / 2].as_micros(),
-                templates * 32,
-                requests.bytes.saturating_sub((templates * 32) as u64),
-                delta_sizes[0],
-                templates * 12
-            );
-            memory = counted.0;
-        }
-    }
-}
-
 pub fn displayed(inputs: [TableInput; N]) -> DivisionTemplateIconRow {
     let [
         _,
@@ -1760,86 +1673,6 @@ fn missing_local_certificate_withdraws_a_held_core_without_withholding_fresh_mod
 }
 
 #[test]
-#[ignore = "synthetic quiet template core acquisition timing"]
-fn certified_template_core_scale_bench() {
-    use std::time::Instant;
-    const TEMPLATES: usize = 1500;
-    let changes = CoreChanges {
-        templates: crate::template_changes::Watches::enabled(TEMPLATES + 16),
-        locals: collector_model_inputs::local_subunit_changes::Watches::enabled(16),
-    };
-    let mut source = fixture();
-    for (grid, data, count) in [
-        (native::REGIMENT_DATA, 0x6100, 25_u32),
-        (native::SUPPORT_DATA, 0x6200, 5),
-        (native::REGIMENTAL_SUPPORT_DATA, 0x6300, 5),
-    ] {
-        source.bytes[0x5000 + grid..][..8].copy_from_slice(&(data as u64).to_le_bytes());
-        source.bytes[0x5000 + grid + 8..][..8]
-            .copy_from_slice(&((u64::from(count) << 32) | u64::from(count)).to_le_bytes());
-        for index in 0..count as usize {
-            source.bytes[data + index * 8..][..8].copy_from_slice(&0x7000_u64.to_le_bytes());
-        }
-    }
-    let template = source.bytes[0x5000..0x5400].to_vec();
-    let list = 0xa000;
-    let objects = (list + TEMPLATES * 8).next_multiple_of(0x1000);
-    source.bytes.resize(objects + TEMPLATES * 0x400, 0);
-    source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES..][..8]
-        .copy_from_slice(&(list as u64).to_le_bytes());
-    for offset in [8, 12] {
-        source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + offset..][..4]
-            .copy_from_slice(&(TEMPLATES as u32).to_le_bytes());
-    }
-    for index in 0..TEMPLATES {
-        let pointer = objects + index * 0x400;
-        source.bytes[pointer..pointer + 0x400].copy_from_slice(&template);
-        source.bytes[pointer + 8..pointer + 16]
-            .copy_from_slice(&(((index as u64 + 1) << 32) | 52).to_le_bytes());
-        source.bytes[list + index * 8..][..8].copy_from_slice(&(pointer as u64).to_le_bytes());
-    }
-    let capacities = Capacities {
-        rows: TEMPLATES,
-        icon_rows: TEMPLATES,
-        counts: TEMPLATES * 16,
-        bytes: TEMPLATES * 32,
-        icon_bytes: TEMPLATES * 32,
-        name_bytes: TEMPLATES * 32,
-        ..capacity()
-    };
-    let mut expected = None;
-    for (name, observer) in [
-        (
-            "fresh_core",
-            &changes.templates as &dyn crate::template_changes::Changes,
-        ),
-        ("held_core", &changes),
-    ] {
-        let mut capture = Captured::with_capacities(&capacities);
-        // SAFETY: Unit test runs against an isolated fixture.
-        unsafe { capture.capture_original(&source, 0, 0x1000, 0, false, observer) };
-        let mut elapsed = Vec::new();
-        for hour in 1..31 {
-            let start = Instant::now();
-            // SAFETY: Unit test runs against an isolated fixture.
-            unsafe { capture.capture_original(&source, 0, 0x1000, hour, false, observer) };
-            elapsed.push(start.elapsed());
-        }
-        elapsed.sort_unstable();
-        let tables = capture.tables();
-        if let Some(expected) = &expected {
-            assert_eq!(&tables, expected);
-        } else {
-            expected = Some(tables);
-        }
-        println!(
-            "TEMPLATE_CORE_BENCH templates={TEMPLATES} mode={name} p50_us={}",
-            elapsed[elapsed.len() / 2].as_micros()
-        );
-    }
-}
-
-#[test]
 fn pooled_frames_carry_and_witness_the_previous_hours_templates_from_their_shared_home() {
     const A: usize = 0x5000;
     let changes = CoreChanges::new();
@@ -1876,4 +1709,43 @@ fn pooled_frames_carry_and_witness_the_previous_hours_templates_from_their_share
     assert!(recording.template(A) > 0);
     assert_ne!(frames[0].witness, witnesses[3]);
     assert_eq!(frames[0].tables(), tables[3]);
+}
+
+#[test]
+fn clean_whole_table_fast_path_matches_full_walk_and_invalidates_on_change() {
+    const A: usize = 0x5000;
+    let changes = CoreChanges::new();
+    let mut source = gridded_fixture();
+    let mut fast = Captured::with_capacities(&capacity());
+    let mut reference = Captured::with_capacities(&capacity());
+    for hour in 0..3 {
+        let recording = Recording::new(&source);
+        // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+        unsafe {
+            fast.capture_original(&recording, 0, 0x1000, hour, hour == 0, &changes);
+            reference.capture_original(&source, 0, 0x1000, hour, true, &changes);
+        }
+        assert_eq!(fast.tables(), reference.tables(), "hour {hour}");
+        assert_eq!(fast.country_state(), reference.country_state(), "hour {hour}");
+        assert_eq!(fast.outcomes(), reference.outcomes(), "hour {hour}");
+        assert_eq!(fast.model_failures(), reference.model_failures(), "hour {hour}");
+        if hour == 2 {
+            assert!(fast.fast_clean.is_some());
+            assert_eq!(recording.template(A), 0);
+            assert_eq!(recording.shared(), 0);
+        }
+    }
+    source.bytes[A + native::FORMATION_DIVISION_COUNT..][..4]
+        .copy_from_slice(&9_i32.to_le_bytes());
+    drop(changes.templates.notify(A, site("rebuild_template_caches")));
+    let recording = Recording::new(&source);
+    // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+    unsafe {
+        fast.capture_original(&recording, 0, 0x1000, 3, false, &changes);
+        reference.capture_original(&source, 0, 0x1000, 3, true, &changes);
+    }
+    assert!(fast.fast_clean.is_none());
+    assert!(recording.template(A) > 0);
+    assert_eq!(fast.tables(), reference.tables());
+    assert_eq!(fast.country_state(), reference.country_state());
 }

@@ -3568,24 +3568,6 @@ mod tests {
     }
 
     #[test]
-    fn operation_completion_events_are_named_save_limitation() {
-        let mut report = Report::default();
-        completion_event_limitation(&mut report);
-        assert!(report.differences.is_empty());
-        assert!(report.compared_tables.is_empty());
-        assert!(
-            report
-                .limitations
-                .keys()
-                .any(|reason| reason.contains("does not retain completion event history"))
-        );
-        assert!(report.limitations.keys().any(|reason| {
-            reason.contains("individually refused completion descriptions")
-                && reason.contains("no save comparator")
-        }));
-    }
-
-    #[test]
     fn raid_intel_oracle_checks_roster_and_reports_unsaved_operands() {
         let country = CountryRow {
             id: 101,

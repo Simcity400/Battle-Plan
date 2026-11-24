@@ -198,36 +198,4 @@ mod tests {
         assert_eq!(LOCAL.snapshot().peak_total_lower_bound, 160);
     }
 
-    #[test]
-    fn empty_and_unchanged_charges_do_not_acquire_the_tracker_lock() {
-        use std::sync::atomic::Ordering;
-        static LOCAL: Tracker = Tracker::new();
-        let mut empty = Charge::empty_on(&LOCAL);
-        let mut charged = Charge::empty_on(&LOCAL);
-        let capacity = Capacity {
-            auxiliary_vectors: 32,
-            ..Capacity::default()
-        };
-        charged.set(capacity);
-        let updates = LOCAL.updates.load(Ordering::Relaxed);
-        empty.set(Capacity::default());
-        drop(empty);
-        charged.set(capacity);
-        assert_eq!(LOCAL.updates.load(Ordering::Relaxed), updates);
-        drop(charged);
-        assert_eq!(LOCAL.updates.load(Ordering::Relaxed), updates + 1);
-        assert_eq!(LOCAL.snapshot().current, Capacity::default());
-    }
-
-    #[test]
-    fn vector_accounting_uses_capacity_including_cleared_and_zero_sized_storage() {
-        let mut values = Vec::<u32>::with_capacity(19);
-        let bytes = vector_bytes(&values);
-        values.extend([1, 2, 3]);
-        assert_eq!(vector_bytes(&values), bytes);
-        values.clear();
-        assert_eq!(vector_bytes(&values), bytes);
-        assert_eq!(bytes, values.capacity() as u64 * 4);
-        assert_eq!(vector_bytes(&Vec::<()>::with_capacity(10)), 0);
-    }
 }

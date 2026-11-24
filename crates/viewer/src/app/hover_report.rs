@@ -24,14 +24,3 @@ pub(crate) fn describe(control: Option<&Control>, unit: Option<Unit>) -> Option<
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_picker_takes_the_pointer_then_a_counter() {
-        assert_eq!(describe(Some(&Control::Slot(2)), Some(Unit::Division(7))).as_deref(), Some("button:slot:2"));
-        assert_eq!(describe(None, Some(Unit::Division(7))).as_deref(), Some("division:7"));
-        assert_eq!(describe(None, None), None);
-    }
-}

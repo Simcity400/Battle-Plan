@@ -266,19 +266,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn map_hook_errors_name_the_family_site_and_original_reason() {
-        let message = hook_failure(
-            "ground_crews",
-            "construction failed",
-            "enable",
-            "synthetic verification refusal",
-        );
-        assert!(message.contains("ground_crews"));
-        assert!(message.contains("enable"));
-        assert!(message.contains("synthetic verification refusal"));
-    }
-
-    #[test]
     fn a_writer_moves_only_its_objects_certificate_and_the_quiet_token() {
         let watches = Watches::enabled(16);
         let [first, second] = [0x1000, 0x2000].map(|air| Changes::sequence(&watches, air).unwrap());

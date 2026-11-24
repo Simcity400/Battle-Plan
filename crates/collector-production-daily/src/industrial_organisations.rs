@@ -68,6 +68,8 @@ pub struct Captured {
     holds_complete: bool,
     nested_bytes: usize,
     bytes: Arena<u8>,
+    daily_released: bool,
+    last_capacity: Capacities,
 }
 
 impl Captured {
@@ -103,6 +105,8 @@ impl Captured {
             holds_complete: false,
             nested_bytes: 0,
             bytes: Arena::new(capacity.bytes),
+            daily_released: false,
+            last_capacity: *capacity,
         }
     }
     pub fn reset(&mut self) {
@@ -123,11 +127,39 @@ impl Captured {
             + self.details.allocated_bytes()
             + self.nested_bytes
     }
+    pub fn release_daily(&mut self) {
+        self.last_capacity.organisations = self
+            .last_capacity
+            .organisations
+            .max(self.organisations.rows.len())
+            .max(self.details.rows.len());
+        self.last_capacity.history = self.last_capacity.history.max(self.history.rows.len());
+        self.last_capacity.bytes = self.last_capacity.bytes.max(self.bytes.first.len());
+        self.organisations.release();
+        self.history.release();
+        self.details.release();
+        self.policies.release();
+        self.bytes.release();
+        self.scratch = native::details::Scratch::default();
+        self.held = Vec::new();
+        self.held_policies = Vec::new();
+        self.holds_complete = false;
+        self.nested_bytes = 0;
+        self.daily_released = true;
+    }
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        self.organisations.grow(&mut capacity.organisations);
-        self.history.grow(&mut capacity.history);
-        self.details.grow(&mut capacity.organisations);
-        self.bytes.grow(&mut capacity.bytes);
+        if self.daily_released {
+            self.organisations.record_demand(&mut capacity.organisations);
+            self.history.record_demand(&mut capacity.history);
+            self.details.record_demand(&mut capacity.organisations);
+            self.bytes.record_demand(&mut capacity.bytes);
+        } else {
+            self.organisations.grow(&mut capacity.organisations);
+            self.history.grow(&mut capacity.history);
+            self.details.grow(&mut capacity.organisations);
+            self.bytes.grow(&mut capacity.bytes);
+        }
+        self.last_capacity = *capacity;
     }
     pub fn capture(
         &mut self,
@@ -141,6 +173,19 @@ impl Captured {
         if !should_walk(TABLES[0], hour, force_full) {
             self.fail_capture(hour, force_full, SKIPPED_REASON);
             return [0; N];
+        }
+        if self.daily_released {
+            self.daily_released = false;
+            crate::table_capture::grow_vec(
+                &mut self.organisations.rows,
+                self.last_capacity.organisations,
+            );
+            crate::table_capture::grow_vec(&mut self.history.rows, self.last_capacity.history);
+            crate::table_capture::grow_vec(
+                &mut self.details.rows,
+                self.last_capacity.organisations,
+            );
+            crate::table_capture::grow_vec(&mut self.bytes.first, self.last_capacity.bytes);
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();

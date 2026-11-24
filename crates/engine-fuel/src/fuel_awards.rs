@@ -119,19 +119,127 @@ pub fn start_held(
     status: usize,
     held: Option<&Located>,
 ) -> Result<(Started, Located, bool), &'static str> {
-    auth(memory, base, status, fuel::VTABLE_RVA)?;
-    let game_state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
-    let countries = ccountry::Reader::new(memory, base, game_state)?;
-    let owner = value::<u64>(memory, status, fuel::COUNTRY)? as usize;
-    let (country, taken) = match held {
-        Some(held) if held.owner == owner => (held.country, true),
-        _ => (countries.of_pointer(owner)?, false),
-    };
-    if value::<u64>(memory, owner, ccountry::FUEL_STATUS)? != status as u64 {
-        return Err("fuel award owner backlink mismatch");
+    const MISMATCH: &str = "fuel award object identity mismatch";
+    const UNREADABLE: &str = "fuel award operand unreadable or overflowed";
+    if status == 0 {
+        return Err(MISMATCH);
     }
-    let country_instance = value(memory, owner, ccountry::SURRENDER_TARGET)?;
-    let started = payload(memory, status, country.id, country_instance)?;
+    let expected = engine_sites::at(base, fuel::VTABLE_RVA).ok_or(MISMATCH)?;
+    let singleton = engine_sites::at(base, cgame_state::SINGLETON_RVA);
+    let mut raw = [[0_u8; 8]; 12];
+    let status_ok = (|| -> Option<()> {
+        let addresses = [
+            status,
+            status.checked_add(fuel::COUNTRY)?,
+            status.checked_add(0x68)?,
+            status.checked_add(0x70)?,
+            status.checked_add(0x90)?,
+            status.checked_add(fuel::GAIN)?,
+            status.checked_add(fuel::GAIN_FROM_STATES)?,
+            status.checked_add(fuel::COST)?,
+            status.checked_add(fuel::LEND_LEASE_GAIN)?,
+            status.checked_add(fuel::HISTORY_INDEX)?,
+            status.checked_add(fuel::REMAINING_HOURS)?,
+            singleton?,
+        ];
+        let widths = [8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 8];
+        let mut widths = widths.into_iter();
+        let mut destinations = raw
+            .each_mut()
+            .map(|value| &mut value[..widths.next().unwrap_or(0)]);
+        (memory.copy_scattered(addresses, &mut destinations) == 12).then_some(())
+    })()
+    .is_some();
+    if !status_ok {
+        auth(memory, base, status, fuel::VTABLE_RVA)?;
+        let game_state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let owner = value::<u64>(memory, status, fuel::COUNTRY)? as usize;
+        let (country, taken) = match held {
+            Some(held) if held.owner == owner => (held.country, true),
+            _ => (countries.of_pointer(owner)?, false),
+        };
+        if value::<u64>(memory, owner, ccountry::FUEL_STATUS)? != status as u64 {
+            return Err("fuel award owner backlink mismatch");
+        }
+        let country_instance = value(memory, owner, ccountry::SURRENDER_TARGET)?;
+        let started = payload(memory, status, country.id, country_instance)?;
+        return Ok((started, Located { owner, country }, taken));
+    }
+    if u64::from_le_bytes(raw[0]) != expected as u64 {
+        return Err(MISMATCH);
+    }
+    let owner = u64::from_le_bytes(raw[1]) as usize;
+    let game_state = u64::from_le_bytes(raw[11]) as usize;
+    let mut backlink = [0_u8; 8];
+    let mut surrender = [0_u8; 4];
+    let mut countries_header = [0_u8; 16];
+    let mut links_header = [0_u8; 16];
+    let second_ok = (|| -> Option<()> {
+        let addresses = [
+            owner.checked_add(ccountry::FUEL_STATUS)?,
+            owner.checked_add(ccountry::SURRENDER_TARGET)?,
+            game_state.checked_add(cgame_state::COUNTRIES)?,
+            game_state.checked_add(cgame_state::COUNTRY_LINKS)?,
+        ];
+        (memory.copy_scattered(
+            addresses,
+            &mut [
+                &mut backlink[..],
+                &mut surrender[..],
+                &mut countries_header[..],
+                &mut links_header[..],
+            ],
+        ) == 4)
+            .then_some(())
+    })()
+    .is_some();
+    let (country, taken, country_instance) = if second_ok {
+        let countries = match memory.authenticated_countries(base, game_state) {
+            Some(_) => ccountry::Reader::new(memory, base, game_state)?,
+            None => {
+                let countries = Array::from_header(countries_header, 8)
+                    .ok_or("country array unreadable or invalid")?;
+                let links = Array::from_header(links_header, 4)
+                    .ok_or("country links unreadable or invalid")?;
+                ccountry::Reader::from_arrays(memory, base, game_state, [countries, links])?
+            }
+        };
+        let (country, taken) = match held {
+            Some(held) if held.owner == owner => (held.country, true),
+            _ => (countries.of_pointer(owner)?, false),
+        };
+        if u64::from_le_bytes(backlink) != status as u64 {
+            return Err("fuel award owner backlink mismatch");
+        }
+        (country, taken, u32::from_le_bytes(surrender))
+    } else {
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let (country, taken) = match held {
+            Some(held) if held.owner == owner => (held.country, true),
+            _ => (countries.of_pointer(owner)?, false),
+        };
+        if value::<u64>(memory, owner, ccountry::FUEL_STATUS)? != status as u64 {
+            return Err("fuel award owner backlink mismatch");
+        }
+        let country_instance = value(memory, owner, ccountry::SURRENDER_TARGET).map_err(|_| UNREADABLE)?;
+        (country, taken, country_instance)
+    };
+    let half = |bytes: [u8; 8]| i32::from_le_bytes(bytes[..4].try_into().unwrap());
+    let started = Started {
+        status,
+        country: country.id,
+        country_instance,
+        pending_gain: i64::from_le_bytes(raw[2]),
+        pending_consumed: i64::from_le_bytes(raw[3]),
+        pending_other: i64::from_le_bytes(raw[4]),
+        base: i64::from_le_bytes(raw[5]),
+        states: i64::from_le_bytes(raw[6]),
+        cost: i64::from_le_bytes(raw[7]),
+        lend_lease_in: i64::from_le_bytes(raw[8]),
+        history_index: half(raw[9]),
+        remaining_hours: half(raw[10]),
+    };
     Ok((started, Located { owner, country }, taken))
 }
 fn payload(
@@ -197,6 +305,104 @@ pub fn settle_held(
     status: usize,
     held: Option<&Located>,
 ) -> Result<(Settled, bool), &'static str> {
+    if held.is_some() && status == begun.status {
+        if let Ok([
+            pending_gain,
+            pending_consumed,
+            pending_other,
+            gain,
+            states,
+            cost,
+            lend_lease_in,
+            history_index,
+            remaining_hours,
+            outgoing,
+            consumers_lo,
+            consumers_hi,
+            current,
+        ]) = fields(
+            memory,
+            status,
+            [
+                (0x68, 8),
+                (0x70, 8),
+                (0x90, 8),
+                (fuel::GAIN, 8),
+                (fuel::GAIN_FROM_STATES, 8),
+                (fuel::COST, 8),
+                (fuel::LEND_LEASE_GAIN, 8),
+                (fuel::HISTORY_INDEX, 4),
+                (fuel::REMAINING_HOURS, 4),
+                (fuel::LEND_LEASE_CONSUMPTION, 8),
+                (fuel::CONSUMERS, 8),
+                (fuel::CONSUMERS + 8, 8),
+                (fuel::CURRENT, 8),
+            ],
+        ) {
+            let half = |bytes: [u8; 8]| i32::from_le_bytes(bytes[..4].try_into().unwrap());
+            let now = Started {
+                status,
+                country: begun.country,
+                country_instance: begun.country_instance,
+                pending_gain: i64::from_le_bytes(pending_gain),
+                pending_consumed: i64::from_le_bytes(pending_consumed),
+                pending_other: i64::from_le_bytes(pending_other),
+                base: i64::from_le_bytes(gain),
+                states: i64::from_le_bytes(states),
+                cost: i64::from_le_bytes(cost),
+                lend_lease_in: i64::from_le_bytes(lend_lease_in),
+                history_index: half(history_index),
+                remaining_hours: half(remaining_hours),
+            };
+            if now.history_index != begun.history_index
+                || now.remaining_hours != begun.remaining_hours
+                || [now.base, now.states, now.cost, now.lend_lease_in]
+                    != [begun.base, begun.states, begun.cost, begun.lend_lease_in]
+            {
+                return Err("fuel award root or applied operands changed");
+            }
+            let own_gain = now.pending_gain.wrapping_sub(begun.pending_gain);
+            let cost_gain = if begun.cost < 0 {
+                begun.cost.wrapping_neg()
+            } else {
+                0
+            };
+            let oil = own_gain
+                .wrapping_sub(begun.base)
+                .wrapping_sub(begun.states)
+                .wrapping_sub(cost_gain);
+            let other = now.pending_other.wrapping_sub(begun.pending_other);
+            let outgoing = i64::from_le_bytes(outgoing);
+            let mut header = [0_u8; 16];
+            header[..8].copy_from_slice(&consumers_lo);
+            header[8..].copy_from_slice(&consumers_hi);
+            let consumers = Array::from_header(header, crate::fuel_consumer_data::STRIDE)
+                .filter(|a| a.count == fuel::MAX_CONSUMERS)
+                .ok_or("fuel award consumers unreadable or invalid")?;
+            let receipt = |index: usize| {
+                (
+                    index * crate::fuel_consumer_data::STRIDE + crate::fuel_consumer_data::RECEIVED,
+                    8,
+                )
+            };
+            let received = fields(memory, consumers.data, [receipt(0), receipt(1), receipt(2)])?
+                .map(i64::from_le_bytes);
+            let settled = Settled {
+                gains: [begun.base, begun.states, oil, cost_gain],
+                own_gain,
+                transfers: [
+                    begun.lend_lease_in,
+                    outgoing,
+                    other.wrapping_sub(outgoing),
+                    other,
+                ],
+                consumed: now.pending_consumed.wrapping_sub(begun.pending_consumed),
+                received,
+                current: i64::from_le_bytes(current),
+            };
+            return Ok((settled, true));
+        }
+    }
     let (now, taken) = match held {
         Some(_) if status == begun.status => (
             payload(memory, status, begun.country, begun.country_instance)?,
@@ -329,37 +535,113 @@ pub fn air_held(
     consuming: u32,
     held: Option<&engine_native_memory::country_identity::Country>,
 ) -> Result<(Recipient, bool), &'static str> {
+    air_held_with(memory, base, pointer, container, consuming, held, None)
+}
+
+pub fn air_held_with(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    container: usize,
+    consuming: u32,
+    held: Option<&engine_native_memory::country_identity::Country>,
+    registry: Option<&mut Registry>,
+) -> Result<(Recipient, bool), &'static str> {
+    const MISMATCH: &str = "fuel award object identity mismatch";
     let held = held.filter(|country| country.id == consuming);
-    auth(memory, base, pointer, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
-    auth(memory, base, container, ccountry_air_container::VTABLE_RVA)?;
-    let reference = value::<u64>(memory, pointer, engine_native_parts::cair_base_layout::HANDLE)?;
-    if reference >> 32 == 0
-        || creference_registry::resolve(memory, base, reference)? != Some(pointer)
-    {
+    if pointer == 0 || container == 0 {
+        return Err(MISMATCH);
+    }
+    let expected_base = engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA).ok_or(MISMATCH)?;
+    let expected_container =
+        engine_sites::at(base, ccountry_air_container::VTABLE_RVA).ok_or(MISMATCH)?;
+    let (
+        mut base_vtable,
+        mut handle_bytes,
+        mut containers_header,
+        mut host_bytes,
+        mut container_vtable,
+        mut owner_bytes,
+    ) = ([0_u8; 8], [0_u8; 8], [0_u8; 16], [0_u8; 8], [0_u8; 8], [0_u8; 4]);
+    let scattered_ok = (|| -> Option<()> {
+        let addresses = [
+            pointer,
+            pointer.checked_add(engine_native_parts::cair_base_layout::HANDLE)?,
+            pointer.checked_add(cair_base::COUNTRY_CONTAINERS)?,
+            pointer.checked_add(engine_native_parts::cair_base_layout::HOST_REFERENCE)?,
+            container,
+            container.checked_add(ccountry_air_container::COUNTRY)?,
+        ];
+        (memory.copy_scattered(
+            addresses,
+            &mut [
+                &mut base_vtable,
+                &mut handle_bytes,
+                &mut containers_header,
+                &mut host_bytes,
+                &mut container_vtable,
+                &mut owner_bytes,
+            ],
+        ) == 6)
+            .then_some(())
+    })()
+    .is_some();
+    let (reference, owner, containers, host) = if scattered_ok {
+        if u64::from_le_bytes(base_vtable) != expected_base as u64
+            || u64::from_le_bytes(container_vtable) != expected_container as u64
+        {
+            return Err(MISMATCH);
+        }
+        (
+            u64::from_le_bytes(handle_bytes),
+            u32::from_le_bytes(owner_bytes),
+            Array::from_header(containers_header, 8),
+            Some(u64::from_le_bytes(host_bytes)),
+        )
+    } else {
+        auth(memory, base, pointer, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
+        auth(memory, base, container, ccountry_air_container::VTABLE_RVA)?;
+        let reference = value::<u64>(memory, pointer, engine_native_parts::cair_base_layout::HANDLE)?;
+        let owner = value::<u32>(memory, container, ccountry_air_container::COUNTRY)?;
+        (reference, owner, None, None)
+    };
+    let resolved = match registry {
+        Some(registry) => registry.0.resolve(memory, base, reference)?,
+        None => creference_registry::resolve(memory, base, reference)?,
+    };
+    if reference >> 32 == 0 || resolved != Some(pointer) {
         return Err("fuel air base registry identity mismatch");
     }
-    let game_state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
-    let countries = ccountry::Reader::new(memory, base, game_state)?;
-    let owner = value::<u32>(memory, container, ccountry_air_container::COUNTRY)?;
     let country = match held {
-        Some(country) => *country,
-        None => countries.resolve(consuming)?,
+        Some(country) if owner == consuming => *country,
+        _ => {
+            let game_state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
+            let countries = ccountry::Reader::new(memory, base, game_state)?;
+            let country = match held {
+                Some(country) => *country,
+                None => countries.resolve(consuming)?,
+            };
+            let owner_pointer = match held {
+                Some(country) if owner == consuming => country.pointer,
+                _ => countries.resolve(owner)?.pointer,
+            };
+            if owner_pointer != country.pointer {
+                return Err("fuel air recipient consumes another country");
+            }
+            country
+        }
     };
-    let owner_pointer = match held {
-        Some(country) if owner == consuming => country.pointer,
-        _ => countries.resolve(owner)?.pointer,
+    let containers = match containers {
+        Some(containers) => containers,
+        None => Array::read(
+            memory,
+            pointer
+                .checked_add(cair_base::COUNTRY_CONTAINERS)
+                .ok_or("fuel air container address overflow")?,
+            8,
+        )
+        .ok_or("fuel air container vector invalid")?,
     };
-    if owner_pointer != country.pointer {
-        return Err("fuel air recipient consumes another country");
-    }
-    let containers = Array::read(
-        memory,
-        pointer
-            .checked_add(cair_base::COUNTRY_CONTAINERS)
-            .ok_or("fuel air container address overflow")?,
-        8,
-    )
-    .ok_or("fuel air container vector invalid")?;
     if containers
         .element(country.canonical_slot, 8)
         .and_then(|p| read::<u64>(memory, p))
@@ -367,12 +649,20 @@ pub fn air_held(
     {
         return Err("fuel air container backlink mismatch");
     }
+    let host = match host {
+        Some(host) => host,
+        None => value(
+            memory,
+            pointer,
+            engine_native_parts::cair_base_layout::HOST_REFERENCE,
+        )?,
+    };
     Ok((
         Recipient {
             kind: 1,
             reference,
             owner,
-            host: value(memory, pointer, engine_native_parts::cair_base_layout::HOST_REFERENCE)?,
+            host,
         },
         held.is_some(),
     ))

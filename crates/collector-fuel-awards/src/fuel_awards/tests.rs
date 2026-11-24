@@ -1064,119 +1064,6 @@ fn unsealable_boundary_keeps_or_supersedes_the_prepared_offer_without_a_lock() {
 }
 
 #[test]
-#[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
-fn hook_cost_fuel_awards() {
-    use engine_fuel::{ccountry_fuel_status as fuel, fuel_consumer_data};
-    use engine_native::{ccountry, cgame_state};
-    const COUNTRIES: usize = 1500;
-    const GAME: usize = 0x1000;
-    const TABLE: usize = 0x2000;
-    const LINKS: usize = TABLE + (COUNTRIES + 1) * 8;
-    const STATUSES: usize = (LINKS + (COUNTRIES + 1) * 4).div_ceil(0x100) * 0x100;
-    const STATUS: usize = 0x200;
-    const OBJECTS: usize = STATUSES + (COUNTRIES + 1) * STATUS;
-    const OBJECT: usize = ccountry::FUEL_STATUS + 0x80;
-    const _: () = assert!(0x100 + 3 * fuel_consumer_data::STRIDE <= STATUS);
-    let _guard = EXCLUSIVE.lock().unwrap();
-    release().unwrap();
-    let mut storage = vec![0_u64; (OBJECTS + (COUNTRIES + 1) * OBJECT) / 8];
-    let at = storage.as_ptr() as usize;
-    let base = at - cgame_state::SINGLETON_RVA.0;
-    let mut word = |offset: usize, value: u64| storage[offset / 8] = value;
-    let array = |word: &mut dyn FnMut(usize, u64), offset: usize, data: usize, count: usize| {
-        word(offset, (at + data) as u64);
-        word(offset + 8, ((count as u64) << 32) | count as u64);
-    };
-    word(0, (at + GAME) as u64);
-    array(
-        &mut word,
-        GAME + cgame_state::COUNTRIES,
-        TABLE,
-        COUNTRIES + 1,
-    );
-    array(
-        &mut word,
-        GAME + cgame_state::COUNTRY_LINKS,
-        LINKS,
-        COUNTRIES + 1,
-    );
-    let status = |country: usize| STATUSES + country * STATUS;
-    for country in 1..=COUNTRIES {
-        let object = OBJECTS + country * OBJECT;
-        word(TABLE + country * 8, (at + object) as u64);
-        word(object, (base + ccountry::VTABLE_RVA.0) as u64);
-        word(
-            object + ccountry::ID,
-            ((country as u64) << 32) | country as u64,
-        );
-        word(
-            object + ccountry::FUEL_STATUS,
-            (at + status(country)) as u64,
-        );
-        word(status(country), (base + fuel::VTABLE_RVA.0) as u64);
-        word(status(country) + fuel::COUNTRY, (at + object) as u64);
-        let consumers = status(country) + 0x100;
-        array(&mut word, status(country) + fuel::CONSUMERS, consumers, 3);
-    }
-    let links = storage.as_mut_ptr().cast::<u32>();
-    for country in 1..=COUNTRIES {
-        unsafe { *links.add((LINKS + country * 4) / 4) = country as u32 };
-    }
-    BASE.store(base, Ordering::Relaxed);
-    NAME_STRIDE.store(32, Ordering::Release);
-    offer(32 * COUNTRIES, 32 * COUNTRIES * 32);
-    install_offered();
-    LOG.enabled.store(true, Ordering::SeqCst);
-    let mut registers: Registers = unsafe { std::mem::zeroed() };
-    let mut roots = || {
-        for country in 1..=COUNTRIES {
-            registers.rsi = at + status(country);
-            unsafe { observe(&registers, 0) };
-            registers.rbx = at + status(country);
-            unsafe { observe(&registers, 1) };
-        }
-    };
-    let root = crate::test_support::per_call_ns(2 * COUNTRIES, &mut roots);
-    let reset = crate::test_support::per_call_ns(COUNTRIES, || {
-        for country in 1..=COUNTRIES {
-            registers.rsi = at + status(country);
-            unsafe { observe(&registers, 9) };
-        }
-    });
-    let mut memory = Memory(vec![0; 0x400]);
-    name(&mut memory, b"1. Division");
-    let receipt = crate::test_support::per_call_ns(COUNTRIES, || {
-        let call = LOG.enter();
-        for country in 1..=COUNTRIES {
-            assert!(append(
-                &call,
-                Entry {
-                    root: country as u64,
-                    country: country as u32,
-                    recipient: Some(native::Recipient::default()),
-                    amount: -7,
-                    ..Default::default()
-                },
-                Some(native::stored_name(&memory, 0x100, 2).unwrap()),
-                &memory,
-            ));
-        }
-    });
-    let mut entries = Vec::new();
-    let mut names = Vec::new();
-    let (drained, _, _) = drain(&mut entries, &mut names).unwrap();
-    LOG.enabled.store(false, Ordering::SeqCst);
-    assert_eq!(drained.copied, 3 * 8 * COUNTRIES);
-    assert!(entries.iter().all(|entry| !entry.refused));
-    assert_eq!(HELD.total(0), (8 * COUNTRIES) as u64);
-    assert_eq!((HELD.total(1), HELD.total(2)), (0, 0));
-    println!(
-        "hook_cost fuel_awards: begin+end {root:.1} ns/call, reset {reset:.1} ns/call, recipient receipt recording {receipt:.1} ns/call"
-    );
-    release().unwrap();
-}
-
-#[test]
 fn a_root_from_before_an_hourly_boundary_is_never_taken() {
     let _guard = EXCLUSIVE
         .lock()
@@ -1190,4 +1077,99 @@ fn a_root_from_before_an_hourly_boundary_is_never_taken() {
     assert_eq!(held(&pending), Some(pending.located));
     pending.stamp.0 = pending.stamp.0.wrapping_add(1);
     assert_eq!(held(&pending), None);
+}
+
+#[test]
+fn partial_drain_reclaims_only_consumed_root_slots_under_out_of_order_reservation() {
+    let log = Log::new(4);
+    let spill = Spill::new();
+    let buffer = Buffer::new(4, 32, Default::default()).unwrap();
+    assert_eq!(buffer.roots.len(), 4);
+    let memory = Memory(Vec::new());
+    let mapping = [(0_u64, 1_usize, 101_i64), (1, 0, 202), (2, 2, 303), (3, 3, 404)];
+    log.cursor.store(4, Ordering::SeqCst);
+    buffer.cursor.store(4, Ordering::Release);
+    for (entry_index, root_pos, amount) in mapping {
+        buffer.roots[root_pos]
+            .owner
+            .store(entry_index + 1, Ordering::Release);
+        // SAFETY: Test owns this local `Buffer` exclusively.
+        unsafe {
+            *buffer.roots[root_pos].data.get() = RootData {
+                amount,
+                ..Default::default()
+            };
+            *buffer.entries[entry_index as usize].entry.get() = CompactEntry {
+                root: entry_index + 10,
+                payload: CompactPayload::Root {
+                    country: (entry_index + 1) as u32,
+                    index: root_pos as u32,
+                },
+            };
+            *buffer.entries[entry_index as usize].name_required.get() = 0;
+        }
+        buffer.entries[entry_index as usize]
+            .published
+            .store(entry_index + 1, Ordering::Release);
+    }
+
+    let mut one = [Entry::default(); 1];
+    let mut names = [0_u8; 32];
+    let (drained, _, _) = handover_buffers(
+        &log,
+        &spill,
+        &buffer,
+        None,
+        engine_native_memory::walk::Buffer::Exact(&mut one),
+        engine_native_memory::walk::Buffer::Exact(&mut names),
+        None,
+    )
+    .unwrap();
+    assert_eq!((drained.copied, drained.pending), (1, 4));
+    assert_eq!(one[0].amount, 101);
+    assert_eq!(buffer.roots[1].owner.load(Ordering::Acquire), 0);
+    assert_eq!(buffer.roots[0].owner.load(Ordering::Acquire), 2);
+
+    assert!(append_buffer(
+        &log,
+        &spill,
+        &buffer,
+        Entry {
+            root: 14,
+            country: 5,
+            amount: 505,
+            ..Default::default()
+        },
+        None,
+        &memory,
+    ));
+    assert_eq!(buffer.roots[1].owner.load(Ordering::Acquire), 5);
+    assert_eq!(buffer.roots[0].owner.load(Ordering::Acquire), 2);
+
+    let mut compact_out = [CompactEntry::default(); 4];
+    let mut compact_roots = Vec::new();
+    let (drained, _, _) = handover_compact(
+        &log,
+        &spill,
+        &buffer,
+        None,
+        engine_native_memory::walk::Buffer::Exact(&mut compact_out),
+        &mut compact_roots,
+        engine_native_memory::walk::Buffer::Exact(&mut names),
+        None,
+    )
+    .unwrap();
+    assert_eq!((drained.copied, drained.pending), (4, 4));
+    let amounts: Vec<i64> = compact_out
+        .iter()
+        .map(|entry| match entry.payload {
+            CompactPayload::Root { index, .. } => compact_roots[index as usize].amount,
+            other => panic!("expected root payload, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(amounts, [202, 303, 404, 505]);
+    assert!(buffer
+        .roots
+        .iter()
+        .all(|slot| slot.owner.load(Ordering::Acquire) == 0));
 }

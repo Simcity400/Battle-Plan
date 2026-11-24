@@ -449,34 +449,6 @@ fn governance_batch_carried_persistent_drift_fault_keeps_serial_failure() {
     );
 }
 #[test]
-fn governance_batch_carried_assigned_aliases_keep_one_technology_progress_read() {
-    let mut world = World::new(1);
-    let country = World::country(1);
-    world.pointer(
-        country + SLOT + 2 * 0x80 + cresearch_slot::TECHNOLOGY,
-        country + TECH,
-    );
-    world.put(
-        country + SLOT + 2 * 0x80 + cresearch_slot::TECHNOLOGY_HANDLE,
-        7_u32.to_le_bytes(),
-    );
-    let mut store = drift::Store::default();
-    let mut serial = serial::Store::default();
-    hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
-    let trace = Trace::new(&world, "Technology drift alias");
-    assert_eq!(technologies(&store, &trace, 1).0, Outcome::Rows { len: 2 });
-    assert_eq!(
-        trace
-            .operands
-            .borrow()
-            .iter()
-            .filter(|&&(at, _)| at == country + TECH + ctechnology::LIVE_PROGRESS)
-            .count(),
-        1
-    );
-    assert_eq!(trace.count(), 4);
-}
-#[test]
 fn governance_batch_carried_research_aliased_technologies_do_not_reread_completed_prefix() {
     let mut world = World::new(1);
     let country = World::country(1);

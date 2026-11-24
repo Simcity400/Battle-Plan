@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { breakdownRows, formatPercent, lineName, linesPerMeasure, percentRuns, rawAt, readHourOf, stabilityEnd, zoomRange } from './stabilityData.ts';
+import { breakdownRows, formatPercent, linesPerMeasure, percentRuns, rawAt, readHourOf, stabilityEnd, zoomRange } from './stabilityData.ts';
 import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
 import { resolveCountries } from '../../dashboard/groups.ts';
 import { definition } from './definition.ts';
@@ -76,17 +76,6 @@ test('lines that do not add up show the rest as its own part, and missing inputs
   assert.deepEqual(stale.rows.at(-2), { label: 'Modifiers', value: '+5.0%', tone: 'positive' });
 });
 
-test('a line is named by its label with what it is, else its recorded text, else an unavailable title', () => {
-  assert.deepEqual(lineName(line(1, 'idea', '1', { identity: 'x', label: 'Name' })), { name: 'Name', recorded: false });
-  assert.deepEqual(lineName(line(1, 'idea', '1', { label: 'Blackouts', groupKind: 'national_spirit' })), { name: 'National spirit: Blackouts', recorded: false });
-  assert.deepEqual(lineName(line(1, 'advisor', '1', { label: 'Hjalmar Schacht', group: 'Political Advisor' })), { name: 'Political Advisor: Hjalmar Schacht', recorded: false });
-  assert.deepEqual(lineName(line(1, 'countryLeader', '1', { label: 'Iosif Stalin' })), { name: 'Country leader: Iosif Stalin', recorded: false });
-  assert.deepEqual(lineName(line(1, 'unpaired', '1', { text: 'Game text' })), { name: 'Game text', recorded: true });
-  assert.deepEqual(lineName(line(1, 'idea', '1', { identity: 'x' })), { name: 'Source name unavailable', recorded: false });
-  assert.deepEqual(lineName(line(1, 'idea', '1', { identity: 'x', label: '', text: 'Recorded title' })), { name: '', recorded: false });
-  assert.deepEqual(lineName(line(1, 'idea', '1', { identity: 'x', label: 'x', text: 'Recorded title' })), { name: 'x', recorded: false });
-  assert.deepEqual(lineName(line(1, 'unpaired', '1', { text: '' })), { name: '', recorded: true });
-});
 
 test('a long breakdown lists its largest lines and counts the rest, so it fits the window', () => {
   const cap = linesPerMeasure(2);

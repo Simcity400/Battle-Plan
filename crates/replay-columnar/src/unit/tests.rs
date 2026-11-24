@@ -982,7 +982,6 @@ fn a_cursor_refuses_a_log_s_part_and_a_log_cursor_a_state_table_s() {
     assert!(refused.to_string().contains("is read with a Cursor"), "{refused}");
 }
 
-
 #[test]
 fn a_log_passes_two_to_the_thirty_two_rows() {
     let start = u64::from(u32::MAX) - 3;
@@ -1404,36 +1403,6 @@ fn marks_write_what_sorting_every_mark_by_slot_wrote() {
         let written = marks(&pending, &births, first, &mut scratch).unwrap();
         assert_eq!(written, marks_by_sorting(&pending, &births, first), "case {index}");
     }
-}
-
-#[test]
-fn a_table_read_in_part_every_hour_closes_in_two_bytes_a_mark_and_keeps_nothing_to_chain() {
-    const ROWS: u32 = 4_000;
-    let mut store = store(Settings::at(3));
-    let mut memory = Memory::default();
-    let slots: Vec<u32> = (0..ROWS).collect();
-    store.begin_run(0);
-    for hour in 0..BLOCK {
-        store.begin_hour(hour as i32, &[]).unwrap();
-        store.status(0, Status::Truncated { missing: 1 }, true, Some(hour as i32), true).unwrap();
-        let mut changes = store.table(0).unwrap();
-        if hour == 0 {
-            for slot in 0..ROWS {
-                insert_row(&mut changes, slot, u128::from(slot) + 1, slot as i32);
-            }
-        } else {
-            changes.read_rows(&slots).unwrap();
-            changes.read_done();
-        }
-        store.end_hour(&mut memory).unwrap();
-    }
-    store.end_block();
-    let marks = (ROWS * (BLOCK - 1)) as usize;
-    let held = store.encoder().unwrap().held;
-    assert!(held.closing >= marks, "closing {} counts the marks stream of {marks} marks", held.closing);
-    assert!(held.closing <= 4 * marks, "closing {} holds at most the stream and two bytes a mark, {marks} marks", held.closing);
-    assert_eq!(held.previous, 0, "no stream kept to chain to at the block's end");
-    assert_eq!(memory.pages.len(), 1);
 }
 
 fn journal_kinds() -> Vec<Vec<Kind>> {

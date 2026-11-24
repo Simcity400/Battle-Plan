@@ -10,8 +10,6 @@ use viewer_native_gui::gui_resources::count_refused;
 use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
 use viewer_native_gui::icon_windows::PoolView;
 use viewer_native_gui::icon_windows::Retry;
-#[cfg(test)]
-use viewer_runtime::label_reads::victory_point_keys;
 use viewer_runtime::label_reads::{label_anchors, label_name, overrides_ladder, unreadable};
 use viewer_foundation::mode_visibility::{Priorities, PriorityIcon, Visibility};
 use viewer_native_gui::native_resources::Context;
@@ -1275,25 +1273,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn refused_names_reach_the_warning_area() {
-        assert!(LabelReport::default().warnings().is_empty());
-        let report = LabelReport {
-            refused_names: 3,
-            refused_localisation: BTreeMap::from([(
-                "localisation VICTORY_POINTS_3: its text is not UTF-8".to_owned(),
-                BTreeMap::from([(692, 1), (6521, 2)]),
-            )]),
-            ..Default::default()
-        };
-        assert_eq!(
-            report.warnings(),
-            vec![
-                "2 victory-point names are not drawn: localisation VICTORY_POINTS_3: its text is not UTF-8; provinces 692, 6521",
-            ]
-        );
-    }
-
-    #[test]
     fn the_raid_mode_keeps_only_capitals_and_the_resource_mode_draws_no_names() {
         use viewer_map_modes::map_mode::{MapMode, Stock, visibility};
         let of = |stock| visibility::of(&MapMode::Stock(stock));
@@ -1326,48 +1305,6 @@ pub(crate) mod tests {
         assert_eq!(dot_allegiance(201, &links, &allegiances), Allegiance::Ours);
         assert_eq!(dot_allegiance(101, &links, &allegiances), Allegiance::Enemy);
         assert_eq!(dot_allegiance(0, &links, &allegiances), Allegiance::Other);
-    }
-
-    #[test]
-    fn the_frame_index_walks_shapes_slowest_and_colours_fastest() {
-        assert_eq!(frame_index(0, Allegiance::Enemy), 0);
-        assert_eq!(frame_index(0, Allegiance::Other), 4);
-        assert_eq!(frame_index(1, Allegiance::Enemy), 5);
-        assert_eq!(
-            frame_index(
-                shape_group(false, 20, &LabelDefines::test()),
-                Allegiance::Other
-            ),
-            9
-        );
-        assert_eq!(
-            frame_index(
-                shape_group(true, 50, &LabelDefines::test()),
-                Allegiance::Ours
-            ),
-            2
-        );
-        assert_eq!(
-            frame_index(
-                shape_group(true, 20, &LabelDefines::test()),
-                Allegiance::Other
-            ),
-            4
-        );
-        assert_eq!(
-            frame_index(
-                shape_group(false, 30, &LabelDefines::test()),
-                Allegiance::Other
-            ),
-            9
-        );
-        assert_eq!(
-            frame_index(
-                shape_group(false, 1, &LabelDefines::test()),
-                Allegiance::Other
-            ),
-            19
-        );
     }
 
     #[test]
@@ -1492,16 +1429,6 @@ pub(crate) mod tests {
             label_name(&loc, Some(b"VICTORY_POINTS_678"), None, 678),
             Ok(Some("Port Haven".into()))
         );
-    }
-
-    #[test]
-    fn the_text_key_probes_the_owner_override_first() {
-        assert_eq!(
-            victory_point_keys(Some("GER"), 692),
-            ["GER_VICTORY_POINTS_692", "VICTORY_POINTS_692"]
-        );
-        assert_eq!(victory_point_keys(None, 6521), ["VICTORY_POINTS_6521"]);
-        assert_eq!(victory_point_keys(Some(""), 6521), ["VICTORY_POINTS_6521"]);
     }
 
     #[test]

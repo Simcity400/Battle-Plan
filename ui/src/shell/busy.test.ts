@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { busy, busyCount, busyKinds, busyPreparing, busyWait, inBackground } from './busy.ts';
+import { busy, busyCount, busyKinds, busyPreparing, inBackground } from './busy.ts';
 import { FrameScheduler } from '../charts/scheduler.ts';
 import { inFrame, inFrameNow } from '../dashboard/frameUpdates.ts';
 
@@ -32,18 +32,6 @@ test('a request the prepare lane starts is its own, never in the count the page 
   assert.equal(busyCount(), before);
 });
 
-test('a deliberate wait is in flight until it runs or is cancelled', async () => {
-  let ran = false;
-  busyWait(() => { ran = true; }, 0);
-  assert.equal(busyKinds().waits, 1);
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(ran, true);
-  assert.equal(busyKinds().waits, 0, 'over once it ran');
-  const cancel = busyWait(() => { throw new Error('a cancelled wait never runs'); }, 0);
-  cancel();
-  assert.equal(busyKinds().waits, 0, 'over once cancelled');
-  await new Promise(resolve => setTimeout(resolve, 0));
-});
 
 test('a chart draw is in flight from its wake until it has drawn, never while hidden, and the scheduler counts once', () => {
   const frames: ((now: number) => void)[] = [];

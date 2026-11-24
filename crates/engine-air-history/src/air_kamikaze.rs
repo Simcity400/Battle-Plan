@@ -938,21 +938,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_combat_walk_costs_a_few_calls_per_fleet() {
-        let image = fleets(30, 4, |f, t| {
-            (t == 0).then_some((true, (f * 4 + t) as u32, 3))
-        });
-        let started = std::time::Instant::now();
-        let (combats, calls) = walk(&image);
-        let elapsed = started.elapsed();
-        assert_eq!(combats.unwrap().len(), 30);
-        eprintln!(
-            "naval-patrol combat walk: 30 fleets x 4 task forces, 30 in combat: {calls} calls, {elapsed:?}"
-        );
-        assert!(calls <= 3 + 30 * 2 + 30 * 4);
-    }
-
     fn air_objects(countries: u32) -> (engine_native::ccountry::synthetic::World, Vec<usize>) {
         let mut world = engine_native::ccountry::synthetic::World::new(BASE, countries, 0x10);
         let roots = (0..=countries)

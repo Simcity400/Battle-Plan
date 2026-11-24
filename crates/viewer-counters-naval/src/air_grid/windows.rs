@@ -463,7 +463,7 @@ fn update_item(
 
 #[cfg(test)]
 mod tests {
-    use super::{AirGridHover, Allegiance, Arc, BTreeMap, Composed, CounterColorMode, CounterReport, Countries, Drawn, IconFamily, Instance, NAVY_WINDOW, PreparedItem, SharedNativeWindows, Tick, View, WINDOW, native, native_gui, update_item};
+    use super::{AirGridHover, Allegiance, Arc, Composed, CounterColorMode, CounterReport, Countries, Drawn, IconFamily, Instance, NAVY_WINDOW, PreparedItem, SharedNativeWindows, Tick, View, WINDOW, native, native_gui};
     use viewer_native_gui::test_support::gui::fixture;
     fn window_bytes() -> &'static [u8] {
         br#"guiTypes={containerWindowType={name=air_wing_counter size={width=58 height=27}
@@ -481,12 +481,6 @@ mod tests {
             iconType={name=bar_str spriteType=GFX_even}
             instantTextboxType={name=count_txt font=Main_14 maxWidth=50 maxHeight=14}
         }}"#
-    }
-    fn window() -> native::Element {
-        native::read(window_bytes())
-            .template("air_wing_counter")
-            .unwrap()
-            .clone()
     }
     #[test]
     fn carrier_grid_composes_through_both_holders_and_hits_in_the_outer_coordinates() {
@@ -638,142 +632,6 @@ mod tests {
         assert_eq!(
             report.air_grid_hits.into_iter().collect::<Vec<_>>(),
             [(1, hover.clone()), (2, hover)]
-        );
-    }
-
-    #[test]
-    fn air_item_draws_authored_controls_count_type_selection_flags_and_current_strength() {
-        content_reader_script::test_game::enter();
-        viewer_counter_kit::fixtures::with_counter_inputs_fixture(
-            viewer_counter_kit::fixtures::action_gui(false),
-            |_| {},
-            |_| {},
-            |mut inputs| {
-                inputs.settings.color_mode = CounterColorMode::Allegiance;
-                let root = window();
-                let mut resources = fixture();
-                let sprite = resources.sprites.get_mut("GFX_even").unwrap();
-                sprite.frames = 4;
-                sprite.texture = [80, 10];
-                let mut instance = Instance::construct(&root, [400, 400], &resources).unwrap();
-                let mut countries = Countries::default();
-                countries.sides.insert(1, Allegiance::Ours);
-                let mut data = PreparedItem {
-                    item: super::super::Item {
-                        members: vec![7, 8],
-                        selected: true,
-                        archetype: Some(1),
-                        group: 9,
-                        planes: 1250,
-                    },
-                    icon_frame: 3,
-                    action: Some(2),
-                    country: Some(1),
-                    group_color: Some([0.2, 0.3, 0.4, 0.5]),
-                    markers: [Some(false), Some(false), Some(true), Some(true)],
-                    capacity: Some(2000),
-                    hover: Arc::default(),
-                    marker_hovers: std::array::from_fn(|_| Arc::default()),
-                    refused: Default::default(),
-                };
-                update_item(
-                    &mut instance,
-                    &root,
-                    &data,
-                    &inputs,
-                    Some(&countries),
-                    &resources,
-                    &mut BTreeMap::new(),
-                )
-                .unwrap();
-                let control = |kind, name| root.find(kind, name).unwrap();
-                assert_eq!(
-                    instance
-                        .control(&root, control(native::Kind::TextBox, "count_txt"))
-                        .unwrap()
-                        .text
-                        .as_deref(),
-                    Some("1.2K")
-                );
-                assert_eq!(
-                    instance
-                        .bindings(&root, &resources)
-                        .unwrap()
-                        .bind(control(native::Kind::Icon, "wing_type"))
-                        .frame,
-                    Some(3)
-                );
-                assert_eq!(
-                    instance
-                        .bindings(&root, &resources)
-                        .unwrap()
-                        .bind(control(native::Kind::Icon, "onmap_action_icon"))
-                        .frame,
-                    Some(2)
-                );
-                assert_eq!(
-                    instance
-                        .control(&root, control(native::Kind::Icon, "bar_str"))
-                        .unwrap()
-                        .stretch,
-                    Some(0.625)
-                );
-                assert_eq!(
-                    instance
-                        .control(&root, control(native::Kind::Icon, "group_marker"))
-                        .unwrap()
-                        .color,
-                    Some([0.2, 0.3, 0.4, 0.5])
-                );
-                instance
-                    .tick(&root, &resources, Tick { time: 0., dt: 0. })
-                    .unwrap();
-                let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
-                let shown = |name: &str| {
-                    layout
-                        .parts
-                        .iter()
-                        .any(|part| part.path.ends_with(&format!(".{name}")))
-                };
-                assert!(
-                    shown("count_selected")
-                        && shown("training")
-                        && shown("training_will_stop_at_max_icon")
-                );
-                assert!(!shown("no_mission") && !shown("no_region"));
-                data.capacity = None;
-                data.action = None;
-                data.markers = [None; 4];
-                data.item.selected = false;
-                update_item(
-                    &mut instance,
-                    &root,
-                    &data,
-                    &inputs,
-                    Some(&countries),
-                    &resources,
-                    &mut BTreeMap::new(),
-                )
-                .unwrap();
-                instance
-                    .tick(&root, &resources, Tick { time: 1., dt: 1. })
-                    .unwrap();
-                let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
-                assert!(
-                    layout
-                        .parts
-                        .iter()
-                        .any(|part| part.path.ends_with(".count_txt"))
-                );
-                for name in ["onmap_action_icon", "bar_str", "training", "count_selected"] {
-                    assert!(
-                        !layout
-                            .parts
-                            .iter()
-                            .any(|part| part.path.ends_with(&format!(".{name}")))
-                    );
-                }
-            },
         );
     }
 

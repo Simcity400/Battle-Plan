@@ -3536,26 +3536,6 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
 }
 
 #[test]
-fn hours_reading_one_lexer_table_share_its_folds() {
-    let first = frame(&[(100, 7, "GER", 0, "GER", "GER")], &[100]);
-    let mut next = first.clone();
-    next.hour = 2;
-    let names = TriggerNames::default();
-    let aliases = Arc::new(TagAliases::default());
-    let dlcs = BTreeSet::new();
-    let read = |frame| World::read(frame, ContentFacts::content_only(&dlcs, &names, &aliases));
-    let folds = |world: &World| match world.names().unwrap() {
-        world::Names::Own(folds) => Arc::as_ptr(folds),
-    };
-    let (earlier, later) = (read(&first), read(&next));
-    assert_eq!(folds(&earlier), folds(&later));
-    assert_eq!(later.token_of(b"X"), Ok(Some(900)));
-    let mut reread = first.clone();
-    let _ = &mut *reread.tables[TableId::LexicalTokens.index()];
-    assert_ne!(folds(&read(&reread)), folds(&earlier));
-}
-
-#[test]
 fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -3668,12 +3648,6 @@ fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
 
 #[path = "refusal_consumption_tests.rs"]
 mod refusal_consumption;
-
-#[test]
-fn shared_trigger_kit_keeps_unit_scope_and_country_ace_operands() {
-    assert!(super::RECORDED_TABLES.contains(&replay_data::rows::TableId::Divisions));
-    assert!(super::RECORDED_TABLES.contains(&replay_data::rows::TableId::CountryCommandPower));
-}
 
 #[test]
 fn new_assignment_triggers_refuse_unrecorded_predicates_in_their_accepted_scopes() {

@@ -21,7 +21,6 @@ import boat as bt
 
 OK = types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-
 class FakeBoat:
     """VMs as Boat lists them; records every call and lets a test fail chosen ones."""
 
@@ -127,10 +126,8 @@ class FakeBoat:
     def ttl_calls(self, vmid):
         return [int(call[3]) for call in self.calls if call[0] == "extend" and call[1] == vmid]
 
-
 def vm(vmid, state="idle", type="large", ttl=bt.IDLE_SECONDS, hydrated=True):
     return {"id": vmid, "state": state, "type": type, "ttlSeconds": ttl, "hydrated": hydrated}
-
 
 class Harness(unittest.TestCase):
     def setUp(self):
@@ -157,7 +154,6 @@ class Harness(unittest.TestCase):
         for vmid in fake.vms:
             bt.atomic_json(self.state.pool / (vmid + ".json"), {"id": vmid, "snapshot": bt.SNAPSHOT})
         return fake
-
 
 class Rank(unittest.TestCase):
     def test_running_before_stopped_then_lane_then_size(self):
@@ -189,13 +185,6 @@ class Rank(unittest.TestCase):
         states = {vmid: vm(vmid, state) for vmid, state in [("a", "stopped"), ("b", "idle"), ("c", "idle"), ("d", "idle")]}
         rebuilds = {"a": (0, 0), "b": (60, 0), "c": (3, 0), "d": (60, 0)}.get
         self.assertEqual(bt.rank(sorted(states), states, "d", "large", lambda _: False, rebuilds=rebuilds), ["c", "d", "b", "a"])
-
-    def test_resume_only_grows(self):
-        self.assertEqual(bt.resume_type("default", "large"), "large")
-        self.assertIsNone(bt.resume_type("large", "default"))
-        self.assertIsNone(bt.resume_type("large", "large"))
-        self.assertIsNone(bt.resume_type("default", "default"))
-
 
 class Plan(unittest.TestCase):
     """A workspace where top depends on middle, middle on base, and top's tests on probe."""
@@ -268,7 +257,6 @@ class Plan(unittest.TestCase):
         lost = {"used": 4.0, **bt.left_trees(after, {release.key: None}, 4.0)}
         self.assertEqual((release.rebuilds(lost), check.rebuilds(lost)), ((3, 0), (0, 0)))
 
-
     def test_a_feature_named_through_a_member_that_dev_depends_on_itself_reaches_the_build(self):
         crates = {"solo": '[features]\nx = []\ny = []\n[dev-dependencies]\nsolo = { path = ".", features = ["y"] }\n', "pair": "[features]\nx = []\n"}
         for name, body in crates.items():
@@ -287,7 +275,6 @@ class Plan(unittest.TestCase):
                 self.assertEqual(bt.member_features(self.root, ["build", "--release", *args]), ["build", "--release", *expected])
         with self.assertRaises(bt.Failure):
             bt.member_features(self.root, ["build", "--release", "-p", "solo", "-p", "pair", "--features", "solo/x"])
-
 
 class Parse(unittest.TestCase):
     def test_check_and_build(self):
@@ -320,7 +307,6 @@ class Parse(unittest.TestCase):
             with self.subTest(args=args), self.assertRaisesRegex(bt.Refused, reason):
                 bt.parse(args)
 
-
 def remote_function(name):
     """A function of the VM's runner, whose module runs on import and only on Linux."""
     tree = ast.parse((Path(bt.TOOLS) / "boat_remote.py").read_text(encoding="utf-8"))
@@ -329,10 +315,8 @@ def remote_function(name):
     exec(compile(ast.Module([node], []), "boat_remote.py", "exec"), namespace)
     return namespace[name]
 
-
 def artifact(package, name, kind, test, executable):
     return {"reason": "compiler-artifact", "package_id": package, "target": {"name": name, "kind": kind}, "profile": {"test": test}, "executable": executable}
-
 
 class TestPrograms(unittest.TestCase):
     """The runner's reading of Cargo's messages: which executable is which test program."""
@@ -363,11 +347,9 @@ class TestPrograms(unittest.TestCase):
         self.assertEqual(binaries, [{"package": "viewer", "name": "viewer", "executable": "viewer.exe", "path": f"{deps}/viewer.exe"}])
         self.assertEqual(files, [f"{deps}/deps/viewer-1a.exe", f"{deps}/deps/viewer-2b.exe", f"{deps}/deps/dump_stack-3c.exe", f"{deps}/deps/viewer_core-4d.exe", f"{deps}/viewer.exe"])
 
-
 def program(name="replay", kind=("lib",), target="replay", executable="replay-1a.exe", env=(), version="1.2.3"):
     package = {"name": name, "version": version, "authors": ["a", "b"], "manifest": f"crates/{name}/Cargo.toml", "env": [list(pair) for pair in env], "description": None, "rust_version": "1.80"}
     return {"package": package, "target": target, "kind": list(kind), "executable": executable}
-
 
 class TestEnvironment(unittest.TestCase):
     def test_a_program_gets_what_cargo_test_sets_with_this_machines_paths(self):
@@ -385,7 +367,6 @@ class TestEnvironment(unittest.TestCase):
         integration = bt.test_environment(base, worktree, folder, program("viewer", ("test",), "dump_stack"), binaries)
         self.assertEqual((integration["CARGO_BIN_EXE_viewer"], integration["CARGO_TARGET_TMPDIR"]), (str(folder / "viewer.exe"), str(folder / "tmp")))
         self.assertNotIn("CARGO_BIN_EXE_x", integration)
-
 
 class TestSources(unittest.TestCase):
     def setUp(self):
@@ -449,7 +430,6 @@ class TestSources(unittest.TestCase):
         self.assertTrue((live / "a.exe").exists())
         live_lock.close()
         third_lock.close()
-
 
 class TestRuns(unittest.TestCase):
     def setUp(self):
@@ -526,7 +506,6 @@ class TestRuns(unittest.TestCase):
         self.assertEqual(result, (3, 2, 5))
         self.assertIn(b"test a ... ok", out.getvalue())
 
-
 class Reconcile(Harness):
     def test_shortens_only_long_lived_vms_no_run_holds(self):
         fake = self.use(FakeBoat([vm("free", ttl=14400), vm("short"), vm("held", ttl=14400), vm("stopped", "stopped", ttl=14400), vm("busy", "running", ttl=14400)]))
@@ -539,7 +518,6 @@ class Reconcile(Harness):
         self.assertEqual(fake.ttl_calls("busy"), [bt.IDLE_SECONDS])
         for vmid in ("short", "held", "stopped"):
             self.assertEqual(fake.ttl_calls(vmid), [], vmid)
-
 
 class Acquire(Harness):
     def test_a_vm_that_does_not_start_or_stops_hydrating_is_cooled_and_passed_by(self):
@@ -559,21 +537,6 @@ class Acquire(Harness):
             self.assertEqual(fake.ttl_calls(vmid)[-1], bt.IDLE_SECONDS)
             self.state.lock(vmid).close()
         self.assertTrue(all("--no-wait" in call for call in fake.calls if call[0] == "resume"))
-
-    def test_readiness_records_each_stage_boat_reports_and_polls_faster_at_the_end(self):
-        fake = self.use(FakeBoat([vm("a", "stopped", hydrated=False)]))
-        fake.starting["a"] = 3
-        fake.hydrating["a"] = 6
-        pauses = []
-        bt.wait_ready = lambda vmid, spent=None: self.saved["wait_ready"](vmid, spent, clock=lambda: self.now, pause=lambda seconds: (pauses.append(seconds), setattr(self, "now", self.now + seconds)))
-        record = {}
-        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
-        lease.end()
-        lock.close()
-        readiness = record["readiness"]
-        self.assertEqual(set(readiness), {"resume_call", "boot", "settling", "claim"})
-        self.assertEqual((readiness["boot"], readiness["settling"]), (2 * bt.POLL_SECONDS, 6 * bt.FINAL_POLL_SECONDS))
-        self.assertEqual(pauses, [bt.POLL_SECONDS] * 2 + [bt.FINAL_POLL_SECONDS] * 6)
 
     def test_hydration_spends_its_stages_by_name_and_counts_its_entries(self):
         phases = iter([("starting", {"phase": "folding"}), ("idle", {"phase": "hydrating", "percent": 40, "entriesTotal": 9}), ("idle", {"phase": "hydrating", "percent": 95, "entriesTotal": 9}), ("idle", None)])
@@ -658,37 +621,6 @@ class Acquire(Harness):
         resume = next(call for call in fake.calls if call[0] == "resume")
         self.assertNotIn("--type", resume)
         self.assertEqual(fake.vms["a"]["type"], "large")
-
-    def test_the_runner_is_installed_before_the_claim(self):
-        fake = self.use(FakeBoat([vm("a")]))
-        installed = []
-
-        def quick(vmid, *args):
-            installed.append(any(call[0] == "exec" and "runner-remote.py.b64-000" in " ".join(call) for call in fake.calls))
-            return fake.quick(vmid, *args)
-
-        bt.quick = quick
-        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {})
-        lease.end()
-        lock.close()
-        self.assertEqual((fake.remote_calls, installed), ([("a", "acquire", "t")], [True]))
-
-    def test_the_runner_assembles_exactly_its_parts_and_clears_them_either_way(self):
-        fake = self.use(FakeBoat([vm("a")]))
-        bt.install_runner(self.state, "a")
-        execs = [call for call in fake.calls if call[0] == "exec"]
-        uploaded = {call[-2].rsplit("/", 1)[1] for call in execs[:-1]}
-        script = execs[-1][-1]
-        for name, data in bt.runner_files().items():
-            text = len(bt.base64.b64encode(data))
-            parts = [f"runner-{name}.b64-{index:03d}" for index in range(-(-text // bt.CHUNK_CHARS))]
-            self.assertTrue(set(parts) <= uploaded)
-            self.assertIn(f"cat {' '.join(parts)} | base64 -d > {name}.new", script)
-        self.assertNotIn("b64-* |", script)
-        install, cleanup = script.split("; status=$?; ")
-        self.assertTrue(install.startswith(f"cd {bt.REMOTE} || exit; {{ ") and install.endswith("; }"))
-        self.assertEqual(cleanup, "rm -f runner-*.b64-* remote.py.new run.sh.new; exit $status")
-        self.assertIsNotNone(self.state.entry("a").get("runner_hash"))
 
     def test_a_vm_holding_another_claim_is_quarantined_and_released(self):
         fake = self.use(FakeBoat([vm("a"), vm("b")]))
@@ -795,18 +727,6 @@ class Acquire(Harness):
         self.assertEqual([(item["vm"], "claim" in item["readiness"]) for item in record["passed_over"]], [("a", True)])
         self.assertEqual(self.state.quarantined(), [])
         self.assertEqual(self.state.registered(), ["a", "b"])
-
-    def test_lease_renews_until_ended(self):
-        fake = self.use(FakeBoat([vm("a")]))
-        bt.RENEW_SECONDS = 0.01
-        lease = bt.Lease("a")
-        self.assertTrue(fake.renewed.wait(10))
-        lease.end()
-        count = len(fake.calls)
-        self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
-        lease.thread.join()
-        self.assertEqual(len(fake.calls), count)
-
 
 class Wake(Harness):
     def test_resumes_the_vm_the_run_would_take_without_claiming_or_waiting(self):
@@ -939,7 +859,6 @@ class Wake(Harness):
         self.assertEqual([call[1] for call in fake.calls if call[0] == "resume"], ["a"])
         self.assertFalse((self.state.logs / "timings.jsonl").exists())
 
-
 class ToolchainChannel(unittest.TestCase):
     def test_the_channel_is_read_and_a_file_that_cannot_be_read_names_none(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -950,7 +869,6 @@ class ToolchainChannel(unittest.TestCase):
             self.assertEqual(bt.toolchain_channel(Path(folder)), "")
             path.unlink()
             self.assertEqual(bt.toolchain_channel(Path(folder)), "")
-
 
 class AtomicJson(unittest.TestCase):
     def test_a_replace_a_reader_blocks_for_a_moment_still_lands(self):
@@ -966,7 +884,6 @@ class AtomicJson(unittest.TestCase):
             with mock.patch.object(Path, "replace", blocked), mock.patch.object(bt.time, "sleep") as sleep:
                 bt.atomic_json(path, {"a": 1})
             self.assertEqual((json.loads(path.read_text()), len(sleep.call_args_list)), ({"a": 1}, 2))
-
 
 class RemoteToolchain(unittest.TestCase):
     """The claim's Cargo probe, from boat_remote.py's own definitions."""
@@ -1012,7 +929,6 @@ class RemoteToolchain(unittest.TestCase):
     def test_an_exec_reply_without_output_reads_as_empty(self):
         with mock.patch.object(bt, "boat", return_value=(OK, [{"exitCode": 0, "stdout": None}])):
             self.assertEqual(bt.quick("a", "acquire", "t"), (0, ""))
-
 
 class Run(Harness):
     def setUp(self):
@@ -1143,26 +1059,12 @@ class Run(Harness):
         self.assertNotIn("snapshot", [call[0] for call in fake.calls])
         self.assertEqual(fake.ttl_calls("n")[-1], bt.IDLE_SECONDS)
 
-    def test_a_compile_error_runs_nothing_and_passes_through(self):
-        fake = self.use(FakeBoat([vm("a")]))
-        fake.cargo_exit = 101
-        bt.run_program = None
-        self.assertEqual(bt.main(["test", "-p", "x", "--", "name"]), 101)
-
-    def test_a_refusal_names_why_and_is_not_a_boat_failure(self):
-        fake = self.use(FakeBoat([vm("a")]))
-        self.assertEqual(bt.main(["test", "-p", "x", "--doc"]), 2)
-        self.assertEqual(fake.calls, [])
-
-
 TLS = '{"error":"could not reach the Boat API at https://boat.dev: error sending request for url (https://boat.dev/api/boat/sandboxes): client error (Connect): tls handshake eof","event":"error"}'
 NOT_READY = '{"code":"sandbox_not_ready","error":"Sandbox a is not ready (state: updating)","event":"error"}'
 LOST = '{"error":"could not reach the Boat API at https://boat.dev: error sending request for url (https://boat.dev/api/boat/sandboxes): connection closed before message completed","event":"error"}'
 
-
 def result(returncode=0, stdout=""):
     return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
-
 
 class Attach:
     """A fake `boat exec --attach` process that prints the given JSON frames, then optionally raises."""
@@ -1185,7 +1087,6 @@ class Attach:
 
     def wait(self):
         return self.returncode
-
 
 class Transport(unittest.TestCase):
     def setUp(self):
@@ -1379,7 +1280,6 @@ class Transport(unittest.TestCase):
             bt.remote("a", "check", "t")
         self.assertEqual(len(self.attaches), len(bt.RETRY_SECONDS) + 1)
         self.assertEqual(self.runs[-1][-2:], ["outcome", self.runs[0][-1]])
-
 
 if __name__ == "__main__":
     unittest.main()

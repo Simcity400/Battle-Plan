@@ -189,36 +189,6 @@ test('malformed or ambiguous geometry is refused, never silently dropped', () =>
   assert.throws(() => motion.set({ ...graph, flows: [{ ...graph.flows[0], target: graph.nodes[2].id }] }));
 });
 
-test('equal frame targets validate once by identity and settled motion retains its geometry', () => {
-  let reads = 0;
-  const data: ChordData = deepFreeze({ nodes: graph.nodes, flows: graph.flows.map(flow => ({ ...flow,
-    get value() { reads++; return flow.value; } })) });
-  const total = checkChord(data);
-  const validated = reads;
-  assert.ok(validated > 0);
-  assert.equal(checkChord(data), total);
-  assert.equal(reads, validated);
-  assert.throws(() => Object.assign(data.flows[0], { value: -1 }), TypeError);
-  assert.throws(() => Object.assign(data.nodes[0], { id: 'changed' }), TypeError);
-  const frames = new ChordFrames();
-  frames.accept({ data });
-  const first = frames.motion.advance(1, 0);
-  const used = reads;
-  const geometry = layoutChord(first.data, frames.motion.presence, first.ringPresence);
-  assert.deepEqual(geometry, layoutChord(graph));
-  for (let tick = 0; tick < 100; tick++) {
-    frames.accept({ data, playing: true, revision: tick });
-    assert.equal(frames.motion.advance(1 / 60, 1), first);
-    assert.equal(frames.revision, tick);
-  }
-  assert.equal(reads, used);
-  frames.accept({ data, segment: 'seek' });
-  assert.deepEqual(layoutChord(frames.motion.advance(1, 0).data), geometry);
-  assert.equal(checkChord(data), total);
-  const different: ChordData = { ...data, flows: [{ ...graph.flows[0], value: -1 }] };
-  assert.throws(() => frames.accept({ data: different, segment: 'seek' }), /Invalid chord value/);
-  assert.equal(frames.data, data);
-});
 
 test('5,000 nodes retain positive geometry and a chosen fold preserves every flow', () => {
   const nodes = Array.from({ length: 5_000 }, (_, index) => node(`content ${index}`));

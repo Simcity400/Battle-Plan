@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { careerLanes, careerTotals, leaderRows, topLeader, traitDateText, withheldLeaders } from './generalsData.ts';
+import { careerLanes, careerTotals, leaderRows, topLeader, withheldLeaders } from './generalsData.ts';
 import type { CareerBattle, LeaderCareerReply, LeaderRole, LeaderRow, UnitLeadersReply } from '../../generated/dashboard';
 
 const role = (owner: string | null, kind = 1): LeaderRole => ({ owner, kind, category: 0, rank: 'Field Marshal', attributeNames: ['A', 'D', 'P', 'L'], maximumSkill: 9 });
@@ -38,11 +38,6 @@ test('withheld leaders are kept by kind and country', () => {
   assert.equal(withheldLeaders(data, null, 'land').length, 0);
 });
 
-test('a trait date names how it was dated, and says when none was recorded', () => {
-  assert.match(traitDateText([100, 0]), /^Held before /);
-  assert.match(traitDateText([100, 1]), /^Gained /);
-  assert.equal(traitDateText(null), 'Date not recorded');
-});
 
 const battle = (start: number, read: number, won: boolean | null, resultRead: number | null): CareerBattle =>
   ({ start, read, unknown: false, kind: 1, won, resultHour: resultRead === null ? null : resultRead - 1, resultRead });

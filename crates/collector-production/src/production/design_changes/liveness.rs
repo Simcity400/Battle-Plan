@@ -174,7 +174,35 @@ fn event(
     });
     Ok(())
 }
+fn record_registered(
+    store: &mut Store,
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    handle: u64,
+) {
+    if !store.interests.organisations.contains_key(&handle) {
+        return;
+    }
+    let result = (|| {
+        store.interests.author_changed(handle);
+        let vtable = engine_sites::at(base, organisation::VTABLE_RVA)
+            .ok_or("design organisation liveness identity mismatch")?;
+        if engine_native_memory::read::<u64>(memory, pointer) != Some(vtable as u64) {
+            return Err("design organisation liveness identity mismatch");
+        }
+        let resolved = engine_native_parts::creference_registry::resolve(memory, base, handle)?;
+        store.interests.organisation(handle, resolved)?;
+        event(store, memory, base, handle, pointer, resolved.is_some())
+    })();
+    if let Err(reason) = result {
+        store.batch.failure = Some(reason);
+    }
+}
 pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
+    if !DEMANDED.load(Ordering::Acquire) {
+        return;
+    }
     let Some(store) = STORE.get() else {
         return;
     };
@@ -186,32 +214,12 @@ pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
-    let result = (|| {
-        if !store.interests.organisations.contains_key(&handle) {
-            return Ok(());
-        }
-        store.interests.author_changed(handle);
-        let vtable = engine_sites::at(base, organisation::VTABLE_RVA)
-            .ok_or("design organisation liveness identity mismatch")?;
-        if engine_native_memory::read::<u64>(memory, pointer) != Some(vtable as u64) {
-            return Err("design organisation liveness identity mismatch");
-        }
-        let resolved = engine_native_parts::creference_registry::resolve(memory, base, handle)?;
-        store.interests.organisation(handle, resolved)?;
-        event(
-            &mut store,
-            memory,
-            base,
-            handle,
-            pointer,
-            resolved.is_some(),
-        )
-    })();
-    if let Err(reason) = result {
-        store.batch.failure = Some(reason);
-    }
+    record_registered(&mut store, memory, base, pointer, handle);
 }
 pub(super) fn retired(memory: &impl Memory, base: usize, pointer: usize) {
+    if !DEMANDED.load(Ordering::Acquire) {
+        return;
+    }
     let Some(store) = STORE.get() else {
         return;
     };
@@ -232,19 +240,87 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
     if !LIVENESS_BASELINE.load(Ordering::Acquire) || !DEMANDED.load(Ordering::Acquire) {
         return;
     }
+    let Some(store) = STORE.get() else {
+        return;
+    };
     let Some(array) = Array::read(memory, header, 8) else {
         unobserved!();
         return;
     };
-    for ordinal in 0..array.count {
-        let pointer = array
-            .element(ordinal, 8)
-            .and_then(|at| engine_native_memory::read::<u64>(memory, at));
-        if let Some(pointer) = pointer {
-            registered(memory, base, pointer as usize);
-        } else {
-            unobserved!();
+    if array.count == 0 {
+        return;
+    }
+    let mut store = callback_store(store);
+    if store.epoch != EPOCH.load(Ordering::Acquire) || store.interests.organisations.is_empty() {
+        return;
+    }
+    const ROSTER_BATCH: usize = 64;
+    const REFERENCE_FIELDS: [engine_native_memory::memory::RecordField; 1] =
+        [engine_native_memory::memory::RecordField {
+            source_offset: organisation::REFERENCE,
+            destination_offset: 0,
+            len: 8,
+        }];
+    const REFERENCE_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+        engine_native_memory::memory::RecordLayout::new(&REFERENCE_FIELDS, 8)
+            .expect("valid record layout");
+    let mut pointer_bytes = [0_u8; ROSTER_BATCH * 8];
+    let mut pointers = [0_usize; ROSTER_BATCH];
+    let mut handle_bytes = [0_u8; ROSTER_BATCH * 8];
+    let mut first = 0_u32;
+    while first < array.count {
+        let count = ((array.count - first) as usize).min(ROSTER_BATCH);
+        let batch_ok = array
+            .slice(first, count as u32, 8)
+            .ok()
+            .is_some_and(|span| engine_native_memory::read_slice(memory, span.data, &mut pointer_bytes[..count * 8]));
+        if !batch_ok {
+            for ordinal in first..first + count as u32 {
+                let pointer = array
+                    .element(ordinal, 8)
+                    .and_then(|at| engine_native_memory::read::<u64>(memory, at));
+                let Some(pointer) = pointer else {
+                    unobserved!();
+                    continue;
+                };
+                let Some(handle) =
+                    engine_native_memory::read::<u64>(memory, pointer as usize + organisation::REFERENCE)
+                else {
+                    unobserved!();
+                    continue;
+                };
+                record_registered(&mut store, memory, base, pointer as usize, handle);
+            }
+            first += count as u32;
+            continue;
         }
+        for (slot, chunk) in pointers[..count]
+            .iter_mut()
+            .zip(pointer_bytes[..count * 8].chunks_exact(8))
+        {
+            *slot = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
+        }
+        let copied = memory.copy_records(
+            engine_native_memory::memory::RecordSources::Pointers(&pointers[..count]),
+            &REFERENCE_LAYOUT,
+            &mut handle_bytes[..count * 8],
+        );
+        for index in 0..copied {
+            let handle = u64::from_le_bytes(handle_bytes[index * 8..(index + 1) * 8].try_into().unwrap());
+            record_registered(&mut store, memory, base, pointers[index], handle);
+        }
+        if copied < count {
+            for &pointer in &pointers[copied..count] {
+                let Some(handle) =
+                    engine_native_memory::read::<u64>(memory, pointer + organisation::REFERENCE)
+                else {
+                    unobserved!();
+                    continue;
+                };
+                record_registered(&mut store, memory, base, pointer, handle);
+            }
+        }
+        first += count as u32;
     }
 }
 pub(super) fn refresh_context(
@@ -268,15 +344,15 @@ pub(super) fn refresh_context(
     Ok(())
 }
 struct Scope {
+    flight: collector_primitives::asymmetric::FlightGuard<'static>,
     complete: bool,
 }
 impl Drop for Scope {
     fn drop(&mut self) {
-        REVISION.fetch_add(1, Ordering::AcqRel);
+        self.flight.mark_dirty();
         if !self.complete {
             unobserved!();
         }
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 unsafe extern "system-unwind" fn callback<const SITE: usize>(
@@ -287,9 +363,10 @@ unsafe extern "system-unwind" fn callback<const SITE: usize>(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     if SITE == 3 {
@@ -320,9 +397,10 @@ unsafe extern "system-unwind" fn reconcile(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c, d, e) });

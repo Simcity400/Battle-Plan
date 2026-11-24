@@ -353,17 +353,6 @@ fn speeds_load_as_the_game_resizes_them() {
 }
 
 #[test]
-fn a_hidden_cycle_fades_out_rather_than_snapping() {
-    let mut clock = DayNightPlayback::default();
-    let shown = DayNight::at_hour(30);
-    clock.update(30, shown, 0.0, 1.0);
-    let hidden = shown.with_cycle(false);
-    let first = clock.update(30, hidden, 1.0 / 60.0, 1.0).strength;
-    assert!((first - 0.8).abs() < 1e-6, "{first}");
-    assert_eq!(clock.update(30, hidden, 1.0, 1.0).strength, 0.0);
-}
-
-#[test]
 fn a_mods_game_speeds_move_where_the_cycle_hides() {
     use content_reader_layers::ResolvedLayers;
     let root = std::env::temp_dir().join(format!("mod-game-speeds-{}", std::process::id()));

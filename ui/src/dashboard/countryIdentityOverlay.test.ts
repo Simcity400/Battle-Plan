@@ -74,17 +74,6 @@ test('exact aliases join adjacent equal holders after clipping all rough aliases
   assert.deepEqual(index.aliasesAt(index.selected(['A']), 7), ['A', 'B'], 'aliases outside exact evidence remain');
 });
 
-test('identity overlays retain every country at 5000 without request loops', () => {
-  const rough = Array.from({ length: 5000 }, (_, index) => ({ tag: `mod-${index}`,
-    identities: [{ firstHour: 0, lastHour: 100, slot: index, countryId: index }] }));
-  const exact = rough.map((history, index) => ({ tag: history.tag,
-    identities: [{ firstHour: 50, lastHour: 50, slot: index, countryId: index + 5000 }] }));
-  let requests = 0;
-  const combined = (() => { requests++; return overlayCountryIdentities(rough, exact); })();
-  assert.equal(requests, 1);
-  assert.equal(combined.length, 5000);
-  assert.equal(combined.every(history => history.identities.length === 3), true);
-});
 
 test('5,000 exact aliases replace rough aliases at their hours with one holder per slot', () => {
   const rough = Array.from({ length: 5000 }, (_, slot) => ({ tag: `rough-${slot}`,

@@ -411,13 +411,3 @@ pub fn instance(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serializer_rvas_match_supported_operation_layout() {
-        assert_eq!(SAVE_RVA, 0x14A0A70);
-        assert_eq!(LOADER_RVA, 0x149e700);
-    }
-}

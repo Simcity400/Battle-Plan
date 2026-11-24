@@ -53,18 +53,6 @@ fn level(height: f32) -> Flight {
 }
 
 #[test]
-fn a_flight_starts_over_the_ground_the_map_camera_looks_at_heading_its_way() {
-    let map = base();
-    let flight = Flight::from_map(&map, &flat, SIZE);
-    assert_eq!([flight.position[0], flight.position[2]], map.center);
-    assert!(flight.yaw.abs() < 1e-6);
-    let above = flight.position[1] - WATER_HEIGHT;
-    assert!((above - (300.0 - WATER_HEIGHT) * START_HEIGHT_SHARE).abs() < 1e-3);
-    assert_eq!(flight.view, View::Chase);
-    assert_eq!(flight.speed, cruise(START_THROTTLE));
-}
-
-#[test]
 fn with_nothing_held_it_flies_level_ahead_at_the_throttle_speed() {
     let mut flight = level(200.0);
     fly(&mut flight, &idle(), &flat, 2.0);

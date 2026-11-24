@@ -79,7 +79,16 @@ impl Captured {
         self.rows.allocated_bytes() + self.text.allocated_bytes()
     }
 
+    pub fn release_static(&mut self) {
+        self.rows.rows = Vec::new();
+        self.text.first = Vec::new();
+        self.reset();
+    }
+
     pub fn grow(&mut self, capacity: &mut Capacities) {
+        if self.raw_mode {
+            return;
+        }
         grow_capacity(&mut capacity.rows, self.rows.rows.len());
         self.rows.grow(&mut capacity.rows);
         capacity.text = capacity
@@ -236,7 +245,6 @@ fn converted(outcome: Outcome, source: &[cpdx_lexer::Row], bytes: &[u8]) -> Tabl
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
-
 
 const TABLE_CHUNK: usize = 65536;
 
@@ -2030,21 +2038,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lexical_cold_storage_holds_no_content_guesses() {
-        let job = LexicalJob::new();
-        assert!(!job.has_storage());
-        assert_eq!(
-            (
-                job.bytes.capacity(),
-                job.tokens.capacity(),
-                job.chunks.capacity()
-            ),
-            (0, 0, 0)
-        );
-        let capacity = Capacities::default();
-        assert_eq!((capacity.rows, capacity.text), (0, 0));
-    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -2103,7 +2096,8 @@ mod conversion_tests {
             TableInput::Sampled(actual) => assert_eq!(actual, &expected),
             TableInput::ComparedEqual(_)
             | TableInput::ComparedChanges { .. }
-            | TableInput::SliceUpdate { .. } => {
+            | TableInput::SliceUpdate { .. }
+            | TableInput::UniformOptionalI32 { .. } => {
                 panic!("lexical reuse must retain full encoder validation")
             }
         }

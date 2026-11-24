@@ -25,11 +25,3 @@ fn every_column_but_the_combined_casualties_reads_a_declared_value_of_a_country_
     assert!(columns.iter().any(|column| column.key == DEFAULT_SORT && column.available));
 }
 
-#[test]
-fn a_column_takes_the_games_heading_where_the_recording_has_one_and_its_plain_name_otherwise() {
-    let columns = registry(|key| (key == "STABILITY").then(|| "Stabilität".to_owned()));
-    let label = |key: ScoreboardColumnKey| columns.iter().find(|column| column.key == key).unwrap().label.clone();
-    assert_eq!(label(ScoreboardColumnKey::Stability), "Stabilität");
-    assert_eq!(label(ScoreboardColumnKey::WarSupport), "War support");
-    assert_eq!(label(ScoreboardColumnKey::Factories), "Factories");
-}

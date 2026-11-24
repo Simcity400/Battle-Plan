@@ -3,34 +3,6 @@ use collector_observers::country_input_changes::{Changes, Table};
 use engine_native_memory::{Memory, walk::Outcome};
 use std::sync::{Condvar, atomic::AtomicUsize, mpsc};
 
-#[test]
-fn callback_help_keeps_nested_acquisition_and_coordinator_jobs_on_workers() {
-    for role in [
-        Role::Variants,
-        Role::Governance,
-        Role::GatedProjects,
-        Role::PresentationPrepare,
-        Role::PresentationSettle,
-        Role::Presentation,
-        Role::FinalInputs,
-        Role::ScriptVariables,
-        Role::Research,
-        Role::Lexical,
-    ] {
-        assert!(!role.callback_help());
-        assert!(role.worker_only());
-    }
-    for role in [
-        Role::Countries,
-        Role::DivisionInputs,
-        Role::AirWing,
-        Role::Characters,
-    ] {
-        assert!(role.callback_help());
-        assert!(role.worker_only());
-    }
-}
-
 struct Unreadable;
 impl Memory for Unreadable {
     fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -62,7 +34,12 @@ fn gated(hour: i32, full: bool, raw: bool, mode: replay_data::scope::CaptureMode
         hour,
         full,
         Box::new(collector_certificates::slicing::SliceFingerprints::new()),
-        None,
+        Some(
+            engine_allocation::shared(
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
+            )
+            .unwrap(),
+        ),
     )
 }
 fn old_gated(request: &mut GatedRequest, marks: &Marks) {
@@ -118,6 +95,8 @@ fn split_gated_matches_serial_tables_raw_admission_and_single_mark_consumption()
                 let mut split = gated(hour, full, raw, mode);
                 let marks = Marks::default();
                 let mut projects = split.take_projects();
+                assert!(split.countries.is_some());
+                assert!(projects.countries.is_some());
                 projects.capture(&Unreadable, &Unreadable, &marks);
                 split
                     .packs

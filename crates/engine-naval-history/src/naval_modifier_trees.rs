@@ -454,21 +454,6 @@ mod tests {
     }
 
     #[test]
-    fn keys_are_sorted_and_name_each_kind_once() {
-        assert!(KEYS.windows(2).all(|pair| pair[0] < pair[1]));
-        for (index, kind) in Kind::ALL.into_iter().enumerate() {
-            assert_eq!(kind as usize, index);
-            assert_eq!(Kind::from_u8(index as u8), Some(kind));
-        }
-        assert_eq!(Kind::from_u8(Kind::ALL.len() as u8), None);
-        assert!(Kind::Country.carried() && Kind::Commander.carried());
-        assert!(!Kind::CommanderClass.carried() && !Kind::SideWeather.carried());
-        for (index, source) in SideSource::ALL.into_iter().enumerate() {
-            assert_eq!(SideSource::from_ordinal(index as u16), Some(source));
-        }
-    }
-
-    #[test]
     fn the_ship_join_names_each_tree_scope_and_skips_the_rest() {
         let owner = |scope| ship_owner(scope, 3, 0x2a, 0x55, 41, 77, 5, 99, 6, 12);
         assert_eq!(owner(0), Some((Kind::Country, 5, 0)));

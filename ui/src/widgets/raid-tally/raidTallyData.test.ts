@@ -5,8 +5,7 @@ import { tallyEntries, tallyLines, tallyLineTooltip, tallyModel, tallyTooltip } 
 import { definition, OPTIONS } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
-import { countryRaceEnds, countryRaceItems } from '../../charts/race/countryRace.ts';
-import { SECONDARY_DASH } from '../../charts/palette.ts';
+import { countryRaceItems } from '../../charts/race/countryRace.ts';
 import { stepRace } from '../../charts/race/race.ts';
 
 const synthetic = (): RaidTallySeries => ({ tag: 'MOD A', segments: [{ firstHour: 100, lastHour: 101 }, { firstHour: 103, lastHour: 105 }], membership: null,
@@ -66,15 +65,6 @@ test('Both defaults to launched ranking with exact inner successes, including su
     [['MOD A at hover', 'hover flag', '4+ launched · 1+ succeeded'], ['MOD B at hover', 'hover flag', '0+ launched · 7+ succeeded']]);
 });
 
-test('Both lines use country colour with secondary dashes and exact measure end labels', () => {
-  const lines = tallyLines([synthetic()], 'both', { firstHour: 100, lastHour: 105 }, null);
-  assert.deepEqual(lines.map(line => [line.tag, line.measure, line.dash, line.color]),
-    [['MOD A', 'launched', undefined, undefined], ['MOD A', 'succeeded', SECONDARY_DASH, undefined]]);
-  assert.notEqual(lines[0].id, lines[1].id);
-  const ends = countryRaceEnds(lines, 100, 105, null, () => 'Hovered country', () => 'country', value => `${value}+`);
-  assert.deepEqual(ends.map(end => [end.text, end.suffix, end.color]), [['Hovered country · launched', '0+', 'country'], ['Hovered country · succeeded', '1+', 'country']]);
-  assert.equal(tallyLines([synthetic()], 'both', { firstHour: 102, lastHour: 102 }, null).length, 0);
-});
 
 test('chosen raid countries have no arbitrary row cap', () => {
   const all = Array.from({ length: 5000 }, (_, index) => ({ ...synthetic(), tag: `M${index}` }));

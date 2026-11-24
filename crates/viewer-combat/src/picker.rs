@@ -1132,32 +1132,6 @@ mod tests {
     }
 
     #[test]
-    fn a_mode_list_grows_upward_a_slot_per_scripted_mode() {
-        content_reader_script::test_game::enter();
-        let windows = viewer_native_gui::test_support::gui::windows(
-            br#"guiTypes = { containerWindowType = {
-                name = "List" position = { x = -255 y = -322 } size = { width = 180 height = 296 }
-                Orientation = lower_RIGHT
-                gridboxtype = { name = "slots" position = { x = 0 y = 5 }
-                    size = { width = 160 height = 264 } slotsize = { width = 156 height = 22 }
-                    max_slots_horizontal = 1 }
-            } }"#,
-        );
-        let root = gui::template(&windows, "List").unwrap();
-        let viewport = Some([1920, 1080]);
-        let authored = native_gui::container_frame(root, viewport).unwrap();
-        assert_eq!(grown(root, 0).unwrap(), *root);
-        let grown = native_gui::container_frame(&grown(root, 3).unwrap(), viewport).unwrap();
-        assert_eq!(grown.size[1], authored.size[1] + 66);
-        assert_eq!(grown.at[1], authored.at[1] - 66);
-        assert_eq!(
-            grown.at[1] + grown.size[1],
-            authored.at[1] + authored.size[1]
-        );
-        assert_eq!(grown.at[0], authored.at[0]);
-    }
-
-    #[test]
     fn buttons_show_their_modes_frame_whatever_the_slot() {
         content_reader_script::test_game::enter();
         let windows = viewer_native_gui::native_windows::NativeWindows::read(

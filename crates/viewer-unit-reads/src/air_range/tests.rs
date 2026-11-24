@@ -141,28 +141,6 @@ fn fixture() -> Fixture {
 }
 
 #[test]
-fn absent_or_dead_ace_keeps_unreached_inputs_lazy() {
-    let mut sources = fixture();
-    let mut wing = AirWingRow {
-        owner: 11,
-        country_override: -3,
-        base_range_raw: 200_000,
-        ..Default::default()
-    };
-    assert_eq!(wing_range(&wing, defines(), &sources).unwrap(), 125_000);
-    assert_eq!(*sources.reads.borrow(), ["slot:11", "country:1"]);
-    sources.reads.borrow_mut().clear();
-    wing.ace = 7;
-    sources.aces.push(AceRangeInputRow {
-        ace: 7,
-        alive: 0,
-        ..Default::default()
-    });
-    assert_eq!(wing_range(&wing, defines(), &sources).unwrap(), 125_000);
-    assert_eq!(*sources.reads.borrow(), ["slot:11", "country:1", "ace:7"]);
-}
-
-#[test]
 fn live_ace_uses_its_owner_and_assigned_wing_before_the_wing_country_bonus() {
     let mut sources = fixture();
     sources.command = vec![

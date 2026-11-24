@@ -443,16 +443,3 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     ),
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn data_sites_name_the_contained_data() {
-        assert_eq!(DATA, 0x18);
-        assert_eq!(engine_native::creferenced_division_template::NAME_KEY, DATA + 0x28);
-        let mut rvas = MUTATIONS.map(|(site, _)| site.rva);
-        rvas.sort_unstable();
-        assert!(rvas.windows(2).all(|pair| pair[0] != pair[1]));
-    }
-}

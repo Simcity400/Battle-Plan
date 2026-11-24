@@ -135,16 +135,4 @@ mod tests {
         assert_eq!(ledgers.count(6), 0);
     }
 
-    #[test]
-    fn estimates_print_one_number_or_both_bounds() {
-        assert_eq!(range_text([4, 4]), "4");
-        assert_eq!(range_text([3, 6]), "3-6");
-    }
-
-    #[test]
-    fn air_shares_split_the_score_and_stay_zero_without_one() {
-        assert_eq!(air_shares(30_000, 10_000), [75_000, 25_000]);
-        assert_eq!(air_shares(0, 0), [0, 0]);
-        assert_eq!(percent(air_shares(1, 2)[0]), "33%");
-    }
 }

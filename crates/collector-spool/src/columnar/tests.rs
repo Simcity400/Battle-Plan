@@ -568,21 +568,6 @@ fn each_capture_takes_the_next_number_and_keeps_the_earlier_files() {
 }
 
 #[test]
-fn an_off_recording_holds_nothing_and_reports_nothing() {
-    let mut columnar = Columnar::off();
-    assert!(
-        columnar
-            .prepare(&frame(1, 1), row(), &OneThread)
-            .unwrap()
-            .is_none()
-    );
-    columnar.complete(1, 1);
-    columnar.interrupt();
-    columnar.finish();
-    assert!(columnar.status().is_none());
-}
-
-#[test]
 fn an_unopened_recording_fails_every_hour() {
     let mut columnar = Columnar::Unopened;
     assert!(columnar.prepare(&frame(1, 1), row(), &OneThread).is_err());

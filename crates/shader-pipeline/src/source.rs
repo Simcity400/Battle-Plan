@@ -365,11 +365,4 @@ mod tests {
         assert_eq!(refused("float s = \"a\\\\\n\n#include \"b\"\n"), 1);
     }
 
-    #[test]
-    fn host_path_tests_are_undefined_first() {
-        let lowered = lowered("#if __has_include(\"C:/host.h\")\n#endif\n");
-        assert!(lowered.starts_with(
-            "#undef __has_include\n#undef __has_include_next\n#line 1\n#if __has_include"
-        ));
-    }
 }

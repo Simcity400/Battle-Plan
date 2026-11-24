@@ -196,7 +196,7 @@ pub struct World<'a, M: Memory> {
     memory: &'a M,
     base: usize,
     state: usize,
-    countries: ccountry::Reader<'a, M>,
+    countries: std::cell::OnceCell<ccountry::Reader<'a, M>>,
 }
 
 impl<'a, M: Memory> World<'a, M> {
@@ -209,8 +209,17 @@ impl<'a, M: Memory> World<'a, M> {
             memory,
             base,
             state,
-            countries: ccountry::Reader::new(memory, base, state)?,
+            countries: std::cell::OnceCell::new(),
         })
+    }
+
+    fn countries(&self) -> Result<&ccountry::Reader<'a, M>, &'static str> {
+        if let Some(countries) = self.countries.get() {
+            return Ok(countries);
+        }
+        let countries = ccountry::Reader::new(self.memory, self.base, self.state)?;
+        let _ = self.countries.set(countries);
+        Ok(self.countries.get().expect("initialized country reader"))
     }
 
     pub fn hour(&self) -> Result<i32, &'static str> {
@@ -218,14 +227,14 @@ impl<'a, M: Memory> World<'a, M> {
     }
 
     pub fn country(&self, reference: u32) -> Result<CountryIdentity, &'static str> {
-        Ok(identity(self.memory, self.base, &self.countries, reference)?.1)
+        Ok(identity(self.memory, self.base, self.countries()?, reference)?.1)
     }
 
     pub fn country_and_object(
         &self,
         reference: u32,
     ) -> Result<(CountryIdentity, usize), &'static str> {
-        let (country, identity) = identity(self.memory, self.base, &self.countries, reference)?;
+        let (country, identity) = identity(self.memory, self.base, self.countries()?, reference)?;
         Ok((identity, country.pointer))
     }
 
@@ -241,9 +250,48 @@ impl<'a, M: Memory> World<'a, M> {
         &self,
         country: usize,
     ) -> Result<(engine_native_memory::country_identity::Country, CountryIdentity), &'static str> {
+        let expected = super::site(self.base, ccountry::VTABLE_RVA)? as u64;
+        if country == 0 {
+            return Err("event feed object identity mismatch");
+        }
+        if let (Some(id_addr), Some(target_addr)) = (
+            country.checked_add(ccountry::ID),
+            country.checked_add(ccountry::SURRENDER_TARGET),
+        ) {
+            let mut vtable_bytes = [0u8; 8];
+            let mut id_bytes = [0u8; 4];
+            let mut target_bytes = [0u8; 4];
+            let copied = self.memory.copy_scattered(
+                [country, id_addr, target_addr],
+                &mut [&mut vtable_bytes[..], &mut id_bytes[..], &mut target_bytes[..]],
+            );
+            if copied >= 1 && u64::from_le_bytes(vtable_bytes) != expected {
+                return Err("event feed object identity mismatch");
+            }
+            if copied == 3 {
+                let reference = u32::from_le_bytes(id_bytes);
+                let instance = u32::from_le_bytes(target_bytes);
+                let countries = self.countries()?;
+                if let Some(resolved) = countries.verify_canonical_pointer(country, reference) {
+                    return Ok((
+                        resolved,
+                        CountryIdentity {
+                            reference,
+                            id: resolved.id,
+                            instance,
+                        },
+                    ));
+                }
+                let (resolved, identity) = identity(self.memory, self.base, countries, reference)?;
+                if resolved.pointer != country {
+                    return Err("event feed country is not its canonical object");
+                }
+                return Ok((resolved, identity));
+            }
+        }
         verify_vtable(self.memory, self.base, country, ccountry::VTABLE_RVA)?;
         let reference = value(self.memory, country, ccountry::ID)?;
-        let (resolved, identity) = identity(self.memory, self.base, &self.countries, reference)?;
+        let (resolved, identity) = identity(self.memory, self.base, self.countries()?, reference)?;
         if resolved.pointer != country {
             return Err("event feed country is not its canonical object");
         }

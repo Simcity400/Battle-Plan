@@ -132,14 +132,27 @@ impl Store {
                 .get(&segment.handle)
                 .is_none_or(|base| base.segment != segment.id);
             if changed {
-                let containers = read_membership(
-                    &recorded,
-                    &metadata,
-                    image,
-                    segment,
-                    countries.as_ref().expect("changed base demands countries"),
-                    &mut self.resolved,
-                );
+                let containers = match segment.carried_raw.as_deref() {
+                    Some(raw) => {
+                        let carried_recorded = raw.memory(&recorded);
+                        read_membership(
+                            &carried_recorded,
+                            &metadata,
+                            image,
+                            segment,
+                            countries.as_ref().expect("changed base demands countries"),
+                            &mut self.resolved,
+                        )
+                    }
+                    None => read_membership(
+                        &recorded,
+                        &metadata,
+                        image,
+                        segment,
+                        countries.as_ref().expect("changed base demands countries"),
+                        &mut self.resolved,
+                    ),
+                };
                 engine_allocation::reserve_map(&mut self.bases, 1)
                     .map_err(|_| "state air-base metadata storage unavailable")?;
                 self.bases.insert(
@@ -687,86 +700,6 @@ mod tests {
     }
 
     #[test]
-    fn fuel_batches_keep_independent_faults_exact_spans_and_successful_byte_accounting() {
-        use engine_native_memory::read_counts::{CountedMemory, ReadCounts};
-        struct Batched {
-            words: ScalarMemory,
-            batches: Cell<usize>,
-            singles: Cell<usize>,
-            spans: std::cell::RefCell<Vec<(usize, usize)>>,
-        }
-        impl Memory for Batched {
-            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-                self.singles.set(self.singles.get() + 1);
-                self.spans.borrow_mut().push((at, output.len()));
-                self.words.copy(at, output)
-            }
-            fn copy_scattered<const N: usize>(
-                &self,
-                addresses: [usize; N],
-                destinations: &mut [&mut [u8]; N],
-            ) -> usize {
-                self.batches.set(self.batches.get() + 1);
-                for (n, (&at, output)) in addresses.iter().zip(destinations).enumerate() {
-                    self.spans.borrow_mut().push((at, output.len()));
-                    if !self.words.copy(at, output) {
-                        return n;
-                    }
-                }
-                N
-            }
-        }
-        for (demand, allocation) in [
-            (Some(-21), Some(7)),
-            (Some(-21), None),
-            (None, Some(7)),
-            (None, None),
-        ] {
-            ReadCounts::take_current();
-            let raw = CountedMemory::new(Batched {
-                words: ScalarMemory {
-                    demand: Cell::new(demand),
-                    allocation: Cell::new(allocation),
-                    reads: Cell::new(0),
-                },
-                batches: Cell::new(0),
-                singles: Cell::new(0),
-                spans: Default::default(),
-            });
-            let memory = Counted {
-                memory: &raw,
-                bytes: Cell::new(0),
-            };
-            let fuel = update_fuel(&memory, 0);
-            assert_eq!(
-                fuel.demand,
-                demand.ok_or("state air-base fuel scalar unreadable")
-            );
-            assert_eq!(
-                fuel.allocated,
-                allocation.ok_or("state air-base fuel scalar unreadable")
-            );
-            assert_eq!(raw.0.batches.get(), 1);
-            assert_eq!(raw.0.singles.get(), usize::from(demand.is_none()));
-            assert_eq!(
-                *raw.0.spans.borrow(),
-                [
-                    (container::FUEL_DEMAND_RAW, 8),
-                    (container::FUEL_ALLOCATED_RAW, 8),
-                ]
-            );
-            assert_eq!(
-                memory.bytes.get(),
-                8 * (u64::from(demand.is_some()) + u64::from(allocation.is_some()))
-            );
-            let counts = ReadCounts::take_current();
-            assert_eq!((counts.spans, counts.bytes), (2, 16));
-            assert_eq!(counts.scattered_calls, 1);
-            assert_eq!(counts.copy_calls, u64::from(demand.is_none()));
-        }
-    }
-
-    #[test]
     fn every_containers_fuel_is_one_gather_resumed_only_after_a_failed_word() {
         use engine_native_memory::read_counts::{CountedMemory, ReadCounts};
         let memory = CountedMemory::new(ScalarMemory {
@@ -860,6 +793,7 @@ mod tests {
             handle: 7,
             pointer: 0x1000,
             id: 1,
+            carried_raw: None,
         };
         let pools = vec![CarrierPool {
             type_index: -4,
@@ -897,7 +831,7 @@ mod tests {
             memory.demand.set(Some(demand));
             memory.allocation.set(Some(allocation));
             store
-                .capture(&memory, 0, 0, &log, &[segment], &mut packet)
+                .capture(&memory, 0, 0, &log, std::slice::from_ref(&segment), &mut packet)
                 .unwrap();
             assert_eq!(packet.rows.len(), 2);
             assert_eq!(packet.rows[0].fuel.demand, Ok(demand));

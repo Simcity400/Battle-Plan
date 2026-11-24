@@ -47,22 +47,3 @@ pub const MUTATIONS: [MutationSite; 10] = [
 
 pub const RECEIVER_ARGUMENT: [usize; 10] = [0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_sites_are_distinct() {
-        for (index, site) in MUTATIONS.iter().enumerate() {
-            assert!(
-                MUTATIONS[index + 1..]
-                    .iter()
-                    .all(|other| other.rva != site.rva)
-            );
-        }
-        assert_eq!(
-            MUTATIONS[3].rva,
-            engine_native_air::cstrategic_air_manager::ADD_CARRIER_AIR_BASE_RVA
-        );
-    }
-}

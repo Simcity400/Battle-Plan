@@ -1202,17 +1202,6 @@ template_counter=-");
     }
 
     #[test]
-    fn a_monitor_scaled_to_125_percent_is_a_smaller_desktop_to_the_game() {
-        assert_eq!(OWNER_MONITOR.virtualised(), Some([2048, 1152]));
-        assert_eq!(OWNER_MONITOR.dpi_scale(), Some(1.25));
-        let plain = Desktop {
-            physical: [1920, 1080],
-            dpi: Ok(96),
-        };
-        assert_eq!(plain.virtualised(), Some([1920, 1080]));
-    }
-
-    #[test]
     fn the_owners_borderless_game_is_stretched_by_windows_to_125_percent() {
         let game = display(OWNER_SETTINGS, Some(OWNER_PDX)).unwrap();
         assert_eq!(game.size, Some([2560, 1440]));

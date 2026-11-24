@@ -26,6 +26,56 @@ pub fn id_and_controller(memory: &impl Memory, state: usize) -> Result<(u32, u32
     Ok((field(ID)?, field(CONTROLLER)?))
 }
 
+const ID_CONTROLLER_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: ID,
+        destination_offset: 0,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CONTROLLER,
+        destination_offset: 4,
+        len: 4,
+    },
+];
+const ID_CONTROLLER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ID_CONTROLLER_FIELDS, 8).expect("valid state id/controller layout");
+
+pub fn ids_and_controllers(
+    memory: &impl Memory,
+    states: &[usize],
+    out: &mut Vec<(usize, Result<(u32, u32), &'static str>)>,
+) {
+    const BATCH: usize = 64;
+    let mut records = [0_u8; BATCH * 8];
+    let mut offset = 0;
+    while offset < states.len() {
+        let count = (states.len() - offset).min(BATCH);
+        let chunk = &states[offset..offset + count];
+        let copied = memory.copy_records(
+            RecordSources::Pointers(chunk),
+            &ID_CONTROLLER_LAYOUT,
+            &mut records[..count * 8],
+        );
+        let complete = copied / ID_CONTROLLER_FIELDS.len();
+        for (index, &state) in chunk.iter().enumerate() {
+            if index < complete {
+                let bytes = &records[index * 8..(index + 1) * 8];
+                out.push((
+                    state,
+                    Ok((
+                        u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                        u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                    )),
+                ));
+            } else {
+                out.push((state, id_and_controller(memory, state)));
+            }
+        }
+        offset += count;
+    }
+}
+
 pub const PROVINCES: usize = 0x18;
 pub const PROVINCE_COUNT: usize = 0x24;
 pub const TEMPLATE: usize = 0x30;
@@ -275,6 +325,16 @@ pub fn country_modifier_accumulator(
                 .ok_or("state movement country links invalid")?,
         )
     };
+    country_modifier_accumulator_with_links(memory, links, state, owner_raw)
+}
+
+pub fn country_modifier_accumulator_with_links(
+    memory: &impl Memory,
+    links: Option<Array>,
+    state: usize,
+    owner_raw: u32,
+) -> Result<usize, &'static str> {
+    let links = links.filter(|_| owner_raw != 0);
     let header_address = state
         .checked_add(COUNTRY_MODIFIERS)
         .ok_or("state movement hash address overflow")?;

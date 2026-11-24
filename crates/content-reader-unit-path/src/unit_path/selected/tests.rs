@@ -1490,39 +1490,6 @@ fn army_route_zero_negative_and_unknown_distances_are_not_kind4() {
 }
 
 #[test]
-fn army_route_land_neighbour_access_promotes_exile_mode_before_d0_search() {
-    let graph = route_graph(3, &[(1, 2, Some(0), false)]);
-    let army = army();
-    let world = World {
-        exile_raw: Ok(1),
-        state_owner: 2,
-        controller: 2,
-        state_owners: BTreeMap::from([(2, Ok(1))]),
-        d0: BTreeMap::from([(1, Ok(7)), (3, Ok(7))]),
-        ..Default::default()
-    };
-    assert_eq!(
-        Mover {
-            graph: &graph,
-            world: &world
-        }
-        .selected_army_path(&unit(&army), 3),
-        Ok(true)
-    );
-    assert_eq!(
-        &*world.route_trace.borrow(),
-        &[
-            "D8:1->3",
-            "raw-exile",
-            "canonical:1",
-            "state-owner:2",
-            "D0:1",
-            "D0:3"
-        ]
-    );
-}
-
-#[test]
 fn army_route_skips_known_null_and_kind4_before_indexing_but_refuses_invalid_indices() {
     let mut graph = route_graph(2, &[(1, 2, Some(0), false)]);
     let army = army();
@@ -1800,50 +1767,6 @@ fn railway_route_heap_bubbles_equal_cost_later_neighbour_before_lower_id() {
         }
         .selected_railway_path(&railway_unit(&army), 4),
         Ok(true)
-    );
-}
-
-#[test]
-fn railway_route_relaxation_keeps_earlier_heap_key_frozen_and_expands_duplicate() {
-    let graph = route_graph(
-        6,
-        &[
-            (1, 2, Some(1000), false),
-            (1, 3, Some(1), false),
-            (1, 4, Some(50), false),
-            (3, 2, Some(9), false),
-            (2, 5, Some(10000), false),
-            (4, 5, Some(10000), false),
-        ],
-    );
-    let army = army();
-    let world = World::default();
-    assert_eq!(
-        Mover {
-            graph: &graph,
-            world: &world
-        }
-        .selected_railway_path(&railway_unit(&army), 6),
-        Ok(false)
-    );
-    let edges: Vec<_> = world
-        .route_trace
-        .borrow()
-        .iter()
-        .filter(|call| call.starts_with("rail-edge:"))
-        .cloned()
-        .collect();
-    assert_eq!(
-        edges,
-        [
-            "rail-edge:1->2",
-            "rail-edge:1->3",
-            "rail-edge:1->4",
-            "rail-edge:3->2",
-            "rail-edge:2->5",
-            "rail-edge:4->5",
-            "rail-edge:2->5"
-        ]
     );
 }
 

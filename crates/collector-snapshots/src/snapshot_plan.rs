@@ -164,7 +164,11 @@ impl SnapshotPlan {
         if engine_allocation::advisory(|| self.try_prepare(data_reads)).is_err() {
             self.compiled = None;
             self.complete = false;
-            self.trace.get_mut().eligible = false;
+            let trace = self.trace.get_mut();
+            trace.eligible = false;
+            trace.reads = Vec::new();
+            trace.bytes = Vec::new();
+            trace.hints = Vec::new();
             self.rebuild = false;
         }
     }
@@ -194,17 +198,21 @@ impl SnapshotPlan {
             let reads = engine_allocation::copy_vec(&trace.reads)?;
             let bytes = engine_allocation::copy_vec(&trace.bytes)?;
             let hints = engine_allocation::copy_vec(&trace.hints)?;
+            let destination_len = trace.bytes.len();
             self.compiled = if let Some(plan) =
-                PreparedPlan::try_new(reads, controls, bytes, trace.bytes.len())?
+                PreparedPlan::try_new(reads, controls, bytes, destination_len)?
             {
                 plan.try_with_hints(hints)?
             } else {
                 None
             };
-            let additional = trace.bytes.len().saturating_sub(self.destination.len());
+            let additional = destination_len.saturating_sub(self.destination.len());
             engine_allocation::reserve(&mut self.destination, additional)?;
-            self.destination.resize(trace.bytes.len(), 0);
+            self.destination.resize(destination_len, 0);
         }
+        trace.reads = Vec::new();
+        trace.bytes = Vec::new();
+        trace.hints = Vec::new();
         self.rebuild = false;
         Ok(())
     }
@@ -397,86 +405,6 @@ impl<M: Memory> Memory for Observed<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn worker_trace_grows_original_reads_bytes_and_hints_before_first_and_later_prepare() {
-        struct Source {
-            calls: RefCell<Vec<(usize, usize)>>,
-            hints: RefCell<Vec<(usize, usize)>>,
-        }
-        impl Memory for Source {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.calls.borrow_mut().push((address, output.len()));
-                output.fill(address as u8);
-                true
-            }
-            fn prefetch(&self, address: usize, len: usize) {
-                self.hints.borrow_mut().push((address, len));
-            }
-        }
-        let source = Source {
-            calls: RefCell::new(Vec::new()),
-            hints: RefCell::new(Vec::new()),
-        };
-        let mut plan = SnapshotPlan::default();
-        for count in [5000, 12000] {
-            source.calls.borrow_mut().clear();
-            source.hints.borrow_mut().clear();
-            assert!(!plan.begin(&source, false));
-            let view = plan.view(&source);
-            for index in 0..count {
-                let address = 0x1000 + index * 8;
-                view.prefetch(address, 8);
-                assert!(view.copy(address, &mut [0; 8]));
-            }
-            let mut name = vec![0; 5001];
-            assert!(view.copy(0x1000, &mut name));
-            assert!(plan.finish(true));
-            assert_eq!(source.calls.borrow().len(), count + 1);
-            assert_eq!(source.hints.borrow().len(), count);
-            let trace = plan.trace.borrow();
-            assert!(trace.eligible);
-            assert_eq!(trace.reads.len(), count + 1);
-            assert_eq!(trace.bytes.len(), count * 8 + 5001);
-            assert_eq!(trace.hints.len(), count);
-            drop(trace);
-            plan.prepare();
-            assert_eq!(plan.compiled.as_ref().unwrap().hints().len(), count);
-            let acquired = source.calls.take();
-            source.hints.borrow_mut().clear();
-            assert!(plan.begin(&source, true));
-            assert_eq!(*source.calls.borrow(), acquired);
-        }
-    }
-
-    #[test]
-    fn destination_preserves_resize_capacity_schedule() {
-        let memory = engine_native_memory::memory::SliceMemory {
-            base: 0x1000,
-            bytes: &[0x11; 16],
-        };
-        let mut plan = SnapshotPlan::default();
-        let mut reference = Vec::new();
-        for len in [2, 3, 5, 9] {
-            plan.begin(&memory, false);
-            let mut output = [0; 16];
-            assert!(plan.view(&memory).copy(0x1000, &mut output[..len]));
-            assert!(plan.finish(true));
-            plan.prepare();
-            reference.resize(len, 0_u8);
-            assert_eq!(plan.destination.capacity(), reference.capacity());
-            let trace = plan.trace.borrow();
-            let retained = trace.reads.capacity() * std::mem::size_of::<Read>()
-                + trace.bytes.capacity()
-                + trace.hints.capacity() * std::mem::size_of::<Hint>()
-                + plan
-                    .compiled
-                    .as_ref()
-                    .map_or(0, PreparedPlan::capacity_bytes);
-            drop(trace);
-            assert_eq!(plan.allocated_bytes(), retained + reference.capacity());
-        }
-    }
 
     #[test]
     fn untracked_payload_keeps_native_batches_and_does_not_consume_control_prefix() {

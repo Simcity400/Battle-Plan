@@ -215,6 +215,8 @@ pub struct Variants {
     templates: design_context::Snapshot,
     fog: design_fog::Observation,
     liveness: design_changes::liveness::Observation,
+    daily_released: bool,
+    last_capacity: Capacities,
 }
 
 impl Variants {
@@ -235,6 +237,8 @@ impl Variants {
             organisation_holds: Vec::new(),
             organisations_complete: false,
             organisation_bytes: 0,
+            daily_released: false,
+            last_capacity: *capacities,
         }
     }
 
@@ -255,6 +259,16 @@ impl Variants {
             organisation_holds: Vec::new(),
             organisations_complete: false,
             organisation_bytes: 0,
+            daily_released: false,
+            last_capacity: Capacities::default(),
+        }
+    }
+
+    fn with_capacities_daily_released(capacities: &Capacities) -> Self {
+        Self {
+            daily_released: true,
+            last_capacity: *capacities,
+            ..Self::vacant()
         }
     }
 
@@ -286,17 +300,69 @@ impl Variants {
             + self.nested_bytes
     }
 
+    fn release_daily(&mut self) {
+        self.last_capacity.rows[3] = self.last_capacity.rows[3].max(self.definitions.rows.len());
+        self.last_capacity.rows[4] = self.last_capacity.rows[4].max(self.modules.rows.len());
+        self.last_capacity.rows[5] = self.last_capacity.rows[5].max(self.stats.rows.len());
+        self.last_capacity.rows[6] = self.last_capacity.rows[6].max(self.upgrades.rows.len());
+        self.last_capacity.definition_bytes = self
+            .last_capacity
+            .definition_bytes
+            .max(self.definition_bytes.first.len());
+        self.definitions.release();
+        self.modules.release();
+        self.stats.release();
+        self.upgrades.release();
+        self.definition_bytes.release();
+        self.organisation_holds = Vec::new();
+        self.organisations_complete = false;
+        self.organisation_bytes = 0;
+        self.nested_bytes = 0;
+        self.dictionary = None;
+        self.context = None;
+        self.templates = None;
+        self.fog = design_fog::Observation::default();
+        self.liveness = design_changes::liveness::Observation::default();
+        self.daily_released = true;
+    }
+
+    fn rehydrate_daily(&mut self) {
+        if !self.daily_released {
+            return;
+        }
+        self.daily_released = false;
+        crate::table_capture::grow_vec(&mut self.definitions.rows, self.last_capacity.rows[3]);
+        crate::table_capture::grow_vec(&mut self.modules.rows, self.last_capacity.rows[4]);
+        crate::table_capture::grow_vec(&mut self.stats.rows, self.last_capacity.rows[5]);
+        crate::table_capture::grow_vec(&mut self.upgrades.rows, self.last_capacity.rows[6]);
+        crate::table_capture::grow_vec(
+            &mut self.definition_bytes.first,
+            self.last_capacity.definition_bytes,
+        );
+    }
+
     fn grow(&mut self, capacities: &mut Capacities) {
         capacities.rows[3] = capacities.rows[3].max(self.definitions.outcome.len());
-        self.definitions.grow(&mut capacities.rows[3]);
         capacities.rows[4] = capacities.rows[4].max(self.modules.outcome.len());
-        self.modules.grow(&mut capacities.rows[4]);
         capacities.rows[5] = capacities.rows[5].max(self.stats.outcome.len());
-        self.stats.grow(&mut capacities.rows[5]);
         capacities.rows[6] = capacities.rows[6].max(self.upgrades.outcome.len());
-        self.upgrades.grow(&mut capacities.rows[6]);
         capacities.definition_bytes = capacities.definition_bytes.max(self.definition_bytes.len);
-        self.definition_bytes.grow(&mut capacities.definition_bytes);
+        if self.daily_released {
+            self.definitions.record_demand(&mut capacities.rows[3]);
+            self.modules.record_demand(&mut capacities.rows[4]);
+            self.stats.record_demand(&mut capacities.rows[5]);
+            self.upgrades.record_demand(&mut capacities.rows[6]);
+            self.definition_bytes
+                .record_demand(&mut capacities.definition_bytes);
+        } else {
+            self.definitions.grow(&mut capacities.rows[3]);
+            self.modules.grow(&mut capacities.rows[4]);
+            self.stats.grow(&mut capacities.rows[5]);
+            self.upgrades.grow(&mut capacities.rows[6]);
+            self.definition_bytes
+                .grow(&mut capacities.definition_bytes);
+        }
+        self.last_capacity = *capacities;
     }
 
     pub fn fail(&mut self, reason: &'static str, hour: i32, force_full: bool) {
@@ -533,6 +599,7 @@ impl Variants {
         force_full: bool,
         recovery_carry: bool,
     ) -> [u64; N] {
+        self.rehydrate_daily();
         let mut ticks = [0; N];
         let mut reads = read_accounting::table(TABLES[3]);
         let begin = qpc();
@@ -726,6 +793,8 @@ pub struct Captured {
     pub divisions_raw_mode: bool,
     pub rest_raw_mode: bool,
     division_details_active: bool,
+    daily_released: bool,
+    last_capacity: Capacities,
 }
 
 impl Captured {
@@ -746,6 +815,14 @@ impl Captured {
             line_custom_name_bytes: 0,
             license_handles: 0,
         })
+    }
+
+    pub fn with_capacities_daily_released(capacities: &Capacities) -> Self {
+        let mut captured = Self::vacant();
+        captured.variants = Variants::with_capacities_daily_released(capacities);
+        captured.daily_released = true;
+        captured.last_capacity = *capacities;
+        captured
     }
 
     pub fn fail_final_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
@@ -804,6 +881,8 @@ impl Captured {
             divisions_raw_mode: false,
             rest_raw_mode: false,
             division_details_active: true,
+            daily_released: false,
+            last_capacity: *capacities,
         }
     }
 
@@ -849,27 +928,116 @@ impl Captured {
             + self.license_handles.allocated_bytes()
     }
 
+    pub fn release_daily(&mut self) {
+        self.variants.release_daily();
+        self.changes.release_transient();
+        self.last_capacity.rows[0] = self.last_capacity.rows[0].max(self.lines.rows.len());
+        self.last_capacity.rows[1] = self.last_capacity.rows[1].max(self.stockpiles.rows.len());
+        self.last_capacity.rows[2] = self
+            .last_capacity
+            .rows[2]
+            .max(self.division_equipment.rows.len());
+        self.last_capacity.rows[7] = self.last_capacity.rows[7].max(self.groups.rows.len());
+        self.last_capacity.rows[8] = self.last_capacity.rows[8].max(self.requests.rows.len());
+        self.last_capacity.rows[9] = self.last_capacity.rows[9].max(self.deliveries.rows.len());
+        self.last_capacity.rows[10] = self.last_capacity.rows[10].max(self.produced.rows.len());
+        self.last_capacity.rows[11] = self.last_capacity.rows[11].max(self.licenses.rows.len());
+        self.last_capacity.rows[12] = self.last_capacity.rows[12].max(self.conveyors.rows.len());
+        self.last_capacity.rows[13] = self
+            .last_capacity
+            .rows[13]
+            .max(self.deployment_lines.rows.len());
+        self.last_capacity.rows[14] = self
+            .last_capacity
+            .rows[14]
+            .max(self.deployment_manpower.rows.len());
+        self.last_capacity.rows[15] = self
+            .last_capacity
+            .rows[15]
+            .max(self.deployment_equipment.rows.len());
+        self.last_capacity.rows[16] = self
+            .last_capacity
+            .rows[16]
+            .max(self.license_records.rows.len());
+        self.last_capacity.conveyor_name_bytes = self
+            .last_capacity
+            .conveyor_name_bytes
+            .max(self.conveyor_name_bytes.first.len());
+        self.last_capacity.line_custom_name_bytes = self
+            .last_capacity
+            .line_custom_name_bytes
+            .max(self.line_custom_name_bytes.first.len());
+        self.last_capacity.license_handles = self
+            .last_capacity
+            .license_handles
+            .max(self.license_handles.first.len());
+        self.lines.release();
+        self.stockpiles.release();
+        self.division_equipment.release();
+        self.groups.release();
+        self.requests.release();
+        self.deliveries.release();
+        self.produced.release();
+        self.licenses.release();
+        self.conveyors.release();
+        self.deployment_lines.release();
+        self.deployment_manpower.release();
+        self.deployment_equipment.release();
+        self.conveyor_name_bytes.release();
+        self.line_custom_name_bytes.release();
+        self.license_records.release();
+        self.license_handles.release();
+        self.daily_released = true;
+    }
+
     pub fn grow(&mut self, capacities: &mut Capacities) {
         self.variants.grow(capacities);
-        self.lines.grow(&mut capacities.rows[0]);
-        self.stockpiles.grow(&mut capacities.rows[1]);
-        self.division_equipment.grow(&mut capacities.rows[2]);
         capacities.rows[7] = capacities.rows[7].max(self.groups.outcome.len());
-        self.groups.grow(&mut capacities.rows[7]);
-        self.requests.grow(&mut capacities.rows[8]);
-        self.deliveries.grow(&mut capacities.rows[9]);
-        self.produced.grow(&mut capacities.rows[10]);
-        self.licenses.grow(&mut capacities.rows[11]);
-        self.conveyors.grow(&mut capacities.rows[12]);
-        self.deployment_lines.grow(&mut capacities.rows[13]);
-        self.deployment_manpower.grow(&mut capacities.rows[14]);
-        self.deployment_equipment.grow(&mut capacities.rows[15]);
-        self.conveyor_name_bytes
-            .grow(&mut capacities.conveyor_name_bytes);
-        self.line_custom_name_bytes
-            .grow(&mut capacities.line_custom_name_bytes);
-        self.license_records.grow(&mut capacities.rows[16]);
-        self.license_handles.grow(&mut capacities.license_handles);
+        if self.daily_released {
+            self.lines.record_demand(&mut capacities.rows[0]);
+            self.stockpiles.record_demand(&mut capacities.rows[1]);
+            self.division_equipment
+                .record_demand(&mut capacities.rows[2]);
+            self.groups.record_demand(&mut capacities.rows[7]);
+            self.requests.record_demand(&mut capacities.rows[8]);
+            self.deliveries.record_demand(&mut capacities.rows[9]);
+            self.produced.record_demand(&mut capacities.rows[10]);
+            self.licenses.record_demand(&mut capacities.rows[11]);
+            self.conveyors.record_demand(&mut capacities.rows[12]);
+            self.deployment_lines
+                .record_demand(&mut capacities.rows[13]);
+            self.deployment_manpower
+                .record_demand(&mut capacities.rows[14]);
+            self.deployment_equipment
+                .record_demand(&mut capacities.rows[15]);
+            self.conveyor_name_bytes
+                .record_demand(&mut capacities.conveyor_name_bytes);
+            self.line_custom_name_bytes
+                .record_demand(&mut capacities.line_custom_name_bytes);
+            self.license_records.record_demand(&mut capacities.rows[16]);
+            self.license_handles
+                .record_demand(&mut capacities.license_handles);
+        } else {
+            self.lines.grow(&mut capacities.rows[0]);
+            self.stockpiles.grow(&mut capacities.rows[1]);
+            self.division_equipment.grow(&mut capacities.rows[2]);
+            self.groups.grow(&mut capacities.rows[7]);
+            self.requests.grow(&mut capacities.rows[8]);
+            self.deliveries.grow(&mut capacities.rows[9]);
+            self.produced.grow(&mut capacities.rows[10]);
+            self.licenses.grow(&mut capacities.rows[11]);
+            self.conveyors.grow(&mut capacities.rows[12]);
+            self.deployment_lines.grow(&mut capacities.rows[13]);
+            self.deployment_manpower.grow(&mut capacities.rows[14]);
+            self.deployment_equipment.grow(&mut capacities.rows[15]);
+            self.conveyor_name_bytes
+                .grow(&mut capacities.conveyor_name_bytes);
+            self.line_custom_name_bytes
+                .grow(&mut capacities.line_custom_name_bytes);
+            self.license_records.grow(&mut capacities.rows[16]);
+            self.license_handles.grow(&mut capacities.license_handles);
+        }
+        self.last_capacity = *capacities;
     }
 
     pub fn division_details_active(&self) -> bool {
@@ -949,6 +1117,22 @@ impl Captured {
             ticks[1] = elapsed(begin);
         }
         if divisions_active && !self.divisions_raw_mode {
+            if self.daily_released {
+                crate::table_capture::grow_vec(
+                    &mut self.division_equipment.rows,
+                    self.last_capacity.rows[2],
+                );
+                crate::table_capture::grow_vec(&mut self.groups.rows, self.last_capacity.rows[7]);
+                crate::table_capture::grow_vec(&mut self.requests.rows, self.last_capacity.rows[8]);
+                crate::table_capture::grow_vec(
+                    &mut self.deliveries.rows,
+                    self.last_capacity.rows[9],
+                );
+                crate::table_capture::grow_vec(
+                    &mut self.produced.rows,
+                    self.last_capacity.rows[10],
+                );
+            }
             let mut reads = read_accounting::table(TABLES[2]);
             let begin = qpc();
             let source = complete_source(divisions.rows, divisions.outcome);

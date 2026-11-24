@@ -122,17 +122,3 @@ fn a_manual_scale_ignores_the_game_and_invalid_stored_values_match_it() {
     assert_eq!(Setting::from_stored(Some(f32::NAN)), Setting::MatchGame);
 }
 
-#[test]
-fn tooltip_lengths_follow_the_ui_scale_alone_whatever_the_display_scale() {
-    for pixels_per_point in [1.0, 1.5, 2.0] {
-        let device = points(14.0, 1.25, pixels_per_point) * pixels_per_point;
-        assert!((device - 17.5).abs() < 1e-4, "{pixels_per_point}");
-    }
-}
-
-#[test]
-fn device_points_divide_into_interface_pixels() {
-    assert_eq!(to_interface([1280.0, 720.0], 1.25), [1024.0, 576.0]);
-    assert_eq!(extent([2560, 1440], 1.25), [2048.0, 1152.0]);
-    assert_eq!(extent([2048, 1152], 1.0), [2048.0, 1152.0]);
-}

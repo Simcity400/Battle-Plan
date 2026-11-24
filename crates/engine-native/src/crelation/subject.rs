@@ -2,7 +2,7 @@
 use engine_native_memory::{
     Memory,
     cpdx_array::Array,
-    memory::Raw,
+    memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
     msvc_string,
     read,
     read_slice,
@@ -187,22 +187,129 @@ fn walk_from(
                 }
             }
         }
-        for slot in 1..reader.countries.count() {
-            let Some(country) = reader.countries.at(slot)? else {
+        const COUNTRY_DIP_FIELDS: [RecordField; 1] =
+            packed_fields([(ccountry::DIPLOMACY_STATUS, 8)]);
+        const COUNTRY_DIP_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&COUNTRY_DIP_FIELDS, 8).unwrap();
+        const DIP_OWNED_FIELDS: [RecordField; 3] = packed_fields([
+            (0, 8),
+            (engine_native_parts::cdiplomacy_status_layout::COUNTRY, 8),
+            (engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS, 16),
+        ]);
+        const DIP_OWNED_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&DIP_OWNED_FIELDS, 32).unwrap();
+        let expected_diplomacy =
+            engine_sites::at(base, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA).map(|v| v as u64);
+        let mut country_slots = [engine_native_memory::country_identity::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; BATCH];
+        let mut country_ptrs = [0_usize; BATCH];
+        let mut dip_ptr_bytes = [0_u8; BATCH * 8];
+        let mut dip_ptrs = [0_usize; BATCH];
+        let mut dip_map = [u8::MAX; BATCH];
+        let mut dip_records = [0_u8; BATCH * 32];
+        let mut next = 1_u32;
+        while next < reader.countries.count() {
+            let end = reader.countries.count().min(next + BATCH as u32);
+            let mut present = 0_usize;
+            for slot in next..end {
+                if let Some(country) = reader.countries.at(slot)? {
+                    country_slots[present] = country;
+                    country_ptrs[present] = country.pointer;
+                    present += 1;
+                }
+            }
+            next = end;
+            if present == 0 {
                 continue;
-            };
+            }
             found_country = true;
-            let diplomacy = pass
-                .resolver
-                .diplomacy(country, || reader.diplomacy(country))?;
-            let source = reader.array(
-                diplomacy,
-                if matrix {
-                    engine_native_parts::cdiplomacy_status_layout::RELATIONS
+            let (ptrs_copied, dips_copied) = if matrix {
+                (0, 0)
+            } else {
+                let ptrs_copied = memory.copy_records(
+                    RecordSources::Pointers(&country_ptrs[..present]),
+                    &COUNTRY_DIP_LAYOUT,
+                    &mut dip_ptr_bytes[..present * 8],
+                );
+                let mut live = 0_usize;
+                dip_map[..present].fill(u8::MAX);
+                for index in 0..ptrs_copied.min(present) {
+                    let ptr = u64::from_le_bytes(
+                        dip_ptr_bytes[index * 8..(index + 1) * 8]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    if let Ok(ptr) = usize::try_from(ptr)
+                        && ptr != 0
+                    {
+                        dip_map[index] = live as u8;
+                        dip_ptrs[live] = ptr;
+                        live += 1;
+                    }
+                }
+                let dips_copied = if live == 0 {
+                    0
                 } else {
-                    engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS
-                },
-            )?;
+                    memory.copy_records(
+                        RecordSources::Pointers(&dip_ptrs[..live]),
+                        &DIP_OWNED_LAYOUT,
+                        &mut dip_records[..live * 32],
+                    )
+                };
+                (ptrs_copied, dips_copied)
+            };
+            for index in 0..present {
+                let country = country_slots[index];
+                let (diplomacy, source) = if !matrix && index < ptrs_copied {
+                    let dip = usize::try_from(u64::from_le_bytes(
+                        dip_ptr_bytes[index * 8..(index + 1) * 8]
+                            .try_into()
+                            .unwrap(),
+                    ))
+                    .map_err(|_| "subject pointer overflow")?;
+                    if dip == 0 {
+                        return Err("country diplomacy is null");
+                    }
+                    let slot = dip_map[index] as usize;
+                    if dip_map[index] != u8::MAX && (slot + 1) * 3 <= dips_copied {
+                        let rec = &dip_records[slot * 32..(slot + 1) * 32];
+                        let expected = expected_diplomacy.ok_or("module address overflow")?;
+                        if u64::from_le_bytes(rec[0..8].try_into().unwrap()) != expected {
+                            return Err("diplomacy vtable mismatch");
+                        }
+                        if u64::from_le_bytes(rec[8..16].try_into().unwrap())
+                            != country.pointer as u64
+                        {
+                            return Err("diplomacy country mismatch");
+                        }
+                        pass.resolver.cache_diplomacy(country, dip);
+                        let owned = Array::from_header(rec[16..32].try_into().unwrap(), 8)
+                            .ok_or("subject relation vector unreadable or invalid")?;
+                        (dip, owned)
+                    } else {
+                        let diplomacy = pass
+                            .resolver
+                            .diplomacy(country, || reader.diplomacy(country))?;
+                        let source = reader.array(diplomacy, engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS)?;
+                        (diplomacy, source)
+                    }
+                } else {
+                    let diplomacy = pass
+                        .resolver
+                        .diplomacy(country, || reader.diplomacy(country))?;
+                    let source = reader.array(
+                        diplomacy,
+                        if matrix {
+                            engine_native_parts::cdiplomacy_status_layout::RELATIONS
+                        } else {
+                            engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS
+                        },
+                    )?;
+                    (diplomacy, source)
+                };
             if matrix && source.count <= highest_slot {
                 return Err("subject matrix does not cover country ordinals");
             }
@@ -275,6 +382,7 @@ fn walk_from(
                 output[len] = row;
                 len += 1;
                 bytes_len += name_len;
+            }
             }
         }
         if !found_country {

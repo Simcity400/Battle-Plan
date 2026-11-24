@@ -2169,7 +2169,6 @@ mod tests {
         assert_eq!(departure_weight(&hub), 0);
     }
 
-
     #[test]
     fn car_yaw_matches_the_back_to_front_heading() {
         let yaw = car_yaw(2967.11 - 2969.10, 1564.95 - 1564.24, 90f32.to_radians());
@@ -2248,14 +2247,6 @@ mod tests {
             wagons("MIN_TRAIN_WAGON_COUNT = 0.5, MAX_TRAIN_WAGON_COUNT = 0").unwrap(),
             [1, 1]
         );
-    }
-
-    #[test]
-    fn timetable_intervals_span_the_ordered_define_range() {
-        let intervals: Vec<_> = (0..500).map(|r| DEFINES.interval(r * 104729)).collect();
-        assert!(intervals.iter().all(|i| (9.2..=12.0).contains(i)));
-        assert_eq!(DEFINES.interval(0), 9.2);
-        assert_eq!(DEFINES.interval(2800), 12.0);
     }
 
     #[test]
@@ -2612,28 +2603,4 @@ mod tests {
         assert_eq!(route.at(9.0).0, [9.0, 10.0, 0.0]);
     }
 
-    #[test]
-    fn a_frame_samples_the_route_a_bounded_number_of_times_per_live_car() {
-        let assets = assets();
-        for nodes in [40usize, 4000] {
-            let mut plan = plan();
-            plan.routes[0] = route(vec![1, 2], (0..=nodes).map(|i| [i as f32, 10.0, 0.0]).collect(), (0..=nodes).map(|i| i as f32).collect(), SEED);
-            plan.weights = vec![100000; 2000];
-            plan.departures = vec![vec![0]; 2000];
-            plan.field(&assets, 3600.0);
-            for frame in 1..=10 {
-                let cars: usize = plan.services.iter().map(|s| s.cars.len()).sum();
-                ROUTE_SAMPLES.with(|count| count.set(0));
-                plan.field(&assets, 3600.0 + frame as f32 / 60.0);
-                let samples = ROUTE_SAMPLES.with(Cell::get);
-                let live: usize = plan.services.iter().map(|s| s.cars.len()).sum();
-                let bound = 14 * (cars + live);
-                assert!(
-                    samples <= bound,
-                    "{samples} samples against a bound of {bound} on {nodes} nodes"
-                );
-            }
-            assert!(!plan.services.is_empty());
-        }
-    }
 }

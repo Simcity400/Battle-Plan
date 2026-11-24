@@ -141,6 +141,15 @@ impl Observations {
             + crate::raw_memory::vector_bytes(&self.hints)
     }
 
+    pub fn release_buffers(&mut self) {
+        self.controls = Vec::new();
+        self.expected = Vec::new();
+        self.hints = Vec::new();
+        self.required_controls = 0;
+        self.required_bytes = 0;
+        self.after_reads = 0;
+    }
+
     pub fn grow_for_next(&mut self) {
         engine_allocation::advisory(|| self.grow_hints());
     }

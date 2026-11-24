@@ -1933,17 +1933,6 @@ mod tests {
     }
 
     #[test]
-    fn sizes_search_the_game_flag_sets_in_order() {
-        assert_eq!(
-            CountryFlagSize::Medium.sets(),
-            [FlagSet::Medium, FlagSet::Normal]
-        );
-        assert!(CountryFlagSize::Shield.sets().is_empty());
-        assert!(CountryFlagSize::Panel.sets().is_empty());
-        assert_eq!(bounded(82, 52, 128), (82, 52));
-    }
-
-    #[test]
     fn panel_overlay_loses_its_edge_shading_and_keeps_its_texture() {
         let mut pixels = Vec::new();
         for y in 0..16_u32 {

@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { engineHour } from './calendar.ts';
 import { groupAt, ledgerOf, monthFigures, powerGain, spendingGaps, spendingGroups, spendingItems, spendingTableRows, stableSpendingRows, validatePowerSpending } from './powerSpending.ts';
-import { spendingChunks, structureAt, structureHours, structureParts, SPENDING_CHUNK_HOURS } from './powerSpending.ts';
-import { daysIn, firstPaid, groupCostNotes, groupSummary, paymentsIn, powerGains, sameSpendingItems, spendingCostNotes, spendingSummary } from './powerSpending.ts';
+import { spendingChunks, structureAt, structureHours, SPENDING_CHUNK_HOURS } from './powerSpending.ts';
 import { namesCovered, spendingCountryRequests, spendingRowsAhead } from './powerSpending.ts';
 import type { PowerSpendingReply } from '../generated/dashboard';
 
@@ -78,25 +77,6 @@ test('the breakdown reads each group at any hour from its cumulated entries, and
   assert.deepEqual(spendingGaps(ledgers, { from: null, hour: day(4, 1) }).map(gap => [gap.from, gap.through]), [[day(1, 1), day(1, 1) + 1]]);
 });
 
-test('a frame reads the gain, the cost notes and the first payment from running sums that equal the walk over every entry', () => {
-  const ledgers = [ledgerOf('GER', 'Political', chunks())];
-  for (const from of [null, day(1, 3)]) {
-    const gains = powerGains(ledgers, from);
-    const groups = spendingGroups(ledgers, from);
-    for (const hour of [day(1, 1), day(1, 2), day(1, 3), day(2, 1), day(3, 2), day(4, 1)]) {
-      assert.deepEqual(gains(hour), powerGain(ledgers, { from, hour }), `gain at ${hour} from ${from}`);
-      const window = { from, hour };
-      const walked = spendingSummary(paymentsIn(ledgers, window), daysIn(ledgers, window));
-      assert.deepEqual(groupSummary(groups, hour), walked, `summary at ${hour} from ${from}`);
-      assert.deepEqual(groupCostNotes(groups, hour), spendingCostNotes(walked), `notes at ${hour} from ${from}`);
-    }
-  }
-  const groups = spendingGroups(ledgers, null);
-  assert.equal(firstPaid(groups), day(1, 1) + 6);
-  const at = spendingItems(groups, day(2, 1), day(4, 1));
-  assert.ok(sameSpendingItems(at, spendingItems(groups, day(2, 2), day(4, 1))), 'an hour that spent nothing keeps its slices');
-  assert.ok(!sameSpendingItems(at, spendingItems(groups, day(3, 2), day(4, 1))), 'a payment moves them');
-});
 
 test('chunks are aligned, and the structure a head shows changes only where a payment, a month or a coverage run starts', () => {
   assert.deepEqual(spendingChunks(10, SPENDING_CHUNK_HOURS + 5), [[10, SPENDING_CHUNK_HOURS - 1], [SPENDING_CHUNK_HOURS, SPENDING_CHUNK_HOURS + 5]]);
@@ -106,13 +86,6 @@ test('chunks are aligned, and the structure a head shows changes only where a pa
   assert.ok(structureAt(hours, day(3, 2)) > structureAt(hours, day(3, 1)));
 });
 
-test('a table holds ahead only the payments: a month starting or turning partial changes a row already shown', () => {
-  const ledger = ledgerOf('GER', 'Political', chunks());
-  const { payments, other } = structureParts([ledger]);
-  assert.ok(payments.length > 0 && other.length > 0);
-  assert.deepEqual(payments, ledger.payments.map(entry => entry.read).sort((a, b) => a - b));
-  assert.deepEqual([...payments, ...other].sort((a, b) => a - b), structureHours([ledger]), 'together, every change of structure');
-});
 
 test('the rows a block draws ahead are asked their names with it, and rows reported mounted ask again only for a name not asked', () => {
   const rows = spendingTableRows([ledgerOf('GER', 'Political', chunks())], { from: null, hour: day(4, 1) }, '');

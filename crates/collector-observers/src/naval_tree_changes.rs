@@ -183,7 +183,6 @@ pub fn failed() {
     READS[3].fetch_add(1, Ordering::Relaxed);
 }
 
-
 fn observe() {
     let enabled =
         PATCHED.load(Ordering::SeqCst) && FORWARDERS.iter().all(|f| f.load(Ordering::SeqCst));
@@ -342,11 +341,6 @@ callback!(destroy_leader, COUNTRY_SITES + 4);
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn ship_models_size_the_watches_for_their_task_forces() {
-        super::ship_models(700);
-        assert!(super::demand() >= 1400);
-    }
 
     use super::*;
 

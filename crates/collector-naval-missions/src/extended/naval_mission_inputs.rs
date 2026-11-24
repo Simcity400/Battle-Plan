@@ -241,6 +241,8 @@ pub struct Captured {
     mission_headquarters: Vec<(u64, Arc<Vec<u64>>)>,
     empty_headquarters: Option<Arc<Vec<u64>>>,
     member_index: Vec<(u64, usize)>,
+    member_index_ready: bool,
+    entries_keys_len: Option<usize>,
     task_index: Vec<(u64, usize)>,
     escort_owners: Vec<u32>,
     escort_trees: super::naval_escort_trees::Trees,
@@ -403,6 +405,8 @@ impl Captured {
             mission_headquarters: Vec::new(),
             empty_headquarters: None,
             member_index: Vec::new(),
+            member_index_ready: false,
+            entries_keys_len: None,
             task_index: Vec::new(),
             escort_owners: Vec::new(),
             escort_trees: Default::default(),
@@ -484,6 +488,8 @@ impl Captured {
         self.map_ticks = [0; 2];
         self.map_roster_complete = false;
         self.entries.reset();
+        self.member_index_ready = false;
+        self.entries_keys_len = None;
         self.countries.reset();
         self.hubs.reset();
         self.commanders.reset();
@@ -700,7 +706,10 @@ impl Captured {
         ticks
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shared entry point matching acquire_with_navies and split walk/finish"
+    )]
     fn capture_impl<M: Memory>(
         &mut self,
         memory: &M,
@@ -708,17 +717,45 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        mut fingerprints: Option<&mut SliceFingerprints>,
+        fingerprints: Option<&mut SliceFingerprints>,
         holder: &mut collector_naval_movement::country_naval_movement_inputs::Captured,
         skip: LedgerSkip,
     ) -> [u64; N] {
+        let walk_result = self.begin_walk(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints.is_some(),
+        );
+        self.finish_with_navies(
+            memory,
+            base,
+            game_state,
+            force_full,
+            fingerprints,
+            holder,
+            skip,
+            walk_result,
+        )
+    }
+
+    pub fn begin_walk<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        has_fingerprints: bool,
+    ) -> Result<(bool, u64), &'static str> {
         self.reset();
         self.empty_headquarters
             .get_or_insert_with(|| Arc::new(Vec::new()));
         self.ledger_counts = LedgerCounts::default();
         self.selection
-            .reset_hooked(hour, force_full || fingerprints.is_none());
-        let mut ticks = [0; N];
+            .reset_hooked(hour, force_full || !has_fingerprints);
         let started = qpc();
         let mut census_complete = false;
         let walked = {
@@ -736,8 +773,38 @@ impl Captured {
                 };
             })
         };
-        ticks[0] = elapsed(started);
-        let countries = match walked {
+        let walk_ticks = elapsed(started);
+        match walked {
+            Ok(_) => Ok((census_complete, walk_ticks)),
+            Err(reason) => {
+                self.fail_all(reason);
+                Err(reason)
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "completes split capture with navy holder and walk result"
+    )]
+    pub fn finish_with_navies<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        game_state: usize,
+        force_full: bool,
+        mut fingerprints: Option<&mut SliceFingerprints>,
+        holder: &mut collector_naval_movement::country_naval_movement_inputs::Captured,
+        skip: LedgerSkip,
+        walk_result: Result<(bool, u64), &'static str>,
+    ) -> [u64; N] {
+        let mut ticks = [0; N];
+        let (census_complete, walk_ticks) = match walk_result {
+            Ok(values) => values,
+            Err(_) => return ticks,
+        };
+        ticks[0] = walk_ticks;
+        let countries = match ccountry::Reader::new(memory, base, game_state) {
             Ok(countries) => countries,
             Err(reason) => {
                 self.fail_all(reason);
@@ -1011,9 +1078,11 @@ impl Captured {
         Ok(finish(len, unread))
     }
 
-    fn index_members(&mut self) -> Result<(), &'static str> {
+    fn ensure_member_index(&mut self) -> Result<(), &'static str> {
+        if self.member_index_ready {
+            return Ok(());
+        }
         self.member_index.clear();
-        self.task_index.clear();
         reserve(&mut self.member_index, self.census.len)
             .map_err(|_| "naval member index allocation failed")?;
         self.member_index.extend(
@@ -1023,6 +1092,13 @@ impl Captured {
                 .map(|(index, member)| (member.id, index)),
         );
         self.member_index.sort_unstable_by_key(|entry| entry.0);
+        self.member_index_ready = true;
+        Ok(())
+    }
+
+    fn index_members(&mut self) -> Result<(), &'static str> {
+        self.ensure_member_index()?;
+        self.task_index.clear();
         let len = self.task_forces.outcome.len();
         reserve(&mut self.task_index, len).map_err(|_| "naval source index allocation failed")?;
         self.task_index.extend(
@@ -1176,9 +1252,16 @@ impl Captured {
         let original_hq = self.headquarters.len;
         let original_named = (self.named.len, self.named.required);
         let result = (|| {
-            engine_native_memory::walk::Buffer::Growing(&mut self.keys).ensure(self.entries.len)?;
-            self.keys[..self.entries.len].copy_from_slice(&self.entries.first[..self.entries.len]);
-            let count = distinct(&mut self.keys[..self.entries.len], |key| key);
+            let count = if let Some(count) = self.entries_keys_len {
+                count
+            } else {
+                engine_native_memory::walk::Buffer::Growing(&mut self.keys).ensure(self.entries.len)?;
+                self.keys[..self.entries.len]
+                    .copy_from_slice(&self.entries.first[..self.entries.len]);
+                let count = distinct(&mut self.keys[..self.entries.len], |key| key);
+                self.entries_keys_len = Some(count);
+                count
+            };
             reserve(&mut self.patrol, count)
                 .map_err(|_| "naval patrol source allocation failed")?;
             let mut len = original.len();
@@ -1353,7 +1436,7 @@ impl Captured {
         base: usize,
         countries: &ccountry::Reader<'_, M>,
     ) -> Result<(), &'static str> {
-        self.index_members()?;
+        self.ensure_member_index()?;
         for index in 0..self.ledgers.outcome.len() {
             let ledger = self.ledgers.rows[index];
             let handles = &self.entries.first[ledger.first..ledger.first + ledger.count];
@@ -1428,12 +1511,15 @@ impl Captured {
             let entries = self.entries.len;
             engine_native_memory::walk::Buffer::Growing(&mut self.keys).ensure(entries)?;
             self.keys[..entries].copy_from_slice(&self.entries.first[..entries]);
-            self.keys[..entries].sort_unstable();
+            let distinct_entries = distinct(&mut self.keys[..entries], |key| key);
+            self.entries_keys_len = Some(distinct_entries);
             for member in &self.census.first[..self.census.len] {
                 let Some(visit) = member.visit else {
                     continue;
                 };
-                if visit.kind == 2 && self.keys[..entries].binary_search(&visit.id).is_ok() {
+                if visit.kind == 2
+                    && self.keys[..distinct_entries].binary_search(&visit.id).is_ok()
+                {
                     reserve(&mut self.dominance_fleets, 1)
                         .map_err(|_| "naval dominance fleet demand allocation failed")?;
                     self.dominance_fleets.push(visit.fleet_handle);
@@ -1603,16 +1689,22 @@ impl Captured {
         let count = holder.physical_count()?;
         let lifetime = collector_lifetime::world_lifetime::token();
         collector_missions::naval_map_changes::prepare(count);
-        let mine_ready = self.mine_cache.prepare(lifetime, count);
-        let accident_ready = self.accident_cache.prepare(lifetime, count);
-        if let Err(reason) = mine_ready {
-            self.mines_outcome = Outcome::Unavailable { reason };
-        }
-        if let Err(reason) = accident_ready {
-            self.accidents_outcome = Outcome::Unavailable { reason };
-        }
+        let mut mine_session = match self.mine_cache.begin(lifetime, count) {
+            Ok(session) => Some(session),
+            Err(reason) => {
+                self.mines_outcome = Outcome::Unavailable { reason };
+                None
+            }
+        };
+        let mut accident_session = match self.accident_cache.begin(lifetime, count) {
+            Ok(session) => Some(session),
+            Err(reason) => {
+                self.accidents_outcome = Outcome::Unavailable { reason };
+                None
+            }
+        };
         let census = &mut self.census.first[..self.census.len];
-        census.sort_unstable_by_key(|member| member.task);
+        let mut census_sorted = false;
         let mut len = 0_usize;
         let mut unread = 0_u32;
         for index in 0..count {
@@ -1629,10 +1721,10 @@ impl Captured {
                 return Err("country navy absent or unreadable");
             }
             let begin = qpc();
-            if mine_ready.is_ok() {
+            if let Some(session) = mine_session.as_mut() {
                 let _reads = collector_memory::read_accounting::table(TABLES[4]);
                 let rows = &mut self.mines;
-                let result = self.mine_cache.country(memory, pointer, owner.id, |row| {
+                let result = session.country(memory, index, pointer, owner.id, |row| {
                     if rows.len() == rows.capacity() {
                         reserve(rows, 1).map_err(|_| "naval mine output allocation failed")?;
                     }
@@ -1645,33 +1737,19 @@ impl Captured {
             }
             self.map_ticks[0] = self.map_ticks[0].saturating_add(elapsed(begin));
             let begin = qpc();
-            if accident_ready.is_ok() {
+            if let Some(session) = accident_session.as_mut() {
                 let _reads = collector_memory::read_accounting::table(TABLES[5]);
-                let certificate = collector_missions::naval_map_changes::accident_token(pointer);
                 let rows = &mut self.accidents;
-                let result = self.accident_cache.country(
-                    memory,
-                    base,
-                    pointer,
-                    owner.id,
-                    certificate,
-                    |row| {
-                        if rows.len() == rows.capacity() {
-                            reserve(rows, 1)
-                                .map_err(|_| "naval accident output allocation failed")?;
-                        }
-                        rows.push(row);
-                        Ok(())
-                    },
-                );
+                let result = session.country(memory, base, index, pointer, owner.id, |row| {
+                    if rows.len() == rows.capacity() {
+                        reserve(rows, 1)
+                            .map_err(|_| "naval accident output allocation failed")?;
+                    }
+                    rows.push(row);
+                    Ok(())
+                });
                 if let Err(reason) = result {
                     self.accidents_outcome = Outcome::Unavailable { reason };
-                } else if certificate
-                    != collector_missions::naval_map_changes::accident_token(pointer)
-                {
-                    self.accidents_outcome = Outcome::Unavailable {
-                        reason: "naval accident writer changed during acquisition",
-                    };
                 }
             }
             self.map_ticks[1] = self.map_ticks[1].saturating_add(elapsed(begin));
@@ -1749,6 +1827,10 @@ impl Captured {
                 continue;
             }
             self.ledger_counts.read += 1;
+            if !census_sorted {
+                census.sort_unstable_by_key(|member| member.task);
+                census_sorted = true;
+            }
             inputs::ledger_regions_in(memory, outer, |region, ledger| {
                 engine_native_memory::walk::Buffer::Growing(&mut self.scratch)
                     .ensure(ledger.count as usize)?;
@@ -1816,6 +1898,16 @@ impl Captured {
             if holdable {
                 hold_navy(hold, fresh);
             }
+        }
+        if let Some(session) = mine_session
+            && let Err(reason) = session.finish()
+        {
+            self.mines_outcome = Outcome::Unavailable { reason };
+        }
+        if let Some(session) = accident_session
+            && let Err(reason) = session.finish()
+        {
+            self.accidents_outcome = Outcome::Unavailable { reason };
         }
         for slot in (u32::try_from(count).unwrap_or(u32::MAX).max(1))..countries.count() {
             if countries.at(slot)?.is_some() {

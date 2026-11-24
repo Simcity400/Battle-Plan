@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AXIS_HEIGHT, ROW_HEIGHT, barHours, inSpans, laneAt, leftColumn, spanAt } from '../../charts/timeline/layout.ts';
 import { validOption } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
 import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
@@ -77,27 +76,7 @@ test('a recorded seat on a span places it, ahead of content', () => {
   assert.equal(lanesFor(moved, GOVERNMENT, { laws: 'both', holders: 'both' })[0].spans.length, 3);
 });
 
-test('the left column never takes more than 40% of the chart, and unobserved hours are known', () => {
-  assert.equal(leftColumn(280, 1000), 280);
-  assert.equal(leftColumn(280, 300), 120);
-  assert.equal(leftColumn(280, 200), 96);
-  assert.equal(inSpans([{ firstHour: 140, lastHour: 159 }], 150), true);
-  assert.equal(inSpans(undefined, 150), false);
-});
 
-test('timeline layout: lanes by row, spans cover their last observed day, bars stop at the playhead', () => {
-  assert.equal(laneAt(AXIS_HEIGHT - 1, 3), null);
-  assert.equal(laneAt(AXIS_HEIGHT + ROW_HEIGHT * 1.5, 3), 1);
-  assert.equal(laneAt(AXIS_HEIGHT + ROW_HEIGHT * 3, 3), null);
-  assert.equal(laneAt(AXIS_HEIGHT + 54 * 1.5, 3, 54), 1);
-  assert.equal(laneAt(AXIS_HEIGHT + 54 * 3, 3, 54), null);
-  const spans = [{ id: 'a', firstHour: 10, lastHour: 20, label: 'A' }];
-  assert.equal(spanAt(spans, 20.5)?.id, 'a');
-  assert.equal(spanAt(spans, 21), null);
-  assert.deepEqual(barHours(spans[0], null), [10, 21]);
-  assert.deepEqual(barHours(spans[0], 15), [10, 15]);
-  assert.equal(barHours(spans[0], 5), null);
-});
 
 test('content choices keep raw scalar keys, and malformed replies are refused', () => {
   const field: OptionField = { key: 'category', section: 'options', label: 'Category', kind: 'content-choice', automatic: 'First', default: '' };

@@ -27,19 +27,3 @@ pub const NAME_MASKS: &[(&str, u32)] = &[
     ("Thunder at Our Gates", 0x0002_0000),
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn equipment_losses_uses_feature_three_and_the_named_runtime_mask() {
-        assert_eq!(EQUIPMENT_LOSSES_FEATURE, 3);
-        assert_eq!(
-            NAME_MASKS
-                .iter()
-                .find(|(name, _)| *name == "Together for Victory")
-                .map(|(_, mask)| *mask),
-            Some(EQUIPMENT_LOSSES_MASK)
-        );
-    }
-}

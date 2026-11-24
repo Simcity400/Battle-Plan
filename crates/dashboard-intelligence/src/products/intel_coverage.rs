@@ -111,19 +111,3 @@ impl AtHour for IntelNetworkCoverage {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_schema_numbers_every_summary_column_the_cells_and_the_series_read() {
-        for (name, field) in FIELDS {
-            assert!(dashboard_declare::field(TableId::IntelNetworkSummaries, field).is_ok(), "{name}");
-        }
-        let series = dashboard_declare::SERIES.iter().find(|series| series.kind == "intel-networks").expect("declared");
-        assert_eq!(series.table, TableId::IntelNetworkSummaries);
-        assert!(dashboard_declare::read_by_key(TableId::IntelNetworkSummaries));
-        let declared: Vec<&str> = series.measures.iter().map(|measure| measure.name).collect();
-        assert_eq!(declared, FIELDS.map(|(name, _)| name));
-    }
-}

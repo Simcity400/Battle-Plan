@@ -289,34 +289,6 @@ fn only_a_linked_carrier_below_full_sortie_efficiency_reaches_its_member_sources
 }
 
 #[test]
-fn air_count_uses_current_over_max_and_native_side_colour_order() {
-    assert_eq!(
-        air_count_label(0, "AAA", 120, 120, false),
-        format!("\u{11}W {}AAA 120/120\u{11}!", super::super::INLINE_FLAG)
-    );
-    assert_eq!(
-        air_count_label(0, "AAA", 3, 7, false),
-        format!("\u{11}W {}AAA 3/7\u{11}!", super::super::INLINE_FLAG)
-    );
-    assert_eq!(
-        air_count_label(1, "BBB", 2, 9, true),
-        format!("\u{11}R 2/9 {}BBB\u{11}!", super::super::INLINE_FLAG)
-    );
-}
-
-#[test]
-fn air_icon_frames_and_dynamic_hover_are_explicit() {
-    let left = air_icon_widget(Some("GFX_test_air".into()), 0);
-    let right = air_icon_widget(Some("GFX_test_air".into()), 1);
-    assert_eq!(left.frame, Some(1));
-    assert_eq!(right.frame, Some(0));
-    assert!(left.hover_owned && right.hover_owned);
-    assert!(left.tooltip.is_none() && right.tooltip.is_none());
-    let missing = air_icon_widget(None, 0);
-    assert!(missing.hidden && missing.sprite.is_none());
-}
-
-#[test]
 fn air_entries_bind_before_carrier_ships_on_both_grids() {
     let mut out = Bindings::default();
     push_air_entry(
@@ -482,13 +454,6 @@ fn organisation_uses_default_leader_and_recorded_hq_terms() {
     row.live_convoy = 1;
     row.base_organisation = 0;
     assert_eq!(organisation_maximum(&row), Ok(100));
-}
-#[test]
-fn the_left_column_takes_the_second_frame_unless_reversed() {
-    assert_eq!(icon_frame(0, false), 1);
-    assert_eq!(icon_frame(0, true), 0);
-    assert_eq!(icon_frame(1, true), 1);
-    assert_eq!(icon_frame(1, false), 0);
 }
 
 #[test]

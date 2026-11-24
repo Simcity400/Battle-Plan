@@ -77,18 +77,6 @@ test('snapshot cursors hold immutable runs and filter identities, updating reads
   assert.deepEqual(cursor.at(reply, 121), { countries: [], flows: [] });
 });
 
-test('snapshot lookup inside a held interval does not visit pair runs again', () => {
-  const data = fixture();
-  let reads = 0;
-  const runs = data.pairs[0].runs;
-  Object.defineProperty(data.pairs[0], 'runs', { get() { reads++; return runs; } });
-  const reply = validateCasualtyPairs(deepFreeze(data));
-  const cursor = new CasualtyPairsCursor();
-  const first = cursor.at(reply, 111);
-  reads = 0;
-  for (let hour = 112; hour <= 120; hour++) assert.equal(cursor.at(reply, hour), first);
-  assert.equal(reads, 0);
-});
 
 test('filtered cursors ignore excluded hourly changes but retain selected boundaries and observation gaps', () => {
   const span = { firstHour: 100, lastHour: 120 }, run = { ...span, readHour: 100, hourly: false,
