@@ -1,9 +1,10 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import {
-  registerTimeChart,
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
@@ -45,7 +46,7 @@ function resolveLineColors(rawColors: readonly (string | null)[], surface: strin
   return out;
 }
 
-export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesOptions> = registerTimeChart({
+export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesOptions> = registerFamilyProjection({
   kind: 'world-tension',
   family: 'time-chart',
   variant: 'line',
@@ -147,7 +148,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     });
     const auditRows = series
       .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
-      .map(s => ({ row: s.name, key: s.id, value: formatContributionPct(s.headValue!) }));
+      .map(s => (auditRow(s.id, formatContributionPct(s.headValue!))));
     return {
       kind: 'world-tension',
       measureTitle: 'Contribution to world tension',

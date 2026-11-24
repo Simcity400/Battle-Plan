@@ -176,3 +176,22 @@ fn unit_group_titles_use_group_title_localisation_key_with_bare_fallback() {
     assert_eq!(mod_info.name, "Mod Armor");
     assert_eq!(mod_warning, None);
 }
+
+#[test]
+fn army_at_ranks_and_splits_battalion_groups_at_an_hour() {
+    let source = recording();
+    let reply = dashboard_base::products::at_hour::read_at::<ArmyAt>(
+        &source,
+        &ArmyAtParams { branch_id: "1".into(), countries: Vec::new(), top: Some(2), count_for: ArmyAttribution::Host },
+        1_800,
+        &LoadContext::default(),
+    )
+    .unwrap();
+    assert_eq!(reply.missing, None);
+    assert_eq!(reply.rows.len(), 2);
+    assert_eq!(reply.rows[0].tag, "ITA");
+    assert_eq!(reply.rows[0].total, Some(9));
+    assert_eq!(reply.rows[0].parts_missing, None);
+    let sum: i64 = reply.rows[0].values.iter().map(|v| v.unwrap_or(0)).sum();
+    assert_eq!(sum, 9);
+}

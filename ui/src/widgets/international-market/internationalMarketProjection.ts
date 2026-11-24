@@ -1,6 +1,7 @@
 import { liveKey } from '../../charts/live.ts';
 import { MARKET, validateMarketReply } from '../../dashboard/market.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import { filterCandidates, nextChangeAfter } from '../../families/holders.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { artState, resolveIdentity, type ResolvedIdentity } from '../../families/table/identityCell.ts';
@@ -12,13 +13,13 @@ import {
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { knownValue, notRecorded, valueFromLive, zeroValue } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue } from '../../families/value.ts';
 import { MARKET_TABS, marketColumns, marketTableBase } from './definition.ts';
 
 const UNKNOWN_COUNTRY: ResolvedIdentity = { value: notRecorded('Unknown country'), name: 'Unknown country' };
 const countryAt = (readView: BoundedReadView, tag: string | null | undefined, hour: number): ResolvedIdentity =>
   tag ? resolveIdentity(readView, 'country', tag, { atHour: hour }) : UNKNOWN_COUNTRY;
-import { cic, contractRows, levelText, offerRows, units, type MarketTab } from './marketData.ts';
+import { cic, contractRows, levelText, offerRows, units, type MarketMatch, type MarketTab } from './marketData.ts';
 
 export interface InternationalMarketProjectionOptions {
   readonly view: MarketTab;
@@ -26,9 +27,10 @@ export interface InternationalMarketProjectionOptions {
   readonly filter: FamilyPlanContext<unknown>['countries']['filter'];
 }
 
-function makeMatcher(filterAll: boolean, filter: InternationalMarketProjectionOptions['filter']) {
-  return (tag: string, atHour: number): boolean => {
+function makeMatcher(filterAll: boolean, filter: InternationalMarketProjectionOptions['filter']): MarketMatch {
+  return (tag, atHour) => {
     if (filterAll || !filter.passing) return true;
+    if (tag === null) return false;
     return filter.passing[tag]?.some(([first, last]) => first <= atHour && atHour <= last) ?? false;
   };
 }
@@ -37,6 +39,7 @@ function makeMatcher(filterAll: boolean, filter: InternationalMarketProjectionOp
 export const internationalMarketProjection: TableProjection<InternationalMarketProjectionOptions> = {
   kind: 'international-market',
   family: 'table',
+  nextChange: (readView: BoundedReadView, options: InternationalMarketProjectionOptions) => nextChangeAfter(options.filter.bounds, readView.hour),
   project(readView: BoundedReadView, options: InternationalMarketProjectionOptions): TableModel {
     const hour = readView.hour;
     const columns = marketColumns(options.view);
@@ -65,6 +68,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
 
     const matcher = makeMatcher(options.filterAll, options.filter);
     const live = readView.live('main') ?? null;
+    const unattributed = reply.unattributed;
 
     if (options.view === 'inventory') {
       const offers = offerRows(at, matcher);
@@ -73,8 +77,8 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
           columns,
           rows: [],
           hour,
-          empty: 'Nothing listed.',
-          emptyKind: 'empty',
+          empty: unattributed ? 'Some sellers were not recorded at this date.' : 'Nothing listed.',
+          emptyKind: unattributed ? 'unavailable' : 'empty',
           warnings: reply.warnings,
 
         };
@@ -105,49 +109,47 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
     }
 
     const listed = contractRows(at, options.view, matcher);
-    const warnings = listed.unattributed
-      ? [...reply.warnings, `${listed.unattributed} ${options.view === 'contracts' ? 'contracts' : 'requests'} whose countries were not recorded at this date may also match`]
-      : reply.warnings;
+    const warnings = reply.warnings;
 
-    if (!listed.rows.length) {
+    if (!listed.length) {
       return {
         columns,
         rows: [],
         hour,
-        empty: listed.unattributed
+        empty: unattributed
           ? `Some ${options.view === 'contracts' ? 'contracts' : 'requests'}' countries were not recorded at this date.`
           : (options.view === 'contracts' ? 'No market contracts at this date.' : 'No open requests.'),
-        emptyKind: listed.unattributed ? 'unavailable' : 'empty',
+        emptyKind: unattributed ? 'unavailable' : 'empty',
         warnings,
 
       };
     }
 
-    const rows: TableRow[] = listed.rows.map(row => {
+    const rows: TableRow[] = listed.map(row => {
       const seller = countryAt(readView, row.seller, hour);
       const buyer = countryAt(readView, row.buyer, hour);
       const allEquipment = row.equipment.map(item => item.name ?? 'Equipment name unavailable').join(', ');
       const firstIcon = row.equipment[0]?.icon ?? null;
       const art = artState(readView, urlArtHandle(firstIcon));
 
+      const priceOf = (variant: string) => row.prices.find(item => item.variant === variant)?.amount ?? null;
+      const levelOf = (variant: string) => row.levels.find(item => item.variant === variant)?.level ?? null;
+      const single = row.equipment.length === 1 ? row.equipment[0]! : null;
+      const several = notApplicable('Several equipment: each is listed with its own amount, price and level');
       const extra: TooltipExtraRow[] = [
         { label: 'Seller', value: seller.value, divider: true },
         { label: 'Buyer', value: buyer.value },
-        ...row.equipment.map((item, idx): TooltipExtraRow => ({
-          label: item.name ?? 'Equipment name unavailable',
-          value: knownValue(units(item.amount)),
-          lookupKey: item.variant,
-          ...(idx === 0 ? { divider: true } : {}),
-        })),
-        ...row.prices.map((item): TooltipExtraRow => ({
-          label: `Agreed price · ${item.name ?? 'Equipment name unavailable'}`,
-          value: knownValue(cic(item.amount)),
-        })),
+        ...row.equipment.map((item, idx): TooltipExtraRow => {
+          const price = priceOf(item.variant);
+          const level = levelOf(item.variant);
+          const parts = [units(item.amount), ...(price !== null ? [cic(price)] : []), ...(level !== null ? [levelText(level)] : [])];
+          return { label: item.name ?? 'Equipment name unavailable', value: knownValue(parts.join(' · ')), lookupKey: item.variant, ...(idx === 0 ? { divider: true } : {}) };
+        }),
       ];
 
       if (options.view === 'requests') {
-        const amt = row.equipment[0]?.amount ?? null;
-        const lvl = row.levels[0]?.level ?? null;
+        const amt = single?.amount ?? null;
+        const lvl = single ? levelOf(single.variant) : null;
         return {
           key: row.key,
           name: allEquipment || 'Equipment',
@@ -155,8 +157,8 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
             buyer: { value: buyer.value, iconSlot: true, icon: buyer.icon, iconPending: buyer.iconPending, country: row.buyer ?? undefined, countryColor: buyer.color },
             seller: { value: seller.value, iconSlot: true, icon: seller.icon, iconPending: seller.iconPending, country: row.seller ?? undefined, countryColor: seller.color },
             equipment: { value: knownValue(allEquipment || 'Equipment name unavailable'), iconSlot: true, artShape: 'wide', artName: allEquipment, ...art },
-            amount: { value: amt === null ? notRecorded('Amount not recorded') : amt === 0n ? zeroValue(0n) : knownValue(amt) },
-            level: { value: lvl === null ? notRecorded('Price level not recorded') : knownValue(levelText(lvl)) },
+            amount: { value: single === null ? several : amt === null ? notRecorded('Amount not recorded') : amt === 0n ? zeroValue(0n) : knownValue(amt) },
+            level: { value: single === null ? several : lvl === null ? notRecorded('Price level not recorded') : knownValue(levelText(lvl)) },
           },
           tooltipTitle: `${seller.name} \u2192 ${buyer.name}`,
           tooltipExtra: extra,
@@ -169,7 +171,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
         };
       }
 
-      const priceRaw = row.prices[0]?.amount ?? null;
+      const priceRaw = single ? priceOf(single.variant) : null;
       const assigned = valueFromLive(live, liveKey(row.key, 'assigned'));
       const needed = valueFromLive(live, liveKey(row.key, 'convoys'));
       const collected = valueFromLive(live, liveKey(row.key, 'collected'));
@@ -186,7 +188,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
         seller: { value: seller.value, iconSlot: true, icon: seller.icon, iconPending: seller.iconPending, country: row.seller ?? undefined, countryColor: seller.color },
         buyer: { value: buyer.value, iconSlot: true, icon: buyer.icon, iconPending: buyer.iconPending, country: row.buyer ?? undefined, countryColor: buyer.color },
         equipment: { value: knownValue(allEquipment || 'Equipment name unavailable'), iconSlot: true, artShape: 'wide', artName: allEquipment, ...art },
-        price: { value: priceRaw === null ? notRecorded('Price not recorded') : knownValue(priceRaw) },
+        price: { value: single === null ? several : priceRaw === null ? notRecorded('Price not recorded') : knownValue(priceRaw) },
         convoys: { value: assigned, format: 'integer', secondaryValue: needed },
         collected: { value: collected },
         deliveries: { value: deliveries },
@@ -215,6 +217,7 @@ for (const view of MARKET_TABS) registerTableProjection(internationalMarketProje
 
 function marketSources(ctx: FamilyPlanContext<unknown>, view: MarketTab): SourcePlan {
   const only = view === 'inventory' ? 'offers' : 'contracts';
+  const countries = filterCandidates(ctx.countries.filter.passing) ?? [];
   const owner = `international-market:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${only}`;
   return {
     owner,
@@ -228,8 +231,8 @@ function marketSources(ctx: FamilyPlanContext<unknown>, view: MarketTab): Source
         channel: 'panel',
         coverage: { mode: 'population', form: 'all' },
         product: MARKET,
-        followQuery: { panel: MARKET, branchId: ctx.branch.id, countries: [], only },
-        params: { branchId: ctx.branch.id, countries: [], only },
+        followQuery: { panel: MARKET, branchId: ctx.branch.id, countries, only },
+        params: { branchId: ctx.branch.id, countries, only },
         validate: validateMarketReply,
       },
     }],

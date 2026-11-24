@@ -144,6 +144,7 @@ impl AtHour for AutonomyLevels {
     const KEY: &'static str = "autonomy-levels";
     const TITLE: &'static str = "Autonomy levels";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = AutonomyLevelsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = AutonomyLevelsReply;
@@ -166,6 +167,16 @@ impl AtHour for AutonomyLevels {
         let mut warnings = Vec::new();
         let levels = content_levels(source, load, &mut warnings);
         Ok(AutonomyLevelsContext { levels, warnings })
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        frame.complete::<tables::Subjects>().map_or(i32::MAX, |rows| {
+            rows.iter()
+                .filter(|row| row.cancel == 0 && row.end_hour > row.start_hour && row.end_hour > frame.hour)
+                .map(|row| row.end_hour - 1)
+                .min()
+                .unwrap_or(i32::MAX)
+        })
     }
 
     fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications';
+import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 
@@ -76,7 +76,7 @@ export type MatrixRamp = 'accent' | 'red' | 'amber';
 export interface MatrixCells {
   readonly present: ReadonlyMap<number, MatrixCell>;
   readonly absent: MatrixCell | ((rowIndex: number) => MatrixCell);
-  readonly self?: MatrixCell;
+  readonly self?: MatrixCell | ((rowIndex: number) => MatrixCell);
 }
 
 const SELF: MatrixCell = { kind: 'diagonal' };
@@ -90,7 +90,10 @@ export function matrixPairIndex(columnCount: number, rowIndex: number, columnInd
 export function matrixCellAt(model: Pick<HeatMatrixModel, 'rows' | 'columns' | 'cells'>, rowIndex: number, columnIndex: number): MatrixCell {
   const present = model.cells.present.get(rowIndex * model.columns.length + columnIndex);
   if (present) return present;
-  if (model.rows[rowIndex]?.id === model.columns[columnIndex]?.id) return model.cells.self ?? SELF;
+  if (model.rows[rowIndex]?.id === model.columns[columnIndex]?.id) {
+    const self = model.cells.self ?? SELF;
+    return typeof self === 'function' ? self(rowIndex) : self;
+  }
   const absent = model.cells.absent;
   return typeof absent === 'function' ? absent(rowIndex) : absent;
 }
@@ -224,40 +227,21 @@ export function cellAuditValue(cell: MatrixCell): string {
 
 export function deriveMatrixAudit(
   model: HeatMatrixModel,
-  window?: { readonly firstRow: number; readonly endRow: number; readonly firstCol: number; readonly endCol: number },
-): readonly AuditRow[] {
-  const out: AuditRow[] = [];
-  const push = (r: number, c: number, cell: MatrixCell) => {
-    if (cell.kind === 'diagonal' && cell.text === undefined) return;
-    const row = model.rows[r]!;
-    const col = model.columns[c]!;
-    out.push({ key: `${row.id}->${col.id}`, row: `${row.label} → ${col.label}`, value: cellAuditValue(cell) });
-  };
-  if (!window) {
-    const width = model.columns.length;
-    for (const [index, cell] of model.cells.present) push(Math.floor(index / width), index % width, cell);
-    const absent = model.cells.absent;
-    if (typeof absent === 'function') {
-      for (let r = 0; r < model.rows.length; r++) out.push({ key: `${model.rows[r]!.id}->rest`, row: `${model.rows[r]!.label} → every other column`, value: cellAuditValue(absent(r)) });
-    } else if (model.cells.present.size < model.rows.length * model.columns.length) {
-      out.push({ key: 'rest', row: 'Every other cell', value: cellAuditValue(absent) });
-    }
-    if (model.margin) {
-      for (let r = 0; r < model.rows.length; r++) {
-        out.push({ key: `${model.rows[r]!.id}->margin`, row: `${model.rows[r]!.label} · ${model.margin.header}`, value: marginAuditValue(model.margin.cell(r)) });
-      }
-    }
-    return out;
-  }
+  window: { readonly firstRow: number; readonly endRow: number; readonly firstCol: number; readonly endCol: number },
+): readonly FamilyAuditRow[] {
+  const out: FamilyAuditRow[] = [];
   const firstRow = Math.max(0, window.firstRow);
   const endRow = Math.min(model.rows.length, window.endRow);
   const firstCol = Math.max(0, window.firstCol);
   const endCol = Math.min(model.columns.length, window.endCol);
   for (let r = firstRow; r < endRow; r++) {
-    for (let c = firstCol; c < endCol; c++) push(r, c, matrixCellAt(model, r, c));
-    if (model.margin) {
-      out.push({ key: `${model.rows[r]!.id}->margin`, row: `${model.rows[r]!.label} · ${model.margin.header}`, value: marginAuditValue(model.margin.cell(r)) });
+    const row = model.rows[r]!;
+    for (let c = firstCol; c < endCol; c++) {
+      const cell = matrixCellAt(model, r, c);
+      if (cell.kind === 'diagonal' && cell.text === undefined) continue;
+      out.push(auditCell(row.id, model.columns[c]!.id, cellAuditValue(cell)));
     }
+    if (model.margin) out.push(auditCell(row.id, 'margin', marginAuditValue(model.margin.cell(r))));
   }
   return out;
 }
@@ -285,6 +269,7 @@ export function deriveMatrixMirror(
         spoken: `${col.label}: ${cellAuditValue(cell)}`,
       });
     }
+    if (model.margin) cells.push({ column: model.margin.header, spoken: `${model.margin.header}: ${marginAuditValue(model.margin.cell(r))}` });
     rows.push({
       key: entity.id,
       name: entity.label,

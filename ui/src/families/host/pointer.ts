@@ -50,12 +50,18 @@ export function resolveInstalledAction(
   };
 }
 
-export function parseDefaultRowHit(hitKey: string | null): FamilyPointerHit | null {
+export function parseDefaultRowHit(hitKey: string | null): ParsedFamilyHit | null {
   if (!hitKey) return null;
   const toggle = hitKey.startsWith('toggle:');
   if (!toggle && !hitKey.startsWith('row:')) return null;
   const key = hitKey.slice(hitKey.indexOf(':') + 1);
-  return key ? { key, toggle } : null;
+  return key ? { key, subject: key, toggle, kind: toggle ? 'toggle' : 'row', inspectToken: `row:${key}` } : null;
+}
+
+export interface FamilyRowDrag {
+  readonly starts: (hit: ParsedFamilyHit) => boolean;
+  readonly move: (point: readonly [number, number]) => void;
+  readonly end: (point: readonly [number, number] | null) => void;
 }
 
 export interface FamilyPointerBindingOptions {
@@ -79,6 +85,7 @@ export interface FamilyPointerBindingOptions {
   readonly inspectToken?: (key: string) => string;
   readonly onHoverChange?: (hit: ParsedFamilyHit | null) => void;
   readonly gestures?: FamilyPointerGestures;
+  readonly rowDrag?: FamilyRowDrag;
   readonly onActivate: (key: string, toggle: boolean, action?: InstalledAction, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => void;
   readonly onContextMenu?: (key: string | null, clientX: number, clientY: number, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => boolean;
 }
@@ -101,6 +108,7 @@ interface PointerDownState extends PictureStamp {
   toggle: boolean;
   cancelled: boolean;
   dragging: boolean;
+  rowDrag: boolean;
 }
 
 export interface FamilyPointerBinding {
@@ -128,6 +136,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     getInstalled,
     onHoverChange,
     gestures,
+    rowDrag,
     onActivate,
     onContextMenu,
   } = options;
@@ -193,11 +202,18 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
       const dy = event.clientY - pointerDown.y;
       if (!pointerDown.cancelled && Math.hypot(dx, dy) > CLICK_CANCEL_PX) {
         pointerDown.cancelled = true;
-        if (pointerDown.button === 0 && !isBlocked() && gestures?.onDragMove) {
+        if (pointerDown.button === 0 && !isBlocked() && pointerDown.hit && rowDrag?.starts(pointerDown.hit)) {
+          pointerDown.rowDrag = true;
+          try { bodyNode.setPointerCapture?.(pointerDown.pointerId); } catch {}
+        } else if (pointerDown.button === 0 && !isBlocked() && gestures?.onDragMove) {
           pointerDown.dragging = true;
           try { bodyNode.setPointerCapture?.(pointerDown.pointerId); } catch {}
           gestures.onDragStart?.(pointerDown.startPoint);
         }
+      }
+      if (pointerDown.rowDrag) {
+        rowDrag?.move(toPoint(event.clientX, event.clientY));
+        return;
       }
       if (pointerDown.dragging) {
         gestures?.onDragMove?.(toPoint(event.clientX, event.clientY), [dx, dy]);
@@ -281,6 +297,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
       toggle: false,
       cancelled: false,
       dragging: false,
+      rowDrag: false,
     };
     pointerDown = down;
     pipeline.pointer(pipe, 0, point, (hitKey, hitMeta) => {
@@ -305,7 +322,13 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     });
   };
 
-  const endDrag = (down: PointerDownState) => {
+  const endDrag = (down: PointerDownState, point: readonly [number, number] | null = null) => {
+    if (down.rowDrag) {
+      down.rowDrag = false;
+      try { bodyNode.releasePointerCapture?.(down.pointerId); } catch {}
+      rowDrag?.end(point);
+      return;
+    }
     if (!down.dragging) return;
     down.dragging = false;
     try { bodyNode.releasePointerCapture?.(down.pointerId); } catch {}
@@ -315,9 +338,9 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
   const onPointerUp = (event: PointerEvent) => {
     const down = pointerDown;
     if (!down) return;
-    if (down.dragging) {
+    if (down.dragging || down.rowDrag) {
       pointerDown = null;
-      endDrag(down);
+      endDrag(down, isBlocked() ? null : toPoint(event.clientX, event.clientY));
       return;
     }
     if (down.cancelled || down.button !== 0 || isBlocked()) {

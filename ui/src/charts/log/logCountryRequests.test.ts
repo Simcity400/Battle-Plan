@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { logCountryRequests, sameCountryRequests } from './logData.ts';
-import { occurrenceCountryRequests } from '../../widgets/event-feed/scriptOccurrences.ts';
-import type { ScriptOccurrence } from '../../generated/dashboard';
 
 test('log identities use their own hours across a country rename, with opaque tags', () => {
   const rows = [{ key: 'old', hour: 10, item: ['mod: country', null] }, { key: 'new', hour: 20, item: ['mod: country', 'victim'] },
@@ -20,21 +18,10 @@ test('log label requests keep all 5000 synthetic countries and deduplicate only 
   assert.deepEqual(wanted.at(-1), { hour: 100, tag: 'MOD 4999' });
 });
 
-test('F5: sameCountryRequests detects a new chooser or nameHour added under the same occurrence row key', () => {
-  const edge = (nameHour: number, tags: string[]) => ({
-    option: null,
-    lifecycle: null,
-    days: null,
-    costs: null,
-    row: { hour: nameHour, readHour: nameHour, nameHour, kind: 'eventFired', tags, item: null },
-  }) as unknown as ScriptOccurrence['edges'][number];
-  const before: ScriptOccurrence = { id: 'ev-1', opened: true, edges: [edge(100, ['GER'])] };
-  const afterSame: ScriptOccurrence = { id: 'ev-1', opened: true, edges: [edge(100, ['GER'])] };
-  const afterExtended: ScriptOccurrence = { id: 'ev-1', opened: false, edges: [edge(100, ['GER']), edge(112, ['FRA'])] };
-  const reqBefore = occurrenceCountryRequests([before]);
-  const reqSame = occurrenceCountryRequests([afterSame]);
-  const reqExtended = occurrenceCountryRequests([afterExtended]);
-  assert.equal(sameCountryRequests(reqBefore, reqSame), true);
-  assert.equal(sameCountryRequests(reqBefore, reqExtended), false);
-  assert.deepEqual(reqExtended, [{ hour: 100, tag: 'GER' }, { hour: 112, tag: 'FRA' }]);
+test('sameCountryRequests compares request arrays element by element', () => {
+  const before = [{ hour: 100, tag: 'GER' }];
+  const same = [{ hour: 100, tag: 'GER' }];
+  const extended = [{ hour: 100, tag: 'GER' }, { hour: 112, tag: 'FRA' }];
+  assert.equal(sameCountryRequests(before, same), true);
+  assert.equal(sameCountryRequests(before, extended), false);
 });

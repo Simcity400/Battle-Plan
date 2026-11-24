@@ -58,7 +58,11 @@ fn a_slot_follows_its_country_through_a_tag_change_while_the_tag_goes_to_another
     );
     assert!(holders.at(&country, 125).is_none(), "an hour the slot holds no tag is absent, never another country");
     assert_eq!(holders.tag_at(&country, 125), None);
-    assert_eq!(holders.name(&country, 125), "DEU");
+    assert_eq!(holders.name(&country, 125), country.key(), "a fact at an hour the slot holds no tag is the slot, never a neighbour's name");
+    assert_eq!(holders.name(&country, 95), country.key(), "nor a later holder's");
+    assert_eq!(holders.label(&country, 125), None);
+    assert_eq!(holders.say(&country, 125, |name| format!("{name} has no row")), NOT_HELD_AT_HOUR, "the reason is that the slot holds no tag then");
+    assert_eq!((holders.nearest_name(&country, 125), holders.nearest_name(&country, 95)), ("DEU".to_owned(), "GER".to_owned()), "a label that is no fact at an hour asks for the nearest name by name");
     assert_eq!(holders.name(&Country::Slot(77), 105), Country::Slot(77).key(), "a slot never named is named by its key, never a bare number");
     assert_eq!(holders.label(&Country::Slot(77), 105), None, "it has no name to show");
     assert_eq!(holders.say(&Country::Slot(77), 105, |name| format!("{name} has no row")), NOT_IN_HISTORY);
@@ -68,4 +72,16 @@ fn a_slot_follows_its_country_through_a_tag_change_while_the_tag_goes_to_another
     assert_eq!(Country::from("5").key(), "5");
     assert_eq!(serde_json::from_str::<Country>("5").unwrap(), country);
     assert_eq!(serde_json::from_str::<Country>(r#""GER""#).unwrap(), Country::from("GER"));
+}
+
+#[test]
+fn a_slot_names_the_tag_it_holds_at_each_hour_and_none_between() {
+    let holders = Holders::new(
+        [("SPR".to_owned(), vec![run(100, 149, GER)]), ("SPA".to_owned(), vec![run(160, 199, GER_AFTER)])].into(),
+        Vec::new(),
+    );
+    assert_eq!(holders.slot_tag(5, 120), Some("SPR"));
+    assert_eq!(holders.slot_tag(5, 155), None, "no tag between the two runs");
+    assert_eq!(holders.slot_tag(5, 199), Some("SPA"));
+    assert_eq!(holders.slot_tag(6, 120), None);
 }

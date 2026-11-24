@@ -1,14 +1,12 @@
 import { colour } from '../../charts/palette.ts';
-import { bridgeGaps } from '../../charts/timeline/runState.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { ideaNameMissing, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryProof, ideaNameMissing, lookOf, unobservedThrough, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
-import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, wholeBranchProof } from '../../families/timeline/helpers.ts';
+import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
-import type { IdeaHistoryReply, IdeaSpan } from '../../generated/dashboard';
+import { registerFamilyProjection } from '../../families/registry.ts';
+import type { IdeaHistoryReply, IdeaHolding } from '../../generated/dashboard';
 import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData.ts';
 
 export interface IdeaTimelineOptions {
@@ -18,34 +16,12 @@ export interface IdeaTimelineOptions {
   readonly surface: string;
 }
 
-function boundaries(reply: IdeaHistoryReply): number[] {
-  const hours: number[] = [];
-  for (const span of reply.spans) hours.push(span.firstHour, span.lastHour + 1);
-  for (const gap of reply.unobserved) hours.push(gap.firstHour, gap.lastHour + 1);
-  return sortedBoundaries(hours);
-}
-
-function bridgedSpans(spans: readonly IdeaSpan[], unobserved: IdeaHistoryReply['unobserved']): IdeaSpan[] {
-  const byHolder = new Map<string, IdeaSpan[]>();
-  for (const span of spans) {
-    const key = JSON.stringify([span.token, span.slot, span.character?.id ?? null, span.character?.token ?? null, span.character?.name ?? null]);
-    const list = byHolder.get(key);
-    if (list) list.push(span); else byHolder.set(key, [span]);
-  }
-  const out: IdeaSpan[] = [];
-  for (const list of byHolder.values()) {
-    list.sort((a, b) => a.firstHour - b.firstHour);
-    for (const stretch of bridgeGaps(list, unobserved)) out.push({ ...stretch.runs[0]!, lastHour: stretch.lastHour });
-  }
-  return out.sort((a, b) => a.firstHour - b.firstHour);
-}
-
-export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = registerTimelineProjection<IdeaTimelineOptions>({
+export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = registerFamilyProjection<TimelineProjection<IdeaTimelineOptions>>({
+  family: 'timeline',
   kind: 'idea-timeline',
 
   nextChange(readView) {
-    const reply = readView.panel<IdeaHistoryReply>('main');
-    return reply ? nextBoundaryAfter(boundaries(reply), readView.hour) : Infinity;
+    return readView.panel<IdeaHistoryReply>('main')?.nextChange ?? Infinity;
   },
 
   project(readView, opt) {
@@ -53,37 +29,26 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
     const reply = readView.panel<IdeaHistoryReply>('main');
     const base = { hour, firstHour: opt.firstHour, labelWidth: 200, iconsOnBars: opt.iconsOnBars };
     if (!reply) return timelineModel(base);
-    const nextChangeAt = nextBoundaryAfter(boundaries(reply), hour);
+    const nextChangeAt = reply.nextChange ?? Infinity;
     const category = chosenCategory(reply.categories, opt.category);
     if (!category) {
       return timelineModel({ ...base, empty: opt.category ? 'Category not in this recording' : 'No idea categories recorded', emptyKind: 'unavailable', warnings: reply.warnings, nextChangeAt });
     }
-    const gaps = clipSpansToHour(reply.unobserved, hour);
-    const seen = { ...reply, spans: bridgedSpans(boundedRuns(reply.spans, hour), gaps) };
     const slotOrdinal = new Map(category.slots.map((slot, index) => [slot.token, index]));
-    const gapNow = inHourSpans(gaps, hour);
-    const lanes: TimelineLane[] = lanesFor(seen, category).map(group => {
+    const lanes: TimelineLane[] = lanesFor(reply, category).map(group => {
       const fill = colour(opt.surface, slotOrdinal.get(group.slot) ?? 0);
-      const held = bridgeGaps(group.spans, gaps, (a, b) => a.token === b.token && a.holder === b.holder);
-      const spans = held.map(stretch => {
-        const span = { ...stretch.runs[0]!, lastHour: stretch.lastHour };
-        const open = span.lastHour >= hour;
-        return {
-          id: span.id,
-          firstHour: span.firstHour,
-          lastHour: Math.min(span.lastHour, hour),
-          color: fill,
-          label: span.label,
-          icon: urlArtHandle(span.icon),
-          iconMissing: !span.icon,
-          ...spanStart(span.firstHour, opt.firstHour, gaps),
-          endUnseen: !open && inHourSpans(gaps, span.lastHour + 1),
-          open,
-          meta: { token: span.token },
-        };
-      });
+      const spans = group.spans.map(span => ({
+        id: span.id,
+        firstHour: span.holding.firstHour,
+        color: fill,
+        label: span.label,
+        icon: urlArtHandle(span.icon),
+        iconMissing: !span.icon,
+        ...holdingSpanFlags(span.holding, hour),
+        meta: { holding: span.holding },
+      }));
       const current = spans.find(span => span.open);
-      const subtitle = current?.label ?? (gapNow ? 'Not recorded' : 'Empty');
+      const subtitle = current?.label ?? (reply.unrecorded ? 'Not recorded' : 'Empty');
       return {
         key: group.id,
         kind: 'item' as const,
@@ -94,7 +59,7 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
         auditValue: `${group.label}|${subtitle}`,
       };
     });
-    return timelineModel({ ...base, lanes, unobserved: reply.unobserved, warnings: reply.warnings, nextChangeAt });
+    return timelineModel({ ...base, lanes, unobserved: unobservedThrough(reply, hour), warnings: reply.warnings, nextChangeAt });
   },
 
   tooltip(model, hit, readView, opt) {
@@ -102,25 +67,21 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
     const lane = laneByKey(model, hit.laneKey);
     if (!lane) return null;
     const span = spanAt(lane, hit);
-    if (!span) {
+    if (!span || !reply) {
       const at = hit.hour ?? model.hour;
-      return { title: lane.label, hour: at, items: [{ label: 'Held', value: inHourSpans(reply?.unobserved, at) ? 'Not recorded' : 'Empty' }] };
+      return { title: lane.label, hour: at, items: [{ label: 'Held', value: inHourSpans(model.unobserved, at) ? 'Not recorded' : 'Empty' }] };
     }
-    const token = (span.meta as { token: string }).token;
-    const info = reply?.ideas.find(item => item.token === token);
-    const art = reply?.artwork.find(item => item.token === token);
-    const category = reply ? chosenCategory(reply.categories, opt.category) : null;
-    const level = category ? lawLevel(category, info) : null;
-    const why = ideaNameMissing(art, info);
+    const holding = (span.meta as { holding: IdeaHolding }).holding;
+    const look = lookOf(reply, holding);
+    const category = chosenCategory(reply.categories, opt.category);
+    const level = category ? lawLevel(category, look.info) : null;
+    const why = ideaNameMissing(look.artwork, look.info);
     return {
       title: span.label ?? lane.label,
       subtitle: level ? `${lane.label} · Level ${level}` : lane.label,
       hour: hit.hour ?? model.hour,
-      items: [
-        { label: span.heldBefore ? 'Held before' : 'Since', value: `${span.startBy ? 'By ' : ''}${formatDateOnly(span.firstHour)}` },
-        untilItem(span, model.unobserved, hit.hour ?? model.hour, { held: 'Held now', until: 'Until' }),
-      ],
-      ...(art?.description ? { description: art.description } : {}),
+      items: [holdingSince(holding), holdingUntil(holding)],
+      ...(look.artwork.description ? { description: look.artwork.description } : {}),
       ...(why ? { note: why } : {}),
     };
   },
@@ -150,8 +111,9 @@ export const ideaTimelineDeclaration: TimelineWidgetDeclaration<IdeaTimelineOpti
             product: 'idea-history',
             followQuery: null,
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            buildSpanParams: params => params,
-            provenInterval: wholeBranchProof,
+            buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
+            provenInterval: ideaHistoryProof,
+            dynamicKeys: ['hour'],
             validate: validateIdeaHistoryReply,
           },
         }]

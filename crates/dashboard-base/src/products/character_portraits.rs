@@ -52,15 +52,11 @@ pub fn resolve_portrait(
                 file: None,
             },
         },
-        RecordedPortrait::Generated => super::artwork::ArtResolution::ConfirmedMissing {
+        RecordedPortrait::Generated => super::artwork::ArtResolution::Unavailable {
             reason: "The game generates this portrait from inputs the recording lacks.".into(),
-            origin: None,
-            file: None,
         },
-        RecordedPortrait::Unrecorded => super::artwork::ArtResolution::ConfirmedMissing {
+        RecordedPortrait::Unrecorded => super::artwork::ArtResolution::Unavailable {
             reason: "The character's portraits were not recorded.".into(),
-            origin: None,
-            file: None,
         },
     }
 }

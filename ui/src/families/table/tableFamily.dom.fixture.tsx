@@ -80,22 +80,34 @@ let frozenNow = 0;
 let timerIdSeq = 1;
 let timerFiredCount = 0;
 const heldTimers = new Map<number, () => void>();
+const liveTimers = new Map<number, { readonly fn: () => void; readonly handle: ReturnType<typeof setTimeout> }>();
 const controlledClock = () => (cadenceHold ? frozenNow : performance.now());
 const controlledTimers: CadenceTimers = {
   set(fn, ms) {
-    if (cadenceHold) {
-      const id = timerIdSeq++;
-      heldTimers.set(id, fn);
-      return id as unknown as ReturnType<typeof setTimeout>;
-    }
-    return setTimeout(() => { timerFiredCount++; fn(); }, ms);
+    const id = timerIdSeq++;
+    if (cadenceHold) heldTimers.set(id, fn);
+    else liveTimers.set(id, { fn, handle: setTimeout(() => { liveTimers.delete(id); timerFiredCount++; fn(); }, ms) });
+    return id as unknown as ReturnType<typeof setTimeout>;
   },
   clear(id) {
     const num = id as unknown as number;
     if (heldTimers.delete(num)) return;
-    clearTimeout(id);
+    const live = liveTimers.get(num);
+    if (live) clearTimeout(live.handle);
+    liveTimers.delete(num);
   },
 };
+
+function holdCadence(now: number): void {
+  frozenNow = now;
+  cadenceHold = true;
+  heldTimers.clear();
+  for (const [id, live] of liveTimers) {
+    clearTimeout(live.handle);
+    heldTimers.set(id, live.fn);
+  }
+  liveTimers.clear();
+}
 
 function createControlledLane(): LaneWorker {
   const worker: LaneWorker = {
@@ -354,10 +366,8 @@ window.tableFamilyDom = {
 
       const wantTop = 'FRA';
       const pauseHour = sentThrough + 1;
-      frozenNow = performance.now() + 50;
-      cadenceHold = true;
+      holdCadence(performance.now() + 50);
       timerFiredCount = 0;
-      heldTimers.clear();
       flipFromHour = pauseHour;
       feed(pauseHour);
       const reachedFlip = await until(() => (pipeline.view(pipeId)?.h ?? 0) >= pauseHour && !pipeline.view(pipeId)?.dim, 4000);

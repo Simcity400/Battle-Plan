@@ -825,7 +825,7 @@ fn reply(source: &Source, query: &Query<'_>, params: &ProductionSpendingParams, 
     }
     let reply = ProductionSpendingReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, query.timeline.last),
+        tag: query.holders.nearest_name(&params.country, query.timeline.last),
         decimals: 5,
         reads: sorted(equipment_reads.iter().chain(&rocket_reads).copied()),
         observations: sorted(equipment_observations.iter().chain(&rocket_observations).copied()),

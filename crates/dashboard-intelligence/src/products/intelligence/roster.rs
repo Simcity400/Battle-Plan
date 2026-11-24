@@ -65,6 +65,8 @@ pub struct RosterOperative {
     pub experience_text: Option<String>,
     pub experience_ratio: Option<f64>,
     pub experience_missing: Option<String>,
+    #[doc = " The skill is at its highest level: there is no progress to the next."]
+    pub experience_at_cap: bool,
     #[doc = " As the game numbers it: 0 captured, 1 cooling down, 3 on a mission, 4 in an operation."]
     pub assignment: u32,
     pub assignment_name: Option<String>,
@@ -189,6 +191,7 @@ impl RosterOperative {
             experience_raw: row.experience_raw.to_string(),
             experience_text: experience.text,
             experience_ratio: experience.ratio,
+            experience_at_cap: experience.at_cap,
             experience_missing: experience.missing.or_else(|| unconfigured("The skill level")),
             assignment: row.assignment,
             assignment_name: assignment.name,
@@ -375,6 +378,7 @@ impl AtHour for OperativesRoster {
     const KEY: &'static str = "operatives-roster";
     const TITLE: &'static str = "Operatives roster";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = OperativesRosterParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
     type Reply = OperativesRosterReply;
@@ -426,6 +430,10 @@ impl AtHour for OperativesRoster {
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         Ok(operative_content::content(source, load))
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        if frame.tables[TableId::OperativeMemberships.index()].sampled_at().is_some() { i32::MAX } else { frame.hour }
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

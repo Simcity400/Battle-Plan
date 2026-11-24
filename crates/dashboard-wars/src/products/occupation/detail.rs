@@ -88,6 +88,7 @@ impl AtHour for OccupationDetail {
     const KEY: &'static str = "occupation-at";
     const TITLE: &'static str = "Occupation";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = OccupationDetailParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, collaboration, "countries[]"];
     type Reply = OccupationDetailReply;

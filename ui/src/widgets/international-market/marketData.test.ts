@@ -19,25 +19,33 @@ const raw = { branchId: '1', purchasesMissing: null, unattributed: 1, warnings: 
     { key: '1', id: '51', seller: 'FRA', buyer: 'GER', request: false, speed: 1, equipment: [item('5', '100000'), item('6', '1')], prices: [], levels: [], subsidies: [], purchase: true },
     { key: '2', id: '52', seller: 'FRA', buyer: null, request: true, speed: 0, equipment: [item('5', '1')], prices: [], levels: [{ variant: '5', name: null, level: 0 }], subsidies: [], purchase: false },
     { key: '3', id: '53', seller: 'ITA', buyer: 'ENG', request: false, speed: 0, equipment: [], prices: [], levels: [], subsidies: [], purchase: false },
+    { key: '4', id: '54', seller: 'ITA', buyer: 'ENG', request: true, speed: 0, equipment: [item('6', '200000')], prices: [], levels: [{ variant: '5', name: null, level: 0 }, { variant: '6', name: null, level: 2 }], subsidies: [], purchase: false },
   ],
   agreements: null };
 const reply: MarketAt = { ...validateMarketReply(raw), hour: 7 };
 
-test('contracts and requests are the rows either party matches; an unnamed party may match and is counted', () => {
-  const ger = (tag: string) => tag === 'GER';
+test('contracts and requests are the rows either party matches', () => {
+  const ger = (tag: string | null) => tag === 'GER';
   const contracts = contractRows(reply, 'contracts', ger);
-  assert.deepEqual(contracts.rows.map(row => row.key), ['1']);
-  assert.equal(contracts.unattributed, 0);
-  assert.deepEqual(contracts.rows[0].equipment.map(entry => [entry.name, entry.icon, entry.amount]), [['Rifle', 'data:rifle', 100000n], [null, null, 1n]]);
-  const requests = contractRows(reply, 'requests', ger);
-  assert.deepEqual([requests.rows.length, requests.unattributed], [0, 1], 'a request whose buyer has no tag may be GER\'s');
-  assert.deepEqual(contractRows(reply, 'requests', () => true).rows[0].levels, [{ variant: '5', level: 0 }]);
+  assert.deepEqual(contracts.map(row => row.key), ['1']);
+  assert.deepEqual(contracts[0].equipment.map(entry => [entry.name, entry.icon, entry.amount]), [['Rifle', 'data:rifle', 100000n], [null, null, 1n]]);
+  assert.deepEqual(contractRows(reply, 'requests', ger), []);
+  assert.deepEqual(contractRows(reply, 'requests', () => true)[0].levels, [{ variant: '5', level: 0 }]);
 });
 
-test('inventory lists each matching seller\'s variants in native order with their price levels; a seller with no tag is not listed', () => {
-  const rows = offerRows(reply, () => true);
+test('inventory lists each matching seller\'s variants in native order with their price levels', () => {
+  const rows = offerRows(reply, tag => tag !== null);
   assert.deepEqual(rows.map(row => [row.key, row.name, row.amount, row.level]), [['44:5', 'Rifle', 300000n, null], ['44:6', null, 100000n, 2]]);
   assert.equal(rows[1].missing, 'The recording does not name this design at this hour.');
+});
+
+test('under All countries an offer whose seller has no country is still listed; under a selection the product\'s count says it may match', () => {
+  const view = createBoundedReadView({ hour: 7, panels: new Map([['main', raw]]) });
+  const all = internationalMarketProjection.project(view, { view: 'inventory', filterAll: true, filter: { passing: null, unrecorded: [], bounds: [] } });
+  assert.ok(all.rows.some(row => row.key === '45:5'), 'the recorded quantity is not dropped');
+  const chosen = internationalMarketProjection.project(view, { view: 'requests', filterAll: false, filter: { passing: { GER: [[0, 9]] }, unrecorded: [], bounds: [10] } });
+  assert.equal(chosen.emptyKind, 'unavailable', 'a request with an unnamed buyer may be GER\'s');
+  assert.equal(internationalMarketProjection.nextChange?.(view, { view: 'requests', filterAll: false, filter: { passing: { GER: [[0, 9]] }, unrecorded: [], bounds: [10] } }), 10);
 });
 
 
@@ -54,4 +62,16 @@ test('contract cells show the live figures exactly as recorded and say why one i
   assert.deepEqual(cells.deliveries!.value, { kind: 'known', value: 4 });
   const unread = model.rows.find(row => row.key === '3')!.cells;
   assert.deepEqual(unread.collected!.value, { kind: 'notRecorded', reason: 'Convoy progress was not recorded at this hour' });
+});
+
+test('each amount, price and level belongs to its own variant: reordered levels never swap prices between variants, and several equipment are listed one by one', () => {
+  const view = createBoundedReadView({ hour: 7, panels: new Map([['main', raw]]) });
+  const all = { passing: null, unrecorded: [], bounds: [] };
+  const requests = internationalMarketProjection.project(view, { view: 'requests', filterAll: true, filter: all });
+  assert.deepEqual(requests.rows.find(row => row.key === '4')!.cells.level!.value, { kind: 'known', value: 'High' }, 'variant 6 is High though variant 5 is listed first');
+  const contracts = internationalMarketProjection.project(view, { view: 'contracts', filterAll: true, filter: all });
+  const several = contracts.rows.find(row => row.key === '1')!;
+  assert.equal(several.cells.price!.value.kind, 'notApplicable', 'two equipment never show one price');
+  const extra = (typeof several.tooltipExtra === 'function' ? several.tooltipExtra() : several.tooltipExtra) ?? [];
+  assert.deepEqual(extra.filter(entry => entry.lookupKey).map(entry => entry.lookupKey), ['5', '6']);
 });

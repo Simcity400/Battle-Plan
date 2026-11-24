@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
@@ -11,11 +12,8 @@ import {
   type SourcePlan,
 } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { ChartGap, ChartHoverDetail, ChartMarker, ChartMarkerItem } from '../../families/time-chart/model.ts';
 import {
   branchGapsOf,
@@ -208,7 +206,7 @@ function buildRulingMarkers(
     }));
 }
 
-export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = registerTimeChart({
+export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = registerFamilyProjection({
   kind: 'ruling-party',
   family: 'time-chart',
   variant: 'stacked-area',
@@ -304,7 +302,7 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
       const head = heads[idx];
       return head === null || head === undefined
         ? []
-        : [{ row: band.token, key: band.token, value: formatShare(head) }];
+        : [auditRow(band.token, formatShare(head))];
     });
 
     return {

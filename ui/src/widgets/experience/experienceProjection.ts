@@ -1,11 +1,9 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { measureArtHandle, type ChartMeasureArt } from '../../families/time-chart/measureArt.ts';
 import type { ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
@@ -35,7 +33,7 @@ export function formatExperience(value: number): string {
   return formatScalar(value, { decimals: 0, maxDecimals: 2 });
 }
 
-export const experienceProjection: TimeChartProjection<ExperienceOptions> = registerTimeChart({
+export const experienceProjection: TimeChartProjection<ExperienceOptions> = registerFamilyProjection({
   kind: 'experience',
   family: 'time-chart',
   variant: 'line',
@@ -80,7 +78,7 @@ export const experienceProjection: TimeChartProjection<ExperienceOptions> = regi
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       auditRows: series.flatMap(s => (s.headValue === null || s.headValue === undefined
         ? []
-        : [{ row: s.id, key: s.id, value: formatExperience(s.headValue) }])),
+        : [auditRow(s.id, formatExperience(s.headValue))])),
     };
   },
 });

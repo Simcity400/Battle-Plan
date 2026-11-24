@@ -1,13 +1,11 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatChartAxisValue } from '../../families/time-chart/layout.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
@@ -40,7 +38,7 @@ function formatEndAmount(value: number): string {
   return formatChartAxisValue(value, 'power');
 }
 
-export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerTimeChart({
+export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerFamilyProjection({
   kind: 'command-power',
   family: 'time-chart',
   variant: 'rate-with-ceiling',
@@ -163,7 +161,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       auditRows: ordered.slice(0, 8).flatMap(tag => {
         const v = headByTag.get(tag);
-        return v === null || v === undefined ? [] : [{ row: tag, key: tag, value: formatEndAmount(v) }];
+        return v === null || v === undefined ? [] : [auditRow(tag, formatEndAmount(v))];
       }),
     };
   },

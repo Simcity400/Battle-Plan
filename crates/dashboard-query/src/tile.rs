@@ -43,6 +43,7 @@ struct Params {
     #[serde(default)]
     least: bool,
     hour: Option<f64>,
+    rank_by: Option<String>,
 }
 
 #[doc = " How far the membership of a top is proven on each side of its hour, in hours."]
@@ -167,10 +168,19 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -
     }
     let n = usize::try_from(top).ok().filter(|n| *n >= 1).ok_or_else(|| invalid("A top names one country or more"))?;
     let hour = crate::series::hour_of(params.hour, "hour")?;
-    let (tags, ranking) = match line.rank_at_by_checked(hour, n, params.least)? {
+    let by = match params.rank_by.as_deref() {
+        None => None,
+        Some(name) => {
+            let measure = line.series().measure(name).ok_or_else(|| invalid(format!("{} has no measure {name} to rank by", line.series().kind)))?;
+            Some(Line::new(line.query(), line.series(), measure)?)
+        }
+    };
+    let ranker = by.as_ref().unwrap_or(line);
+    let (tags, ranking) = match ranker.rank_at(hour, n, params.least)? {
         Err(reason) => (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) }),
         Ok(tags) => {
-            let (from, until) = same_top(line, hour, n, params.least, &tags)?;
+            let held: std::collections::BTreeSet<&str> = tags.iter().map(String::as_str).collect();
+            let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), |ranked| ranked.len() == held.len() && ranked.iter().all(|tag| held.contains(tag.as_str())))?;
             (tags, TileRanking { hour, from, until, refused: None })
         }
     };
@@ -178,26 +188,6 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -
     let mut reply = tile(line, branch_id, &asks, None, params.bin_hours, params.index, params.with_marks)?;
     reply.ranking = Some(ranking);
     Ok(reply)
-}
-
-fn same_top(line: &Line<'_, '_>, hour: i32, n: usize, least: bool, tags: &[String]) -> io::Result<(i32, i32)> {
-    let held: std::collections::BTreeSet<&str> = tags.iter().map(String::as_str).collect();
-    let same = |at: i32| -> io::Result<bool> {
-        Ok(match line.rank_at_by_checked(at, n, least)? {
-            Ok(ranked) => ranked.len() == held.len() && ranked.iter().all(|tag| held.contains(tag.as_str())),
-            Err(_) => false,
-        })
-    };
-    let timeline = &line.query().timeline;
-    let mut from = hour;
-    while from > timeline.first && hour - from < RANK_PROOF_HOURS && same(from - 1)? {
-        from -= 1;
-    }
-    let mut until = hour;
-    while until < timeline.last && until - hour < RANK_PROOF_HOURS && same(until + 1)? {
-        until += 1;
-    }
-    Ok((from, until))
 }
 
 pub fn tile(

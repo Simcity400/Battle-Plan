@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
@@ -9,11 +10,8 @@ import {
 } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type {
   ChartArtSlot,
@@ -145,7 +143,7 @@ function markerDays(raw: readonly StabilityRawMarker[]): readonly MarkerDay[] {
   return days;
 }
 
-export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerTimeChart({
+export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerFamilyProjection({
   kind: 'stability',
   family: 'time-chart',
   variant: 'line',
@@ -300,7 +298,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
         ? { message: 'Both lines are switched off in the settings.' }
         : null,
       auditRows: series.slice(0, 8).flatMap(s =>
-        s.endLabel ? [{ row: s.id, key: s.id, value: s.endLabel.value }] : [],
+        s.endLabel ? [auditRow(s.id, s.endLabel.value)] : [],
       ),
     };
   },

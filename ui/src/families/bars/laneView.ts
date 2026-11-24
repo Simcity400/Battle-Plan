@@ -6,13 +6,14 @@ import { glideDurationForSpeed } from '../table/painter.ts';
 import { layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import { assertBarsModelValid, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, type BarsModel } from './model.ts';
 import { collectVisibleBarsIcons, drawFamilyBars, hitFamilyBars, type BarsGlideOffset } from './painter.ts';
+import { barsRegionRows } from './shareRows.ts';
+import { regionHitKey } from '../regions/regionRows.ts';
 
 export interface FamilyBarsBinding<TOptions = unknown> extends LaneBinding<TOptions> {
   readonly family: 'bars';
   readonly width: number;
   readonly height: number;
   readonly reducedMotion?: boolean;
-  readonly window?: { readonly first: number; readonly count: number };
   readonly pauseFlush?: number;
 }
 
@@ -50,7 +51,6 @@ function glideOf(frame: BarsFrame): Glide {
 function inspected(inspect: string | null): { readonly key: string; readonly side?: 'right' } | null {
   if (inspect?.startsWith('row:')) return { key: inspect.slice(4) };
   if (inspect?.startsWith('right:')) return { key: inspect.slice(6), side: 'right' };
-  if (inspect?.startsWith('add:')) return { key: inspect.slice(4) };
   return null;
 }
 
@@ -96,8 +96,9 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     if (frame.binding.focusedKey) shown.add(frame.binding.focusedKey);
     const res = hitFamilyBars(frame.layout, frame.model, { x: point[0], y: point[1] }, frame.binding.scrollTop, glide.moving ? glide.offsets : undefined, frame.now, glide.duration, shown);
     if (res.kind === 'none' || !res.rowKey) return null;
-    if (res.kind === 'add-region') return `add:${res.rowKey}`;
-    if (res.kind === 'remove-region') return `remove:${res.rowKey}`;
+    if (res.kind === 'add-region') return regionHitKey('add', res.rowKey);
+    if (res.kind === 'remove-region') return regionHitKey('remove', res.rowKey);
+    if (res.kind === 'grip-region') return regionHitKey('grip', res.rowKey);
     if (res.kind === 'right-row') return `right:${res.rowKey}`;
     return `row:${res.rowKey}`;
   },
@@ -108,7 +109,9 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     return payload ? { hour: frame.model.hour, rowKey: target.key, payload } : null;
   },
   structure({ model, layout }) {
+    const regions = barsRegionRows(model, layout);
     return {
+      ...(regions ? { regions } : {}),
       meta: {
         form: model.form,
         count: model.rows.length,
@@ -123,16 +126,14 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
         notes: model.notes ?? [],
         warnings: model.warnings ?? [],
       },
-      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null] as const])),
-      rowBounds: { tops: layout.rowTops, heights: layout.rowHeights, bodyTop: layout.bodyTop },
+      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.label, index, -1, '', row.kind === 'data' ? (row.meta ?? null) : null, layout.rowTops[index]!, layout.rowHeights[index]!] as const])),
     };
   },
   mirror(frame) {
     const shown = visibleBarsRange(frame.layout, frame.binding.scrollTop);
-    const window = frame.binding.window ?? { first: shown.first, count: Math.max(0, shown.last - shown.first) };
-    return deriveBarsMirror(frame.model, window, frame.binding.focusedKey);
+    return deriveBarsMirror(frame.model, { first: shown.first, count: Math.max(0, shown.last - shown.first) }, frame.binding.focusedKey);
   },
-  audit: frame => deriveBarsAudit(frame.model, { window: frame.binding.window }),
+  audit: frame => deriveBarsAudit(frame.model),
   visibleArt: frame => collectVisibleBarsIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };
 

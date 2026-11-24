@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { liveKey, valuesOf } from '../../charts/live.ts';
-import { heldCoverage, occupationLineTooltip, occupationMean, occupationTooltip, totalsOf, validateOccupationDetail } from './occupationTrendData.ts';
+import { heldCoverage, occupationMean, occupationTooltip, totalsOf, validateOccupationDetail } from './occupationTrendData.ts';
+import { occupationHoverItems } from './occupationLinesProjection.ts';
 import type { DetailAt } from './occupationTrendData';
 import type { OccupationDetailReply } from '../../generated/dashboard';
 
@@ -32,9 +33,16 @@ test('a tooltip is of the hour read: it waits for that hour, says why a total is
   assert.deepEqual(occupationTooltip('SOV', 10, detail(10), labelAt, 'resistance', false).rows.map(row => row.value), ['No country holds this tag at this hour']);
 });
 
-test('the line tooltip ranks the shown occupiers by the ranked measure', () => {
-  const tip = occupationLineTooltip(10, ['GER', 'ITA', 'SOV'], detail(10), labelAt, () => '#000', 'resistance', 'resistance', false);
-  assert.deepEqual(tip.rows.filter(row => row.strong).map(row => row.label), ['Name ITA', 'Name GER']);
+test('the lines hover lists every drawn occupier in the chart order, both measures when both are shown, and a missing total with its reason', () => {
+  const lines = ['ITA', 'GER', 'SOV'].map(tag => ({ tag, name: `Name ${tag}`, color: '#000' }));
+  const items = occupationHoverItems(reply, detail(10).values, lines, { shown: 'both', rank: 'resistance', collaboration: true, digits: 0 }, tag => `Name ${tag}`);
+  assert.deepEqual(items.map(item => [item.label, item.value]), [
+    ['Name ITA', '50%'], ['Average compliance', '0%'], ['States', '1 states; total unknown'],
+    ['Name GER', '10%'], ['Average compliance', '3%'], ['States', '3/4 states'],
+    ['Country collaboration: Name POL', '25%'], ['Country collaboration: Country name unavailable', 'Not recorded'],
+    ['Name SOV', 'Not recorded'],
+  ]);
+  assert.equal(items.at(-1)!.missingReason, 'No country holds this tag at this hour');
 });
 
 test('the detail reply is checked whole', () => {

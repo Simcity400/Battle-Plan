@@ -1,7 +1,7 @@
+import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
 import { tintColour } from '../../shell/appearance/color.ts';
-import type { AuditRow } from '../../draw/notifications';
 import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
@@ -263,9 +263,9 @@ export function deriveBreakdownNavAndMirror(
 
 export function deriveBreakdownAudit(
   model: BreakdownModel,
-): readonly AuditRow[] {
+): readonly FamilyAuditRow[] {
   const level = breakdownLevel(model);
-  const rows: AuditRow[] = [];
+  const rows: FamilyAuditRow[] = [];
   const totalVal = level.total.value === null
     ? `notRecorded:${level.total.reason ?? 'Not recorded'}`
     : level.total.atLeast
@@ -273,14 +273,14 @@ export function deriveBreakdownAudit(
       : level.total.partial
         ? `partial:${level.total.exact ?? level.total.text}`
         : (level.total.exact ?? level.total.text);
-  rows.push({ row: '__total__', key: '__total__', value: totalVal });
+  rows.push(auditRow('__total__', totalVal));
   for (const part of level.parts) {
     const val = part.notRecorded || part.value === null
       ? `notRecorded:${part.missingReason ?? 'Not recorded'}`
       : part.partial
         ? `partial:${part.exact ?? part.text}`
         : (part.exact ?? part.text);
-    rows.push({ row: part.key, key: part.key, value: val });
+    rows.push(auditRow(part.key, val));
   }
   return rows;
 }

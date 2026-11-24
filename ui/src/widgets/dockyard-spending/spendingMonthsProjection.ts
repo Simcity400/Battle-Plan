@@ -1,12 +1,13 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, reservedGrey } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { icDecimals } from '../../dashboard/icDecimals.ts';
 import type { OptionValue } from '../../dashboard/options';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
+import { registerFamilyProjection } from '../../families/registry.ts';
+import type {
+  TimeChartProjection,
+  TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
 import type {
   ChartColumnSegment,
@@ -89,7 +90,7 @@ export function createSpendingMonthsView(spec: SpendingMonthsSpec): {
   readonly projection: TimeChartProjection<SpendingMonthsOptions>;
   readonly declaration: TimeChartWidgetDeclaration<SpendingMonthsOptions>;
 } {
-  const projection: TimeChartProjection<SpendingMonthsOptions> = registerTimeChart({
+  const projection: TimeChartProjection<SpendingMonthsOptions> = registerFamilyProjection({
     kind: spec.kind,
     family: 'time-chart',
     variant: 'columns',
@@ -261,11 +262,7 @@ export function createSpendingMonthsView(spec: SpendingMonthsSpec): {
 
       const auditRows = slots
         .filter(s => s.status === 'recorded' && !s.totalMissingReason)
-        .map(s => ({
-          row: `${s.year}-${String(s.month).padStart(2, '0')}`,
-          key: `${s.year}-${String(s.month).padStart(2, '0')}`,
-          value: s.totalText,
-        }));
+        .map(s => auditRow(`${s.year}-${String(s.month).padStart(2, '0')}`, s.totalText));
 
       return {
         kind: spec.kind,

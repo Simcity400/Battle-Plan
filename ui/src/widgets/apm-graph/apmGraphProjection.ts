@@ -1,4 +1,6 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { TRAILING_HOURS } from '../../dashboard/model.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -6,7 +8,6 @@ import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import {
-  registerTimeChart,
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
@@ -75,7 +76,7 @@ function extractHeadRows(readView: BoundedReadView): { readonly rows: readonly A
   return { rows: [], ready: false, refusal: null, warnings: [] };
 }
 
-export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = registerTimeChart({
+export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = registerFamilyProjection({
   kind: 'apm-graph',
   family: 'time-chart',
   variant: 'line',
@@ -170,7 +171,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
     });
     const auditRows = series
       .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
-      .map(s => ({ row: s.name, key: s.id, value: formatApm(s.headValue!) }));
+      .map(s => (auditRow(s.id, formatApm(s.headValue!))));
     return {
       kind: 'apm-graph',
       measureTitle: 'eAPM',
