@@ -2,6 +2,7 @@ import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type Fam
 import type { AnyTableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { familyTableLaneView } from '../../families/table/laneView.ts';
 import type { TableProjection } from '../../families/table/model.ts';
+import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 
 function tableSpec<TModule>(
@@ -16,7 +17,7 @@ function tableSpec<TModule>(
   });
 }
 
-const GAME_SCORE_TABLE_OPTION_KEYS = new Set(['view', 'factions', 'topMeasure', 'cellBars', 'rankMarkers', 'density', 'narrowTable', 'tableSort']);
+const GAME_SCORE_TABLE_OPTION_KEYS = new Set(['view', 'factions', 'topMeasure', 'rankMarkers', TABLE_SETTINGS_KEY]);
 const GAME_SCORE_TABLE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_TABLE_OPTION_KEYS.has(field.key));
 
 export const TABLE_VIEWS: readonly FamilyViewEntry[] = [

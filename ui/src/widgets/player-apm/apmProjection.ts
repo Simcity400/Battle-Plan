@@ -12,17 +12,16 @@ import {
   type TableProjection,
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { OFFERED } from '../../families/table/settings.ts';
+import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, wireFloat, wireWhole, type NullableMeaning, type Value } from '../../families/value.ts';
 import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
 import { GAPS_NOTE, playerNames, validateApm, valueNote } from './apmData.ts';
 import { apmHeadQuery } from './apmHead.ts';
-import { DEFAULT_SORT, TABLE_APM_OPTIONS } from './definition.ts';
+import { TABLE_APM_OPTIONS, TABLE_BASE } from './definition.ts';
 
 export interface ApmTableProjectionOptions {
   readonly players: boolean;
   readonly showPaused: boolean;
-  readonly cellBars: boolean;
   readonly rankMarkers: boolean;
   readonly labels: CountryLooksMap;
   readonly unobserved?: HourRanges;
@@ -111,14 +110,33 @@ function parseReply(raw: unknown): ParsedApm {
     : { rows: [], refusal: 'Player orders were not recorded in this campaign.', warnings: reply.warnings };
 }
 
-export function apmTableColumns(players: boolean, showPaused: boolean, cellBars: boolean): TableColumnSpec[] {
+function formatPlayedHm(minutes: number): string {
+  const totalMins = Math.max(0, Math.round(minutes));
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  return `${h}:${String(m).padStart(2, '0')}`;
+}
+
+export function apmTableColumns(players: boolean, showPaused: boolean): TableColumnSpec[] {
   return [
-    { key: 'name', label: players ? 'Player' : 'Country', as: players ? 'plain' : 'flagName', offered: players ? OFFERED.text : OFFERED.country, priority: 0, text: true, hideable: false, widest: ['United Kingdom'] },
-    ...(players ? [{ key: 'country', label: 'Country', as: 'flagName' as const, offered: OFFERED.country, priority: 2, text: true, widest: ['United Kingdom'] }] : []),
-    { key: 'apm', label: 'eAPM', as: cellBars ? 'faint' : 'plain', tone: 'blue', offered: OFFERED.number, priority: 1, numeric: true, format: 'decimal1', widest: ['999.9'], hint: 'Orders per unpaused real minute' },
-    { key: 'orders', label: 'Orders', as: 'plain', offered: OFFERED.number, priority: 1, numeric: true, format: 'integer', widest: ['999,999'], hint: 'Player-issued gameplay orders during unpaused play' },
-    ...(showPaused ? [{ key: 'paused', label: 'Paused orders', as: 'plain' as const, offered: OFFERED.number, priority: 2, numeric: true, format: 'integer' as const, widest: ['99,999'] }] : []),
-    { key: 'minutes', label: 'Unpaused minutes', as: 'plain', offered: OFFERED.number, priority: 3, numeric: true, format: 'decimal1', widest: ['9,999.9'] },
+    ...(players ? [{ key: 'country', label: 'Country', as: 'flag' as const, offered: OFFERED.country, showNamesDefault: false, pinned: true, priority: 0, text: true }] : []),
+    {
+      key: 'name',
+      label: players ? 'Player' : 'Country',
+      as: players ? 'plain' : 'flagName',
+      ...(players ? { cellKind: 'item' as const } : {}),
+      offered: players ? OFFERED.text : OFFERED.country,
+      ...(players ? {} : { showNamesDefault: true }),
+      pinned: true,
+      priority: 0,
+      text: true,
+      hideable: false,
+      widest: ['United Kingdom'],
+    },
+    { key: 'apm', label: 'eAPM', unit: 'actions a minute', as: 'faint', barEligible: true, tone: 'country', offered: OFFERED.number, priority: 1, numeric: true, format: 'decimal1', widest: ['999.9'], hint: 'Orders per unpaused real minute' },
+    { key: 'orders', label: 'Actions', as: 'faint', barEligible: true, offered: OFFERED.number, priority: 1, numeric: true, format: 'integer', widest: ['999,999'], hint: 'Player-issued gameplay orders during unpaused play' },
+    ...(showPaused ? [{ key: 'paused', label: 'Paused actions', as: 'faint' as const, barEligible: true, offered: OFFERED.number, priority: 2, numeric: true, format: 'integer' as const, widest: ['99,999'] }] : []),
+    { key: 'minutes', label: 'Played', unit: 'h:mm', as: 'plain', barEligible: false, offered: OFFERED.number, priority: 3, numeric: true, widest: ['99:59'] },
   ];
 }
 
@@ -133,7 +151,7 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
     rank: true,
     rankMarkers: opt => opt.rankMarkers,
     columns: (_parsed, opt): readonly DeclarativeColumnSpec<DisplayApmRow, ApmTableProjectionOptions>[] => {
-      const specs = apmTableColumns(opt.players, opt.showPaused, opt.cellBars);
+      const specs = apmTableColumns(opt.players, opt.showPaused);
       const gapsPartial = (row: DisplayApmRow) => (row.summary.gaps ? GAPS_NOTE : null);
       return specs.map((spec): DeclarativeColumnSpec<DisplayApmRow, ApmTableProjectionOptions> => {
         if (spec.key === 'name') {
@@ -147,10 +165,12 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
             : { ...spec, countryField: 'tag', lookHour: (row, h) => observationHour(row, h) };
         }
         if (spec.key === 'country') return { ...spec, countryField: 'tag', lookHour: (row, h) => observationHour(row, h) };
-        if (spec.key === 'apm') return { ...spec, value: row => rateValue(row.summary) };
+        if (spec.key === 'apm') return { ...spec, country: 'tag', lookHour: (row, h) => observationHour(row, h), value: row => rateValue(row.summary) };
         if (spec.key === 'orders') {
           return {
             ...spec,
+            country: 'tag',
+            lookHour: (row, h) => observationHour(row, h),
             path: 'summary.orders',
             rawBigInt: true,
             whenNull: { kind: 'notRecorded', reason: 'Player orders were not recorded for this period.' },
@@ -160,6 +180,8 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
         if (spec.key === 'paused') {
           return {
             ...spec,
+            country: 'tag',
+            lookHour: (row, h) => observationHour(row, h),
             path: 'summary.pausedOrders',
             rawBigInt: true,
             whenNull: { kind: 'notRecorded', reason: 'Paused player orders were not recorded for this period.' },
@@ -168,9 +190,14 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
         }
         return {
           ...spec,
-          path: 'summary.unpausedMinutes',
+          value: row => {
+            const mins = row.summary.unpausedMinutes;
+            if (mins === null) return notRecorded('Unpaused play time was not recorded for this period.');
+            const text = formatPlayedHm(mins);
+            return row.summary.gaps ? partialValue(text, GAPS_NOTE) : knownValue(text);
+          },
+          sortPath: 'summary.unpausedMinutes',
           whenNull: { kind: 'notRecorded', reason: 'Unpaused play time was not recorded for this period.' },
-          partial: gapsPartial,
         };
       });
     },
@@ -224,6 +251,7 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
   countries: {
     mode: 'multi',
     labels: true,
+    colours: true,
     allowSingleSlot: true,
     allTagsForLabels: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group',
@@ -251,12 +279,11 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
     };
   },
   projection: apmTableProjection,
-  columns: ctx => apmTableColumns(ctx.options.group === 'player', ctx.options.showPausedActions === true, ctx.options.cellBars === true),
-  settings: { kind: 'options', defaultSort: DEFAULT_SORT },
+  columns: ctx => apmTableColumns(ctx.options.group === 'player', ctx.options.showPausedActions === true),
+  settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
   projectionOptions: ctx => ({
     players: ctx.options.group === 'player',
     showPaused: ctx.options.showPausedActions === true,
-    cellBars: ctx.options.cellBars === true,
     rankMarkers: ctx.options.rankMarkers === true,
     labels: ctx.countries.labels,
     unobserved: ctx.countries.unobserved,

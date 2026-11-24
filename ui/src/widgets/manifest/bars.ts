@@ -1,6 +1,6 @@
 import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
 import { familyBarsLaneView } from '../../families/bars/laneView.ts';
-import type { FamilyManifestModule, FamilyViewEntry } from '../../families/manifest.ts';
+import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
@@ -12,6 +12,35 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
       family: 'bars', kind: 'naval-supremacy', view: 'shares',
       projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
+    })),
+  },
+  {
+    kind: 'factories',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../factories/factoriesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'factories', view: 'race',
+      projection: mod.factoriesProjection, declaration: mod.factoriesDeclaration,
+    })),
+  },
+  {
+    kind: 'air-superiority-region',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../air-superiority-region/airSuperiorityProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-superiority-region', view: DEFAULT_VIEW,
+      projection: mod.airSuperiorityRegionProjection, declaration: mod.airSuperiorityRegionDeclaration,
+    })),
+  },
+  {
+    kind: 'minefields',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../minefields/minefieldsProjection.ts').then(mod => ({
+      family: 'bars', kind: 'minefields', view: DEFAULT_VIEW,
+      projection: mod.minefieldsProjection, declaration: mod.minefieldsDeclaration,
     })),
   },
 ];

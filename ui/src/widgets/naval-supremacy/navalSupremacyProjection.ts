@@ -239,7 +239,7 @@ export const supremacySharesDeclaration: BarsWidgetDeclaration<SupremacyOptions>
   family: 'bars',
   sources: ctx => supremacySources(ctx, true),
   projection: supremacySharesProjection,
-  projectionOptions: (_ctx, extra) => ({ surface: extra.surface }),
+  projectionOptions: (_ctx, extra) => ({ surface: extra?.surface ?? '' }),
 };
 
 export const supremacyTimelineDeclaration: HeatLanesWidgetDeclaration<SupremacyOptions> = {

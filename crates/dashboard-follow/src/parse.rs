@@ -142,6 +142,56 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
                 _ => Err(invalid(format!("A followed {product} names a country or more, or a top of one row or more"))),
             }
         }
+        "naval-losses" => {
+            use replay_data::rows::NavalLossTotalRow as Row;
+            match text(params, "period")? {
+                "running" => {}
+                "month" => return Err(invalid("Monthly naval losses are not followed at the head")),
+                other => return Err(invalid(format!("No naval-losses period {other}"))),
+            }
+            let attribution = match text(params, "attribution")? {
+                "lost" => Row::LOST,
+                "sunkBy" => Row::SUNK_BY,
+                other => return Err(invalid(format!("No naval-losses attribution {other}"))),
+            };
+            const SHIPS: &[u8] = &[Row::SHIPS];
+            const CONVOYS: &[u8] = &[Row::CONVOYS];
+            const BOTH: &[u8] = &[Row::SHIPS, Row::CONVOYS];
+            let kinds = match text(params, "kind")? {
+                "ships" => SHIPS,
+                "convoys" => CONVOYS,
+                "both" => BOTH,
+                other => return Err(invalid(format!("No naval-losses kind {other}"))),
+            };
+            let series = dashboard_declare::series("naval-losses").ok_or_else(|| invalid("naval-losses is not declared"))?;
+            let measure = measure(series, "total")?;
+            let tags = countries(params.get("countries"))?;
+            let has_top = params.get("top").is_some_and(|top| !top.is_null());
+            if scope == CoverageScope::Row {
+                return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
+            }
+            let top = params.get("top").and_then(Value::as_u64).and_then(|top| usize::try_from(top).ok());
+            match (tags.is_empty(), has_top, top) {
+                (true, true, Some(n)) if n >= 1 => {
+                    let all = identity.holders.tags.keys().map(Country::from).collect();
+                    Ok(Query::Series {
+                        series,
+                        measure,
+                        countries: all,
+                        mode: SeriesMode::NavalLosses { attribution, kinds, top: Some(n) },
+                        identity: identity.clone(),
+                    })
+                }
+                (false, false, _) => Ok(Query::Series {
+                    series,
+                    measure,
+                    countries: tags,
+                    mode: SeriesMode::NavalLosses { attribution, kinds, top: None },
+                    identity: identity.clone(),
+                }),
+                _ => Err(invalid("A followed naval-losses names a country or more, or a top of one row or more")),
+            }
+        }
         other => Err(invalid(format!("{other} is not followed at the head"))),
     }
 }
