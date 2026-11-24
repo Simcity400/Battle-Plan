@@ -216,6 +216,7 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
             pinned_regions: None,
             hidden_regions: None,
             top: None,
+            rank_from: None,
         },
         &LoadContext { content: Some(options) },
         &AtomicBool::new(false),
@@ -226,4 +227,13 @@ fn ships_at_end_uses_last_recorded_day_hour_when_window_ends_in_a_gap() {
     assert_eq!(region.own_ships, MissionShips::Counted { ships: 2 });
     assert_eq!(region.enemy_ships, MissionShips::Counted { ships: 1 });
     assert_ne!(reply.viewer_name_missing.as_deref(), Some("The recording holds no hour here"), "the viewer is named at the readout's hour, not inside the gap");
+}
+
+#[test]
+fn completed_days_rank_the_regions_and_a_region_active_only_today_follows_them() {
+    let today = || [(7, 900), (8, 10), (9, 0), (11, 5)].into_iter();
+    assert_eq!(ranked(today(), None, Some(2)), vec![7, 8], "today alone");
+    let completed = HashMap::from([(8, 5_000), (9, 4_000), (10, 0)]);
+    assert_eq!(ranked(today(), Some(completed.clone()), None), vec![8, 9, 7, 11], "held totals order the regions; one active only today comes after, by id; one never active is not ranked");
+    assert_eq!(ranked(today(), Some(completed), Some(1)), vec![8]);
 }

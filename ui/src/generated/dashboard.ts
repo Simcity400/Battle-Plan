@@ -1645,7 +1645,11 @@ export type NavalSupremacyParams = { branchId: string, country: CountryRef,
 /**
  * The window of days asked ([`super::windows`]).
  */
-window?: number, firstHour?: number, lastHour?: number, regions?: Array<number>, pinnedRegions?: Array<number>, hiddenRegions?: Array<number>, top?: number, };
+window?: number, firstHour?: number, lastHour?: number, regions?: Array<number>, pinnedRegions?: Array<number>, hiddenRegions?: Array<number>, top?: number,
+/**
+ * Ranks the regions by their activity over the days from this hour to the day before `firstHour`, kept per source and extended by the days added since.
+ */
+rankFrom?: number, };
 export type SupremacyRun = { firstDay: number, lastDay: number, control: number | null, friendly: string | null, enemy: string | null, share: string | null, own: string | null, };
 export type SupremacyRegion = { id: string, name: string, pinned: boolean, ownShips: MissionShips, enemyShips: MissionShips, readout?: SupremacyReadout, runs: Array<SupremacyRun>, };
 export type SupremacyReadout = { "kind": "control", control: number, share: string | null, friendly: string | null, enemy: string | null, own: string | null, as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
@@ -1654,6 +1658,10 @@ export type SupremacyLegendItem = { id: string, label: string, control: number, 
 export type UnknownDays = { firstDay: number, lastDay: number, reason: string, };
 export type SeaRegionChoice = { id: string, name: string, };
 export type NavalSupremacyReply = { firstHour: number, lastHour: number,
+/**
+ * The last hour through which nothing this reply shows changes: read beside the reply, never among its rows.
+ */
+validThrough: number,
 /**
  * Day 0 starts at this hour (a multiple of `dayHours`); day `n` covers the `n`th day after.
  */
@@ -6450,7 +6458,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "naval-management": { "hour": "read" },
   "naval-refits": { "hour": "read" },
   "naval-repairs": { "hour": "read" },
-  "naval-supremacy": { "firstHour": "start", "lastHour": "end" },
+  "naval-supremacy": { "firstHour": "start", "lastHour": "end", "rankFrom": "start" },
   "navy-at": { "hour": "read" },
   "next-elections": { "hour": "read" },
   "nuclear-arsenal": { "hour": "read" },
@@ -6634,7 +6642,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "naval-management": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-refits": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-repairs": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "naval-supremacy": { "branchId": "leaf", "country": "any", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf", "window": "leaf" },
+  "naval-supremacy": { "branchId": "leaf", "country": "any", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "rankFrom": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf", "window": "leaf" },
   "navy-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "grouping": "leaf", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
   "next-elections": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "nuclear-arsenal": { "branchId": "leaf", "hour": "leaf", "top": "leaf" },
@@ -6818,7 +6826,7 @@ export type RequestParams<E, B> = {
   "naval-management": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "naval-refits": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "naval-repairs": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "naval-supremacy": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "naval-supremacy": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "rankFrom"?: B | null };
   "navy-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "next-elections": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "nuclear-arsenal": { readonly [key: string]: unknown; readonly "hour"?: E | null };
