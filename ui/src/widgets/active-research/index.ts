@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import ActiveResearchWidget from './ActiveResearchWidget';
+import ActiveResearchView from './ActiveResearchView';
 
-export default { render: ActiveResearchWidget } satisfies WidgetRenderer;
+export default { render: ActiveResearchView } satisfies WidgetRenderer;

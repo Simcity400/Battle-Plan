@@ -291,8 +291,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const auxEnabled = !!auxSpec && (!auxSpec.when || auxSpec.when(options));
   const auxParams = useMemo(
-    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options) : null),
-    [auxSpec, auxEnabled, track, options],
+    () => (auxSpec && auxEnabled && track ? auxSpec.params(track, options, countryTag) : null),
+    [auxSpec, auxEnabled, track, options, countryTag],
   );
   const auxReq = useMemo(
     () => (auxSpec && auxParams && track

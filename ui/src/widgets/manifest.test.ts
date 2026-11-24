@@ -49,8 +49,8 @@ test('manifest accounts for every widget kind once across family views and legac
     const pair = `${entry.kind}:${normalizeView(entry.view)}`;
     assert.equal(familyPairs.has(pair), false, `${pair} must not appear in both lists`);
   }
-  assert.ok(FAMILY_VIEWS.length >= 10);
-  for (const kind of ['factories', 'air-superiority-region', 'minefields']) {
+  assert.equal(FAMILY_VIEWS.length, familyPairs.size, 'each (kind, view) is declared once');
+  for (const kind of ['factories', 'air-superiority-region', 'minefields', 'active-research', 'doctrine-mastery', 'decryption']) {
     assert.ok(familyKinds.has(kind), `${kind} must appear in FAMILY_VIEWS`);
   }
 });
@@ -215,9 +215,9 @@ test('worker projection registry loads table and bars projections lazily on dema
 
   assert.deepEqual(
     FAMILY_MANIFESTS.map(entry => entry.family),
-    ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart'],
+    ['bars', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
   );
-  for (const family of ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart']) {
+  for (const family of ['bars', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
     assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
   }
 });
