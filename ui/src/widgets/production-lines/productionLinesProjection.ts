@@ -14,7 +14,8 @@ import {
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, zeroValue } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { ProductionLinesAtReply } from '../../generated/dashboard';
 import { PRODUCTION_LINES_BASE, PRODUCTION_LINES_COLUMNS } from './definition.ts';
 import {
@@ -36,6 +37,14 @@ function readLiveNum(live: ReturnType<BoundedReadView['live']>, handle: string, 
   if (!live) return null;
   const val = live.get(liveKey(handle, field));
   return typeof val === 'number' && Number.isFinite(val) ? val : null;
+}
+
+function producedValue(line: ProductionLinesAtReply['lines'][number], outputMissing: string | null, units: number | null): Value {
+  if (outputMissing !== null || !line.output) return notRecorded(outputMissing ?? 'Total output not recorded');
+  if (line.output.parts.some(part => !part.exact)) return notRecorded('Inexact output history');
+  if (units === null) return notRecorded('Total output not recorded');
+  if (!line.output.wholeLife) return partialValue(units, `Counted since ${formatDateOnly(line.output.sinceHour)}; earlier output was not recorded`);
+  return units === 0 ? zeroValue(0) : knownValue(units);
 }
 
 function readLiveWhole(live: ReturnType<BoundedReadView['live']>, handle: string, field: string): bigint | null {
@@ -120,7 +129,7 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
         },
         factories: {
           value: active === null ? notRecorded('Active factories not recorded') : active === 0 ? zeroValue(0) : knownValue(active),
-          secondaryValue: requested === null ? notRecorded('Requested factories not recorded') : knownValue(requested),
+          secondaryValue: knownValue(line.maxFactories),
           sortValue: active === null ? notRecorded('Not recorded') : knownValue(active),
         },
         efficiency: {
@@ -136,17 +145,7 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
               : knownValue(weeklyVal),
           format: weeklyVal !== null && weeklyVal > 0 && weeklyVal < 0.05 ? { decimals: 0, maxDecimals: reply.decimals } : 'decimal1',
         },
-        total: {
-          value: reply.outputMissing !== null || !line.output
-            ? notRecorded(reply.outputMissing ?? 'Total output not recorded')
-            : line.output.parts.some(p => !p.exact)
-              ? notRecorded('Inexact output history')
-              : outputUnits === null
-                ? notRecorded('Total output not recorded')
-                : outputUnits === 0
-                  ? zeroValue(0)
-                  : knownValue(outputUnits),
-        },
+        total: { value: producedValue(line, reply.outputMissing, outputUnits) },
         priority: { value: knownValue(line.priority + 1) },
         cost: {
           value: costRaw === null ? notRecorded('IC cost not recorded') : knownValue(formatAmount(costRaw, reply.decimals)),
@@ -161,12 +160,11 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
       const extra: TooltipExtraRow[] = [
         ...(subtitle ? [{ label: 'Type', value: knownValue(subtitle), divider: true }] : []),
         {
-          label: 'Factories',
-          value: active !== null && requested !== null
-            ? knownValue(`${active} / ${requested}`)
-            : notRecorded('Factories not recorded'),
+          label: 'Factories assigned / maximum',
+          value: active !== null ? knownValue(`${active} / ${line.maxFactories}`) : notRecorded('Factories not recorded'),
           ...(subtitle ? {} : { divider: true }),
         },
+        { label: 'Factories requested', value: requested === null ? notRecorded('Requested factories not recorded') : knownValue(requested), format: 'integer' },
         {
           label: 'Efficiency',
           value: effPct !== null ? knownValue(`${effPct}%`) : notRecorded('Efficiency not recorded'),

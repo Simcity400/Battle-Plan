@@ -128,6 +128,19 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'occupation-trend',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    loadSpec: timeChartSpec(
+      'occupation-trend',
+      'lines',
+      () => import('../occupation-trend/occupationLinesProjection.ts'),
+      mod => ({ projection: mod.occupationLinesProjection, declaration: mod.occupationLinesDeclaration }),
+    ),
+  },
+  {
     kind: 'political-power',
     view: DEFAULT_VIEW,
     family: 'time-chart',

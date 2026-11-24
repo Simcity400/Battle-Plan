@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications.ts';
+import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtResult, BoundedReadView, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
@@ -88,10 +88,10 @@ export function deriveFlowMirror(model: FlowModel): MirrorModel {
   return { first: 0, total: rows.length, rows };
 }
 
-export function deriveFlowAudit(model: FlowModel): readonly AuditRow[] {
-  const rows: AuditRow[] = [];
-  for (const node of flowNodes(model)) rows.push({ key: `node:${node.key}`, row: node.label, value: node.audit });
-  for (const ribbon of model.ribbons) rows.push({ key: `ribbon:${ribbon.key}`, row: ribbon.tooltip?.title ?? ribbon.key, value: ribbon.audit });
+export function deriveFlowAudit(model: FlowModel): readonly FamilyAuditRow[] {
+  const rows: FamilyAuditRow[] = [];
+  for (const node of flowNodes(model)) rows.push(auditRow(`node:${node.key}`, node.audit));
+  for (const ribbon of model.ribbons) rows.push(auditRow(`ribbon:${ribbon.key}`, ribbon.audit));
   return rows;
 }
 

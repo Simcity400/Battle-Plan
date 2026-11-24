@@ -7,15 +7,6 @@ import { FUEL_QUANTITY, fixedText } from './market.ts';
 export const MARKET_LOG = 'market-events';
 export const MARKET_LEDGER = 'market-ledger';
 
-export const KINDS = [
-  { kind: 11, key: 'contracts', label: 'New contracts' },
-  { kind: 10, key: 'requests', label: 'Requests posted' },
-  { kind: 20, key: 'deliveries', label: 'Deliveries' },
-  { kind: 21, key: 'payments', label: 'Payments' },
-  { kind: 12, key: 'removals', label: 'Contracts removed' },
-] as const;
-export type KindKey = typeof KINDS[number]['key'];
-
 export const DELIVERY_KINDS = [3, 4, 5, 6, 20, 21, 34] as const;
 
 export type PartyState = 'tag' | 'notRecorded' | 'unavailable';
@@ -72,12 +63,6 @@ export function ledgerFacets(kinds: readonly number[], tags: readonly string[] |
   const facets: BoundFacetFilter[] = [{ name: 'kind', values: [...kinds], countries: [] }];
   if (tags) facets.push({ name: 'country|receiver', values: [], countries: tags.map(countryFromKey) });
   return facets;
-}
-
-export function shownKinds(enabled: (key: KindKey) => boolean): number[] {
-  const kinds: number[] = KINDS.filter(kind => enabled(kind.key)).map(kind => kind.kind);
-  if (enabled('deliveries')) kinds.push(34);
-  return kinds.sort((a, b) => a - b);
 }
 
 const lease = (item: LedgerItem) => item.kind !== null && (item.kind <= 6 || (item.kind === 34 && item.mode !== null && item.mode !== 20));

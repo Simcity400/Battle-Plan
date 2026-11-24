@@ -150,6 +150,7 @@ impl AtHour for FactionRosters {
     const KEY: &'static str = "faction-rosters";
     const TITLE: &'static str = "Faction rosters";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = FactionRostersParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = FactionRostersReply;

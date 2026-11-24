@@ -84,6 +84,7 @@ pub struct Changes {
     pub deleted: Vec<(u32, u128)>,
     pub written: Vec<Vec<u32>>,
     pub status_changed: bool,
+    pub coverage_changed: bool,
 }
 
 impl Changes {
@@ -97,6 +98,11 @@ impl Changes {
         self.deleted.clear();
         self.written.iter_mut().for_each(Vec::clear);
         self.status_changed = false;
+        self.coverage_changed = false;
+    }
+
+    pub fn rows_moved(&self) -> bool {
+        self.anew || self.coverage_changed || !self.inserted.is_empty() || !self.deleted.is_empty() || self.written.iter().any(|slots| !slots.is_empty())
     }
 }
 
@@ -387,6 +393,7 @@ impl TableReader {
             self.stand_absent(ordinal);
             self.changes.anew = true;
             self.changes.status_changed = true;
+            self.changes.coverage_changed = true;
             return Ok(());
         }
         if self.log.is_some() {
@@ -441,6 +448,7 @@ impl TableReader {
         self.changes.clear();
         self.changes.anew = true;
         self.changes.status_changed = true;
+        self.changes.coverage_changed = true;
         Ok(())
     }
 
@@ -466,6 +474,7 @@ impl TableReader {
             self.ordinal = Some(next);
             self.settle(hour)?;
             self.changes.status_changed = before != (self.status, self.read, self.sampled);
+            self.changes.coverage_changed = (before.0, before.1) != (self.status, self.read);
             return Ok(true);
         }
         if block != self.block {
@@ -492,6 +501,7 @@ impl TableReader {
         self.ordinal = Some(next);
         self.settle(hour)?;
         self.changes.status_changed = before != (self.status, self.read, self.sampled);
+        self.changes.coverage_changed = (before.0, before.1) != (self.status, self.read);
         Ok(true)
     }
 
@@ -550,6 +560,7 @@ impl TableReader {
         self.settle(hour)?;
         self.changes.anew = true;
         self.changes.status_changed = true;
+        self.changes.coverage_changed = true;
         Ok(())
     }
 
@@ -570,6 +581,7 @@ impl TableReader {
             self.stand_absent(to);
             self.changes.anew = true;
             self.changes.status_changed = true;
+            self.changes.coverage_changed = true;
             let statuses = vec![Status::NotRecorded; usize::from(last - from) + 1];
             return Ok(Stretch { block, block_first: self.first_hour + (block * BLOCK) as i32, from, to: last, statuses, ..Stretch::default() });
         }
@@ -620,6 +632,7 @@ impl TableReader {
         self.settle(last)?;
         self.changes.anew = true;
         self.changes.status_changed = true;
+        self.changes.coverage_changed = true;
         Ok(stretch)
     }
 
@@ -793,6 +806,7 @@ impl TableReader {
         self.changes.clear();
         self.changes.anew = true;
         self.changes.status_changed = true;
+        self.changes.coverage_changed = true;
         Ok(())
     }
 
@@ -808,6 +822,7 @@ impl TableReader {
         self.settle(hour)?;
         self.changes.anew = true;
         self.changes.status_changed = true;
+        self.changes.coverage_changed = true;
         Ok(())
     }
 

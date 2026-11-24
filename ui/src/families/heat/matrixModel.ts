@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications';
+import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 
@@ -76,7 +76,7 @@ export type MatrixRamp = 'accent' | 'red' | 'amber';
 export interface MatrixCells {
   readonly present: ReadonlyMap<number, MatrixCell>;
   readonly absent: MatrixCell | ((rowIndex: number) => MatrixCell);
-  readonly self?: MatrixCell;
+  readonly self?: MatrixCell | ((rowIndex: number) => MatrixCell);
 }
 
 const SELF: MatrixCell = { kind: 'diagonal' };
@@ -90,7 +90,10 @@ export function matrixPairIndex(columnCount: number, rowIndex: number, columnInd
 export function matrixCellAt(model: Pick<HeatMatrixModel, 'rows' | 'columns' | 'cells'>, rowIndex: number, columnIndex: number): MatrixCell {
   const present = model.cells.present.get(rowIndex * model.columns.length + columnIndex);
   if (present) return present;
-  if (model.rows[rowIndex]?.id === model.columns[columnIndex]?.id) return model.cells.self ?? SELF;
+  if (model.rows[rowIndex]?.id === model.columns[columnIndex]?.id) {
+    const self = model.cells.self ?? SELF;
+    return typeof self === 'function' ? self(rowIndex) : self;
+  }
   const absent = model.cells.absent;
   return typeof absent === 'function' ? absent(rowIndex) : absent;
 }
@@ -225,8 +228,8 @@ export function cellAuditValue(cell: MatrixCell): string {
 export function deriveMatrixAudit(
   model: HeatMatrixModel,
   window: { readonly firstRow: number; readonly endRow: number; readonly firstCol: number; readonly endCol: number },
-): readonly AuditRow[] {
-  const out: AuditRow[] = [];
+): readonly FamilyAuditRow[] {
+  const out: FamilyAuditRow[] = [];
   const firstRow = Math.max(0, window.firstRow);
   const endRow = Math.min(model.rows.length, window.endRow);
   const firstCol = Math.max(0, window.firstCol);
@@ -236,9 +239,9 @@ export function deriveMatrixAudit(
     for (let c = firstCol; c < endCol; c++) {
       const cell = matrixCellAt(model, r, c);
       if (cell.kind === 'diagonal' && cell.text === undefined) continue;
-      out.push({ key: `${row.id}:${model.columns[c]!.id}`, row: row.id, value: cellAuditValue(cell) });
+      out.push(auditCell(row.id, model.columns[c]!.id, cellAuditValue(cell)));
     }
-    if (model.margin) out.push({ key: `${row.id}:margin`, row: row.id, value: marginAuditValue(model.margin.cell(r)) });
+    if (model.margin) out.push(auditCell(row.id, 'margin', marginAuditValue(model.margin.cell(r))));
   }
   return out;
 }

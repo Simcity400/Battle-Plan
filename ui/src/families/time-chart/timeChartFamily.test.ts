@@ -964,7 +964,7 @@ describe('several countries, one measure', () => {
   const rank = parseFollowed(message(10, [{ id: 1, answer: { keys: ranked.map((_, at) => BigInt(at + 1)), columns: 1, values: ranked.map(() => 1n), names: ranked } }])).answers[0]!.answer;
   const project = (projection: typeof navyLinesProjection, membership: Readonly<Record<string, readonly (readonly [number, number])[]>> | null) =>
     projection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), answers: new Map([['rank', rank]]) }),
-      { tags, top: null, membership, decimals: 0, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags, top: null, membership, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
 
   it('orders by the product ranking, colours eight and keeps the rest a grey tail without end labels', () => {
     const model = project(navyLinesProjection, null);
@@ -992,12 +992,23 @@ describe('several countries, one measure', () => {
       { country: 'A03', hour: base + 10, run: null, missing: 'Country did not exist' },
     ] } }]]);
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), hovers }),
-      { tags: [], top: 3, membership: null, decimals: 0, extent: [base, base + 95], gaps: [], surface: '#111111' });
+      { tags: [], top: 3, membership: null, decimals: 0, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.deepEqual(model.series.map(s => s.id), ['A07', 'A01', 'A03']);
     assert.equal(model.series.find(s => s.id === 'A07')!.exact, null);
     assert.deepEqual(model.series.find(s => s.id === 'A01')!.exact, { hour: base + 10, value: 1234 });
     assert.deepEqual(model.series.find(s => s.id === 'A03')!.exact, { hour: base + 10, value: null, reason: 'Country did not exist' });
     assert.equal(model.series[0]!.endLabel?.value, '7,000');
+  });
+
+  it('draws a second measure dashed beside each country in the same colour, keyed apart, with a legend naming both', () => {
+    const named = new Map(['A07', 'A01'].map(tag => [tag, lines.get(tag)!]));
+    const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named], ['second', named]]) }),
+      { tags: ['A07', 'A01'], top: null, membership: null, decimals: 0, digits: null, endLabels: false, second: { measure: 'other', legend: ['Resistance', 'Compliance'] }, options: {},
+        extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(model.series.map(s => [s.key.replace('\u0000', '|'), s.dash ? 'dashed' : 'solid']), [['A07', 'solid'], ['A07|second', 'dashed'], ['A01', 'solid'], ['A01|second', 'dashed']]);
+    assert.equal(model.series[1]!.color, model.series[0]!.color);
+    assert.ok(model.series.every(s => s.endLabel === null), 'end labels off by option');
+    assert.deepEqual(model.legend?.map(entry => [entry.label, !!entry.dash]), [['Resistance', false], ['Compliance', true]]);
   });
 });
 
@@ -1213,7 +1224,13 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         color: CHART_MEASURE_COLOURS.bopRight,
         role: 'primary',
         step: true,
-        points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.4 }],
+        points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.9 }],
+        endLabel: {
+          icon: { art: readyArt('bop'), label: 'Balance of power' },
+          name: 'Very Long Consolidated Power Range Name',
+          shortName: 'Very Long Consolidated Power Range Name',
+          value: '0.36',
+        },
       }],
       overlays: [
         { position: 'top-right', text: 'Benito Mussolini', arrow: 'right', color: CHART_MEASURE_COLOURS.bopRight },
@@ -1222,8 +1239,19 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     };
     const { ctx, ops } = mockCanvas(960, 160);
     const layout = layoutTimeChart(withOverlays, 960, 160, FONT, measure);
-    drawTimeChart(ctx, withOverlays, layout, undefined, null, 1);
-    assert.ok(ops.includes('text:Benito Mussolini'), 'top-right overlay renders on wide 160px plot');
+    drawTimeChart(ctx, withOverlays, layout, LANE_THEME, null, 1);
+    const overlayTextIdx = ops.indexOf('text:Benito Mussolini');
+    const plateIdx = ops.lastIndexOf('roundRect', overlayTextIdx);
+    assert.ok(overlayTextIdx > 0, 'top-right overlay renders on wide 160px plot');
+    assert.ok(plateIdx > 0 && plateIdx < overlayTextIdx, 'side overlay paints a surface plate behind the label so the line stays clear');
     assert.ok(ops.includes('text:Grand Council of Fascism'), 'bottom-right overlay renders on wide 160px plot');
+    assert.ok(layout.endLabels[0]?.name?.endsWith('…'), 'long end-label name truncates to fit the right gutter');
+    assert.equal(layout.endLabels[0]?.value, '0.36');
+
+    const narrowLayout = layoutTimeChart(withOverlays, 320, 160, FONT, measure);
+    const narrowLabel = narrowLayout.endLabels[0]!;
+    assert.equal(narrowLabel.value, '0.36', 'value never truncates before the name');
+    assert.ok(narrowLabel.name === null || narrowLabel.name.endsWith('…'), 'narrow end-label truncates or drops name before clipping value');
+    assert.ok(narrowLabel.x + narrowLabel.width <= 320, 'fitted end-label stays inside the chart width');
   });
 });
