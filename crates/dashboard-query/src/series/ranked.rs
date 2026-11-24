@@ -43,10 +43,15 @@ pub(super) fn top(line: &Line<'_, '_>, top: Option<u32>) -> io::Result<Option<us
     }
 }
 
-pub(super) fn states(line: &Line<'_, '_>, hour: Option<f64>, n: usize) -> io::Result<Vec<SeriesState>> {
+pub(super) fn states(line: &Line<'_, '_>, hour: Option<f64>, n: usize) -> io::Result<(Vec<SeriesState>, Option<String>)> {
     let hour = hour_of(hour, "hour")?;
-    let reads: Vec<SeriesRead> = line.rank_at(hour, n)?.into_iter().map(|tag| SeriesRead { country: tag.into(), hour, part: None }).collect();
-    line.states(&reads, None)
+    match line.rank_at_by_checked(hour, n, false)? {
+        Ok(tags) => {
+            let reads: Vec<SeriesRead> = tags.into_iter().map(|tag| SeriesRead { country: tag.into(), hour, part: None }).collect();
+            Ok((line.states(&reads, None)?, None))
+        }
+        Err(reason) => Ok((Vec::new(), Some(reason))),
+    }
 }
 
 pub(super) fn summary(line: &Line<'_, '_>, branch_id: &str, from: Option<f64>, to: Option<f64>, width: Option<u32>, n: usize) -> io::Result<SeriesRankedReply> {

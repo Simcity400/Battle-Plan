@@ -129,6 +129,9 @@ pub struct SeriesStateReply {
     pub measure: String,
     pub decimals: u8,
     pub states: Vec<SeriesState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub missing: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -350,16 +353,20 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
     let line = Line::new(query, series, measure)?;
     let ranking = ranked::top(&line, params.top)?;
     let value = match product {
-        "series-state" => serde_json::to_value(SeriesStateReply {
-            branch_id: params.branch_id.clone(),
-            measure: measure.name.to_owned(),
-            decimals: measure.decimals,
-            states: match ranking {
+        "series-state" => {
+            let (states, missing) = match ranking {
                 Some(n) if params.reads.is_empty() => ranked::states(&line, params.hour, n)?,
                 Some(_) => return Err(invalid(format!("A ranked {} state names an hour, not reads", series.kind))),
-                None => line.states(&params.reads, params.top.map(|top| top as usize))?,
-            },
-        })?,
+                None => (line.states(&params.reads, params.top.map(|top| top as usize))?, None),
+            };
+            serde_json::to_value(SeriesStateReply {
+                branch_id: params.branch_id.clone(),
+                measure: measure.name.to_owned(),
+                decimals: measure.decimals,
+                states,
+                missing,
+            })?
+        }
         "series-summary" => {
             let n = ranking.ok_or_else(|| invalid(format!("A chart of chosen {} lines is served as tiles", series.kind)))?;
             serde_json::to_value(ranked::summary(&line, &params.branch_id, params.from, params.to, params.width, n)?)?
@@ -1015,15 +1022,17 @@ impl<'q, 'a> Line<'q, 'a> {
                 let hour = out[at].hour;
                 let lo = from.max(part.first);
                 let hi = block_last.min(part.last);
-                let Some(runs) = runs.get(&part.key) else { continue };
-                let Some(found) = runs.iter().position(|run| run.0 <= hour && hour <= run.1) else { continue };
+                let Some(runs) = runs.get(&part.key) else {
+                    unresolved.entry(run).or_default().push((at, hour, part.key));
+                    continue;
+                };
+                let Some(found) = runs.iter().position(|run| run.0 <= hour && hour <= run.1) else {
+                    unresolved.entry(run).or_default().push((at, hour, part.key));
+                    continue;
+                };
                 let (first, last, value) = runs[found];
                 let Some(value) = value else {
-                    if matches!(self.source, Source::Computed { .. }) {
-                        unresolved.entry(run).or_default().push((at, hour, part.key));
-                    } else {
-                        out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
-                    }
+                    unresolved.entry(run).or_default().push((at, hour, part.key));
                     continue;
                 };
                 let (read_first, read_last) = (first, last);
@@ -1052,26 +1061,29 @@ impl<'q, 'a> Line<'q, 'a> {
         if !unresolved.is_empty() {
             enum Resolved {
                 NotApplicable(&'static str),
+                TableMissing(String),
                 CompleteUnrecorded,
             }
             let columns = read::columns_of(&self.source);
+            let is_computed = matches!(self.source, Source::Computed { .. });
             for (run, items) in unresolved {
                 let mut asks: Vec<(i32, u128)> = items.iter().map(|&(_, hour, key)| (hour, key)).collect();
                 asks.sort_unstable();
                 asks.dedup();
                 let mut resolved: HashMap<(i32, u128), Resolved> = HashMap::new();
                 crate::cost::storage(|| {
-                    replay_lanes::lanes::at_each_with_status(recording, run, self.series.table, Some(&columns), &asks, &mut |hour, key, status, _, row| {
-                        if matches!(status, Status::Complete) {
-                            let state = match row {
+                    replay_lanes::lanes::at_each_with_status(recording, run, self.series.table, Some(&columns), &asks, &mut |hour, key, status, unavailable_reason, row| {
+                        let state = match crate::coverage::row_coverage(self.series.table, status, unavailable_reason, row.is_some()) {
+                            crate::coverage::Coverage::NotRecorded(reason) => Resolved::TableMissing(reason),
+                            crate::coverage::Coverage::Recorded => match row {
                                 Some((view, slot)) => match self.source.read(&view, slot) {
                                     Computed::NotApplicable(reason) => Resolved::NotApplicable(reason),
                                     Computed::Unrecorded | Computed::Value(_) => Resolved::CompleteUnrecorded,
                                 },
                                 None => Resolved::CompleteUnrecorded,
-                            };
-                            resolved.insert((hour, key), state);
-                        }
+                            },
+                        };
+                        resolved.insert((hour, key), state);
                         Ok(())
                     })
                 })?;
@@ -1081,12 +1093,14 @@ impl<'q, 'a> Line<'q, 'a> {
                             out[at].missing = Some((*reason).to_owned());
                             out[at].not_applicable = Some(true);
                         }
-                        Some(Resolved::CompleteUnrecorded) => {
-                            out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
-                            out[at].not_applicable = Some(false);
+                        Some(Resolved::TableMissing(reason)) => {
+                            out[at].missing = Some(reason.clone());
                         }
-                        None => {
-                            out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
+                        Some(Resolved::CompleteUnrecorded) | None => {
+                            out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
+                            if is_computed {
+                                out[at].not_applicable = Some(false);
+                            }
                         }
                     }
                 }
