@@ -1318,7 +1318,7 @@ fn link_kind(path: &Path) -> io::Result<Listed> {
     const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
     let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let mut data: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
-    let handle = unsafe { FindFirstFileW(name.as_ptr(), &mut data) };
+    let handle = unsafe { FindFirstFileW(name.as_ptr(), &raw mut data) };
     if handle == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
@@ -1397,7 +1397,7 @@ fn collect_folder_short_names(
         // SAFETY: WIN32_FIND_DATAW is plain data that accepts all-zero initialization.
         let mut data: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
         // SAFETY: wide is NUL-terminated and data is a valid mutable pointer.
-        let handle = unsafe { FindFirstFileW(wide.as_ptr(), &mut data) };
+        let handle = unsafe { FindFirstFileW(wide.as_ptr(), &raw mut data) };
         if handle == INVALID_HANDLE_VALUE {
             check_find_error(&dir_path, io::Error::last_os_error(), ERROR_FILE_NOT_FOUND)?;
             continue;
@@ -1426,7 +1426,7 @@ fn collect_folder_short_names(
                 }
             }
             // SAFETY: handle is open and valid until _guard drops.
-            if unsafe { FindNextFileW(handle, &mut data) } == 0 {
+            if unsafe { FindNextFileW(handle, &raw mut data) } == 0 {
                 check_find_error(&dir_path, io::Error::last_os_error(), ERROR_NO_MORE_FILES)?;
                 break;
             }

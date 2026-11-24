@@ -1445,7 +1445,10 @@ impl Captured {
         carrying.counts.terms_ticks += qpc().saturating_sub(started).max(0) as u64;
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a hot carry fills the fields, carrying, hot and held state separately"
+    )]
     fn carry_hot(
         &mut self,
         memory: &impl Memory,
@@ -2044,7 +2047,10 @@ impl Captured {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one detail read fills the fields and carrying from the held, visited and kept state"
+    )]
     fn read_detail(
         &mut self,
         memory: &impl Memory,

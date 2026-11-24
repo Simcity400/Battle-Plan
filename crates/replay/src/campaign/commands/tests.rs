@@ -289,7 +289,7 @@ fn branches_share_capture_metadata_without_importing_future_updates_or_other_lif
     ] {
         assert_eq!(serde_json::to_value(actual).unwrap(), expected);
     }
-    let mut missing_prefix = second.clone();
+    let mut missing_prefix = second;
     let ControlRecord::PlayerCommands { packet, .. } = &mut missing_prefix else {
         unreachable!()
     };

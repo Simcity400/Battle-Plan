@@ -363,7 +363,7 @@ fn folder(path: &str) -> Option<(u32, u64)> {
         .open(path)
         .ok()?;
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    let read = unsafe { GetFileInformationByHandle(opened.as_raw_handle(), &mut info) };
+    let read = unsafe { GetFileInformationByHandle(opened.as_raw_handle(), &raw mut info) };
     (read != 0 && info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0).then(|| {
         (
             info.dwVolumeSerialNumber,

@@ -1564,7 +1564,7 @@ fn handover_buffers(
     Ok((drained, len, required))
 }
 
-#[allow(clippy::too_many_arguments, reason = "mirrors handover_buffers with separate root arena")]
+#[expect(clippy::too_many_arguments, reason = "mirrors handover_buffers with separate root arena")]
 fn handover_compact(
     log: &Log,
     spill: &Spill,

@@ -432,7 +432,7 @@ fn an_iteration_listed_by_a_read_in_part_is_withheld_by_name() {
         ]));
         let choice = ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: CHOICE, ..Default::default() };
         *frame.tables[TableId::ProjectHistory.index()] = match hour {
-            IN_PART => TableView::Truncated { rows: TableRows::ProjectHistory(vec![choice.clone()]), missing: 1 },
+            IN_PART => TableView::Truncated { rows: TableRows::ProjectHistory(vec![choice]), missing: 1 },
             COMPLETE.. => TableView::Complete(TableRows::ProjectHistory(vec![choice])),
             _ => TableView::Complete(TableRows::empty(TableId::ProjectHistory)),
         };

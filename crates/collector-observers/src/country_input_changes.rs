@@ -283,7 +283,7 @@ pub struct Marks<'a> {
 
 #[derive(Default)]
 struct Part<'a> {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "held only so its drop releases the dirty sets")]
     held: [Option<Dirty<'a>>; SETS],
     again: Option<Again<'a>>,
 }

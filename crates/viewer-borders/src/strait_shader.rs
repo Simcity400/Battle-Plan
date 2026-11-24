@@ -200,7 +200,7 @@ impl Straits {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, encoder and targets, plus the frames, textures, retained state and visibility of one draw")]
     pub fn draw(
         &self,
         arena: &gpu::Arena,

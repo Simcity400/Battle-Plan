@@ -1,7 +1,7 @@
 use crate::{Host, Role};
 use std::{
     io,
-    sync::{Arc, Condvar, Mutex, OnceLock, PoisonError},
+    sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak},
 };
 use windows_sys::Win32::{
     Foundation::{
@@ -17,7 +17,7 @@ use windows_sys::Win32::{
             PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
         },
         RemoteDesktop::ProcessIdToSessionId,
-        Threading::{CreateEventW, GetCurrentProcessId, INFINITE, ResetEvent, SetEvent, WaitForMultipleObjects},
+        Threading::{CreateEventW, GetCurrentProcessId, INFINITE, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject},
     },
 };
 
@@ -29,6 +29,7 @@ const FREE: u8 = b'I';
 const BUSY: u8 = b'B';
 const WRITE_LIMIT: u32 = 2_000;
 const READ_BACK_LIMIT: u32 = 5_000;
+const RETRY_AFTER: u32 = 1_000;
 
 fn close_reply(closing: Result<(), String>) -> (Vec<u8>, Option<Vec<u8>>) {
     match closing {
@@ -42,7 +43,7 @@ fn close_reply(closing: Result<(), String>) -> (Vec<u8>, Option<Vec<u8>>) {
 
 fn pipe_name(role: Role) -> io::Result<Vec<u16>> {
     let mut session = 0_u32;
-    if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) } == 0 {
+    if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &raw mut session) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(format!(r"\\.\pipe\BattlePlan.{session}.{}", role.pipe())
@@ -64,12 +65,20 @@ pub(crate) struct Server {
 }
 
 // SAFETY: the stop event is a kernel handle, usable from any thread, and lives as long as the
-// server (it is never closed).
+// server: it is closed only when the server is dropped.
 unsafe impl Send for Server {}
 // SAFETY: as above; every other field is synchronised.
 unsafe impl Sync for Server {}
 
-static SERVED: OnceLock<Arc<Server>> = OnceLock::new();
+impl Drop for Server {
+    fn drop(&mut self) {
+        // SAFETY: the server owns the stop event, and nothing waits on it once the last owner,
+        // including the serving thread, has let go.
+        unsafe { CloseHandle(self.stop) };
+    }
+}
+
+static SERVED: OnceLock<Weak<Server>> = OnceLock::new();
 
 impl Server {
     fn lock(&self) -> std::sync::MutexGuard<'_, Serving> {
@@ -95,7 +104,7 @@ impl Server {
 }
 
 pub fn stop() {
-    if let Some(server) = SERVED.get() {
+    if let Some(server) = SERVED.get().and_then(Weak::upgrade) {
         server.stop();
     }
 }
@@ -118,7 +127,7 @@ impl Pipe {
         // only once the operation has completed, by success, failure or an observed cancellation.
         unsafe {
             if started {
-                return if GetOverlappedResult(self.handle, overlapped, &mut moved, 0) != 0 { Ok(moved) } else { Err(Ended::Failed(GetLastError())) };
+                return if GetOverlappedResult(self.handle, overlapped, &raw mut moved, 0) != 0 { Ok(moved) } else { Err(Ended::Failed(GetLastError())) };
             }
             let error = GetLastError();
             if error == ERROR_PIPE_CONNECTED {
@@ -131,10 +140,10 @@ impl Pipe {
             let count = if stop.is_some() { 2 } else { 1 };
             let waited = WaitForMultipleObjects(count, waits.as_ptr(), 0, limit);
             if waited == WAIT_OBJECT_0 {
-                return if GetOverlappedResult(self.handle, overlapped, &mut moved, 0) != 0 { Ok(moved) } else { Err(Ended::Failed(GetLastError())) };
+                return if GetOverlappedResult(self.handle, overlapped, &raw mut moved, 0) != 0 { Ok(moved) } else { Err(Ended::Failed(GetLastError())) };
             }
             CancelIoEx(self.handle, overlapped);
-            GetOverlappedResult(self.handle, overlapped, &mut moved, 1);
+            GetOverlappedResult(self.handle, overlapped, &raw mut moved, 1);
             Err(if count == 2 && waited == WAIT_OBJECT_0 + 1 { Ended::Stopped } else { Ended::TimedOut })
         }
     }
@@ -150,21 +159,21 @@ impl Pipe {
     fn connect(&self, stop: HANDLE) -> Result<(), Ended> {
         let mut overlapped = self.fresh();
         // SAFETY: the overlapped structure outlives the wait that completes it.
-        let started = unsafe { ConnectNamedPipe(self.handle, &mut overlapped) } != 0;
+        let started = unsafe { ConnectNamedPipe(self.handle, &raw mut overlapped) } != 0;
         self.wait(&mut overlapped, started, Some(stop), INFINITE).map(drop)
     }
 
     fn read(&self, buffer: &mut [u8], stop: Option<HANDLE>, limit: u32) -> Result<u32, Ended> {
         let mut overlapped = self.fresh();
         // SAFETY: the buffer and the overlapped structure outlive the wait that completes them.
-        let started = unsafe { ReadFile(self.handle, buffer.as_mut_ptr(), buffer.len() as u32, std::ptr::null_mut(), &mut overlapped) } != 0;
+        let started = unsafe { ReadFile(self.handle, buffer.as_mut_ptr(), buffer.len() as u32, std::ptr::null_mut(), &raw mut overlapped) } != 0;
         self.wait(&mut overlapped, started, stop, limit)
     }
 
     fn write(&self, message: &[u8]) -> Result<u32, Ended> {
         let mut overlapped = self.fresh();
         // SAFETY: the message and the overlapped structure outlive the wait that completes them.
-        let started = unsafe { WriteFile(self.handle, message.as_ptr(), message.len() as u32, std::ptr::null_mut(), &mut overlapped) } != 0;
+        let started = unsafe { WriteFile(self.handle, message.as_ptr(), message.len() as u32, std::ptr::null_mut(), &raw mut overlapped) } != 0;
         self.wait(&mut overlapped, started, None, WRITE_LIMIT)
     }
 
@@ -190,7 +199,7 @@ impl Pipe {
 }
 
 pub(crate) fn serve(role: Role, host: Arc<dyn Host>) -> io::Result<()> {
-    serve_on(&pipe_name(role)?, host, |server| drop(SERVED.set(Arc::clone(server)))).map(drop)
+    serve_on(&pipe_name(role)?, host, |server| drop(SERVED.set(Arc::downgrade(server)))).map(drop)
 }
 
 fn serve_on(name: &[u16], host: Arc<dyn Host>, publish: impl FnOnce(&Arc<Server>)) -> io::Result<Arc<Server>> {
@@ -210,17 +219,19 @@ fn serve_on(name: &[u16], host: Arc<dyn Host>, publish: impl FnOnce(&Arc<Server>
         if handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
-        (handle, CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()), CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()))
-    };
-    if io.is_null() || stop.is_null() {
-        let error = io::Error::last_os_error();
-        // SAFETY: closing the handles made above.
-        unsafe {
+        let event = || {
+            let made = CreateEventW(std::ptr::null(), 1, 0, std::ptr::null());
+            if made.is_null() { Err(io::Error::last_os_error()) } else { Ok(made) }
+        };
+        let io = event().inspect_err(|_| {
+            CloseHandle(handle);
+        })?;
+        let stop = event().inspect_err(|_| {
             CloseHandle(handle);
             CloseHandle(io);
-        }
-        return Err(error);
-    }
+        })?;
+        (handle, io, stop)
+    };
     let server = Arc::new(Server { stop, serving: Mutex::default(), finished: Condvar::new() });
     publish(&server);
     let serving = Arc::clone(&server);
@@ -261,8 +272,16 @@ fn serve_until_stopped(pipe: &Pipe, server: &Server, host: &dyn Host) {
                 continue;
             }
             Err(Ended::Failed(error)) => {
-                eprintln!("The update control pipe failed: {}", io::Error::from_raw_os_error(error as i32));
-                return;
+                eprintln!("The update control pipe failed, and is tried again: {}", io::Error::from_raw_os_error(error as i32));
+                // SAFETY: no I/O is outstanding on the handle here, and the stop event lives as long
+                // as the server.
+                unsafe {
+                    DisconnectNamedPipe(pipe.handle);
+                    if WaitForSingleObject(server.stop, RETRY_AFTER) == WAIT_OBJECT_0 {
+                        return;
+                    }
+                }
+                continue;
             }
         }
         let mut request = [0_u8; 16];
@@ -306,11 +325,11 @@ pub(crate) fn install_blocked(role: Role) -> Option<String> {
     let answered = unsafe {
         CallNamedPipeW(
             name.as_ptr(),
-            (&request as *const u8).cast(),
+            (&raw const request).cast(),
             1,
             reply.as_mut_ptr().cast(),
             reply.len() as u32,
-            &mut read,
+            &raw mut read,
             2000,
         )
     } != 0;
@@ -404,11 +423,11 @@ mod tests {
         let answered = unsafe {
             CallNamedPipeW(
                 name.as_ptr(),
-                (&request as *const u8).cast(),
+                (&raw const request).cast(),
                 1,
                 reply.as_mut_ptr().cast(),
                 4,
-                &mut read,
+                &raw mut read,
                 NMPWAIT_WAIT_FOREVER,
             )
         } != 0;
@@ -430,18 +449,18 @@ mod tests {
         };
         assert_ne!(pipe, INVALID_HANDLE_VALUE, "setup reaches the app’s pipe");
         let mode = PIPE_READMODE_MESSAGE;
-        unsafe { SetNamedPipeHandleState(pipe, &mode, std::ptr::null(), std::ptr::null()) };
+        unsafe { SetNamedPipeHandleState(pipe, &raw const mode, std::ptr::null(), std::ptr::null()) };
         let request = CLOSE;
         let mut status = [0_u8; 4];
         let mut read = 0_u32;
         let answered = unsafe {
             TransactNamedPipe(
                 pipe,
-                (&request as *const u8).cast::<c_void>(),
+                (&raw const request).cast::<c_void>(),
                 1,
                 status.as_mut_ptr().cast(),
                 4,
-                &mut read,
+                &raw mut read,
                 std::ptr::null_mut(),
             )
         } != 0;
@@ -454,7 +473,7 @@ mod tests {
                     pipe,
                     reason.as_mut_ptr().cast(),
                     2046,
-                    &mut read,
+                    &raw mut read,
                     std::ptr::null_mut(),
                 )
             } != 0;
@@ -483,8 +502,8 @@ mod tests {
             let (mut read, mut written) = (0_u32, 0_u32);
             unsafe {
                 ConnectNamedPipe(pipe, std::ptr::null_mut());
-                ReadFile(pipe, request.as_mut_ptr(), 16, &mut read, std::ptr::null_mut());
-                WriteFile(pipe, &answer, 1, &mut written, std::ptr::null_mut());
+                ReadFile(pipe, request.as_mut_ptr(), 16, &raw mut read, std::ptr::null_mut());
+                WriteFile(pipe, &raw const answer, 1, &raw mut written, std::ptr::null_mut());
                 FlushFileBuffers(pipe);
                 DisconnectNamedPipe(pipe);
                 CloseHandle(pipe);

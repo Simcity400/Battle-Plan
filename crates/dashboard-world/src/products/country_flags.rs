@@ -667,7 +667,6 @@ struct Broken {
     why: String,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn ladder(
     stack: Stack,
     layers: &content_reader_layers::ResolvedLayers,

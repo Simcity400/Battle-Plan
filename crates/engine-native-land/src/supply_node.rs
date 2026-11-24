@@ -121,7 +121,10 @@ struct Observations {
 }
 
 impl Observations {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the role, country, index and province identify one check, and the province memo is caller-owned"
+    )]
     fn check(
         &mut self,
         memo: &mut ProvinceMemo,
@@ -152,7 +155,6 @@ impl Observations {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn parent(
         &mut self,
         memo: &mut ProvinceMemo,
@@ -356,7 +358,10 @@ impl ProvinceMemo {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the part and part count select the slice, and the output, paths and province memo are caller-owned"
+)]
 pub fn walk_part(
     memory: &impl Memory,
     base: usize,
@@ -380,7 +385,10 @@ pub fn walk_part(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the part and part count select the slice, and the output, paths, province memo and selection are caller-owned"
+)]
 pub fn walk_part_selected(
     memory: &impl Memory,
     base: usize,
@@ -405,7 +413,10 @@ pub fn walk_part_selected(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the part and part count select the slice, and the output, paths, province memo and selection are caller-owned"
+)]
 pub fn walk_part_buffer(
     memory: &impl Memory,
     base: usize,

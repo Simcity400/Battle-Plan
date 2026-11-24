@@ -1225,7 +1225,6 @@ impl NamePass {
         self.draw_view(arena, frames, encoder, targets, None, None)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_view(
         &self,
         arena: &shader_pipeline::gpu::Arena,

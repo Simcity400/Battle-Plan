@@ -1855,7 +1855,7 @@ pub(super) fn picture_names(terrain: Option<&str>, night: bool, weather: &str, o
     names
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the weather, the weapon context, the terrain and its definitions, the text resources and the dropped list")]
 fn terrain_hover(
     weather: &WeatherRegionRow,
     context: &NavalShipWeaponContext,

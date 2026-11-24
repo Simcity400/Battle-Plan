@@ -79,7 +79,7 @@ fn ship_names_cache_operands_and_hull_delta_independently() {
     let refused = ShipRow {
         name: None.into(),
         naming: None.into(),
-        ..before.clone()
+        ..before
     };
     for (after, mask) in [
         (cache, 1 << 9),

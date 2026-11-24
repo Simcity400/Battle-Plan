@@ -1,4 +1,4 @@
-#![allow(clippy::too_many_arguments)]
+#![expect(clippy::too_many_arguments, reason = "decision hooks forward every native operand beside the occurrence")]
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) static POWER_EPOCH: AtomicU64 = AtomicU64::new(1);
@@ -955,7 +955,7 @@ impl Store {
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "The owner, member, native record and supplied results form one occurrence."
 )]

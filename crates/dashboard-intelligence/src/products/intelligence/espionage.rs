@@ -884,8 +884,8 @@ impl Product for EspionageLog {
         let mut last_hour: HashMap<u32, i32> = HashMap::new();
         for (row, ..) in &rows {
             if let Some(stretch) = query.timeline.at(row.hour) {
-                if !links.contains_key(&stretch.run) {
-                    links.insert(stretch.run, dashboard_base::queries::links(source, stretch.run)?);
+                if let std::collections::hash_map::Entry::Vacant(slot) = links.entry(stretch.run) {
+                    slot.insert(dashboard_base::queries::links(source, stretch.run)?);
                 }
                 if let Some(token) = number(&row.cells, DEFINITION) {
                     tokens.entry(stretch.run).or_default().insert(u128::from(token as u32));
@@ -940,7 +940,7 @@ impl Product for EspionageLog {
                     hour: row.hour,
                     key: row.key.to_string(),
                     ordinal: ordinal.to_string(),
-                    country: tag.clone(),
+                    country: tag,
                     own_ordinal: tagged.then(|| own.to_string()),
                     cells,
                 }

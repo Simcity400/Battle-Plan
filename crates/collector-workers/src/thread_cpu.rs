@@ -116,7 +116,7 @@ fn registered_creation_time(id: u32) -> Option<u64> {
     }
     let [mut created, mut exited, mut kernel, mut user] = [ZERO; 4];
     let read =
-        unsafe { GetThreadTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0 };
+        unsafe { GetThreadTimes(handle, &raw mut created, &raw mut exited, &raw mut kernel, &raw mut user) != 0 };
     unsafe { CloseHandle(handle) };
     read.then(|| filetime(created))
         .filter(|created| *created != 0)
@@ -238,8 +238,8 @@ fn read_thread(id: u32) -> Option<(u64, Times)> {
     let [mut created, mut exited, mut kernel, mut user] = [ZERO; 4];
     let mut cycles = 0;
     let read = unsafe {
-        GetThreadTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0
-            && QueryThreadCycleTime(handle, &mut cycles) != 0
+        GetThreadTimes(handle, &raw mut created, &raw mut exited, &raw mut kernel, &raw mut user) != 0
+            && QueryThreadCycleTime(handle, &raw mut cycles) != 0
     };
     unsafe { CloseHandle(handle) };
     read.then(|| {
@@ -259,8 +259,8 @@ fn read_process() -> Option<Times> {
     let [mut created, mut exited, mut kernel, mut user] = [ZERO; 4];
     let mut cycles = 0;
     let read = unsafe {
-        GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) != 0
-            && QueryProcessCycleTime(process, &mut cycles) != 0
+        GetProcessTimes(process, &raw mut created, &raw mut exited, &raw mut kernel, &raw mut user) != 0
+            && QueryProcessCycleTime(process, &raw mut cycles) != 0
     };
     read.then(|| Times {
         cycles,

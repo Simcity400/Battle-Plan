@@ -371,7 +371,7 @@ mod tests {
                 PathBuf::from(r"C:\first")
             ]
         );
-        let mut chosen = settings.clone();
+        let mut chosen = settings;
         chosen.choose_save_folder(PathBuf::from(r"C:\FIRST"));
         assert_eq!(
             chosen.session_roots(),
@@ -389,7 +389,7 @@ mod tests {
         .value;
         assert_eq!(settings.session_roots(), [PathBuf::from("c:/SECOND")]);
         assert_eq!(RecorderSettings::load_from(&path).unwrap(), settings);
-        let mut kept = settings.clone();
+        let mut kept = settings;
         assert!(!kept.keep_session_root(PathBuf::from(r"\\?\C:\Second")));
         assert!(kept.keep_session_root(PathBuf::from(r"C:\first")));
         assert!(!kept.keep_session_root(PathBuf::from("c:/first")));

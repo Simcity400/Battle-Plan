@@ -221,7 +221,7 @@ pub fn emit(
     Some(field.draws.len() - 1)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the field it fills, the head's root, normal and edge, its size, and the height lookup")]
 fn emit_head(
     field: &mut OrderField,
     root: [f32; 2],
@@ -252,7 +252,7 @@ fn emit_head(
     bounds
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the field it fills, the point, normal, width and texture coordinate, and the height lookup")]
 fn push_pair(
     field: &mut OrderField,
     point: [f32; 2],

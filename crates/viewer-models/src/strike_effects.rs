@@ -548,6 +548,7 @@ mod tests {
         let mut pass = crate::ModelPass::new(&library, "map frame");
         let (placed, clocks) = shown.advance(true, |_| true, |_| None, 1.0);
         pass.update_placed(placed.clone(), 256.0);
+        #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
         let struck: std::collections::BTreeSet<_> =
             clocks.keys().map(|&key| pass.actor_address(key)).collect();
         pass.set_clocks(clocks);

@@ -54,7 +54,6 @@ impl LiveRows {
         self.list.clear();
     }
 
-    #[allow(clippy::too_many_arguments, reason = "live row evaluation takes keys, columns, state, index, witness set, coverage rule and output buffers")]
     pub(crate) fn evaluate(&mut self, keys: &[u128], columns: &[usize], cells: &TableState, find: &dyn Find, read_rows: Option<&[u32]>, coverage: impl Fn(bool) -> Coverage, scratch: &mut Table, body: &mut Vec<u8>) -> (Answer, usize) {
         let slot_of = |key: u128| find.slot(key).filter(|slot| read_rows.is_none_or(|read| read.binary_search(slot).is_ok()));
         let mut read = 0;

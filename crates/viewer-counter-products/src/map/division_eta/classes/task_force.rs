@@ -362,7 +362,7 @@ mod tests {
                 &force,
                 &TaskForceMapMotionRow {
                     path: vec![],
-                    ..motion.clone()
+                    ..motion
                 },
                 false
             )

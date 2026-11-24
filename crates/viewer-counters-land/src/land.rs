@@ -548,7 +548,7 @@ impl PreparedLand {
         Ok(placed_columns)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the counter inputs, the report, the member and its placement, and the plate styles")]
     pub fn land_plate(
         &mut self,
         inputs: &CounterInputs<'_>,
@@ -1017,7 +1017,7 @@ pub struct Source<'a> {
     pub units: Vec<SourceUnit<'a>>,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant, reason = "units are gathered per counter for one frame and sorted in place; boxing would allocate for every unit")]
 pub enum SourceUnit<'a> {
     Land(LandUnit<'a>),
     Naval(NavalUnit<'a>),
@@ -1751,7 +1751,7 @@ pub fn division_counters_of(stacks: &LandStacks) -> DivisionCounters {
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the counter inputs, the division and stack tables, the lookups, and the plans and frame it fills")]
 pub fn land_counters<'a>(
     inputs: &CounterInputs<'_>,
     divisions: &DivisionCounters,
@@ -2145,7 +2145,6 @@ impl ColumnProgram {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn column_program(
     inputs: &CounterInputs<'_>,
     units: &[&SourceUnit<'_>],
@@ -2482,7 +2481,7 @@ pub fn draw_land_counter(
     Ok(controls)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the counter inputs, the batch, the member and its window, plate and binding")]
 fn pointed_plate(
     inputs: &CounterInputs<'_>,
     batch: &mut Batch,

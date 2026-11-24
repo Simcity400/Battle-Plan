@@ -723,7 +723,10 @@ pub fn walk_trait_experience(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pointer, leader and offset locate the traits, the output and arena are caller-owned, and make builds each row"
+)]
 fn walk_definitions<R: Default>(
     memory: &impl Memory,
     base: usize,

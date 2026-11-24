@@ -1512,7 +1512,6 @@ impl OwnedAppearanceRow {
     }
 }
 
-#[allow(clippy::type_complexity)]
 pub fn walk_appearance_carrying(
     memory: &impl Memory,
     base: usize,
@@ -1555,7 +1554,10 @@ fn walk_appearance_observed_inner<
         &mut |_, _, _| false,
     )
 }
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "the carry callback takes the globals, the country and the row being carried"
+)]
 fn walk_appearance_carrying_inner<
     T: engine_native_memory::capture_text::Value,
     G: engine_native_memory::capture_text::Value,
@@ -3448,7 +3450,6 @@ pub const ATTACK_MODIFIER_KEYS: [u32; 2] = [
     engine_executable::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR,
 ];
 
-#[allow(clippy::too_many_arguments)]
 pub fn walk_counter_inputs_with_effect_rosters_observed<'a, M: Memory>(
     memory: &'a M,
     base: usize,
@@ -3477,7 +3478,10 @@ pub type CounterCarry<'a> = dyn for<'r, 's, 'e, 'f> FnMut(
     ) -> Option<CounterInputsRow>
     + 'a;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, counter and effect rosters, observed reader and carry are separate caller-owned parts of one walk"
+)]
 pub fn walk_counter_inputs_carried<'a, M: Memory>(
     memory: &'a M,
     base: usize,

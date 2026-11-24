@@ -281,7 +281,7 @@ impl Picker {
         self.root_generation = Some(self.generation);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the content and state, the window's extent, and the frame's clock and input")]
     pub fn draw(
         &mut self,
         content: &super::content::Content,
@@ -760,7 +760,7 @@ fn entry_values(mode: &ModeButton, selected: bool, shortcut: Option<&str>) -> Va
     values
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the retained list, its state and assignment, the window's resources, and the frame's clock and input")]
 fn draw_list(
     kept: &mut Option<Retained>,
     name: &str,
@@ -845,7 +845,7 @@ fn draw_list(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the retained slots, their state and assignment, the window's resources, and the frame's clock and input")]
 fn draw_slots(
     kept: &mut Option<Retained>,
     state: &State<'_>,
@@ -970,7 +970,7 @@ fn grown(
     Ok(root)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the retained window, its root, values and groups, its resources, and the frame's clock and input")]
 fn draw_window(
     retained: &mut Retained,
     root: &content_reader_gui::gui::native::Element,
@@ -1172,9 +1172,9 @@ mod tests {
         };
         let mut picker = Picker::default();
         picker.refresh_values(&state, root);
-        let cached = &picker.values["day_night_toggle"] as *const Widget;
+        let cached = &raw const picker.values["day_night_toggle"];
         picker.refresh_values(&state, root);
-        assert_eq!(&picker.values["day_night_toggle"] as *const Widget, cached);
+        assert_eq!(&raw const picker.values["day_night_toggle"], cached);
         let snapshot = |values: &Values| {
             values
                 .iter()

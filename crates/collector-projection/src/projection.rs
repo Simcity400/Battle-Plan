@@ -993,7 +993,7 @@ impl Projection<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "internal ledger diffing helper")]
+#[expect(clippy::too_many_arguments, reason = "internal ledger diffing helper")]
 fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     held: &Ledger<C>,
     next: &Ledger<C>,

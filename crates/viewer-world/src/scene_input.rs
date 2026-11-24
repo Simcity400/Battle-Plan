@@ -5,7 +5,6 @@ use viewer_rail::trains::TrainAssets;
 use viewer_native_gui::native_resources::GuiResources;
 use viewer_gpu::province_map::HeightField;
 
-#[allow(clippy::large_enum_variant, reason = "a product moves into its setter unboxed, with no second allocation")]
 pub enum SceneInput<'a> {
     WarmTrains(&'a Arc<TrainAssets>),
     WarmUnitModels(&'a UnitModelAssets),

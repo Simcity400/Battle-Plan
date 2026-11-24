@@ -171,7 +171,7 @@ impl Layout {
 }
 
 impl Dispatch {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the players and rigs, the field it poses, the time and filter, and the events it records")]
     pub fn animate(
         &mut self,
         players: &mut BTreeMap<Key, entity_animation::Player>,

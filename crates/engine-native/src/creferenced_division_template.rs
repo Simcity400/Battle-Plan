@@ -821,7 +821,10 @@ fn pointers(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the layout and scope select the templates, and the country, details, prepare and visit hooks belong to the caller"
+)]
 fn visit_templates(
     memory: &impl Memory,
     base: usize,
@@ -1339,7 +1342,10 @@ pub fn copy_names(
     Ok(spans)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the rows, bytes, counts, variants and names are caller-owned arenas, and the slots come from the caller"
+)]
 pub fn walk_icons_with_names(
     memory: &impl Memory,
     base: usize,
@@ -1367,7 +1373,10 @@ pub fn walk_icons_with_names(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the rows, bytes, counts, variants and names are caller-owned arenas, and the slots, country hook and detail policy come from the caller"
+)]
 pub fn walk_icons_with_selected_details(
     memory: &impl Memory,
     base: usize,
@@ -1397,7 +1406,7 @@ pub fn walk_icons_with_selected_details(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the selected walk's arenas, slots and callbacks, and its range"
 )]
@@ -1601,7 +1610,10 @@ struct Headers {
     model_entity: Descriptor,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arenas, slots, range, country hook and detail policy are separate caller-owned parts of one walk"
+)]
 pub fn walk_icons_inner(
     memory: &impl Memory,
     base: usize,
@@ -1632,7 +1644,7 @@ pub fn walk_icons_inner(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the selected walk's arenas and the occurrence it reads"
 )]
@@ -1669,7 +1681,7 @@ pub fn read_icon_occurrence(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the selected walk's arenas, slots and callbacks, and its scope"
 )]

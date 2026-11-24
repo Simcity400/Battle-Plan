@@ -470,7 +470,10 @@ impl OrderBatch {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the groups, visits and source come from earlier walks, and each output arena is caller-owned"
+)]
 pub fn walk_plans(
     memory: &impl Memory,
     base: usize,
@@ -558,7 +561,10 @@ pub struct PlanPart<'a> {
     pub orders: &'a [Row],
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parts and census come from the split walks, and each output arena, the order and the hosts are caller-owned"
+)]
 pub fn stitch_plans(
     parts: &[PlanPart<'_>],
     census: Outcome,
@@ -714,7 +720,10 @@ pub fn keyed_row<T>(
     rows.binary_search_by_key(&key, key_of)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the groups, visits, lists and source come from earlier walks, and each output arena and the order are caller-owned"
+)]
 pub fn walk_plans_ordered(
     memory: &impl Memory,
     base: usize,
@@ -733,7 +742,10 @@ pub fn walk_plans_ordered(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the groups, visits, lists and source come from earlier walks, and each output arena, the order and the hosts are caller-owned"
+)]
 pub fn walk_plans_ordered_with_sources(
     memory: &impl Memory,
     base: usize,
@@ -1574,7 +1586,10 @@ pub fn walk_listing_successors(
     walk
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the groups and root outcome come from earlier walks, and the output, geometry, visits and lists are caller-owned"
+)]
 pub fn walk_listing_successors_of(
     memory: &impl Memory,
     base: usize,
@@ -1600,7 +1615,10 @@ pub fn walk_listing_successors_of(
     walk
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the groups, root outcome and range come from earlier walks, and the output, geometry, visits and lists are caller-owned"
+)]
 pub fn walk_listing_successors_part(
     memory: &impl Memory,
     base: usize,
@@ -1900,7 +1918,10 @@ pub fn refuse_census(root_outcome: Outcome, lists: &mut SuccessorLists) -> Optio
     Some(walk)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the groups and root outcome come from earlier walks, and the output, geometry, visits and lists are caller-owned"
+)]
 fn walk_graph_census(
     memory: &impl Memory,
     base: usize,
@@ -1925,7 +1946,10 @@ fn walk_graph_census(
     .walk
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the groups, root outcome and range come from earlier walks, and the output, geometry, visits and lists are caller-owned"
+)]
 fn walk_graph_census_part(
     memory: &impl Memory,
     base: usize,

@@ -227,10 +227,6 @@ impl Renderer<'_, '_, '_> {
         Ok("   ".repeat(indent) + &header + ":\n" + &self.group(&body, selected, indent + 1))
     }
 
-    #[allow(
-        dead_code,
-        reason = "staged core entry point for lead F's contested-owner leaves"
-    )]
     pub(super) fn fresh_country_state_scope(
         &self,
         country: u32,

@@ -52,6 +52,7 @@ impl Known {
     }
 }
 
+#[expect(clippy::large_enum_variant, reason = "retired passes are mostly state cursors, so boxing them would add an allocation to nearly every retirement")]
 pub enum Passed {
     State(Cursor),
     Log(LogCursor),

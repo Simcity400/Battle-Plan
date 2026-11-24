@@ -618,9 +618,9 @@ impl PowerLedger {
     }
 
     fn total<'p>(own: &Rows<'_>, pending: &'p mut Pending, key: u128, make: impl FnOnce() -> Total) -> io::Result<&'p mut Total> {
-        if !pending.totals.contains_key(&key) {
+        if let std::collections::btree_map::Entry::Vacant(vacant) = pending.totals.entry(key) {
             let held = inputs::keyed::<Total>(&own.table(TableId::PowerSpendTotals), key)?.unwrap_or_else(make);
-            pending.totals.insert(key, held);
+            vacant.insert(held);
         }
         Ok(pending.totals.get_mut(&key).expect("just held"))
     }

@@ -561,7 +561,7 @@ impl Tree {
             paths.entry(element.path.clone()).or_insert(index);
         }
         Self {
-            root: elements[0].0 as *const Element as usize,
+            root: std::ptr::from_ref::<Element>(elements[0].0) as usize,
             routes: elements
                 .iter()
                 .map(|&(element, parent, child)| {
@@ -576,7 +576,7 @@ impl Tree {
             indices: elements
                 .iter()
                 .enumerate()
-                .map(|(index, (element, ..))| (*element as *const Element as usize, index))
+                .map(|(index, (element, ..))| (std::ptr::from_ref::<Element>(*element) as usize, index))
                 .collect(),
             paths,
         }
@@ -588,7 +588,7 @@ impl Tree {
     }
 
     fn same(&self, root: &Element) -> bool {
-        root as *const Element as usize == self.root
+        std::ptr::from_ref::<Element>(root) as usize == self.root
     }
 
     fn objects<'a>(&self, root: &'a Element, nodes: &[Node]) -> Vec<Object<'a>> {
@@ -1282,7 +1282,7 @@ impl Instance {
         let index = if self.tree.same(root) {
             self.tree
                 .indices
-                .get(&(element as *const Element as usize))
+                .get(&(std::ptr::from_ref::<Element>(element) as usize))
                 .copied()
         } else {
             elements(root)
@@ -3219,7 +3219,7 @@ impl Instance {
             }
             let via = object
                 .built
-                .map(|(owner, role)| (objects[owner].element as *const Element, role));
+                .map(|(owner, role)| (std::ptr::from_ref::<Element>(objects[owner].element), role));
             *bindings.bind_at(Site::new(element, via)) = bound;
         }
         Ok(bindings)

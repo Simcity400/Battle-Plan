@@ -68,12 +68,12 @@ impl Done {
             // sent to this thread, which `PeekMessageW` then dispatches without removing anything
             // posted.
             unsafe {
-                let woke = MsgWaitForMultipleObjectsEx(1, &self.0, INFINITE, QS_SENDMESSAGE, MWMO_INPUTAVAILABLE);
+                let woke = MsgWaitForMultipleObjectsEx(1, &raw const self.0, INFINITE, QS_SENDMESSAGE, MWMO_INPUTAVAILABLE);
                 if woke == WAIT_OBJECT_0 {
                     break;
                 }
                 let mut message: MSG = std::mem::zeroed();
-                PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+                PeekMessageW(&raw mut message, std::ptr::null_mut(), 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
             }
         }
         WAITING.set(false);
@@ -135,8 +135,9 @@ fn on_message(follow: &Followed, window: &dyn Blocking, message: u32, wparam: WP
                 2 => Some(UNCHECKED),
                 _ => None,
             };
-            if let Some(reason) = reason(ending.saving(), drafts) {
-                window.block(&reason);
+            match reason(ending.saving(), drafts) {
+                Some(reason) => window.block(&reason),
+                None => window.unblock(),
             }
         }
         WM_ENDSESSION => {
@@ -244,13 +245,13 @@ mod tests {
         commits: AtomicUsize,
         retired: AtomicUsize,
         done: Done,
-        saving: Option<&'static str>,
+        saving: Mutex<Option<&'static str>>,
         drafts: Mutex<Option<Box<dyn FnOnce(Drafts) + Send>>>,
     }
 
     impl App {
         fn new(saving: Option<&'static str>) -> Self {
-            Self { commits: AtomicUsize::new(0), retired: AtomicUsize::new(0), done: Done::new().unwrap(), saving, drafts: Mutex::new(None) }
+            Self { commits: AtomicUsize::new(0), retired: AtomicUsize::new(0), done: Done::new().unwrap(), saving: Mutex::new(saving), drafts: Mutex::new(None) }
         }
     }
 
@@ -262,7 +263,7 @@ mod tests {
             &self.done
         }
         fn saving(&self) -> Option<&'static str> {
-            self.saving
+            *self.saving.lock().unwrap()
         }
         fn check_drafts(&self, answer: Box<dyn FnOnce(Drafts) + Send>) {
             *self.drafts.lock().unwrap() = Some(answer);
@@ -312,6 +313,13 @@ mod tests {
         on_message(&follow, &shown, DRAFTS, query as usize, 1);
         assert_eq!(shown.reasons.borrow().len(), before, "a late answer to a retired query changes nothing");
         assert_eq!(app.commits.load(Ordering::SeqCst), 0, "recording and editing carry on");
+        on_message(&follow, &shown, WM_QUERYENDSESSION, 0, 0);
+        assert_eq!(shown.reasons.borrow().last().cloned().flatten(), Some(SAVING.to_owned()));
+        *app.saving.lock().unwrap() = None;
+        app.drafts.lock().unwrap().take().unwrap()(Drafts::Clean);
+        let (query, code) = *shown.posted.lock().unwrap().last().unwrap();
+        on_message(&follow, &shown, DRAFTS, query as usize, code);
+        assert_eq!(shown.reasons.borrow().last(), Some(&None), "a save that ended before a clean draft answer leaves no reason registered");
     }
 
     #[test]

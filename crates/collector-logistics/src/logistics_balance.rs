@@ -388,7 +388,7 @@ pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
         return Err(allocation::oom());
     }
     storage.push(owner);
-    let pointer = &mut storage.last_mut().unwrap()[0] as *mut Storage;
+    let pointer = &raw mut storage.last_mut().unwrap()[0];
     PENDING.store(pointer, Ordering::SeqCst);
     if ACTIVE.load(Ordering::SeqCst) == 0 {
         LOG.store(pointer, Ordering::SeqCst);
@@ -1048,12 +1048,12 @@ mod tests {
         let _guard = EXCLUSIVE.lock().unwrap();
         let mut old = two_countries();
         let mut new = two_countries();
-        LOG.store(&mut old, Ordering::SeqCst);
-        PENDING.store(&mut new, Ordering::SeqCst);
+        LOG.store(&raw mut old, Ordering::SeqCst);
+        PENDING.store(&raw mut new, Ordering::SeqCst);
         let [current, pending] = bound();
-        assert!(current.is_some_and(|storage| ptr::eq(storage, &old)));
-        assert!(pending.is_some_and(|storage| ptr::eq(storage, &new)));
-        PENDING.store(&mut old, Ordering::SeqCst);
+        assert!(current.is_some_and(|storage| ptr::eq(storage, &raw const old)));
+        assert!(pending.is_some_and(|storage| ptr::eq(storage, &raw const new)));
+        PENDING.store(&raw mut old, Ordering::SeqCst);
         assert!(bound()[1].is_none());
         let mut across = bind([Some(&new), None], Ok((B, 0xb000)), 0, || true);
         for binding in across.iter_mut().flatten() {

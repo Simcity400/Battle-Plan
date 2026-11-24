@@ -397,7 +397,7 @@ fn rail_strip_indices_are_written_where_a_run_moved_and_read_nowhere_else() {
     let mut runs: Vec<Range<u32>> = (0..50u32).map(|at| at * 10..at * 10 + 8).collect();
     let mut strips = Strips::default();
     let (length, owed) = strips.laid(&runs).unwrap();
-    assert_eq!((length, owed.clone()), (whole(&runs).len(), Some(0..whole(&runs).len())), "nothing stands yet, so the whole list is owed");
+    assert_eq!((length, owed), (whole(&runs).len(), Some(0..whole(&runs).len())), "nothing stands yet, so the whole list is owed");
     strips.sent = length;
     assert_eq!(strips.held[..length], whole(&runs)[..], "the list laid out whole");
     assert_eq!(strips.laid(&runs).unwrap(), (length, None), "the same runs owe nothing");

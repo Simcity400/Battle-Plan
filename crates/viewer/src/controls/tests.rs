@@ -111,7 +111,7 @@ fn escape_and_focus_loss_release_the_pointer_and_held_input() {
     assert_eq!(frame.look, [4.0, -2.0]);
     assert!(frame.pad.left[1] > 0.99);
     let frame = input.frame(window(
-        &[key(egui::Key::Escape, true), motion.clone()],
+        &[key(egui::Key::Escape, true), motion],
         true,
         now,
     ));

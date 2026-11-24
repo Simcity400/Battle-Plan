@@ -406,7 +406,7 @@ fn late_mesh_admission_binds_events_without_changing_existing_actor_identities()
             let address = pass.actor_address(known_key);
             assert!(pass.events.iter().any(|event| event.key.actor() == address));
             assert!(!pass.players.contains_key(&late_key));
-            let player = &pass.players[&known_key] as *const _;
+            let player = &raw const pass.players[&known_key];
             let played = pass.root_play_position(known_key);
             let appeared = pass.default_appeared.clone();
             let existing = pass
@@ -429,7 +429,7 @@ fn late_mesh_admission_binds_events_without_changing_existing_actor_identities()
                 pass.sync(&library);
             }
             assert_eq!(pass.actor_address(known_key), address);
-            assert_eq!(&pass.players[&known_key] as *const _, player);
+            assert_eq!(&raw const pass.players[&known_key], player);
             assert_eq!(pass.root_play_position(known_key), played);
             assert_eq!(pass.default_appeared, appeared);
             assert_eq!(pass.field.instances, instances);

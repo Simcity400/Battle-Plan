@@ -145,7 +145,6 @@ impl PrimaryRootCache {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn contains(
         &mut self,
         memory: &impl engine_native_memory::Memory,

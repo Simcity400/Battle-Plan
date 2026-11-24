@@ -2027,7 +2027,6 @@ impl Captured {
         ]
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_presentation_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
@@ -2235,7 +2234,10 @@ impl Captured {
             .map(|family| self.family_selection(family))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the governance request takes ownership of its fingerprints and each store separately"
+    )]
     pub(crate) fn take_governance_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
@@ -2382,7 +2384,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the supply-train request takes its part and fingerprints beside the hourly operands"
+    )]
     pub(crate) fn take_supply_trains_request(
         &mut self,
         countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
@@ -3368,7 +3373,10 @@ impl Captured {
         ticks
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the tick counters and inline choice"
+    )]
     pub(super) fn assemble_production_daily(
         &mut self,
         memory: &impl Memory,
@@ -3599,7 +3607,10 @@ impl Captured {
         ticks
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the orders and tick counters"
+    )]
     #[inline(never)]
     pub(crate) fn capture_tables_late(
         &mut self,

@@ -583,7 +583,7 @@ fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
     harness.follow.follow(10, none_least.clone()).unwrap();
     harness.seek(0);
     let played = harness.play(50);
-    let last = |id: u32| played.iter().flat_map(Played::answers).filter(|(at, _, _)| *at == id).last().expect("an answer");
+    let last = |id: u32| played.iter().flat_map(Played::answers).filter(|(at, _, _)| *at == id).next_back().expect("an answer");
     let (_, hour, answer) = last(7);
     assert_eq!(answer, harness.fresh(&top, hour));
     let names: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
@@ -1362,7 +1362,7 @@ fn rows_changed_queued_behind_the_rows_they_change_are_laid_over_them_never_drop
     let (_, _, body) = decode(&merged).unwrap().answers[0];
     let changed = Answer::parse(body).unwrap();
     assert!(changed.changed);
-    assert_eq!((changed.keys.clone(), changed.values.clone()), (vec![2, 3], vec![22, 32]), "two changes are the newer of each row");
+    assert_eq!((changed.keys.clone(), changed.values), (vec![2, 3], vec![22, 32]), "two changes are the newer of each row");
     let (merged, _) = crate::answer::merge(&whole, &merged).unwrap();
     let decoded = decode(&merged).unwrap();
     assert_eq!(decoded.hour, 12);
@@ -1480,7 +1480,7 @@ fn a_send_waits_for_its_credit_but_one_message_always_goes_when_nothing_is_in_fl
     let cost = crate::answer::charge(&packet);
     let budget = playhead::ByteBudget::new(cost * 4);
     let push = Push::with_budget(budget.clone());
-    push.offer(packet.clone());
+    push.offer(packet);
     push.offer(one(7, 48, 2));
     push.offer(one(7, 72, 3));
     assert!(push.try_take().is_some());
@@ -1505,7 +1505,7 @@ fn a_replacement_the_clock_has_reached_goes_while_the_lanes_still_hold_the_pictu
     let cost = crate::answer::charge(&packet);
     let budget = playhead::ByteBudget::new(cost * 5);
     let push = Push::with_budget(budget.clone());
-    push.offer(packet.clone());
+    push.offer(packet);
     push.offer(one(7, 20, 2));
     push.offer(one(7, 30, 3));
     assert!(push.try_take().is_some() && push.try_take().is_some());

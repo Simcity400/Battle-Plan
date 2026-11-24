@@ -738,7 +738,7 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
                 && row.cause == PowerCause::AbilityActivation
             {
                 match content.power_content() {
-                    Err(reason) => item.unknown = Some(reason.clone()),
+                    Err(reason) => item.unknown = Some(reason),
                     Ok(power) => {
                         if let Some(key) = power.abilities.name_key(token.as_bytes()) {
                             item.name = content.localised(key, View::Plain);
@@ -792,7 +792,7 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
                 && let Some(token) = token.as_deref()
             {
                 match content.power_content() {
-                    Err(reason) => item.unknown = Some(reason.clone()),
+                    Err(reason) => item.unknown = Some(reason),
                     Ok(power) => {
                         match own.as_ref() {
                             Some(own) => match power.unit_traits.name_key(token, &own.tag, |key| content.defines(key)) {

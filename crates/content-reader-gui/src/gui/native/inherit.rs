@@ -539,7 +539,7 @@ fn window_fields(
                 )));
             };
             let from = passed
-                .get(&(found as *const Element))
+                .get(&std::ptr::from_ref::<Element>(found))
                 .unwrap_or(from)
                 .clone();
             let size_unset = stored_size(&own, viewport)

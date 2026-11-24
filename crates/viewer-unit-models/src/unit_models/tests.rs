@@ -394,7 +394,7 @@ fn animation_selection_prioritizes_combat_and_retreat_over_movement() {
         animation_state(
             Some(&Route {
                 path: vec![],
-                ..moving.clone()
+                ..moving
             }),
             Some(ATTACK),
             Some(false)
@@ -1028,7 +1028,7 @@ fn a_weather_or_status_change_makes_again_the_camouflage_that_read_it_and_no_oth
     assert_eq!(kept[0].chosen, [snow.clone(), snow.clone(), snow.clone()]);
     assert_eq!(
         kept[1].chosen,
-        [snow.clone(), Ok("GER_custom_entity".to_owned()), snow.clone()]
+        [snow.clone(), Ok("GER_custom_entity".to_owned()), snow]
     );
     for (hour, frame) in frames.iter().enumerate() {
         let alone = sessions(&camouflaged_assets(), std::slice::from_ref(frame), &stacks);
@@ -1923,7 +1923,7 @@ fn models_made_without_ships_say_so_and_take_the_ships_layers_beside_their_own_l
     };
     let mut report = ModelReport { ship_hulls: 4, ..ModelReport::default() };
     report.error("No ship is drawn: TaskForces is not wholly recorded this hour");
-    let joined = without.with_ships(layer.clone(), &report);
+    let joined = without.with_ships(layer, &report);
     assert!(joined.naval(), "joined, it holds the layer's ships");
     assert_eq!(joined.ships().candidates.iter().map(|candidate| candidate.identity).collect::<Vec<_>>(), [2, 3]);
     assert_eq!(joined.placed.len(), without.placed.len(), "its own land stays");

@@ -76,7 +76,6 @@ fn persistent_arithmetic_only_describes_authored_tooltips() {
     }
 }
 
-#[allow(clippy::field_reassign_with_default)]
 #[test]
 fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
     engine_executable::executable_tables::initialize_for_tests()

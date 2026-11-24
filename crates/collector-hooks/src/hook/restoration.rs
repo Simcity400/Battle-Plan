@@ -144,7 +144,7 @@ impl Scratch {
                     ERROR_INSUFFICIENT_BUFFER,
                 );
             }
-            self.references.push(hook as *mut Hook);
+            self.references.push(std::ptr::from_mut::<Hook>(hook));
         }
         let hooks = unsafe {
             std::slice::from_raw_parts_mut(
@@ -170,7 +170,7 @@ impl Scratch {
                     ERROR_INSUFFICIENT_BUFFER,
                 );
             }
-            self.references.push(hook as *mut Hook);
+            self.references.push(std::ptr::from_mut::<Hook>(hook));
         }
         // SAFETY: the pointers were exclusive references lent by this call.
         if self.references[start..]
@@ -201,7 +201,7 @@ impl Scratch {
         let (mut first, mut len, mut enabled) = (ptr::null_mut(), 0, false);
         for hook in hooks {
             if len == 0 {
-                first = hook as *mut Hook;
+                first = std::ptr::from_mut::<Hook>(hook);
             }
             len += 1;
             enabled |= hook.is_enabled();
@@ -255,7 +255,7 @@ impl Scratch {
                     hook.site as *const c_void,
                     hook.sentinel_len,
                     PAGE_EXECUTE_READWRITE,
-                    &mut previous,
+                    &raw mut previous,
                 )
             } == 0
             {
@@ -354,7 +354,7 @@ impl Scratch {
                     hook.site as *const c_void,
                     hook.sentinel_len,
                     hook.page_protection,
-                    &mut previous,
+                    &raw mut previous,
                 )
             } == 0
             {
@@ -447,7 +447,7 @@ impl Scratch {
                         hook.site as *const c_void,
                         hook.sentinel_len,
                         PAGE_EXECUTE_READWRITE,
-                        &mut prior,
+                        &raw mut prior,
                     )
                 } == 0
                 {
@@ -597,7 +597,7 @@ impl Scratch {
                         hook.site as *const c_void,
                         hook.sentinel_len,
                         hook.page_protection,
-                        &mut prior,
+                        &raw mut prior,
                     )
                 } == 0
                 {

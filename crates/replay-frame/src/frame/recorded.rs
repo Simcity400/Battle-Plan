@@ -142,7 +142,6 @@ impl RecordedFrame {
             }),
         })
     }
-    #[allow(clippy::too_many_arguments)]
     pub fn from_columns(
         branch: BranchId,
         hour: Hour,

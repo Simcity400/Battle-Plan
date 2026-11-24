@@ -492,7 +492,6 @@ fn push_complete(out: &mut Vec<(i32, i32)>, first: i32, last: i32) {
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "a point walk names its recording, run, table, columns, keys, range, state lens, optional complete-span collector and callback")]
 fn read<L: Look>(
     recording: &Recording,
     (run, table): (u32, TableId),
@@ -639,7 +638,6 @@ fn read<L: Look>(
     Ok((asked, std::mem::take(&mut look.texts().held).into_iter().map(|(_, text)| text).collect()))
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, source, keys and range")]
 pub fn points(
     recording: &Recording,
     run: u32,
@@ -664,7 +662,6 @@ pub fn points(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, source, keys and range")]
 pub fn points_with_complete(
     recording: &Recording,
     run: u32,
@@ -690,7 +687,6 @@ pub fn points_with_complete(
     Ok(complete)
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn cells(
     recording: &Recording,
     run: u32,

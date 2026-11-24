@@ -367,7 +367,7 @@ mod tests {
         bytes.extend_from_slice(&[0, 192]);
         let pcm = decode(&bytes).unwrap();
         assert_eq!(
-            (pcm.format, pcm.samples.clone()),
+            (pcm.format, pcm.samples),
             (Format::U8, vec![-1.0, 0.5])
         );
         let mut bytes = encode_pcm16(44_100, 1, &[0, 0, 0, 0]);
@@ -562,6 +562,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::single_range_in_vec_init, reason = "without takes the list of byte ranges to cut, and this test cuts one")]
     fn adpcm_reads_only_the_first_format_chunk() {
         let (original, _) = ima_adpcm();
         let second = &encode_pcm16(8_000, 2, &[])[12..36];

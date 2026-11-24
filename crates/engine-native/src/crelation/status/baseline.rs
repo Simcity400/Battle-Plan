@@ -219,7 +219,10 @@ impl Baseline {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the scope, country reader and status vtable locate the baseline, and the resolver, observation and selection come from the caller"
+    )]
     pub(super) fn prepare(
         &mut self,
         memory: &impl Memory,

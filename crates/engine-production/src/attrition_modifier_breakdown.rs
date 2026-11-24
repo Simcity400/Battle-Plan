@@ -97,7 +97,7 @@ impl StackLimits {
             fn GetCurrentThreadStackLimits(low: *mut usize, high: *mut usize);
         }
         let mut limits = Self { low: 0, high: 0 };
-        unsafe { GetCurrentThreadStackLimits(&mut limits.low, &mut limits.high) };
+        unsafe { GetCurrentThreadStackLimits(&raw mut limits.low, &raw mut limits.high) };
         if limits.low == 0 || limits.low >= limits.high {
             Err("attrition modifier worker stack limits unavailable")
         } else {
@@ -278,10 +278,6 @@ fn capture_root(
 }
 
 #[inline(never)]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Explicit per-root key, capture state and caller-owned arenas"
-)]
 fn capture_node(
     memory: &impl Memory,
     address: usize,
@@ -368,7 +364,7 @@ struct Ancestor<'a> {
 }
 
 #[inline(never)]
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Borrowed native ancestor frames replace short heap scratch"
 )]

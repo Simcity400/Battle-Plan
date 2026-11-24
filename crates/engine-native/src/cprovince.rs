@@ -79,7 +79,10 @@ pub fn walk_unit_order_with_known(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the listed provinces, known-unit lookup and land callback belong to the caller, and the output and handles are caller-owned"
+)]
 pub fn walk_unit_order_listed(
     memory: &impl Memory,
     base: usize,
@@ -136,7 +139,10 @@ pub fn unit_order_slots(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the known-unit lookup, land callback and listed provinces belong to the caller, and the output and handle buffers are caller-owned"
+)]
 fn unit_order(
     memory: &impl Memory,
     base: usize,
@@ -1798,7 +1804,10 @@ fn fort_bunker<'a, M: Memory>(
     .ok()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, controller areas, conflict buffers and state are caller-owned, and the hour carry is optional"
+)]
 fn walk_rows(
     memory: &impl Memory,
     base: usize,
@@ -1860,7 +1869,10 @@ fn walk_rows(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the array locates the provinces, and the output, controller areas, conflict buffers, state and state cache are caller-owned"
+)]
 fn read_rows(
     memory: &impl Memory,
     base: usize,

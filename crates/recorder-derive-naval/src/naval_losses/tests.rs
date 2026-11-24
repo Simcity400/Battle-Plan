@@ -148,7 +148,7 @@ fn sinkings_count_each_rise_of_an_entry_and_each_bucket_change_per_identity_from
     let mut unread = after_two.clone();
     unread[9] = run_row(ships, BASE, false, None);
     assert_eq!(seen[3], unread, "an hour the ships are not read leaves their totals not known");
-    let mut refused = after_two.clone();
+    let mut refused = after_two;
     refused[0] = total(10, 1, lost, ships, 1, 1);
     refused[2] = total(10, 3, lost, ships, 1, 1);
     refused[6] = total(20, 2, sunk_by, ships, 1, 1);

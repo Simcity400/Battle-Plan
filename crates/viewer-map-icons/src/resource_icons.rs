@@ -488,7 +488,7 @@ fn update(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the layout, controls and entries, the viewport, the resources, and the parts and notes it fills")]
 fn row_parts(
     layout: &native_gui::Layout,
     controls: &Controls<'_>,

@@ -190,7 +190,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the fingerprints and change source"
+    )]
     pub fn capture_changed(
         &mut self,
         memory: &impl Memory,

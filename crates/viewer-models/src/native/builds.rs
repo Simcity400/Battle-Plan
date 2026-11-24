@@ -137,7 +137,7 @@ impl Builds {
         None
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the queue, the part's key and library, and the pass's caster, sample and instancing modes")]
     pub fn ready(
         &self,
         queued: &mut Queued,
@@ -245,8 +245,8 @@ impl Builds {
                     marked.push((*key, None));
                 }
                 for (part, ..) in part_keys(*key, lods, forced) {
-                    if !state.parts.contains_key(&part) {
-                        state.parts.insert(part, None);
+                    if let std::collections::hash_map::Entry::Vacant(e) = state.parts.entry(part) {
+                        e.insert(None);
                         marked.push((*key, Some(part)));
                     }
                 }

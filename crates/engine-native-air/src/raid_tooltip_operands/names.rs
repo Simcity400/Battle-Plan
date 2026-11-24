@@ -223,7 +223,10 @@ fn independent_string(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the caller selects the scalar, group, custom and cached output kinds that label the rows, and the sink is caller-owned"
+)]
 fn member(
     m: &impl Memory,
     base: usize,

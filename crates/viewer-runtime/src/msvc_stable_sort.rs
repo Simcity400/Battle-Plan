@@ -492,7 +492,7 @@ mod tests {
         let mut expected = large.clone();
         sort(&mut expected, |a, b| a.0 < b.0);
         let mut requests = Vec::new();
-        let mut fallback = large.clone();
+        let mut fallback = large;
         sort_with_scratch(
             &mut fallback,
             |requested| {

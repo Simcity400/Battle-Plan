@@ -1749,7 +1749,7 @@ impl StatusPacket {
         selected
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "the seed's carried, staged and batched reads"
     )]
@@ -2006,7 +2006,10 @@ impl StatusPacket {
         self.commander_bans.iter().copied()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the seeds, source and owner lookup come from earlier walks, and the output and held lookup are caller-owned"
+    )]
     pub fn retreat_bans(
         &mut self,
         memory: &impl Memory,
@@ -2472,7 +2475,10 @@ impl StatusPacket {
         self.capture_holding(memory, base, state, seeds, source_outcome, &[], &[])
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the seeds, source, held maxima and experience come from earlier walks"
+    )]
     pub fn capture_holding(
         &mut self,
         memory: &impl Memory,
@@ -2506,7 +2512,10 @@ impl StatusPacket {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the seeds, source, held and staged maxima come from earlier walks, and membership may be deferred"
+    )]
     fn prepare_holding_inner<'a, M: Memory>(
         &mut self,
         memory: &'a M,
@@ -2620,7 +2629,10 @@ impl StatusPacket {
         prepared
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the seeds, source, held maxima and experience come from earlier walks"
+    )]
     pub fn prepare_holding(
         &mut self,
         memory: &impl Memory,
@@ -2643,7 +2655,7 @@ impl StatusPacket {
         )
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "prepare_holding's operands and the staged reads"
     )]
@@ -2696,7 +2708,10 @@ impl StatusPacket {
         self.units.len()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the seeds, source, experience and prepared reader come from earlier steps, and two flags choose deferred work"
+    )]
     fn finish_holding<M: Memory>(
         &mut self,
         memory: &M,
@@ -3427,7 +3442,6 @@ pub fn walk_status(
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
 fn status_test_capture(
     memory: &impl Memory,
     base: usize,
@@ -3472,7 +3486,6 @@ fn status_test_capture(
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
 pub fn walk_status_with_membership(
     memory: &impl Memory,
     base: usize,

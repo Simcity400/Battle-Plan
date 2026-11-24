@@ -86,10 +86,6 @@ impl SideSource {
 
 pub type Owner = (Kind, u64, u32);
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "every recorded identity the join reads is a separate field"
-)]
 pub fn ship_owner(
     scope: u8,
     index: u32,

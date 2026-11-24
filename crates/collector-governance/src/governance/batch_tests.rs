@@ -1,7 +1,7 @@
 use super::*;
 use engine_governance_tests as kit;
 use engine_research::{research_inputs, research_modifiers};
-#[allow(dead_code)]
+#[expect(dead_code, reason = "these tests use only part of the serial reference copy of drift")]
 #[path = "drift_serial.rs"]
 mod serial;
 use kit::{GAME, SLOT, TECH, Trace, World};

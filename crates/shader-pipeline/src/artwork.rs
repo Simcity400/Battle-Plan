@@ -907,10 +907,10 @@ Effect Up { VertexShader=V PixelShader=P }
         std::fs::remove_file(root.join("map/synthetic.bmp")).unwrap();
         assert!(Arc::ptr_eq(
             &first,
-            &program(&layers.clone(), effect.as_bytes()).unwrap()
+            &program(&layers, effect.as_bytes()).unwrap()
         ));
         assert_eq!(
-            super::globals(&layers.clone(), Decode::default()).unwrap(),
+            super::globals(&layers, Decode::default()).unwrap(),
             globals
         );
         assert!(

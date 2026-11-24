@@ -1568,16 +1568,16 @@ impl Encoder {
                     self.restore_chunk(table, stream, index, from, raw, whole, sink)?;
                     continue;
                 }
-                let (mut index, mut from, mut raw) = (index, from, Vec::new());
+                let (mut index, mut start, mut raw) = (index, from, Vec::new());
                 for slot in from..slots {
                     restore::column_chunk(state, column, slot, slot + 1, &mut raw);
                     if raw.len() >= restore::CHUNK && slot + 1 < slots {
-                        self.restore_chunk(table, stream, index, from, std::mem::take(&mut raw), whole, sink)?;
+                        self.restore_chunk(table, stream, index, start, std::mem::take(&mut raw), whole, sink)?;
                         index += 1;
-                        from = slot + 1;
+                        start = slot + 1;
                     }
                 }
-                self.restore_chunk(table, stream, index, from, raw, whole, sink)?;
+                self.restore_chunk(table, stream, index, start, raw, whole, sink)?;
             }
         }
         let others = (self.timings.reading_back - before.reading_back)
@@ -1588,7 +1588,6 @@ impl Encoder {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments, reason = "a chunk's place in its restore, given whole")]
     fn name_again(&mut self, table: usize, stream: u32, index: usize, from: u32, next: Option<u32>, slots: u32, sink: &mut dyn PartSink) -> io::Result<bool> {
         let rule = &self.tables[table].rule;
         let Some(chunks) = rule.chunks.get(stream as usize) else { return Ok(false) };
@@ -1632,7 +1631,6 @@ impl Encoder {
         Ok(Some((frame, Arc::new(bytes))))
     }
 
-    #[allow(clippy::too_many_arguments, reason = "a chunk's place in its restore, given whole")]
     fn restore_chunk(&mut self, table: usize, stream: u32, index: usize, slot: u32, raw: Vec<u8>, whole: bool, sink: &mut dyn PartSink) -> io::Result<()> {
         let prefix = if whole { None } else { self.read_whole(table, stream, index, sink)? };
         self.send_chunk(table, stream, slot, raw, prefix, sink)

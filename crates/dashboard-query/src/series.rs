@@ -1479,7 +1479,6 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
-    #[allow(clippy::too_many_arguments, reason = "a part's hours, the view's level and its grid")]
     fn fold_reads(&self, reads: &[ExtentRead], key: u128, (first, last): (i32, i32), level: u8, first_bin: i64, bin_hours: i64, bins: usize) -> Vec<Option<ChartBucket>> {
         use replay_columnar::summary::bucket_hours;
         let scale = self.scale();

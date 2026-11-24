@@ -129,9 +129,12 @@ fn status_of(receiver: Receiver, first: usize) -> Option<usize> {
 
 #[must_use]
 struct Forwarded(
-    #[allow(dead_code)] Option<crate::territory_changes::Marks<'static>>,
-    #[allow(dead_code)] Option<crate::dirty_set::Dirty<'static>>,
-    #[allow(dead_code)] Option<crate::dirty_set::Dirty<'static>>,
+    #[expect(dead_code, reason = "held only so its drop releases the territory marks")]
+    Option<crate::territory_changes::Marks<'static>>,
+    #[expect(dead_code, reason = "held only so its drop releases the dirty set")]
+    Option<crate::dirty_set::Dirty<'static>>,
+    #[expect(dead_code, reason = "held only so its drop releases the dirty set")]
+    Option<crate::dirty_set::Dirty<'static>>,
 );
 
 fn forward(receiver: Receiver, first: usize) -> Forwarded {

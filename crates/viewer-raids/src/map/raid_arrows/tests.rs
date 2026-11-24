@@ -142,7 +142,7 @@ fn the_raid_unit_speed_takes_each_native_branch() {
     );
     let dead = SpeedInputs {
         ace_alive: Some(0),
-        ..wing.clone()
+        ..wing
     };
     assert_eq!(
         raid_unit_speed(SpeedBranch::Unit, &dead, 100_000, &defines),

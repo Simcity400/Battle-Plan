@@ -11,7 +11,6 @@ const MOTOR: usize = GROUP + corders_group::MOTORIZATION_LEVEL;
 const HEADER: usize = GROUP + carmy_group::MEMBER_DATA;
 const MASK: u32 = 0x1C0;
 
-#[allow(clippy::field_reassign_with_default)]
 fn request(count: i32) -> OrdersRequest {
     let mut payload = naval_history::NavalJob::default();
     payload.log = RawLog::new(16, 128);

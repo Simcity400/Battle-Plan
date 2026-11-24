@@ -31,7 +31,7 @@ pub struct LoadedIcons {
 }
 
 impl MapIcons {
-    #[allow(clippy::too_many_arguments, reason = "The content stack plus the client's settings.")]
+    #[expect(clippy::too_many_arguments, reason = "The content stack plus the client's settings.")]
     pub fn load_with_products(
         products: Option<&map_content::loader::Loader>,
         layers: &ResolvedLayers,

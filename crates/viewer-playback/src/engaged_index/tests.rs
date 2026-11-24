@@ -228,7 +228,7 @@ fn naval_frame(
     frame
 }
 
-#[allow(clippy::type_complexity, reason = "Each fixture hour includes players, faction links, and both combat sides.")]
+#[expect(clippy::type_complexity, reason = "Each fixture hour includes players, faction links, and both combat sides.")]
 fn fold_hours(tag: &str, hours: &[(Hour, &[u32], &[(u32, u32)], [u8; 2])]) -> Pass {
     let mut pass = Pass::new(Arc::default(), Country::Tag(tag.into()));
     let load = hours.first().map(|hour| hour.0);

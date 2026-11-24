@@ -224,7 +224,7 @@ fn typed_groups_borrow_the_decoded_names_portraits_units_and_commands() {
     let source: &dyn RecordedSource = raw;
     assert!(std::ptr::eq(
         raw.characters().unwrap().get(0).unwrap(),
-        &frame.complete::<tables::Characters>().unwrap()[0]
+        &raw const frame.complete::<tables::Characters>().unwrap()[0]
     ));
     assert_eq!(raw.characters().unwrap()[0].token, b"Renamed mod character");
     assert!(

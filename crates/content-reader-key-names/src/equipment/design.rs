@@ -142,7 +142,6 @@ impl UpgradeXpRules {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn module_save_xp(
     upgrade_xp: i64,
     module_xp: i64,

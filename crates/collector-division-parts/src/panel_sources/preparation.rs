@@ -228,7 +228,7 @@ impl NativeReads {
             + self.variant_indices.capacity()
                 * std::mem::size_of::<((u64, usize), VariantObservation)>()
     }
-    #[allow(clippy::too_many_arguments, reason = "internal preparation staging")]
+    #[expect(clippy::too_many_arguments, reason = "internal preparation staging")]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -536,7 +536,7 @@ impl NativeReads {
             && read.army == seed.pointer)
             .then_some(read)
     }
-    #[allow(clippy::too_many_arguments, reason = "internal state preparation staging")]
+    #[expect(clippy::too_many_arguments, reason = "internal state preparation staging")]
     fn capture_state(
         &mut self,
         memory: &impl Memory,

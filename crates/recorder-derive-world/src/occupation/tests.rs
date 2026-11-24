@@ -93,7 +93,7 @@ fn occupier_totals_sum_occupied_states_and_unite_held_ones() {
 fn an_unresolved_controller_or_unread_garrisons_say_what_is_not_known() {
     let states = [(1, 10), (2, 20), (3, 99)];
     let resistance = [(1, 20, 5, 6, 1), (2, 10, 7, 8, 1)];
-    let mut hours = vec![
+    let mut hours = [
         world(&states, &resistance, &[(10, 1), (10, 7), (20, 2)]),
         world(&states, &[(1, 20, 5, 6, 1), (2, 10, 7, 8, 1), (3, 10, 1, 1, 1)], &[(10, 1), (10, 7), (20, 2)]),
         world(&states, &resistance, &[(10, 1), (10, 7), (20, 2)]),
@@ -120,7 +120,7 @@ fn an_unresolved_controller_or_unread_garrisons_say_what_is_not_known() {
 #[test]
 fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     let states = [(1, 10), (2, 10), (3, 20)];
-    let mut hours = vec![
+    let mut hours = [
         world(&states, &[(1, 20, 5, 6, 1), (3, 10, 1, 2, 1)], &[(10, 1)]),
         world(&states, &[(1, 20, 6, 6, 1), (2, 30, 3, 3, 1), (3, 10, 1, 2, 1)], &[(10, 1), (20, 3)]),
         world(&[(1, 10), (2, 20), (3, 20)], &[(1, 20, 6, 7, 1), (2, 30, 3, 3, 1), (3, 10, 1, 2, 0)], &[(10, 1), (20, 3)]),

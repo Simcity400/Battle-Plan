@@ -24,7 +24,10 @@ fn orders_group(
     Ok(handle)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the gun, row and sample hour identify one estimate, and the named bonuses, registry, layout, buffer and observations are caller-owned"
+)]
 pub(super) fn capture(
     memory: &impl Memory,
     base: usize,

@@ -107,7 +107,7 @@ impl Inner {
         let folders = recording_upgrade::Folders {
             games,
             user: content.options.user_dir.clone(),
-            cache: content.options.cache_dir.clone(),
+            cache: content.options.cache_dir,
         };
         match recording_upgrade::upgrade(path, &folders) {
             Ok(recording_upgrade::Outcome::Upgraded { steps }) => {
@@ -573,7 +573,7 @@ impl Inner {
             }
             LoadJob::MapSettings(job) => {
                 let request = Arc::clone(&job.request);
-                let result = self.map_settings_job(job);
+                let result = self.map_settings_job(*job);
                 self.complete(request, result.map_err(Into::into));
             }
             LoadJob::Product {
@@ -842,7 +842,7 @@ pub(super) enum LoadJob {
         segment_id: String,
         choice: Option<String>,
     },
-    MapSettings(MapSettingsJob),
+    MapSettings(Box<MapSettingsJob>),
     Open(OpenJob),
     Product {
         request: Arc<Request>,

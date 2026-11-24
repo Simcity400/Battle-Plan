@@ -518,7 +518,6 @@ pub fn walk_with_names(
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
 pub fn walk_shared_names_with_operands(
     memory: &impl Memory,
     base: usize,
@@ -550,7 +549,10 @@ pub fn walk_shared_names_with_operands(
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, names and the row, score and owner callbacks are separate caller-owned parts of one walk"
+)]
 pub(crate) fn walk_game_score_with_owners(
     memory: &impl Memory,
     base: usize,
@@ -582,9 +584,11 @@ pub(crate) fn walk_game_score_with_owners(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, sources, names and the row, score and owner callbacks are separate caller-owned parts of one walk"
+)]
 pub(crate) fn walk_shared_game_score_with_owners(memory: &impl Memory, base: usize, game_state: usize, output: &mut Vec<Row>, sources: &mut Vec<Source>, names: Option<&mut NameArena<'_>>, scored: bool, visit: impl FnMut(usize, usize, &mut Row, Admitted), score_visit: impl FnMut(usize, &ScoreLeaf), owners: impl FnMut(u32, Option<usize>)) -> GameScoreWalk {
     walk_shared_game_score_buffers_with_owners(memory, base, game_state, EVERY_OWNER, Buffer::Growing(output), Buffer::Growing(sources), names, scored, visit, score_visit, owners)
 }
@@ -745,7 +749,10 @@ impl Queue {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the slots, output, sources and the row, owner and score callbacks are separate caller-owned parts of one walk"
+)]
 fn walk_projected(
     memory: &impl Memory,
     base: usize,
@@ -1346,7 +1353,10 @@ impl<M: Memory> Reader<'_, M> {
         fields
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the pointer, pool, owner, ordinal and air base identify one wing, and the score callback is caller-owned"
+    )]
     fn row(
         &self,
         fields: &RowFields,

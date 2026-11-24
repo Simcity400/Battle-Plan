@@ -122,8 +122,10 @@ impl Changes for Observer {
 const STRUCTURE_SITES: [usize; 6] = [2, 5, 6, 7, 8, 9];
 
 pub struct Notifications<'a>(
-    #[allow(dead_code)] Notification<'a>,
-    #[allow(dead_code)] Option<Notification<'a>>,
+    #[expect(dead_code, reason = "held only so its drop delivers the notification")]
+    Notification<'a>,
+    #[expect(dead_code, reason = "held only so its drop delivers the notification")]
+    Option<Notification<'a>>,
 );
 
 pub fn active() -> usize {

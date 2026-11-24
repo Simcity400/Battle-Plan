@@ -228,7 +228,6 @@ unsafe extern "system" {
     fn air_loss_original_return();
 }
 
-#[allow(clippy::too_many_arguments)]
 unsafe extern "system" fn pre(
     context: *mut CallContext,
     receiver: usize,

@@ -110,7 +110,7 @@ fn every_combat_keeps_its_vector_place_and_class() {
         &(engine_native_parts::cland_border_war_combat::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     assert_eq!(walk(&border, 2, 4).3[1], COMBAT_BORDER_WAR);
-    let mut unknown = bytes.clone();
+    let mut unknown = bytes;
     put(&mut unknown, LAND, &1u64.to_le_bytes());
     assert!(matches!(
         walk(&unknown, 2, 4).0.outcome,

@@ -26,13 +26,13 @@ test('a downloaded update says so in words above the footer, and the footer glyp
   try {
     const { PanelView } = await vite.ssrLoadModule('/ui/src/recorder/RecorderPanel.tsx') as { PanelView: (props: PanelViewProps) => unknown };
     const state: UpdateState = { enabled: true, status: 'up-to-date', channel: 'stable', build: 'stable', currentVersion: '0.9.4', availableVersion: null,
-      downloadedVersion: null, releases: [], unlisted: false, downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null, channelWarning: null, downgrade: false };
+      downloadedVersion: null, releases: [], unlisted: false, downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null, channelWarning: null, downgrade: false, revision: 1 };
     const update = (change: Partial<UpdateState>, ask: PanelUpdate['ask'] = null): PanelUpdate =>
       ({ state: { ...state, ...change }, failure: null, ask, pending: false, press() {}, restart() {}, retry() {}, dismiss() {}, channel() {} });
     const render = (props: Partial<PanelViewProps>) => renderToStaticMarkup(createElement(PanelView as never, {
       snapshot: { ...recording, phase: 'waiting', campaign: null, recording: null }, settings, view: 'main', asking: false, error: null, now: STARTED,
       actions, ...props } as never));
-    const { blockedReason, peekTitle } = await vite.ssrLoadModule('/ui/src/update/logic.ts') as typeof import('../update/logic');
+    const { blockedReason, latestUpdateState, peekTitle } = await vite.ssrLoadModule('/ui/src/update/logic.ts') as typeof import('../update/logic');
     const { UpdateNotes } = await vite.ssrLoadModule('/ui/src/update/UpdateControl.tsx') as typeof import('../update/UpdateControl');
     const { actionFailure } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts') as typeof import('../dashboard/queryError');
     assert.deepEqual(actionFailure('Couldn’t show the recording in its folder.', 'Couldn’t show Germany 1936 in its folder: C:\\Rec\\Germany 1936.battleplan: denied'),
@@ -125,6 +125,11 @@ test('a downloaded update says so in words above the footer, and the footer glyp
     assert.doesNotMatch(channel({}), /disabled/);
     assert.equal(channel({ status: 'downloading', availableVersion: '0.9.5', downloadPercent: 40 }).match(/disabled=""/g)?.length, 2, 'no channel change during a download');
     assert.equal(channel({}, true).match(/disabled=""/g)?.length, 2, 'nor while an update action runs');
+    assert.doesNotMatch(channel({ status: 'checking' }), /disabled/, 'a background check leaves the channel free to change');
+    const newer = { ...state, revision: 2, status: 'available' as const, availableVersion: '0.9.5' };
+    assert.equal(latestUpdateState(newer, state), newer, 'an older state arriving after a newer one is ignored');
+    assert.equal(latestUpdateState(state, newer), newer);
+    assert.equal(latestUpdateState(null, state), state);
   } finally { await vite.close(); }
 });
 

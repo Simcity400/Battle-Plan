@@ -12,7 +12,7 @@ pub(super) fn acquire(handle: HANDLE, context: &mut AlignedContext) -> Option<Re
         if ips.is_empty() {
             return None;
         }
-        assert_eq!(context as *mut _ as usize % 16, 0);
+        assert_eq!(std::ptr::from_mut(context) as usize % 16, 0);
         assert_eq!(context.0.ContextFlags, CONTEXT_CONTROL_AMD64);
         let index = handle as usize - 1;
         calls[index] += 1;

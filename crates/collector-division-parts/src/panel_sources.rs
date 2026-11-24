@@ -654,7 +654,10 @@ impl Store {
             None,
         )
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one root observation names its kind, owner, receiver, accumulator, certificate and reads"
+    )]
     fn root_with_observation(
         &mut self,
         memory: &impl Memory,
@@ -772,7 +775,10 @@ impl Store {
     pub fn phase_ticks(&self) -> [u64; PHASE_NAMES.len()] {
         self.phase_ticks
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the staged capture takes the seeds, selection, preparation and both read sets separately"
+    )]
     pub fn capture_staged<'a>(
         &mut self,
         memory: &impl Memory,
@@ -801,7 +807,10 @@ impl Store {
         self.boundary.active = false;
         result
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the inner capture takes the seeds, selection, preparation, both read sets and the boundary separately"
+    )]
     fn capture_inner<'a>(
         &mut self,
         memory: &impl Memory,
@@ -1534,7 +1543,10 @@ impl Store {
         );
         Ok(())
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one state preparation names its id, pointer, country and reads beside the read operands"
+    )]
     fn state_prepared(
         &mut self,
         memory: &impl Memory,

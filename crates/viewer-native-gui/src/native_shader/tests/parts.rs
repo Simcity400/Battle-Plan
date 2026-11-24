@@ -123,7 +123,7 @@ fn sprite_inputs(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "each input of one native text draw the test builds")]
 fn text_inputs(
     effect: &Arc<library::Effect>,
     views: &[wgpu::TextureView],

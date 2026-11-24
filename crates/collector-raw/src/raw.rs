@@ -168,7 +168,7 @@ impl RawBytes {
             let mut observations = observations.borrow_mut();
             if observations.active {
                 let start =
-                    (value as *const T).cast::<u8>() as usize - self.storage.as_ptr() as usize;
+                    std::ptr::from_ref::<T>(value).cast::<u8>() as usize - self.storage.as_ptr() as usize;
                 let len = std::mem::size_of_val(value);
                 observations.observe(start, &self.storage[start..start + len]);
             }
@@ -452,6 +452,7 @@ impl<const N: usize> RawLog<N> {
             }
         }
         if self.bytes.storage.capacity() > target_bytes.saturating_mul(2) {
+            #[expect(clippy::slow_vector_initialization, reason = "the buffer is reserved through the advisory allocator so a refused allocation is handled, then zero-filled; vec![0; n] would allocate outside it")]
             let mut trimmed = Vec::new();
             if engine_allocation::advisory(|| {
                 engine_allocation::reserve_exact(&mut trimmed, target_bytes)

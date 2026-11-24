@@ -156,7 +156,10 @@ fn country(
     countries.at(slot)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the raid identity, country reader, memo, arena, walk and stat witness are separate inputs of one row"
+)]
 fn read_row(
     memory: &impl Memory,
     base: usize,
@@ -352,10 +355,6 @@ pub fn each_raid(
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Raid speed walk passes memory, base, game state, modifier memo, output buffers and stat timing witness explicitly."
-)]
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -376,10 +375,6 @@ pub fn walk(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Raid speed walk passes memory, base, game state, modifier memo, output buffers and stat timing witness explicitly."
-)]
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,

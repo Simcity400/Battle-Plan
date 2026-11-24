@@ -248,7 +248,7 @@ impl Scratch {
             .map_err(|_| "air menu history allocation failed")?;
         self.failures[..range.len()].fill(None);
         let layout = RecordLayout::new(fields, stride).ok_or("air menu history layout invalid")?;
-        let pointers = &self.pointers[range.clone()];
+        let pointers = &self.pointers[range];
         let mut first = 0;
         while first < pointers.len() {
             let complete = memory.copy_records(

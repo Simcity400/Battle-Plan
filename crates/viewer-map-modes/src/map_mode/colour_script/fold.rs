@@ -90,7 +90,7 @@ impl Fold {
         let bank = self
             .bank
             .as_ref()
-            .filter(|bank| bank.strong_count() != 0 && bank.as_ptr() == inputs.map as *const _);
+            .filter(|bank| bank.strong_count() != 0 && bank.as_ptr() == std::ptr::from_ref(inputs.map));
         if self.active.as_ref().is_none_or(|active| {
             active.mode.as_str() != mode
                 || active.viewer != viewer

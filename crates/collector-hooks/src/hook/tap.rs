@@ -22,7 +22,7 @@ pub struct Registers {
 #[cfg(any(test, feature = "test-support"))]
 impl Registers {
     pub fn rsp(&self) -> usize {
-        self as *const Self as usize + CALL_RETURN_OFFSET + size_of::<usize>()
+        std::ptr::from_ref::<Self>(self) as usize + CALL_RETURN_OFFSET + size_of::<usize>()
     }
 }
 const _: () = assert!(size_of::<Registers>() == 128);
@@ -41,7 +41,7 @@ struct JumpTail {
 }
 unsafe extern "system-unwind" fn jump_tail(registers: &Registers, tag: usize) {
     let binding = unsafe { &*(tag as *const JumpTail) };
-    let return_slot = (registers as *const Registers as usize + CALL_RETURN_OFFSET) as *mut usize;
+    let return_slot = (std::ptr::from_ref::<Registers>(registers) as usize + CALL_RETURN_OFFSET) as *mut usize;
     unsafe {
         ptr::write(return_slot, binding.target);
         (binding.observer)(registers, binding.tag);
@@ -96,7 +96,7 @@ impl Tap {
                     GetProcessMitigationPolicy(
                         GetCurrentProcess(),
                         ProcessUserShadowStackPolicy,
-                        (&mut policy as *mut u32).cast(),
+                        (&raw mut policy).cast(),
                         size_of::<u32>(),
                     )
                 } == 0
@@ -155,6 +155,10 @@ impl Tap {
                     hook.patch[5..instructions].fill(0x90);
                     hook.patch_len = instructions;
                 }
+                #[expect(
+                    clippy::cast_ptr_alignment,
+                    reason = "the stub is a VirtualAlloc block, so the word one page in is page-aligned"
+                )]
                 let in_flight =
                     unsafe { &*code.cast::<u8>().add(PAGE_BYTES).cast::<AtomicUsize>() };
                 hook.tap = Some(TapSafety {
@@ -162,6 +166,10 @@ impl Tap {
                     stub: code as usize..code as usize + PAGE_BYTES,
                 });
                 let mut bridge = if let Some(target) = jump_target {
+                    #[expect(
+                        clippy::cast_ptr_alignment,
+                        reason = "the stub is a VirtualAlloc block, so one page and one word in is pointer-aligned"
+                    )]
                     let binding = unsafe {
                         code.cast::<u8>()
                             .add(PAGE_BYTES + size_of::<AtomicUsize>())
@@ -247,7 +255,7 @@ impl Tap {
                     );
                 }
                 let mut previous = 0;
-                if unsafe { VirtualProtect(code, PAGE_BYTES, PAGE_EXECUTE_READ, &mut previous) }
+                if unsafe { VirtualProtect(code, PAGE_BYTES, PAGE_EXECUTE_READ, &raw mut previous) }
                     == 0
                     || unsafe {
                         FlushInstructionCache(GetCurrentProcess(), code, bridge.code.len())

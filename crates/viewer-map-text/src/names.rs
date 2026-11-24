@@ -485,7 +485,7 @@ fn scan_area(
     })
 }
 
-#[allow(clippy::type_complexity, reason = "returns the horizontal and vertical regression segments")]
+#[expect(clippy::type_complexity, reason = "returns the horizontal and vertical regression segments")]
 fn regressions(scan: &MaskScan) -> Option<(([f32; 2], [f32; 2]), ([f32; 2], [f32; 2]))> {
     let n = scan.n;
     let numerator = n.checked_mul(scan.sxy)?.checked_sub(scan.sx.checked_mul(scan.sy)?)?;

@@ -486,7 +486,10 @@ fn fits(len: usize, more: usize, ensure: impl FnOnce(usize) -> Result<bool, &'st
         .is_some_and(|required| ensure(required) == Ok(true))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each published output has its own buffer and progress, and the building and level outputs are optional"
+)]
 fn publish_held(
     held: HeldBatch<'_>,
     province_output: &mut Buffer<'_, info::Row>,
@@ -642,7 +645,10 @@ pub fn walk_with_selection(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the province, edge and building outputs, levels and carry are separate caller-owned parts of one walk"
+)]
 pub fn walk_with_selection_carried(
     memory: &impl Memory,
     base: usize,
@@ -708,7 +714,10 @@ pub fn read_header(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the province, edge and building outputs, levels and carry are separate caller-owned parts of one walk"
+)]
 fn walk_inner(
     memory: &impl Memory,
     base: usize,
@@ -1359,7 +1368,10 @@ impl EdgeScratch {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the provinces, vtable, pairs and province locate the edges, and the batch, scratch, output and progress are caller-owned"
+)]
 fn read_edges(
     memory: &impl Memory,
     provinces: Array,

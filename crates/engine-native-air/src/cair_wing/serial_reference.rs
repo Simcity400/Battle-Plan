@@ -1,6 +1,9 @@
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the serial reference keeps the same signature as the walk it checks"
+)]
 pub(super) fn walk_projected(
     memory: &impl Memory,
     base: usize,

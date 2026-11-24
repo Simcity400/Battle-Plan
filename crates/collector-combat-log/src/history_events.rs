@@ -371,7 +371,7 @@ pub unsafe fn prepare(attempted: usize) {
     HANDOFF.store(true, SeqCst);
     if WRITERS.active.load(SeqCst) == 0 && storage.as_ref().is_none_or(|s| s.is_drained()) {
         let mut next = next;
-        LANE.store(&mut *next, SeqCst);
+        LANE.store(&raw mut *next, SeqCst);
         CAPACITY.store(next.len(), SeqCst);
         *storage = Some(next);
     }

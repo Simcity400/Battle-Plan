@@ -151,7 +151,6 @@ fn events(store: &Store) -> Vec<Event> {
         .collect()
 }
 
-#[allow(clippy::too_many_arguments, reason = "one argument per column a test checks")]
 fn event(kind: u8, division: u64, slot: i64, native_hour: i64, exact: bool, after: Option<i64>, place: Option<(i64, i64)>, template_hour: Option<i64>, killer_slot: Option<i64>) -> Event {
     Event {
         kind,

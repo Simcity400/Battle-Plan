@@ -430,7 +430,7 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
             assert!(report.limitations.iter().any(|(reason, subjects)| {
                 reason.contains("the stat block's maximum-speed field")
                     && reason.contains("the save has no counterpart")
-                    && subjects == &[counted.clone()]
+                    && subjects == std::slice::from_ref(&counted)
             }));
             assert!(
                 !report

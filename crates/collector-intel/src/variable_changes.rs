@@ -757,10 +757,10 @@ mod tests {
         let call = |code: u32| {
             let record = ExceptionRecord { code };
             let mut pointers = ExceptionPointers {
-                record: &record,
+                record: &raw const record,
                 _context: std::ptr::null(),
             };
-            unsafe { vectored(&mut pointers) }
+            unsafe { vectored(&raw mut pointers) }
         };
         let token = || {
             (

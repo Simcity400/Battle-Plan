@@ -246,9 +246,7 @@ fn bind(
         .references
         .named
         .extend_from_slice(&state.named_sources);
-    if !held.contains_key(&row.identity.id) {
-        held.insert(row.identity.id, vacant);
-    }
+    held.entry(row.identity.id).or_insert(vacant);
     Ok(true)
 }
 pub(super) fn track(

@@ -141,7 +141,7 @@ fn a_weak_names_what_its_allocation_was_read_back_as() {
     let released = std::mem::take(shared.released());
     assert_eq!(shared.len(), 1);
     let mut second = Vec::new();
-    (weak.clone(), Weak::<Viewed>::new())
+    (weak, Weak::<Viewed>::new())
         .spool(&mut Writer::new(&mut second, &mut shared))
         .unwrap();
 

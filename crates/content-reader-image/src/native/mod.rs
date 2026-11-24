@@ -303,7 +303,7 @@ mod tests {
         ));
         assert!(decode_texture_image_within(name, &file, padded, 64).is_ok());
         assert!(TEXEL_BUDGET.get().is_none());
-        let mut claim = file.clone();
+        let mut claim = file;
         claim[16..24].copy_from_slice(&[0, 0, 0x3E, 0x80, 0, 0, 0x3E, 0x80]);
         let crc = crc32(&claim[12..29]);
         claim[29..33].copy_from_slice(&crc.to_be_bytes());

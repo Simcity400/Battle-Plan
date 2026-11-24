@@ -13,6 +13,10 @@ struct Slot {
     returned: Condvar,
     generation: AtomicU64,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one static slot holds the store inline so a return never allocates"
+)]
 enum State {
     Vacant,
     Ready(Held),
@@ -145,7 +149,10 @@ impl StateInputs {
 }
 
 #[derive(Default)]
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "observed rows keep each keyed input beside its refusal"
+)]
 pub(super) struct Rows {
     pub states: Vec<((u32, u32, u32), Result<StateInputs, &'static str>)>,
     pub access: Vec<(u32, u32)>,
