@@ -8,6 +8,7 @@ import type { TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExt
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { IndustrialOrganisationsReply, OrganisationNow } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -93,7 +94,7 @@ export const organisationsProjection: TableProjection<OrganisationsProjectionOpt
       const meta: OrganisationMeta = { organisation: row.id, name };
       const extra = (): readonly TooltipExtraRow[] => [
         { label: 'Unspent points', value: valueFromLive(live, liveKey(row.id, 'points')), format: 'integer', divider: true },
-        ...(days !== null ? [{ label: 'Policy cooldown', value: knownValue(`${days.toLocaleString('en-US')} days`) }] : []),
+        ...(days !== null ? [{ label: 'Policy cooldown', value: knownValue(`${formatScalar(days, 'integer')} days`) }] : []),
       ];
       return {
         key: row.id,

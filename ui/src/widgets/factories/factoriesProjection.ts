@@ -10,6 +10,7 @@ import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourceEntry, S
 import { holderTagAt, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, valueFromRawBigInt, zeroValue, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { FactoryGroupsReply, SeriesStateReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 import { COUNT_MODES, chosenGroups, countMode, factoryMeasure, groupName, validateFactoryGroups, type CountMode } from './factoriesData.ts';
@@ -137,7 +138,7 @@ function buildPartSegments(
       segments.push({ key: 'healthy', label: 'Undamaged', share: healthy / total, value: scalarOf(healthy), format: { decimals: 0 }, color: fill });
     }
     segments.push({ key: 'damaged', label: 'Damaged', share: clampedDamaged / total, value: scalarOf(clampedDamaged), format: { decimals: 0 }, color: fill, hatched: true });
-    tooltipItems.push({ label: 'Damaged', value: Math.round(clampedDamaged).toLocaleString('en-US') });
+    tooltipItems.push({ label: 'Damaged', value: formatScalar(clampedDamaged, { decimals: 0, maxDecimals: 0 }) });
     return { segments, tooltipItems };
   }
 
@@ -162,7 +163,7 @@ function buildPartSegments(
     const clamped = Math.max(0, amount);
     sumParts += clamped;
     rawParts.push({ spec, amount: clamped, damaged: Math.min(clamped, damaged) });
-    tooltipItems.push({ label: spec.label, swatch: spec.color, value: Math.round(clamped).toLocaleString('en-US') });
+    tooltipItems.push({ label: spec.label, swatch: spec.color, value: formatScalar(clamped, { decimals: 0, maxDecimals: 0 }) });
   }
   const denom = sumParts > 0 ? sumParts : total;
   if (denom <= 0 || !rawParts.length) return { tooltipItems };
@@ -209,7 +210,7 @@ function makeRow(
     ? { label: options.modeLabel, missingReason: value.reason }
     : value.kind === 'notApplicable'
       ? { label: options.modeLabel, value: '\u2014' }
-      : { label: options.modeLabel, value: Math.round(Number(value.kind === 'zero' ? 0 : value.value)).toLocaleString('en-US') };
+      : { label: options.modeLabel, value: formatScalar(Number(value.kind === 'zero' ? 0 : value.value), { decimals: 0, maxDecimals: 0 }) };
   const meta: FactoriesRowMeta = { tag: displayTag, key };
   return {
     kind: 'data',
