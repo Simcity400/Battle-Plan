@@ -37,9 +37,10 @@ pub enum ScriptStatus {
     Awaiting,
     Chosen,
     NotRecorded,
+    Available,
 }
 
-const STATUSES: [ScriptStatus; 11] = [
+const STATUSES: [ScriptStatus; 12] = [
     ScriptStatus::Active,
     ScriptStatus::Taken,
     ScriptStatus::Completed,
@@ -51,6 +52,7 @@ const STATUSES: [ScriptStatus; 11] = [
     ScriptStatus::Awaiting,
     ScriptStatus::Chosen,
     ScriptStatus::NotRecorded,
+    ScriptStatus::Available,
 ];
 
 impl ScriptStatus {
@@ -205,7 +207,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
             }
             let Some(kind) = EventFeedKind::of_code(event.code) else { return Ok(()) };
             let at = Locator { run, hour: row.hour, key: row.key };
-            if decision_state::applies(&event) && event.lifecycle.is_some_and(|lifecycle| lifecycle != 0) {
+            if decision_state::applies(&event) && event.lifecycle.is_some() {
                 lifecycles.push(event.clone());
             }
             if !internal(kind) {
@@ -295,12 +297,19 @@ fn transitions(observed: i32, mut candidates: Vec<i32>, status: impl Fn(i32) -> 
     out.into_boxed_slice()
 }
 
-fn decision_status(card: &Card<'_>, states: &HashMap<u128, DecisionLifecycleState>, breaks: &[(i32, i32)], hour: i32) -> ScriptStatus {
+fn timer_end(edges: &[&Brief]) -> Option<i32> {
+    use EventFeedKind::*;
+    let edge = edges.iter().rev().find(|edge| matches!(edge.kind, DecisionSelected | DecisionActivated | DecisionDurationChanged) && edge.days.is_some())?;
+    edge.days.filter(|days| *days > 0).map(|days| edge.hour.saturating_add(days.saturating_mul(24)))
+}
+
+fn decision_status(card: &Card<'_>, states: &HashMap<u128, DecisionLifecycleState>, breaks: &[(i32, i32)], superseded: Option<i32>, hour: i32) -> ScriptStatus {
     use EventFeedKind::*;
     let edges: Vec<&Brief> = card.edges.iter().copied().filter(|edge| edge.at.hour <= hour).collect();
     let ends = [DecisionCompleted, DecisionCancelled, DecisionTimedOut, DecisionRemoved];
     let end = edges.iter().rev().find(|edge| ends.contains(&edge.kind) || edge.kind == DecisionActivated).filter(|edge| ends.contains(&edge.kind));
-    let timer = edges.iter().rev().find(|edge| matches!(edge.kind, DecisionSelected | DecisionActivated | DecisionDurationChanged) && edge.days.is_some()).is_some_and(|edge| edge.days.is_some_and(|days| days > 0));
+    let ends_at = timer_end(&edges);
+    let timer = ends_at.is_some();
     let lifecycle = |edge: &Brief| states.get(&((u128::from(edge.generation) << 64) | u128::from(edge.sequence))).filter(|state| !matches!(state, DecisionLifecycleState::NotApplicable { .. }));
     let state = end.and_then(|edge| lifecycle(edge)).or_else(|| edges.iter().rev().find_map(|edge| lifecycle(edge)));
     let mut status = match end.map(|edge| edge.kind) {
@@ -311,6 +320,9 @@ fn decision_status(card: &Card<'_>, states: &HashMap<u128, DecisionLifecycleStat
         None if timer || edges.iter().any(|edge| matches!(edge.kind, DecisionActivated | DecisionDurationChanged)) => ScriptStatus::Active,
         None => ScriptStatus::Taken,
     };
+    if end.is_none() && !timer && !edges.iter().any(|edge| edge.kind == DecisionSelected) && matches!(state, Some(DecisionLifecycleState::Available)) {
+        return ScriptStatus::Available;
+    }
     match state {
         Some(DecisionLifecycleState::Failed { .. }) => status = ScriptStatus::Failed,
         Some(DecisionLifecycleState::Unsupported { .. }) => status = ScriptStatus::Unsupported,
@@ -318,10 +330,36 @@ fn decision_status(card: &Card<'_>, states: &HashMap<u128, DecisionLifecycleStat
         Some(DecisionLifecycleState::Aborted) if end.is_none() && status == ScriptStatus::Active => status = ScriptStatus::Cancelled,
         _ => {}
     }
-    if status == ScriptStatus::Active && edges.last().is_some_and(|last| break_after(breaks, last.at.hour, hour).is_some()) {
+    let unwitnessed = edges.last().is_some_and(|last| break_after(breaks, last.at.hour, hour).is_some())
+        || superseded.is_some_and(|at| at <= hour)
+        || ends_at.is_some_and(|at| at <= hour);
+    if status == ScriptStatus::Active && unwitnessed {
         status = ScriptStatus::NotRecorded;
     }
     status
+}
+
+fn decision_key<'b>(card: &Card<'b>) -> Option<(u32, &'b str, Option<u32>)> {
+    Some((card.head.slots[0]?, card.head.token.as_deref()?, card.head.slots[1]))
+}
+
+fn superseded<'b>(cards: &[Card<'b>]) -> Vec<Option<i32>> {
+    let mut by_key: HashMap<(u32, &'b str, Option<u32>), Vec<usize>> = HashMap::new();
+    for (at, card) in cards.iter().enumerate() {
+        if card.opened
+            && let Some(key) = decision_key(card)
+        {
+            by_key.entry(key).or_default().push(at);
+        }
+    }
+    let mut out = vec![None; cards.len()];
+    for mut opened in by_key.into_values() {
+        opened.sort_by_key(|&at| (cards[at].head.at.hour, cards[at].head.at.key));
+        for pair in opened.windows(2) {
+            out[pair[0]] = Some(cards[pair[1]].head.at.hour);
+        }
+    }
+    out
 }
 
 fn chosen(edge: &Brief) -> bool {
@@ -360,15 +398,20 @@ fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i
 
 fn decisions(scanned: &Scanned, names: &Names) -> io::Result<Index<Item>> {
     let list = super::cards::List::Decisions;
-    let made = cards(&scanned.briefs, list.openers(), list.continuing())
-        .into_iter()
-        .map(|card| {
+    let found = cards(&scanned.briefs, list.openers(), list.continuing());
+    let later = superseded(&found);
+    let made = found
+        .iter()
+        .zip(later)
+        .map(|(card, later)| {
             let mut candidates: Vec<i32> = card.edges.iter().map(|edge| edge.at.hour).collect();
-            for edge in &card.edges {
+            for (at, edge) in card.edges.iter().enumerate() {
                 candidates.extend(break_hours(&scanned.breaks, edge.at.hour));
+                candidates.extend(timer_end(&card.edges[..=at]));
             }
-            let states = transitions(card.head.at.hour, candidates, |hour| Some(decision_status(&card, &scanned.states, &scanned.breaks, hour)));
-            card_occurrence(&card, card.head, names, states)
+            candidates.extend(later);
+            let states = transitions(card.head.at.hour, candidates, |hour| Some(decision_status(card, &scanned.states, &scanned.breaks, later, hour)));
+            card_occurrence(card, card.head, names, states)
         })
         .collect();
     Index::new(made, scanned.gaps.clone(), &LIVE)
@@ -624,3 +667,6 @@ pub(crate) fn read_events(query: &Query<'_>, locators: &[Locator]) -> io::Result
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests;

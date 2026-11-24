@@ -43,6 +43,7 @@ export interface TimelineLayout extends TimelinePlacement {
 }
 
 export function laneHeight(lane: TimelineLane, compact: boolean): number {
+  if (lane.height !== undefined) return lane.height;
   if (lane.kind === 'heading') return HEADING_LANE_HEIGHT;
   if (lane.kind === 'group') return compact || !lane.subtitle ? LANE_HEIGHT_COMPACT : GROUP_LANE_HEIGHT;
   return lane.subtitle && !compact ? LANE_HEIGHT : LANE_HEIGHT_COMPACT;
@@ -62,7 +63,8 @@ export function placeTimeline(
     ? MIN_LABEL_WIDTH
     : Math.max(MIN_LABEL_WIDTH, Math.min(model.labelWidth, Math.floor(w * 0.38)));
   const plotLeft = labelWidth + PLOT_GAP;
-  const plotRight = Math.max(plotLeft + 24, w - RIGHT_PAD);
+  const outcome = compact ? 0 : Math.min(model.outcomeWidth ?? 0, Math.floor(w * 0.25));
+  const plotRight = Math.max(plotLeft + 24, w - RIGHT_PAD - outcome);
   const lanes: PlacedLane[] = [];
   let y = TOP_PAD;
   const shown = visibleLanes(model.lanes, expanded);
