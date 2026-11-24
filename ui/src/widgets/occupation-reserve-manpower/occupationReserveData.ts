@@ -1,10 +1,5 @@
-import { liveKey } from '../../charts/live.ts';
-import type { LiveValues } from '../../charts/live';
 import type { Run } from '../../charts/series';
-import type { TooltipContent } from '../../charts/tooltip';
-import type { CountryRaceEntry } from '../../charts/race/countryRace';
-import type { Country, OccupationReserveReply, ReserveHistoryReply, ReserveHolder, ReserveSegment } from '../../generated/dashboard';
-
+import type { OccupationReserveReply, ReserveHistoryReply, ReserveSegment } from '../../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const country = (value: unknown) => object(value) && Number.isSafeInteger(value.id) && (value.tag === null || typeof value.tag === 'string' && value.tag.length > 0);
@@ -12,9 +7,11 @@ const integer = (value: unknown) => Number.isSafeInteger(value);
 const warnings = (value: Record<string, unknown>) => Array.isArray(value.warnings) && value.warnings.every(item => typeof item === 'string');
 
 export function validateOccupationReserve(value: unknown): OccupationReserveReply {
-  const ok = object(value) && (value.missing === null || typeof value.missing === 'string') && (value.readHour === null || integer(value.readHour)) && warnings(value)
+  const ok = object(value) && (value.missing === null || typeof value.missing === 'string') && (value.readHour === null || integer(value.readHour))
+    && integer(value.unnamed) && (value.unnamed as number) >= 0 && warnings(value)
     && Array.isArray(value.holders) && value.holders.every(holder => object(holder) && country(holder.country) && typeof holder.admitted === 'boolean'
-      && Array.isArray(holder.entries) && holder.entries.every(entry => object(entry) && integer(entry.ordinal) && country(entry.source)));
+      && integer(holder.total)
+      && Array.isArray(holder.entries) && holder.entries.every(entry => object(entry) && integer(entry.ordinal) && country(entry.source) && integer(entry.amount)));
   if (!ok) throw new Error('The occupation reserve reply is malformed.');
   return value as unknown as OccupationReserveReply;
 }
@@ -31,57 +28,7 @@ export function validateReserveHistory(value: unknown): ReserveHistoryReply {
   return value as unknown as ReserveHistoryReply;
 }
 
-export const reserveStructure = (reply: OccupationReserveReply) => JSON.stringify([reply.missing, reply.holders, reply.warnings]);
-
-export const UNRESOLVED = 'unresolved';
-export const sourceKey = (source: Country) => source.tag ?? UNRESOLVED;
-
-export interface ReadEntry { ordinal: number; source: Country; amount: number | undefined }
-export interface HolderReserve { holder: ReserveHolder; tag: string; entries: ReadEntry[]; positive: number | null; negative: ReadEntry[] }
-
-export function reserveOf(holder: ReserveHolder, values: LiveValues<number>): HolderReserve {
-  const entries = holder.entries.map(entry => ({ ...entry, amount: values.get(liveKey(`${holder.country.id}:${entry.ordinal}`, 'amount')) }));
-  const unread = entries.some(entry => entry.amount === undefined);
-  return { holder, tag: holder.country.tag ?? `#${holder.country.id}`, entries,
-    positive: unread ? null : entries.reduce((sum, entry) => sum + Math.max(0, entry.amount!), 0),
-    negative: entries.filter(entry => entry.amount !== undefined && entry.amount < 0) };
-}
-
-export function sourceParts(reserve: HolderReserve): { source: string; amount: number }[] {
-  const by = new Map<string, number>();
-  for (const entry of reserve.entries) if (entry.amount !== undefined && entry.amount > 0) by.set(sourceKey(entry.source), (by.get(sourceKey(entry.source)) ?? 0) + entry.amount);
-  return [...by].map(([source, amount]) => ({ source, amount })).sort((a, b) => b.amount - a.amount || a.source.localeCompare(b.source));
-}
-
-export function raceHolders(reply: OccupationReserveReply, candidate: (tag: string) => boolean, top = false): ReserveHolder[] {
-  const held = reply.holders.filter(holder => holder.country.tag !== null && (holder.admitted || holder.entries.length > 0) && candidate(holder.country.tag));
-  return held.some(holder => holder.entries.length > 0) ? top ? held.filter(holder => holder.entries.length > 0) : held : [];
-}
-
-export function raceEntries(holders: readonly ReserveHolder[], values: LiveValues<number>, top: number | null,
-  colour: (source: string) => string, hour: number): CountryRaceEntry[] {
-  const reserves = holders.map(holder => reserveOf(holder, values)).filter(reserve => top === null || reserve.positive !== 0);
-  reserves.sort((a, b) => (b.positive ?? -1) - (a.positive ?? -1) || a.tag.localeCompare(b.tag));
-  const shown = top === null ? reserves : reserves.slice(0, Math.max(0, top));
-  return shown.map(reserve => ({ tag: reserve.tag, hour, value: reserve.positive ?? 0, label: reserve.positive === null ? 'Not read' : persons(reserve.positive), stretch: null,
-    parts: sourceParts(reserve).map(part => ({ id: part.source, value: part.amount, color: colour(part.source) })) }));
-}
-
 export const persons = (value: number) => value.toLocaleString('en-US');
-
-export function holderTooltip(reserve: HolderReserve, name: string, sourceName: (source: Country) => string, sourceColour: (source: string) => string,
-  read: string | null): TooltipContent {
-  const positive = reserve.entries.filter(entry => entry.amount === undefined || entry.amount >= 0);
-  return {
-    title: name, scrollable: true, scrollId: String(reserve.holder.country.id),
-    rows: [
-      { label: 'Reserve manpower held', value: reserve.positive === null ? 'Not read' : persons(reserve.positive) },
-      ...positive.map(entry => ({ label: sourceName(entry.source), swatch: sourceColour(sourceKey(entry.source)), value: entry.amount === undefined ? 'Not read' : persons(entry.amount), indent: true })),
-      ...reserve.negative.length ? [{ label: 'Negative entries' }, ...reserve.negative.map(entry => ({ label: sourceName(entry.source), value: persons(entry.amount!), indent: true }))] : [],
-      ...read ? [{ label: 'As of', value: read }] : [],
-    ],
-  };
-}
 
 export function sourceTagAt(history: ReserveHistoryReply, source: number, hour: number): string | null {
   const tags = history.sources.find(item => item.id === source)?.tags ?? [];

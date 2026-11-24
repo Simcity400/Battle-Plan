@@ -30,6 +30,7 @@ dashboard_base::register_hourly_products! {
     ARMY_LOSSES_ARMYLOSSES => crate::products::army_losses::ArmyLosses,
     FORCES_AIRFORCEAT => crate::products::forces::AirForceAt,
     FORCES_NAVYAT => crate::products::forces::NavyAt,
+    ARMY_ARMYAT => crate::products::army::ArmyAt,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};
@@ -42,3 +43,4 @@ type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, St
 pub const EXACT_DOCTRINEMASTERY: ExactPanel = exact_panel::<crate::products::doctrine_mastery::DoctrineMastery>;
 pub const EXACT_AIRFORCEAT: ExactPanel = exact_panel::<crate::products::forces::AirForceAt>;
 pub const EXACT_NAVYAT: ExactPanel = exact_panel::<crate::products::forces::NavyAt>;
+pub const EXACT_ARMYAT: ExactPanel = exact_panel::<crate::products::army::ArmyAt>;

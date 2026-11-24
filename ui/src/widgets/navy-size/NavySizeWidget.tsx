@@ -11,6 +11,7 @@ import type { InstalledAction } from '../../families/plan.ts';
 import { OPTIONS } from './definition';
 import { formatHullTick, formatNavyValue, navyChartOptions, navyRequest, navyTotals } from './navyData';
 import NavyManagement from './NavyManagement';
+import { navySizeMixDeclaration } from './navySizeMixProjection.ts';
 import { navySizeRaceDeclaration } from './navySizeRaceProjection.ts';
 
 const config: PartsRaceViewConfig = {
@@ -31,10 +32,10 @@ export default function NavySizeWidget(props: WidgetProps) {
   const { widget, runtime, active } = props;
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.view === 'lines' ? 'lines' : options.view === 'mix' ? 'mix' : 'race';
-  const isBarsRace = view === 'race' && options.show !== 'breakdown';
+  const isBarsFamily = (view === 'race' || view === 'mix') && options.show !== 'breakdown';
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
-  const gate = useGate(runtime, widget, SPEC, active && isBarsRace);
+  const gate = useGate(runtime, widget, SPEC, active && isBarsFamily);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
 
   const onActivate = useCallback((action: InstalledAction) => {
@@ -44,14 +45,14 @@ export default function NavySizeWidget(props: WidgetProps) {
     setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
   }, [gate]);
 
-  if (isBarsRace) {
+  if (isBarsFamily) {
     return (
       <div ref={anchorRef} className="fh-frame">
         <DeclaredFamilyWidget
           {...props}
           adapter={barsHostAdapter}
-          view="race"
-          declaration={navySizeRaceDeclaration}
+          view={view}
+          declaration={view === 'mix' ? navySizeMixDeclaration : navySizeRaceDeclaration}
           selectedKey={detail?.key ?? null}
           onActivate={onActivate}
         />

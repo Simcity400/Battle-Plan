@@ -205,7 +205,7 @@ fn navy_race(measure: NavyMeasure, ownership: NavyOwnership) -> Race {
     Race { totals: "navy-totals", total, reference: Some(reference), parts: "navy-classes", part, ownership_shift: 32, ownership: owner }
 }
 
-fn validate_selection(branch_id: &str, tags: &[Country], top: Option<usize>) -> Result<(), &'static str> {
+pub(crate) fn validate_selection(branch_id: &str, tags: &[Country], top: Option<usize>) -> Result<(), &'static str> {
     if branch_id.parse::<u64>().is_err() {
         return Err("Invalid branch");
     }
@@ -300,13 +300,13 @@ struct Asked<'a> {
 }
 
 #[derive(Default)]
-struct Named {
-    parts: Vec<ForcePart>,
-    of: HashMap<u128, usize>,
+pub(crate) struct Named {
+    pub(crate) parts: Vec<ForcePart>,
+    pub(crate) of: HashMap<u128, usize>,
 }
 
 impl Named {
-    fn group(resolved: BTreeMap<u128, ForcePart>) -> Self {
+    pub(crate) fn group(resolved: BTreeMap<u128, ForcePart>) -> Self {
         let mut keys: BTreeMap<String, ForcePart> = BTreeMap::new();
         for part in resolved.values() {
             keys.entry(part.key.clone()).or_insert_with(|| part.clone());
@@ -817,5 +817,5 @@ fn navy_classes(recording: &Recording, met: &BTreeMap<u128, (u32, i32)>, content
 
 #[cfg(test)]
 mod tests;
-mod at_hour;
+pub(crate) mod at_hour;
 pub use at_hour::{AirForceAt, AirForceAtParams, ForceAtReply, ForceAtRow, NavyAt, NavyAtParams};
