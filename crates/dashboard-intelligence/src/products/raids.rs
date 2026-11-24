@@ -1114,6 +1114,9 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
     let mut key_counts: HashMap<u128, usize> = HashMap::new();
     let mut keyed: Vec<(i32, u128, usize, RaidEpisode)> = Vec::with_capacity(accumulated.len());
     for (order, acc) in accumulated.into_iter().enumerate() {
+        let count = key_counts.entry(acc.key).or_insert(0);
+        *count += 1;
+        let id = if *count == 1 { acc.key.to_string() } else { format!("{}#{}", acc.key, *count) };
         if acc.last_hour < from || acc.first_hour > to {
             continue;
         }
@@ -1210,9 +1213,6 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
         if raider.is_none() {
             warnings.insert("Some raids' raiders are not named: their country holds no tag at the raid's hour.".into());
         }
-        let count = key_counts.entry(acc.key).or_insert(0);
-        *count += 1;
-        let id = if *count == 1 { acc.key.to_string() } else { format!("{}#{}", acc.key, *count) };
         let episode = RaidEpisode {
             id,
             first_hour,

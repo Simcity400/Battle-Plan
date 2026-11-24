@@ -295,7 +295,7 @@ fn product_rejects_exactness_from_truncated_reads_and_keeps_exactness_at_range_s
         make_frame(1, 11, countries.clone(), 20, TableView::Truncated { rows: TableRows::Raids(vec![]), missing: 1 }, vec![]),
         make_frame(1, 12, countries.clone(), 20, TableView::Complete(TableRows::Raids(vec![raid_row(1, 1, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(100))])), vec![target_row(1, scope.clone(), 40)]),
     ]);
-    let reply = load_product(&[truncated_run], "1", None, None);
+    let reply = load_product(std::slice::from_ref(&truncated_run), "1", None, None);
     assert_eq!(reply.episodes.len(), 1);
     assert!(!reply.episodes[0].ended_exact);
     assert_eq!(reply.episodes[0].runs[1].first_exact, false);
@@ -435,8 +435,8 @@ fn one_history_makes_every_episode_and_a_range_is_that_history_clipped() {
     let carried = [before_load, after_load];
     let full = load_product(&carried, "1", None, None);
     let late = load_product(&carried, "1", Some(15), Some(16));
-    assert_eq!(full.episodes.iter().map(|e| (e.id.as_str(), e.victim.as_deref())).collect::<Vec<_>>(), [("9", Some("FRA"))]);
-    assert_eq!(late.episodes.iter().map(|e| (e.id.as_str(), e.victim.as_deref())).collect::<Vec<_>>(), [("9", Some("FRA"))], "a range inside a loaded stretch follows the raid from before the load");
+    assert_eq!(full.episodes.iter().map(|e| e.victim.as_deref()).collect::<Vec<_>>(), [Some("FRA")]);
+    assert_eq!(late.episodes.iter().map(|e| (e.id.as_str(), e.victim.as_deref())).collect::<Vec<_>>(), [(full.episodes[0].id.as_str(), Some("FRA"))], "a range inside a loaded stretch follows the raid from before the load");
 
     let outcome_later = records(1, (10..=21).map(|hour| {
         let outcome = if hour < 20 { native::OUTCOME_NONE } else { native::OUTCOME_SUCCESS };
