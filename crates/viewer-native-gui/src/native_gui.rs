@@ -3922,7 +3922,7 @@ impl Walk<'_> {
             },
             None => info,
         };
-        if element.kind == Kind::Button
+        if element.kind != Kind::Checkbox
             && let Some(button) = button
             && button.size[0] > 0
             && button.size[1] > 0

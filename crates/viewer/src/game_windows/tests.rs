@@ -33,15 +33,43 @@ PixelShader = {
         return Base_Texture.Sample(Base_Sampler, v.uv) * tint;
     } ]]
 }
-BlendState AlphaBlend {
+BlendState BlendState {
     BlendEnable = yes
-    SourceBlend = "SRC_ALPHA"
-    DestBlend = "INV_SRC_ALPHA"
+    SourceBlend = src_alpha
+    DestBlend = inv_src_alpha
 }
-Effect Up { VertexShader = V PixelShader = P BlendState = AlphaBlend }
-Effect Down { VertexShader = V PixelShader = P BlendState = AlphaBlend }
-Effect Over { VertexShader = V PixelShader = P BlendState = AlphaBlend }
-Effect Disable { VertexShader = V PixelShader = P BlendState = AlphaBlend }
+Effect Up { VertexShader = V PixelShader = P }
+Effect Down { VertexShader = V PixelShader = P }
+Effect Over { VertexShader = V PixelShader = P }
+Effect Disable { VertexShader = V PixelShader = P }
+"#;
+
+const SYNTHETIC_OPAQUE_SHADER: &str = r#"
+VertexStruct In {
+    float3 at : POSITION;
+    float2 uv : TEXCOORD0;
+};
+VertexStruct Out {
+    float4 at : SV_POSITION;
+    float2 uv : TEXCOORD0;
+};
+ConstantBuffer(0, 0) {
+    float4x4 world;
+    float4 tint;
+    float4 offset;
+};
+VertexShader = { MainCode V [[ Out main(In v) {
+    Out o; o.at = mul(world, float4(v.at, 1)); o.uv = v.uv + offset.xy; return o;
+} ]] }
+PixelShader = {
+    Samplers = {
+        Base = { Index = 0 }
+    }
+    MainCode P [[ float4 main(Out v) : SV_TARGET {
+        return Base_Texture.Sample(Base_Sampler, v.uv) * tint;
+    } ]]
+}
+Effect Up { VertexShader = V PixelShader = P }
 "#;
 
 fn make_tga_rgba8(width: u16, height: u16, rgba: &[u8]) -> Vec<u8> {
@@ -307,115 +335,205 @@ fn oversized_surface_is_refused_without_clamping() {
     assert!(err.to_string().contains("4096"));
 }
 
-#[test]
-fn service_renders_mod_only_window_with_straight_alpha_trim_and_refusals() {
-    content_reader_script::test_game::enter();
-    let root_dir = std::env::temp_dir().join(format!(
-        "battleplan-game-window-mod-test-{}",
-        uuid::Uuid::new_v4()
-    ));
-    fs::create_dir_all(root_dir.join("gfx/FX")).unwrap();
-    fs::create_dir_all(root_dir.join("gfx/ui")).unwrap();
-    fs::create_dir_all(root_dir.join("interface")).unwrap();
-    fs::create_dir_all(root_dir.join("localisation/english")).unwrap();
+struct SyntheticModFixture {
+    root_dir: PathBuf,
+    layers: ResolvedLayers,
+}
 
-    fs::write(root_dir.join("gfx/FX/defines_hlsl_dx11.fxh"), b"").unwrap();
-    fs::write(
-        root_dir.join("gfx/FX/buttonstate.lua"),
-        SYNTHETIC_BUTTON_SHADER.as_bytes(),
-    )
-    .unwrap();
-    fs::write(
-        root_dir.join("gfx/FX/text.lua"),
-        SYNTHETIC_BUTTON_SHADER.as_bytes(),
-    )
-    .unwrap();
+impl SyntheticModFixture {
+    fn create(button_shader: &str) -> Self {
+        content_reader_script::test_game::enter();
+        let root_dir = std::env::temp_dir().join(format!(
+            "battleplan-game-window-mod-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(root_dir.join("gfx/FX")).unwrap();
+        fs::create_dir_all(root_dir.join("gfx/ui")).unwrap();
+        fs::create_dir_all(root_dir.join("interface")).unwrap();
+        fs::create_dir_all(root_dir.join("localisation/english")).unwrap();
 
-    let tex_w: usize = 24;
-    let tex_h: usize = 16;
-    let mut tex_rgba = vec![0u8; tex_w * tex_h * 4];
-    for y in 2..14 {
-        for x in 2..22 {
-            let idx = (y * tex_w + x) * 4;
-            if x == 2 && y == 2 {
-                tex_rgba[idx..idx + 4].copy_from_slice(&[0, 0, 0, 0]);
-            } else if x == 2 || x == 21 || y == 2 || y == 13 {
-                tex_rgba[idx..idx + 4].copy_from_slice(&[200, 100, 50, 128]);
-            } else {
-                tex_rgba[idx..idx + 4].copy_from_slice(&[220, 110, 40, 255]);
+        fs::write(root_dir.join("gfx/FX/defines_hlsl_dx11.fxh"), b"").unwrap();
+        for path in [
+            "gfx/FX/buttonstate.shader",
+            "gfx/FX/buttonstate.lua",
+            "gfx/FX/text.shader",
+            "gfx/FX/text.lua",
+        ] {
+            fs::write(root_dir.join(path), button_shader.as_bytes()).unwrap();
+        }
+
+        let tex_w: usize = 24;
+        let tex_h: usize = 16;
+        let mut tex_rgba = vec![0u8; tex_w * tex_h * 4];
+        for y in 2..14 {
+            for x in 2..22 {
+                let idx = (y * tex_w + x) * 4;
+                if x == 2 && y == 2 {
+                    tex_rgba[idx..idx + 4].copy_from_slice(&[0, 0, 0, 0]);
+                } else if x == 2 || x == 21 || y == 2 || y == 13 {
+                    tex_rgba[idx..idx + 4].copy_from_slice(&[200, 100, 50, 128]);
+                } else {
+                    tex_rgba[idx..idx + 4].copy_from_slice(&[220, 110, 40, 255]);
+                }
             }
         }
+        fs::write(
+            root_dir.join("gfx/ui/plate.tga"),
+            make_tga_rgba8(tex_w as u16, tex_h as u16, &tex_rgba),
+        )
+        .unwrap();
+
+        fs::write(
+            root_dir.join("interface/mod_sprites.gfx"),
+            br#"spriteTypes = {
+                spriteType = {
+                    name = "GFX_mod_plate"
+                    texturefile = "gfx/ui/plate.tga"
+                }
+                spriteType = {
+                    name = "GFX_mod_missing"
+                    texturefile = "gfx/ui/does_not_exist.tga"
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            root_dir.join("interface/mod_window.gui"),
+            br#"guiTypes = {
+                containerWindowType = {
+                    name = "mod_only_panel"
+                    position = { x = 10 y = 10 }
+                    size = { width = 24 height = 16 }
+                    buttonType = {
+                        name = "close_button"
+                        position = { x = 0 y = 0 }
+                        spriteType = "GFX_mod_plate"
+                        pdx_tooltip = "MOD_CLOSE"
+                    }
+                }
+                containerWindowType = {
+                    name = "mod_blank_panel"
+                    position = { x = 0 y = 0 }
+                    size = { width = 20 height = 20 }
+                    iconType = {
+                        name = "missing_art"
+                        position = { x = 0 y = 0 }
+                        spriteType = "GFX_mod_missing"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            root_dir.join("localisation/english/mod_l_english.yml"),
+            "\u{feff}l_english:\n MOD_CLOSE:0 \"Close Mod Panel\"\n".as_bytes(),
+        )
+        .unwrap();
+
+        let layers = ResolvedLayers::from_folders(&[(&root_dir, &[][..])]).unwrap();
+        Self { root_dir, layers }
     }
-    fs::write(
-        root_dir.join("gfx/ui/plate.tga"),
-        make_tga_rgba8(tex_w as u16, tex_h as u16, &tex_rgba),
-    )
-    .unwrap();
 
-    fs::write(
-        root_dir.join("interface/mod_sprites.gfx"),
-        br#"spriteTypes = {
-            spriteType = {
-                name = "GFX_mod_plate"
-                texturefile = "gfx/ui/plate.tga"
-            }
-            spriteType = {
-                name = "GFX_mod_missing"
-                texturefile = "gfx/ui/does_not_exist.tga"
-            }
-        }"#,
-    )
-    .unwrap();
-    fs::write(
-        root_dir.join("interface/mod_window.gui"),
-        br#"guiTypes = {
-            containerWindowType = {
-                name = "mod_only_panel"
-                position = { x = 10 y = 10 }
-                size = { width = 24 height = 16 }
-                buttonType = {
-                    name = "close_button"
-                    position = { x = 0 y = 0 }
-                    spriteType = "GFX_mod_plate"
-                    pdx_tooltip = "MOD_CLOSE"
-                }
-            }
-            containerWindowType = {
-                name = "mod_blank_panel"
-                position = { x = 0 y = 0 }
-                size = { width = 20 height = 20 }
-                iconType = {
-                    name = "missing_art"
-                    position = { x = 0 y = 0 }
-                    spriteType = "GFX_mod_missing"
-                }
-            }
-        }"#,
-    )
-    .unwrap();
-    fs::write(
-        root_dir.join("localisation/english/mod_l_english.yml"),
-        "\u{feff}l_english:\n MOD_CLOSE:0 \"Close Mod Panel\"\n".as_bytes(),
-    )
-    .unwrap();
+    fn key(&self, window: &str) -> WindowCacheKey {
+        cache_key(
+            "mod-src",
+            "rev-1",
+            &self.root_dir.to_string_lossy(),
+            "",
+            "",
+            "english",
+            window,
+        )
+    }
+}
 
-    let layers = ResolvedLayers::from_folders(&[(&root_dir, &[][..])]).unwrap();
+impl Drop for SyntheticModFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root_dir);
+    }
+}
+
+#[test]
+fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
+    let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
     let service = Service::default();
     let cancel = AtomicBool::new(false);
-    let key = cache_key(
-        "mod-src",
-        "rev-1",
-        &root_dir.to_string_lossy(),
-        "",
-        "",
-        "english",
-        "mod_only_panel",
-    );
+
+    let shared = SharedInterface::load(&fixture.layers, DEFAULT_VIEWPORT, Some("english")).unwrap();
+    assert!(shared.guis.template(b"mod_only_panel").is_some());
+    assert!(shared.guis.template(b"unit_counter_navy").is_none());
+
+    let missing_err = service
+        .render_window_from_layers(
+            fixture.key("custom_mod_missing_window"),
+            &fixture.layers,
+            "custom_mod_missing_window",
+            &Assets::default(),
+            1.0,
+            Some(0),
+            true,
+            &[],
+            &BTreeMap::new(),
+            Vec::new(),
+            &cancel,
+            |_, _, _| {},
+        )
+        .err()
+        .unwrap();
+    assert!(matches!(missing_err, GameWindowError::Refused(_)));
+    assert!(missing_err.to_string().contains("custom_mod_missing_window"));
+
+    let blank_err = service
+        .render_window_from_layers(
+            fixture.key("mod_blank_panel"),
+            &fixture.layers,
+            "mod_blank_panel",
+            &Assets::default(),
+            1.0,
+            Some(0),
+            true,
+            &[],
+            &BTreeMap::new(),
+            Vec::new(),
+            &cancel,
+            |_, _, _| {},
+        )
+        .err()
+        .unwrap();
+    assert!(matches!(blank_err, GameWindowError::Refused(_)));
+
+    let cancelled = AtomicBool::new(true);
+    let cancel_err = service
+        .render_window_from_layers(
+            fixture.key("mod_only_panel"),
+            &fixture.layers,
+            "mod_only_panel",
+            &Assets::default(),
+            1.0,
+            Some(0),
+            true,
+            &[],
+            &BTreeMap::new(),
+            Vec::new(),
+            &cancelled,
+            |_, _, _| {},
+        )
+        .err()
+        .unwrap();
+    assert_eq!(cancel_err, GameWindowError::Cancelled);
+}
+
+#[test]
+fn service_renders_straight_alpha_translucent_edges_and_trims_transparent_border() {
+    let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
+    let service = Service::default();
+    let cancel = AtomicBool::new(false);
+    let key = fixture.key("mod_only_panel");
 
     let rendered = service
         .render_window_from_layers(
             key.clone(),
-            &layers,
+            &fixture.layers,
             "mod_only_panel",
             &Assets::default(),
             1.0,
@@ -451,7 +569,10 @@ fn service_renders_mod_only_window_with_straight_alpha_trim_and_refusals() {
     assert!((i16::from(center[2]) - 40).abs() <= 2, "{center:?}");
 
     let edge = px(10, 0);
-    assert!(edge[3] > 110 && edge[3] < 145, "translucent alpha lost: {edge:?}");
+    assert!(
+        edge[3] > 110 && edge[3] < 145,
+        "translucent alpha lost: {edge:?}"
+    );
     assert!(
         (i16::from(edge[0]) - 200).abs() <= 8
             && (i16::from(edge[1]) - 100).abs() <= 8
@@ -462,8 +583,8 @@ fn service_renders_mod_only_window_with_straight_alpha_trim_and_refusals() {
 
     let rendered_15 = service
         .render_window_from_layers(
-            key.clone(),
-            &layers,
+            key,
+            &fixture.layers,
             "mod_only_panel",
             &Assets::default(),
             1.5,
@@ -479,56 +600,20 @@ fn service_renders_mod_only_window_with_straight_alpha_trim_and_refusals() {
     assert_eq!(rendered_15.logical_size, [20, 12]);
     assert_eq!(rendered_15.pixel_size, [30, 18]);
 
-    let missing_err = service
-        .render_window_from_layers(
-            WindowCacheKey {
-                window: "custom_mod_missing_window".into(),
-                ..key.clone()
-            },
-            &layers,
-            "custom_mod_missing_window",
-            &Assets::default(),
-            1.0,
-            Some(0),
-            true,
-            &[],
-            &BTreeMap::new(),
-            Vec::new(),
-            &cancel,
-            |_, _, _| {},
-        )
-        .err()
-        .unwrap();
-    assert!(matches!(missing_err, GameWindowError::Refused(_)));
-    assert!(missing_err.to_string().contains("custom_mod_missing_window"));
+    assert_eq!(service.cache_len(), 1);
+    service.evict_source("mod-src");
+    assert_eq!(service.cache_len(), 0);
+}
 
-    let blank_err = service
+#[test]
+fn service_refuses_non_blended_shader_in_layer_mode() {
+    let fixture = SyntheticModFixture::create(SYNTHETIC_OPAQUE_SHADER);
+    let service = Service::default();
+    let cancel = AtomicBool::new(false);
+    let err = service
         .render_window_from_layers(
-            WindowCacheKey {
-                window: "mod_blank_panel".into(),
-                ..key.clone()
-            },
-            &layers,
-            "mod_blank_panel",
-            &Assets::default(),
-            1.0,
-            Some(0),
-            true,
-            &[],
-            &BTreeMap::new(),
-            Vec::new(),
-            &cancel,
-            |_, _, _| {},
-        )
-        .err()
-        .unwrap();
-    assert!(matches!(blank_err, GameWindowError::Refused(_)));
-
-    let cancelled = AtomicBool::new(true);
-    let cancel_err = service
-        .render_window_from_layers(
-            key,
-            &layers,
+            fixture.key("mod_only_panel"),
+            &fixture.layers,
             "mod_only_panel",
             &Assets::default(),
             1.0,
@@ -537,18 +622,13 @@ fn service_renders_mod_only_window_with_straight_alpha_trim_and_refusals() {
             &[],
             &BTreeMap::new(),
             Vec::new(),
-            &cancelled,
+            &cancel,
             |_, _, _| {},
         )
         .err()
         .unwrap();
-    assert_eq!(cancel_err, GameWindowError::Cancelled);
-
-    assert_eq!(service.cache_len(), 1);
-    service.evict_source("mod-src");
-    assert_eq!(service.cache_len(), 0);
-
-    let _ = fs::remove_dir_all(&root_dir);
+    assert!(matches!(err, GameWindowError::Failed(_)));
+    assert!(err.to_string().contains("refused draws"));
 }
 
 fn decode_base64_for_test(input: &str) -> Vec<u8> {
