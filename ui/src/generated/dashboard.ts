@@ -1649,6 +1649,12 @@ export type MissionShips = { "kind": "counted", ships: number, } | { "kind": "no
 export type SupremacyLegendItem = { id: string, label: string, control: number, };
 export type UnknownDays = { firstDay: number, lastDay: number, reason: string, };
 export type SeaRegionChoice = { id: string, name: string, };
+export type NoRegions = { "kind": "filtered", hidden: number, outside: number, } | { "kind": "unread", reason: string, } | { "kind": "none" };
+export type ActiveRegions = { ids: Array<number>,
+/**
+ * Why the active regions at the hour are not all known; `ids` then holds only the witnessed ones.
+ */
+missing: string | null, };
 export type NavalSupremacyReply = { firstHour: number, lastHour: number,
 /**
  * The last hour through which nothing this reply shows changes: read beside the reply, never among its rows.
@@ -1661,7 +1667,11 @@ firstDayHour: number, dayHours: number, days: number, unknown: Array<UnknownDays
 /**
  * Why the most active regions are not a proven rank at the asked hour: its day, or a region's score on it, is not recorded. A top then lists only the pinned regions.
  */
-rankMissing: string | null, scale: number, warnings: Array<string>, };
+rankMissing: string | null,
+/**
+ * Why no region is listed in the ranked view; set only when `regions` is empty.
+ */
+empty: NoRegions | null, activeUnlisted: ActiveRegions, scale: number, warnings: Array<string>, };
 export type LeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type LeaderPortrait = { reference: string, image: string | null, missing: string | null, resolution: ArtResolution, };
 export type LeaderPortraitsReply = { portraits: Array<LeaderPortrait>, warnings: Array<string>, };
@@ -2278,6 +2288,10 @@ unheld: Array<HourSpan>, gaps: Array<HourSpan>, regions: Array<ConvoyRegion>,
  * Why the most strained regions are not a proven rank at the asked hour: the regions' convoy state there is not recorded. A top then lists only the pinned regions.
  */
 rankMissing: string | null,
+/**
+ * Why no region is listed in the ranked regions view; set only when `regions` is empty.
+ */
+empty: NoRegions | null, activeUnlisted: ActiveRegions,
 /**
  * With `every`: the cells of a region without a convoy efficiency.
  */
@@ -4069,7 +4083,7 @@ rankMissing: string | null,
 /**
  * Why no row is listed; set only when `rows` is empty.
  */
-empty: NoRegions | null,
+empty: NoRegions | null, activeUnlisted: ActiveRegions,
 /**
  * With `every`: the days of a region without a score, as runs.
  */
@@ -5555,12 +5569,11 @@ pinned: boolean,
  */
 missing: string | null, };
 export type UnknownRegion = { region: number, unknownOwners: number, };
-export type NoRegions = { "kind": "filtered", hidden: number, outside: number, } | { "kind": "unread", reason: string, } | { "kind": "none" };
 export type MinefieldsReply = { regions: Array<MinedRegion>, unknown: Array<UnknownRegion>,
 /**
  * Why no region is listed; set only when `regions` is empty.
  */
-empty: NoRegions | null, scale: number, warnings: Array<string>, };
+empty: NoRegions | null, activeUnlisted: ActiveRegions, scale: number, warnings: Array<string>, };
 export type MinefieldsParamsAtHour = MinefieldsParams & { hour: number };
 export type NavalYardsParams = { branchId: string, country: CountryRef, };
 export type YardShip = { handle: string, name: string | null, nameRebuilt: string | null, design: string | null, class: string | null,
@@ -6721,7 +6734,7 @@ unlisted: string | null,
 /**
  * Why the comparison lists no region; set only when it is shown and `regions` is empty.
  */
-empty: NoRegions | null,
+empty: NoRegions | null, activeUnlisted: ActiveRegions,
 /**
  * The comparison of a region no country scores in.
  */

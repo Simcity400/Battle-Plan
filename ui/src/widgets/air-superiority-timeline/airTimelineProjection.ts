@@ -343,7 +343,7 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     playhead: through,
     gaps: [...gaps.values()],
     rows,
-    regions: regionLanes(subject),
+    regions: { ...regionLanes(subject), active: now.activeUnlisted },
     readoutWidth: LANE_READOUT_MAX_WIDTH,
     inspect: (rowIndex, at) => {
       const own = pieces[rowIndex];
