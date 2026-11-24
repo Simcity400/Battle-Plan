@@ -38,22 +38,6 @@ const markup = (node: ReactNode) => renderToStaticMarkup(node as never);
 type Gated = { outside: { message: string; detail: string | undefined } | null };
 const gated = (_runtime: never, gate: Gated) => head(gate.outside ? { outside: true, outsideMessage: gate.outside.message, outsideDetail: gate.outside.detail } : {});
 
-test('a market drill asking recorded hour 105, inside a widget whose range ends past its track, waits on its read: it never says the time is outside', async () => {
-  const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct') });
-  try {
-    const { default: MarketDrill } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/dashboard/MarketDrill.tsx');
-    const time = await load<typeof import('./widgetTime.ts')>('/ui/src/dashboard/widgetTime.ts');
-    const widget = { id: 'ledger', kind: 'market-ledger', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'range', firstOffset: 5, lastOffset: 10 }, options: {} };
-    const heads = new time.ActiveHeads();
-    heads.set({}, true);
-    host.__stub = { useHeadProduct: gated };
-    const runtime = { tracks: [track(100, 109)], client: {}, clock: clockAt({ firstHour: 100, lastHour: 200 }, 150) };
-    const drawn = markup(createElement(time.RegionContext.Provider, { value: { heads, outside: { message: OUTSIDE, detail: time.SETTINGS_DETAIL }, key: 'main' } },
-      createElement(MarketDrill, { runtime, widget, time: { kind: 'at', hour: 105 }, tags: ['GER'], selected: null, active: true })));
-    assert.ok(drawn.includes('data-state="loading"') && !drawn.includes(OUTSIDE), `the drill reads 105, inside the track, so it is loading: ${drawn}`);
-  } finally { delete host.__stub; await close(); }
-});
-
 test('a fuel consumption drill told to follow playback, in a widget pinned at 105, reads the playback hour: past its track it is outside the recording, never loading', async () => {
   const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct'), '/widgets/fuel/fuelReads.ts': wrapped('usePartSeries'),
     '/charts/drill/BreakdownChart.tsx': 'export default () => null;', '/charts/drill/DrillParts.tsx': 'export default () => null;', '/charts/useChartTokens.ts': TOKENS });

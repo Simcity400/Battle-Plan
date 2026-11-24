@@ -6,7 +6,7 @@ import type { TableWidgetDeclaration } from '../../families/table/declaration.ts
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { artKindCell } from '../../families/table/identityCell.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
@@ -71,7 +71,7 @@ function funds(value: Value): Value {
   return units === 0n ? zeroValue(0n) : knownValue(units);
 }
 
-export const organisationsProjection: TableProjection<OrganisationsProjectionOptions> = registerTableProjection({
+export const organisationsProjection: TableProjection<OrganisationsProjectionOptions> = registerFamilyProjection({
   kind: 'industrial-organisations',
   family: 'table',
   project(readView, options): TableModel {

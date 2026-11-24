@@ -143,7 +143,12 @@ test('research timeline projects slot lanes clipped to the playhead, with covera
   assert.deepEqual(model.lanes.map(l => l.label), ['Slot 1', 'Slot 2']);
   assert.equal(model.lanes[0]!.openedMarker, undefined, 'slot open at coverage start carries no opened marker');
   assert.deepEqual(model.lanes[1]!.openedMarker, { hour: day(100), label: 'opened' }, 'slot opening inside recorded coverage carries opened marker');
-  assert.deepEqual(model.legend?.map(entry => entry.label), ['Completed', 'In progress', 'Idle', 'Not recorded']);
+  assert.deepEqual(model.legend?.map(entry => [entry.label, entry.swatch ?? null]), [
+    ['Completed', 'square'],
+    ['In progress', 'square'],
+    ['Idle', null],
+    ['Not recorded', null],
+  ]);
   assert.equal(model.summaryText, '2 completed');
   assert.deepEqual(model.unobserved, [{ firstHour: day(60) + 1, lastHour: day(80) - 1 }]);
   assert.deepEqual(model.notes, ['Head: 1 in progress · Improved Submarine 81%, 29 days left']);

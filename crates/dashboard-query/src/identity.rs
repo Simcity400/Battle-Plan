@@ -161,6 +161,16 @@ impl Holders {
         }
     }
 
+    pub fn slot_at(&self, country: &Country, hour: i32) -> Option<u32> {
+        match country {
+            Country::Slot(slot) => Some(*slot),
+            Country::Tag(_) => match self.at(country, hour)?.holder {
+                Holder::Found { slot, .. } => Some(slot),
+                Holder::Unresolved => None,
+            },
+        }
+    }
+
     pub fn goes_by(&self, country: &Country, tag: &str, hour: i32) -> bool {
         match country {
             Country::Tag(chosen) => chosen == tag,
