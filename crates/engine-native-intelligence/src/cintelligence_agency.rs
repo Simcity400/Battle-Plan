@@ -246,71 +246,176 @@ pub fn walk_captured_operatives_buffer(
 ) -> Outcome {
     use crate::{ccaptured_operative_reference as captured, coperative_leader};
     use engine_native_parts::creference_registry;
+    const BATCH: usize = 64;
+    const COUNTRY_AGENCY_FIELDS: [RecordField; 1] =
+        packed_fields([(ccountry::INTELLIGENCE_AGENCY, 8)]);
+    const COUNTRY_AGENCY_LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&COUNTRY_AGENCY_FIELDS, 8).unwrap();
+    const CAPTURED_AGENCY_FIELDS: [RecordField; 3] =
+        packed_fields([(0, 8), (OWNER_COUNTRY, 8), (CAPTURED_OPERATIVE_REFERENCES, 16)]);
+    const CAPTURED_AGENCY_LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&CAPTURED_AGENCY_FIELDS, 32).unwrap();
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let expected_agency = engine_sites::at(base, VTABLE_RVA).map(|v| v as u64);
         let (mut len, mut unread_rows) = (0_usize, 0_u32);
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
-            };
-            let Some(agency) = root(memory, base, country)? else {
-                continue;
-            };
-            let array = Array::read(
-                memory,
-                at(agency, CAPTURED_OPERATIVE_REFERENCES)?,
-                captured::STRIDE,
-            )
-            .ok_or("captured operative roster unreadable or invalid")?;
-            output.ensure(
-                len.checked_add(array.count as usize)
-                    .ok_or("captured operative row demand overflow")?,
-            )?;
-            for ordinal in 0..array.count {
-                if len == output.len() {
-                    unread_rows = unread_rows
-                        .checked_add(array.count - ordinal)
-                        .ok_or("captured operative row count overflow")?;
-                    break;
+        let mut country_slots = [engine_native_memory::country_identity::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; BATCH];
+        let mut country_ptrs = [0_usize; BATCH];
+        let mut agency_ptr_bytes = [0_u8; BATCH * 8];
+        let mut agency_ptrs = [0_usize; BATCH];
+        let mut agency_map = [u8::MAX; BATCH];
+        let mut agency_records = [0_u8; BATCH * 32];
+        let mut next = 1_u32;
+        while next < countries.count() {
+            let end = countries.count().min(next + BATCH as u32);
+            let mut present = 0_usize;
+            for slot in next..end {
+                if let Some(country) = countries.at(slot)? {
+                    country_slots[present] = country;
+                    country_ptrs[present] = country.pointer;
+                    present += 1;
                 }
-                let pointer = array
-                    .element(ordinal, captured::STRIDE)
-                    .ok_or("captured operative entry address overflow")?;
-                let header = read::<[u8; 0x14]>(memory, pointer)
-                    .ok_or("captured operative entry unreadable")?;
-                if u64::from_le_bytes(header[..8].try_into().unwrap())
-                    != engine_sites::at(base, captured::VTABLE_RVA)
-                        .ok_or("module address overflow")? as u64
+            }
+            next = end;
+            if present == 0 {
+                continue;
+            }
+            let ptrs_copied = memory.copy_records(
+                RecordSources::Pointers(&country_ptrs[..present]),
+                &COUNTRY_AGENCY_LAYOUT,
+                &mut agency_ptr_bytes[..present * 8],
+            );
+            let mut live = 0_usize;
+            agency_map[..present].fill(u8::MAX);
+            for index in 0..ptrs_copied.min(present) {
+                let ptr = u64::from_le_bytes(
+                    agency_ptr_bytes[index * 8..(index + 1) * 8]
+                        .try_into()
+                        .unwrap(),
+                );
+                if let Ok(ptr) = usize::try_from(ptr)
+                    && ptr != 0
                 {
-                    return Err("captured operative entry vtable mismatch");
+                    agency_map[index] = live as u8;
+                    agency_ptrs[live] = ptr;
+                    live += 1;
                 }
-                let operative = u64::from_le_bytes(header[0xC..0x14].try_into().unwrap());
-                let owner = match creference_registry::resolve(memory, base, operative)? {
-                    None => None,
-                    Some(leader) => {
-                        let identity = read::<[u8; 16]>(memory, leader)
-                            .ok_or("captured operative referent unreadable")?;
-                        if u64::from_le_bytes(identity[..8].try_into().unwrap())
-                            != engine_sites::at(base, engine_native_parts::coperative_leader_layout::VTABLE_RVA)
-                                .ok_or("module address overflow")?
-                                as u64
-                            || u64::from_le_bytes(identity[8..].try_into().unwrap()) != operative
-                        {
-                            return Err("captured operative referent identity mismatch");
-                        }
-                        Some(
-                            read::<u32>(memory, at(leader, coperative_leader::OWNER_COUNTRY)?)
-                                .ok_or("captured operative owner unreadable")?,
-                        )
+            }
+            let agencies_copied = if live == 0 {
+                0
+            } else {
+                memory.copy_records(
+                    RecordSources::Pointers(&agency_ptrs[..live]),
+                    &CAPTURED_AGENCY_LAYOUT,
+                    &mut agency_records[..live * 32],
+                )
+            };
+            for index in 0..present {
+                let country = country_slots[index];
+                let array = if index < ptrs_copied {
+                    let agency = usize::try_from(u64::from_le_bytes(
+                        agency_ptr_bytes[index * 8..(index + 1) * 8]
+                            .try_into()
+                            .unwrap(),
+                    ))
+                    .map_err(|_| "agency pointer overflow")?;
+                    if agency == 0 {
+                        continue;
                     }
+                    let slot = agency_map[index] as usize;
+                    if agency_map[index] != u8::MAX && (slot + 1) * 3 <= agencies_copied {
+                        let rec = &agency_records[slot * 32..(slot + 1) * 32];
+                        let expected = expected_agency.ok_or("agency vtable address overflow")?;
+                        if u64::from_le_bytes(rec[0..8].try_into().unwrap()) != expected {
+                            return Err("agency vtable mismatch");
+                        }
+                        if u64::from_le_bytes(rec[8..16].try_into().unwrap())
+                            != country.pointer as u64
+                        {
+                            return Err("agency owner pointer mismatch");
+                        }
+                        Array::from_header(rec[16..32].try_into().unwrap(), captured::STRIDE)
+                            .ok_or("captured operative roster unreadable or invalid")?
+                    } else {
+                        let Some(agency) = authenticate(memory, base, country, agency)? else {
+                            continue;
+                        };
+                        Array::read(
+                            memory,
+                            at(agency, CAPTURED_OPERATIVE_REFERENCES)?,
+                            captured::STRIDE,
+                        )
+                        .ok_or("captured operative roster unreadable or invalid")?
+                    }
+                } else {
+                    let Some(agency) = root(memory, base, country)? else {
+                        continue;
+                    };
+                    Array::read(
+                        memory,
+                        at(agency, CAPTURED_OPERATIVE_REFERENCES)?,
+                        captured::STRIDE,
+                    )
+                    .ok_or("captured operative roster unreadable or invalid")?
                 };
-                output[len] = CapturedOperativeRow {
-                    country: country.id,
-                    ordinal,
-                    operative,
-                    owner,
-                };
-                len += 1;
+                output.ensure(
+                    len.checked_add(array.count as usize)
+                        .ok_or("captured operative row demand overflow")?,
+                )?;
+                for ordinal in 0..array.count {
+                    if len == output.len() {
+                        unread_rows = unread_rows
+                            .checked_add(array.count - ordinal)
+                            .ok_or("captured operative row count overflow")?;
+                        break;
+                    }
+                    let pointer = array
+                        .element(ordinal, captured::STRIDE)
+                        .ok_or("captured operative entry address overflow")?;
+                    let header = read::<[u8; 0x14]>(memory, pointer)
+                        .ok_or("captured operative entry unreadable")?;
+                    if u64::from_le_bytes(header[..8].try_into().unwrap())
+                        != engine_sites::at(base, captured::VTABLE_RVA)
+                            .ok_or("module address overflow")? as u64
+                    {
+                        return Err("captured operative entry vtable mismatch");
+                    }
+                    let operative = u64::from_le_bytes(header[0xC..0x14].try_into().unwrap());
+                    let owner = match creference_registry::resolve(memory, base, operative)? {
+                        None => None,
+                        Some(leader) => {
+                            let identity = read::<[u8; 16]>(memory, leader)
+                                .ok_or("captured operative referent unreadable")?;
+                            if u64::from_le_bytes(identity[..8].try_into().unwrap())
+                                != engine_sites::at(
+                                    base,
+                                    engine_native_parts::coperative_leader_layout::VTABLE_RVA,
+                                )
+                                    .ok_or("module address overflow")?
+                                    as u64
+                                || u64::from_le_bytes(identity[8..].try_into().unwrap())
+                                    != operative
+                            {
+                                return Err("captured operative referent identity mismatch");
+                            }
+                            Some(
+                                read::<u32>(memory, at(leader, coperative_leader::OWNER_COUNTRY)?)
+                                    .ok_or("captured operative owner unreadable")?,
+                            )
+                        }
+                    };
+                    output[len] = CapturedOperativeRow {
+                        country: country.id,
+                        ordinal,
+                        operative,
+                        owner,
+                    };
+                    len += 1;
+                }
             }
         }
         Ok(if unread_rows == 0 {

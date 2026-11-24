@@ -22,6 +22,7 @@ import { SECONDARY_DASH } from '../../charts/palette';
 import { runAt } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartData, ChartLayer, ChartPick } from '../../charts/TimeChart';
+import { stabilityZoomFit } from '../../charts/renderTimeChart';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import { fitTooltip } from '../../charts/tooltip';
@@ -70,7 +71,7 @@ import { useMeasureSeries } from '../country-measure/measureSeries';
 import { STABILITY_BREAKDOWNS, STABILITY_OPTIONS } from './definition';
 import { historyMarks, stabilityMarkers } from './markers';
 import type { FocusMarks, MarkerKind } from './markers';
-import { breakdownRows, formatPercent, linesPerMeasure, readHourOf, stabilityEnd, validateStabilityReads, zoomRange } from './stabilityData';
+import { breakdownRows, formatPercent, linesPerMeasure, readHourOf, stabilityEnd, validateStabilityReads } from './stabilityData';
 import type { Measure } from './stabilityData';
 import { chooseStabilityActor, pinStabilityDrill, stabilityPickAction } from './stabilityDrillData';
 import type { StabilityPick } from './stabilityDrillData';
@@ -409,7 +410,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: zoom ? null : 0, yMax: zoom ? null : 1, log: false }}
-        fitValues={zoom ? fitted => { const range = zoomRange(fitted && [fitted[0] * 100, fitted[1] * 100]); return range && [range[0] / 100, range[1] / 100]; } : undefined}
+        fitValues={zoom ? stabilityZoomFit : undefined}
         padding={{ right: options.endLabels ? CHART_LAYOUT.countryEndLabels : CHART_LAYOUT.right }} layers={layers} active={active && !(drillOpen && options.drill !== 'popout')}
         notRecorded={stability.notRecorded && warSupport.notRecorded ? stability.notRecorded : null}
         pickOwner={pickOwner} revision={`${track.branch.id}:${lines.length}:${shown.length}:${viewport}:${hoveredFor ? 'breakdown' : hovered.error ? 'failed' : 'none'}:${stability.states ? 'states' : ''}`}

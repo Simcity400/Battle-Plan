@@ -1312,6 +1312,27 @@ impl TableRows {
             .map(move |(field, count)| (table.field_name(field).unwrap_or("unnamed field"), count));
         (fields, nested.into_iter())
     }
+
+    pub fn supports_optional_i32_fill(&self, column: usize) -> bool {
+        matches!(self, Self::RailCooldowns(_) if column == 3)
+    }
+
+    pub fn fill_optional_i32(&mut self, column: usize, value: Option<i32>) -> io::Result<bool> {
+        match self {
+            Self::RailCooldowns(rows) if column == 3 => {
+                let target = Recorded::Value(value);
+                let mut changed = false;
+                for row in rows {
+                    if row.selection_hour != target {
+                        row.selection_hour = target;
+                        changed = true;
+                    }
+                }
+                Ok(changed)
+            }
+            _ => Err(invalid("uniform optional i32 fill targets an unsupported column")),
+        }
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]

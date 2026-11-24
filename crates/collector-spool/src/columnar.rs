@@ -164,7 +164,8 @@ struct Pending {
     ordinal: u32,
     witness: Option<Witness>,
     manifest: Vec<u8>,
-    sections: Vec<Vec<u8>>,
+    section_bytes: Vec<u8>,
+    section_ends: Vec<u32>,
 }
 
 impl Columnar {
@@ -279,6 +280,44 @@ impl Columnar {
     pub(crate) fn queued(&mut self, branch: u64, hour: i32) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.queued(branch, hour));
+        }
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        matches!(self, Self::Live(_))
+    }
+
+    pub(crate) fn has_complete(&self, table: TableId, branch: u64, hour: i32) -> bool {
+        match self {
+            Self::Live(live) => live.run.as_ref().is_some_and(|run| {
+                run.branch == branch
+                    && run.next_hour == hour
+                    && run.frames.tables()[table.index()].status()
+                        == replay_columnar::manifest::Status::Complete
+                    && run.frames.tables()[table.index()]
+                        .acquisition()
+                        .available_from
+                        .is_some()
+            }),
+            Self::Unopened => false,
+            #[cfg(test)]
+            Self::Off => true,
+        }
+    }
+
+    pub(crate) fn materialize_complete(
+        &self,
+        table: TableId,
+        branch: u64,
+    ) -> io::Result<Option<replay_data::rows::TableRows>> {
+        let Self::Live(live) = self else {
+            return Ok(None);
+        };
+        match &live.run {
+            Some(run) if run.branch == branch => {
+                engine_allocation::advisory(|| run.frames.materialize_complete(table))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -621,7 +660,7 @@ impl Live {
 
     fn try_commit(
         &mut self,
-        hour: FrameHour,
+        mut hour: FrameHour,
         queued: bool,
         lanes: &dyn native_frame::Lanes,
     ) -> io::Result<()> {
@@ -633,9 +672,21 @@ impl Live {
             .hour()
             .checked_add(1)
             .ok_or_else(|| invalid("Hours pass 2^31"))?;
-        let mut sections = engine_allocation::vec(TABLE_COUNT)?;
+        let (mut section_count, mut total_bytes) = (0usize, 0usize);
         for (_, section) in hour.sections() {
-            sections.push(engine_allocation::copy_vec(section)?);
+            section_count += 1;
+            total_bytes = total_bytes
+                .checked_add(section.len())
+                .ok_or_else(|| invalid("Journal hour sections exceed address space"))?;
+        }
+        if u32::try_from(total_bytes).is_err() {
+            return Err(invalid("Journal hour sections exceed 32-bit length"));
+        }
+        let mut section_bytes = engine_allocation::vec(total_bytes)?;
+        let mut section_ends = engine_allocation::vec(section_count)?;
+        for (_, section) in hour.sections() {
+            section_bytes.extend_from_slice(section);
+            section_ends.push(section_bytes.len() as u32);
         }
         let pending = Pending {
             starts: run.start,
@@ -647,8 +698,9 @@ impl Live {
                 .take()
                 .filter(|(witnessed, _)| *witnessed == hour.hour())
                 .map(|(_, witness)| witness),
-            manifest: engine_allocation::copy_vec(&hour.manifest)?,
-            sections,
+            manifest: std::mem::take(&mut hour.manifest),
+            section_bytes,
+            section_ends,
         };
         run.frames.commit_on(hour, lanes)?;
         run.start = None;
@@ -714,7 +766,7 @@ impl Live {
                 invalid("A columnar hour is written to its journal"),
             ));
         }
-        let bytes = pending.manifest.len() + pending.sections.iter().map(Vec::len).sum::<usize>();
+        let bytes = pending.manifest.len() + pending.section_bytes.len();
         let hour = engine_allocation::boxed(journal_thread::Hour {
             starts: pending
                 .starts
@@ -724,7 +776,8 @@ impl Live {
             ends_segment: (pending.ordinal + 1) % envelope::UNIT_ORDINALS == 0,
             witness: pending.witness,
             manifest: pending.manifest,
-            sections: pending.sections,
+            section_bytes: pending.section_bytes,
+            section_ends: pending.section_ends,
         })
         .map_err(|error| (journal_thread::APPEND, error))?;
         self.thread.queue(&self.lane, Op::Hour(hour));

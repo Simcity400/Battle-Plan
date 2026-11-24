@@ -72,11 +72,13 @@ pub fn install_file(file: &[u8], sha256: &[u8; 32], base: usize) -> Verified<&'s
     Ok(install(located))
 }
 
+#[inline]
 pub fn located() -> Option<&'static Located> {
     // SAFETY: only `install` stores, a leaked and never freed table.
     unsafe { LOCATED.load(Ordering::Acquire).as_ref() }
 }
 
+#[inline]
 pub fn resolve(base: usize, key: Rva) -> Verified<usize> {
     match MODE.load(Ordering::Acquire) {
         SYNTHETIC => {
@@ -93,6 +95,7 @@ pub fn resolve(base: usize, key: Rva) -> Verified<usize> {
     }
 }
 
+#[inline]
 pub fn at(base: usize, key: Rva) -> Option<usize> {
     match resolve(base, key) {
         Ok(address) => Some(address),
@@ -158,6 +161,7 @@ pub fn require(base: usize, keys: &[Rva]) -> Result<(), &'static str> {
     Ok(())
 }
 
+#[inline]
 pub fn reference(base: usize, address: usize) -> Option<Rva> {
     match MODE.load(Ordering::Acquire) {
         SYNTHETIC => address.checked_sub(base).map(Rva),
@@ -166,6 +170,7 @@ pub fn reference(base: usize, address: usize) -> Option<Rva> {
     }
 }
 
+#[inline]
 pub fn classify(base: usize, address: usize, candidates: &[Rva]) -> Verified<Option<Rva>> {
     let found = reference(base, address);
     if let Some(key) = found
@@ -185,6 +190,7 @@ pub fn classify(base: usize, address: usize, candidates: &[Rva]) -> Verified<Opt
     Ok(None)
 }
 
+#[inline]
 pub fn which(base: usize, address: usize, candidates: &[Rva]) -> Option<Rva> {
     match classify(base, address, candidates) {
         Ok(found) => found,

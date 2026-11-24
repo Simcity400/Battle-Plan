@@ -13,6 +13,7 @@ pub fn pool_size() -> usize {
     crate::acquisition::usable_cpus()
         .saturating_sub(1)
         .min(MAX_HELPERS)
+        .min(1)
 }
 
 const ENCODING_HELPERS: usize = 2;
@@ -252,6 +253,7 @@ fn serve(
             // SAFETY: `join` keeps the job alive until `running` clears.
             let job = unsafe { &*job.0 };
             let panicked = catch_unwind(AssertUnwindSafe(job)).is_err();
+            crate::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
             state = shared.lock();
             state.job = None;
             state.running = false;

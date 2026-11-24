@@ -177,6 +177,7 @@ pub(crate) struct ResearchReport {
     pub ticks: [u64; 3],
 }
 pub(crate) struct IntelResidualRequest {
+    pub workers: variant_workers::Dispatch,
     pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub captured: intel::Captured,
@@ -223,6 +224,7 @@ impl OrdinaryRequest {
     }
 }
 pub(crate) struct OrdinaryPartRequest {
+    pub workers: variant_workers::Dispatch,
     pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
@@ -346,14 +348,81 @@ pub(crate) struct WarOverviewRequest {
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct WarOverviewReport;
+pub(crate) struct RaidStateInputsPart {
+    countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
+    game_state: usize,
+    hour: i32,
+    force_full: bool,
+    captured: crate::extended::raid_state_inputs::Captured,
+    states: Option<Box<collector_certificates::slicing::SliceFingerprints>>,
+    buildings: Option<Box<collector_certificates::slicing::SliceFingerprints>>,
+    ticks: [u64; crate::extended::raid_state_inputs::N],
+}
+impl RaidStateInputsPart {
+    fn capture(&mut self, memory: &impl engine_native_memory::Memory, base: usize) {
+        let _allocation_phase =
+            collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
+        let cached = self.countries.roster_view(memory);
+        self.ticks = self.captured.capture_sliced(
+            &cached,
+            base,
+            self.game_state,
+            self.hour,
+            self.force_full,
+            self.states
+                .as_deref_mut()
+                .zip(self.buildings.as_deref_mut())
+                .map(
+                    |(states, countries)| crate::extended::raid_state_inputs::Stores {
+                        states,
+                        countries,
+                        changes: &collector_observers::raid_changes::Observer,
+                    },
+                ),
+        );
+    }
+}
+pub(crate) struct RailsPart {
+    game_state: usize,
+    hour: i32,
+    rails: naval_history::RailPart,
+    store: Option<Box<naval_history::RailStore>>,
+}
+impl RailsPart {
+    fn capture(&mut self, memory: &impl engine_native_memory::Memory, base: usize) {
+        self.rails.capture(
+            memory,
+            base,
+            self.game_state,
+            self.hour,
+            self.store.as_deref_mut(),
+        );
+    }
+}
+pub(crate) struct NaviesBeginPart {
+    countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
+    game_state: usize,
+    hour: i32,
+    begin: crate::extended::NaviesBegin,
+}
+impl NaviesBeginPart {
+    fn capture(&mut self, memory: &impl engine_native_memory::Memory, base: usize) {
+        let cached = self.countries.roster_view(memory);
+        self.begin
+            .capture(&cached, base, self.game_state, self.hour);
+    }
+}
 pub(crate) struct RaidStateRequest {
+    pub workers: variant_workers::Dispatch,
     pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
     pub packs: Box<crate::extended::RaidStatePacks>,
-    pub stores: crate::extended::RaidStateStores,
+    pub states_store: Option<Box<collector_certificates::slicing::SliceFingerprints>>,
+    pub buildings_store: Option<Box<collector_certificates::slicing::SliceFingerprints>>,
+    pub routes_store: Box<collector_certificates::slicing::SliceFingerprints>,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RaidStateReport;
@@ -445,6 +514,7 @@ pub(crate) struct DivisionModelInputsRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DivisionModelInputsReport;
 pub(crate) struct ScoresRailsRequest {
+    pub workers: variant_workers::Dispatch,
     pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
@@ -556,7 +626,7 @@ impl GatedRequest {
                 .project_fingerprints
                 .take()
                 .expect("projects store present"),
-            countries: self.countries.take(),
+            countries: self.countries.clone(),
             recorded: self.packs.projects_recorded,
             ticks: [0; projects::N],
         }
@@ -581,17 +651,34 @@ impl GatedProjectsRequest {
             let (base, game_state, hour, force_full) =
                 (self.base, self.game_state, self.hour, self.force_full);
             self.captured.reset();
-            let rest = self.captured.take_rest(game_state, hour, force_full);
+            let (rest_primary, rest_aux, rest_paths) = self
+                .captured
+                .take_rest(game_state, hour, force_full)
+                .into_triple();
             let workers = &self.workers;
+            let countries = &self.countries;
             let (captured, fingerprints, ticks) =
                 (&mut self.captured, &mut self.fingerprints, &mut self.ticks);
-            let returned = workers.beside(
-                variant_workers::Work::ProjectsRest(Box::new(rest)),
+            let (returned_primary, returned_aux, returned_paths) = workers.beside_triple(
+                variant_workers::Work::ProjectsRestPrimary {
+                    rest: Box::new(rest_primary),
+                    countries: countries.clone(),
+                },
+                variant_workers::Work::ProjectsRestAux {
+                    rest: Box::new(rest_aux),
+                    countries: countries.clone(),
+                },
+                variant_workers::Work::ProjectsRestPaths {
+                    rest: Box::new(rest_paths),
+                    countries: countries.clone(),
+                },
                 memory,
                 base,
                 collector_workers::hour_stages::Part::ProjectsRestWait,
                 &mut || {
-                    let mut acquire = |parts| workers.projects(parts, roster, base, game_state);
+                    let mut acquire = |parts| {
+                        workers.projects(parts, memory, base, game_state, countries.clone())
+                    };
                     *ticks = captured.acquire_selected_partitioned(
                         memory,
                         roster,
@@ -608,16 +695,26 @@ impl GatedProjectsRequest {
                     );
                 },
             );
-            match returned {
-                Some(variant_workers::Work::ProjectsRest(rest)) => {
-                    let rest = self.captured.restore_rest(*rest);
-                    for (ticks, rest) in self.ticks.iter_mut().zip(rest) {
-                        *ticks += rest;
-                    }
-                }
-                _ => self
-                    .captured
-                    .fail_rest("project family rest acquisition stopped before reading"),
+            let primary = match returned_primary {
+                Some(variant_workers::Work::ProjectsRestPrimary { rest, .. }) => Some(*rest),
+                _ => None,
+            };
+            let aux = match returned_aux {
+                Some(variant_workers::Work::ProjectsRestAux { rest, .. }) => Some(*rest),
+                _ => None,
+            };
+            let paths = match returned_paths {
+                Some(variant_workers::Work::ProjectsRestPaths { rest, .. }) => Some(*rest),
+                _ => None,
+            };
+            let rest = self.captured.restore_rest_triple(
+                primary,
+                aux,
+                paths,
+                "project family rest acquisition stopped before reading",
+            );
+            for (ticks, rest) in self.ticks.iter_mut().zip(rest) {
+                *ticks += rest;
             }
         } else {
             self.captured.fail_gated_capture(
@@ -674,6 +771,7 @@ impl PresentationRequest {
 
     pub(crate) fn take_speed_terms(&mut self) -> PresentationSpeedTermsRequest {
         PresentationSpeedTermsRequest {
+            workers: Default::default(),
             countries: engine_allocation::SharedBox::clone(&self.countries),
             context: self.context,
             inputs: self.inputs.clone(),
@@ -720,6 +818,7 @@ pub(crate) struct PresentationStatusRequest {
 }
 
 pub(crate) struct PresentationSpeedTermsRequest {
+    pub workers: variant_workers::Dispatch,
     pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs:
@@ -1547,13 +1646,44 @@ fn run_with_memory(
             })
         }
         Job::IntelResidual(request) => {
-            let cached = request.countries.view(memory);
-            Report::IntelResidual(request.captured.capture_residual(
-                &cached,
-                request.context,
-                request.flags.as_deref_mut(),
-                None,
-            ))
+            let context = request.context;
+            let aux = request.captured.take_residual_aux(context);
+            let IntelResidualRequest {
+                workers,
+                countries,
+                captured,
+                flags,
+                ..
+            } = request;
+            let workers = &*workers;
+            let countries = &*countries;
+            let mut report = intel::CaptureReport::default();
+            let returned = workers.beside(
+                variant_workers::Work::IntelResidualAux {
+                    part: Box::new(aux),
+                    countries: engine_allocation::SharedBox::clone(countries),
+                },
+                memory,
+                context.base,
+                collector_workers::hour_stages::Part::IntelResidualWait,
+                &mut || {
+                    let cached = countries.view(memory);
+                    report = captured.capture_residual(&cached, context, flags.as_deref_mut(), None);
+                },
+            );
+            let aux = match returned {
+                Some(variant_workers::Work::IntelResidualAux { part, .. }) => Some(*part),
+                _ => None,
+            };
+            let aux_ticks = captured.restore_residual_aux(
+                aux,
+                context,
+                "residual Intel auxiliary acquisition stopped before reading",
+            );
+            for (dst, src) in report.ticks.iter_mut().zip(aux_ticks) {
+                *dst += src;
+            }
+            Report::IntelResidual(report)
         }
         Job::ScriptVariables(request) => {
             let cached = request.countries.view(memory);
@@ -1604,14 +1734,69 @@ fn run_with_memory(
             Report::Ordinary(OrdinaryReport)
         }
         Job::OrdinaryPart(request) => {
-            let cached = request.countries.roster_view(memory);
-            request.part.capture(
-                &cached,
-                request.base,
-                request.game_state,
-                request.hour,
-                request.fresh_modifier_guard,
-            );
+            let OrdinaryPartRequest {
+                workers,
+                countries,
+                base,
+                game_state,
+                hour,
+                fresh_modifier_guard,
+                part,
+            } = request;
+            if let crate::extended::OrdinaryPart::Navies(packs) = part {
+                let base = *base;
+                let game_state = *game_state;
+                let hour = *hour;
+                let begin = packs.take_navies();
+                let force_full = packs.force_full();
+                let has_fingerprints = packs.has_fingerprints();
+                let countries = &*countries;
+                let workers = &*workers;
+                let worker_part = NaviesBeginPart {
+                    countries: engine_allocation::SharedBox::clone(countries),
+                    game_state,
+                    hour,
+                    begin,
+                };
+                let mut walk_result = Err("naval mission walk did not run");
+                let returned = workers.beside(
+                    variant_workers::Work::NaviesBegin(Box::new(worker_part)),
+                    memory,
+                    base,
+                    collector_workers::hour_stages::Part::OrdinaryNaviesWait,
+                    &mut || {
+                        let _allocation_phase =
+                            collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
+                        let cached = countries.roster_view(memory);
+                        walk_result = packs.naval_mission_inputs.begin_walk(
+                            &cached,
+                            base,
+                            game_state,
+                            hour,
+                            force_full,
+                            has_fingerprints,
+                        );
+                    },
+                );
+                match returned {
+                    Some(variant_workers::Work::NaviesBegin(worker_part)) => {
+                        let cached = countries.roster_view(memory);
+                        packs.finish_navies(
+                            &cached,
+                            base,
+                            game_state,
+                            worker_part.begin,
+                            walk_result,
+                        );
+                    }
+                    _ => {
+                        packs.fail_navies("physical navy acquisition stopped before reading");
+                    }
+                }
+            } else {
+                let cached = countries.roster_view(memory);
+                part.capture(&cached, *base, *game_state, *hour, *fresh_modifier_guard);
+            }
             Report::OrdinaryPart(OrdinaryReport)
         }
         Job::Slow(request) => {
@@ -1743,15 +1928,75 @@ fn run_with_memory(
             Report::AirHistories(AirHistoriesReport)
         }
         Job::RaidState(request) => {
-            let cached = request.countries.roster_view(memory);
-            request.packs.capture(
-                &cached,
+            let (base, game_state, hour, force_full) = (
                 request.base,
                 request.game_state,
                 request.hour,
                 request.force_full,
-                &mut request.stores,
             );
+            let part = RaidStateInputsPart {
+                countries: engine_allocation::SharedBox::clone(&request.countries),
+                game_state,
+                hour,
+                force_full,
+                captured: std::mem::replace(
+                    &mut request.packs.raid_state_inputs,
+                    crate::extended::raid_state_inputs::Captured::vacant(),
+                ),
+                states: request.states_store.take(),
+                buildings: request.buildings_store.take(),
+                ticks: [0; crate::extended::raid_state_inputs::N],
+            };
+            let RaidStateRequest {
+                workers,
+                countries,
+                packs,
+                routes_store,
+                ..
+            } = &mut *request;
+            let workers = &*workers;
+            let countries = &*countries;
+            let mut resource_ticks = [0; crate::extended::resource_map::N];
+            let returned = workers.beside(
+                variant_workers::Work::RaidStateInputs(Box::new(part)),
+                memory,
+                base,
+                collector_workers::hour_stages::Part::RaidStateWait,
+                &mut || {
+                    let _allocation_phase =
+                        collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
+                    let cached = countries.roster_view(memory);
+                    resource_ticks = packs.resource_map.capture_deferred(
+                        &cached,
+                        base,
+                        game_state,
+                        hour,
+                        force_full,
+                        Some(crate::extended::resource_map::Stores {
+                            routes: routes_store,
+                            changes: &collector_observers::raid_changes::Observer,
+                        }),
+                    );
+                },
+            );
+            let state_ticks = match returned {
+                Some(variant_workers::Work::RaidStateInputs(part)) => {
+                    let part = *part;
+                    request.packs.raid_state_inputs = part.captured;
+                    request.states_store = part.states;
+                    request.buildings_store = part.buildings;
+                    part.ticks
+                }
+                _ => {
+                    request.packs.raid_state_inputs.fail_capture(
+                        hour,
+                        force_full,
+                        "raid state inputs acquisition stopped before reading",
+                    );
+                    [0; crate::extended::raid_state_inputs::N]
+                }
+            };
+            request.packs.record_ticks(state_ticks, resource_ticks);
             Report::RaidState(RaidStateReport)
         }
         Job::RaidLaunch(request) => {
@@ -1816,23 +2061,62 @@ fn run_with_memory(
             Report::AirSupply(AirSupplyReport)
         }
         Job::ScoresRails(request) => {
-            let parts = &mut *request.parts;
-            parts.scores.capture(
-                &request.countries.bytes_view(memory),
+            let (base, game_state, hour, force_full, score_capacity) = (
                 request.base,
                 request.game_state,
                 request.hour,
                 request.force_full,
                 request.score_capacity,
-                &mut request.air_scores,
             );
-            parts.rails.capture(
+            let part = RailsPart {
+                game_state,
+                hour,
+                rails: std::mem::replace(
+                    &mut request.parts.rails,
+                    naval_history::RailPart::vacant(),
+                ),
+                store: request.rail_store.take(),
+            };
+            let ScoresRailsRequest {
+                workers,
+                countries,
+                parts,
+                air_scores,
+                ..
+            } = &mut *request;
+            let workers = &*workers;
+            let countries = &*countries;
+            let returned = workers.beside(
+                variant_workers::Work::Rails(Box::new(part)),
                 memory,
-                request.base,
-                request.game_state,
-                request.hour,
-                request.rail_store.as_deref_mut(),
+                base,
+                collector_workers::hour_stages::Part::ScoresRailsWait,
+                &mut || {
+                    parts.scores.capture(
+                        &countries.bytes_view(memory),
+                        base,
+                        game_state,
+                        hour,
+                        force_full,
+                        score_capacity,
+                        air_scores,
+                    );
+                },
             );
+            match returned {
+                Some(variant_workers::Work::Rails(part)) => {
+                    let part = *part;
+                    request.parts.rails = part.rails;
+                    request.rail_store = part.store;
+                }
+                _ => {
+                    request.parts.rails.fail(
+                        hour,
+                        force_full,
+                        "railway acquisition stopped before reading",
+                    );
+                }
+            }
             Report::ScoresRails(ScoresRailsReport)
         }
         Job::ArmyIcons(request) => {
@@ -1892,13 +2176,22 @@ fn run_with_memory(
             Report::ChildFronts(OrdersReport)
         }
         Job::Gated(request) => {
-            request.packs.capture(
-                memory,
-                request.base,
-                request.game_state,
-                request.hour,
-                request.force_full,
-            );
+            match request.countries.as_deref() {
+                Some(countries) => request.packs.capture(
+                    &countries.roster_view(memory),
+                    request.base,
+                    request.game_state,
+                    request.hour,
+                    request.force_full,
+                ),
+                None => request.packs.capture(
+                    memory,
+                    request.base,
+                    request.game_state,
+                    request.hour,
+                    request.force_full,
+                ),
+            }
             Report::Gated(GatedReport)
         }
         Job::GatedProjects(request) => {
@@ -2022,10 +2315,47 @@ fn run_with_memory(
             Report::Presentation(report)
         }
         Job::PresentationSpeedTerms(request) => {
-            let cached = request.countries.roster_view(memory);
-            let inputs = request.inputs.as_deref();
-            let context = request.context;
-            Report::PresentationSpeedTerms(request.pass.capture(
+            let PresentationSpeedTermsRequest {
+                workers,
+                countries,
+                context,
+                inputs,
+                pass,
+            } = request;
+            let workers = &*workers;
+            let countries = &*countries;
+            let cached = countries.roster_view(memory);
+            let inputs = inputs.as_deref();
+            let context = *context;
+            let mut runner = |entries: division_presentation::SpeedTermsEntriesWork,
+                              aux: division_presentation::SpeedTermsAuxWork,
+                              run: &mut dyn FnMut()| {
+                let (out0, out1) = workers.beside_pair(
+                    variant_workers::Work::SpeedTermsEntries {
+                        part: Box::new(entries),
+                        countries: engine_allocation::SharedBox::clone(countries),
+                    },
+                    variant_workers::Work::SpeedTermsAux {
+                        part: Box::new(aux),
+                        countries: engine_allocation::SharedBox::clone(countries),
+                    },
+                    memory,
+                    context.base,
+                    collector_workers::hour_stages::Part::PresentationSpeedTermsWait,
+                    run,
+                );
+                (
+                    match out0 {
+                        Some(variant_workers::Work::SpeedTermsEntries { part, .. }) => Some(*part),
+                        _ => None,
+                    },
+                    match out1 {
+                        Some(variant_workers::Work::SpeedTermsAux { part, .. }) => Some(*part),
+                        _ => None,
+                    },
+                )
+            };
+            Report::PresentationSpeedTerms(pass.capture_with_parallel(
                 &cached,
                 context.base,
                 context.game_state,
@@ -2038,6 +2368,7 @@ fn run_with_memory(
                         |inputs| inputs.outcome(),
                     ),
                 },
+                Some(&mut runner),
             ))
         }
         Job::PresentationMovement(request) => {
@@ -2233,9 +2564,28 @@ impl Pool {
             Some(Job::Variants(request)) => request.workers.arm_at(self, VARIANT_LANES),
             Some(Job::Governance(request)) => request.workers.arm(self),
             Some(Job::GatedProjects(request)) => request.workers.arm(self),
-            Some(Job::Templates(request)) => {
-                request.workers.arm_at(self, Role::Templates.priority())
+            Some(Job::RaidState(request)) => {
+                request.workers.arm_at(self, Role::RaidState.priority())
             }
+            Some(Job::ScoresRails(request)) => {
+                request.workers.arm_at(self, Role::ScoresRails.priority())
+            }
+            Some(Job::Templates(request)) => request
+                .workers
+                .arm_at(self, Role::Templates.priority()),
+            Some(Job::IntelResidual(request)) => request
+                .workers
+                .arm_at(self, Role::IntelResidual.priority()),
+            Some(Job::OrdinaryPart(request))
+                if matches!(request.part, crate::extended::OrdinaryPart::Navies(_)) =>
+            {
+                request
+                    .workers
+                    .arm_at(self, Role::OrdinaryNavies.priority())
+            }
+            Some(Job::PresentationSpeedTerms(request)) => request
+                .workers
+                .arm_at(self, Role::PresentationSpeedTerms.priority()),
             _ => {}
         }
         let role = request.as_ref().map(Job::role);
@@ -2320,7 +2670,8 @@ impl Pool {
     /// Only the owner of the live acquisition schedule may switch its worker policy for the current
     /// capture placement.
     pub(crate) unsafe fn hold_pace(&self) {
-        self.executor.hold_pace();
+        self.executor
+            .hold_pace_with(crate::capture_point::hurried_readers());
     }
     /// # Safety
     /// Only the owner of the live acquisition schedule may switch its worker policy for the current

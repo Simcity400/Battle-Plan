@@ -361,7 +361,10 @@ fn slots(memory: &impl Memory, status: usize) -> Option<Array> {
 
 fn copy_into<T: Clone + PartialEq>(held: &mut Vec<T>, rows: &[T]) -> Option<()> {
     held.clear();
-    engine_allocation::reserve(held, rows.len()).ok()?;
+    if held.capacity() > rows.len().saturating_mul(2).max(16) {
+        *held = Vec::new();
+    }
+    engine_allocation::reserve_exact(held, rows.len()).ok()?;
     held.extend(rows.iter().cloned());
     (held.as_slice() == rows).then_some(())
 }

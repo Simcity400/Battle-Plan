@@ -43,63 +43,58 @@ impl ObserverBoundaryRequest {
     pub fn capture(&mut self) -> ObserverBoundaryReport {
         let mut report = ObserverBoundaryReport::default();
         let boundaries = qpc();
-        // SAFETY: Runs on the admitted hour's sole observer boundary while market observation lives.
+        let invalidate = !self.continuous || self.recovery;
+        // SAFETY: observer boundary runs first inside the quiescent capture lease before any
+        // acquisition worker starts, so no certificate query or concurrent boundary can run,
+        // and market, naval, and faction watches live for the full admitted hour.
         unsafe {
-            collector_observers::market_changes::boundary(
-                self.market_clock,
-                !self.continuous || self.recovery || self.market_refresh,
-            );
+            collector_certificates::watch_registry::with_quiescent_growth(|| {
+                collector_observers::market_changes::boundary(
+                    self.market_clock,
+                    invalidate || self.market_refresh,
+                );
+                collector_air_relations::relation_changes::boundary(invalidate);
+                collector_air_histories::history_changes::boundary(invalidate);
+                collector_intel::flag_changes::boundary(invalidate);
+                collector_intel::propaganda_changes::boundary(invalidate);
+                collector_intel::network_auxiliary::boundary(invalidate);
+                collector_intel::source_changes::boundary(invalidate);
+                collector_intel::intel::network_summary_boundary(invalidate);
+                collector_construction::building_changes::boundary(invalidate);
+                collector_observers::advisor_pool_changes::boundary(invalidate);
+                collector_governance::party_leader_changes::boundary(invalidate);
+                collector_intel::variable_changes::boundary(invalidate);
+                collector_governance::party_changes::boundary(invalidate);
+                collector_observers::roster_changes::boundary(invalidate);
+                collector_observers::political_status_changes::boundary(invalidate);
+                collector_observers::wing_changes::boundary(invalidate);
+                collector_missions::mission_changes::boundary(invalidate);
+                collector_observers::rail_changes::boundary(invalidate);
+                collector_observers::territory_changes::boundary(invalidate);
+                collector_division_parts::army_stat_changes::boundary(invalidate);
+                collector_observers::country_input_changes::boundary(invalidate);
+                collector_observers::raid_changes::boundary(invalidate);
+                collector_observers::naval_tree_changes::boundary(invalidate);
+                collector_observers::unit_leader_changes::boundary(invalidate);
+                collector_naval_management::changes::boundary(invalidate);
+                collector_observers::census_changes::boundary(invalidate);
+                collector_observers::orders_group_changes::boundary(invalidate);
+                collector_observers::unit_leader_trait_changes::boundary(invalidate);
+                collector_observers::world_input_changes::boundary(invalidate);
+                collector_observers::retreat_ban_changes::boundary(invalidate);
+                collector_model_inputs::local_subunit_changes::boundary(invalidate);
+                collector_production::production::design_changes::boundary(invalidate);
+                collector_division_templates::template_changes::boundary(invalidate);
+                collector_factions::faction_goal_changes::boundary(invalidate);
+                collector_factions::faction_companion_changes::boundary(invalidate);
+                collector_ship_models::ship_model_changes::boundary(invalidate);
+                collector_divisions::province_unit_changes::boundary(invalidate);
+                collector_observers::province_combat_changes::boundary(invalidate);
+                collector_observers::air_base_carry_changes::boundary(invalidate);
+                collector_observers::character_changes::boundary(invalidate);
+                collector_observers::war_changes::boundary(invalidate);
+            });
         }
-        collector_air_relations::relation_changes::boundary(!self.continuous || self.recovery);
-        collector_air_histories::history_changes::boundary(!self.continuous || self.recovery);
-        collector_intel::flag_changes::boundary(!self.continuous || self.recovery);
-        collector_intel::propaganda_changes::boundary(!self.continuous || self.recovery);
-        collector_intel::network_auxiliary::boundary(!self.continuous || self.recovery);
-        collector_intel::source_changes::boundary(!self.continuous || self.recovery);
-        collector_intel::intel::network_summary_boundary(!self.continuous || self.recovery);
-        collector_construction::building_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::advisor_pool_changes::boundary(!self.continuous || self.recovery);
-        collector_governance::party_leader_changes::boundary(!self.continuous || self.recovery);
-        collector_intel::variable_changes::boundary(!self.continuous || self.recovery);
-        collector_governance::party_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::roster_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::political_status_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::wing_changes::boundary(!self.continuous || self.recovery);
-        collector_missions::mission_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::rail_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::territory_changes::boundary(!self.continuous || self.recovery);
-        collector_division_parts::army_stat_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::country_input_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::raid_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::naval_tree_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::unit_leader_changes::boundary(!self.continuous || self.recovery);
-        // SAFETY: Runs on the admitted hour's sole observer boundary while naval watches live.
-        unsafe {
-            collector_naval_management::changes::boundary(!self.continuous || self.recovery);
-        }
-        collector_observers::census_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::orders_group_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::unit_leader_trait_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::world_input_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::retreat_ban_changes::boundary(!self.continuous || self.recovery);
-        collector_model_inputs::local_subunit_changes::boundary(!self.continuous || self.recovery);
-        collector_production::production::design_changes::boundary(
-            !self.continuous || self.recovery,
-        );
-        collector_division_templates::template_changes::boundary(!self.continuous || self.recovery);
-        // SAFETY: Runs on the admitted hour's sole observer boundary while faction watches live.
-        unsafe {
-            collector_factions::faction_goal_changes::boundary(!self.continuous || self.recovery);
-            collector_factions::faction_companion_changes::boundary(
-                !self.continuous || self.recovery,
-            );
-        }
-        collector_ship_models::ship_model_changes::boundary(!self.continuous || self.recovery);
-        collector_divisions::province_unit_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::province_combat_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::air_base_carry_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::character_changes::boundary(!self.continuous || self.recovery);
-        collector_observers::war_changes::boundary(!self.continuous || self.recovery);
         // SAFETY: Runs on the admitted hour's sole observer boundary while land-event storage lives.
         unsafe { self.land.drain(self.hour, !self.continuous) };
         self.finished[0] = true;

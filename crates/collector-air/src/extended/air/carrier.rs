@@ -12,6 +12,14 @@ use engine_native_air::cair_base::{
     CountryOccurrence,
 };
 use std::cell::RefCell;
+use std::collections::HashMap;
+
+struct CachedStateOrder {
+    pointer: usize,
+    segment: u64,
+    countries: Result<Vec<CountryOccurrence>, &'static str>,
+    pass: u64,
+}
 
 pub struct Bases {
     pub rows: Vec<CarrierBase>,
@@ -22,7 +30,9 @@ pub struct Bases {
     pub names_len: usize,
     indexed: bool,
     demand: CarrierDemand,
-    state_segments: Vec<(u64, usize)>,
+    state_segments: Vec<(u64, usize, u64, usize)>,
+    state_cache: HashMap<u64, CachedStateOrder>,
+    state_cache_pass: u64,
 }
 
 impl Bases {
@@ -37,6 +47,8 @@ impl Bases {
             indexed: true,
             demand: CarrierDemand::default(),
             state_segments: Vec::new(),
+            state_cache: HashMap::new(),
+            state_cache_pass: 0,
         }
     }
     pub fn prepare_states(&mut self, job: &super::AirBasesJob) -> Result<(), &'static str> {
@@ -46,22 +58,33 @@ impl Bases {
         self.state_segments.extend(
             job.segments
                 .iter()
-                .map(|segment| (segment.handle, segment.pointer)),
+                .enumerate()
+                .map(|(idx, segment)| (segment.handle, segment.pointer, segment.id, idx)),
         );
         self.state_segments
-            .sort_unstable_by_key(|(handle, _)| *handle);
-        let recorded = collector_raw::raw::Recorded::build(&job.log)?;
+            .sort_unstable_by_key(|(handle, _, _, _)| *handle);
+        let needs_log = job
+            .segments
+            .iter()
+            .any(|segment| segment.carried_raw.is_none());
+        let recorded = if needs_log {
+            Some(collector_raw::raw::Recorded::build(&job.log)?)
+        } else {
+            None
+        };
         let count = job
             .segments
             .iter()
             .try_fold(0_usize, |sum, segment| {
-                sum.checked_add(
-                    engine_native_air::cair_base::state_country_order_demand(
-                        &recorded,
+                let demand = match segment.carried_raw.as_deref() {
+                    Some(raw) => raw.dense_count,
+                    None => engine_native_air::cair_base::state_country_order_demand(
+                        recorded.as_ref().unwrap(),
                         segment.pointer,
                     )
                     .unwrap_or(0),
-                )
+                };
+                sum.checked_add(demand)
             })
             .ok_or(DEMAND_OVERFLOW)?;
         let demand = job.carrier.demand;
@@ -85,6 +108,7 @@ impl Bases {
         )
     }
 
+    #[cfg(test)]
     pub fn decode_states(
         &mut self,
         job: &super::AirBasesJob,
@@ -99,7 +123,20 @@ impl Bases {
             image,
             job.game_state,
         );
-        let countries = engine_native::ccountry::Reader::new(&recorded, image, job.game_state);
+        self.decode_states_with_recorded(job, image, source, resolved, &recorded)
+    }
+
+    pub(crate) fn decode_states_with_recorded<M: Memory>(
+        &mut self,
+        job: &super::AirBasesJob,
+        image: usize,
+        source: &[engine_native_air::cair_base::Row],
+        resolved: &mut [engine_native_air::cair_base::ResolvedLink],
+        recorded: &M,
+    ) -> Result<(), &'static str> {
+        let countries = engine_native::ccountry::Reader::new(recorded, image, job.game_state);
+        self.state_cache_pass = self.state_cache_pass.wrapping_add(1);
+        let pass = self.state_cache_pass;
         for base in source.iter().filter(|base| base.state.is_some()) {
             if self.len >= self.rows.len() {
                 break;
@@ -109,34 +146,115 @@ impl Bases {
                 countries: Err("state air-base country-order certificate unavailable"),
                 host_name: Ok(None),
             };
-            let pointer = self
+            let matched = self
                 .state_segments
-                .binary_search_by_key(&base.id, |(handle, _)| *handle)
+                .binary_search_by_key(&base.id, |(handle, _, _, _)| *handle)
                 .ok()
-                .map(|at| self.state_segments[at].1);
-            let (Some(pointer), Ok(countries)) = (pointer, &countries) else {
+                .map(|at| self.state_segments[at]);
+            let (Some((_, pointer, segment_id, job_idx)), Ok(countries)) = (matched, &countries)
+            else {
                 continue;
             };
+            let start = self.countries_len;
+            let cached_hit = if let Some(cached) = self.state_cache.get_mut(&base.id)
+                && cached.pointer == pointer
+                && cached.segment == segment_id
             {
-                let start = self.countries_len;
-                row.countries = engine_native_air::cair_base::state_country_order(
-                    &recorded,
-                    image,
-                    pointer,
-                    base,
-                    countries,
-                    resolved,
-                    &mut self.countries[start..],
-                    &mut self.names[self.names_len..],
-                )
-                .map(|len| {
-                    self.countries_len += len;
-                    (start, len)
-                });
-            }
+                match &cached.countries {
+                    Ok(items)
+                        if self.countries[start..].len() >= items.len()
+                            && engine_native_air::cair_base::verify_country_occurrences(
+                                countries, resolved, items,
+                            ) =>
+                    {
+                        self.countries[start..start + items.len()].copy_from_slice(items);
+                        self.countries_len += items.len();
+                        cached.pass = pass;
+                        Some(Ok((start, items.len())))
+                    }
+                    Err(reason) => {
+                        cached.pass = pass;
+                        Some(Err(*reason))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            row.countries = match cached_hit {
+                Some(hit) => hit,
+                None => {
+                    let result = match job.segments[job_idx].carried_raw.as_deref() {
+                        Some(raw) => {
+                            let overlay = raw.memory(recorded);
+                            engine_native::ccountry::Reader::new(&overlay, image, job.game_state)
+                                .and_then(|overlay_countries| {
+                                    engine_native_air::cair_base::state_country_order(
+                                        &overlay,
+                                        image,
+                                        pointer,
+                                        base,
+                                        &overlay_countries,
+                                        resolved,
+                                        &mut self.countries[start..],
+                                        &mut self.names[self.names_len..],
+                                    )
+                                })
+                        }
+                        None => engine_native_air::cair_base::state_country_order(
+                            recorded,
+                            image,
+                            pointer,
+                            base,
+                            countries,
+                            resolved,
+                            &mut self.countries[start..],
+                            &mut self.names[self.names_len..],
+                        ),
+                    };
+                    let cacheable = match result {
+                        Ok(len) => {
+                            self.countries_len += len;
+                            let mut items = Vec::new();
+                            if allocation::advisory(|| allocation::reserve(&mut items, len))
+                                .is_ok()
+                            {
+                                items.extend_from_slice(&self.countries[start..start + len]);
+                                Some(Ok(items))
+                            } else {
+                                None
+                            }
+                        }
+                        Err(reason)
+                            if reason != "state air-base country-order storage unavailable"
+                                && reason
+                                    != "state air-base country-order byte storage unavailable" =>
+                        {
+                            Some(Err(reason))
+                        }
+                        Err(_) => None,
+                    };
+                    if let Some(cached_countries) = cacheable
+                        && allocation::advisory(|| allocation::reserve_map(&mut self.state_cache, 1))
+                            .is_ok()
+                    {
+                        self.state_cache.insert(
+                            base.id,
+                            CachedStateOrder {
+                                pointer,
+                                segment: segment_id,
+                                countries: cached_countries,
+                                pass,
+                            },
+                        );
+                    }
+                    result.map(|len| (start, len))
+                }
+            };
             self.rows[self.len] = row;
             self.len += 1;
         }
+        self.state_cache.retain(|_, cached| cached.pass == pass);
         self.index_rows();
         Ok(())
     }
@@ -175,7 +293,18 @@ impl Bases {
         self.rows.capacity() * size_of::<CarrierBase>()
             + self.countries.capacity() * size_of::<CountryOccurrence>()
             + self.names.capacity()
-            + self.state_segments.capacity() * size_of::<(u64, usize)>()
+            + self.state_segments.capacity() * size_of::<(u64, usize, u64, usize)>()
+            + self.state_cache.capacity() * size_of::<(u64, CachedStateOrder)>()
+            + self
+                .state_cache
+                .values()
+                .map(|cached| {
+                    cached
+                        .countries
+                        .as_ref()
+                        .map_or(0, |items| items.capacity() * size_of::<CountryOccurrence>())
+                })
+                .sum::<usize>()
     }
     pub fn capacity(&self) -> [usize; 3] {
         [self.rows.len(), self.countries.len(), self.names.len()]
@@ -332,48 +461,15 @@ impl Registrations {
             .sort_unstable_by_key(|row| (row.base, row.slot));
         Ok(())
     }
+    pub fn cursor(&self) -> RegistrationCursor<'_> {
+        RegistrationCursor {
+            registrations: self,
+            state_at: std::cell::Cell::new(0),
+            row_at: std::cell::Cell::new(0),
+        }
+    }
     pub fn registration(&self, source: &cair_base::RegistrationRow) -> Registration<'_> {
-        let key = (source.base, source.slot);
-        if let Ok(index) = self
-            .state
-            .rows
-            .binary_search_by_key(&key, |row| (row.base, row.slot))
-        {
-            return Registration {
-                row: self.state.rows.get(index),
-                pools: &self.state.pools,
-                pools_len: self.state.pools.len(),
-                wing_len: source.wings_len,
-                state: true,
-            };
-        }
-        let row = self
-            .indexed
-            .then(|| self.rows.get(..self.len))
-            .flatten()
-            .and_then(|rows| {
-                let index = rows
-                    .binary_search_by_key(&key, |row| (row.base, row.slot))
-                    .ok()?;
-                if index
-                    .checked_sub(1)
-                    .and_then(|index| rows.get(index))
-                    .is_some_and(|row| (row.base, row.slot) == key)
-                    || rows
-                        .get(index + 1)
-                        .is_some_and(|row| (row.base, row.slot) == key)
-                {
-                    return None;
-                }
-                rows.get(index)
-            });
-        Registration {
-            row,
-            pools: &self.pools,
-            pools_len: self.pools_len,
-            wing_len: source.wings_len,
-            state: false,
-        }
+        self.cursor().registration(source)
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn state_fuel(&self, source: &cair_base::RegistrationRow) -> [Option<i64>; 2] {
@@ -393,6 +489,103 @@ impl Registrations {
         old: &rows::Recorded<Option<rows::AirBaseRegistrationCarrierInputs>>,
     ) -> bool {
         self.registration(source).equal(old)
+    }
+}
+
+pub struct RegistrationCursor<'a> {
+    registrations: &'a Registrations,
+    state_at: std::cell::Cell<usize>,
+    row_at: std::cell::Cell<usize>,
+}
+
+fn find_sorted<T>(
+    rows: &[T],
+    cursor: &std::cell::Cell<usize>,
+    key: (u64, u32),
+    key_of: impl Fn(&T) -> (u64, u32),
+) -> Option<usize> {
+    let pos = cursor.get();
+    if pos > 0 && rows.get(pos - 1).is_some_and(|row| key_of(row) >= key) {
+        return match rows.binary_search_by_key(&key, &key_of) {
+            Ok(index) => {
+                cursor.set(index + 1);
+                Some(index)
+            }
+            Err(index) => {
+                cursor.set(index);
+                None
+            }
+        };
+    }
+    if let Some(row) = rows.get(pos) {
+        match key_of(row).cmp(&key) {
+            std::cmp::Ordering::Equal => {
+                cursor.set(pos + 1);
+                return Some(pos);
+            }
+            std::cmp::Ordering::Greater => return None,
+            std::cmp::Ordering::Less => {}
+        }
+    } else {
+        return None;
+    }
+    let mut low = pos + 1;
+    let mut step = 1;
+    while low + step < rows.len() && key_of(&rows[low + step]) < key {
+        low += step;
+        step <<= 1;
+    }
+    let end = (low + step + 1).min(rows.len());
+    let at = low + rows[low..end].partition_point(|row| key_of(row) < key);
+    if rows.get(at).is_some_and(|row| key_of(row) == key) {
+        cursor.set(at + 1);
+        Some(at)
+    } else {
+        cursor.set(at);
+        None
+    }
+}
+
+impl<'a> RegistrationCursor<'a> {
+    pub fn registration(&self, source: &cair_base::RegistrationRow) -> Registration<'a> {
+        let key = (source.base, source.slot);
+        let registrations = self.registrations;
+        if let Some(index) = find_sorted(&registrations.state.rows, &self.state_at, key, |row| {
+            (row.base, row.slot)
+        }) {
+            return Registration {
+                row: registrations.state.rows.get(index),
+                pools: &registrations.state.pools,
+                pools_len: registrations.state.pools.len(),
+                wing_len: source.wings_len,
+                state: true,
+            };
+        }
+        let row = registrations
+            .indexed
+            .then(|| registrations.rows.get(..registrations.len))
+            .flatten()
+            .and_then(|rows| {
+                let index = find_sorted(rows, &self.row_at, key, |row| (row.base, row.slot))?;
+                if index
+                    .checked_sub(1)
+                    .and_then(|index| rows.get(index))
+                    .is_some_and(|row| (row.base, row.slot) == key)
+                    || rows
+                        .get(index + 1)
+                        .is_some_and(|row| (row.base, row.slot) == key)
+                {
+                    return None;
+                }
+                rows.get(index)
+            });
+        Registration {
+            row,
+            pools: &registrations.pools,
+            pools_len: registrations.pools_len,
+            wing_len: source.wings_len,
+            state: false,
+        }
     }
 }
 

@@ -12,6 +12,7 @@ doctest = false
 [dependencies]
 engine-native-memory.workspace = true
 engine-allocation.workspace = true
+foldhash = "0.2"
 replay-data.workspace = true
 replay-frame = { workspace = true, features = ["capture"] }
 serde = { workspace = true, features = ["derive"] }

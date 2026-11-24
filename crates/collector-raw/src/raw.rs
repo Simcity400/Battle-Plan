@@ -304,6 +304,9 @@ pub struct RawLog<const N: usize> {
     index: RefCell<Option<RecordedIndex>>,
     plan: CapturePlan<N>,
     planned_spans_loaned: bool,
+    quiet_streak: u8,
+    quiet_peak_spans: usize,
+    quiet_peak_bytes: usize,
     pub backend_ns: u64,
     capacity_charge: crate::raw_memory::Charge,
 }
@@ -333,6 +336,9 @@ impl<const N: usize> RawLog<N> {
             index: RefCell::new(None),
             plan: CapturePlan::default(),
             planned_spans_loaned: false,
+            quiet_streak: 0,
+            quiet_peak_spans: 0,
+            quiet_peak_bytes: 0,
             backend_ns: 0,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
@@ -372,6 +378,97 @@ impl<const N: usize> RawLog<N> {
         self.plan.blocked = false;
         self.plan.source_observed = false;
         self.plan.attempt = Attempt::None;
+    }
+
+    pub fn drop_index(&mut self) {
+        *self.index.get_mut() = None;
+    }
+
+    pub fn trim_if_quiet(&mut self) -> bool {
+        self.return_planned_spans();
+        if self.overflowed || self.plan.attempt != Attempt::None {
+            self.quiet_streak = 0;
+            self.quiet_peak_spans = 0;
+            self.quiet_peak_bytes = 0;
+            return false;
+        }
+        let used_spans = self.spans.len();
+        let used_bytes = self.bytes.len();
+        let span_cap = self.spans.capacity();
+        let byte_cap = self.bytes.storage.capacity();
+        let has_unused_plan = self.plan.compiled.is_some()
+            || self.plan.requests.capacity() > 32_768
+            || self
+                .bytes
+                .observations
+                .as_ref()
+                .is_some_and(|observations| observations.borrow().capacity_bytes() > 256 * 1024);
+        let oversized = (span_cap > 32_768 && used_spans.saturating_mul(4) < span_cap)
+            || (byte_cap > 512 * 1024 && used_bytes.saturating_mul(4) < byte_cap)
+            || has_unused_plan;
+        if !oversized {
+            self.quiet_streak = 0;
+            self.quiet_peak_spans = 0;
+            self.quiet_peak_bytes = 0;
+            return true;
+        }
+        self.quiet_streak = self.quiet_streak.saturating_add(1);
+        self.quiet_peak_spans = self.quiet_peak_spans.max(used_spans);
+        self.quiet_peak_bytes = self.quiet_peak_bytes.max(used_bytes);
+        if self.quiet_streak < 4 {
+            return true;
+        }
+        let target_spans = self.quiet_peak_spans.saturating_mul(2).max(16_384);
+        let target_bytes = self.quiet_peak_bytes.saturating_mul(2).max(256 * 1024);
+        self.quiet_streak = 0;
+        self.quiet_peak_spans = 0;
+        self.quiet_peak_bytes = 0;
+        let mut changed = false;
+        if self.plan.compiled.is_some() {
+            self.plan.compiled = None;
+            self.plan.retire = false;
+            self.plan.sealed = false;
+            changed = true;
+        }
+        if self.plan.requests.capacity() > target_spans.saturating_mul(2) {
+            self.plan.requests = Vec::new();
+            changed = true;
+        }
+        if let Some(observations) = &mut self.bytes.observations
+            && observations.get_mut().capacity_bytes() > 256 * 1024
+        {
+            observations.get_mut().release_buffers();
+            changed = true;
+        }
+        if self.spans.capacity() > target_spans.saturating_mul(2) {
+            let mut trimmed = Vec::new();
+            if engine_allocation::advisory(|| {
+                engine_allocation::reserve_exact(&mut trimmed, target_spans)
+            })
+            .is_ok()
+            {
+                self.spans = trimmed;
+                changed = true;
+            }
+        }
+        if self.bytes.storage.capacity() > target_bytes.saturating_mul(2) {
+            let mut trimmed = Vec::new();
+            if engine_allocation::advisory(|| {
+                engine_allocation::reserve_exact(&mut trimmed, target_bytes)
+            })
+            .is_ok()
+            {
+                trimmed.resize(trimmed.capacity(), 0);
+                self.bytes.storage = trimmed;
+                self.bytes.used = 0;
+                changed = true;
+            }
+        }
+        if changed {
+            self.drop_index();
+            self.update_capacity_charge();
+        }
+        true
     }
 
     pub fn initialize_read_plan(
@@ -837,6 +934,22 @@ impl<const N: usize> RawLog<N> {
         true
     }
 
+    pub fn clone_with_extra(&self, extra_spans: usize, extra_bytes: usize) -> Option<Self> {
+        let total_spans = self.spans.len().checked_add(extra_spans)?;
+        let total_bytes = self.bytes.len().checked_add(extra_bytes)?;
+        let mut cloned = Self::new(total_spans, total_bytes);
+        if cloned.spans.capacity() < total_spans || cloned.bytes.capacity() < total_bytes {
+            return None;
+        }
+        cloned.spans.extend_from_slice(&self.spans);
+        cloned.bytes.extend_from_slice(self.bytes.as_ref());
+        cloned.fault = self.fault;
+        cloned.raw_bytes = self.raw_bytes;
+        cloned.overflowed = self.overflowed;
+        cloned.has_bulk = self.has_bulk;
+        Some(cloned)
+    }
+
     pub fn record(
         &mut self,
         addr: usize,
@@ -1151,7 +1264,6 @@ impl<const N: usize> RawLog<N> {
         Some((start, completed))
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn take_records(
         &mut self,
         memory: &impl Memory,

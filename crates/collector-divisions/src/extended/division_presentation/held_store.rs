@@ -213,6 +213,7 @@ mod tests {
             8,
             &[0; engine_native::cname_group_member::INPUT_SPAN],
             b"held name",
+            0,
         );
         store.hold(Some(1));
         store

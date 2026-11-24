@@ -1,4 +1,8 @@
-use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{
+    Memory, cpdx_array::Array,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read, read_slice,
+};
 use engine_native::{
     carmy::{self, DivisionSeed},
     cequipment_variant::pool as cequipment_variant_pool,
@@ -8,6 +12,14 @@ use engine_native::{
 };
 use engine_native_parts::equipment_entry;
 pub const VARIANT_TERRAIN_ATTRITION: usize = 0x3a0;
+const VARIANT_HEADER_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 16,
+}];
+const VARIANT_HEADER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&VARIANT_HEADER_FIELDS, 16).expect("valid record layout");
+
 pub fn held_variants(
     memory: &impl Memory,
     base: usize,
@@ -19,23 +31,81 @@ pub fn held_variants(
         .checked_add(carmy::EQUIPMENT_POOL)
         .ok_or("attrition membership pool overflow")?;
     let entries = cequipment_variant_pool::entries(memory, base, pool)?;
-    for ordinal in 0..entries.count {
-        let address = entries
-            .element(ordinal, equipment_entry::STRIDE)
-            .ok_or("attrition membership slot overflow")?;
-        let raw =
-            read::<[u8; 16]>(memory, address).ok_or("attrition membership entry unreadable")?;
-        let amount_raw = i64::from_le_bytes(raw[8..].try_into().unwrap());
-        if amount_raw != 0 {
-            let variant_pointer = u64::from_le_bytes(raw[..8].try_into().unwrap()) as usize;
-            let variant_handle = engine_native_parts::equipment_variant_identity::identity(memory, base, variant_pointer)?;
-            visit(equipment_entry::Row {
-                source_ordinal: ordinal,
-                variant_handle,
-                variant_pointer,
-                amount_raw,
-            })?;
+    let expected = engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA);
+    const BATCH: usize = 64;
+    let mut raw = [0u8; BATCH * 16];
+    let mut pointers = [0usize; BATCH];
+    let mut ordinals = [0u32; BATCH];
+    let mut amounts = [0i64; BATCH];
+    let mut headers = [0u8; BATCH * 16];
+    let mut first = 0u32;
+    while first < entries.count {
+        let count = ((entries.count - first) as usize).min(BATCH);
+        let chunk_ok = entries
+            .slice(first, count as u32, equipment_entry::STRIDE)
+            .ok()
+            .is_some_and(|span| read_slice(memory, span.data, &mut raw[..count * 16]));
+        if !chunk_ok {
+            for ordinal in first..first + count as u32 {
+                let address = entries
+                    .element(ordinal, equipment_entry::STRIDE)
+                    .ok_or("attrition membership slot overflow")?;
+                let entry = read::<[u8; 16]>(memory, address)
+                    .ok_or("attrition membership entry unreadable")?;
+                let amount_raw = i64::from_le_bytes(entry[8..].try_into().unwrap());
+                if amount_raw != 0 {
+                    let variant_pointer = u64::from_le_bytes(entry[..8].try_into().unwrap()) as usize;
+                    let variant_handle = engine_native_parts::equipment_variant_identity::identity(memory, base, variant_pointer)?;
+                    visit(equipment_entry::Row {
+                        source_ordinal: ordinal,
+                        variant_handle,
+                        variant_pointer,
+                        amount_raw,
+                    })?;
+                }
+            }
+            first += count as u32;
+            continue;
         }
+        let mut live = 0usize;
+        for (offset, entry) in raw[..count * 16].chunks_exact(16).enumerate() {
+            let amount_raw = i64::from_le_bytes(entry[8..].try_into().unwrap());
+            if amount_raw != 0 {
+                pointers[live] = u64::from_le_bytes(entry[..8].try_into().unwrap()) as usize;
+                ordinals[live] = first + offset as u32;
+                amounts[live] = amount_raw;
+                live += 1;
+            }
+        }
+        if live != 0 {
+            let expected = expected.ok_or("variant module address overflow")?;
+            let copied = memory.copy_records(
+                RecordSources::Pointers(&pointers[..live]),
+                &VARIANT_HEADER_LAYOUT,
+                &mut headers[..live * 16],
+            );
+            for slot in 0..live {
+                let variant_handle = if slot < copied {
+                    engine_native_parts::equipment_variant_identity::identity_from_header(
+                        expected,
+                        headers[slot * 16..slot * 16 + 16].try_into().unwrap(),
+                    )?
+                } else {
+                    engine_native_parts::equipment_variant_identity::identity(
+                        memory,
+                        base,
+                        pointers[slot],
+                    )?
+                };
+                visit(equipment_entry::Row {
+                    source_ordinal: ordinals[slot],
+                    variant_handle,
+                    variant_pointer: pointers[slot],
+                    amount_raw: amounts[slot],
+                })?;
+            }
+        }
+        first += count as u32;
     }
     Ok(entries.count)
 }
@@ -57,17 +127,34 @@ pub fn terrain(
         8,
     )
     .ok_or("attrition variant terrain vector unreadable")?;
-    for ordinal in 0..array.count {
-        visit(
-            ordinal,
-            read(
-                memory,
-                array
-                    .element(ordinal, 8)
-                    .ok_or("attrition variant terrain slot overflow")?,
-            )
-            .ok_or("attrition variant terrain value unreadable")?,
-        )?;
+    const BATCH: usize = 64;
+    let mut raw = [0u8; BATCH * 8];
+    let mut first = 0u32;
+    while first < array.count {
+        let count = ((array.count - first) as usize).min(BATCH);
+        let chunk_ok = array
+            .slice(first, count as u32, 8)
+            .ok()
+            .is_some_and(|span| read_slice(memory, span.data, &mut raw[..count * 8]));
+        if chunk_ok {
+            for (offset, bytes) in raw[..count * 8].chunks_exact(8).enumerate() {
+                visit(first + offset as u32, i64::from_le_bytes(bytes.try_into().unwrap()))?;
+            }
+        } else {
+            for ordinal in first..first + count as u32 {
+                visit(
+                    ordinal,
+                    read(
+                        memory,
+                        array
+                            .element(ordinal, 8)
+                            .ok_or("attrition variant terrain slot overflow")?,
+                    )
+                    .ok_or("attrition variant terrain value unreadable")?,
+                )?;
+            }
+        }
+        first += count as u32;
     }
     Ok(array.count)
 }
@@ -85,6 +172,16 @@ pub fn selected_province_in(
     game_state: usize,
     seed: &DivisionSeed,
 ) -> Result<usize, &'static str> {
+    selected_province_cached(memory, roster, game_state, seed, |_, read| read())
+}
+
+pub fn selected_province_cached(
+    memory: &impl Memory,
+    roster: &mut Option<Array>,
+    game_state: usize,
+    seed: &DivisionSeed,
+    mut resolve: impl FnMut(u32, &mut dyn FnMut() -> Result<usize, &'static str>) -> Result<usize, &'static str>,
+) -> Result<usize, &'static str> {
     let route = seed
         .ordinary_route
         .ok_or("attrition ordinary route unavailable")?;
@@ -95,32 +192,35 @@ pub fn selected_province_in(
             None => read::<u32>(memory, array.data),
         }
         .ok_or("attrition first route id unreadable")?;
-        let provinces = match *roster {
-            Some(provinces) => provinces,
-            None => {
-                let provinces = Array::read(
-                    memory,
-                    game_state
-                        .checked_add(cgame_state::PROVINCES)
-                        .ok_or("attrition province roster overflow")?,
-                    8,
-                )
-                .ok_or("attrition province roster invalid")?;
-                *roster = Some(provinces);
+        let mut read_route = || {
+            let provinces = match *roster {
+                Some(provinces) => provinces,
+                None => {
+                    let provinces = Array::read(
+                        memory,
+                        game_state
+                            .checked_add(cgame_state::PROVINCES)
+                            .ok_or("attrition province roster overflow")?,
+                        8,
+                    )
+                    .ok_or("attrition province roster invalid")?;
+                    *roster = Some(provinces);
+                    provinces
+                }
+            };
+            let province = read::<u64>(
+                memory,
                 provinces
+                    .element(id, 8)
+                    .ok_or("attrition route province outside roster")?,
+            )
+            .ok_or("attrition route province unreadable")? as usize;
+            if province != 0 && read::<u32>(memory, province + cprovince::ID) != Some(id) {
+                return Err("attrition route province identity mismatch");
             }
+            Ok(province)
         };
-        let province = read::<u64>(
-            memory,
-            provinces
-                .element(id, 8)
-                .ok_or("attrition route province outside roster")?,
-        )
-        .ok_or("attrition route province unreadable")? as usize;
-        if province != 0 && read::<u32>(memory, province + cprovince::ID) != Some(id) {
-            return Err("attrition route province identity mismatch");
-        }
-        province
+        resolve(id, &mut read_route)?
     } else {
         0
     };

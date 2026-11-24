@@ -7,7 +7,7 @@ use engine_native_memory::{
     read_slice,
     walk::{Buffer, Outcome},
 };
-use engine_native::{cequipment_variant::{self, pool as pool}, cgame_state, corders_group};
+use engine_native::{cequipment_variant::pool, cgame_state, corders_group};
 use engine_native_parts::equipment_entry;
 use crate::{ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as logs};
 use engine_sites::Rva;
@@ -69,6 +69,20 @@ const GROUP_FIELDS: [RecordField; 1] = [RecordField {
 }];
 const GROUP_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&GROUP_FIELDS, logs::SIZE).expect("valid record layout");
+const GROUP_IDENTITY_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: logs::GROUP,
+        destination_offset: 8,
+        len: 8,
+    },
+];
+const GROUP_IDENTITY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&GROUP_IDENTITY_FIELDS, 16).expect("valid record layout");
 const KINDS: usize = logs::REASON_COUNT + 1;
 
 const ENTRY_BYTES: usize = loss::POOL + pool::ITEMS + 16;
@@ -97,11 +111,94 @@ struct Vtables {
     variant: usize,
 }
 
+const SMALL_MEMO_SLOTS: usize = 256;
+
+struct SmallVariantMemo {
+    pointers: [usize; SMALL_MEMO_SLOTS],
+    ids: [u32; SMALL_MEMO_SLOTS],
+    len: usize,
+}
+
+impl Default for SmallVariantMemo {
+    fn default() -> Self {
+        Self {
+            pointers: [0; SMALL_MEMO_SLOTS],
+            ids: [0; SMALL_MEMO_SLOTS],
+            len: 0,
+        }
+    }
+}
+
+impl SmallVariantMemo {
+    #[inline]
+    fn slot(pointer: usize) -> usize {
+        (pointer >> 4).wrapping_mul(0x9e37_79b9_7f4a_7c15) & (SMALL_MEMO_SLOTS - 1)
+    }
+
+    fn get(&self, pointer: usize) -> Option<u32> {
+        let mut slot = Self::slot(pointer);
+        loop {
+            match self.pointers[slot] {
+                0 => return None,
+                found if found == pointer => return Some(self.ids[slot]),
+                _ => slot = (slot + 1) & (SMALL_MEMO_SLOTS - 1),
+            }
+        }
+    }
+
+    fn insert(&mut self, pointer: usize, id: u32) {
+        if self.len >= SMALL_MEMO_SLOTS / 2 {
+            return;
+        }
+        let mut slot = Self::slot(pointer);
+        while self.pointers[slot] != 0 {
+            if self.pointers[slot] == pointer {
+                return;
+            }
+            slot = (slot + 1) & (SMALL_MEMO_SLOTS - 1);
+        }
+        self.pointers[slot] = pointer;
+        self.ids[slot] = id;
+        self.len += 1;
+    }
+}
+
+enum Memo<'a> {
+    None,
+    Heap(&'a mut VariantMemo),
+    Stack(&'a mut SmallVariantMemo),
+}
+
+impl Memo<'_> {
+    fn reserve(&mut self, additional: usize) -> std::io::Result<()> {
+        match self {
+            Self::Heap(memo) => memo.reserve(additional),
+            Self::None | Self::Stack(_) => Ok(()),
+        }
+    }
+
+    fn get(&self, pointer: usize) -> Option<u32> {
+        match self {
+            Self::None => None,
+            Self::Heap(memo) => memo.get(pointer),
+            Self::Stack(memo) => memo.get(pointer),
+        }
+    }
+
+    fn insert(&mut self, pointer: usize, id: u32) {
+        match self {
+            Self::None => {}
+            Self::Heap(memo) => memo.insert(pointer, id),
+            Self::Stack(memo) => memo.insert(pointer, id),
+        }
+    }
+}
+
 struct Output<'a> {
     rows: Buffer<'a, Row>,
     len: usize,
     unread_rows: u32,
-    memo: Option<&'a mut VariantMemo>,
+    memo: Memo<'a>,
 }
 
 #[derive(Default)]
@@ -296,7 +393,10 @@ fn walk_prepared_buffer<T>(
         rows,
         len: 0,
         unread_rows: 0,
-        memo,
+        memo: match memo {
+            Some(memo) => Memo::Heap(memo),
+            None => Memo::None,
+        },
     };
     let read = |state: &mut T, memory: &_, vtables: &Vtables, country, groups| {
         let Some(months) = select(state, country)? else {
@@ -625,10 +725,10 @@ fn read_pool(
             .ok_or("combat log unread row count exceeds u32")?;
         return Ok(());
     }
-    if let Some(memo) = output.memo.as_deref_mut() {
-        memo.reserve(items.count as usize)
-            .map_err(|_| "combat log variant memo allocation failed")?;
-    }
+    output
+        .memo
+        .reserve(items.count as usize)
+        .map_err(|_| "combat log variant memo allocation failed")?;
     let start = output.len;
     let mut entries = [0_u8; BATCH * equipment_entry::STRIDE];
     let mut ids = [0_u32; BATCH];
@@ -651,7 +751,7 @@ fn read_pool(
             if variant == 0 {
                 return Err("combat log pool variant pointer null");
             }
-            match output.memo.as_deref().and_then(|memo| memo.get(variant)) {
+            match output.memo.get(variant) {
                 Some(id) => ids[index] = id,
                 None => {
                     misses[missed] = index;
@@ -675,9 +775,7 @@ fn read_pool(
             )?;
             let id = (handle >> 32) as u32;
             ids[misses[miss]] = id;
-            if let Some(memo) = output.memo.as_deref_mut() {
-                memo.insert(unknown[miss], id);
-            }
+            output.memo.insert(unknown[miss], id);
         }
         for (index, entry) in bytes.chunks_exact(equipment_entry::STRIDE).enumerate() {
             output.rows[output.len] = Row {
@@ -704,13 +802,21 @@ fn read_pool(
     Ok(())
 }
 
+const BUCKET_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 24,
+}];
+const BUCKET_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&BUCKET_FIELDS, 24).expect("valid record layout");
+
 pub fn countries_with_deleted_groups(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     mut visit: impl FnMut(u32),
 ) -> Result<(), &'static str> {
-    let mut resolver = engine_native_parts::creference_registry::HeaderResolver::default();
+    let mut resolver = engine_native_parts::creference_registry::ScopedResolver::new(base);
     for_each_manager(
         memory,
         base,
@@ -720,7 +826,7 @@ pub fn countries_with_deleted_groups(
         |_, memory, vtables, country, groups| {
             let mut deleted = false;
             for_each_group(memory, vtables, groups, |_, _, _, reference| {
-                if !deleted && resolver.resolve(memory, base, reference)?.is_none() {
+                if !deleted && resolver.resolve(memory, reference)?.is_none() {
                     deleted = true;
                 }
                 Ok(())
@@ -758,27 +864,108 @@ pub fn deleted_logs(
     let groups = Array::from_header(header[GROUPS..GROUPS + 16].try_into().unwrap(), 8)
         .ok_or("combat log group array invalid")?;
     let country = u32_at(&header, COUNTRY);
+    let mut small_memo = SmallVariantMemo::default();
     let mut output = Output {
         rows: Buffer::Exact(rows),
         len: 0,
         unread_rows: 0,
-        memo: None,
+        memo: Memo::Stack(&mut small_memo),
     };
-    let mut resolver = engine_native_parts::creference_registry::HeaderResolver::default();
-    for_each_group(memory, &vtables, groups, |_, _, bytes, reference| {
-        if resolver.resolve(memory, base, reference)?.is_some() {
-            return Ok(());
+    let mut resolver = engine_native_parts::creference_registry::ScopedResolver::new(base);
+    let mut pointer_bytes = [0_u8; BATCH * 8];
+    let mut pointers = [0_usize; BATCH];
+    let mut identities = [0_u8; BATCH * 16];
+    let mut references = [0_u64; BATCH];
+    let mut cell_headers = [None; BATCH];
+    let mut cell_pointers = [0_usize; BATCH];
+    let mut cell_map = [0_usize; BATCH];
+    let mut cell_bytes = [0_u8; BATCH * 24];
+    let mut group_bytes = [0_u8; logs::SIZE];
+    let mut first = 0;
+    while first < groups.count {
+        let count = ((groups.count - first) as usize).min(BATCH);
+        let span = groups
+            .slice(first, count as u32, 8)
+            .map_err(|_| "combat log group window invalid")?;
+        if !read_slice(memory, span.data, &mut pointer_bytes[..count * 8]) {
+            return Err("combat log group pointers unreadable");
         }
-        read_group(
-            memory,
-            &vtables,
-            country,
-            bytes,
-            reference,
-            Months::All,
-            &mut output,
-        )
-    })?;
+        for (pointer, bytes) in pointers.iter_mut().zip(pointer_bytes.chunks_exact(8)) {
+            *pointer = u64_at(bytes, 0) as usize;
+        }
+        if pointers[..count].contains(&0) {
+            return Err("combat log group pointer null");
+        }
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&pointers[..count]),
+            &GROUP_IDENTITY_LAYOUT,
+            &mut identities[..count * 16],
+        );
+        let mut cell_count = 0_usize;
+        for index in 0..count {
+            if copied < index + 1 {
+                return Err("combat log group unreadable");
+            }
+            let identity = &identities[index * 16..(index + 1) * 16];
+            if u64_at(identity, 0) != vtables.group {
+                return Err("combat log group vtable mismatch");
+            }
+            let reference = u64_at(identity, 8);
+            if reference as u32 != corders_group::REFERENCE_TYPE {
+                return Err("combat log group reference is not an orders group");
+            }
+            references[index] = reference;
+            if let Some((header, cell)) = resolver.first_cell(memory, reference)? {
+                cell_headers[index] = Some(header);
+                cell_pointers[cell_count] = cell;
+                cell_map[index] = cell_count;
+                cell_count += 1;
+            } else {
+                cell_headers[index] = None;
+            }
+        }
+        let copied_cells = if cell_count != 0 {
+            memory.copy_records(
+                RecordSources::Pointers(&cell_pointers[..cell_count]),
+                &BUCKET_LAYOUT,
+                &mut cell_bytes[..cell_count * 24],
+            )
+        } else {
+            0
+        };
+        for index in 0..count {
+            let resolved = match cell_headers[index] {
+                Some(header) => {
+                    let slot = cell_map[index];
+                    if slot < copied_cells {
+                        let first_bucket: [u8; 24] = cell_bytes[slot * 24..(slot + 1) * 24]
+                            .try_into()
+                            .unwrap();
+                        resolver.resolve_gathered(memory, header, references[index], first_bucket)?
+                    } else {
+                        resolver.resolve(memory, references[index])?
+                    }
+                }
+                None => None,
+            };
+            if resolved.is_some() {
+                continue;
+            }
+            if !read_slice(memory, pointers[index], &mut group_bytes) {
+                return Err("combat log group unreadable");
+            }
+            read_group(
+                memory,
+                &vtables,
+                country,
+                &group_bytes,
+                references[index],
+                Months::All,
+                &mut output,
+            )?;
+        }
+        first += count as u32;
+    }
     let outcome = if output.unread_rows == 0 {
         Outcome::Rows { len: output.len }
     } else {

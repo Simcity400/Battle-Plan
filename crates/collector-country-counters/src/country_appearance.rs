@@ -756,6 +756,183 @@ impl Captured {
         self.tables_at(None)
     }
 
+    pub fn table_inputs(
+        &self,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+        hour: Option<i32>,
+    ) -> [replay_frame::frame::TableInput; N] {
+        [
+            self.appearance_input(projection),
+            replay_frame::frame::TableInput::Sampled(self.reserved_table(hour)),
+        ]
+    }
+
+    fn appearance_input(
+        &self,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> replay_frame::frame::TableInput {
+        let Some(subjects) = self.subjects.first.get(..self.subjects.len) else {
+            return unavailable("country subject arena invalid").into();
+        };
+        let len = self.rows.outcome.len();
+        let Some((rows, starts)) = self.rows.rows.get(..len).zip(self.subject_starts.get(..len))
+        else {
+            return unavailable("country subject span outside captured arena").into();
+        };
+        if rows.iter().zip(starts).any(|(row, &start)| {
+            start
+                .checked_add(row.subjects.count as usize)
+                .and_then(|end| subjects.get(start..end))
+                .is_none()
+        }) {
+            return unavailable("country subject span outside captured arena").into();
+        }
+        let base = rows.as_ptr() as usize;
+        let stride = std::mem::size_of::<
+            ccountry::AppearanceRow<
+                engine_native_memory::capture_text::Owned,
+                engine_native_memory::capture_text::Owned,
+                engine_native_memory::capture_text::Owned,
+            >,
+        >();
+        let start_of = |r: &ccountry::AppearanceRow<
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+        >| { starts[(r as *const _ as usize - base) / stride] };
+        let original_tag_bytes = |r: &ccountry::AppearanceRow<
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+        >| {
+            r.original_tag.and_then(|name| {
+                name.start.checked_add(name.len).and_then(|end| {
+                    self.naming
+                        .first
+                        .get(..self.naming.len)?
+                        .get(name.start..end)
+                })
+            })
+        };
+        collector_projection::projection::project_table::<tables::CountryAppearance, _>(
+            projection,
+            self.outcomes()[0],
+            rows,
+            |r| u128::from(r.country),
+            |r, prev| {
+                if prev.country != r.country
+                    || prev.red != r.rgba[0]
+                    || prev.green != r.rgba[1]
+                    || prev.blue != r.rgba[2]
+                    || prev.alpha != r.rgba[3]
+                    || prev.overlord != r.overlord
+                    || prev.leader_character != r.leader_character
+                    || prev.ui_red != r.ui_rgba[0]
+                    || prev.ui_green != r.ui_rgba[1]
+                    || prev.ui_blue != r.ui_rgba[2]
+                    || prev.ui_alpha != r.ui_rgba[3]
+                    || prev.original_tag_reference
+                        != replay_data::rows::Recorded::Value(Some(r.original_tag_reference))
+                    || prev.transport_convoys
+                        != replay_data::rows::Recorded::Value(replay_data::rows::Retired)
+                    || prev.cosmetic_tag.as_slice() != r.cosmetic_tag.as_bytes()
+                    || prev.name_tag.as_slice() != r.name_tag.as_bytes()
+                    || prev.leader_ideology.as_slice() != r.leader_ideology.as_bytes()
+                    || prev.graphical_culture.as_slice() != r.graphical_culture.as_bytes()
+                    || prev.graphical_culture_2d.as_slice() != r.graphical_culture_2d.as_bytes()
+                {
+                    return false;
+                }
+                let start = start_of(r);
+                let cur_subjects = &subjects[start..start + r.subjects.count as usize];
+                let subjects_eq = match &prev.subjects {
+                    replay_data::rows::Recorded::Value(prev_subjects) => {
+                        prev_subjects.len() == cur_subjects.len()
+                            && prev_subjects
+                                .iter()
+                                .zip(cur_subjects)
+                                .all(|(&a, &b)| a == b as i32)
+                    }
+                    _ => false,
+                };
+                if !subjects_eq {
+                    return false;
+                }
+                let old_names_eq = match (
+                    r.old_names.as_ref(),
+                    prev.old_name.as_deref(),
+                    prev.old_adjective.as_deref(),
+                    prev.old_definite_name.as_deref(),
+                ) {
+                    (Some(cur), Some(a), Some(b), Some(c)) => {
+                        a == cur[0].as_bytes() && b == cur[1].as_bytes() && c == cur[2].as_bytes()
+                    }
+                    (None, None, None, None) => true,
+                    _ => false,
+                };
+                if !old_names_eq {
+                    return false;
+                }
+                match (original_tag_bytes(r), &prev.original_tag) {
+                    (Some(cur), replay_data::rows::Recorded::Value(Some(prev))) => {
+                        prev.as_slice() == cur
+                    }
+                    (None, replay_data::rows::Recorded::Value(None)) => true,
+                    _ => false,
+                }
+            },
+            |r| {
+                let start = start_of(r);
+                CountryAppearanceRow {
+                    country: r.country,
+                    subjects: replay_data::rows::Recorded::Value(owned_vec(
+                        engine_allocation::collect_vec(
+                            subjects[start..start + r.subjects.count as usize]
+                                .iter()
+                                .map(|&value| value as i32),
+                        ),
+                    )),
+                    red: r.rgba[0],
+                    green: r.rgba[1],
+                    blue: r.rgba[2],
+                    alpha: r.rgba[3],
+                    cosmetic_tag: owned_vec(copy_vec(r.cosmetic_tag.as_bytes())),
+                    name_tag: owned_vec(copy_vec(r.name_tag.as_bytes())),
+                    leader_ideology: owned_vec(copy_vec(r.leader_ideology.as_bytes())),
+                    overlord: r.overlord,
+                    graphical_culture: owned_vec(copy_vec(r.graphical_culture.as_bytes())),
+                    graphical_culture_2d: owned_vec(copy_vec(r.graphical_culture_2d.as_bytes())),
+                    leader_character: r.leader_character,
+                    ui_red: r.ui_rgba[0],
+                    ui_green: r.ui_rgba[1],
+                    ui_blue: r.ui_rgba[2],
+                    ui_alpha: r.ui_rgba[3],
+                    old_name: r
+                        .old_names
+                        .as_ref()
+                        .map(|names| owned_vec(copy_vec(names[0].as_bytes()))),
+                    old_adjective: r
+                        .old_names
+                        .as_ref()
+                        .map(|names| owned_vec(copy_vec(names[1].as_bytes()))),
+                    old_definite_name: r
+                        .old_names
+                        .as_ref()
+                        .map(|names| owned_vec(copy_vec(names[2].as_bytes()))),
+                    original_tag: replay_data::rows::Recorded::Value(
+                        original_tag_bytes(r).map(|bytes| owned_vec(copy_vec(bytes))),
+                    ),
+                    original_tag_reference: replay_data::rows::Recorded::Value(Some(
+                        r.original_tag_reference,
+                    )),
+                    transport_convoys: replay_data::rows::Recorded::Value(
+                        replay_data::rows::Retired,
+                    ),
+                }
+            },
+        )
+    }
+
     pub fn tables_at(&self, hour: Option<i32>) -> [TableView; N] {
         [self.appearance_table(), self.reserved_table(hour)]
     }

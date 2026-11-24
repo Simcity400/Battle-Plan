@@ -38,13 +38,12 @@ fn apply(pipeline: &Pipeline, budget: &mut Budget, now: u64, native: &AtomicU32)
 
 #[test]
 fn pressure_is_early_targeted_and_only_during_capture() {
-    assert_eq!((0..=4).map(level).collect::<Vec<_>>(), [2, 2, 1, 0, 0]);
+    assert_eq!((0..=4).map(level).collect::<Vec<_>>(), [2, 1, 0, 0, 0]);
     let pipeline = fixture(false);
     assert_eq!(pipeline.pressure(), 0);
     let callback = pipeline.callback();
     assert_eq!(for_role(pipeline.pressure(), Role::Decode.slot()), 0);
     assert_eq!(for_role(pipeline.pressure(), Role::Sizing.slot()), 0);
-    pipeline.claim();
     pipeline.claim();
     assert_eq!(for_role(pipeline.pressure(), Role::Spool.slot()), 1);
     assert_eq!(for_role(pipeline.pressure(), Role::Decode.slot()), 1);
@@ -360,12 +359,13 @@ fn availability_counts_every_published_frame_and_each_claim() {
     let _callback = pipeline.callback();
     pipeline.publish();
     assert_eq!(pipeline.free_count(), 1);
-    assert_eq!(for_role(pipeline.pressure(), 0), 2);
+    assert_eq!(for_role(pipeline.pressure(), 0), 1);
     pipeline.publish();
     pipeline.claim();
     assert_eq!(pipeline.free_count(), 1);
     pipeline.claim();
     assert_eq!(pipeline.free_count(), 0);
+    assert_eq!(for_role(pipeline.pressure(), 0), 2);
     pipeline.claim();
     assert_eq!(pipeline.free_count(), 0);
     for _ in 0..collector_extended_support::hourly::BUFFERS * 3 {
@@ -376,4 +376,9 @@ fn availability_counts_every_published_frame_and_each_claim() {
         collector_extended_support::hourly::BUFFERS * 3
     );
     assert_eq!(pipeline.pressure(), 0);
+}
+#[test]
+fn ticking_decode_gets_its_own_slot_state() {
+    assert_eq!(for_role(TICKING, Role::Decode.slot()), TICK_DECODE);
+    assert_eq!(for_role(TICKING, Role::Spool.slot()), TICK);
 }

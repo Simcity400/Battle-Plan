@@ -311,7 +311,7 @@ fn air_loss_after_an_existing_history_reads_only_the_witnesses_and_words() {
     let change = after(&memory, BASE, GAME, &snapshot).unwrap();
     assert_eq!((change.country, change.daily_slot), (snapshot.country, 29));
     assert_eq!(change.fields, [100_000; 2]);
-    assert_eq!((memory.calls.get(), memory.bytes.get()), (2, 4 + 8 + 2 * 8));
+    assert_eq!((memory.calls.get(), memory.bytes.get()), (1, 4 + 8 + 2 * 8));
 }
 
 #[test]

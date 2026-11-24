@@ -5,7 +5,7 @@ use std::{
     ptr,
     sync::{
         OnceLock,
-        atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
 };
 use windows_sys::Win32::{
@@ -25,17 +25,96 @@ const HEAP_ALIGNMENT: usize = 16;
 const HEADER: usize = size_of::<*mut u8>();
 const DLL_PROCESS_DETACH: u32 = 0;
 const FINE_CLASSES: usize = 64;
-const SMALL_LIMIT: usize = 32 * 1024;
-const CLASSES: usize = FINE_CLASSES + 5;
-const CACHE_CLASS_BYTES: usize = 64 * 1024;
-const DEPOT_BYTES: usize = 32 * 1024 * 1024;
+const SMALL_LIMIT: usize = 8 * 1024;
+const CLASSES: usize = FINE_CLASSES + 3;
+const PAGE_CLASS_FIRST: usize = FINE_CLASSES + 1;
+const PAGE_CLASSES: usize = CLASSES - PAGE_CLASS_FIRST;
+const CACHE_CLASS_BYTES: usize = 16 * 1024;
+const MAX_BATCH: usize = 64;
 const _: () = assert!(SMALL_LIMIT <= CACHE_CLASS_BYTES / 2);
 const PAGE: usize = 4096;
 const GRANULARITY: usize = 64 * 1024;
 const RECORD_BYTES: usize = 64;
+const COLD_OFFSET: usize = 256;
+const COLD_STRIDE: usize = 16;
+const SUBPAGE_START: usize = 512;
+const WARM_PAGE_BLOCKS: usize = 8;
+const WARM_SUBPAGE_PAGES: usize = 4;
 const _: () = assert!(size_of::<Record>() + HEADER <= RECORD_BYTES);
+const _: () = assert!(RECORD_BYTES <= COLD_OFFSET);
+const _: () = assert!(SUBPAGE_START % HEAP_ALIGNMENT == 0);
+const _: () = assert!(COLD_OFFSET + ((GRANULARITY - PAGE) / PAGE) * COLD_STRIDE <= SUBPAGE_START);
+const _: () = assert!(SUBPAGE_START + 2048 <= PAGE);
 const RESERVATIONS: usize = (usize::BITS - GRANULARITY.trailing_zeros()) as usize;
-const KEPT_BYTES: usize = 64 * 1024 * 1024;
+const KEPT_BYTES: usize = 8 * 1024 * 1024;
+const TRIM_SLACK: usize = 256 * 1024;
+const _: () = assert!(slab_bytes(CLASSES - 1) == GRANULARITY);
+
+const fn is_page_class(class: usize) -> bool {
+    class >= PAGE_CLASS_FIRST
+}
+
+const fn subpage_page0_count(size: usize) -> usize {
+    (PAGE - SUBPAGE_START) / size
+}
+
+const fn subpage_per_page(size: usize) -> usize {
+    PAGE / size
+}
+
+const fn slab_count(class: usize) -> usize {
+    let size = class_size(class);
+    if is_page_class(class) {
+        (slab_bytes(class) - PAGE) / size
+    } else {
+        subpage_page0_count(size) + ((GRANULARITY - PAGE) / PAGE) * subpage_per_page(size)
+    }
+}
+
+fn slab_block(base: *mut u8, class: usize, index: usize) -> *mut u8 {
+    let size = class_size(class);
+    if is_page_class(class) {
+        // SAFETY: `index < slab_count(class)` keeps the pointer inside the slab.
+        unsafe { base.add(PAGE + index * size) }
+    } else {
+        let p0 = subpage_page0_count(size);
+        if index < p0 {
+            // SAFETY: `SUBPAGE_START + index * size < PAGE` for `index < p0`.
+            unsafe { base.add(SUBPAGE_START + index * size) }
+        } else {
+            let rem = index - p0;
+            let pp = subpage_per_page(size);
+            let page = 1 + rem / pp;
+            let slot = rem % pp;
+            // SAFETY: `page < GRANULARITY / PAGE` and `slot * size < PAGE`.
+            unsafe { base.add(page * PAGE + slot * size) }
+        }
+    }
+}
+
+fn cold_node(block: *mut u8, class: usize) -> *mut u8 {
+    let slab = (block as usize) & !(GRANULARITY - 1);
+    let slot = (block as usize - slab - PAGE) / class_size(class);
+    (slab + COLD_OFFSET + slot * COLD_STRIDE) as *mut u8
+}
+
+fn cold_block(node: *mut u8, class: usize) -> *mut u8 {
+    let slab = (node as usize) & !(GRANULARITY - 1);
+    let slot = (node as usize - slab - COLD_OFFSET) / COLD_STRIDE;
+    (slab + PAGE + slot * class_size(class)) as *mut u8
+}
+
+fn cold_subpage_node(page: *mut u8) -> *mut u8 {
+    let slab = (page as usize) & !(GRANULARITY - 1);
+    let slot = (page as usize - slab - PAGE) / PAGE;
+    (slab + COLD_OFFSET + slot * COLD_STRIDE) as *mut u8
+}
+
+fn cold_subpage_page(node: *mut u8) -> *mut u8 {
+    let slab = (node as usize) & !(GRANULARITY - 1);
+    let slot = (node as usize - slab - COLD_OFFSET) / COLD_STRIDE;
+    (slab + PAGE + slot * PAGE) as *mut u8
+}
 
 fn class(size: usize) -> Option<usize> {
     if size <= FINE_CLASSES * 16 {
@@ -56,11 +135,27 @@ const fn class_size(class: usize) -> usize {
 }
 
 const fn batch(class: usize) -> u32 {
-    (CACHE_CLASS_BYTES / 2 / class_size(class)) as u32
+    let count = CACHE_CLASS_BYTES / 2 / class_size(class);
+    if count > MAX_BATCH {
+        MAX_BATCH as u32
+    } else {
+        count as u32
+    }
 }
 
-const fn batch_bytes(class: usize) -> usize {
-    batch(class) as usize * class_size(class)
+const fn slab_bytes(class: usize) -> usize {
+    let size = class_size(class);
+    let min_blocks = if (batch(class) as usize) < 4 {
+        4
+    } else {
+        batch(class) as usize
+    };
+    let want = min_blocks * size + RECORD_BYTES;
+    let mut bytes = GRANULARITY;
+    while bytes < want {
+        bytes *= 2;
+    }
+    bytes
 }
 
 fn next(block: *mut u8) -> *mut *mut u8 {
@@ -85,7 +180,7 @@ const fn page_end(bytes: usize) -> usize {
     bytes.div_ceil(PAGE) * PAGE
 }
 
-#[repr(C, align(16))]
+#[repr(C, align(64))]
 struct Stack(UnsafeCell<SLIST_HEADER>);
 
 // SAFETY: the header is only touched by the interlocked list functions.
@@ -240,11 +335,13 @@ impl Cache {
         head
     }
 
-    fn keep(&mut self, class: usize, block: *mut u8, depot: &Depot, bounded: bool) -> bool {
+    fn keep(&mut self, class: usize, block: *mut u8, depot: &Depot) -> bool {
+        let mut spilled = false;
         let list = &mut self.lists[class];
         if list.count == batch(class) {
-            if !list.spare.is_null() && !depot.keep(class, list.spare, bounded) {
-                return false;
+            if !list.spare.is_null() {
+                depot.keep(class, list.spare);
+                spilled = true;
             }
             list.spare = list.head;
             list.head = ptr::null_mut();
@@ -253,7 +350,33 @@ impl Cache {
         unsafe { next(block).write(list.head) };
         list.head = block;
         list.count += 1;
-        true
+        spilled
+    }
+
+    fn flush(&mut self, depot: &Depot) {
+        for (class, list) in std::mem::replace(self, Cache::EMPTY)
+            .lists
+            .into_iter()
+            .enumerate()
+        {
+            if !list.spare.is_null() {
+                depot.keep(class, list.spare);
+            }
+            if list.head.is_null() {
+                continue;
+            }
+            if list.count == batch(class) {
+                depot.keep(class, list.head);
+                continue;
+            }
+            let mut block = list.head;
+            while !block.is_null() {
+                // SAFETY: blocks in this thread's cache form a valid singly linked list.
+                let following = unsafe { next(block).read() };
+                depot.keep_single(class, block);
+                block = following;
+            }
+        }
     }
 }
 
@@ -261,6 +384,7 @@ struct Thread {
     heap: usize,
     off_hold: bool,
     closed: bool,
+    flushed_epoch: u64,
     cache: Cache,
 }
 
@@ -271,6 +395,7 @@ impl Thread {
         }
         if self.heap != id {
             self.heap = id;
+            self.flushed_epoch = 0;
             self.cache = Cache::EMPTY;
         }
         Some(&mut self.cache)
@@ -279,7 +404,13 @@ impl Thread {
 
 thread_local! {
     static THREAD: UnsafeCell<Thread> = const {
-        UnsafeCell::new(Thread { heap: 0, off_hold: false, closed: false, cache: Cache::EMPTY })
+        UnsafeCell::new(Thread {
+            heap: 0,
+            off_hold: false,
+            closed: false,
+            flushed_epoch: 0,
+            cache: Cache::EMPTY,
+        })
     };
 }
 
@@ -301,48 +432,63 @@ fn side() -> usize {
 
 struct Depot {
     classes: [Stack; CLASSES],
-    bytes: AtomicUsize,
+    singles: [Stack; CLASSES],
+    cold: [Stack; PAGE_CLASSES],
+    cold_subpage: [Stack; PAGE_CLASS_FIRST],
 }
 
 impl Depot {
     const fn new() -> Self {
         Self {
             classes: [const { Stack::new() }; CLASSES],
-            bytes: AtomicUsize::new(0),
+            singles: [const { Stack::new() }; CLASSES],
+            cold: [const { Stack::new() }; PAGE_CLASSES],
+            cold_subpage: [const { Stack::new() }; PAGE_CLASS_FIRST],
         }
     }
 
-    fn keep(&self, class: usize, batch_head: *mut u8, bounded: bool) -> bool {
-        let bytes = batch_bytes(class);
-        if bounded {
-            let reserved = self
-                .bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
-                    (held + bytes <= DEPOT_BYTES).then_some(held + bytes)
-                });
-            if reserved.is_err() {
-                return false;
-            }
-        } else {
-            self.bytes.fetch_add(bytes, Ordering::Relaxed);
-        }
+    fn keep(&self, class: usize, batch_head: *mut u8) {
         unsafe { parked_next(batch_head).write(next(batch_head).read()) };
         self.classes[class].push(batch_head);
-        true
     }
 
     fn take(&self, class: usize) -> *mut u8 {
         let head = self.classes[class].pop();
         if !head.is_null() {
             unsafe { next(head).write(parked_next(head).read()) };
-            self.bytes.fetch_sub(batch_bytes(class), Ordering::Relaxed);
         }
         head
     }
 
+    fn keep_single(&self, class: usize, block: *mut u8) {
+        self.singles[class].push(block);
+    }
+
+    fn take_single(&self, class: usize) -> *mut u8 {
+        self.singles[class].pop()
+    }
+
+    fn keep_cold(&self, class: usize, node: *mut u8) {
+        self.cold[class - PAGE_CLASS_FIRST].push(node);
+    }
+
+    fn take_cold(&self, class: usize) -> *mut u8 {
+        self.cold[class - PAGE_CLASS_FIRST].pop()
+    }
+
+    fn keep_cold_subpage(&self, class: usize, node: *mut u8) {
+        self.cold_subpage[class].push(node);
+    }
+
+    fn take_cold_subpage(&self, class: usize) -> *mut u8 {
+        self.cold_subpage[class].pop()
+    }
+
     fn clear(&self) {
         self.classes.iter().for_each(Stack::clear);
-        self.bytes.store(0, Ordering::Relaxed);
+        self.singles.iter().for_each(Stack::clear);
+        self.cold.iter().for_each(Stack::clear);
+        self.cold_subpage.iter().for_each(Stack::clear);
     }
 }
 
@@ -351,11 +497,12 @@ struct Record {
     link: [usize; 2],
     made: *mut Record,
     reserved: usize,
-    committed: usize,
+    committed: AtomicUsize,
 }
 
 struct Pages {
     free: [Stack; RESERVATIONS],
+    cold: [Stack; RESERVATIONS],
     kept: AtomicUsize,
     made: AtomicPtr<Record>,
 }
@@ -364,6 +511,7 @@ impl Pages {
     const fn new() -> Self {
         Self {
             free: [const { Stack::new() }; RESERVATIONS],
+            cold: [const { Stack::new() }; RESERVATIONS],
             kept: AtomicUsize::new(0),
             made: AtomicPtr::new(ptr::null_mut()),
         }
@@ -393,10 +541,19 @@ struct Domain {
 
 static DOMAINS: AtomicUsize = AtomicUsize::new(1);
 
+enum Cold {
+    Empty,
+    Block(*mut u8),
+    Failed,
+}
+
 pub struct PrivateHeap {
+    domain_id: AtomicUsize,
     heap: OnceLock<Domain>,
     depot: Depot,
     pages: Pages,
+    reclaiming: AtomicBool,
+    flush_epoch: AtomicU64,
     sides: [Side; 2],
     #[cfg(test)]
     failures: AtomicUsize,
@@ -407,9 +564,12 @@ pub struct PrivateHeap {
 impl PrivateHeap {
     pub const fn new() -> Self {
         Self {
+            domain_id: AtomicUsize::new(0),
             heap: OnceLock::new(),
             depot: Depot::new(),
             pages: Pages::new(),
+            reclaiming: AtomicBool::new(false),
+            flush_epoch: AtomicU64::new(0),
             sides: [const { Side::new() }; 2],
             #[cfg(test)]
             failures: AtomicUsize::new(0),
@@ -428,8 +588,12 @@ impl PrivateHeap {
                     id,
                 };
             }
+            let handle = unsafe { HeapCreate(0, 0, 0) } as usize;
+            if handle != 0 {
+                self.domain_id.store(id, Ordering::Release);
+            }
             Domain {
-                handle: AtomicUsize::new(unsafe { HeapCreate(0, 0, 0) } as usize),
+                handle: AtomicUsize::new(handle),
                 id,
             }
         })
@@ -483,6 +647,62 @@ impl PrivateHeap {
     /// The [`GlobalAlloc::alloc`] contract: `size` and `align` come from a valid layout of non-zero
     /// size.
     unsafe fn allocate(&self, size: usize, align: usize, zeroed: bool) -> *mut u8 {
+        if size <= SMALL_LIMIT && align <= HEAP_ALIGNMENT {
+            let id = self.domain_id.load(Ordering::Relaxed);
+            if id != 0 {
+                #[cfg(test)]
+                if self.refuse(tests::ALLOCATE) {
+                    return ptr::null_mut();
+                }
+                if let Some(class) = class(size) {
+                    if let Some(cache) = unsafe { (*thread()).cache(id) } {
+                        let kept = cache.take(class, &self.depot);
+                        if !kept.is_null() {
+                            if zeroed {
+                                unsafe { kept.write_bytes(0, size) };
+                            }
+                            return kept;
+                        }
+                        let single = self.depot.take_single(class);
+                        if !single.is_null() {
+                            if zeroed {
+                                unsafe { single.write_bytes(0, size) };
+                            }
+                            return single;
+                        }
+                        let cold = if is_page_class(class) {
+                            unsafe { self.take_cold(class) }
+                        } else {
+                            unsafe { self.take_cold_subpage(class, Some(cache)) }
+                        };
+                        match cold {
+                            Cold::Block(block) => return block,
+                            Cold::Failed => return ptr::null_mut(),
+                            Cold::Empty => {}
+                        }
+                        return unsafe { self.refill_slab(class, Some(cache), zeroed) };
+                    }
+                    let reused = self.take_closed(class);
+                    if !reused.is_null() {
+                        if zeroed {
+                            unsafe { reused.write_bytes(0, size) };
+                        }
+                        return reused;
+                    }
+                    let cold = if is_page_class(class) {
+                        unsafe { self.take_cold(class) }
+                    } else {
+                        unsafe { self.take_cold_subpage(class, None) }
+                    };
+                    match cold {
+                        Cold::Block(block) => return block,
+                        Cold::Failed => return ptr::null_mut(),
+                        Cold::Empty => {}
+                    }
+                    return unsafe { self.refill_slab(class, None, zeroed) };
+                }
+            }
+        }
         let bytes = if size > SMALL_LIMIT {
             let Some(reserved) = reservation(size, align) else {
                 return ptr::null_mut();
@@ -511,7 +731,6 @@ impl PrivateHeap {
         if size > SMALL_LIMIT {
             return unsafe { self.allocate_large(bytes, size, align, zeroed) };
         }
-        let flags = if zeroed { HEAP_ZERO_MEMORY } else { 0 };
         if align <= HEAP_ALIGNMENT
             && let Some(class) = class(bytes)
         {
@@ -523,11 +742,45 @@ impl PrivateHeap {
                     }
                     return kept;
                 }
+                let single = self.depot.take_single(class);
+                if !single.is_null() {
+                    if zeroed {
+                        unsafe { single.write_bytes(0, bytes) };
+                    }
+                    return single;
+                }
+                let cold = if is_page_class(class) {
+                    unsafe { self.take_cold(class) }
+                } else {
+                    unsafe { self.take_cold_subpage(class, Some(cache)) }
+                };
+                match cold {
+                    Cold::Block(block) => return block,
+                    Cold::Failed => return ptr::null_mut(),
+                    Cold::Empty => {}
+                }
+                return unsafe { self.refill_slab(class, Some(cache), zeroed) };
             }
-            return self
-                .heap_call(|| unsafe { HeapAlloc(heap, flags, class_size(class)) })
-                .cast();
+            let reused = self.take_closed(class);
+            if !reused.is_null() {
+                if zeroed {
+                    unsafe { reused.write_bytes(0, bytes) };
+                }
+                return reused;
+            }
+            let cold = if is_page_class(class) {
+                unsafe { self.take_cold(class) }
+            } else {
+                unsafe { self.take_cold_subpage(class, None) }
+            };
+            match cold {
+                Cold::Block(block) => return block,
+                Cold::Failed => return ptr::null_mut(),
+                Cold::Empty => {}
+            }
+            return unsafe { self.refill_slab(class, None, zeroed) };
         }
+        let flags = if zeroed { HEAP_ZERO_MEMORY } else { 0 };
         let raw = self
             .heap_call(|| unsafe { HeapAlloc(heap, flags, bytes) })
             .cast::<u8>();
@@ -540,6 +793,191 @@ impl PrivateHeap {
         aligned
     }
 
+    fn take_closed(&self, class: usize) -> *mut u8 {
+        let single = self.depot.take_single(class);
+        if !single.is_null() {
+            return single;
+        }
+        let head = self.depot.take(class);
+        if !head.is_null() {
+            let mut rest = unsafe { next(head).read() };
+            while !rest.is_null() {
+                let following = unsafe { next(rest).read() };
+                self.depot.keep_single(class, rest);
+                rest = following;
+            }
+        }
+        head
+    }
+
+    /// # Safety
+    /// `class` is a page-aligned small size class (`is_page_class(class)`).
+    unsafe fn take_cold(&self, class: usize) -> Cold {
+        let node = self.depot.take_cold(class);
+        if node.is_null() {
+            return Cold::Empty;
+        }
+        let block = cold_block(node, class);
+        let size = class_size(class);
+        if self.virtual_alloc(block, size, MEM_COMMIT).is_null() {
+            self.depot.keep_cold(class, node);
+            return Cold::Failed;
+        }
+        let record = ((block as usize) & !(GRANULARITY - 1)) as *mut Record;
+        // SAFETY: `record` sits in Page 0 of this slab reservation, which stays committed.
+        unsafe { (*record).committed.fetch_add(size, Ordering::Relaxed) };
+        Cold::Block(block)
+    }
+
+    /// # Safety
+    /// `class` is a sub-page small size class (`!is_page_class(class)`). If `cache` is `Some`, its
+    /// `lists[class]` must currently be empty (`count == 0` and `spare.is_null()`).
+    unsafe fn take_cold_subpage(&self, class: usize, cache: Option<&mut Cache>) -> Cold {
+        let node = self.depot.take_cold_subpage(class);
+        if node.is_null() {
+            return Cold::Empty;
+        }
+        let page = cold_subpage_page(node);
+        if self.virtual_alloc(page, PAGE, MEM_COMMIT).is_null() {
+            self.depot.keep_cold_subpage(class, node);
+            return Cold::Failed;
+        }
+        let record = ((page as usize) & !(GRANULARITY - 1)) as *mut Record;
+        // SAFETY: `record` sits in Page 0 of this slab reservation, which stays committed.
+        unsafe { (*record).committed.fetch_add(PAGE, Ordering::Relaxed) };
+        let size = class_size(class);
+        let count = subpage_per_page(size);
+        // SAFETY: `page` is freshly committed and holds `count` disjoint blocks of `size` bytes.
+        let first = unsafe {
+            self.distribute_blocks(class, count, |index| page.add(index * size), cache)
+        };
+        Cold::Block(first)
+    }
+
+    /// # Safety
+    /// `block_at(0..count)` must yield distinct committed blocks for `class`. If `cache` is
+    /// `Some`, its `lists[class]` must currently be empty (`count == 0` and `spare.is_null()`).
+    unsafe fn distribute_blocks(
+        &self,
+        class: usize,
+        count: usize,
+        block_at: impl Fn(usize) -> *mut u8,
+        cache: Option<&mut Cache>,
+    ) -> *mut u8 {
+        let first = block_at(0);
+        let batch_len = batch(class) as usize;
+        let mut index = 1;
+        if let Some(cache) = cache {
+            let list = &mut cache.lists[class];
+            let head_take = (count - index).min(batch_len - 1);
+            if head_take > 0 {
+                let mut head = ptr::null_mut();
+                for offset in 0..head_take {
+                    let block = block_at(index + offset);
+                    unsafe { next(block).write(head) };
+                    head = block;
+                }
+                list.head = head;
+                list.count = head_take as u32;
+                index += head_take;
+            }
+            if count - index >= batch_len {
+                let mut spare = ptr::null_mut();
+                for offset in 0..batch_len {
+                    let block = block_at(index + offset);
+                    unsafe { next(block).write(spare) };
+                    spare = block;
+                }
+                list.spare = spare;
+                index += batch_len;
+            }
+        }
+        while count - index >= batch_len {
+            let mut batch_head = ptr::null_mut();
+            for offset in 0..batch_len {
+                let block = block_at(index + offset);
+                unsafe { next(block).write(batch_head) };
+                batch_head = block;
+            }
+            self.depot.keep(class, batch_head);
+            index += batch_len;
+        }
+        while index < count {
+            let block = block_at(index);
+            self.depot.keep_single(class, block);
+            index += 1;
+        }
+        first
+    }
+
+    /// # Safety
+    /// `class` is a valid small size class `< CLASSES`. If `cache` is `Some`, its `lists[class]`
+    /// must currently be empty (`count == 0` and `spare.is_null()`).
+    unsafe fn refill_slab(
+        &self,
+        class: usize,
+        cache: Option<&mut Cache>,
+        zeroed: bool,
+    ) -> *mut u8 {
+        let bytes = slab_bytes(class);
+        let (reused, from_cold) = if bytes == GRANULARITY {
+            let warm = self.pages.free[0].pop().cast::<Record>();
+            if !warm.is_null() {
+                (warm, false)
+            } else {
+                let cold = self.pages.cold[0].pop().cast::<Record>();
+                (cold, !cold.is_null())
+            }
+        } else {
+            (ptr::null_mut(), false)
+        };
+        let (base, fresh, committed) = if reused.is_null() {
+            let base = self.virtual_alloc(ptr::null(), bytes, MEM_RESERVE | MEM_COMMIT);
+            if base.is_null() {
+                return ptr::null_mut();
+            }
+            (base, true, bytes)
+        } else {
+            let base = reused.cast::<u8>();
+            let committed = unsafe { (*reused).committed.load(Ordering::Relaxed) };
+            let reclaimable = committed.saturating_sub(PAGE);
+            if !from_cold && reclaimable > 0 {
+                self.pages.kept.fetch_sub(reclaimable, Ordering::Relaxed);
+            }
+            if bytes > committed
+                && self
+                    .virtual_alloc(base.wrapping_add(committed), bytes - committed, MEM_COMMIT)
+                    .is_null()
+            {
+                if from_cold || reclaimable == 0 {
+                    self.pages.cold[0].push(base);
+                } else {
+                    self.pages.kept.fetch_add(reclaimable, Ordering::Relaxed);
+                    self.pages.free[0].push(base);
+                }
+                return ptr::null_mut();
+            }
+            (base, false, committed)
+        };
+        let record = base.cast::<Record>();
+        unsafe {
+            (*record).reserved = bytes;
+            (*record).committed.store(bytes, Ordering::Relaxed);
+        }
+        if fresh {
+            self.pages.made(record);
+        }
+        let count = slab_count(class);
+        let first = unsafe {
+            self.distribute_blocks(class, count, |index| slab_block(base, class, index), cache)
+        };
+        if zeroed && !fresh && (!is_page_class(class) || committed > PAGE) {
+            // SAFETY: `first` sits in the committed slab and holds `class_size(class)` bytes.
+            unsafe { first.write_bytes(0, class_size(class)) };
+        }
+        first
+    }
+
     /// # Safety
     /// As [`Self::allocate`], with `size` above `SMALL_LIMIT`, so `dealloc` routes the block back here,
     /// and `reserved` the reservation size [`reservation`] gave for `size` and `align`.
@@ -550,13 +988,23 @@ impl PrivateHeap {
         align: usize,
         zeroed: bool,
     ) -> *mut u8 {
-        let list = &self.pages.free[reservation_list(reserved)];
-        let mut record = list.pop().cast::<Record>();
+        let list_index = reservation_list(reserved);
+        let warm = &self.pages.free[list_index];
+        let cold = &self.pages.cold[list_index];
+        let mut record = warm.pop().cast::<Record>();
+        let mut from_cold = false;
+        if record.is_null() {
+            record = cold.pop().cast::<Record>();
+            from_cold = !record.is_null();
+        }
         let committed = if record.is_null() {
             0
         } else {
-            let committed = unsafe { (*record).committed };
-            self.pages.kept.fetch_sub(committed, Ordering::Relaxed);
+            let committed = unsafe { (*record).committed.load(Ordering::Relaxed) };
+            let reclaimable = committed.saturating_sub(PAGE);
+            if !from_cold && reclaimable > 0 {
+                self.pages.kept.fetch_sub(reclaimable, Ordering::Relaxed);
+            }
             committed
         };
         let fresh = record.is_null();
@@ -578,20 +1026,36 @@ impl PrivateHeap {
         {
             if fresh {
                 self.page_call(|| unsafe { VirtualFree(base.cast(), 0, MEM_RELEASE) });
+            } else if from_cold || committed <= PAGE {
+                cold.push(base);
             } else {
-                self.pages.kept.fetch_add(committed, Ordering::Relaxed);
-                list.push(base);
+                self.pages
+                    .kept
+                    .fetch_add(committed.saturating_sub(PAGE), Ordering::Relaxed);
+                warm.push(base);
             }
             return ptr::null_mut();
         }
         if fresh {
             unsafe {
                 (*record).reserved = reserved;
-                (*record).committed = 0;
+                (*record).committed.store(0, Ordering::Relaxed);
             }
             self.pages.made(record);
         }
-        unsafe { (*record).committed = end.max(committed) };
+        let mut final_committed = end.max(committed);
+        if !fresh
+            && side() == OTHER
+            && committed > end.saturating_add(TRIM_SLACK)
+            && self.page_call(|| unsafe {
+                VirtualFree(base.add(end).cast(), committed - end, MEM_DECOMMIT)
+            }) != 0
+        {
+            final_committed = end;
+        }
+        unsafe {
+            (*record).committed.store(final_committed, Ordering::Relaxed);
+        }
         let body = unsafe { base.add(offset) };
         if zeroed && committed > offset {
             unsafe { body.write_bytes(0, size.min(committed - offset)) };
@@ -608,33 +1072,28 @@ impl PrivateHeap {
     /// `body` is a live large block of this heap, never used again.
     unsafe fn free_large(&self, body: *mut u8) {
         let record = Self::record(body);
-        let committed = unsafe { (*record).committed };
-        let kept = if side() == OTHER {
-            self.pages
-                .kept
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |kept| {
-                    (kept + committed <= KEPT_BYTES).then_some(kept + committed)
-                })
-                .is_ok()
-        } else {
-            self.pages.kept.fetch_add(committed, Ordering::Relaxed);
-            true
-        };
-        if !kept {
-            let base = record.cast::<u8>();
-            if committed > PAGE
-                && self.page_call(|| unsafe {
-                    VirtualFree(base.add(PAGE).cast(), committed - PAGE, MEM_DECOMMIT)
-                }) != 0
-            {
-                unsafe { (*record).committed = PAGE };
-            }
-            self.pages
-                .kept
-                .fetch_add(unsafe { (*record).committed }, Ordering::Relaxed);
-        }
         let reserved = unsafe { (*record).reserved };
-        self.pages.free[reservation_list(reserved)].push(record.cast());
+        let list_index = reservation_list(reserved);
+        let committed = unsafe { (*record).committed.load(Ordering::Relaxed) };
+        let reclaimable = committed.saturating_sub(PAGE);
+        if reclaimable == 0 {
+            self.pages.cold[list_index].push(record.cast());
+            return;
+        }
+        let previous = self.pages.kept.fetch_add(reclaimable, Ordering::Relaxed);
+        if side() == OTHER && previous + reclaimable > KEPT_BYTES {
+            let base = record.cast::<u8>();
+            if self.page_call(|| unsafe {
+                VirtualFree(base.add(PAGE).cast(), reclaimable, MEM_DECOMMIT)
+            }) != 0
+            {
+                unsafe { (*record).committed.store(PAGE, Ordering::Relaxed) };
+                self.pages.kept.fetch_sub(reclaimable, Ordering::Relaxed);
+                self.pages.cold[list_index].push(record.cast());
+                return;
+            }
+        }
+        self.pages.free[list_index].push(record.cast());
     }
 
     /// # Safety
@@ -643,7 +1102,8 @@ impl PrivateHeap {
     unsafe fn reallocate_large(&self, body: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let record = Self::record(body);
         let base = record.cast::<u8>();
-        let (reserved, committed) = unsafe { ((*record).reserved, (*record).committed) };
+        let (reserved, committed) =
+            unsafe { ((*record).reserved, (*record).committed.load(Ordering::Relaxed)) };
         let offset = body as usize - base as usize;
         if offset + new_size > reserved {
             return unsafe { self.moved(body, layout, new_size) };
@@ -655,19 +1115,420 @@ impl PrivateHeap {
             if grown.is_null() {
                 return ptr::null_mut();
             }
-            unsafe { (*record).committed = end };
-        } else if end < committed
-            && self.page_call(|| unsafe {
-                VirtualFree(base.add(end).cast(), committed - end, MEM_DECOMMIT)
-            }) != 0
-        {
-            unsafe { (*record).committed = end };
+            unsafe { (*record).committed.store(end, Ordering::Relaxed) };
         }
         body
     }
 
     pub fn ready(&self) -> bool {
         !self.heap().is_null()
+    }
+
+    pub fn flush_thread_cache(&self) {
+        let id = self.domain_id.load(Ordering::Relaxed);
+        if id == 0 {
+            return;
+        }
+        // SAFETY: `THREAD` is thread-local and only accessed by the current thread.
+        let thread = unsafe { &mut *thread() };
+        if thread.closed || thread.heap != id {
+            return;
+        }
+        thread.cache.flush(&self.depot);
+        thread.flushed_epoch = self.flush_epoch.load(Ordering::Relaxed);
+    }
+
+    pub fn maybe_flush_thread_cache(&self) {
+        let epoch = self.flush_epoch.load(Ordering::Relaxed);
+        // SAFETY: `THREAD` is thread-local and only accessed by the current thread.
+        let thread = unsafe { &mut *thread() };
+        if thread.flushed_epoch != epoch {
+            let id = self.domain_id.load(Ordering::Relaxed);
+            if id != 0 && !thread.closed && thread.heap == id {
+                thread.cache.flush(&self.depot);
+            }
+            thread.flushed_epoch = epoch;
+        }
+    }
+
+    pub fn reclaim_empty_slabs(&self) -> usize {
+        if side() != OTHER || self.heap().is_null() {
+            return 0;
+        }
+        if self
+            .reclaiming
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return 0;
+        }
+        struct Guard<'a>(&'a AtomicBool);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let _guard = Guard(&self.reclaiming);
+        self.flush_epoch.fetch_add(1, Ordering::Relaxed);
+        self.flush_thread_cache();
+        let mut blocks = Vec::<usize>::new();
+        let mut runs = Vec::<(usize, usize, usize)>::new();
+        if blocks.try_reserve(4096).is_err() {
+            return 0;
+        }
+        let mut reclaimed = 0usize;
+        for class in (0..CLASSES).rev() {
+            let bytes = slab_bytes(class);
+            if bytes != GRANULARITY {
+                continue;
+            }
+            blocks.clear();
+            runs.clear();
+            let mut oom = false;
+            loop {
+                let head = self.depot.take(class);
+                if head.is_null() {
+                    break;
+                }
+                let mut block = head;
+                while !block.is_null() {
+                    // SAFETY: blocks popped from the depot form a valid singly linked batch.
+                    let following = unsafe { next(block).read() };
+                    if !oom && blocks.try_reserve(1).is_ok() {
+                        blocks.push(block as usize);
+                    } else {
+                        oom = true;
+                        self.depot.keep_single(class, block);
+                    }
+                    block = following;
+                }
+                if oom {
+                    break;
+                }
+            }
+            if !oom {
+                loop {
+                    let block = self.depot.take_single(class);
+                    if block.is_null() {
+                        break;
+                    }
+                    if blocks.try_reserve(1).is_ok() {
+                        blocks.push(block as usize);
+                    } else {
+                        self.depot.keep_single(class, block);
+                        oom = true;
+                        break;
+                    }
+                }
+            }
+            let page_class = is_page_class(class);
+            if !oom {
+                if page_class {
+                    loop {
+                        let node = self.depot.take_cold(class);
+                        if node.is_null() {
+                            break;
+                        }
+                        if blocks.try_reserve(1).is_ok() {
+                            blocks.push((cold_block(node, class) as usize) | 1);
+                        } else {
+                            self.depot.keep_cold(class, node);
+                            oom = true;
+                            break;
+                        }
+                    }
+                } else {
+                    loop {
+                        let node = self.depot.take_cold_subpage(class);
+                        if node.is_null() {
+                            break;
+                        }
+                        if blocks.try_reserve(1).is_ok() {
+                            blocks.push((cold_subpage_page(node) as usize) | 1);
+                        } else {
+                            self.depot.keep_cold_subpage(class, node);
+                            oom = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if blocks.is_empty() {
+                continue;
+            }
+            blocks.sort_unstable_by_key(|&entry| entry & !1);
+            let size = class_size(class);
+            let total = slab_count(class);
+            let per_page = if page_class { 1 } else { subpage_per_page(size) };
+            let batch_len = batch(class) as usize;
+            let mut kept_end = 0usize;
+            let mut warm_pages_kept = 0usize;
+            let mut at = 0usize;
+            while at < blocks.len() {
+                let slab = (blocks[at] & !1) & !(GRANULARITY - 1);
+                let mut end = at + 1;
+                while end < blocks.len() && ((blocks[end] & !1) & !(GRANULARITY - 1)) == slab {
+                    end += 1;
+                }
+                let run_len = if page_class {
+                    end - at
+                } else {
+                    blocks[at..end]
+                        .iter()
+                        .map(|&entry| if entry & 1 != 0 { per_page } else { 1 })
+                        .sum()
+                };
+                let mut freed = false;
+                if run_len == total && !oom {
+                    let base = slab as *mut u8;
+                    let record = base.cast::<Record>();
+                    // SAFETY: every block in this 64 KiB slab has been exclusively popped out of
+                    // the depot, so no live allocation or thread cache references this slab.
+                    let reserved = unsafe { (*record).reserved };
+                    if reserved == GRANULARITY
+                        && self.page_call(|| unsafe {
+                            VirtualFree(base.add(PAGE).cast(), GRANULARITY - PAGE, MEM_DECOMMIT)
+                        }) != 0
+                    {
+                        // SAFETY: page 0 stays committed and we hold exclusive ownership of slab.
+                        let previous = unsafe { (*record).committed.swap(PAGE, Ordering::Relaxed) };
+                        self.pages.cold[0].push(base);
+                        reclaimed += previous.saturating_sub(PAGE);
+                        freed = true;
+                    }
+                }
+                if !freed {
+                    if page_class {
+                        let record = slab as *mut Record;
+                        for index in at..end {
+                            let entry = blocks[index];
+                            let block = (entry & !1) as *mut u8;
+                            if entry & 1 != 0 {
+                                self.depot.keep_cold(class, cold_node(block, class));
+                            } else if kept_end < WARM_PAGE_BLOCKS {
+                                blocks[kept_end] = block as usize;
+                                kept_end += 1;
+                            } else if self.page_call(|| unsafe {
+                                VirtualFree(block.cast(), size, MEM_DECOMMIT)
+                            }) != 0
+                            {
+                                // SAFETY: `record` is Page 0 of the slab and stays committed.
+                                unsafe { (*record).committed.fetch_sub(size, Ordering::Relaxed) };
+                                self.depot.keep_cold(class, cold_node(block, class));
+                                reclaimed += size;
+                            } else {
+                                blocks[kept_end] = block as usize;
+                                kept_end += 1;
+                            }
+                        }
+                    } else {
+                        let record = slab as *mut Record;
+                        let mut p_start = at;
+                        while p_start < end {
+                            let page_addr = (blocks[p_start] & !1) & !(PAGE - 1);
+                            let mut p_end = p_start + 1;
+                            while p_end < end
+                                && ((blocks[p_end] & !1) & !(PAGE - 1)) == page_addr
+                            {
+                                p_end += 1;
+                            }
+                            if p_end - p_start == 1 && blocks[p_start] & 1 != 0 {
+                                self.depot.keep_cold_subpage(
+                                    class,
+                                    cold_subpage_node(page_addr as *mut u8),
+                                );
+                            } else if page_addr > slab
+                                && p_end - p_start == per_page
+                                && warm_pages_kept >= WARM_SUBPAGE_PAGES
+                                && self.page_call(|| unsafe {
+                                    VirtualFree(page_addr as *mut c_void, PAGE, MEM_DECOMMIT)
+                                }) != 0
+                            {
+                                // SAFETY: `record` is Page 0 of the slab and stays committed.
+                                unsafe { (*record).committed.fetch_sub(PAGE, Ordering::Relaxed) };
+                                self.depot.keep_cold_subpage(
+                                    class,
+                                    cold_subpage_node(page_addr as *mut u8),
+                                );
+                                reclaimed += PAGE;
+                            } else {
+                                if page_addr > slab && p_end - p_start == per_page {
+                                    warm_pages_kept += 1;
+                                }
+                                if runs.try_reserve(1).is_ok() {
+                                    runs.push((p_end - p_start, p_start, p_end));
+                                } else {
+                                    for index in p_start..p_end {
+                                        self.depot
+                                            .keep_single(class, blocks[index] as *mut u8);
+                                    }
+                                }
+                            }
+                            p_start = p_end;
+                        }
+                    }
+                }
+                at = end;
+            }
+            if page_class {
+                let survivors = &blocks[..kept_end];
+                let mut index = 0usize;
+                while survivors.len() - index >= batch_len {
+                    let mut batch_head = ptr::null_mut();
+                    for offset in 0..batch_len {
+                        let block = survivors[index + offset] as *mut u8;
+                        // SAFETY: each survivor is an exclusively owned free block of `class`.
+                        unsafe { next(block).write(batch_head) };
+                        batch_head = block;
+                    }
+                    self.depot.keep(class, batch_head);
+                    index += batch_len;
+                }
+                while index < survivors.len() {
+                    self.depot.keep_single(class, survivors[index] as *mut u8);
+                    index += 1;
+                }
+            } else {
+                runs.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                let mut batch_head = ptr::null_mut();
+                let mut batch_count = 0usize;
+                for &(_, start, end) in &runs {
+                    for &entry in &blocks[start..end] {
+                        let block = entry as *mut u8;
+                        // SAFETY: each survivor is an exclusively owned free block of `class`.
+                        unsafe { next(block).write(batch_head) };
+                        batch_head = block;
+                        batch_count += 1;
+                        if batch_count == batch_len {
+                            self.depot.keep(class, batch_head);
+                            batch_head = ptr::null_mut();
+                            batch_count = 0;
+                        }
+                    }
+                }
+                while !batch_head.is_null() {
+                    // SAFETY: `batch_head` is a singly linked list of exclusively owned free blocks.
+                    let following = unsafe { next(batch_head).read() };
+                    self.depot.keep_single(class, batch_head);
+                    batch_head = following;
+                }
+            }
+        }
+        reclaimed += self.trim_large_free(&mut blocks);
+        reclaimed
+    }
+
+    fn trim_large_free(&self, held: &mut Vec<usize>) -> usize {
+        if self.pages.kept.load(Ordering::Relaxed) <= KEPT_BYTES {
+            return 0;
+        }
+        let mut reclaimed = 0usize;
+        for list in (0..RESERVATIONS).rev() {
+            if self.pages.kept.load(Ordering::Relaxed) <= KEPT_BYTES {
+                break;
+            }
+            held.clear();
+            let limit = if list == 0 { 1024 } else { usize::MAX };
+            for _ in 0..limit {
+                let base = self.pages.free[list].pop();
+                if base.is_null() {
+                    break;
+                }
+                let record = base.cast::<Record>();
+                // SAFETY: `base` was exclusively popped from `pages.free[list]`.
+                let committed = unsafe { (*record).committed.load(Ordering::Relaxed) };
+                if committed <= PAGE {
+                    self.pages.cold[list].push(base);
+                    continue;
+                }
+                if self.pages.kept.load(Ordering::Relaxed) > KEPT_BYTES
+                    && self.page_call(|| unsafe {
+                        VirtualFree(base.add(PAGE).cast(), committed - PAGE, MEM_DECOMMIT)
+                    }) != 0
+                {
+                    // SAFETY: page 0 stays committed and we exclusively own `base`.
+                    unsafe { (*record).committed.store(PAGE, Ordering::Relaxed) };
+                    let freed = committed - PAGE;
+                    self.pages.kept.fetch_sub(freed, Ordering::Relaxed);
+                    reclaimed += freed;
+                    self.pages.cold[list].push(base);
+                    continue;
+                }
+                if held.try_reserve(1).is_ok() {
+                    held.push(base as usize);
+                } else {
+                    self.pages.free[list].push(base);
+                    break;
+                }
+            }
+            for &base in held.iter() {
+                self.pages.free[list].push(base as *mut u8);
+            }
+        }
+        reclaimed
+    }
+
+    pub fn trim_large_if_needed(&self) -> usize {
+        if side() != OTHER
+            || self.heap().is_null()
+            || self.pages.kept.load(Ordering::Relaxed) <= KEPT_BYTES
+        {
+            return 0;
+        }
+        if self
+            .reclaiming
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return 0;
+        }
+        struct Guard<'a>(&'a AtomicBool);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let _guard = Guard(&self.reclaiming);
+        let mut reclaimed = 0usize;
+        let mut held = [0usize; 64];
+        for list in (0..RESERVATIONS).rev() {
+            if self.pages.kept.load(Ordering::Relaxed) <= KEPT_BYTES {
+                break;
+            }
+            let mut count = 0usize;
+            while count < held.len() {
+                let base = self.pages.free[list].pop();
+                if base.is_null() {
+                    break;
+                }
+                let record = base.cast::<Record>();
+                // SAFETY: `base` was exclusively popped from `pages.free[list]`.
+                let committed = unsafe { (*record).committed.load(Ordering::Relaxed) };
+                if committed <= PAGE {
+                    self.pages.cold[list].push(base);
+                    continue;
+                }
+                if self.pages.kept.load(Ordering::Relaxed) > KEPT_BYTES
+                    && self.page_call(|| unsafe {
+                        VirtualFree(base.add(PAGE).cast(), committed - PAGE, MEM_DECOMMIT)
+                    }) != 0
+                {
+                    // SAFETY: page 0 stays committed and we exclusively own `base`.
+                    unsafe { (*record).committed.store(PAGE, Ordering::Relaxed) };
+                    let freed = committed - PAGE;
+                    self.pages.kept.fetch_sub(freed, Ordering::Relaxed);
+                    reclaimed += freed;
+                    self.pages.cold[list].push(base);
+                    continue;
+                }
+                held[count] = base as usize;
+                count += 1;
+            }
+            for &base in &held[..count] {
+                self.pages.free[list].push(base as *mut u8);
+            }
+        }
+        reclaimed
     }
 
     /// # Safety
@@ -684,20 +1545,7 @@ impl PrivateHeap {
         if heap.is_null() || !held {
             return;
         }
-        let cache = std::mem::replace(&mut thread.cache, Cache::EMPTY);
-        for (class, list) in cache.lists.into_iter().enumerate() {
-            for (head, whole) in [(list.spare, true), (list.head, list.count == batch(class))] {
-                if head.is_null() || (whole && self.depot.keep(class, head, true)) {
-                    continue;
-                }
-                let mut block = head;
-                while !block.is_null() {
-                    let following = unsafe { next(block).read() };
-                    self.heap_call(|| unsafe { HeapFree(heap, 0, block.cast()) });
-                    block = following;
-                }
-            }
-        }
+        thread.cache.flush(&self.depot);
     }
 
     /// # Safety
@@ -713,9 +1561,11 @@ impl PrivateHeap {
         let Some(domain) = self.heap.get() else {
             return false;
         };
+        self.domain_id.store(0, Ordering::Release);
         let heap = domain.handle.swap(0, Ordering::Relaxed) as HANDLE;
         self.depot.clear();
         self.pages.free.iter().for_each(Stack::clear);
+        self.pages.cold.iter().for_each(Stack::clear);
         self.pages.kept.store(0, Ordering::Relaxed);
         let mut record = self.pages.made.swap(ptr::null_mut(), Ordering::Acquire);
         while !record.is_null() {
@@ -762,22 +1612,25 @@ unsafe impl GlobalAlloc for PrivateHeap {
         if layout.size() > SMALL_LIMIT {
             return unsafe { self.free_large(pointer) };
         }
+        if layout.align() <= HEAP_ALIGNMENT
+            && let Some(class) = class(layout.size())
+        {
+            let id = self.domain_id.load(Ordering::Relaxed);
+            let id = if id != 0 { id } else { self.domain().id };
+            let thread = unsafe { &mut *thread() };
+            if let Some(cache) = thread.cache(id) {
+                let spilled = cache.keep(class, pointer, &self.depot);
+                if spilled && thread.off_hold {
+                    self.maybe_flush_thread_cache();
+                }
+            } else {
+                self.depot.keep_single(class, pointer);
+            }
+            return;
+        }
         let domain = self.domain();
         let heap = domain.handle.load(Ordering::Relaxed) as HANDLE;
-        let raw = if layout.align() <= HEAP_ALIGNMENT {
-            if let Some(class) = class(layout.size()) {
-                let thread = unsafe { &mut *thread() };
-                let bounded = thread.off_hold;
-                if let Some(cache) = thread.cache(domain.id)
-                    && cache.keep(class, pointer, &self.depot, bounded)
-                {
-                    return;
-                }
-            }
-            pointer
-        } else {
-            unsafe { pointer.cast::<*mut u8>().sub(1).read() }
-        };
+        let raw = unsafe { pointer.cast::<*mut u8>().sub(1).read() };
         self.heap_call(|| unsafe { HeapFree(heap, 0, raw.cast()) });
     }
 

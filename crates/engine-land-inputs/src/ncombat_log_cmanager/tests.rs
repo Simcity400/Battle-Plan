@@ -137,7 +137,7 @@ impl Fixture {
     fn variant(&mut self, id: u32) -> usize {
         let variant = VARIANTS + id as usize * 0x100;
         self.pointer(variant, BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0);
-        self.u32(variant + 8, cequipment_variant::REFERENCE_TYPE);
+        self.u32(variant + 8, engine_native::cequipment_variant::REFERENCE_TYPE);
         self.u32(variant + 12, id);
         variant
     }

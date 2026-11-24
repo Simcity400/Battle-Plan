@@ -1026,7 +1026,6 @@ fn transport_context(
 
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn capture_context(memory: &impl Memory, base: usize, game: usize, sources: &mut Sources, army: usize, expected_handle: u64, modifiers: &mut Vec<ModifierTerm>, supply: &mut Vec<SupplyTerm>, acclimatization_terms: &mut Vec<AcclimatizationTerm>, transport_terms: &mut Vec<TransportTerm>, transport_start: usize) -> Result<ContextRow, &'static str> {
     capture_context_buffer(memory, base, game, sources, army, expected_handle, Buffer::Growing(modifiers), Buffer::Growing(supply), Buffer::Growing(acclimatization_terms), transport_terms, transport_start)
 }

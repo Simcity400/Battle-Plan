@@ -425,6 +425,8 @@ impl Captured {
         self.wars_result = unavailable;
         self.wars_snapshot_sampled = false;
         self.factions_result = unavailable;
+        self.faction_goals = Default::default();
+        self.faction_companions = Default::default();
         self.faction_names_len = 0;
         self.faction_names_required = 0;
         self.faction_members_result = unavailable;
@@ -465,8 +467,31 @@ impl Captured {
         map_capacities: &MapCapacities,
         extended_capacities: &extended::Capacities,
     ) -> std::io::Result<Self> {
+        // SAFETY: Caller guarantees live observer storage and exclusive frame preparation.
+        unsafe { Self::with_capacities_mode(capacities, map_capacities, extended_capacities, false) }
+    }
+
+    /// # Safety
+    /// Allocate only in the session's attach, sizing or capture sequence, or in an isolated
+    /// fixture. Keep live observer stores active and exclude conflicting sizing or teardown while
+    /// creating packs.
+    pub unsafe fn with_capacities_mode(
+        capacities: &[usize; 12],
+        map_capacities: &MapCapacities,
+        extended_capacities: &extended::Capacities,
+        parked: bool,
+    ) -> std::io::Result<Self> {
         let unavailable = Outcome::Unavailable {
             reason: "clock unavailable",
+        };
+        let extended = if parked {
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { extended::Captured::frame_parked(extended_capacities) }
+        } else {
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { extended::Captured::frame(extended_capacities) }
         };
         let frame = Self {
             world_generation: collector_lifetime::world_lifetime::generation(),
@@ -476,10 +501,7 @@ impl Captured {
             // SAFETY: These are session-measured map capacities or capacities owned by an isolated
             // fixture.
             unsafe { MapCaptured::with_capacities(map_capacities) },
-            extended:
-            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
-            // consuming it.
-            unsafe { extended::Captured::frame(extended_capacities) },
+            extended,
             country_cache_status: SeedStatus::Unavailable {
                 reason: "clock unavailable",
             },
@@ -918,6 +940,10 @@ pub struct Shared {
     pub(crate) template_home: collector_division_templates::extended::division_templates::Home,
     pub(crate) naval_combat_home: collector_naval_details::naval_combat_sources::Home,
     pub(crate) weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
+    parked_packs: Mutex<Vec<Box<extended::ParkedPacks>>>,
+    retired_parked: Mutex<Vec<Box<extended::ParkedPacks>>>,
+    parked_total_bytes: AtomicU64,
+    retired_parked_pending: AtomicBool,
     pub(crate) builder_waker: OnceLock<std::thread::Thread>,
     #[cfg(test)]
     pub(crate) clock_frame_seam: OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -1496,6 +1522,10 @@ impl Shared {
             template_home,
             naval_combat_home,
             weather_temperature: Mutex::new(Default::default()),
+            parked_packs: Mutex::new(Vec::new()),
+            retired_parked: Mutex::new(Vec::new()),
+            parked_total_bytes: AtomicU64::new(0),
+            retired_parked_pending: AtomicBool::new(false),
             builder_waker: OnceLock::new(),
                     #[cfg(test)]
             clock_frame_seam: OnceLock::new(),
@@ -1560,21 +1590,65 @@ impl Shared {
         Ok(())
     }
 
-    #[inline(never)]
-    pub(crate) fn new_frame(&self) -> std::io::Result<Box<Captured>> {
-        self.frame_for(&self.frame_capacities.published())
+    fn publish_frame_claimed(
+        &self,
+        frame: Box<Captured>,
+        ahead: bool,
+        claim: crate::frame_pool::GrowthClaim<'_>,
+    ) -> std::io::Result<()> {
+        let index = self.frames.vacant()?;
+        self.frames.install_claimed(index, frame, claim);
+        if ahead {
+            self.frames.built_ahead(index);
+        }
+        self.frame_priority.publish();
+        let published = self.frames.push(index);
+        debug_assert!(published.is_ok());
+        Ok(())
     }
 
-    fn frame_for(&self, capacities: &FrameCapacities) -> std::io::Result<Box<Captured>> {
+    pub fn parked_bytes(&self) -> u64 {
+        self.parked_total_bytes.load(Ordering::Relaxed)
+    }
+
+    fn at_frame_limit(&self) -> bool {
+        self.frames.at_limit()
+    }
+
+    fn try_claim_frame_growth(&self) -> Option<crate::frame_pool::GrowthClaim<'_>> {
+        self.frames.try_claim_growth(
+            crate::frame_pool::MAX_LIVE_FRAMES,
+            crate::frame_pool::MAX_LIVE_BYTES,
+        )
+    }
+
+    #[inline(never)]
+    pub(crate) fn new_frame(&self) -> std::io::Result<Box<Captured>> {
+        self.frame_for(&self.frame_capacities.published(), false)
+    }
+
+    #[inline(never)]
+    pub(crate) fn new_frame_parked(&self) -> std::io::Result<Box<Captured>> {
+        self.frame_for(&self.frame_capacities.published(), true)
+    }
+
+    fn frame_for(&self, capacities: &FrameCapacities, parked: bool) -> std::io::Result<Box<Captured>> {
         let mut frame = engine_allocation::boxed(
             // SAFETY: The session or isolated fixture owns this frame's observer allocations and
             // excludes teardown.
             unsafe {
-                Captured::with_capacities(&capacities.core, &capacities.map, &capacities.extended)
+                Captured::with_capacities_mode(
+                    &capacities.core,
+                    &capacities.map,
+                    &capacities.extended,
+                    parked,
+                )
             }?,
         )?;
-        frame.extended.share_country_intel(&self.country_intel);
-        frame.extended.share_template_home(&self.template_home);
+        if !parked {
+            frame.extended.share_country_intel(&self.country_intel);
+            frame.extended.share_template_home(&self.template_home);
+        }
         frame
             .extended
             .share_naval_combat_home(&self.naval_combat_home);
@@ -1589,8 +1663,14 @@ impl Shared {
     /// Only the session frame builder or isolated fixture may prepare a spare. Ensure the observer
     /// stores remain live throughout its preparation.
     pub unsafe fn build_frame_ahead(&self) -> std::io::Result<()> {
-        let frame = self.new_frame()?;
-        self.publish_frame(frame, true)
+        if self.frames.spool_stalled() {
+            return Ok(());
+        }
+        let Some(claim) = self.try_claim_frame_growth() else {
+            return Ok(());
+        };
+        let frame = self.new_frame_parked()?;
+        self.publish_frame_claimed(frame, true, claim)
     }
 
     /// # Safety
@@ -1619,7 +1699,10 @@ impl Shared {
             if stop.load(Ordering::Acquire) || self.acquisition_failed() {
                 return Ok(());
             }
-            if crate::frame_pool::builds_ahead(self.frames.len(), self.frames.spool_stalled()) {
+            if crate::frame_pool::builds_ahead(
+                self.frames.len(),
+                self.frames.spool_stalled() || self.at_frame_limit(),
+            ) {
                 observe(BuildAhead::Starting);
                 // SAFETY: The dedicated builder or owning fixture prepares a spare while observers
                 // remain live.
@@ -1645,36 +1728,68 @@ impl Shared {
             // SAFETY: This consumer owns the queue removal for the named pool.
             unsafe { self.frames.pop() },
             self.frames.spool_stalled(),
+            self.at_frame_limit(),
         ) {
             HourFrame::Free(index) => {
                 self.frames.taken(index);
                 self.frame_priority.claim();
                 // SAFETY: This stage owns the installed frame slot.
                 unsafe { self.frame_stage(index, FrameStage::Callback) };
-                if self.frames.len() < crate::frame_pool::AHEAD {
+                if self.frames.len() < crate::frame_pool::AHEAD && !self.at_frame_limit() {
                     self.wake_builder();
                 }
                 if !self.hold_clock(index) {
                     self.return_frame(index, Return::Idle);
                     return None;
                 }
+                if !self.ensure_parked_packs(index) {
+                    self.return_frame(index, Return::Idle);
+                    return None;
+                }
                 return Some(index);
             }
-            HourFrame::Drop => {
+            HourFrame::DropStalled => {
                 self.frames.drop_stalled();
+                return None;
+            }
+            HourFrame::DropLimit => {
+                self.frames.drop_limit();
                 return None;
             }
             HourFrame::Grow => {}
         }
+        let Some(claim) = self.try_claim_frame_growth() else {
+            self.frames.drop_limit();
+            return None;
+        };
         self.wake_builder();
         let started = qpc();
         let index = self.frames.vacant().ok()?;
-        match self.new_frame() {
-            Ok(frame) => self.frames.install(index, frame),
-            Err(_) => {
-                self.frames.abandon(index);
-                return None;
-            }
+        let built = match self.take_parked_pack() {
+            Some((parked, bytes)) => match self.new_frame_parked() {
+                Ok(mut frame) => {
+                    frame.extended.install_parked_packs(parked);
+                    self.parked_total_bytes.fetch_sub(bytes, Ordering::Relaxed);
+                    self.frames
+                        .install_claimed_with_credit(index, frame, claim, bytes);
+                    Ok(())
+                }
+                Err(err) => {
+                    self.park_pack_with_prior(parked, bytes);
+                    Err(err)
+                }
+            },
+            None => match self.new_frame() {
+                Ok(frame) => {
+                    self.frames.install_claimed(index, frame, claim);
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            },
+        };
+        if built.is_err() {
+            self.frames.abandon(index);
+            return None;
         }
         let elapsed = self.ns(qpc() - started);
         self.frames.grew(elapsed);
@@ -1687,6 +1802,198 @@ impl Shared {
         unsafe { self.frame_stage(index, FrameStage::Callback) };
         self.frame_priority.refresh();
         Some(index)
+    }
+
+    fn adjust_parked_bytes(&self, before: u64, after: u64) {
+        if after != before {
+            let delta = after.wrapping_sub(before);
+            self.parked_total_bytes.fetch_add(delta, Ordering::Relaxed);
+            self.frames.adjust_live_bytes(before, after);
+        }
+    }
+
+    fn park_pack_from_frame(
+        &self,
+        index: usize,
+        frame_after: u64,
+        parked: Box<extended::ParkedPacks>,
+    ) {
+        const MAX_RETIRED_PARKED: usize = 1;
+        let parked_bytes = parked.allocated_bytes() as u64;
+        let retired = if let Ok(mut slots) = self.parked_packs.lock() {
+            if slots.is_empty() && engine_allocation::reserve(&mut slots, 1).is_ok() {
+                slots.push(parked);
+                self.parked_total_bytes
+                    .fetch_add(parked_bytes, Ordering::Relaxed);
+                self.frames
+                    .transfer_slot_bytes(index, frame_after, parked_bytes);
+                None
+            } else {
+                Some(parked)
+            }
+        } else {
+            Some(parked)
+        };
+        let Some(retired) = retired else {
+            return;
+        };
+        let overflow = if let Ok(mut queue) = self.retired_parked.lock() {
+            if queue.len() < MAX_RETIRED_PARKED && engine_allocation::reserve(&mut queue, 1).is_ok()
+            {
+                queue.push(retired);
+                self.parked_total_bytes
+                    .fetch_add(parked_bytes, Ordering::Relaxed);
+                self.frames
+                    .transfer_slot_bytes(index, frame_after, parked_bytes);
+                self.retired_parked_pending.store(true, Ordering::Release);
+                None
+            } else {
+                Some(retired)
+            }
+        } else {
+            Some(retired)
+        };
+        if let Some(overflow) = overflow {
+            drop(overflow);
+            self.set_frame_bytes(index, frame_after);
+        }
+    }
+
+    fn park_pack_with_prior(&self, parked: Box<extended::ParkedPacks>, prior_bytes: u64) {
+        let after = parked.allocated_bytes() as u64;
+        let retired = if let Ok(mut slots) = self.parked_packs.lock() {
+            if slots.is_empty() && engine_allocation::reserve(&mut slots, 1).is_ok() {
+                slots.push(parked);
+                self.adjust_parked_bytes(prior_bytes, after);
+                None
+            } else {
+                Some(parked)
+            }
+        } else {
+            Some(parked)
+        };
+        if let Some(retired) = retired {
+            self.retire_parked_pack_with_prior(retired, prior_bytes);
+        }
+    }
+
+    fn retire_parked_pack_with_prior(
+        &self,
+        retired: Box<extended::ParkedPacks>,
+        prior_bytes: u64,
+    ) {
+        const MAX_RETIRED_PARKED: usize = 1;
+        let after = retired.allocated_bytes() as u64;
+        let overflow = if let Ok(mut queue) = self.retired_parked.lock() {
+            if queue.len() < MAX_RETIRED_PARKED && engine_allocation::reserve(&mut queue, 1).is_ok()
+            {
+                queue.push(retired);
+                self.adjust_parked_bytes(prior_bytes, after);
+                self.retired_parked_pending.store(true, Ordering::Release);
+                None
+            } else {
+                Some(retired)
+            }
+        } else {
+            Some(retired)
+        };
+        if let Some(overflow) = overflow {
+            drop(overflow);
+            self.adjust_parked_bytes(prior_bytes, 0);
+        }
+    }
+
+    pub fn has_retired_parked(&self) -> bool {
+        self.retired_parked_pending.load(Ordering::Acquire)
+    }
+
+    pub fn drain_retired_parked(&self) -> bool {
+        let drained = match self.retired_parked.lock() {
+            Ok(mut queue) => {
+                self.retired_parked_pending.store(false, Ordering::Release);
+                std::mem::take(&mut *queue)
+            }
+            Err(_) => return false,
+        };
+        if drained.is_empty() {
+            return false;
+        }
+        let bytes: u64 = drained
+            .iter()
+            .map(|entry| entry.allocated_bytes() as u64)
+            .sum();
+        drop(drained);
+        self.adjust_parked_bytes(bytes, 0);
+        true
+    }
+
+    fn take_parked_pack(&self) -> Option<(Box<extended::ParkedPacks>, u64)> {
+        self.parked_packs.lock().ok().and_then(|mut slots| {
+            let parked = slots.pop()?;
+            let bytes = parked.allocated_bytes() as u64;
+            Some((parked, bytes))
+        })
+    }
+
+    fn ensure_parked_packs(&self, index: usize) -> bool {
+        // SAFETY: caller exclusively owns the frame slot just taken for capture.
+        let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
+        if !frame.extended.is_parked() {
+            return true;
+        }
+        if let Some((parked, bytes)) = self.take_parked_pack() {
+            frame.extended.install_parked_packs(parked);
+            let after = frame.allocated_bytes() as u64;
+            self.parked_total_bytes.fetch_sub(bytes, Ordering::Relaxed);
+            self.frames
+                .transfer_slot_bytes(index, after, 0_u64.wrapping_sub(bytes));
+            true
+        } else {
+            let capacities = self.frame_capacities.published();
+            frame.extended.hydrate_parked_packs(&capacities.extended);
+            frame.extended.share_country_intel(&self.country_intel);
+            frame.extended.share_template_home(&self.template_home);
+            self.set_frame_bytes(index, frame.allocated_bytes() as u64);
+            !collector_memory::terminal::failed()
+        }
+    }
+
+    pub fn grow_parked_packs(&self, capacities: &mut extended::Capacities) {
+        struct PriorCharge<'a> {
+            shared: &'a Shared,
+            bytes: u64,
+        }
+        impl PriorCharge<'_> {
+            fn take(mut self) -> u64 {
+                let bytes = self.bytes;
+                self.bytes = 0;
+                bytes
+            }
+        }
+        impl Drop for PriorCharge<'_> {
+            fn drop(&mut self) {
+                if self.bytes != 0 {
+                    self.shared.adjust_parked_bytes(self.bytes, 0);
+                }
+            }
+        }
+        let mut grown = 0usize;
+        loop {
+            let (mut parked, charge) = match self.parked_packs.lock() {
+                Ok(mut slots) => {
+                    if grown >= slots.len() {
+                        break;
+                    }
+                    let parked = slots.remove(0);
+                    let bytes = parked.allocated_bytes() as u64;
+                    (parked, PriorCharge { shared: self, bytes })
+                }
+                Err(_) => break,
+            };
+            parked.grow(capacities);
+            self.park_pack_with_prior(parked, charge.take());
+            grown += 1;
+        }
     }
 
     /// # Safety
@@ -1709,7 +2016,7 @@ impl Shared {
         let before = frame.clock_bytes();
         let held = frame.prepare_clock(self.clock_required()).is_ok();
         if frame.clock_bytes() != before {
-            self.measure_frame(index);
+            self.set_frame_bytes(index, frame.allocated_bytes() as u64);
         }
         held
     }
@@ -1745,24 +2052,15 @@ impl Shared {
         collector_memory::terminal::failed() || self.acquisition_panics.load(Ordering::Acquire) != 0
     }
 
-    pub(crate) fn measure_frame(&self, index: usize) {
-        let frame = unsafe { &*self.frames[index].load(Ordering::Acquire) };
-        self.frames
-            .slot(index)
-            .bytes
-            .store(frame.allocated_bytes() as u64, Ordering::Relaxed);
+    pub fn set_frame_bytes(&self, index: usize, bytes: u64) {
+        self.frames.set_slot_bytes(index, bytes);
     }
 
     pub fn pool_owned(&self) -> u64 {
-        self.frames
-            .slots()
-            .map(|slot| slot.bytes.load(Ordering::Relaxed))
-            .fold(
-                self.pool_bytes
-                    .load(Ordering::Relaxed)
-                    .wrapping_add(self.frames.slot_bytes()),
-                u64::wrapping_add,
-            )
+        self.pool_bytes
+            .load(Ordering::Relaxed)
+            .wrapping_add(self.frames.slot_bytes())
+            .wrapping_add(self.frames.live_bytes())
     }
 
     pub fn pool_total(&self) -> u64 {
@@ -1780,10 +2078,24 @@ impl Shared {
     /// spool, sizing or helper borrow, and give up that claim on return to the pool.
     pub unsafe fn prepare_frame_for_reuse(&self, index: usize) {
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
+        let before = frame.allocated_bytes();
         frame.reset_verdicts();
         frame.verdicts_reset = true;
+        frame.extended.release_transient();
+        let parked = (self.frames.live() > crate::frame_pool::STEADY)
+            .then(|| frame.extended.take_parked_packs())
+            .flatten();
         let result = frame.prepare_clock(self.clock_required());
-        self.measure_frame(index);
+        let after = frame.allocated_bytes() as u64;
+        if let Some(parked) = parked {
+            self.park_pack_from_frame(index, after, parked);
+        } else if after != before as u64
+            || self.frames.slot(index).bytes.load(Ordering::Relaxed) == 0
+        {
+            self.set_frame_bytes(index, after);
+        }
+        collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
+        collector_workers::private_heap::PRIVATE_HEAP.trim_large_if_needed();
         if result.is_err() {
             self.recording.store(false, Ordering::Release);
         }
@@ -1931,7 +2243,7 @@ impl Shared {
             let before = frame.clock_bytes();
             let _ = engine_allocation::advisory(|| frame.prepare_clock(required));
             if frame.clock_bytes() != before {
-                self.measure_frame(index);
+                self.set_frame_bytes(index, frame.allocated_bytes() as u64);
             }
             self.return_frame(index, Return::Idle);
         }
@@ -2326,7 +2638,7 @@ pub(crate) unsafe fn capture(placement: Placement, full: bool) -> bool {
                 Placement::Beside(game) => {
                     // SAFETY: Only this session's acquisition scheduling owner changes its policy
                     // here.
-                    unsafe { pool.beside_pace(crate::capture_point::BESIDE_READERS, game) };
+                    unsafe { pool.beside_pace(crate::capture_point::beside_readers(), game) };
                     if crate::capture_point::hurried() {
                         // SAFETY: Only this session's acquisition scheduling owner changes its
                         // policy here.
@@ -2368,6 +2680,9 @@ pub unsafe fn record_lost(shared: &Shared, hours: u32) {
 /// # Safety
 /// As [`capture`], and `shared` is the published runtime state.
 unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, full: bool) {
+    let _quiescent = collector_primitives::asymmetric::begin_capture_quiescence(|| {
+        !collector_timing::hook_timing::any_other_in_flight()
+    });
     let history_capture =
     // SAFETY: The admitted capture or its fixture owns this frame's observer sequencing.
     unsafe { shared.history_frames.capture() };
@@ -2910,6 +3225,72 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 }};
             }
             batch.hold();
+            let radar_due = replay_data::cadence::should_walk(
+                TableId::RadarCoverage,
+                clock.hour,
+                force_full,
+            );
+            let world_scheduled = world_schedule(clock.hour, force_full);
+            let construction_active = world_scheduled.1;
+            let projects_omitted =
+                projects_refresh && !frame.extended.records_any(&decode::PROJECTS);
+            let radar_ctx = frame.extended.radar_pilot().radar_copy_context(
+                shared.base,
+                state,
+                clock.hour,
+                force_full,
+            );
+            let intel_ctx = frame
+                .extended
+                .intel_pilot()
+                .intel_copy_context(shared.base, state);
+            frame.extended.radar_pilot().radar_raw_mode = radar_due;
+            frame.extended.radar_pilot().registrations_raw_mode = true;
+            frame.extended.intel_pilot().intel_raw_mode = true;
+            frame.extended.projects_pilot().raw_mode = projects_refresh;
+            frame.extended.construction_rest_pilot().rest_raw_mode = construction_active;
+            let (gated_pending, gated_projects_pending) = out_of_line(|| {
+                let mut request = frame.extended.take_gated_request(
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    unsafe { take_slice_store(shared, collector_certificates::slicing::PROJECTS) },
+                    Some(engine_allocation::SharedBox::clone(&country_snapshot)),
+                );
+                let projects = request.take_projects();
+                let projects = queue!(acquisition::Job::GatedProjects(projects));
+                (queue!(acquisition::Job::Gated(request)), projects)
+            });
+            let (launch_store, state_stores) = unsafe {
+                (
+                    take_slice_store(shared, collector_certificates::slicing::RAID_LAUNCH),
+                    crate::extended::RaidStateStores {
+                        states: take_slice_store(
+                            shared,
+                            collector_certificates::slicing::RAID_STATE,
+                        ),
+                        buildings: take_slice_store(
+                            shared,
+                            collector_certificates::slicing::RAID_BUILDINGS,
+                        ),
+                        routes: take_slice_store(
+                            shared,
+                            collector_certificates::slicing::TRADE_ROUTES,
+                        ),
+                    },
+                )
+            };
+            let raid_state_pending = queue!(acquisition::Job::RaidState(
+                frame.extended.take_raid_state_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    state_stores,
+                )
+            ));
             let ship_census = std::mem::replace(&mut frame.map.naval, ShipCensus::vacant());
             let ship_models_pending = out_of_line(|| {
                 let mut request = frame.extended.take_ship_models_request(
@@ -3127,7 +3508,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     }
                 )));
             }
-            let world_scheduled = world_schedule(clock.hour, force_full);
             let world_pending = (frame.extended.records_any(&decode::PRODUCTION_REST)
                 || frame.extended.records_any(&decode::CONSTRUCTION_REST))
             .then(|| {
@@ -3141,7 +3521,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     )))
                 })
             });
-            let construction_active = world_scheduled.1;
             let economy_pending = queue!(acquisition::Job::Economy(acquire_economy_request(
                 &country_snapshot,
                 shared.base,
@@ -3482,24 +3861,13 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 frame.extended.sunk_pilot().sunk_raw_mode = sunk_omitted;
                 None
             };
-            let radar_ctx = frame.extended.radar_pilot().radar_copy_context(
-                shared.base,
-                state,
-                clock.hour,
-                force_full,
-            );
-            let radar_pending = if replay_data::cadence::should_walk(
-                TableId::RadarCoverage,
-                clock.hour,
-                force_full,
-            ) {
+            let radar_pending = if radar_due {
                 Some(queue!(acquisition::Job::Radar(acquisition::RawRequest {
                     countries: engine_allocation::SharedBox::clone(&country_snapshot),
                     context: radar_ctx,
                     payload: decode::acquire_radar_job(),
                 })))
             } else {
-                frame.extended.radar_pilot().radar_raw_mode = false;
                 None
             };
             let projects_ctx = collector_projects::projects::ProjectsCopyContext {
@@ -3507,8 +3875,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 game_state: state,
                 active: projects_refresh,
             };
-            let projects_omitted =
-                projects_refresh && !frame.extended.records_any(&decode::PROJECTS);
             let projects_pending = if projects_refresh && !projects_omitted {
                 Some(queue!(acquisition::Job::Projects(
                     acquisition::RawRequest {
@@ -3518,32 +3884,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     }
                 )))
             } else {
-                frame.extended.projects_pilot().raw_mode = false;
                 None
             };
-            let intel_ctx = frame
-                .extended
-                .intel_pilot()
-                .intel_copy_context(shared.base, state);
-            frame.extended.radar_pilot().radar_raw_mode = radar_pending.is_some();
-            frame.extended.radar_pilot().registrations_raw_mode = true;
-            frame.extended.intel_pilot().intel_raw_mode = true;
-            frame.extended.projects_pilot().raw_mode =
-                projects_pending.is_some() || projects_omitted;
-            frame.extended.construction_rest_pilot().rest_raw_mode = construction_active;
-            let (gated_pending, gated_projects_pending) = out_of_line(|| {
-                let mut request = frame.extended.take_gated_request(
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    unsafe { take_slice_store(shared, collector_certificates::slicing::PROJECTS) },
-                    Some(engine_allocation::SharedBox::clone(&country_snapshot)),
-                );
-                let projects = request.take_projects();
-                let projects = queue!(acquisition::Job::GatedProjects(projects));
-                (queue!(acquisition::Job::Gated(request)), projects)
-            });
             let lexical_ctx = collector_lexical::lexical::LexicalCopyContext { base: shared.base };
             let lexical_pending = if lexical_refresh {
                 Some(queue!(acquisition::Job::Lexical(acquisition::RawRequest {
@@ -3573,35 +3915,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 frame.extended.session_pilot().raw_mode = session_omitted;
                 None
             };
-            let (launch_store, state_stores) = unsafe {
-                (
-                    take_slice_store(shared, collector_certificates::slicing::RAID_LAUNCH),
-                    crate::extended::RaidStateStores {
-                        states: take_slice_store(
-                            shared,
-                            collector_certificates::slicing::RAID_STATE,
-                        ),
-                        buildings: take_slice_store(
-                            shared,
-                            collector_certificates::slicing::RAID_BUILDINGS,
-                        ),
-                        routes: take_slice_store(
-                            shared,
-                            collector_certificates::slicing::TRADE_ROUTES,
-                        ),
-                    },
-                )
-            };
-            let raid_state_pending = queue!(acquisition::Job::RaidState(
-                frame.extended.take_raid_state_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    state_stores,
-                )
-            ));
             let raid_targets_pending = frame
                 .extended
                 .records_any(&collector_projects::raid_target_statuses::TABLES)

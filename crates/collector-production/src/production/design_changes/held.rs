@@ -46,7 +46,7 @@ impl CensusProof {
         enabled()
             && active() == 0
             && self.epoch == EPOCH.load(Ordering::Acquire)
-            && self.revision == REVISION.load(Ordering::Acquire)
+            && self.revision == DESIGN_GATE.revision()
             && self.dependencies == CENSUS_REVISION.load(Ordering::Acquire)
             && !repair::pending()
     }
@@ -91,7 +91,7 @@ pub(in super::super) fn census() -> Option<Census> {
         .get()?
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let revision = REVISION.load(Ordering::Acquire);
+    let revision = DESIGN_GATE.revision();
     let dependencies = CENSUS_REVISION.load(Ordering::Acquire);
     if native::mutations::WRITER_AUDIT_REFUSAL.is_some()
         || !enabled()
@@ -636,7 +636,7 @@ mod census_tests {
         let (_space, sources, _) = setup();
         let proof = census().unwrap();
         repair::mark(sources[0].pointer());
-        assert_eq!(proof.proof.revision, REVISION.load(Ordering::Acquire));
+        assert_eq!(proof.proof.revision, DESIGN_GATE.revision());
         assert_eq!(
             proof.proof.dependencies,
             CENSUS_REVISION.load(Ordering::Acquire)
@@ -807,7 +807,7 @@ mod census_tests {
         BASE.store(space.base, Ordering::Release);
         let refresh = shared_bonus_refresh();
         let proof = census().unwrap();
-        let revision = REVISION.load(Ordering::Acquire);
+        let revision = DESIGN_GATE.revision();
         let pause = Barrier::new(2);
         let args = [
             sources[0].pointer(),
@@ -819,8 +819,8 @@ mod census_tests {
             std::thread::spawn(move || unsafe { refresh(args[0], args[1], args[2], args[3]) });
         pause.wait();
         let shared_active = world_input_changes::design_forwarder_active();
-        let private_active = ACTIVE.load(Ordering::SeqCst);
-        let private_revision = REVISION.load(Ordering::Acquire);
+        let private_active = DESIGN_GATE.active();
+        let private_revision = DESIGN_GATE.revision();
         let watch_dirty = STORE.get().unwrap().lock().unwrap().watched[&sources[0].pointer()].dirty;
         let traits = engine_native_memory::read::<i32>(
             &space.memory(),
@@ -844,7 +844,7 @@ mod census_tests {
         assert!(!admitted, "the shared original prevents census admission");
         assert_eq!(world_input_changes::design_forwarder_active(), 0);
         assert!(
-            REVISION.load(Ordering::Acquire) > revision,
+            DESIGN_GATE.revision() > revision,
             "the inner rebuild arrives later"
         );
         assert_eq!(result, 19);
@@ -869,10 +869,10 @@ mod census_tests {
             "closing dispatch revokes acquired proofs too"
         );
         drop(proof);
-        let revision = REVISION.load(Ordering::Acquire);
+        let revision = DESIGN_GATE.revision();
         assert_eq!(unsafe { refresh(sources[0].pointer(), 0, 23, 0) }, 19);
         assert_eq!(world_input_changes::design_forwarder_active(), 0);
-        assert_eq!(REVISION.load(Ordering::Acquire), revision);
+        assert_eq!(DESIGN_GATE.revision(), revision);
         assert!(!STORE.get().unwrap().lock().unwrap().watched[&sources[0].pointer()].dirty);
         assert!(
             census().is_none(),
@@ -915,9 +915,9 @@ mod census_tests {
             census().is_some(),
             "a local refusal preserves independent proofs"
         );
-        let revision = REVISION.load(Ordering::Acquire);
+        let revision = DESIGN_GATE.revision();
         assert_eq!(unsafe { refresh(sources[0].pointer(), 0, 23, 0) }, 19);
-        assert!(REVISION.load(Ordering::Acquire) > revision);
+        assert!(DESIGN_GATE.revision() > revision);
         assert!(census().is_none());
         assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(1));
         let recovered = acquire(&space.memory(), space.base, &sources, true);
@@ -953,9 +953,9 @@ mod census_tests {
             views(acquire(&failing, space.base, &sources, false))
         );
         CENSUS_BASELINE.store(CENSUS_REVISION.load(Ordering::Acquire), Ordering::Release);
-        ACTIVE.store(1, Ordering::SeqCst);
+        let held_flight = DESIGN_GATE.enter(false);
         assert!(census().is_none());
-        ACTIVE.store(0, Ordering::SeqCst);
+        drop(held_flight);
         let proof = census().unwrap();
         unobserved!();
         assert!(!proof.is_current());

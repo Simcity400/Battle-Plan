@@ -96,7 +96,7 @@ impl ReferenceReads {
             }
         }
         let pool = store.pools.get(&seed.division);
-        self.capture_membership(memory, base, pool, seed);
+        self.capture_membership(memory, base, pool, seed, &store.boundary.retired);
         if let Some(&index) = self.membership_indices.get(&seed.division)
             && self.memberships[index].ready
             && self.memberships[index].result.is_ok()
@@ -117,6 +117,9 @@ impl ReferenceReads {
                 }
             } else if !std::mem::replace(&mut self.dirty_read, true) {
                 for &pointer in &store.boundary.dirty {
+                    if store.boundary.retired.binary_search(&pointer).is_ok() {
+                        continue;
+                    }
                     if let Some(&handle) = store.variant_handles.get(&pointer) {
                         self.capture_variant(memory, base, store, handle, pointer, false);
                     }
@@ -215,6 +218,7 @@ impl ReferenceReads {
         base: usize,
         held: Option<&Pool>,
         seed: &DivisionSeed,
+        retired: &[usize],
     ) {
         if self.membership_indices.contains_key(&seed.division) {
             self.complete = false;
@@ -227,6 +231,13 @@ impl ReferenceReads {
             self.complete = false;
             return;
         };
+        let retired_pool = held.is_some_and(|held| {
+            !retired.is_empty()
+                && held
+                    .variants
+                    .iter()
+                    .any(|&(_, _, pointer)| retired.binary_search(&pointer).is_ok())
+        });
         let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = operands::sequence_at(pool, hint);
         let Some((certificate, slot)) = acquired else {
@@ -235,7 +246,9 @@ impl ReferenceReads {
         };
         self.membership_observation = Some((certificate, slot));
         let certificate = Some(certificate);
-        if held.is_some_and(|held| held.army == seed.pointer && held.certificate == certificate) {
+        if !retired_pool
+            && held.is_some_and(|held| held.army == seed.pointer && held.certificate == certificate)
+        {
             return;
         }
         let index = self.membership_indices.len();
@@ -488,6 +501,9 @@ impl ReferenceReads {
             variants_used: self.variants_used,
             variant_refresh: self.variant_refresh,
             dirty_read: self.dirty_read,
+            last_country_root: None,
+            last_commander_root: None,
+            last_state: None,
         }
     }
 }

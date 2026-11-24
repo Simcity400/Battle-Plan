@@ -1205,7 +1205,7 @@ impl Captured {
         }
         match owners {
             Err(reason) => fail(self, reason),
-            Ok(census) => {
+            Ok((census, found_country)) => {
                 if census {
                     store.finish_scan();
                     self.project_selection.finish_census(store);
@@ -1237,6 +1237,10 @@ impl Captured {
                         self.acquisition_phases[4] = elapsed(started);
                     }
                     outcomes
+                } else if census && found_country && self.project_read.is_empty() {
+                    self.projects.rows.clear();
+                    self.history.rows.clear();
+                    (Outcome::Rows { len: 0 }, Outcome::Rows { len: 0 })
                 } else {
                     nproject_cproject::walk_with_history_selected(
                         memory,
@@ -1302,7 +1306,7 @@ impl Captured {
         base: usize,
         game_state: usize,
         store: &mut SliceFingerprints,
-    ) -> Result<bool, &'static str> {
+    ) -> Result<(bool, bool), &'static str> {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let links = countries.arrays()[1];
         let bytes = (links.count as usize)
@@ -1330,9 +1334,13 @@ impl Captured {
         }
         self.project_owners.sort_unstable();
         let mut census = true;
+        let mut found_country = false;
         for slot in 1..countries.count() {
             let country = match countries.at(slot) {
-                Ok(Some(country)) => country,
+                Ok(Some(country)) => {
+                    found_country = true;
+                    country
+                }
                 Ok(None) => continue,
                 Err(_) => {
                     census = false;
@@ -1370,7 +1378,7 @@ impl Captured {
                 }
             }
         }
-        Ok(census)
+        Ok((census, found_country))
     }
 
     fn project_countries(&self) -> impl Iterator<Item = &[(u32, u32)]> {
@@ -1484,70 +1492,220 @@ pub fn scientist_spool_fixture(daily: bool, ordinal: u32) -> [TableView; N] {
     captured.tables()
 }
 
-macro_rules! rest {
-    ($($field:ident: $ty:ty = $vacant:expr),* $(,)?) => {
-        pub struct Rest {
-            game_state: usize,
-            hour: i32,
-            force_full: bool,
-            ticks: [u64; N],
-            $($field: $ty,)*
-        }
-
-        impl Captured {
-            pub fn take_rest(&mut self, game_state: usize, hour: i32, force_full: bool) -> Rest {
-                self.rest_lent = true;
-                Rest {
-                    game_state,
-                    hour,
-                    force_full,
-                    ticks: [0; N],
-                    $($field: std::mem::replace(&mut self.$field, $vacant),)*
-                }
-            }
-
-            pub fn restore_rest(&mut self, rest: Rest) -> [u64; N] {
-                self.rest_lent = false;
-                $(self.$field = rest.$field;)*
-                rest.ticks
-            }
-        }
-    };
+pub struct RestPrimary {
+    game_state: usize,
+    hour: i32,
+    force_full: bool,
+    ticks: [u64; N],
+    facilities: CaptureRows<raid_facilities::Row>,
+    tooltip_operands: CaptureRows<raid_tooltip_operands::Row>,
+    nukes: CaptureRows<cnuke::Row>,
+    raid_countries: CaptureRows<ccountry_raid_status::Row>,
+    raids: CaptureRows<craid_instance::Row>,
+    peace: CaptureRows<peace_conference::Row>,
+    raid_cooldowns: CaptureRows<craid_system::CooldownRow>,
+    raid_player: CaptureRows<cplayer_status_cache::Row>,
+    raid_type_tokens: Arena<u32>,
+    raid_show_for: Arena<u32>,
+    raid_type_memo: ccountry_raid_status::TypeTokens,
+    refused_leaders: u32,
 }
 
-rest!(
-    facilities: CaptureRows<raid_facilities::Row> = CaptureRows::new(0),
-    raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row> = CaptureRows::new(0),
-    agency_defense: Vec<Option<super::agency_defense::Tree>> = Vec::new(),
-    tooltip_operands: CaptureRows<raid_tooltip_operands::Row> = CaptureRows::new(0),
-    counteroperatives: Arena<engine_raid_inputs::raid_intel_inputs::Operative> = Arena::new(0),
-    nukes: CaptureRows<cnuke::Row> = CaptureRows::new(0),
-    raid_countries: CaptureRows<ccountry_raid_status::Row> = CaptureRows::new(0),
-    raids: CaptureRows<craid_instance::Row> = CaptureRows::new(0),
-    peace: CaptureRows<peace_conference::Row> = CaptureRows::new(0),
-    scientists: CaptureRows<scientist_roster::Row> = CaptureRows::new(0),
-    scientist_skills: CaptureRows<scientist_roster::SkillRow> = CaptureRows::new(0),
-    scientist_names: Vec<u8> = Vec::new(),
-    raid_cooldowns: CaptureRows<craid_system::CooldownRow> = CaptureRows::new(0),
-    raid_paths: [CaptureRows<raid_path_memo::Row>; 2] = [CaptureRows::new(0), CaptureRows::new(0)],
-    raid_player: CaptureRows<cplayer_status_cache::Row> = CaptureRows::new(0),
-    raid_speeds: CaptureRows<raid_speed_inputs::Row> = CaptureRows::new(0),
-    raid_transports: Arena<i64> = Arena::new(0),
-    raid_equipment: CaptureRows<raid_equipment::Row> = CaptureRows::new(0),
-    raid_equipment_variants: Arena<u64> = Arena::new(0),
-    raid_equipment_amounts: Arena<i64> = Arena::new(0),
-    raid_equipment_archetype_tokens: Arena<u32> = Arena::new(0),
-    raid_equipment_archetype_amounts: Arena<i64> = Arena::new(0),
-    speed_memo: engine_native_parts::modifier_definition::DefinitionMemo =
-        engine_native_parts::modifier_definition::DefinitionMemo::default(),
-    raid_reads: super::RaidReadCounts = super::RaidReadCounts::default(),
-    raid_type_tokens: Arena<u32> = Arena::new(0),
-    raid_show_for: Arena<u32> = Arena::new(0),
-    raid_type_memo: ccountry_raid_status::TypeTokens = ccountry_raid_status::TypeTokens::empty(),
-    scientist_injury_read: bool = false,
-);
+pub struct RestAux {
+    game_state: usize,
+    hour: i32,
+    force_full: bool,
+    ticks: [u64; N],
+    raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row>,
+    agency_defense: Vec<Option<super::agency_defense::Tree>>,
+    counteroperatives: Arena<engine_raid_inputs::raid_intel_inputs::Operative>,
+    raid_speeds: CaptureRows<raid_speed_inputs::Row>,
+    raid_transports: Arena<i64>,
+    raid_equipment: CaptureRows<raid_equipment::Row>,
+    raid_equipment_variants: Arena<u64>,
+    raid_equipment_amounts: Arena<i64>,
+    raid_equipment_archetype_tokens: Arena<u32>,
+    raid_equipment_archetype_amounts: Arena<i64>,
+    speed_memo: engine_native_parts::modifier_definition::DefinitionMemo,
+}
+
+pub struct RestPaths {
+    game_state: usize,
+    hour: i32,
+    force_full: bool,
+    ticks: [u64; N],
+    scientists: CaptureRows<scientist_roster::Row>,
+    scientist_skills: CaptureRows<scientist_roster::SkillRow>,
+    scientist_names: Vec<u8>,
+    raid_paths: [CaptureRows<raid_path_memo::Row>; 2],
+    scientist_injury_read: bool,
+    torn_memo_reads: u32,
+}
+
+pub struct Rest {
+    primary: RestPrimary,
+    aux: RestAux,
+    paths: RestPaths,
+}
 
 impl Rest {
+    pub fn into_triple(self) -> (RestPrimary, RestAux, RestPaths) {
+        (self.primary, self.aux, self.paths)
+    }
+
+    pub fn capture(&mut self, memory: &impl Memory, base: usize) {
+        self.primary.capture(memory, base);
+        self.aux.capture(memory, base);
+        self.paths.capture(memory, base);
+    }
+}
+
+impl Captured {
+    pub fn take_rest(&mut self, game_state: usize, hour: i32, force_full: bool) -> Rest {
+        self.rest_lent = true;
+        let primary = RestPrimary {
+            game_state,
+            hour,
+            force_full,
+            ticks: [0; N],
+            facilities: std::mem::replace(&mut self.facilities, CaptureRows::new(0)),
+            tooltip_operands: std::mem::replace(&mut self.tooltip_operands, CaptureRows::new(0)),
+            nukes: std::mem::replace(&mut self.nukes, CaptureRows::new(0)),
+            raid_countries: std::mem::replace(&mut self.raid_countries, CaptureRows::new(0)),
+            raids: std::mem::replace(&mut self.raids, CaptureRows::new(0)),
+            peace: std::mem::replace(&mut self.peace, CaptureRows::new(0)),
+            raid_cooldowns: std::mem::replace(&mut self.raid_cooldowns, CaptureRows::new(0)),
+            raid_player: std::mem::replace(&mut self.raid_player, CaptureRows::new(0)),
+            raid_type_tokens: std::mem::replace(&mut self.raid_type_tokens, Arena::new(0)),
+            raid_show_for: std::mem::replace(&mut self.raid_show_for, Arena::new(0)),
+            raid_type_memo: std::mem::replace(
+                &mut self.raid_type_memo,
+                ccountry_raid_status::TypeTokens::empty(),
+            ),
+            refused_leaders: self.raid_reads.refused_leaders,
+        };
+        let aux = RestAux {
+            game_state,
+            hour,
+            force_full,
+            ticks: [0; N],
+            raid_intel: std::mem::replace(&mut self.raid_intel, CaptureRows::new(0)),
+            agency_defense: std::mem::take(&mut self.agency_defense),
+            counteroperatives: std::mem::replace(&mut self.counteroperatives, Arena::new(0)),
+            raid_speeds: std::mem::replace(&mut self.raid_speeds, CaptureRows::new(0)),
+            raid_transports: std::mem::replace(&mut self.raid_transports, Arena::new(0)),
+            raid_equipment: std::mem::replace(&mut self.raid_equipment, CaptureRows::new(0)),
+            raid_equipment_variants: std::mem::replace(
+                &mut self.raid_equipment_variants,
+                Arena::new(0),
+            ),
+            raid_equipment_amounts: std::mem::replace(
+                &mut self.raid_equipment_amounts,
+                Arena::new(0),
+            ),
+            raid_equipment_archetype_tokens: std::mem::replace(
+                &mut self.raid_equipment_archetype_tokens,
+                Arena::new(0),
+            ),
+            raid_equipment_archetype_amounts: std::mem::replace(
+                &mut self.raid_equipment_archetype_amounts,
+                Arena::new(0),
+            ),
+            speed_memo: std::mem::take(&mut self.speed_memo),
+        };
+        let paths = RestPaths {
+            game_state,
+            hour,
+            force_full,
+            ticks: [0; N],
+            scientists: std::mem::replace(&mut self.scientists, CaptureRows::new(0)),
+            scientist_skills: std::mem::replace(&mut self.scientist_skills, CaptureRows::new(0)),
+            scientist_names: std::mem::take(&mut self.scientist_names),
+            raid_paths: std::mem::replace(
+                &mut self.raid_paths,
+                [CaptureRows::new(0), CaptureRows::new(0)],
+            ),
+            scientist_injury_read: std::mem::take(&mut self.scientist_injury_read),
+            torn_memo_reads: self.raid_reads.torn_memo_reads,
+        };
+        Rest {
+            primary,
+            aux,
+            paths,
+        }
+    }
+
+    pub fn restore_rest(&mut self, rest: Rest) -> [u64; N] {
+        self.restore_rest_triple(Some(rest.primary), Some(rest.aux), Some(rest.paths), "")
+    }
+
+    pub fn restore_rest_triple(
+        &mut self,
+        primary: Option<RestPrimary>,
+        aux: Option<RestAux>,
+        paths: Option<RestPaths>,
+        reason: &'static str,
+    ) -> [u64; N] {
+        self.rest_lent = false;
+        let mut ticks = [0; N];
+        match primary {
+            Some(primary) => {
+                self.facilities = primary.facilities;
+                self.tooltip_operands = primary.tooltip_operands;
+                self.nukes = primary.nukes;
+                self.raid_countries = primary.raid_countries;
+                self.raids = primary.raids;
+                self.peace = primary.peace;
+                self.raid_cooldowns = primary.raid_cooldowns;
+                self.raid_player = primary.raid_player;
+                self.raid_type_tokens = primary.raid_type_tokens;
+                self.raid_show_for = primary.raid_show_for;
+                self.raid_type_memo = primary.raid_type_memo;
+                self.raid_reads.refused_leaders = primary.refused_leaders;
+                for (dst, src) in ticks.iter_mut().zip(primary.ticks) {
+                    *dst += src;
+                }
+            }
+            None => self.fail_rest_primary(reason),
+        }
+        match aux {
+            Some(aux) => {
+                self.raid_intel = aux.raid_intel;
+                self.agency_defense = aux.agency_defense;
+                self.counteroperatives = aux.counteroperatives;
+                self.raid_speeds = aux.raid_speeds;
+                self.raid_transports = aux.raid_transports;
+                self.raid_equipment = aux.raid_equipment;
+                self.raid_equipment_variants = aux.raid_equipment_variants;
+                self.raid_equipment_amounts = aux.raid_equipment_amounts;
+                self.raid_equipment_archetype_tokens = aux.raid_equipment_archetype_tokens;
+                self.raid_equipment_archetype_amounts = aux.raid_equipment_archetype_amounts;
+                self.speed_memo = aux.speed_memo;
+                for (dst, src) in ticks.iter_mut().zip(aux.ticks) {
+                    *dst += src;
+                }
+            }
+            None => self.fail_rest_aux(reason),
+        }
+        match paths {
+            Some(paths) => {
+                self.scientists = paths.scientists;
+                self.scientist_skills = paths.scientist_skills;
+                self.scientist_names = paths.scientist_names;
+                self.raid_paths = paths.raid_paths;
+                self.scientist_injury_read = paths.scientist_injury_read;
+                self.raid_reads.torn_memo_reads = paths.torn_memo_reads;
+                for (dst, src) in ticks.iter_mut().zip(paths.ticks) {
+                    *dst += src;
+                }
+            }
+            None => self.fail_rest_paths(reason),
+        }
+        ticks
+    }
+}
+
+impl RestPrimary {
     pub fn capture(&mut self, memory: &impl Memory, base: usize) {
         let (game_state, hour, force_full) = (self.game_state, self.hour, self.force_full);
         let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
@@ -1592,7 +1750,7 @@ impl Rest {
             self.raid_type_tokens.required = walk.required_type_tokens;
             self.raid_show_for.len = walk.show_for_len;
             self.raid_show_for.required = walk.required_show_for;
-            self.raid_reads.refused_leaders += walk.refused_leaders;
+            self.refused_leaders += walk.refused_leaders;
             ticks[5] = elapsed(begin);
         } else {
             self.raid_countries.outcome = Outcome::Unavailable {
@@ -1632,6 +1790,18 @@ impl Rest {
                 reason: replay_data::cadence::SKIPPED_REASON,
             };
         }
+        plain!(peace, 7, peace_conference);
+        plain!(facilities, 16, raid_facilities);
+        plain!(tooltip_operands, 18, raid_tooltip_operands);
+        self.ticks = ticks;
+    }
+}
+
+impl RestAux {
+    pub fn capture(&mut self, memory: &impl Memory, base: usize) {
+        let (game_state, hour, force_full) = (self.game_state, self.hour, self.force_full);
+        let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
+        let mut ticks = [0; N];
         if active[14] {
             let _reads = read_accounting::table(TABLES[14]);
             let begin = qpc();
@@ -1691,9 +1861,6 @@ impl Rest {
                 reason: replay_data::cadence::SKIPPED_REASON,
             };
         }
-        plain!(peace, 7, peace_conference);
-        plain!(facilities, 16, raid_facilities);
-        plain!(tooltip_operands, 18, raid_tooltip_operands);
         if !active[17] {
             self.raid_intel.outcome = Outcome::Unavailable {
                 reason: replay_data::cadence::SKIPPED_REASON,
@@ -1727,6 +1894,15 @@ impl Rest {
             self.counteroperatives.len = read.operatives.min(self.counteroperatives.first.len());
             ticks[17] = elapsed(begin);
         }
+        self.ticks = ticks;
+    }
+}
+
+impl RestPaths {
+    pub fn capture(&mut self, memory: &impl Memory, base: usize) {
+        let (game_state, hour, force_full) = (self.game_state, self.hour, self.force_full);
+        let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
+        let mut ticks = [0; N];
         if active[12] {
             let _reads = read_accounting::table(TABLES[12]);
             let begin = qpc();
@@ -1741,7 +1917,7 @@ impl Rest {
                         game_state,
                         dispatcher,
                         rows,
-                        &mut self.raid_reads.torn_memo_reads,
+                        &mut self.torn_memo_reads,
                     )
                 });
             }
@@ -1816,25 +1992,39 @@ impl Rest {
 }
 
 impl Captured {
-    pub fn fail_rest(&mut self, reason: &'static str) {
-        self.rest_lent = false;
-        self.scientist_injury_read = false;
+    fn fail_rest_primary(&mut self, reason: &'static str) {
         let failed = Outcome::Unavailable { reason };
         self.facilities.outcome = failed;
-        self.raid_intel.outcome = failed;
         self.tooltip_operands.outcome = failed;
         self.nukes.outcome = failed;
         self.raid_countries.outcome = failed;
         self.raids.outcome = failed;
         self.peace.outcome = failed;
+        self.raid_cooldowns.outcome = failed;
+        self.raid_player.outcome = failed;
+    }
+
+    fn fail_rest_aux(&mut self, reason: &'static str) {
+        let failed = Outcome::Unavailable { reason };
+        self.raid_intel.outcome = failed;
+        self.raid_speeds.outcome = failed;
+        self.raid_equipment.outcome = failed;
+    }
+
+    fn fail_rest_paths(&mut self, reason: &'static str) {
+        self.scientist_injury_read = false;
+        let failed = Outcome::Unavailable { reason };
         self.scientists.outcome = failed;
         self.scientist_skills.outcome = failed;
-        self.raid_cooldowns.outcome = failed;
         for memo in &mut self.raid_paths {
             memo.outcome = failed;
         }
-        self.raid_player.outcome = failed;
-        self.raid_speeds.outcome = failed;
-        self.raid_equipment.outcome = failed;
+    }
+
+    pub fn fail_rest(&mut self, reason: &'static str) {
+        self.rest_lent = false;
+        self.fail_rest_primary(reason);
+        self.fail_rest_aux(reason);
+        self.fail_rest_paths(reason);
     }
 }

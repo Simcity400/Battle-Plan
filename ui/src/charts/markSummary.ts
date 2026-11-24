@@ -2,6 +2,7 @@ import { summaryFits } from './chartSummary.ts';
 import { BADGE_STRIP, drawBadges } from './badges.ts';
 import type { EventBadge } from './badges.ts';
 import type { PlotFrame } from './frame.ts';
+import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens.ts';
 
 export interface MarkCluster {
@@ -48,7 +49,7 @@ export function markSummaryMatches(summary: MarkSummary, frame: PlotFrame, until
 
 export function clusterHour(cluster: MarkCluster): number { return (cluster.firstHour + cluster.lastHour) / 2; }
 
-export function drawMarkSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, summary: MarkSummary, until: number | null = null): void {
+export function drawMarkSummary(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, summary: MarkSummary, until: number | null = null): void {
   if (summary.placement === 'ticks') {
     ctx.save(); ctx.strokeStyle = summary.color ?? tokens.muted;
     const bottom = frame.plotTop + frame.plotHeight;

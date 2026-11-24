@@ -31,25 +31,39 @@ fn weight(encoder: &FrameEncoder, table: TableId, input: &TableInput) -> usize {
             }
         }
         TableInput::ComparedChanges { rows, .. } => rows.len(),
-        TableInput::SliceUpdate { update, .. } => update.rows().len(),
+        TableInput::SliceUpdate { update, .. }
+        | TableInput::UniformOptionalI32 { update, .. } => update.rows().len(),
         TableInput::ComparedEqual(_)
         | TableInput::Sampled(TableView::Unavailable { .. } | TableView::NotRecorded { .. }) => 0,
     }
 }
 
-pub(crate) fn encode(
+pub(crate) fn encode_keeping(
+    encoder: &FrameEncoder,
+    source: &FrameInput,
+    target: (BranchId, Hour, bool),
+    kept: impl Fn(TableId) -> bool,
+    helpers: collector_workers::spool_helper::Helpers<'_>,
+) -> [Option<TableSegment>; TABLE_COUNT] {
+    encode_keeping_with_steps(encoder, source, target, kept, helpers, &HELPER)
+}
+
+#[cfg(test)]
+fn encode_with_steps(
     encoder: &FrameEncoder,
     source: &FrameInput,
     target: (BranchId, Hour, bool),
     helpers: collector_workers::spool_helper::Helpers<'_>,
+    steps: &Steps<impl PhaseObserver + Sync>,
 ) -> [Option<TableSegment>; TABLE_COUNT] {
-    encode_with_steps(encoder, source, target, helpers, &HELPER)
+    encode_keeping_with_steps(encoder, source, target, |_| true, helpers, steps)
 }
 
-fn encode_with_steps(
+fn encode_keeping_with_steps(
     encoder: &FrameEncoder,
     source: &FrameInput,
     (branch, hour, force): (BranchId, Hour, bool),
+    kept: impl Fn(TableId) -> bool,
     helpers: collector_workers::spool_helper::Helpers<'_>,
     steps: &Steps<impl PhaseObserver + Sync>,
 ) -> [Option<TableSegment>; TABLE_COUNT] {
@@ -57,6 +71,9 @@ fn encode_with_steps(
     let mut order = [(0_usize, 0_usize); TABLE_COUNT];
     let mut count = 0;
     for table in TableId::ALL {
+        if !kept(table) {
+            continue;
+        }
         let rows = weight(encoder, table, &source.tables[table.index()]);
         if rows >= SEGMENT_ROWS {
             order[count] = (rows, table.index());

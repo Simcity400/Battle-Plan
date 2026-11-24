@@ -97,25 +97,105 @@ impl OrganisationMemo {
         province: usize,
         expected: Option<u32>,
     ) -> Result<(u32, u8), &'static str> {
+        let mut fetched_flags = None;
         let (id, definition) = self.identities.get_or_if(
             province,
             || {
-                if province == 0
-                    || read::<u64>(memory, province)
-                        != engine_sites::at(base, cprovince::VTABLE_RVA).map(|p| p as u64)
-                {
+                if province == 0 {
                     return Err("movement province identity mismatch");
                 }
-                let definition = movement_pointer(memory, province, cprovince::DEFINITION)?;
-                if definition == 0 {
-                    return Err("movement province definition mismatch");
-                }
-                let definition_id =
-                    presentation_field::<u32>(memory, definition, crate::cprovince::definition::ID)?;
-                let id = presentation_field::<u32>(memory, province, cprovince::ID)?;
+                let expected_vtable =
+                    engine_sites::at(base, cprovince::VTABLE_RVA).map(|p| p as u64);
+                let def_at = province.checked_add(cprovince::DEFINITION);
+                let id_at = province.checked_add(cprovince::ID);
+                let (definition, id) = match (def_at, id_at) {
+                    (Some(def_at), Some(id_at)) => {
+                        let mut vtable = [0u8; 8];
+                        let mut def_bytes = [0u8; 8];
+                        let mut id_bytes = [0u8; 4];
+                        let completed = memory.copy_scattered_prefetched(
+                            [province, def_at, id_at],
+                            &mut [&mut vtable, &mut def_bytes, &mut id_bytes],
+                        );
+                        if completed == 0 || Some(u64::from_le_bytes(vtable)) != expected_vtable {
+                            return Err("movement province identity mismatch");
+                        }
+                        if completed < 2 {
+                            return Err("movement province pointer unreadable");
+                        }
+                        let definition = usize::try_from(u64::from_le_bytes(def_bytes))
+                            .map_err(|_| "movement province pointer overflow")?;
+                        if definition == 0 {
+                            return Err("movement province definition mismatch");
+                        }
+                        let id = if completed == 3 {
+                            Some(u32::from_le_bytes(id_bytes))
+                        } else {
+                            None
+                        };
+                        (definition, id)
+                    }
+                    _ => {
+                        if read::<u64>(memory, province) != expected_vtable {
+                            return Err("movement province identity mismatch");
+                        }
+                        let definition = movement_pointer(memory, province, cprovince::DEFINITION)?;
+                        if definition == 0 {
+                            return Err("movement province definition mismatch");
+                        }
+                        let definition_id = presentation_field::<u32>(
+                            memory,
+                            definition,
+                            crate::cprovince::definition::ID,
+                        )?;
+                        let id = presentation_field::<u32>(memory, province, cprovince::ID)?;
+                        if definition_id != id {
+                            return Err("movement province definition mismatch");
+                        }
+                        return Ok((id, definition));
+                    }
+                };
+                let want_flags = id.is_some_and(|id| expected.is_none_or(|e| id == e))
+                    && !self.flags.contains(definition);
+                let (definition_id, maybe_flags) = match (
+                    definition.checked_add(crate::cprovince::definition::ID),
+                    want_flags
+                        .then(|| definition.checked_add(crate::cprovince::definition::TERRAIN_FLAGS))
+                        .flatten(),
+                ) {
+                    (Some(def_id_at), Some(flags_at)) => {
+                        let mut def_id_bytes = [0u8; 4];
+                        let mut flag_bytes = [0u8; 1];
+                        let completed = memory.copy_scattered_prefetched(
+                            [def_id_at, flags_at],
+                            &mut [&mut def_id_bytes, &mut flag_bytes],
+                        );
+                        if completed == 0 {
+                            return Err("presentation field unreadable");
+                        }
+                        (
+                            u32::from_le_bytes(def_id_bytes),
+                            Some(if completed == 2 {
+                                Ok(flag_bytes[0])
+                            } else {
+                                Err("presentation field unreadable")
+                            }),
+                        )
+                    }
+                    _ => (
+                        presentation_field::<u32>(
+                            memory,
+                            definition,
+                            crate::cprovince::definition::ID,
+                        )?,
+                        None,
+                    ),
+                };
+                let id = id.ok_or("presentation field unreadable")?;
                 if definition_id != id {
                     return Err("movement province definition mismatch");
                 }
+                fetched_flags = maybe_flags;
                 Ok((id, definition))
             },
             |value| value.is_ok(),
@@ -125,12 +205,13 @@ impl OrganisationMemo {
         }
         let flags = self.flags.get_or_if(
             definition,
-            || {
-                presentation_field(
+            || match fetched_flags {
+                Some(flags) => flags,
+                None => presentation_field(
                     memory,
                     definition,
                     crate::cprovince::definition::TERRAIN_FLAGS,
-                )
+                ),
             },
             |value| value.is_ok(),
         )?;
@@ -185,6 +266,7 @@ impl StatusPacket {
     ) -> u64 {
         let mut refused = 0;
         let mut threshold = None;
+        let mut countries = None;
         self.organisation_memo.clear();
         for index in 0..self.units.len() {
             let value = (|| -> Result<Option<[i64; 2]>, &'static str> {
@@ -237,7 +319,11 @@ impl StatusPacket {
                     } else {
                         roster()?
                     };
-                    let owner = ccountry::Reader::new(memory, base, state)?.resolve(raw)?;
+                    let owner = countries
+                        .get_or_insert_with(|| ccountry::Reader::new(memory, base, state))
+                        .as_ref()
+                        .map_err(|reason| *reason)?
+                        .resolve(raw)?;
                     let inputs = strategic_action::read_inputs(
                         memory,
                         base,

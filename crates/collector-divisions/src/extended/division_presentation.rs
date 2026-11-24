@@ -4,7 +4,7 @@ use collector_primitives::{
 };
 use collector_production::production::Sources;
 use collector_projection::{
-    projection::{Projection, ledger_table, scalar_table},
+    projection::{Projection, ledger_table, project_table, scalar_table},
     table_conversion::unavailable,
 };
 use engine_allocation::{copy_vec, owned_vec};
@@ -154,19 +154,73 @@ macro_rules! project_status_fields {
     }};
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PanelInputs {
+    division: u64,
+    stamp: u64,
+    max_hp: i64,
+    max_org: i64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct StatusInputs {
-    row: carmy::StatusRow,
-    supply_grace: Option<i32>,
-    supply: Option<engine_native_parts::cunit_supply_inputs::Inputs>,
-    dig_in: Option<i64>,
-    commander: Option<[Option<i64>; 6]>,
-    experience: Option<i64>,
-    pending_template: Option<u64>,
-    officer: Option<i64>,
-    career: Option<i32>,
-    panel_source: Option<[u64; 3]>,
-    combat_movement: Option<Option<i64>>,
+    entrenchment: i64,
+    supply_ratio: i64,
+    strength_factor: i64,
+    supply_grace_remaining: i64,
+    supply_grace_displayed: i64,
+    experience: i64,
+    dig_in: i64,
+    flags: u32,
+    division: u64,
+    supply_sample_id: u64,
+    naming_held_stamp: u64,
+    movement_organisation: [i64; 2],
+    entrenchment_cap: i64,
+    supply_grace_maximum: i64,
+    attrition_value: i64,
+    attrition_threshold: i64,
+    weather_factor: i64,
+    border_combat_stats: [i64; 3],
+    commander: [i64; 6],
+    naming_template: u64,
+    pending_template: u64,
+    officer: i64,
+    panel_source: [u64; 3],
+    combat_movement: i64,
+    model_number: i32,
+    invalid_orders_reason: i32,
+    camouflage_category: u32,
+    out_of_supply_days: i32,
+    country_ordinal: u32,
+    naming_order: i32,
+    naming_kind: i32,
+    career: i32,
+    exercising: u8,
+    has_order: u8,
+    invalid_orders: u8,
+    move_flags: u8,
+    movement_organisation_state: u8,
+    camouflage_state: u8,
+    combat_movement_state: u8,
+    commander_mask: u8,
+    naming_ordered: u8,
+    naming_programmatic: u8,
+}
+
+impl StatusInputs {
+    const F_INVALID_ORDERS_REASON: u32 = 1 << 0;
+    const F_WEATHER_FACTOR: u32 = 1 << 1;
+    const F_OUT_OF_SUPPLY_DAYS: u32 = 1 << 2;
+    const F_BORDER_COMBAT_STATS: u32 = 1 << 3;
+    const F_NAMING: u32 = 1 << 4;
+    const F_COUNTRY_ORDINAL: u32 = 1 << 5;
+    const F_DIG_IN: u32 = 1 << 6;
+    const F_EXPERIENCE: u32 = 1 << 7;
+    const F_PENDING_TEMPLATE: u32 = 1 << 8;
+    const F_OFFICER: u32 = 1 << 9;
+    const F_CAREER: u32 = 1 << 10;
+    const F_PANEL_SOURCE: u32 = 1 << 11;
 }
 
 fn unique(keys: &mut Vec<u64>, divisions: impl ExactSizeIterator<Item = u64>) -> bool {
@@ -202,6 +256,7 @@ struct NamingRead {
     cached_name: Option<cname_group_member::Span>,
     cached_failure: Option<&'static str>,
     held: bool,
+    held_stamp: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -383,6 +438,8 @@ fn source_outcome(sources: &Sources<'_, DivisionSeed>) -> Outcome {
     }
 }
 
+pub use speed_terms::{SpeedTermsAuxWork, SpeedTermsEntriesWork};
+
 pub struct SpeedTermsPass {
     terms: speed_terms::SpeedTerms,
 }
@@ -400,10 +457,26 @@ impl SpeedTermsPass {
         state: usize,
         sources: Sources<'_, DivisionSeed>,
     ) -> CaptureReport {
+        self.capture_with_parallel(memory, base, state, sources, None)
+    }
+
+    pub fn capture_with_parallel(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        sources: Sources<'_, DivisionSeed>,
+        parallel: Option<speed_terms::ParallelRunner<'_>>,
+    ) -> CaptureReport {
         let mut report = CaptureReport::default();
-        let terms = self
-            .terms
-            .acquire(memory, base, state, sources.rows, source_outcome(&sources));
+        let terms = self.terms.acquire_with(
+            memory,
+            base,
+            state,
+            sources.rows,
+            source_outcome(&sources),
+            parallel,
+        );
         report.ticks[7..].copy_from_slice(&terms);
         report
     }
@@ -972,10 +1045,24 @@ impl Captured {
         )
     }
 
-    fn published_panel(&self, division: u64) -> Option<[Option<i64>; 23]> {
-        let at = self.status_packet.status_index(division)?;
+    fn published_panel_speed(&self, position: usize, division: u64) -> Option<i64> {
+        let at = if self
+            .status
+            .rows
+            .get(position)
+            .is_some_and(|row| row.division == division)
+        {
+            position
+        } else {
+            self.status_packet.status_index(division)?
+        };
         (self.status.rows.get(at)?.division == division)
-            .then(|| self.attack.view_at(at, division).panel())
+            .then(|| {
+                self.attack
+                    .view_at(at, division)
+                    .panel_stat(DivisionPanelStatsRow::MAXIMUM_SPEED)
+            })
+            .flatten()
     }
 
     fn names_valid(&self, len: usize) -> bool {
@@ -1121,6 +1208,7 @@ impl Captured {
 
     fn order_transport(
         &self,
+        position: usize,
         division: u64,
     ) -> Option<replay_data::rows::DivisionOrderTransportInputs> {
         let rows = self.order_transport.rows();
@@ -1128,9 +1216,14 @@ impl Captured {
             return None;
         }
         let inputs = rows
-            .binary_search_by_key(&division, |row| row.division)
-            .ok()
-            .and_then(|index| rows[index].inputs)?;
+            .get(position)
+            .filter(|row| row.division == division)
+            .or_else(|| {
+                rows.binary_search_by_key(&division, |row| row.division)
+                    .ok()
+                    .map(|index| &rows[index])
+            })
+            .and_then(|row| row.inputs)?;
         Some(replay_data::rows::DivisionOrderTransportInputs {
             naval_weight: inputs.naval_weight,
             paradrop_eligible: inputs.paradrop_eligible,
@@ -1500,23 +1593,35 @@ impl Captured {
             self.attack_deferred = true;
             return;
         }
+        let row_count = sources.rows.len();
         if let Some(store) = store.as_deref_mut() {
-            let parts = &self.preparation_parts;
+            let parts = &self.preparation_parts[..self.status_part_count.min(self.preparation_parts.len())];
             self.attack.settle_certification(
                 context.base,
                 sources.rows,
                 sources.outcome,
                 store,
                 |index| {
+                    if parts.is_empty() {
+                        return None;
+                    }
+                    if row_count != 0 {
+                        let guess = (index * parts.len() / row_count).min(parts.len() - 1);
+                        if parts[guess].range.contains(&index) {
+                            return parts[guess].get(index);
+                        }
+                    }
+                    let pos = parts.partition_point(|part| part.range.end <= index);
                     parts
-                        .iter()
-                        .find(|part| part.range.contains(&index))
+                        .get(pos)
+                        .filter(|part| part.range.contains(&index))
+                        .or_else(|| parts.iter().find(|part| part.range.contains(&index)))
                         .and_then(|part| part.get(index))
                 },
             );
         }
         let status = &self.status_packet;
-        let parts = &self.attack_parts;
+        let parts = &self.attack_parts[..self.status_part_count.min(self.attack_parts.len())];
         let ready = self.attack_ready;
         self.attack.capture_prepared(
             memory,
@@ -1527,14 +1632,21 @@ impl Captured {
             store,
             |index| status.unit_maxima(index),
             |index| {
-                ready
-                    .then(|| {
-                        parts
-                            .iter()
-                            .find(|part| part.range.contains(&index))
-                            .and_then(|part| part.get(index))
-                    })
-                    .flatten()
+                if !ready || parts.is_empty() {
+                    return None;
+                }
+                if row_count != 0 {
+                    let guess = (index * parts.len() / row_count).min(parts.len() - 1);
+                    if parts[guess].range.contains(&index) {
+                        return parts[guess].get(index);
+                    }
+                }
+                let pos = parts.partition_point(|part| part.range.end <= index);
+                parts
+                    .get(pos)
+                    .filter(|part| part.range.contains(&index))
+                    .or_else(|| parts.iter().find(|part| part.range.contains(&index)))
+                    .and_then(|part| part.get(index))
             },
         );
         self.attack_ready = false;
@@ -1691,27 +1803,32 @@ impl Captured {
         self.source_required = self.source_required.max(rows.len());
         let _status_reads = collector_memory::read_accounting::table(TableId::DivisionStatus);
         let start = qpc();
-        let probes = &self.preparation_parts;
+        let probes = &self.preparation_parts[..preparation_count.min(self.preparation_parts.len())];
         let ready = probes_ready;
-        let prepared = |index: usize| {
-            ready
-                .then(|| {
-                    probes
-                        .iter()
-                        .find(|part| part.range.contains(&index))
-                        .and_then(|part| part.get(index))
-                })
-                .flatten()
+        let probe_for = |index: usize| {
+            if !ready || probes.is_empty() {
+                return None;
+            }
+            if !rows.is_empty() {
+                let guess = (index * probes.len() / rows.len()).min(probes.len() - 1);
+                if probes[guess].range.contains(&index) {
+                    return Some(&probes[guess]);
+                }
+            }
+            let pos = probes.partition_point(|part| part.range.end <= index);
+            probes
+                .get(pos)
+                .filter(|part| part.range.contains(&index))
+                .or_else(|| probes.iter().find(|part| part.range.contains(&index)))
         };
+        let prepared = |index: usize| probe_for(index).and_then(|part| part.get(index));
         self.sources_deferred = self.owned_settlement
             && ready
             && !rows.is_empty()
             && army_stats
                 .as_deref()
                 .is_some_and(|store| store.sources.can_settle_owned())
-            && probes[..preparation_count]
-                .iter()
-                .all(|part| part.can_settle_sources());
+            && probes.iter().all(|part| part.can_settle_sources());
         let sources_ready = qpc();
         self.phase_ticks[20] = sources_ready.saturating_sub(start).max(0) as u64;
         let ordered_sources = !self.sources_deferred && army_stats.is_some();
@@ -1726,16 +1843,7 @@ impl Captured {
                     rows,
                     &mut self.attack.selected_sources,
                     |index| prepared(index).and_then(|row| row.selection),
-                    |index| {
-                        ready
-                            .then(|| {
-                                probes
-                                    .iter()
-                                    .find(|part| part.range.contains(&index))
-                                    .and_then(|part| part.source_reads())
-                            })
-                            .flatten()
-                    },
+                    |index| probe_for(index).and_then(|part| part.source_reads()),
                     |handle, pointer| {
                         ready
                             .then(|| {
@@ -1778,12 +1886,7 @@ impl Captured {
             base,
             rows,
             |index| {
-                if !ready {
-                    return None;
-                }
-                probes[..preparation_count]
-                    .iter()
-                    .find(|part| part.range.contains(&index))
+                probe_for(index)
                     .and_then(|part| part.daily_supply(index))
                     .cloned()
             },
@@ -1792,16 +1895,7 @@ impl Captured {
         self.phase_ticks[4] = certified.saturating_sub(sources_finished).max(0) as u64;
         self.phase_ticks[10..13].copy_from_slice(&self.attack.certify_ticks());
         if prepare_only {
-            let staged = |index: usize| {
-                ready
-                    .then(|| {
-                        probes[..preparation_count]
-                            .iter()
-                            .find(|part| part.range.contains(&index))
-                            .and_then(|part| part.maxima(index))
-                    })
-                    .flatten()
-            };
+            let staged = |index: usize| probe_for(index).and_then(|part| part.maxima(index));
             self.status.outcome = self.status_packet.prepare_holding_staged(
                 memory,
                 base,
@@ -1973,24 +2067,35 @@ impl Captured {
             .expect("owned presentation sources");
         let seeds = &inputs.seeds()[..inputs.outcome().len()];
         let parts = &self.preparation_parts[..self.status_part_count];
+        let part_cursor = std::cell::Cell::new(0usize);
+        let locate_part = |index: usize| {
+            let cur = part_cursor.get();
+            if let Some(part) = parts.get(cur)
+                && part.range.contains(&index)
+            {
+                return Some(part);
+            }
+            if let Some(part) = parts.get(cur + 1)
+                && part.range.contains(&index)
+            {
+                part_cursor.set(cur + 1);
+                return Some(part);
+            }
+            let found = parts.iter().position(|part| part.range.contains(&index))?;
+            part_cursor.set(found);
+            parts.get(found)
+        };
         self.attack.sources = Some(store.sources.settle_owned(
             context.base,
             context.game_state,
             seeds,
             &mut self.attack.selected_sources,
             |index| {
-                parts
-                    .iter()
-                    .find(|part| part.range.contains(&index))
+                locate_part(index)
                     .and_then(|part| part.get(index))
                     .and_then(|row| row.selection)
             },
-            |index| {
-                parts
-                    .iter()
-                    .find(|part| part.range.contains(&index))
-                    .and_then(|part| part.source_reads())
-            },
+            |index| locate_part(index).and_then(|part| part.source_reads()),
             |handle, pointer| {
                 parts
                     .iter()
@@ -2038,16 +2143,28 @@ impl Captured {
                 .as_deref()
                 .expect("owned certification census");
             let parts = &self.preparation_parts;
+            let cert_cursor = std::cell::Cell::new(0usize);
             self.attack.settle_certification(
                 context.base,
                 inputs.seeds(),
                 inputs.outcome(),
                 store,
                 |index| {
-                    parts
-                        .iter()
-                        .find(|part| part.range.contains(&index))
-                        .and_then(|part| part.get(index))
+                    let cur = cert_cursor.get();
+                    if let Some(part) = parts.get(cur)
+                        && part.range.contains(&index)
+                    {
+                        return part.get(index);
+                    }
+                    if let Some(part) = parts.get(cur + 1)
+                        && part.range.contains(&index)
+                    {
+                        cert_cursor.set(cur + 1);
+                        return part.get(index);
+                    }
+                    let found = parts.iter().position(|part| part.range.contains(&index))?;
+                    cert_cursor.set(found);
+                    parts[found].get(index)
                 },
             );
         }
@@ -2068,6 +2185,7 @@ impl Captured {
                 .expect("owned attack sources");
             let status = &self.status_packet;
             let parts = &self.attack_parts;
+            let attack_cursor = std::cell::Cell::new(0usize);
             self.attack.capture_owned(
                 context.base,
                 context.hour,
@@ -2076,10 +2194,21 @@ impl Captured {
                 self.deferred_store.as_deref_mut(),
                 |index| status.unit_maxima(index),
                 |index| {
-                    parts
-                        .iter()
-                        .find(|part| part.range.contains(&index))
-                        .and_then(|part| part.get(index))
+                    let cur = attack_cursor.get();
+                    if let Some(part) = parts.get(cur)
+                        && part.range.contains(&index)
+                    {
+                        return part.get(index);
+                    }
+                    if let Some(part) = parts.get(cur + 1)
+                        && part.range.contains(&index)
+                    {
+                        attack_cursor.set(cur + 1);
+                        return part.get(index);
+                    }
+                    let found = parts.iter().position(|part| part.range.contains(&index))?;
+                    attack_cursor.set(found);
+                    parts[found].get(index)
                 },
             );
             self.attack_ready = false;
@@ -2270,49 +2399,218 @@ impl Captured {
             |at, r, record| {
                 let attack = self.attack.view_at(at, r.division);
                 let index = self.status_index_at(at, r.division);
-                let supply = self.supply_sample_at(r, index);
-                record.bytes(r.naming.and_then(|n| name_span(n.custom)));
-                record.bytes(r.naming.and_then(|n| name_span(n.group)));
-                record.bytes(cached_name(r, index));
-                match supply.2 {
-                    Some(origins) => {
-                        record.word(origins.len() as i64);
-                        for origin in origins {
-                            record.word(i64::from(origin.province));
-                            record.word(origin.requested);
-                            record.word(origin.received);
-                        }
-                    }
-                    None => record.word(-1),
+                let naming_held_stamp = self
+                    .naming
+                    .first
+                    .get(..self.naming.len)
+                    .and_then(|rows| rows.get(index))
+                    .filter(|row| row.division == r.division)
+                    .map_or(0, |row| row.held_stamp);
+                if naming_held_stamp == 0 {
+                    record.bytes(r.naming.and_then(|n| name_span(n.custom)));
+                    record.bytes(cached_name(r, index));
                 }
+                record.bytes(r.naming.and_then(|n| name_span(n.group)));
+                let supply_sample = self.daily_status.sample(index).filter(|s| s.id() != 0);
+                let supply_sample_id = match supply_sample {
+                    Some(sample) => sample.id(),
+                    None => {
+                        let supply = self.supply_sample_at(r, index);
+                        collector_division_parts::supply_inputs::record_displayed(supply.0, record);
+                        match supply.2 {
+                            Some(origins) => {
+                                record.word(origins.len() as i64);
+                                for origin in origins {
+                                    record.word(i64::from(origin.province));
+                                    record.word(collector_division_parts::supply_inputs::displayed(
+                                        origin.requested,
+                                    ));
+                                    record.word(collector_division_parts::supply_inputs::displayed(
+                                        origin.received,
+                                    ));
+                                }
+                            }
+                            None => record.word(-1),
+                        }
+                        0
+                    }
+                };
                 attack.record(record);
                 if self.attack.has_witness(r.division) {
                     return None;
                 }
-                let mut row = *r;
-                row.naming = r.naming.map(|naming| cname_group_member::Inputs {
-                    custom: (0, naming.custom.1),
-                    group: (0, naming.group.1),
-                    ..naming
-                });
-                row.supply_origins_start = 0;
-                row.maximum_hit_points = 0;
-                row.maximum_organisation = 0;
-                row.attrition = 0;
-                row.supply = None;
-                row.supply_failure = None;
+                let dig_in = self.dig_in.factor(r.division, index);
+                let experience = attack.experience();
+                let pending_template = attack.pending_template();
+                let officer = attack.officer();
+                let career = attack.career();
+                let panel_source = attack.panel_source();
+                let mut flags = 0_u32;
+                let invalid_orders_reason = match r.invalid_orders_reason {
+                    Some(v) => {
+                        flags |= StatusInputs::F_INVALID_ORDERS_REASON;
+                        v
+                    }
+                    None => 0,
+                };
+                let weather_factor = match r.weather_factor {
+                    Some(v) => {
+                        flags |= StatusInputs::F_WEATHER_FACTOR;
+                        v
+                    }
+                    None => 0,
+                };
+                let out_of_supply_days = match r.out_of_supply_days {
+                    Some(v) => {
+                        flags |= StatusInputs::F_OUT_OF_SUPPLY_DAYS;
+                        v
+                    }
+                    None => 0,
+                };
+                let border_combat_stats = match r.border_combat_stats {
+                    Some(v) => {
+                        flags |= StatusInputs::F_BORDER_COMBAT_STATS;
+                        v
+                    }
+                    None => [0; 3],
+                };
+                let (naming_template, naming_order, naming_kind, naming_ordered, naming_programmatic) =
+                    match r.naming {
+                        Some(n) => {
+                            flags |= StatusInputs::F_NAMING;
+                            (n.template, n.order, n.kind, n.ordered, n.programmatic)
+                        }
+                        None => (0, 0, 0, 0, 0),
+                    };
+                let country_ordinal = match r.country_ordinal {
+                    Some(v) => {
+                        flags |= StatusInputs::F_COUNTRY_ORDINAL;
+                        v
+                    }
+                    None => 0,
+                };
+                let dig_in_val = match dig_in {
+                    Some(v) => {
+                        flags |= StatusInputs::F_DIG_IN;
+                        v
+                    }
+                    None => 0,
+                };
+                let experience_val = match experience {
+                    Some(v) => {
+                        flags |= StatusInputs::F_EXPERIENCE;
+                        v
+                    }
+                    None => 0,
+                };
+                let pending_template_val = match pending_template {
+                    Some(v) => {
+                        flags |= StatusInputs::F_PENDING_TEMPLATE;
+                        v
+                    }
+                    None => 0,
+                };
+                let officer_val = match officer {
+                    Some(v) => {
+                        flags |= StatusInputs::F_OFFICER;
+                        v
+                    }
+                    None => 0,
+                };
+                let career_val = match career {
+                    Some(v) => {
+                        flags |= StatusInputs::F_CAREER;
+                        v
+                    }
+                    None => 0,
+                };
+                let panel_source_val = match panel_source {
+                    Some(v) => {
+                        flags |= StatusInputs::F_PANEL_SOURCE;
+                        v
+                    }
+                    None => [0; 3],
+                };
+                let (movement_organisation_state, movement_organisation) =
+                    match r.movement_organisation {
+                        None => (0, [0; 2]),
+                        Some(None) => (1, [0; 2]),
+                        Some(Some(pair)) => (2, pair),
+                    };
+                let (camouflage_state, camouflage_category) = match r.camouflage {
+                    None => (0, 0),
+                    Some(c) => match c.category {
+                        None => (1, 0),
+                        Some(v) => (2, v),
+                    },
+                };
+                let (combat_movement_state, combat_movement) =
+                    match self.speed_terms.combat_movement_at(at, r.division) {
+                        None => (0, 0),
+                        Some(None) => (1, 0),
+                        Some(Some(v)) => (2, v),
+                    };
+                let (commander_mask, commander) = match self.commander_modifiers(r.division, index)
+                {
+                    None => (0, [0; 6]),
+                    Some(entries) => {
+                        let mut mask = 1_u8 << 7;
+                        let mut vals = [0_i64; 6];
+                        for (i, entry) in entries.into_iter().enumerate() {
+                            if let Some(v) = entry {
+                                mask |= 1_u8 << i;
+                                vals[i] = v;
+                            }
+                        }
+                        (mask, vals)
+                    }
+                };
                 Some(StatusInputs {
-                    row,
-                    supply_grace: self.supply_grace,
-                    supply: supply.0,
-                    dig_in: self.dig_in.factor(r.division, index),
-                    commander: self.commander_modifiers(r.division, index),
-                    experience: attack.experience(),
-                    pending_template: attack.pending_template(),
-                    officer: attack.officer(),
-                    career: attack.career(),
-                    panel_source: attack.panel_source(),
-                    combat_movement: self.speed_terms.combat_movement_at(at, r.division),
+                    entrenchment: r.entrenchment,
+                    supply_ratio: r.supply_ratio,
+                    strength_factor: r.strength_factor,
+                    supply_grace_remaining: r.supply_grace_remaining,
+                    supply_grace_displayed: DivisionStatusRow::displayed_grace(
+                        r.supply_grace_remaining,
+                        self.supply_grace,
+                    ),
+                    experience: experience_val,
+                    dig_in: dig_in_val,
+                    flags,
+                    division: r.division,
+                    supply_sample_id,
+                    naming_held_stamp,
+                    movement_organisation,
+                    entrenchment_cap: r.entrenchment_cap,
+                    supply_grace_maximum: r.supply_grace_maximum,
+                    attrition_value: r.attrition_value,
+                    attrition_threshold: r.attrition_threshold,
+                    weather_factor,
+                    border_combat_stats,
+                    commander,
+                    naming_template,
+                    pending_template: pending_template_val,
+                    officer: officer_val,
+                    panel_source: panel_source_val,
+                    combat_movement,
+                    model_number: r.model_number,
+                    invalid_orders_reason,
+                    camouflage_category,
+                    out_of_supply_days,
+                    country_ordinal,
+                    naming_order,
+                    career: career_val,
+                    exercising: r.exercising,
+                    has_order: r.has_order,
+                    invalid_orders: r.invalid_orders,
+                    move_flags: r.move_flags,
+                    movement_organisation_state,
+                    camouflage_state,
+                    combat_movement_state,
+                    commander_mask,
+                    naming_kind,
+                    naming_ordered,
+                    naming_programmatic,
                 })
             },
             |r| {
@@ -2360,14 +2658,19 @@ impl Captured {
                 (DivisionPanelStatsRow::maximum(words[at]) != Some(stored)).then_some(stored)
             })
         };
-        let panel = ledger_table::<tables::DivisionPanelStats, _, _>(
+        let panel = ledger_table::<tables::DivisionPanelStats, _, PanelInputs>(
             projection.as_deref_mut(),
             status_outcome,
             &self.status.rows,
             |r| u128::from(r.division),
-            |at, r, _| {
-                let words = self.attack.view_at(at, r.division).panel();
-                Some((words, status_maxima(r, &words)))
+            |at, r, _record| {
+                let stamp = self.attack.view_at(at, r.division).panel_stamp()?;
+                Some(PanelInputs {
+                    division: r.division,
+                    stamp,
+                    max_hp: DivisionStatusRow::MAXIMUM_STEP.round(r.maximum_hit_points),
+                    max_org: DivisionStatusRow::MAXIMUM_STEP.round(r.maximum_organisation),
+                })
             },
             |r| {
                 let at = position(&self.status.rows, r);
@@ -2382,16 +2685,21 @@ impl Captured {
         );
         let panels = matches!(status_outcome, Outcome::Rows { .. })
             && self.status.rows.get(..status_outcome.len()).is_some_and(|rows| {
-                let mut keys = Vec::new();
-                unique(&mut keys, rows.iter().map(|row| row.division))
+                rows.windows(2)
+                    .all(|pair| pair[0].division < pair[1].division)
+                    || self.attack.has_unique_divisions(rows)
+                    || {
+                        let mut keys = Vec::new();
+                        unique(&mut keys, rows.iter().map(|row| row.division))
+                    }
             });
-        let own_base_speed = |r: &carmy::MovementRow| {
-            let words = panels
-                .then(|| self.published_panel(r.division))
-                .flatten()
-                .map_or([None; 22], |words| std::array::from_fn(|at| words[at]));
-            (DivisionMovementRow::panel_speed(r.path_total, words) != r.base_speed)
-                .then_some(r.base_speed)
+        let own_base_speed = |at: usize, r: &carmy::MovementRow| {
+            let panel = if (r.path_total as i32) <= 0 || !panels {
+                None
+            } else {
+                self.published_panel_speed(at, r.division)
+            };
+            (panel != r.base_speed).then_some(r.base_speed)
         };
         let history = self.history_input(projection.as_deref());
         let sources = match &self.attack.sources {
@@ -2442,70 +2750,109 @@ impl Captured {
             ];
         }
         [
-            ledger_table::<tables::DivisionMovement, _, _>(
+            project_table::<tables::DivisionMovement, _>(
                 projection,
                 movement,
                 &self.movement.rows,
                 |r| u128::from(r.division),
-                |_, r, record| {
-                    record.ids(span(r.path_start, r.path_len));
-                    record.ids(span(r.alternate_start, r.alternate_len));
-                    match self.movement_packet.combat_references(r) {
-                        Some(references) => {
-                            record.word(references.len() as i64);
-                            for reference in references {
-                                record.word(reference.combat as i64);
-                                record.word(i64::from(reference.kind));
-                            }
-                        }
-                        None => record.word(-1),
+                |r, previous| {
+                    let DivisionMovementRow {
+                        division,
+                        source,
+                        target,
+                        numerator,
+                        retreat,
+                        strategic_redeployment,
+                        naval_transfer,
+                        combat_count,
+                        path_total,
+                        path,
+                        alternate_total,
+                        alternate_path,
+                        combat_role,
+                        combat_province,
+                        map_entity,
+                        strategic_action,
+                        withdrawal,
+                        movement_priority,
+                        order_transport,
+                        combat_references,
+                        fuel,
+                        transport_speed,
+                        own_base_speed: prev_own_base_speed,
+                        queued_actions,
+                    } = previous;
+                    if *division != r.division
+                        || *numerator != r.numerator
+                        || *source != r.source
+                        || *target != r.target
+                        || *path_total != r.path_total
+                        || *combat_count != r.combat_count
+                        || *fuel != Recorded::Value(r.fuel)
+                        || *retreat != r.retreat
+                        || *strategic_redeployment != r.strategic_redeployment
+                        || *naval_transfer != r.naval_transfer
+                        || *alternate_total != r.alternate_total
+                        || *combat_role != r.combat_role
+                        || *combat_province != r.combat_province
+                        || *map_entity != r.map_entity
+                        || *strategic_action != Recorded::Value(r.strategic_action)
+                        || *withdrawal != Recorded::Value(r.withdrawal)
+                        || *movement_priority != Recorded::Value(r.movement_priority)
+                        || *transport_speed != Recorded::Value(r.transport_speed)
+                        || *queued_actions != Recorded::Value(r.queued_actions)
+                    {
+                        return false;
                     }
-                    let row = carmy::MovementRow {
-                        path_start: 0,
-                        alternate_start: 0,
-                        combat_references: r.combat_references.map(|(_, count)| (0, count)),
-                        ..*r
-                    };
-                    Some((
-                        row,
-                        self.order_transport(r.division),
-                        request.is_some(),
-                        own_base_speed(r),
-                    ))
-                },
-                |r| DivisionMovementRow {
-                    combat_references: Recorded::Value(
-                        collector_division_parts::unit_combat_references::project(
+                    let at = position(&self.movement.rows, r);
+                    *order_transport == Recorded::Value(self.order_transport(at, r.division))
+                        && *prev_own_base_speed == own_base_speed(at, r)
+                        && span(r.path_start, r.path_len) == Some(path.as_slice())
+                        && span(r.alternate_start, r.alternate_len)
+                            == Some(alternate_path.as_slice())
+                        && collector_division_parts::unit_combat_references::matches(
                             request,
                             self.movement_packet.combat_references(r),
                             r.combat_count,
+                            combat_references,
+                        )
+                },
+                |r| {
+                    let at = position(&self.movement.rows, r);
+                    DivisionMovementRow {
+                        combat_references: Recorded::Value(
+                            collector_division_parts::unit_combat_references::project(
+                                request,
+                                self.movement_packet.combat_references(r),
+                                r.combat_count,
+                            ),
                         ),
-                    ),
-                    division: r.division,
-                    source: r.source,
-                    target: r.target,
-                    numerator: r.numerator,
-                    retreat: r.retreat,
-                    strategic_redeployment: r.strategic_redeployment,
-                    strategic_action: replay_data::rows::Recorded::Value(r.strategic_action),
-                    withdrawal: Recorded::Value(r.withdrawal),
-                    movement_priority: Recorded::Value(r.movement_priority),
-                    order_transport: Recorded::Value(self.order_transport(r.division)),
-                    naval_transfer: r.naval_transfer,
-                    combat_count: r.combat_count,
-                    path_total: r.path_total,
-                    path: owned_vec(copy_vec(span(r.path_start, r.path_len).unwrap())),
-                    combat_role: r.combat_role,
-                    combat_province: r.combat_province,
-                    map_entity: r.map_entity,
-                    alternate_total: r.alternate_total,
-                    alternate_path: owned_vec(copy_vec(
-                        span(r.alternate_start, r.alternate_len).unwrap(),
-                    )),
-                    fuel: Recorded::Value(r.fuel),
-                    transport_speed: Recorded::Value(r.transport_speed),
-                    own_base_speed: own_base_speed(r),
-                    queued_actions: Recorded::Value(r.queued_actions),
+                        division: r.division,
+                        source: r.source,
+                        target: r.target,
+                        numerator: r.numerator,
+                        retreat: r.retreat,
+                        strategic_redeployment: r.strategic_redeployment,
+                        strategic_action: replay_data::rows::Recorded::Value(r.strategic_action),
+                        withdrawal: Recorded::Value(r.withdrawal),
+                        movement_priority: Recorded::Value(r.movement_priority),
+                        order_transport: Recorded::Value(self.order_transport(at, r.division)),
+                        naval_transfer: r.naval_transfer,
+                        combat_count: r.combat_count,
+                        path_total: r.path_total,
+                        path: owned_vec(copy_vec(span(r.path_start, r.path_len).unwrap())),
+                        combat_role: r.combat_role,
+                        combat_province: r.combat_province,
+                        map_entity: r.map_entity,
+                        alternate_total: r.alternate_total,
+                        alternate_path: owned_vec(copy_vec(
+                            span(r.alternate_start, r.alternate_len).unwrap(),
+                        )),
+                        fuel: Recorded::Value(r.fuel),
+                        transport_speed: Recorded::Value(r.transport_speed),
+                        own_base_speed: own_base_speed(at, r),
+                        queued_actions: Recorded::Value(r.queued_actions),
+                    }
                 },
             ),
             status,

@@ -25,6 +25,7 @@ collector-test-support = { workspace = true, optional = true }
 collector-certificates.workspace = true
 collector-combat.workspace = true
 collector-division-parts.workspace = true
+collector-division-templates.workspace = true
 collector-extended-support.workspace = true
 collector-hooks.workspace = true
 collector-lifetime.workspace = true
@@ -77,10 +78,13 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 collector-division-parts = { workspace = true, features = ["army_stat_changes", "default", "test-support"] }
+collector-division-templates = { workspace = true, features = ["default", "template_changes", "test-support"] }
 collector-divisions = { workspace = true, features = ["default", "province_unit_changes", "test-support"] }
+collector-hook-failures = { workspace = true, features = ["default", "test-support"] }
+collector-model-inputs = { workspace = true, features = ["default", "local_subunit_changes", "test-support"] }
 collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "order_membership_changes", "political_status_changes", "projects_changes", "province_changes", "province_combat_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
 collector-raw = { workspace = true, features = ["test-support"] }
-collector-workers = { workspace = true, features = ["default", "test-support"] }
+collector-workers = { workspace = true, features = ["default", "executor_join_help", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 engine-native-land = { workspace = true, features = ["test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }

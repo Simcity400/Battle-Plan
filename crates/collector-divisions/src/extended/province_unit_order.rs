@@ -6,11 +6,13 @@ use collector_primitives::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_vec},
 };
+#[cfg(test)]
 use collector_projection::table_conversion::table;
 use engine_allocation::{advisory, copy_vec, owned_vec, reserve};
 use engine_native_memory::{Memory, walk::Outcome};
 use engine_native::{carmy, cprovince::{self, KnownUnit, UnitOrderRow}};
 use replay_data::{rows::ProvinceUnitOrderRow, rows::TableId, rows::tables};
+#[cfg(test)]
 use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProvinceUnitOrder];
@@ -552,10 +554,37 @@ impl Captured {
         }
     }
 
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
         [table::<tables::ProvinceUnitOrder, _>(
             self.outcomes()[0],
             &self.rows.rows,
+            |r| ProvinceUnitOrderRow {
+                province: r.province,
+                mixed: owned_vec(copy_vec(
+                    &self.arena.first[r.mixed[0]..r.mixed[0] + r.mixed[1]],
+                )),
+                naval: owned_vec(copy_vec(
+                    &self.arena.first[r.naval[0]..r.naval[0] + r.naval[1]],
+                )),
+            },
+        )]
+    }
+
+    pub fn table_inputs(
+        &self,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> [replay_frame::frame::TableInput; N] {
+        [collector_projection::projection::project_table::<tables::ProvinceUnitOrder, _>(
+            projection,
+            self.outcomes()[0],
+            &self.rows.rows,
+            |r| u128::from(r.province),
+            |r, prev| {
+                r.province == prev.province
+                    && prev.mixed.as_slice() == &self.arena.first[r.mixed[0]..r.mixed[0] + r.mixed[1]]
+                    && prev.naval.as_slice() == &self.arena.first[r.naval[0]..r.naval[0] + r.naval[1]]
+            },
             |r| ProvinceUnitOrderRow {
                 province: r.province,
                 mixed: owned_vec(copy_vec(

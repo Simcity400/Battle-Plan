@@ -1038,6 +1038,15 @@ pub struct Captured {
 }
 
 impl Captured {
+    pub fn vacant() -> Self {
+        Self {
+            rows: CaptureRows::new(0),
+            selection: SliceSelection::new(),
+            parts: Vec::new(),
+            staged: false,
+        }
+    }
+
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
@@ -1057,6 +1066,13 @@ impl Captured {
         }
     }
 
+    pub fn release_transient(&mut self) {
+        const STEADY_ROWS: usize = 4096;
+        if self.rows.rows.capacity() > STEADY_ROWS {
+            self.rows.rows = Vec::new();
+        }
+    }
+
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
             + self
@@ -1072,7 +1088,10 @@ impl Captured {
     }
 
     fn grow_parts(&mut self, capacity: &mut Capacities) {
+        const STEADY_ROWS: usize = 4096;
+        capacity.rows = capacity.rows.min(STEADY_ROWS);
         self.rows.grow(&mut capacity.rows);
+        capacity.rows = capacity.rows.min(STEADY_ROWS);
         for part in &self.parts {
             capacity.observe(part);
         }

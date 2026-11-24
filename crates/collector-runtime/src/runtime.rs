@@ -45,7 +45,7 @@ use std::{
     ptr,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -986,9 +986,10 @@ fn run(
                 &memory,
                 base,
                 slots,
-                sampling::BUFFERS,
+                1,
             )
-            .unwrap_or(slots),
+            .unwrap_or(slots)
+            .min(8192),
             processor
                 .observe_input_demand(engine_events::politics_sites::lexical_key_demand(
                     &memory, base,
@@ -1036,7 +1037,7 @@ fn run(
     sizing.extended.logistics.raise(logistics_rows);
     collector_fuel_awards::fuel_awards::presize(&memory, base);
     collector_fuel_awards::fuel_awards::install_offered();
-    let (entries, names) = collector_fuel_awards::fuel_awards::capacities();
+    let (entries, names) = collector_fuel_awards::fuel_awards::drained_capacities();
     sizing.extended.fuel_awards = collector_fuel_awards::tables::Capacities { entries, names };
     sizing.extended.game_score.enabled = config.game_score;
     if config.game_score
@@ -1058,9 +1059,7 @@ fn run(
         collector_observers::building_bombing::prepare(&memory, base, slots);
         collector_observers::combat_engagement_refreshes::presize(slots.max(64));
     }
-    collector_observers::nuclear_strikes::presize(
-        collector_observers::building_bombing::buildings().saturating_add(slots),
-    );
+    collector_observers::nuclear_strikes::presize(slots.max(64));
     // SAFETY: Runtime attach presizes map-event lanes before callback publication.
     unsafe { collector_map_events::presize(slots) }?;
     sizing.extended.air_losses.events = collector_observers::air_losses::capacity();
@@ -1362,6 +1361,11 @@ fn run(
          shared.frame_priority() .clone(),
     ) }?;
     owned_workers.push(priority_reconciler.thread_id());
+    processor.attach_priority(
+        // SAFETY: The runtime owns this session's worker policy and keeps it live through join.
+        unsafe { shared.frame_priority() }.clone(),
+    );
+    owned_workers.extend(processor.writer_thread_ids().into_iter().flatten());
     let (mut history_worker, history_handoff) = HistoryWorker::start(
         config.output_dir.clone(),
         config.replay_dir.clone(),
@@ -3012,11 +3016,10 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                     unsafe { shared.native_tick_calls() }.load(Ordering::Relaxed),
             },
             "acquisition_work": acquisition_work(shared),
-            "hour_stages": collector_workers::hour_stages::status(),
+            "hour_stages": collector_workers::hour_stages::status(&|ticks| shared.ns(ticks)),
             "collector_thread_cpu": collector_workers::thread_cpu::status(
-
-                    // SAFETY: This is the runtime's own acquisition pool, retained through worker join.
-                    unsafe { shared.acquisition() }
+                // SAFETY: This is the runtime's own acquisition pool, retained through worker join.
+                unsafe { shared.acquisition() }
                     .get()
                     .map(|acquisition| acquisition.calibration().executor.thread_ids)
                     .unwrap_or_default()
@@ -3761,8 +3764,8 @@ struct RegistryWatch {
 }
 
 impl RegistryWatch {
-    const INTERVAL: Duration = Duration::from_millis(50);
-    const INTEL_INTERVAL: Duration = Duration::from_secs(1);
+    const INTERVAL: Duration = Duration::from_millis(250);
+    const INTEL_INTERVAL: Duration = Duration::from_secs(8);
 
     fn poll_reserved_visibility(
         &mut self,
@@ -4246,6 +4249,7 @@ fn grow_combat_hints(
         let success = frame
             .extended
             .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
+        shared.set_frame_bytes(index, frame.allocated_bytes() as u64);
         refused |= (hint.land.is_some() && !success[0]) || (hint.naval.is_some() && !success[1]);
         if success[0] {
             state.land = hint.land;
@@ -4287,10 +4291,15 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         // SAFETY: Sizing holds exclusive `&mut` access to this idle frame while session observer
         // storage stays live and teardown is excluded; shared observers synchronize concurrent growth.
         unsafe { capacities.grow_frame(idle) };
+        shared.set_frame_bytes(idle_index, idle.allocated_bytes() as u64);
         sizing.account_homes(shared);
         // SAFETY: The sizing owner exclusively holds the idle slot and is returning it once.
         unsafe { shared.restore_idle_frame_prepared(idle_index) };
     }
+    shared.grow_parked_packs(&mut capacities.extended);
+    // SAFETY: Sizing uses only the country intel home belonging to this live session.
+    unsafe { shared.country_intel() }.grow(&mut capacities.extended.intel.rows[15]);
+    sizing.account_homes(shared);
 }
 
 fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
@@ -4343,8 +4352,9 @@ fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
             "ahead_taken": frames.ahead_taken,
             "freed": frames.freed,
             "dropped_spool_stalled": frames.dropped_stalled,
+            "dropped_frame_limit": frames.dropped_limit,
         },
-        "scope": "cumulative since attach: the game thread's waits outside the collector's own reading by cause, buffer_wait_* zero by construction (no frame or held store is ever waited on: an hour that finds the held division store still settling takes one of its own; while fewer than two frames are free, the frame builder thread builds frames ahead until the next hour's and a spare are, built_ahead, which hours take, ahead_taken; an hour that still finds no frame free builds one on the game thread, grown/grow_ns, unless the spool is stalled on an hour it cannot take, when no frame is built or built ahead and the hour is dropped, dropped_spool_stalled; frames past the steady count are freed once more than two are free, freed); frames now: live and all their bytes, free, ahead_ready (built ahead and not yet taken), in_flight (taken for an hour and not yet returned by the spool) and their bytes",
+        "scope": "cumulative since attach: the game thread's waits outside the collector's own reading by cause, buffer_wait_* zero by construction (no frame or held store is ever waited on: an hour that finds the held division store still settling takes one of its own; while no frame is free, the frame builder thread builds one spare frame ahead, built_ahead, which hours take, ahead_taken; an hour that still finds no frame free builds one on the game thread, grown/grow_ns, unless the spool is stalled on an hour it cannot take, dropped_spool_stalled, or the live frame count or byte limit is reached, dropped_frame_limit; frames past the steady count are freed once steady frames are idle or after a sustained idle streak, freed); frames now: live and all their bytes, free, ahead_ready (built ahead and not yet taken), in_flight (taken for an hour and not yet returned by the spool) and their bytes",
     })
 }
 
@@ -4371,6 +4381,7 @@ struct SpoolStatus<P, D> {
     pool_bytes: u64,
     dropped_frames: u64,
     dropped_spool_stalled: u64,
+    dropped_frame_limit: u64,
     drain_complete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<&'static str>,
@@ -4404,6 +4415,9 @@ fn spool_status<'a>(
         dropped_spool_stalled:
             // SAFETY: This is the runtime's frame pool for the current session.
             unsafe { shared.frames() }.stalled_drops(),
+        dropped_frame_limit:
+            // SAFETY: This is the runtime's frame pool for the current session.
+            unsafe { shared.frames() }.limit_drops(),
         drain_complete,
         warning: warning.or(teardown.restoration_error),
         error: error.or(teardown.installation_error),
@@ -4800,6 +4814,7 @@ fn spool_loop(
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
             sizing.retire(processor.take_retired());
+            sizing.retire_parked(shared);
             if let Err(error) =
                 // SAFETY: The session's spool owns this command drain and detachment has quieted
                 // callbacks for the final drain.
@@ -5083,7 +5098,11 @@ impl<T> Default for EverySecond<T> {
 
 impl<T: Moment> EverySecond<T> {
     fn due(&self, now: T) -> bool {
-        self.0.is_none_or(|last| now.since(last) >= Duration::from_secs(1))
+        self.due_after(now, Duration::from_secs(1))
+    }
+
+    fn due_after(&self, now: T, interval: Duration) -> bool {
+        self.0.is_none_or(|last| now.since(last) >= interval)
     }
 
     fn done(&mut self, now: T) {
@@ -5097,7 +5116,6 @@ struct SizingState {
     fuel_demand_at: Instant,
     second: EverySecond,
     capacity_census: SizingBackoff,
-    politics_frames: usize,
 }
 
 #[derive(Default)]
@@ -5111,10 +5129,9 @@ type SizingCheck = Box<dyn FnOnce(&SizingShared, &Shared) + Send>;
 
 struct SizingShared {
     capacities: engine_allocation::SharedBox<collector_capture::frame_capacities::Capacities>,
+    capacities_version: AtomicU64,
     idle_growth_requested: AtomicBool,
-    country_intel_accounted: AtomicUsize,
-    template_home_accounted: AtomicUsize,
-    naval_combat_home_accounted: AtomicUsize,
+    home_accounted: Mutex<[usize; 3]>,
     pass_requested: AtomicBool,
     hint_demand: AtomicBool,
     settled_world: AtomicU64,
@@ -5139,12 +5156,14 @@ impl SizingShared {
             capacities:
                 // SAFETY: These are the owned capacity snapshots for this session's frames.
                 unsafe { shared.frame_capacities() }.clone(),
+            capacities_version: AtomicU64::new(0),
             idle_growth_requested: AtomicBool::new(false),
-            country_intel_accounted: AtomicUsize::new(
+            home_accounted: Mutex::new([
                 // SAFETY: Sizing and the test use only the home associated with these session frames.
-                unsafe { shared.country_intel() }.allocated_bytes()),
-            template_home_accounted: AtomicUsize::new(0),
-            naval_combat_home_accounted: AtomicUsize::new(0),
+                unsafe { shared.country_intel() }.allocated_bytes(),
+                0,
+                0,
+            ]),
             pass_requested: AtomicBool::new(false),
             hint_demand: AtomicBool::new(false),
             settled_world: AtomicU64::new(u64::MAX),
@@ -5175,6 +5194,7 @@ impl SizingShared {
         let before = *capacities;
         capacities.merge_max(proposal);
         if *capacities != before {
+            self.capacities_version.fetch_add(1, Ordering::Release);
             self.idle_growth_requested.store(true, Ordering::Release);
         }
     }
@@ -5210,32 +5230,27 @@ impl SizingShared {
     }
 
     fn account_homes(&self, shared: &Shared) {
-        for (bytes, accounted) in [
-            (
-                // SAFETY: Sizing and the test use only the home associated with these session frames.
-                unsafe { shared.country_intel() }.allocated_bytes(),
-                &self.country_intel_accounted,
+        let mut accounted = lock(&self.home_accounted);
+        let current = [
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes(),
+            collector_division_templates::extended::division_templates::home_allocated_bytes(
+                // SAFETY: The sizing pass uses its session's live shared storage.
+                unsafe { shared.template_home() },
             ),
-            (
-                collector_division_templates::extended::division_templates::home_allocated_bytes(
-                    // SAFETY: The sizing pass uses its session's live shared storage.
-                    unsafe { shared.template_home() },
-                ),
-                &self.template_home_accounted,
+            collector_naval_details::naval_combat_sources::home_allocated_bytes(
+                // SAFETY: The sizing pass uses its session's live shared storage.
+                unsafe { shared.naval_combat_home() },
             ),
-            (
-                collector_naval_details::naval_combat_sources::home_allocated_bytes(
-                    // SAFETY: The sizing pass uses its session's live shared storage.
-                    unsafe { shared.naval_combat_home() },
-                ),
-                &self.naval_combat_home_accounted,
-            ),
-        ] {
-            let previous = accounted.fetch_max(bytes, Ordering::Relaxed);
-
-            // SAFETY: The writer accounts memory to this same session and drains before it is released.
-            unsafe { shared.pool_bytes() }
-                .fetch_add(bytes.saturating_sub(previous) as u64, Ordering::Relaxed);
+        ];
+        for (slot, bytes) in accounted.iter_mut().zip(current) {
+            let previous = *slot;
+            if bytes != previous {
+                *slot = bytes;
+                // SAFETY: The writer accounts memory to this same session and drains before it is released.
+                unsafe { shared.pool_bytes() }
+                    .fetch_add((bytes as u64).wrapping_sub(previous as u64), Ordering::Relaxed);
+            }
         }
     }
 
@@ -5279,6 +5294,7 @@ impl SizingShared {
                 // observer storage stays live and teardown is excluded; shared observers synchronize
                 // concurrent growth.
                 unsafe { proposal.grow_frame(frame) };
+                shared.set_frame_bytes(index, frame.allocated_bytes() as u64);
                 if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
                     // SAFETY: This is the sizing pass for the active session's cache.
                     unsafe { shared.offer_country_cache(required_cells) };
@@ -5343,7 +5359,6 @@ impl SizingThread {
                 fuel_demand_at: Instant::now(),
                 second: EverySecond::default(),
                 capacity_census: SizingBackoff::new(),
-                politics_frames: sampling::BUFFERS,
             }),
         ));
         let builder = {
@@ -5415,7 +5430,12 @@ impl SizingThread {
         match &self.thread {
             Some(thread) if received || collector_lifetime::world_lifetime::invalidating() => {
                 self.sizing.pass_requested.store(true, Ordering::Release);
-                thread.thread().unpark();
+                if collector_lifetime::world_lifetime::invalidating()
+                    || self.sizing.hint_demand.load(Ordering::Relaxed)
+                    || self.sizing.idle_growth_requested.load(Ordering::Relaxed)
+                {
+                    thread.thread().unpark();
+                }
             }
             Some(_) => {}
             None => {
@@ -5460,8 +5480,25 @@ impl SizingThread {
             drop(retired);
             return;
         }
+        let wake = !held.is_empty();
         drop(held);
-        thread.thread().unpark();
+        if wake {
+            thread.thread().unpark();
+        }
+    }
+
+    fn retire_parked(&self, shared: &Shared) {
+        if !shared.has_retired_parked() {
+            return;
+        }
+        if let Some(thread) = &self.thread {
+            thread.thread().unpark();
+        } else {
+            let _span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { collector_workers::spool_phases::SPOOL.span(Phase::Retire) };
+            shared.drain_retired_parked();
+        }
     }
 }
 
@@ -5543,6 +5580,10 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         )
     };
     let mut next_pass = Instant::now();
+    let mut last_pass = Instant::now() - SIZING_IDLE_WAIT;
+    let mut last_reclaim = Instant::now();
+    let mut steady_wait = SIZING_IDLE_WAIT;
+    let mut seen_version = sizing.capacities_version.load(Ordering::Acquire);
     while !sizing.stop.load(Ordering::Acquire) && !collector_memory::terminal::failed() {
         // SAFETY: This owned worker updates its priority from its session's own pipeline.
         unsafe {
@@ -5560,20 +5601,49 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
             unsafe { phases.span(Phase::Retire) };
             drop(retired);
         }
-        let due = Instant::now() >= next_pass;
-        if sizing.pass_requested.swap(false, Ordering::AcqRel) || due {
+        let mut reclaim_now = false;
+        if shared.has_retired_parked() {
+            let _span =
+            // SAFETY: This worker records phases on the counters assigned to its spool role.
+            unsafe { phases.span(Phase::Retire) };
+            reclaim_now = shared.drain_retired_parked();
+        }
+        if reclaim_now || last_reclaim.elapsed() >= Duration::from_secs(3) {
+            last_reclaim = Instant::now();
+            collector_workers::private_heap::PRIVATE_HEAP.reclaim_empty_slabs();
+        }
+        let now = Instant::now();
+        let due = now >= next_pass;
+        let urgent = collector_lifetime::world_lifetime::invalidating()
+            || sizing.hint_demand.load(Ordering::Acquire)
+            || sizing.idle_growth_requested.load(Ordering::Acquire);
+        let requested = sizing.pass_requested.load(Ordering::Acquire)
+            && (urgent || last_pass.elapsed() >= steady_wait);
+        if due || urgent || requested {
+            sizing.pass_requested.store(false, Ordering::Release);
+            last_pass = now;
             if let Err(failure) = sizing_pass(shared, sizing, &mut state, phases, true) {
                 let _ = sizing.failure.set(failure);
                 shared.wake_spool();
                 return;
             }
-        }
-        if due {
+            let version = sizing.capacities_version.load(Ordering::Acquire);
+            let still_urgent = urgent
+                || version != seen_version
+                || collector_lifetime::world_lifetime::invalidating()
+                || sizing.hint_demand.load(Ordering::Acquire)
+                || sizing.idle_growth_requested.load(Ordering::Acquire);
+            seen_version = version;
+            steady_wait = if still_urgent {
+                SIZING_IDLE_WAIT
+            } else {
+                (steady_wait * 2).min(SIZING_MAX_WAIT)
+            };
             next_pass = Instant::now()
                 + if collector_lifetime::world_lifetime::invalidating() {
                     SPOOL_IDLE_WAIT
                 } else {
-                    SIZING_IDLE_WAIT
+                    steady_wait
                 };
         }
         let _span =
@@ -5593,9 +5663,14 @@ fn sizing_pass(
     let live = unsafe { LiveMemory::new() };
     let base = shared.base;
     let registry = &mut state.registry;
-    let once_a_second = state.second.due(Instant::now());
     let loading = collector_lifetime::world_lifetime::invalidating();
     let hint_demand = sizing.hint_demand.swap(false, Ordering::AcqRel) || loading;
+    let periodic_interval = if hint_demand {
+        Duration::from_secs(2)
+    } else {
+        Duration::from_secs(8)
+    };
+    let once_a_second = state.second.due_after(Instant::now(), periodic_interval);
     let capacity_census = state.capacity_census.due(
         Instant::now(),
         collector_lifetime::world_lifetime::generation(),
@@ -5604,9 +5679,10 @@ fn sizing_pass(
     let span =
     // SAFETY: This worker records phases on the counters assigned to its spool role.
     unsafe { phases.span(Phase::Sizing) };
-    if let Some(logistics_rows) = registry
-        .poll_logistics(&live, base, Instant::now)
-        .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
+    if (capacity_census || registry.last_logistics.is_none())
+        && let Some(logistics_rows) = registry
+            .poll_logistics(&live, base, Instant::now)
+            .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
     {
         sizing.raise(shared, |capacities| {
             capacities.extended.logistics.raise(logistics_rows)
@@ -5736,28 +5812,12 @@ fn sizing_pass(
             &live,
             base,
             registry.slots,
-            // SAFETY: This is the runtime's frame pool for the current session.
-            unsafe { shared.frames() }.live(),
+            1,
         ) {
             // SAFETY: The session's sole serial sizing pass resizes live politics staging.
-            unsafe { collector_politics::politics_changes::resize(entries, 0) };
+            unsafe { collector_politics::politics_changes::resize(entries.min(8192), 0) };
         }
         collector_fuel_awards::fuel_awards::presize(&live, base);
-    }
-    let frames =
-        // SAFETY: This is the runtime's frame pool for the current session.
-        unsafe { shared.frames() }.live().max(sampling::BUFFERS);
-    if frames > state.politics_frames
-        && let Some(entries) = collector_capture::country_scale::observe_politics_demand(
-            &live,
-            base,
-            registry.slots,
-            frames,
-        )
-    {
-        // SAFETY: The session's sole serial sizing pass resizes live politics staging.
-        unsafe { collector_politics::politics_changes::resize(entries, 0) };
-        state.politics_frames = frames;
     }
     if capacity_census {
         match collector_capture::country_scale::observe_fuel_unit_demand(&live, base) {
@@ -5771,7 +5831,7 @@ fn sizing_pass(
             Err(reason) => sizing.error(reason),
         }
     }
-    let (entries, names) = collector_fuel_awards::fuel_awards::capacities();
+    let (entries, names) = collector_fuel_awards::fuel_awards::drained_capacities();
     sizing.raise(shared, |capacities| {
         let awards = &mut capacities.extended.fuel_awards;
         awards.entries = awards.entries.max(entries);
@@ -5802,20 +5862,26 @@ fn sizing_pass(
         );
     }
     let span = span.switch(Phase::Sizing);
-    collector_naval_results::naval_result_sources::prepare(&live, base);
-    let naval_result_capacity = collector_naval_results::naval_result_sources::demand();
-    sizing.raise(shared, |capacities| {
-        let sources = &mut capacities.extended.naval_result_sources;
-        *sources = (*sources).max(naval_result_capacity);
-    });
-    if let Some(lines) = registry.poll_lines(&live, base) {
+    if once_a_second {
+        collector_naval_results::naval_result_sources::prepare(&live, base);
+        let naval_result_capacity = collector_naval_results::naval_result_sources::demand();
+        sizing.raise(shared, |capacities| {
+            let sources = &mut capacities.extended.naval_result_sources;
+            *sources = (*sources).max(naval_result_capacity);
+        });
+    }
+    if (capacity_census || registry.last_lines.is_none())
+        && let Some(lines) = registry.poll_lines(&live, base)
+    {
         collector_output::line_output::presize(lines);
         sizing.raise(shared, |capacities| {
             let entries = &mut capacities.extended.line_output.entries;
             *entries = (*entries).max(lines);
         });
     }
-    if let Ok(bytes) = collector_weather::weather::observe_display_capacity(&live, base) {
+    if once_a_second
+        && let Ok(bytes) = collector_weather::weather::observe_display_capacity(&live, base)
+    {
         let changed = sizing.raise(shared, |capacities| {
             let display = &mut capacities.extended.weather.display_bytes;
             if bytes > *display {
@@ -5832,8 +5898,6 @@ fn sizing_pass(
     }
     if let Some((slots, regions)) = registry.poll(&live, base) {
         collector_primitives::country_slots::note_slots(slots);
-        // SAFETY: This is the runtime's frame pool for the current session.
-        let live_frames = unsafe { shared.frames() }.live();
         // SAFETY: The session's sole serial sizing pass resizes live operation and politics logs.
         unsafe {
             collector_operation_outcomes::operation_outcomes::resize(slots.max(1));
@@ -5842,9 +5906,10 @@ fn sizing_pass(
                     &live,
                     base,
                     slots,
-                    live_frames,
+                    1,
                 )
-                .unwrap_or(slots),
+                .unwrap_or(slots)
+                .min(8192),
                 sizing
                     .demand(engine_events::politics_sites::lexical_key_demand(
                         &live, base,
@@ -5887,9 +5952,7 @@ fn sizing_pass(
             collector_observers::building_bombing::prepare(&live, base, registry.slots);
             collector_observers::combat_engagement_refreshes::presize(registry.slots.max(64));
         }
-        collector_observers::nuclear_strikes::presize(
-            collector_observers::building_bombing::buildings().saturating_add(registry.slots),
-        );
+        collector_observers::nuclear_strikes::presize(registry.slots.max(64));
         let source =
         // SAFETY: Session sizing or the isolated fixture owns the census and its observer demand.
         unsafe { collector_capture::country_scale::source_demand::Demand::observe_periodic(
@@ -5996,7 +6059,9 @@ fn sizing_pass(
             capacities.extended.railway_guns.raise_for_names(demand)
         });
     }
-    if let Some(demand) = sizing.demand(registry.poll_map(&live, base)).flatten() {
+    if (capacity_census || registry.last_map.is_none())
+        && let Some(demand) = sizing.demand(registry.poll_map(&live, base)).flatten()
+    {
         if let Ok(carrier) = demand.carrier
             && collector_air::sizing::note_carrier_demand(carrier)
         {
@@ -6081,9 +6146,10 @@ fn sizing_pass(
             capacities.extended.raise_for_raid_arenas(demand)
         });
     }
-    if let Some(demand) = sizing
-        .demand(registry.poll_characters(&live, base))
-        .flatten()
+    if (capacity_census || registry.last_characters.is_none())
+        && let Some(demand) = sizing
+            .demand(registry.poll_characters(&live, base))
+            .flatten()
     {
         sizing.raise(shared, |capacities| {
             capacities.extended.raise_for_characters(demand)
@@ -6098,7 +6164,9 @@ fn sizing_pass(
             capacities.extended.saved_event_targets.raise(demand)
         });
     }
-    if let Some(demand) = sizing.demand(registry.poll_politics(&live, base)).flatten() {
+    if (capacity_census || registry.last_politics.is_none())
+        && let Some(demand) = sizing.demand(registry.poll_politics(&live, base)).flatten()
+    {
         for reason in demand.failures() {
             sizing.error(reason);
         }
@@ -6161,6 +6229,7 @@ fn sizing_pass(
 
 const SPOOL_IDLE_WAIT: Duration = Duration::from_millis(10);
 const SIZING_IDLE_WAIT: Duration = RegistryWatch::INTERVAL;
+const SIZING_MAX_WAIT: Duration = Duration::from_secs(4);
 
 #[derive(Default)]
 struct RefreshRequests {
@@ -6264,6 +6333,7 @@ mod equipment_destruction_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn spool_error_stops_capture_before_synchronous_writer_cleanup() {
@@ -6294,7 +6364,9 @@ mod tests {
         assert_eq!(quiet["buffer_wait_calls"], 0);
         assert!(quiet["waits"]["allocator"]["hold"]["heap"]["calls"].is_u64());
         assert!(quiet["waits"]["allocator"]["other"]["heap"]["calls"].is_u64());
-        let hours = 2 * collector_capture::frame_pool::STEADY + 1;
+        let hours = (2 * collector_capture::frame_pool::STEADY + 1).min(
+            collector_capture::frame_pool::MAX_LIVE_FRAMES - collector_capture::frame_pool::AHEAD,
+        );
         let taken: Vec<_> = (0..hours)
             .map(|_| {
                 let index =
@@ -7639,7 +7711,7 @@ mod tests {
                     unsafe { shared.frames() }.len(),
                     sampling::BUFFERS - 1
                 );
-                let held: Vec<_> = (0..sampling::BUFFERS - 2)
+                let held: Vec<_> = (0..sampling::BUFFERS - collector_capture::frame_pool::AHEAD)
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
                         let mut grow_ns = u64::MAX;
@@ -7705,6 +7777,16 @@ mod tests {
         let returning =
         // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe { shared.take_frame(&mut 0) }.unwrap();
+        let primed: Vec<_> = (0..=collector_capture::frame_pool::AHEAD)
+            .map(|_| {
+                // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+                unsafe { shared.take_frame(&mut 0) }.unwrap()
+            })
+            .collect();
+        for index in primed {
+            // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+            unsafe { shared.restore_idle_frame_prepared(index) };
+        }
         let wars = sizing.capacities.lock().core[5] + 8;
         sizing.raise(shared, |capacities| capacities.core[5] = wars);
         let (leased, lease_seen) = std::sync::mpsc::channel();
@@ -7714,7 +7796,7 @@ mod tests {
             assert_eq!(
                 // SAFETY: This code uses the frame pool belonging to its own recording or fixture.
                 unsafe { shared.frames() }.len(),
-                sampling::BUFFERS - 2
+                collector_capture::frame_pool::AHEAD
             );
             leased.send(()).unwrap();
             let _ = resume.recv_timeout(collector_test_support::TEST_HANG_GUARD);
@@ -7742,7 +7824,7 @@ mod tests {
                 lease_seen
                     .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap_or_else(|_| panic!("idle growth never leased a frame"));
-                let others: Vec<_> = (0..sampling::BUFFERS - 2)
+                let others: Vec<_> = (0..collector_capture::frame_pool::AHEAD)
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
                         let mut wait = u64::MAX;
@@ -7789,7 +7871,6 @@ mod tests {
 
     #[test]
     fn an_hour_building_its_own_frame_never_waits_for_the_spool_freeing_a_surplus_one() {
-        use collector_capture::frame_pool::AHEAD;
         use sampling::BUFFERS;
         use std::sync::mpsc;
         let fixture = Arc::new(sizing_fixture());
@@ -7832,7 +7913,7 @@ mod tests {
                         })
                     })
                     .collect();
-                for _ in 0..=AHEAD {
+                for _ in 0..BUFFERS {
                     let index = taken.pop().unwrap();
                     steps.at(format_args!("the spool returning frame {index}"));
                     thread.sizing.recycle_frame(shared, index);
@@ -7842,7 +7923,7 @@ mod tests {
                     unsafe { shared.frames() }.gauge();
                 assert_eq!(
                     (gauge.live, gauge.free, gauge.grown),
-                    (BUFFERS + 1, AHEAD + 1, 1),
+                    (BUFFERS + 1, BUFFERS, 1),
                     "{gauge:?}"
                 );
                 let surplus = taken.pop().unwrap();
@@ -7862,7 +7943,7 @@ mod tests {
                             unsafe { shared.frames() }.gauge()
                         )
                     });
-                let hours = AHEAD + 2;
+                let hours = BUFFERS + 1;
                 let game = {
                     let fixture = Arc::clone(&fixture);
                     collector_test_support::spawn_ending(move || {
@@ -7935,18 +8016,27 @@ mod tests {
                 .slots()
                 .map(|slot| unsafe { slot.captured() }.allocated_bytes())
                 .sum::<usize>()
+                + shared.parked_bytes() as usize
                 +
                     // SAFETY: Sizing and the test use only the home associated with these session frames.
                     unsafe { shared.country_intel() }.allocated_bytes()
+                + collector_division_templates::extended::division_templates::home_allocated_bytes(
+                    // SAFETY: The sizing pass uses its session's live shared storage.
+                    unsafe { shared.template_home() },
+                )
+                + collector_naval_details::naval_combat_sources::home_allocated_bytes(
+                    // SAFETY: The sizing pass uses its session's live shared storage.
+                    unsafe { shared.naval_combat_home() },
+                )
         };
+        let returning =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap();
         let allocated_before = allocated_bytes();
         let pool_before = shared.pool_owned();
         let shared_before =
             // SAFETY: Sizing and the test use only the home associated with these session frames.
             unsafe { shared.country_intel() }.allocated_bytes();
-        let returning =
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-        unsafe { shared.take_frame(&mut 0) }.unwrap();
         let frame = unsafe {
             // SAFETY: This is the runtime's frame pool for the current session.
             shared.frames()[returning].captured()
@@ -7972,7 +8062,10 @@ mod tests {
             unsafe { shared.country_intel() }.allocated_bytes();
         assert!(shared_after_idle > shared_before);
         let allocated_after_idle = allocated_bytes();
-        assert!(allocated_after_idle - allocated_before > shared_after_idle - shared_before);
+        assert_eq!(
+            allocated_after_idle - allocated_before,
+            shared_after_idle - shared_before
+        );
         let pool_after_idle = shared.pool_owned();
         assert_eq!(
             pool_after_idle - pool_before,
@@ -7983,20 +8076,59 @@ mod tests {
         assert_eq!(
             // SAFETY: This fixture reads the home associated with its own frame pool.
             unsafe { shared.country_intel() }.allocated_bytes(),
-            shared_after_idle
+            0
         );
         let allocated_after_return = allocated_bytes();
-        assert!(allocated_after_return > allocated_after_idle);
         let pool_after_return = shared.pool_owned();
         assert_eq!(
-            pool_after_return - pool_after_idle,
-            (allocated_after_return - allocated_after_idle) as u64
+            pool_after_return.wrapping_sub(pool_after_idle),
+            (allocated_after_return as u64).wrapping_sub(allocated_after_idle as u64)
         );
         assert_eq!(
-            pool_after_return - pool_before,
-            (allocated_after_return - allocated_before) as u64
+            pool_after_return.wrapping_sub(pool_before),
+            (allocated_after_return as u64).wrapping_sub(allocated_before as u64)
+        );
+
+        sizing.idle_growth_requested.store(true, Ordering::Release);
+        sizing.grow_idle(&shared);
+        assert_eq!(
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes(),
+            0
+        );
+        let allocated_after_second = allocated_bytes();
+        let pool_after_second = shared.pool_owned();
+        assert_eq!(
+            pool_after_second.wrapping_sub(pool_before),
+            (allocated_after_second as u64).wrapping_sub(allocated_before as u64)
         );
         assert_idle_war_and_faction_capacities(&shared, sizing);
+
+        let mut loan = collector_intel::daily_intel::Loan::new(
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.clone(),
+        );
+        assert!(matches!(
+            loan.borrow(true),
+            collector_intel::daily_intel::Walk::Ready(_)
+        ));
+        drop(loan);
+        let rehydrated =
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes();
+        assert!(rehydrated >= shared_after_idle);
+        sizing.account_homes(&shared);
+        sizing.account_homes(&shared);
+        let allocated_after_rehydrate = allocated_bytes();
+        let pool_after_rehydrate = shared.pool_owned();
+        assert_eq!(
+            pool_after_rehydrate.wrapping_sub(pool_after_second),
+            rehydrated as u64
+        );
+        assert_eq!(
+            pool_after_rehydrate.wrapping_sub(pool_before),
+            (allocated_after_rehydrate as u64).wrapping_sub(allocated_before as u64)
+        );
     }
 
     #[test]
@@ -8625,6 +8757,7 @@ mod tests {
                 .slots()
                 .map(|slot| unsafe { slot.captured() }.allocated_bytes())
                 .sum::<usize>()
+                + shared.parked_bytes() as usize
         };
         let bytes = frame_bytes();
         let check_accounting = || {

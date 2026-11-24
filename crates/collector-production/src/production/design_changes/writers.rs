@@ -19,8 +19,30 @@ struct Claim {
     dependency_conflicted: bool,
 }
 #[derive(Default)]
+struct PointerHasher(u64);
+
+impl std::hash::Hasher for PointerHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = self.0.wrapping_mul(0x517c_c1b7_2722_0a95) ^ u64::from(byte);
+        }
+    }
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.0 = (value as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0 ^ (self.0 >> 32)
+    }
+}
+
+type PointerBuildHasher = std::hash::BuildHasherDefault<PointerHasher>;
+
+#[derive(Default)]
 struct State {
-    claims: HashMap<usize, Claim>,
+    claims: HashMap<usize, Claim, PointerBuildHasher>,
     required: usize,
     ancestry: usize,
     lifetime: usize,
@@ -33,20 +55,20 @@ fn prepare_with(population: usize, before_growth: impl FnOnce()) -> Result<(), &
     let mut state = writers
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if ACTIVE.load(Ordering::SeqCst) != 0 || !state.claims.is_empty() {
+    if DESIGN_GATE.any_active() || !state.claims.is_empty() {
         return Err("variant receiver claims have a running writer");
     }
     let required = population.max(state.required);
     let replacement = if state.claims.capacity() < required {
         drop(state);
         before_growth();
-        let mut claims = HashMap::new();
+        let mut claims = HashMap::with_hasher(PointerBuildHasher::default());
         engine_allocation::reserve_map(&mut claims, required)
             .map_err(|_| "variant receiver claim allocation failed")?;
         state = writers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if ACTIVE.load(Ordering::SeqCst) != 0 || !state.claims.is_empty() {
+        if DESIGN_GATE.any_active() || !state.claims.is_empty() {
             drop(state);
             return Err("variant receiver claims have a running writer");
         }
@@ -88,24 +110,27 @@ fn room(state: &mut State, additional: usize) -> bool {
     true
 }
 fn claim(state: &mut State, pointer: usize, thread: u32, footprint: Footprint) -> bool {
-    let mut conflicted = state.claims.get_mut(&0).is_some_and(|claim| {
-        claim.conflicted |= claim.thread != thread;
-        claim.dependency_conflicted |= claim.thread != thread;
-        claim.conflicted
-    });
-    if pointer == 0
-        || (footprint == Footprint::Ancestry && state.lifetime != 0)
-        || (footprint == Footprint::Lifetime && state.ancestry != 0)
-    {
-        for claim in state.claims.values_mut() {
-            if (claim.thread != thread || claim.conflicted || claim.identities != 0)
-                && (pointer == 0
-                    || (footprint == Footprint::Ancestry && claim.lifetime != 0)
-                    || (footprint == Footprint::Lifetime && claim.ancestry != 0))
-            {
-                claim.conflicted = true;
-                claim.dependency_conflicted = true;
-                conflicted = true;
+    let mut conflicted = false;
+    if !state.claims.is_empty() {
+        conflicted = state.claims.get_mut(&0).is_some_and(|claim| {
+            claim.conflicted |= claim.thread != thread;
+            claim.dependency_conflicted |= claim.thread != thread;
+            claim.conflicted
+        });
+        if pointer == 0
+            || (footprint == Footprint::Ancestry && state.lifetime != 0)
+            || (footprint == Footprint::Lifetime && state.ancestry != 0)
+        {
+            for claim in state.claims.values_mut() {
+                if (claim.thread != thread || claim.conflicted || claim.identities != 0)
+                    && (pointer == 0
+                        || (footprint == Footprint::Ancestry && claim.lifetime != 0)
+                        || (footprint == Footprint::Lifetime && claim.ancestry != 0))
+                {
+                    claim.conflicted = true;
+                    claim.dependency_conflicted = true;
+                    conflicted = true;
+                }
             }
         }
     }
@@ -228,22 +253,12 @@ impl Flight {
         let mut conflicted = false;
         let mut dependency = false;
         for (pointer, footprint) in pointers.into_iter().flatten() {
-            if state.claims.len() == state.claims.capacity() && !state.claims.contains_key(&pointer)
-            {
-                conflicted = true;
-                dependency = true;
-                unobserved!();
-                continue;
-            }
-            let std::collections::hash_map::Entry::Occupied(mut entry) =
-                state.claims.entry(pointer)
-            else {
+            let Some(mut claim) = state.claims.remove(&pointer) else {
                 conflicted = true;
                 dependency = true;
                 unobserved!();
                 continue;
             };
-            let claim = entry.get_mut();
             conflicted |= if footprint == Footprint::Identity {
                 claim.dependency_conflicted
             } else {
@@ -255,9 +270,8 @@ impl Flight {
             claim.identities -= usize::from(footprint == Footprint::Identity);
             claim.ancestry -= usize::from(footprint == Footprint::Ancestry);
             claim.lifetime -= usize::from(footprint == Footprint::Lifetime);
-            let remove = claim.count == 0;
-            if remove {
-                entry.remove();
+            if claim.count != 0 {
+                state.claims.insert(pointer, claim);
             }
             state.ancestry -= usize::from(footprint == Footprint::Ancestry);
             state.lifetime -= usize::from(footprint == Footprint::Lifetime);
@@ -315,7 +329,7 @@ mod tests {
                 })
             });
             pause.wait();
-            ACTIVE.fetch_add(1, Ordering::SeqCst);
+            let active_guard = DESIGN_GATE.enter(false);
             let flight = collector_test_support::with_allocations_denied(|| {
                 enter(1, None, Footprint::Design).unwrap()
             });
@@ -326,7 +340,7 @@ mod tests {
                 Err("variant receiver claims have a running writer")
             );
             assert!(!flight.finish_with_dependency().0);
-            ACTIVE.fetch_sub(1, Ordering::SeqCst);
+            drop(active_guard);
         });
         prepare(capacity + 1).unwrap();
         assert!(WRITERS.get().unwrap().lock().unwrap().claims.capacity() > capacity);

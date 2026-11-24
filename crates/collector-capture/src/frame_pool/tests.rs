@@ -19,12 +19,12 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     assert_eq!(free.len(), STEADY);
     assert!(free.take(1, 1));
     assert!(!free.take(1, 0));
-    assert!(!free.take(2, STEADY - 1));
+    assert!(!free.take(0, STEADY - 1));
     assert_eq!(free.len(), STEADY - 1);
     let newest =
     // SAFETY: This consumer owns the queue removal for the named pool.
     unsafe { free.pop() }.unwrap();
-    assert_eq!(newest, STEADY - 1);
+    assert_eq!(newest, 0);
     free.push(newest).unwrap();
     free.restore(1).unwrap();
     assert_eq!(free.restore(1), Err(1));
@@ -34,10 +34,13 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     // SAFETY: This consumer owns the queue removal for the named pool.
     unsafe { free.pop() })
     .collect();
-    assert_eq!(newest_first, (0..STEADY).rev().collect::<Vec<_>>());
+    let expected: Vec<_> = std::iter::once(newest)
+        .chain((0..STEADY).rev().filter(|&index| index != newest))
+        .collect();
+    assert_eq!(newest_first, expected);
     assert_eq!(free.len(), 0);
     assert!(!free.take(0, 0));
-    free.push(2).unwrap();
+    free.push(1).unwrap();
     free.push(0).unwrap();
     assert_eq!(
         // SAFETY: This consumer owns the queue removal for the named pool.
@@ -50,8 +53,8 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
         unsafe { free.pop() },
         Some(0)
     );
-    assert!(!free.take(2, 1));
-    assert!(free.take(2, 0));
+    assert!(!free.take(1, 1));
+    assert!(free.take(1, 0));
     assert_eq!(free.len(), 0);
     for index in 0..STEADY {
         free.push(index).unwrap();
@@ -60,10 +63,13 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
 
 #[test]
 fn a_stalled_spool_adds_no_frame_and_its_free_frames_are_still_taken() {
-    assert_eq!(hour_frame(Some(3), false), HourFrame::Free(3));
-    assert_eq!(hour_frame(Some(3), true), HourFrame::Free(3));
-    assert_eq!(hour_frame(None, false), HourFrame::Grow);
-    assert_eq!(hour_frame(None, true), HourFrame::Drop);
+    assert_eq!(hour_frame(Some(3), false, false), HourFrame::Free(3));
+    assert_eq!(hour_frame(Some(3), true, false), HourFrame::Free(3));
+    assert_eq!(hour_frame(Some(3), false, true), HourFrame::Free(3));
+    assert_eq!(hour_frame(None, false, false), HourFrame::Grow);
+    assert_eq!(hour_frame(None, true, false), HourFrame::DropStalled);
+    assert_eq!(hour_frame(None, false, true), HourFrame::DropLimit);
+    assert_eq!(hour_frame(None, true, true), HourFrame::DropStalled);
     assert!(builds_ahead(AHEAD - 1, false));
     assert!(!builds_ahead(AHEAD, false));
     assert!(!builds_ahead(AHEAD - 1, true));
@@ -193,5 +199,175 @@ fn fifos_keep_order_while_a_producer_pushes_and_never_fill() {
             unsafe { pool.pop_decode() }
         ),
         (Some(3), Some(1), None)
+    );
+}
+
+#[test]
+fn surplus_waits_for_a_sustained_idle_streak_and_resets_when_popped() {
+    // SAFETY: Isolated unit test owns this `Shared` fixture and its frame slots exclusively.
+    let shared = unsafe { Shared::new(0, 0, 1) };
+    let pool = &shared.frames;
+    let mut taken: Vec<_> = (0..=STEADY)
+        .map(|_| unsafe { shared.take_frame(&mut 0) }.unwrap())
+        .collect();
+    for _ in 0..AHEAD {
+        pool.push(taken.pop().unwrap()).unwrap();
+    }
+    let in_flight = taken.pop().unwrap();
+    let extra = taken.pop().unwrap();
+    assert_eq!(pool.live(), STEADY + 1);
+    assert_eq!(pool.len(), AHEAD);
+    assert!(!pool.surplus_after(4));
+    assert!(!pool.surplus_after(4));
+    let popped = unsafe { pool.pop() }.unwrap();
+    assert!(!pool.surplus_after(4));
+    pool.push(popped).unwrap();
+    for _ in 0..3 {
+        assert!(!pool.surplus_after(4));
+    }
+    assert!(pool.surplus_after(4));
+    assert!(!pool.surplus_after(4));
+    pool.push(in_flight).unwrap();
+    assert_eq!(pool.len(), STEADY);
+    assert!(pool.surplus_after(4));
+    let mut all: Vec<_> = (0..STEADY).map(|_| unsafe { pool.pop() }.unwrap()).collect();
+    all.push(extra);
+    for _ in 0..(SURPLUS_CAP - STEADY) {
+        all.push(unsafe { shared.take_frame(&mut 0) }.unwrap());
+    }
+    for _ in 0..AHEAD {
+        pool.push(all.pop().unwrap()).unwrap();
+    }
+    assert_eq!(pool.live(), SURPLUS_CAP + 1);
+    assert!(pool.surplus_after(4));
+    for slot in all {
+        drop(unsafe { pool.vacate(slot) });
+    }
+}
+
+#[test]
+fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
+    // SAFETY: Isolated unit test owns this `Shared` fixture and its frame slots exclusively.
+    let shared = unsafe { Shared::new(0, 0, 1) };
+    let pool = &shared.frames;
+    let initial = pool.live_bytes();
+    assert!(initial > 0);
+    assert!(!pool.at_limit_with(STEADY + 1, initial + 1));
+    assert!(pool.at_limit_with(STEADY, u64::MAX));
+    assert!(pool.at_limit_with(usize::MAX, initial));
+    assert_eq!(
+        hour_frame(None, false, pool.at_limit_with(usize::MAX, initial)),
+        HourFrame::DropLimit
+    );
+    assert!(!builds_ahead(0, pool.at_limit_with(usize::MAX, initial)));
+
+    let mut held: Vec<_> = (0..STEADY)
+        .map(|_| unsafe { shared.take_frame(&mut 0) }.unwrap())
+        .collect();
+    pool.set_slot_bytes(0, MAX_LIVE_BYTES);
+    assert!(pool.at_limit());
+    assert_eq!(unsafe { shared.take_frame(&mut 0) }, None);
+    assert_eq!(pool.limit_drops(), 1);
+    assert_eq!(pool.stalled_drops(), 0);
+    assert_eq!(pool.live(), STEADY);
+
+    pool.set_slot_bytes(0, 1);
+    assert!(!pool.at_limit());
+    let claim_a = pool
+        .try_claim_growth(STEADY + 1, MAX_LIVE_BYTES)
+        .expect("one growth claim up to the cap");
+    assert!(
+        pool.try_claim_growth(STEADY + 1, MAX_LIVE_BYTES).is_none(),
+        "second concurrent claim at the cap is refused"
+    );
+    drop(claim_a);
+    let extra = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    assert_eq!(pool.live(), STEADY + 1);
+    held.push(extra);
+    for slot in held {
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame_prepared(slot) };
+    }
+    assert_eq!(pool.live(), STEADY);
+    assert_eq!(
+        pool.live_bytes(),
+        pool.gauge().live_bytes + shared.parked_bytes()
+    );
+    assert!(shared.has_retired_parked());
+    let before_drain = pool.live_bytes();
+    assert!(shared.drain_retired_parked());
+    assert!(pool.live_bytes() < before_drain);
+    assert_eq!(
+        pool.live_bytes(),
+        pool.gauge().live_bytes + shared.parked_bytes()
+    );
+    assert!(!shared.has_retired_parked());
+    assert!(!shared.drain_retired_parked());
+
+    let box_bytes = size_of::<crate::extended::ParkedPacks>() as u64;
+    let parked = shared.parked_bytes();
+    assert!(parked > box_bytes);
+    let steady_bytes = pool.live_bytes();
+    let steady_owned = shared.pool_owned();
+    let reused = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    assert_eq!(shared.parked_bytes(), 0);
+    assert_eq!(pool.live_bytes(), steady_bytes - box_bytes);
+    assert_eq!(shared.pool_owned(), steady_owned - box_bytes);
+    assert_eq!(pool.live_bytes(), pool.gauge().live_bytes);
+    let second = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    let grown = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    assert_eq!(pool.live(), STEADY + 1);
+    let transfer_total = pool.live_bytes();
+    let owned_total = shared.pool_owned();
+    assert!(!pool.at_limit_with(usize::MAX, transfer_total + box_bytes + 1));
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let spiked = std::sync::atomic::AtomicBool::new(false);
+    let dipped = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::Acquire) {
+                let bytes = pool.live_bytes();
+                let owned = shared.pool_owned();
+                if bytes > transfer_total + box_bytes || owned > owned_total + box_bytes {
+                    spiked.store(true, Ordering::Relaxed);
+                }
+                if bytes < transfer_total || owned < owned_total {
+                    dipped.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+        struct Finish<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Finish<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _finish = Finish(&done);
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.prepare_frame_for_reuse(reused) };
+        assert_eq!(pool.live_bytes(), transfer_total + box_bytes);
+        assert_eq!(shared.pool_owned(), owned_total + box_bytes);
+        assert!(shared.parked_bytes() > box_bytes);
+        let restored = shared.frames.push(reused);
+        assert!(restored.is_ok());
+        let again = unsafe { shared.take_frame(&mut 0) }.unwrap();
+        assert_eq!(again, reused);
+        assert_eq!(pool.live_bytes(), transfer_total);
+        assert_eq!(shared.pool_owned(), owned_total);
+    });
+    assert!(!spiked.load(Ordering::Relaxed));
+    assert!(!dipped.load(Ordering::Relaxed));
+    assert_eq!(
+        pool.live_bytes(),
+        pool.gauge().live_bytes + shared.parked_bytes()
+    );
+    for slot in [reused, second, grown] {
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame_prepared(slot) };
+    }
+    let _ = shared.drain_retired_parked();
+    assert_eq!(
+        pool.live_bytes(),
+        pool.gauge().live_bytes + shared.parked_bytes()
     );
 }

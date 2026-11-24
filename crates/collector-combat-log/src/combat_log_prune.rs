@@ -169,9 +169,10 @@ fn observe(manager: usize) {
     COUNTERS[0].fetch_add(1, Ordering::Relaxed);
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
-    let demand = match native::deleted_logs(&memory, base, manager, &mut []) {
-        Ok((_, Outcome::Rows { .. })) => return,
-        Ok((_, Outcome::Truncated { unread_rows, .. })) => unread_rows as usize,
+    let mut inline = [Row::default(); 256];
+    let outcome = match native::deleted_logs(&memory, base, manager, &mut inline) {
+        Ok((_, Outcome::Rows { len: 0 })) => return,
+        Ok((_, outcome @ (Outcome::Rows { .. } | Outcome::Truncated { .. }))) => outcome,
         Ok((_, Outcome::Unavailable { .. })) | Err(_) => return failed_read(),
     };
     let Some(signal) = engine_sites::at(
@@ -181,9 +182,30 @@ fn observe(manager: usize) {
     .and_then(|address| engine_native_memory::read::<i64>(&memory, address)) else {
         return failed_read();
     };
-    record(signal, demand, |rows| {
-        native::deleted_logs(&memory, base, manager, rows).map(|(_, outcome)| outcome)
-    });
+    match outcome {
+        Outcome::Rows { len } => {
+            let captured = &inline[..len];
+            record(signal, len, |rows| {
+                let copy = rows.len().min(captured.len());
+                rows[..copy].copy_from_slice(&captured[..copy]);
+                Ok(if copy == captured.len() {
+                    Outcome::Rows { len: copy }
+                } else {
+                    Outcome::Truncated {
+                        len: copy,
+                        unread_rows: (captured.len() - copy) as u32,
+                    }
+                })
+            });
+        }
+        Outcome::Truncated { len, unread_rows } => {
+            let demand = len.saturating_add(unread_rows as usize);
+            record(signal, demand, |rows| {
+                native::deleted_logs(&memory, base, manager, rows).map(|(_, outcome)| outcome)
+            });
+        }
+        Outcome::Unavailable { .. } => unreachable!(),
+    }
 }
 
 fn record(

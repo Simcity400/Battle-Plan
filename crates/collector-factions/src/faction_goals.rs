@@ -72,13 +72,21 @@ pub fn writable(
             .map_err(|_| "faction goal table retention allocation failed")?;
         spares.push(previous);
     }
-    if let Some(index) = spares
+    let reused = spares
         .iter()
         .position(|value| Arc::strong_count(value) == 1)
-    {
-        return Ok(spares.swap_remove(index));
-    }
-    Ok(Arc::new(empty()))
+        .map(|index| spares.swap_remove(index));
+    let mut kept_unique = false;
+    spares.retain(|value| {
+        if Arc::strong_count(value) == 1 {
+            if kept_unique {
+                return false;
+            }
+            kept_unique = true;
+        }
+        true
+    });
+    Ok(reused.unwrap_or_else(|| Arc::new(empty())))
 }
 
 #[derive(Default)]
@@ -1025,6 +1033,29 @@ mod tests {
         );
         acquire(&mut store, &mut output, &memory, &changes, 1);
         assert_eq!(output.failure, None);
+    }
+
+    #[test]
+    fn writable_trims_excess_unique_spares_after_readers_release() {
+        let mut current = None;
+        let mut spares = Vec::new();
+        let mut readers = Vec::new();
+        for _ in 0..8 {
+            let next = writable(&mut current, &mut spares, || {
+                TableRows::FactionGoalStatus(Vec::new())
+            })
+            .unwrap();
+            readers.push(Arc::clone(&next));
+            current = Some(next);
+        }
+        assert_eq!(spares.len(), 7);
+        readers.clear();
+        let next = writable(&mut current, &mut spares, || {
+            TableRows::FactionGoalStatus(Vec::new())
+        })
+        .unwrap();
+        assert_eq!(Arc::strong_count(&next), 1);
+        assert_eq!(spares.len(), 1);
     }
 }
 

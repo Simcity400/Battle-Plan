@@ -950,13 +950,13 @@ fn parts_joined_in_slot_order_equal_one_walk() {
 #[test]
 fn part_starts_split_entries_evenly_at_country_boundaries() {
     let mut census = Census::new_worker();
-    let entries = 4 * 1_500;
+    let entries = 6_000;
     census.entries = vec![Entry::default(); entries];
     census.slot_ends = (1..=60).map(|slot| (slot, slot * 100)).collect();
     let mut starts = [0; MAX_PARTS - 1];
-    assert_eq!(parts_for(entries), 4);
-    assert_eq!(census.part_starts(&mut starts), 3);
-    assert_eq!(starts, [16, 31, 46]);
+    assert_eq!(parts_for(entries), 6);
+    assert_eq!(census.part_starts(&mut starts), 5);
+    assert_eq!(starts, [11, 21, 31, 41, 51]);
 }
 
 #[test]

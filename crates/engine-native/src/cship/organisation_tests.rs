@@ -287,12 +287,14 @@ fn weather_fixture() -> Fixture {
 fn current_task_terms(memory: &impl Memory, memo: &mut OrganisationMemo) -> TaskTerms {
     let task = TaskForceFields {
         pointer: TASK,
+        vtable: (IMAGE + ctask_force::VTABLE_RVA.0) as u64,
         handle: 0,
         roster_owner: 1,
         location: read::<u64>(memory, TASK + cunit::LOCATION).unwrap() as usize,
         fleet: read::<u64>(memory, TASK + ctask_force::FLEET).unwrap() as usize,
         mine_exposure: 0,
         modifiers: TASK + 0x668,
+        influences_count: Some(0),
     };
     read_task_terms(memory, IMAGE, &task, memo)
         .unwrap()

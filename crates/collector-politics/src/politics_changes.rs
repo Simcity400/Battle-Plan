@@ -64,16 +64,21 @@ impl<T> Deref for Padded<T> {
         &self.0
     }
 }
-static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
-
+static ACTIVE_GATE: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(0);
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    ACTIVE_GATE.active()
 }
 static LOG_SERIAL: AtomicU64 = AtomicU64::new(1);
 static LOG: AtomicUsize = AtomicUsize::new(0);
 static OFFERED: AtomicUsize = AtomicUsize::new(0);
 #[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
+#[allow(
+    clippy::vec_box,
+    reason = "superseded logs stay boxed until dropped off the capture path"
+)]
+static RETIRED_LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<String> = OnceLock::new();
 static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 const FAILURE_NAMES: [&str; 41] = [
@@ -374,6 +379,7 @@ struct Log {
     cursor: Padded<AtomicU64>,
     consumed: AtomicU64,
     consumed_epoch: AtomicU64,
+    drained: AtomicBool,
 }
 unsafe impl Sync for Log {}
 impl Log {
@@ -403,16 +409,14 @@ impl Log {
     ) -> io::Result<Self> {
         let entries = entries.max(1);
         let keys = keys.max(1);
-        let shared = SharedLane::new(entries.div_ceil(lanes.max(1)).max(shared), keys)?;
+        let secondary = entries.div_ceil(lanes.max(1)).min(8);
+        let shared_initial = entries.div_ceil(lanes.max(1)).min(32);
+        let shared = SharedLane::new(shared_initial.max(shared), keys)?;
         let mut storage = allocation::vec(lanes)?;
         for n in 0..lanes {
             storage.push(Lane::new(
-                (if n == 0 {
-                    entries
-                } else {
-                    entries.div_ceil(lanes)
-                })
-                .max(required.get(n).copied().unwrap_or(0)),
+                (if n == 0 { entries } else { secondary })
+                    .max(required.get(n).copied().unwrap_or(0)),
                 keys,
             )?);
         }
@@ -431,6 +435,7 @@ impl Log {
             cursor: Padded(AtomicU64::new(0)),
             consumed: AtomicU64::new(0),
             consumed_epoch: AtomicU64::new(EPOCH.load(Ordering::Acquire)),
+            drained: AtomicBool::new(false),
         })
     }
     fn frontier(&self) -> u64 {
@@ -538,27 +543,25 @@ fn cached_lane(log: &Log) -> Option<&Lane> {
     })
 }
 
-struct Call;
+struct Call(Option<collector_primitives::asymmetric::FlightGuard<'static>>);
 impl Call {
     #[inline(always)]
     fn enter() -> Self {
-        DEPTH.with(|depth| {
-            if depth.get() == 0 {
-                ACTIVE.fetch_add(1, Ordering::SeqCst);
-            }
-            depth.set(depth.get() + 1);
+        let guard = DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current + 1);
+            (current == 0).then(|| ACTIVE_GATE.enter(false))
         });
-        Self
+        Self(guard)
     }
 }
 impl Drop for Call {
+    #[inline(always)]
     fn drop(&mut self) {
         DEPTH.with(|depth| {
             depth.set(depth.get() - 1);
-            if depth.get() == 0 {
-                ACTIVE.fetch_sub(1, Ordering::SeqCst);
-            }
         });
+        drop(self.0.take());
     }
 }
 /// # Safety
@@ -649,12 +652,32 @@ fn resize_storage(entries: usize, keys: usize) {
     }
 }
 fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
+    let retired = {
+        let mut retired = RETIRED_LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *retired)
+    };
+    drop(retired);
     let mut logs = LOGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let offered = OFFERED.load(Ordering::Acquire) as *const Log;
+    let current_ptr = LOG.load(Ordering::Acquire);
+    let offered_ptr = OFFERED.load(Ordering::Acquire);
+    if active() == 0 {
+        logs.retain(|entry| {
+            let ptr = entry.as_ptr() as usize;
+            if ptr == current_ptr || ptr == offered_ptr {
+                return true;
+            }
+            let log = &entry[0];
+            !(log.publishers.load(Ordering::Acquire) == usize::MAX
+                && log.drained.load(Ordering::Acquire))
+        });
+    }
+    let offered = offered_ptr as *const Log;
     let offered = (!offered.is_null()).then(|| unsafe { &*offered });
-    let current = log();
+    let current = (current_ptr != 0).then(|| unsafe { &*(current_ptr as *const Log) });
     let sources = [current, offered];
     let entries = entries
         .max(
@@ -749,13 +772,17 @@ pub unsafe fn prepare() {
 /// The caller has disabled hooks, checked their executable ranges and ACTIVE,
 /// and joined all workers that can call drain/resize/status.
 pub unsafe fn release() {
-    if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
+    if ENABLED.load(Ordering::SeqCst) || active() != 0 {
         COUNTERS[8].fetch_add(1, Ordering::Relaxed);
         return;
     }
     LOG.store(0, Ordering::Release);
     OFFERED.store(0, Ordering::Release);
     LOGS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    RETIRED_LOGS
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
     CONSERVATION
@@ -1103,6 +1130,7 @@ pub struct Handoff {
     cursor: u64,
     lanes: usize,
     shared_rejected: u64,
+    final_for_log: bool,
 }
 pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     handoff_buffer(engine_native_memory::walk::Buffer::Growing(cursors))
@@ -1114,25 +1142,26 @@ fn handoff_buffer(
         return Err("politics hooks unavailable");
     }
     let log = log().ok_or("politics staging unavailable")?;
-    if ACTIVE.load(Ordering::SeqCst) != 0 {
-        return handoff_from_buffer(log, cursors);
+    if active() != 0 {
+        return handoff_from_buffer(log, cursors, false);
     }
+    retire_drained_logs();
     if !cursors.ensure(log.lanes.len())? {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     let offered = OFFERED.load(Ordering::Acquire) as *const Log;
     if offered.is_null() {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     let offered = unsafe { &*offered };
     if !cursors.ensure(offered.lanes.len())? {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     if !close_for_handoff(log, offered) {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     offered.base_cursor.store(log.frontier(), Ordering::Release);
-    let sealed = handoff_from_buffer(log, cursors);
+    let sealed = handoff_from_buffer(log, cursors, true);
     LOG.store(offered as *const Log as usize, Ordering::Release);
     let _ = OFFERED.compare_exchange(
         offered as *const Log as usize,
@@ -1142,6 +1171,34 @@ fn handoff_buffer(
     );
     sealed
 }
+fn retire_drained_logs() {
+    let Ok(mut logs) = LOGS.try_lock() else {
+        return;
+    };
+    if logs.len() <= 1 {
+        return;
+    }
+    let Ok(mut retired) = RETIRED_LOGS.try_lock() else {
+        return;
+    };
+    let current_ptr = LOG.load(Ordering::Acquire);
+    let offered_ptr = OFFERED.load(Ordering::Acquire);
+    let mut index = 0;
+    while index < logs.len() {
+        let ptr = logs[index].as_ptr() as usize;
+        let done = ptr != current_ptr
+            && ptr != offered_ptr
+            && logs[index][0].publishers.load(Ordering::Acquire) == usize::MAX
+            && logs[index][0].drained.load(Ordering::Acquire);
+        if done && retired.try_reserve(1).is_ok() {
+            let entry = logs.swap_remove(index);
+            retired.push(entry);
+        } else {
+            index += 1;
+        }
+    }
+}
+
 fn close_for_handoff(log: &Log, offered: &Log) -> bool {
     offered
         .consumed_epoch
@@ -1155,6 +1212,7 @@ fn close_for_handoff(log: &Log, offered: &Log) -> bool {
 fn handoff_from_buffer(
     log: &Log,
     mut cursors: engine_native_memory::walk::Buffer<'_, LaneCursor>,
+    final_for_log: bool,
 ) -> Result<Handoff, &'static str> {
     let count = log.registered.load(Ordering::Acquire).min(log.lanes.len());
     if !cursors.ensure(count)? {
@@ -1172,6 +1230,7 @@ fn handoff_from_buffer(
         cursor: log.frontier(),
         lanes: count,
         shared_rejected,
+        final_for_log,
     })
 }
 impl Handoff {
@@ -1202,7 +1261,7 @@ impl Handoff {
         bytes: &mut [u8],
     ) -> Result<Drained, &'static str> {
         let log = unsafe { &*(self.log as *const Log) };
-        drain_until(
+        let drained = drain_until(
             log,
             Bound {
                 epoch: self.epoch,
@@ -1212,7 +1271,11 @@ impl Handoff {
             &cursors[..self.lanes],
             output,
             bytes,
-        )
+        );
+        if self.final_for_log {
+            log.drained.store(true, Ordering::Release);
+        }
+        drained
     }
 }
 
@@ -3277,7 +3340,11 @@ impl StagingFixture {
     /// Keep `self` alive and unmoved at its current address for every subsequent call on the
     /// returned [`Handoff`].
     pub unsafe fn handoff(&self, cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
-        handoff_from_buffer(&self.0, engine_native_memory::walk::Buffer::Growing(cursors))
+        handoff_from_buffer(
+            &self.0,
+            engine_native_memory::walk::Buffer::Growing(cursors),
+            false,
+        )
     }
     pub fn registered_lanes(&self) -> usize {
         self.0.registered.load(Ordering::Acquire)
@@ -4199,13 +4266,13 @@ mod tests {
             ..Default::default()
         };
         CONTEXT.set(previous);
-        let before = ACTIVE.load(Ordering::SeqCst);
+        let before = active();
         assert_eq!(unsafe { callback(1, 2, 3, 4, 0xabcdef00) }, 0xabcdef0a);
         assert_eq!(CONTEXT.get().government, previous.government);
         let epoch = EPOCH.load(Ordering::SeqCst);
         let result = std::panic::catch_unwind(|| unsafe { callback(usize::MAX, 0, 0, 0, 0) });
         assert!(result.is_err());
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), before);
+        assert_eq!(active(), before);
         assert_eq!(CONTEXT.get().government, previous.government);
         assert_ne!(EPOCH.load(Ordering::SeqCst), epoch);
         ENABLED.store(false, Ordering::SeqCst);
@@ -4703,7 +4770,12 @@ mod tests {
         assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
         assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 5);
         let mut cursors = vec![LaneCursor::default(); 2];
-        let handoff = handoff_from_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)).unwrap();
+        let handoff = handoff_from_buffer(
+            &log,
+            engine_native_memory::walk::Buffer::Growing(&mut cursors),
+            false,
+        )
+        .unwrap();
         assert_eq!(handoff.pending(), 20);
         let mut output = [Event::default(); 20];
         let mut bytes = [0; 20 * 16];

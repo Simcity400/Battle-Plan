@@ -105,6 +105,7 @@ impl StatusPart {
                     experience,
                     countries,
                     false,
+                    false,
                 );
                 for index in 0..self.packet.units.len() {
                     let has_order = self.packet.units[index].has_order.unwrap_or_else(|| {

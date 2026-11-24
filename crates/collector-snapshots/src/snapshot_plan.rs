@@ -164,7 +164,11 @@ impl SnapshotPlan {
         if engine_allocation::advisory(|| self.try_prepare(data_reads)).is_err() {
             self.compiled = None;
             self.complete = false;
-            self.trace.get_mut().eligible = false;
+            let trace = self.trace.get_mut();
+            trace.eligible = false;
+            trace.reads = Vec::new();
+            trace.bytes = Vec::new();
+            trace.hints = Vec::new();
             self.rebuild = false;
         }
     }
@@ -194,17 +198,21 @@ impl SnapshotPlan {
             let reads = engine_allocation::copy_vec(&trace.reads)?;
             let bytes = engine_allocation::copy_vec(&trace.bytes)?;
             let hints = engine_allocation::copy_vec(&trace.hints)?;
+            let destination_len = trace.bytes.len();
             self.compiled = if let Some(plan) =
-                PreparedPlan::try_new(reads, controls, bytes, trace.bytes.len())?
+                PreparedPlan::try_new(reads, controls, bytes, destination_len)?
             {
                 plan.try_with_hints(hints)?
             } else {
                 None
             };
-            let additional = trace.bytes.len().saturating_sub(self.destination.len());
+            let additional = destination_len.saturating_sub(self.destination.len());
             engine_allocation::reserve(&mut self.destination, additional)?;
-            self.destination.resize(trace.bytes.len(), 0);
+            self.destination.resize(destination_len, 0);
         }
+        trace.reads = Vec::new();
+        trace.bytes = Vec::new();
+        trace.hints = Vec::new();
         self.rebuild = false;
         Ok(())
     }

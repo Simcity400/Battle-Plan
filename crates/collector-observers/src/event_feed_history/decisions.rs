@@ -45,6 +45,7 @@ pub(crate) struct Index {
     live: usize,
     owner_count: usize,
     pub demand: usize,
+    pub owner_demand: usize,
 }
 impl Index {
     fn locate<T>(values: &[T], pointer: usize, key: impl Fn(&T) -> usize) -> Result<usize, usize> {
@@ -67,6 +68,13 @@ impl Index {
     pub fn capacity(&self) -> usize {
         self.slots.len() / 2
     }
+    pub fn owner_capacity(&self) -> usize {
+        self.owners.len() / 2
+    }
+    pub fn owner_demand_for(&self, pointer: usize) -> usize {
+        let extra = usize::from(Self::locate(&self.owners, pointer, |s| s.pointer).is_err());
+        self.owner_count.saturating_add(extra)
+    }
     fn needs_room(&self) -> bool {
         self.live >= self.capacity() || self.owner_count >= self.owners.len() / 2
     }
@@ -77,12 +85,15 @@ impl Index {
         self.slots.len() >= other.slots.len() && self.owners.len() >= other.owners.len()
     }
     pub fn prepare(&mut self, capacity: usize) -> io::Result<()> {
-        let size = capacity
+        self.prepare_sized(capacity, capacity)
+    }
+    pub fn prepare_sized(&mut self, slot_capacity: usize, owner_capacity: usize) -> io::Result<()> {
+        let slot_size = slot_capacity
             .checked_mul(2)
             .and_then(|n| n.max(2).checked_next_power_of_two())
             .ok_or_else(allocation::oom)?;
-        if size > self.slots.len() {
-            let mut slots = allocation::filled(size, Slot::default())?;
+        if slot_size > self.slots.len() {
+            let mut slots = allocation::filled(slot_size, Slot::default())?;
             for value in &self.slots {
                 if value.pointer != 0 {
                     let at = Self::locate(&slots, value.pointer, |s| s.pointer).unwrap_err();
@@ -91,8 +102,12 @@ impl Index {
             }
             self.slots = slots;
         }
-        if size > self.owners.len() {
-            let mut owners = allocation::filled(size, Owner::default())?;
+        let owner_size = owner_capacity
+            .checked_mul(2)
+            .and_then(|n| n.max(2).checked_next_power_of_two())
+            .ok_or_else(allocation::oom)?;
+        if owner_size > self.owners.len() {
+            let mut owners = allocation::filled(owner_size, Owner::default())?;
             for value in &self.owners {
                 if value.pointer != 0 {
                     let at = Self::locate(&owners, value.pointer, |s| s.pointer).unwrap_err();
@@ -125,6 +140,7 @@ impl Index {
         spare.live = self.live;
         spare.owner_count = self.owner_count;
         spare.demand = self.demand;
+        spare.owner_demand = self.owner_demand;
         std::mem::swap(self, spare);
     }
     pub fn invalidate(&mut self) {
@@ -219,10 +235,13 @@ impl Index {
                     power_epoch: 0,
                 };
                 self.owner_count += 1;
+                self.owner_demand = self.owner_demand.max(self.owner_count);
                 at
             }
             _ => {
-                self.demand = self.demand.max(self.owners.len().saturating_add(1));
+                self.owner_demand = self
+                    .owner_demand
+                    .max(self.owner_capacity().saturating_add(1));
                 return Err("decision owner certificates need prepared capacity");
             }
         };
@@ -1037,7 +1056,23 @@ impl Store {
         token: engine_native_memory::msvc_string::Descriptor,
         root: Option<u32>,
     ) -> Result<(), &'static str> {
-        let mut value = fact(memory, world.country_object(country)?, change, None);
+        let owner = world.country_object(country)?;
+        let hour = world.hour()?;
+        self.decision_key_resolved(world, memory, base, generation, owner, hour, change, token, root)
+    }
+    pub(crate) fn decision_key_resolved<M: Memory>(
+        &mut self,
+        world: &World<'_, M>,
+        memory: &M,
+        base: usize,
+        generation: u64,
+        owner: CountryIdentity,
+        hour: i32,
+        change: DecisionChange,
+        token: engine_native_memory::msvc_string::Descriptor,
+        root: Option<u32>,
+    ) -> Result<(), &'static str> {
+        let mut value = fact(memory, owner, change, None);
         value.token = token;
         value.script.country_target = root;
         if change.operation == Operation::Candidate
@@ -1046,7 +1081,7 @@ impl Store {
         {
             value.target = world.country(change.ordinal)?;
         }
-        self.script_known(memory, base, generation, world.hour()?, value)
+        self.script_known(memory, base, generation, hour, value)
     }
     fn decision_roster_baseline<M: Memory>(
         &mut self,

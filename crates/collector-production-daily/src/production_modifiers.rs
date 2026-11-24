@@ -130,6 +130,17 @@ impl Part {
             + self.archetypes.allocated_bytes()
             + self.repeats.allocated_bytes()
     }
+    pub fn record_demand(&self, capacity: &mut Capacities) {
+        self.countries.record_demand(&mut capacity.countries);
+        self.lines.record_demand(&mut capacity.lines);
+        self.efficiencies.record_demand(&mut capacity.efficiencies);
+        self.requests.record_demand(&mut capacity.requests);
+        self.roots.record_demand(&mut capacity.requests);
+        self.nodes.record_demand(&mut capacity.nodes);
+        self.text.record_demand(&mut capacity.text);
+        self.stack.record_demand(&mut capacity.stack);
+        self.archetypes.record_demand(&mut capacity.stack);
+    }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.countries.grow(&mut capacity.countries);
         self.lines.grow(&mut capacity.lines);
@@ -357,6 +368,7 @@ pub struct Captured {
     split: usize,
     starts: [u32; MAX_PARTS - 1],
     provided: Option<Result<native::Context, &'static str>>,
+    daily_released: bool,
 }
 
 impl Captured {
@@ -374,6 +386,7 @@ impl Captured {
             split: 1,
             starts: [0; MAX_PARTS - 1],
             provided: None,
+            daily_released: false,
         }
     }
     pub fn reset(&mut self) {
@@ -394,11 +407,25 @@ impl Captured {
                 .map(|part| size_of::<Part>() + part.allocated_bytes())
                 .sum::<usize>()
     }
+    pub fn release_daily(&mut self) {
+        self.first = Part::vacant();
+        for extra in &mut self.extra {
+            if let Some(part) = extra {
+                **part = Part::vacant();
+            }
+        }
+        self.daily_released = true;
+        self.unsplit();
+    }
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        self.first.grow(capacity);
+        if self.daily_released {
+            self.first.record_demand(capacity);
+        } else {
+            self.first.grow(capacity);
+        }
         for extra in &mut self.extra {
             if extra.is_none() && !crate::allocation::failed() {
-                *extra = Some(Box::new(Part::vacant()));
+                *extra = engine_allocation::boxed(Part::vacant()).ok();
             }
         }
     }
@@ -796,5 +823,22 @@ mod tests {
         assert!(starts.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(starts[0] > 1 && starts[2] <= 20);
         assert_eq!(whole.next_starts(([7, 0, 0], 1)), ([0; 3], 0));
+
+        struct NoRead;
+        impl Memory for NoRead {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                false
+            }
+        }
+        let mut recycled = Captured::vacant();
+        let mut capacities = Capacities::default();
+        capacities.raise_for_countries(8);
+        recycled.grow(&mut capacities);
+        assert!(recycled.allocated_bytes() > (MAX_PARTS - 1) * size_of::<Part>());
+        recycled.release_daily();
+        assert_eq!(recycled.allocated_bytes(), (MAX_PARTS - 1) * size_of::<Part>());
+        recycled.grow(&mut capacities);
+        assert_eq!(recycled.allocated_bytes(), (MAX_PARTS - 1) * size_of::<Part>());
+        assert_eq!(recycled.prepare_parts(&NoRead, 0, &[5, 10, 15]), MAX_PARTS);
     }
 }

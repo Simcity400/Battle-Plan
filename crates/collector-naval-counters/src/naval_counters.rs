@@ -941,6 +941,124 @@ impl Captured {
         }
     }
 
+    pub fn table_inputs(
+        &self,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> [replay_frame::frame::TableInput; N] {
+        use replay_frame::frame::TableInput;
+        let [tasks, fleets, ..] = self.outcomes();
+        let names = self.names.first.get(..self.names.len);
+        let task_input =
+            collector_projection::projection::project_table::<tables::TaskForceCounterInputs, _>(
+            projection,
+            tasks,
+            &self.task_forces.rows,
+            |row| u128::from(row.id),
+            |row, prev| {
+                if prev.task_force != row.id
+                    || prev.is_in_regions != row.is_in_regions
+                    || prev.running_away != row.running_away
+                    || prev.engagement_rule != row.engagement_rule
+                    || prev.mission_region_count != row.mission_region_count
+                    || prev.bombardment_region != row.bombardment_region
+                    || prev.repair_parent != row.repair_parent
+                    || prev.detached_activity != row.detached_activity
+                    || prev.repair_last_mission != row.repair_last_mission
+                    || prev.received_supply_ratio != row.received_supply_ratio
+                    || prev.attached_headquarters != row.attached_headquarters
+                {
+                    return false;
+                }
+                let cur_name = row.name.and_then(|(start, len)| {
+                    names?.get(start..start.checked_add(len)?)
+                });
+                let name_eq = match (cur_name, &prev.name) {
+                    (Some(cur), Recorded::Value(Some(p))) => p.as_slice() == cur,
+                    (None, Recorded::Value(None)) => true,
+                    _ => false,
+                };
+                if !name_eq {
+                    return false;
+                }
+                let supply_eq = match (row.supply, &prev.supply) {
+                    (None, Recorded::Value(None)) => true,
+                    (Some(_), Recorded::Value(Some(_))) => {
+                        prev.supply
+                            == Recorded::Value(super::supply_inputs::project(
+                                row.supply,
+                                self.supply_origins(row),
+                            ))
+                    }
+                    _ => false,
+                };
+                if !supply_eq {
+                    return false;
+                }
+                match (row.port_mission, &prev.port_mission) {
+                    (None, Recorded::Value(None)) => true,
+                    (Some(_), Recorded::Value(Some(_))) => {
+                        prev.port_mission == Recorded::Value(self.port_inputs(row))
+                    }
+                    _ => false,
+                }
+            },
+            |row| {
+                task(
+                    row,
+                    names,
+                    self.supply_origins(row),
+                    self.port_inputs(row),
+                )
+            },
+        );
+        let motion = TableInput::Sampled(self.motion_table());
+        let missions = TableInput::Sampled(self.mission_table());
+        let Some(rosters) = self.rosters.first.get(..self.rosters.len) else {
+            return [
+                task_input,
+                TableInput::Sampled(unavailable("fleet roster arena length invalid")),
+                motion,
+                missions,
+            ];
+        };
+        let fleet_rows = &self.fleets.rows[..fleets.len().min(self.fleets.rows.len())];
+        if fleet_rows.iter().any(|r| {
+            r.start
+                .checked_add(r.len)
+                .is_none_or(|end| end > rosters.len())
+        }) {
+            return [
+                task_input,
+                TableInput::Sampled(unavailable("fleet roster lies outside captured arena")),
+                motion,
+                missions,
+            ];
+        }
+        [
+            task_input,
+            TableInput::Sampled(table::<tables::FleetCounterInputs, _>(
+                fleets,
+                &self.fleets.rows,
+                |r| FleetCounterInputRow {
+                    fleet: r.id,
+                    red: r.rgba[0],
+                    green: r.rgba[1],
+                    blue: r.rgba[2],
+                    alpha: r.rgba[3],
+                    mission_region_count: r.mission_region_count,
+                    mission_regions: (self
+                        .fleet_regions
+                        .get(&r.id)
+                        .and_then(|held| held.regions.clone()))
+                    .into(),
+                    task_forces: owned_vec(copy_vec(&rosters[r.start..r.start + r.len])),
+                },
+            )),
+            motion,
+            missions,
+        ]
+    }
+
     pub fn tables(&self) -> [TableView; N] {
         let [tasks, fleets, ..] = self.outcomes();
         let task_table = || {

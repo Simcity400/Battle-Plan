@@ -1650,6 +1650,16 @@ impl Resolver {
         *cell = (generation, country.pointer, diplomacy);
         Ok(diplomacy)
     }
+
+    pub(crate) fn cache_diplomacy(&mut self, country: engine_native_memory::country_identity::Country, diplomacy: usize) {
+        let generation = self.generation;
+        if generation != 0
+            && country.pointer != 0
+            && let Some(cell) = self.diplomacies.get_mut(country.canonical_slot as usize)
+        {
+            *cell = (generation, country.pointer, diplomacy);
+        }
+    }
 }
 
 #[derive(Default)]

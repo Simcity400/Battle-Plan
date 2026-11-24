@@ -355,6 +355,57 @@ pub fn copy_string(
 ) -> Result<Option<Span>, &'static str> {
     let start = names.len;
     let free = names.bytes.len().saturating_sub(start);
+    let word = |at: usize| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
+    let (raw_len, raw_cap) = (word(msvc_string::LENGTH), word(msvc_string::CAPACITY));
+    let can_copy_inline = match &names.bytes {
+        engine_native_memory::walk::Buffer::Count => false,
+        engine_native_memory::walk::Buffer::Exact(_) => raw_len <= free as u64,
+        engine_native_memory::walk::Buffer::Growing(_) | engine_native_memory::walk::Buffer::GrowingFrom(_, _) => true,
+    };
+    if can_copy_inline
+        && raw_cap > msvc_string::INLINE_CAPACITY
+        && raw_len != 0
+        && raw_len <= raw_cap
+        && raw_len <= 255
+    {
+        if let Ok(len) = usize::try_from(raw_len)
+            && let Some(source) = usize::try_from(word(0)).ok().filter(|&a| a != 0)
+            && source.checked_add(len).is_some()
+        {
+            let mut buf = [0_u8; 256];
+            if read_slice(memory, source, &mut buf[..len + 1]) && buf[len] == 0 {
+                names.required = demand(names.required, len)?;
+                if len > free {
+                    match &mut names.bytes {
+                        engine_native_memory::walk::Buffer::Count
+                        | engine_native_memory::walk::Buffer::Exact(_) => return Ok(None),
+                        engine_native_memory::walk::Buffer::GrowingFrom(bytes, offset) => {
+                            msvc_string::place(
+                                &buf[..len],
+                                bytes,
+                                *offset + start,
+                                errors[2],
+                                "division name arena allocation failed",
+                            )?;
+                            return Ok(Some((start, len)));
+                        }
+                        engine_native_memory::walk::Buffer::Growing(bytes) => {
+                            msvc_string::place(
+                                &buf[..len],
+                                bytes,
+                                start,
+                                errors[2],
+                                "division name arena allocation failed",
+                            )?;
+                            return Ok(Some((start, len)));
+                        }
+                    }
+                }
+                names.bytes[start..start + len].copy_from_slice(&buf[..len]);
+                return Ok(Some((start, len)));
+            }
+        }
+    }
     let (source, len) = match string_source(memory, header, errors)? {
         StringSource::Empty => return Ok(Some((start, 0))),
         StringSource::Inline(text) => {
@@ -469,6 +520,32 @@ fn copy_string_into(
     required: &mut usize,
     errors: &StringErrors,
 ) -> Result<usize, &'static str> {
+    let word = |offset: usize| u64::from_le_bytes(header[offset..offset + 8].try_into().unwrap());
+    let (raw_len, raw_cap) = (word(msvc_string::LENGTH), word(msvc_string::CAPACITY));
+    if raw_cap > msvc_string::INLINE_CAPACITY && raw_len != 0 && raw_len <= raw_cap && raw_len <= 255
+    {
+        if let Ok(len) = usize::try_from(raw_len)
+            && let Some(source) = usize::try_from(word(0)).ok().filter(|&a| a != 0)
+            && source.checked_add(len).is_some()
+        {
+            let mut buf = [0_u8; 256];
+            if read_slice(memory, source, &mut buf[..len + 1]) && buf[len] == 0 {
+                *required = demand(*required, len)?;
+                if len > bytes.len().saturating_sub(at) {
+                    msvc_string::place(
+                        &buf[..len],
+                        bytes,
+                        at,
+                        errors[2],
+                        "division name arena allocation failed",
+                    )?;
+                } else {
+                    bytes[at..at + len].copy_from_slice(&buf[..len]);
+                }
+                return Ok(len);
+            }
+        }
+    }
     let (source, len) = match string_source(memory, header, errors)? {
         StringSource::Empty => return Ok(0),
         StringSource::Inline(text) => {

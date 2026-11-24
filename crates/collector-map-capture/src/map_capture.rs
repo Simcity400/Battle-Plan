@@ -23,10 +23,6 @@ pub const MAP_TABLES: usize = 10;
 mod combat;
 pub use combat::{CombatReport, CombatRequest};
 
-fn ship_name_result<T>(result: Result<Option<T>, &'static str>) -> Option<T> {
-    result.ok().flatten()
-}
-
 pub trait MapSources {
     fn begin_land(&mut self) -> u64 {
         0
@@ -253,7 +249,7 @@ impl ShipCensus {
         });
         let (mut name_len, mut name_required) = (0, 0);
         let (mut override_len, mut override_required) = (0, 0);
-        let naval = cfleet::walk_timed_with_management(
+        let naval = cfleet::walk_timed_with_management_and_names(
             memory,
             base,
             state,
@@ -265,42 +261,20 @@ impl ShipCensus {
                 qpc() as u64
             },
             |pointer, row| {
-                row.name = ship_name_result(cship::cached_name_growing(
-                    memory,
-                    base,
-                    pointer,
-                    row.id,
-                    &mut self.ship_names,
-                    &mut name_len,
-                    &mut name_required,
-                ));
-                if let Some((_, len)) = row.name {
-                    name_len += len;
-                }
-                row.naming = ship_name_result(cship::naming(
-                    memory,
-                    base,
-                    pointer,
-                    row.id,
-                    &mut self.ship_overrides,
-                    &mut override_len,
-                    &mut override_required,
-                ));
-                if let Some(naming) = row.naming {
-                    override_len += naming.override_name.1;
-                }
-                let crew = collector_air::crew::ship(
-                    memory,
-                    pointer,
-                    collector_observers::crew_changes::quiet,
-                );
-                row.acquired_manpower = crew.map(|value| value[0]);
-                row.required_manpower = crew.map(|value| value[1]);
                 models.visit_source(pointer, row);
                 management.borrow_mut().ship(pointer, row);
             },
             &mut self.fleet_names,
             |visit| management.borrow_mut().visit(visit),
+            cfleet::ShipNaming {
+                ship_names: &mut self.ship_names,
+                name_len: &mut name_len,
+                name_required: &mut name_required,
+                ship_overrides: &mut self.ship_overrides,
+                override_len: &mut override_len,
+                override_required: &mut override_required,
+                quiet: collector_observers::crew_changes::quiet,
+            },
         );
         self.ship_names.truncate(name_len);
         self.ship_overrides.truncate(override_len);
@@ -826,7 +800,6 @@ fn copy_player_roster(
 ) {
     use engine_native::cgame_state;
     use engine_native_memory::cpdx_array::Array;
-    use engine_native_politics::chuman;
     log.has_bulk = true;
     let roster_start = match pspan(
         log,
@@ -1372,7 +1345,7 @@ mod tests {
             assert_eq!(capacity, 256);
         }
         grow_capacity(&mut capacity, 257);
-        assert_eq!(capacity, 512);
+        assert_eq!(capacity, 384);
         grow_capacity(&mut capacity, usize::MAX);
         assert_eq!(capacity, usize::MAX);
         let mut empty = 0;
@@ -1456,13 +1429,13 @@ mod tests {
         captured.orders.geometry_required = capacity.order_geometry + 23;
         // SAFETY: This path owns the frame capacity changes and excludes teardown.
         unsafe { captured.grow(&mut capacity) };
-        assert_eq!(captured.naval.ships.rows.len(), 8192);
+        assert_eq!(captured.naval.ships.rows.len(), 5184);
 
         assert_eq!(captured.naval.ships.rows[0].id, u64::MAX);
-        assert_eq!(captured.land_participants.len(), 16384);
-        assert_eq!(captured.land_classes.len(), 16384);
+        assert_eq!(captured.land_participants.len(), 10304);
+        assert_eq!(captured.land_classes.len(), 10304);
 
-        assert_eq!(captured.player_names.len(), 8192);
+        assert_eq!(captured.player_names.len(), 5184);
 
         assert_eq!(captured.orders.geometry.len(), 16384 + 23);
 
@@ -1727,7 +1700,7 @@ mod tests {
         captured.naval_groups_required = 129;
         // SAFETY: This path owns the frame capacity changes and excludes teardown.
         unsafe { captured.grow(&mut capacity) };
-        assert_eq!(captured.orders.groups.len(), initial_group_capacity * 2);
+        assert_eq!(captured.orders.groups.len(), 2624);
         assert_eq!(captured.orders.visits.len(), 4096);
         assert_eq!(captured.naval_groups.len(), 256);
         let grown = capacity;

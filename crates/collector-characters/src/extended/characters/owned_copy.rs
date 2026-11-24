@@ -43,7 +43,7 @@ pub struct CharactersJob {
     pub(super) census_historical: usize,
     pub(super) census_generation: u64,
     pub(super) census_capture: bool,
-    pub(super) census_visited: Vec<census::Occurrence>,
+    pub(super) census_visited: Vec<census::Visited>,
     pub(super) census_required: usize,
     pub(super) templates: TemplateCache,
     pub(super) template_charge: collector_primitives::raw_memory::Charge,
@@ -162,10 +162,10 @@ pub(super) enum AppendedRole {
 
 impl CharactersJob {
     pub fn has_storage(&self) -> bool {
+        if self.part == 2 && cfg!(feature = "advisor_changes") {
+            return self.advisor_cache.is_some();
+        }
         self.source_bindings.is_some()
-            || self.advisor_cache.is_some()
-            || self.leader_cache.is_some()
-            || self.log.spans.capacity() != 0
     }
 
     pub fn vacant(part: usize) -> Self {
@@ -300,6 +300,7 @@ impl CharactersJob {
     }
 
     pub fn clear(&mut self) {
+        self.log.drop_index();
         self.log.clear();
         self.game_state = 0;
         self.active = [false; N];
@@ -317,6 +318,7 @@ impl CharactersJob {
         self.advisor_section_complete = false;
         self.leader_cached = false;
         self.roster.quiet = false;
+        self.advisor_roots.drop_index();
         self.advisor_roots.clear();
         if let Some(dynamic) = &mut self.advisor_dynamic {
             dynamic.clear();
@@ -377,8 +379,16 @@ impl CharactersJob {
             || self.appended_required > self.appended_roles.capacity()
     }
 
+    pub fn trim_quiet_logs(&mut self) -> bool {
+        let quiet = self.log.trim_if_quiet();
+        if let Some(dynamic) = &mut self.advisor_dynamic {
+            dynamic.log.trim_if_quiet();
+        }
+        quiet
+    }
+
     pub(super) fn visits_required(&self, live: usize) -> usize {
-        if self.part == 0 {
+        if self.part == 0 || self.advisor_cache.is_some() {
             return 0;
         }
         self.census_required.max(live)
@@ -2503,7 +2513,7 @@ pub(super) fn visit_census(
         job.census_required = job.census_visited.len() + remaining.max(1);
         return false;
     }
-    job.census_visited.push(census.occurrence(index));
+    job.census_visited.push(census.occurrence(index).visited());
     true
 }
 
