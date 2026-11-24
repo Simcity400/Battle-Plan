@@ -8,6 +8,8 @@ export const CARD_HERO_HEIGHT = 94;
 export const CARD_SECTION_HEIGHT = 30;
 export const CARD_FLAG_COLUMN = 70;
 export const CARD_FLAG_INSET = 10;
+export const CARD_FLAG_COLUMN_COMPACT = 46;
+export const CARD_FLAG_INSET_COMPACT = 6;
 export const CARD_FLAG_WIDTH = 20;
 export const CARD_FLAG_HEIGHT = 13;
 export const CARD_GAP = 14;
@@ -24,6 +26,7 @@ export interface CardLayout {
   readonly compact: boolean;
   readonly dateX: number;
   readonly flagX: number;
+  readonly flagInset: number;
   readonly artX: number;
   readonly titleX: number;
   readonly titleWidth: number;
@@ -57,12 +60,12 @@ export function layoutCards(model: CardModel, width: number, height: number): Ca
   }
   const totalHeight = y + CARD_PAD_BOTTOM;
   const columns = model.columns;
-  const compact = width < CARD_COMPACT_BELOW;
+  const compact = width < CARD_COMPACT_BELOW && !!columns.place;
   let left = CARD_PAD_X;
   const dateX = left;
   if (columns.date) left += DATE_COLUMN_WIDTH + 12;
   const flagX = left;
-  if (columns.flag) left += CARD_FLAG_COLUMN;
+  if (columns.flag) left += compact ? CARD_FLAG_COLUMN_COMPACT : CARD_FLAG_COLUMN;
   const artX = left;
   if (columns.art) left += columns.art.width + CARD_GAP;
   const titleX = left;
@@ -98,6 +101,7 @@ export function layoutCards(model: CardModel, width: number, height: number): Ca
     compact,
     dateX,
     flagX,
+    flagInset: compact ? CARD_FLAG_INSET_COMPACT : CARD_FLAG_INSET,
     artX,
     titleX,
     titleWidth,

@@ -22,7 +22,6 @@ import { formatValueState } from '../valueFormat.ts';
 import {
   CARD_FADE,
   CARD_FLAG_HEIGHT,
-  CARD_FLAG_INSET,
   CARD_FLAG_WIDTH,
   CARD_HERO_HEIGHT,
   CARD_PAD_X,
@@ -139,7 +138,7 @@ function drawItem(ctx: Canvas2D, model: CardModel, row: CardItemRow, top: number
   ctx.save();
   if (row.muted) ctx.globalAlpha = MUTED_ROW_ALPHA;
   if (columns.date && row.date) drawDateColumn(ctx, layout.dateX, top, height, row.date.hour, theme);
-  if (columns.flag && row.flag) drawMedia(ctx, row.flag, layout.flagX + CARD_FLAG_INSET, middleY, CARD_FLAG_WIDTH, CARD_FLAG_HEIGHT, theme, artCache);
+  if (columns.flag && row.flag) drawMedia(ctx, row.flag, layout.flagX + layout.flagInset, middleY, CARD_FLAG_WIDTH, CARD_FLAG_HEIGHT, theme, artCache);
   if (columns.art && row.art) drawMedia(ctx, row.art, layout.artX, middleY, columns.art.width, columns.art.height, theme, artCache);
   const subtitle = layout.compact && row.place ? (row.subtitle ? `${row.subtitle} · ${row.place}` : row.place) : row.subtitle;
   const titleFont = `${columns.titleWeight ?? 500} 13px ${theme.font}`;

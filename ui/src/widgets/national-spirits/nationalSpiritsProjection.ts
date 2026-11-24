@@ -117,7 +117,6 @@ export const nationalSpiritsDeclaration: CardWidgetDeclaration<NationalSpiritsOp
           },
         }]
       : [],
-    allowEmptyFollow: true,
   }),
   projection: nationalSpiritsProjection,
   projectionOptions: ctx => ({ branchFirst: ctx.branch.firstHour }),

@@ -121,7 +121,6 @@ export const nationalFocusDeclaration: CardWidgetDeclaration<Record<string, neve
           },
         }]
       : [],
-    allowEmptyFollow: true,
   }),
   projection: nationalFocusProjection,
   projectionOptions: () => ({}),
