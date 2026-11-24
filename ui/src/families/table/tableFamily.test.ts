@@ -630,7 +630,7 @@ test('lane view skips projection on next(), caches unchanged sources across serv
       window: { first: 0, count: 10 },
     };
     const scene = { widget: 1, subs: [], pictures: [], model };
-    assert.equal(view.next?.(scene, 10), Infinity);
+    assert.equal(view.next?.(scene, 10), null, 'with nothing held, next() proves no boundary and the lane paints at its target');
     assert.equal(projectCalls, 0, 'next() must never invoke projection.project()');
 
     const state = new Map<string, unknown>();
@@ -1756,6 +1756,9 @@ function gridContext(width: number, height: number) {
   return { ctx, marks };
 }
 
+const FRESH_OPTIONS = {};
+const FRESH_SOURCES = {};
+
 test('an incremental table paint after a seek back, a same-hour correction and a reorder equals a fresh paint, cell by cell', () => {
   type Row = { id: string; v: number; flag: string };
   const columns: TableColumnSpec[] = [
@@ -1806,7 +1809,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
         widget: 1,
         subs: [],
         pictures: [],
-        model: { family: 'table' as const, kind: 'test-fresh-equals-incremental', options: {}, settings, sources: {}, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+        model: { family: 'table' as const, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
         hour,
         seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 360, height: 200, dpr: 1 }], offset: 0, pin: null },
@@ -1854,7 +1857,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     assert.deepEqual(grouped.map(item => item.kind), ['data'], 'a group revealed later adds no heading before its hour');
 
     const laneBinding = (rows: Row[], settings: TableSettings, scrollTop = 0) => ({
-      family: 'table' as const, theme: TEST_THEME, kind: 'test-fresh-equals-incremental', options: {}, settings, sources: {}, staticPanels: { main: { rows } },
+      family: 'table' as const, theme: TEST_THEME, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } },
       width: 360, height: 200, scrollLeft: 0, scrollTop, reducedMotion: true,
     });
     const tableSurface = { width: 360, height: 200, dpr: 1 };

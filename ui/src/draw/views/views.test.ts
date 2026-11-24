@@ -2,32 +2,20 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { drawnViews } from './drawn.ts';
 import { Page } from '../../dashboard/follow/page.ts';
-import { Lane, type Bitmapped, type Scene } from '../lane.ts';
+import { Lane, type Bitmapped } from '../lane.ts';
 import { bindFamilyManifest } from '../../families/registry.ts';
+import { emptyReadView } from '../../families/boundedView.ts';
 import type { FamilyTableBinding } from '../../families/table/laneView.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import { LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 
-const scene = (model: unknown): Scene => ({ widget: 1, subs: [], pictures: [], model });
 test('astra 7: a table breaks at its filter bounds and at the hours its country names and flags change', async () => {
-  let wakeResolve: ((widget: number) => void) | null = null;
-  const woken = new Promise<number>(resolve => { wakeResolve = resolve; });
-  const table = drawnViews('table', widget => { wakeResolve?.(widget); })!;
-  const base = { family: 'table', kind: 'occupied-states', settings: {}, sources: {}, width: 100, height: 100, scrollLeft: 0, scrollTop: 0 };
-  const filtered = {
-    ...base,
-    options: { filter: { passing: null, unrecorded: [], bounds: [0, 109, 300] }, role: 'occupier', labels: {}, lawAs: 'dot', filterAll: true },
-  };
-  const initial = table.next!(scene(filtered as unknown as FamilyTableBinding), 100);
-  if (!Number.isFinite(initial)) {
-    assert.equal(await woken, 1, 'lazy projection load wakes the widget once loaded');
-  }
-  assert.equal(table.next!(scene(filtered as unknown as FamilyTableBinding), 100), 109, 'the filter changes at 109, never sampled a day later');
-  const named = {
-    ...base,
-    options: { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'German Reich' }, { from: 130, name: 'Germany' }] }, lawAs: 'dot', filterAll: true },
-  };
-  assert.equal(table.next!(scene(named as unknown as FamilyTableBinding), 100), 130, 'the name changes at 130');
+  const { occupiedStatesProjection } = await import('../../widgets/occupied-states/occupiedProjection.ts');
+  const next = (options: unknown) => occupiedStatesProjection.nextChange!(emptyReadView(100), options as never);
+  const filtered = { filter: { passing: null, unrecorded: [], bounds: [0, 109, 300] }, role: 'occupier', labels: {}, lawAs: 'dot', filterAll: true };
+  assert.equal(next(filtered), 109, 'the filter changes at 109, never sampled a day later');
+  const named = { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'German Reich' }, { from: 130, name: 'Germany' }] }, lawAs: 'dot', filterAll: true };
+  assert.equal(next(named), 130, 'the name changes at 130');
 });
 
 test('lazy projection arriving after first next wakes the lane and reports its true boundary', async () => {

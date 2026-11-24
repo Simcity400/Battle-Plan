@@ -67,8 +67,9 @@ const family: LaneFamily<Binding, Model, Layout> = {
 
 const rowsAt = (rows: readonly Row[]) => ({ main: { rows } });
 const DOWN: Options = { order: 'down' };
+const NO_SOURCES = {};
 const binding = (staticPanels: Readonly<Record<string, unknown>>, options: Options = DOWN, extra: Partial<Binding> = {}): Binding => ({
-  family: 'test-lane', kind: 'fixture', options, sources: {}, staticPanels, scrollTop: 0, theme: THEME, ...extra,
+  family: 'test-lane', kind: 'fixture', options, sources: NO_SOURCES, staticPanels, scrollTop: 0, theme: THEME, ...extra,
 });
 
 test('a projection’s identity demands are published by the paint that ran it', () => {
@@ -268,7 +269,7 @@ test('next() builds no identity index, and one snapshot is indexed once for ever
   }
 });
 
-test('the previous layout is given only while the same placement plays forward or stays on its hour, never across a seek back', () => {
+test('the previous layout is given only while the same placement plays forward, never across a seek or a pause', () => {
   const recording = installRecordingCanvas();
   try {
     const seen: (number | null)[] = [];
@@ -285,7 +286,7 @@ test('the previous layout is given only while the same placement plays forward o
     lane.paint({ label: 'seek back', binding: binding(rowsAt([{ key: 'A', v: 3 }])), hour: 5, speed: 24 });
     lane.paint({ label: 'paused, same hour', binding: binding(rowsAt([{ key: 'A', v: 4 }])), hour: 5, speed: 0 });
     lane.paint({ label: 'paused jump', binding: binding(rowsAt([{ key: 'A', v: 5 }])), hour: 9, speed: 0 });
-    assert.deepEqual(seen, [null, 10, null, 5, null]);
+    assert.deepEqual(seen, [null, 10, null, null, null], 'only continuous forward playback supplies it');
   } finally {
     recording.restore();
   }

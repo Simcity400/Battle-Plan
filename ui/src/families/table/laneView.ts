@@ -35,6 +35,7 @@ export interface FamilyTableBinding<TOptions = unknown> extends LaneBinding<TOpt
 }
 
 const TEXT_SAMPLE_ROWS = 40;
+const shapes = new WeakMap<TableModel, TableShape>();
 
 interface TableShape {
   readonly model: TableModel;
@@ -161,7 +162,8 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const prev = step.previous?.layout.shape ?? null;
   const settings = binding.settings;
   const expanded = binding.expanded;
-  if (prev && prev.model === model && prev.settings === settings && prev.expanded === expanded && prev.width === width && prev.theme === theme) return prev;
+  const held = shapes.get(model);
+  if (held && held.options === binding.options && held.settings === settings && held.expanded === expanded && held.width === width && held.theme === theme) return held;
   const sortSig = `${settings.sort.column}\u0000${settings.sort.direction}`;
   const sameView = prev !== null && prev.options === binding.options && prev.settings === settings && prev.expanded === expanded;
   const inc = sameView && prev.model !== model && model.changedKeys !== undefined && !prev.hasGroups && !prev.panes && model.panes === undefined
@@ -238,7 +240,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
       }
     });
   }
-  return {
+  const shape: TableShape = {
     model, options: binding.options, settings, expanded, width, theme,
     flatRows, rowIndex, hasGroups, incremental: inc !== null,
     hasTree: inc === null && flatRows.some(item => item.kind === 'data' && item.isTreeGroup),
@@ -248,6 +250,8 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
     rowAuditCache: inc && prev ? prev.rowAuditCache : new WeakMap(),
     sortSig, orderKeys: dataKeys, markers, glide,
   };
+  shapes.set(model, shape);
+  return shape;
 }
 
 function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, _hour: number, step: LaneStep<TableModel, TableLayout>): TableLayout {
