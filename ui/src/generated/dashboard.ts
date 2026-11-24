@@ -581,7 +581,7 @@ export type CountryFlagUnavailable = {
 /**
  * The choice: its index in the request's `flags`.
  */
-flag: number, reason: string, };
+flag: number, reason: string, resolution: ArtResolution, };
 export type CountryFlagParams = {
 /**
  * The choices to draw, as `country-facts` gives them.
