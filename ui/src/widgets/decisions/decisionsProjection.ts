@@ -285,7 +285,7 @@ function buildDecisionRow(
 
 const RECORDED_STATUS: Readonly<Record<ScriptStatus, DecisionAt['status'] | null>> = {
   active: 'active', taken: 'taken', completed: 'completed', failed: 'failed', cancelled: 'cancelled', timedOut: 'timedOut', removed: 'removed',
-  unsupported: 'unsupported', notRecorded: 'unknown', awaiting: null, chosen: null,
+  unsupported: 'unsupported', notRecorded: 'unknown', awaiting: null, chosen: null, available: null,
 };
 
 const ASKED_STATUSES: Readonly<Record<StatusChoice, readonly ScriptStatus[]>> = {
