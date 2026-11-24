@@ -212,8 +212,8 @@ function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
         product: 'naval-supremacy',
         followQuery: null,
         params,
-        dynamicKeys: shares ? ['firstHour', 'lastHour'] : ['lastHour'],
-        buildExactParams: (base, hour) => ({ ...base, firstHour: shares ? hour : firstHour, lastHour: hour }),
+        dynamicKeys: ['lastHour'],
+        buildExactParams: (base, hour) => ({ ...base, firstHour, lastHour: hour }),
       },
     }],
   };
