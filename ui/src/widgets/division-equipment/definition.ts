@@ -9,6 +9,7 @@ export const VIEWS = [{ value: 'equipment', label: 'By equipment' }, { value: 't
 export const VIEW_OPTION: OptionField = { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'equipment', choices: [...VIEWS] };
 
 export const TYPE_COLUMNS: readonly TableColumnDefaults[] = [
+  { key: 'picture', label: 'Picture', as: 'plain', offered: ['plain'] },
   { key: 'type', label: 'Equipment', as: 'plain', offered: OFFERED.text },
   { key: 'held', label: 'In divisions', as: 'faint', tone: 'grey', offered: OFFERED.number },
   { key: 'needed', label: 'Needed', as: 'faint', tone: 'grey', offered: OFFERED.number },
