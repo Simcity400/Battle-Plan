@@ -1,3 +1,4 @@
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
 import type { AuxProductSpec, BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../contract.ts';
@@ -48,7 +49,7 @@ export interface CountryLinesSpec<TAux = unknown> {
   readonly measure: (options: Readonly<Record<string, OptionValue>>, aux: TAux | undefined) => CountryLinesMeasure | null;
 }
 
-const TAIL_COLOUR = 'rgba(245, 245, 245, 0.22)';
+const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 const COLOURED = 8;
 
 export function formatCountryValue(value: number, format: CountryLinesSpec['format']): string {
