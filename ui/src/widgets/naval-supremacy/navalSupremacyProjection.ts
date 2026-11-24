@@ -84,6 +84,9 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
       const reason = readout?.reason ?? 'Naval region control was not recorded';
       return { ...base, segments: [], missing: notRecorded(reason), tooltip: { title: named.label, hour, missingReason: reason, items: shipItems(region, look) } };
     }
+    if (idle(readout.friendly, readout.enemy)) {
+      return { ...base, segments: [], tooltip: { title: named.label, hour: readout.as_of_hour, items: [{ label: 'No activity' }, ...shipItems(region, look)] } };
+    }
     const share = shareOf(readout.share, reply.scale);
     if (share === null) {
       return { ...base, segments: [], missing: notRecorded('The supremacy share was not recorded'), tooltip: { title: named.label, hour: readout.as_of_hour, missingReason: 'The supremacy share was not recorded' } };
@@ -219,7 +222,6 @@ function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
   const pinned = regionIds(ctx.options.regions);
   const top = typeof ctx.options.rowCount === 'number' ? ctx.options.rowCount : SUPREMACY_TOP_DEFAULT;
   const params = { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), top, ...(pinned.length ? { pinnedRegions: pinned } : {}) };
-  const firstHour = ctx.branch.firstHour;
   return {
     owner: `naval-supremacy:${shares ? 'shares' : 'timeline'}:${JSON.stringify(params)}`,
     entries: [{
@@ -228,14 +230,11 @@ function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
       branch: ctx.branch.id,
       offset: ctx.track.axisOffset,
       read: {
-        shape: 'point',
-        channel: 'followed',
+        shape: 'branch-to-hour',
         coverage: { mode: 'population', form: 'top', limit: top },
         product: 'naval-supremacy',
         followQuery: null,
         params,
-        dynamicKeys: ['lastHour'],
-        buildExactParams: (base, hour) => ({ ...base, firstHour, lastHour: hour }),
       },
     }],
   };

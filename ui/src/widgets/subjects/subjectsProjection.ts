@@ -5,7 +5,7 @@ import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { countryLook, inHourSpans, nextBoundaryAfter, timelineModel, spanStart, clipSpansToHour, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
 import {
   changeHours,
@@ -42,7 +42,8 @@ function boundaries(reply: SubjectReply, groups: CountryGroupReply | undefined):
   return changeHours(reply, groups?.identityChanges);
 }
 
-export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerTimelineProjection<SubjectsOptions>({
+export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerFamilyProjection<TimelineProjection<SubjectsOptions>>({
+  family: 'timeline',
   kind: 'subjects',
 
   nextChange(readView) {

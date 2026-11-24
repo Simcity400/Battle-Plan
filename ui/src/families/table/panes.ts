@@ -1,8 +1,8 @@
 import { drawScrollFade, resolveKitTokens } from '../../draw/kit.ts';
 import { formatValueState } from '../valueFormat.ts';
-import type { FamilyTableLayout } from './layout.ts';
+import { computeRowLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import { resolveTableRows, type FlatTableRow, type TableModel, type TablePane, type TablePaneTitle } from './model.ts';
-import { computeRowLayout, hitFamilyTable, type RowLayoutGeometry } from './painter.ts';
+import { hitFamilyTable } from './painter.ts';
 import type { TableCanvasContext, TableSettings, TableTheme } from './settings.ts';
 
 export const PANE_GUTTER = 28;
@@ -83,6 +83,20 @@ export function combinedPaneRows(panes: readonly ResolvedPane[]): FlatTableRow[]
     for (const item of pane.rows) out.push(item);
   }
   return out;
+}
+
+export function combinedPaneGeometry(panes: readonly ResolvedPane[]): { readonly tops: readonly number[]; readonly heights: readonly number[] } {
+  const tops: number[] = [];
+  const heights: number[] = [];
+  for (const pane of panes) {
+    tops.push(0);
+    heights.push(0);
+    for (let i = 0; i < pane.rows.length; i++) {
+      tops.push(pane.geom.tops[i]!);
+      heights.push(pane.geom.heights[i]!);
+    }
+  }
+  return { tops, heights };
 }
 
 export function panesHeight(panes: readonly ResolvedPane[]): number {

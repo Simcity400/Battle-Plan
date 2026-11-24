@@ -5,7 +5,7 @@ import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { boundedRuns, clipSpansToHour, countryLook, inHourSpans, nextBoundaryAfter, spanStart, timelineModel, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
 import {
@@ -83,7 +83,8 @@ function selectedAt(opt: FactionsOptions, hour: number): Set<string> | null {
   }));
 }
 
-export const factionsProjection: TimelineProjection<FactionsOptions> = registerTimelineProjection<FactionsOptions>({
+export const factionsProjection: TimelineProjection<FactionsOptions> = registerFamilyProjection<TimelineProjection<FactionsOptions>>({
+  family: 'timeline',
   kind: 'factions',
 
   nextChange(readView, opt) {

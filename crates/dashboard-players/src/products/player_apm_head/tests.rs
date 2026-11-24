@@ -200,3 +200,64 @@ fn player_apm_head_carries_dated_name_long_utf8_tag_and_explicit_missing_name_re
     let amounts_late = query_head.amounts(25, 39);
     assert_eq!(amounts_late[&p1_idx].name.as_deref(), Some("LateName"));
 }
+
+#[test]
+fn player_apm_ranks_by_apm_descending_and_tiles_accept_countries_with_unrecorded_reason() {
+    let mut session = dashboard_base::test_fixtures::session(15);
+    session.qpc_frequency = 1;
+    let mk_actor = |id: u64, tag: &[u8], name: &[u8]| Actor {
+        id,
+        player: id as i32,
+        country: id as u32,
+        since_qpc: 0,
+        at_qpc: 0,
+        user: format!("p{id}").into_bytes(),
+        name: name.to_vec(),
+        tag: tag.to_vec(),
+    };
+    let spans: Vec<Span> = (0..20)
+        .map(|hour| Span { from_qpc: hour as u64 * 60, to_qpc: (hour as u64 + 1) * 60, complete: true, hour, paused: false })
+        .collect();
+    let mut events = Vec::new();
+    for seq in 0..10u64 {
+        events.push(Event { qpc: 60 + seq, hour: 1, actor: 2, player: 2, kind: 1, command_country: Some(2), origin: Origin::PlayerOrder, sequence: seq as u32 + 1, paused: false });
+    }
+    events.push(Event { qpc: 70, hour: 1, actor: 1, player: 1, kind: 1, command_country: Some(1), origin: Origin::PlayerOrder, sequence: 99, paused: false });
+    let batch = Batch {
+        kinds: vec![Kind { id: 1, token: 1, name: "synthetic order".into(), category: Category::Army }],
+        actors: vec![mk_actor(1, b"GER", b"Slow"), mk_actor(2, b"ITA", b"Fast")],
+        events,
+        spans,
+        ..Default::default()
+    };
+    let packet = ControlRecord::PlayerCommands { session: 15, packet: Packet::pack(4, 1, 2, 0, 0, 20 * 60, 0, &batch).unwrap() };
+    let index = Arc::new(commands::index(&[session], &[packet], 4).unwrap());
+    let reply = query(&index, &ApmParams {
+        branch_id: "4".into(),
+        group: ApmGroup::Player,
+        registry: false,
+        first_hour: Some(0),
+        last_hour: Some(19),
+        tags: None,
+        membership: None,
+        players: Vec::new(),
+        buckets: 1,
+    }, &AtomicBool::new(false))
+    .unwrap();
+    let ordered: Vec<&str> = reply.series.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ordered, ["user:7032", "user:7031"]);
+
+    let ask: TileAsk = dashboard_query::named::named(&serde_json::json!({ "binHours": 1, "index": 0, "countries": ["user:7032", "user:7031"] })).unwrap();
+    let family = TileFamily { group: ApmGroup::Player, tags: None, membership: None, players: Vec::new(), value: "apm".into() };
+    let (first, last) = tile::hours(ask.bin_hours, ask.index).unwrap();
+    let tile_reply = tile_from_index(&index, 4, 19, &family, &ask, first, last).unwrap();
+    assert_eq!(tile_reply.lines.len(), 2);
+    assert_eq!(tile_reply.lines[0].country.key(), "user:7032");
+    assert!(tile_reply.lines[0].missing.is_empty());
+
+    let empty = Arc::new(commands::index(&[], &[], 4).unwrap());
+    let unrecorded = tile_from_index(&empty, 4, 19, &family, &ask, first, last).unwrap();
+    assert_eq!(unrecorded.lines.len(), 2);
+    assert_eq!(unrecorded.lines[0].missing.len(), 1);
+    assert_eq!(unrecorded.lines[0].missing[0].reason, "Player orders were not recorded in this campaign.");
+}

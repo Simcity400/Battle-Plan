@@ -265,49 +265,46 @@ impl BattleIndex {
                 .filter(|&&(key, born, gone)| born <= to && gone >= from && combats.contains(&(key as u64)))
                 .map(|&(key, ..)| key)
                 .collect();
-            let (Some(&low), Some(&high)) = (held.first(), held.last()) else { continue };
-            let presences = dashboard_query::cost::presences(recording, run, TableId::NavalBattles, (low, high), from, to)?;
-            let mut asks: Vec<(i32, u128)> = Vec::new();
-            let mut spans: HashMap<(u64, i32), i32> = HashMap::new();
-            let mut needs_deletion_check = false;
-            for (key, lived) in presences.iter().filter(|(key, _)| held.contains(key)) {
-                for &(born, gone) in lived {
-                    if born > to || gone < from {
-                        continue;
-                    }
-                    let end = (gone.min(to) as i32).max(stretch.first);
-                    if gone < to {
-                        needs_deletion_check = true;
-                    }
-                    asks.push((end, *key));
-                    spans.insert((*key as u64, end), gone as i32);
-                }
-            }
-            if asks.is_empty() {
+            if held.is_empty() {
                 continue;
             }
-            let combat_statuses = if needs_deletion_check {
+            let keys: Vec<u128> = held.into_iter().collect();
+            let history = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::NavalBattles, &[0], Keys::These(&keys), stretch.first, cap))?;
+            let mut spans: Vec<(u64, i32, i32, bool)> = Vec::new();
+            for (key, steps) in &history.keys {
+                let mut open: Option<i32> = None;
+                for step in steps {
+                    let first_hour = step.cells.as_deref().map(|cells| match cells.first() {
+                        Some(Cell::Number(value)) => i32::try_from(*value).ok(),
+                        _ => None,
+                    });
+                    if open.is_some_and(|held| first_hour == Some(Some(held))) {
+                        continue;
+                    }
+                    if let Some(held) = open.take() {
+                        spans.push((*key as u64, held, step.hour - 1, first_hour.is_none()));
+                    }
+                    open = first_hour.flatten();
+                }
+                if let Some(held) = open {
+                    spans.push((*key as u64, held, cap, false));
+                }
+            }
+            let combat_statuses = if spans.iter().any(|&(.., gone)| gone) {
                 lanes::statuses(recording, run, TableId::NavalCombats, stretch.first, cap)?
             } else {
                 Vec::new()
             };
-            let mut raw_incarnations: Vec<(u64, i32, i32, Option<i32>)> = Vec::new();
-            lanes::at_each(recording, run, TableId::NavalBattles, Some(&[0]), &asks, &mut |hour, key, row| {
-                let Some((view, slot)) = row else { return Ok(()) };
-                let Some(first_hour) = view.number(0, slot).and_then(|value| i32::try_from(value).ok()) else {
-                    return Ok(());
-                };
-                if first_hour > requested_hour {
-                    return Ok(());
-                }
-                let combat = key as u64;
-                let exact_gone = spans.get(&(combat, hour)).copied().unwrap_or(hour);
-                let deletion_hour = (exact_gone < cap
-                    && exact_gone.checked_add(1).is_some_and(|next| next <= requested_hour && complete_at(&combat_statuses, exact_gone) && complete_at(&combat_statuses, next)))
-                .then_some(exact_gone + 1);
-                raw_incarnations.push((combat, first_hour, hour, deletion_hour));
-                Ok(())
-            })?;
+            let raw_incarnations: Vec<(u64, i32, i32, Option<i32>)> = spans
+                .into_iter()
+                .filter(|&(_, first_hour, ..)| first_hour <= requested_hour)
+                .map(|(combat, first_hour, last_hour, gone)| {
+                    let deletion_hour = (gone
+                        && last_hour.checked_add(1).is_some_and(|next| next <= requested_hour && complete_at(&combat_statuses, last_hour) && complete_at(&combat_statuses, next)))
+                    .then_some(last_hour + 1);
+                    (combat, first_hour, last_hour, deletion_hour)
+                })
+                .collect();
             let starts: BTreeSet<(u64, i32)> = raw_incarnations.iter().map(|&(combat, first_hour, ..)| (combat, first_hour)).collect();
             for (combat, first_hour, last_hour, deletion_hour) in raw_incarnations {
                 let deletion_hour = deletion_hour.filter(|&del| !starts.contains(&(combat, del)));
