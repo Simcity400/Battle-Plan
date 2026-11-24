@@ -12,7 +12,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'state', label: 'State', as: 'dot', offered: OFFERED.status },
 ];
 export const DEFAULT_SORT = { column: 'skill', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'operatives-roster', version: 1, title: 'Operatives roster', icon: 'shield',

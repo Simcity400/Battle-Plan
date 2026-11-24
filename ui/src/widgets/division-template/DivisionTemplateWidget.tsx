@@ -7,7 +7,8 @@ import { DetailWindowHost } from '../../families/host/DetailWindowHost';
 import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { TimeRegion, useRegion, useRegionCoverage, useRegionHour } from '../../dashboard/widgetTime.ts';
-import DeclaredTableWidget from '../../families/table/DeclaredTableWidget';
+import type { InstalledAction } from '../../families/contract.ts';
+import { FamilyWidget } from '../../families/host/registry';
 import {
   claimGameWindowSlot,
   gameWindow,
@@ -54,20 +55,21 @@ export default function DivisionTemplateWidget(props: WidgetProps) {
   useEffect(() => closeDrill(), [track?.source.id, track?.source.revision, track?.branch.id, widget.options?.country, closeDrill]);
   useEffect(() => () => releaseGameWindowSlot('divisionDesigner', slotOwnerId), [slotOwnerId]);
 
-  const handleActivate = useCallback((key: string, meta?: unknown, atHour?: number) => {
-    if (!Designer || atHour === undefined) return;
-    const info = meta as { designer?: 'ordinary' | 'headquarters' | null; tag?: string } | null | undefined;
+  const handleActivate = useCallback((action: InstalledAction) => {
+    if (!Designer) return;
+    const info = action.meta as { designer?: 'ordinary' | 'headquarters' | null; tag?: string } | null | undefined;
     if (!info?.tag || !info.designer) return;
     setInheritedPos(claimGameWindowSlot('divisionDesigner', slotOwnerId, closeForHandover));
-    setOpened({ template: key, designer: info.designer, tag: info.tag });
-    drillControl.show(key, atHour);
+    setOpened({ template: action.subject, designer: info.designer, tag: info.tag });
+    drillControl.show(action.subject, action.hour);
   }, [Designer, drillControl, slotOwnerId, closeForHandover]);
   const onPositionChange = useCallback((pos: WindowPosition) => {
     updateGameWindowSlotPosition('divisionDesigner', slotOwnerId, pos);
   }, [slotOwnerId]);
 
-  const main = <DeclaredTableWidget
+  const main = <FamilyWidget
     {...props}
+    family="table"
     declaration={divisionTemplateDeclaration}
     selectedKey={opened?.template ?? null}
     onActivate={Designer ? handleActivate : undefined}

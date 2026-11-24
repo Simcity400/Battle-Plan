@@ -8,7 +8,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'progress', label: 'Progress', as: 'meterBefore', tone: 'blue', offered: OFFERED.number },
   { key: 'state', label: 'State', as: 'dot', offered: ['dot'] },
 ];
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'progress', direction: 'descending' } };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: { column: 'progress', direction: 'descending' } };
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'goals', section: 'options', label: 'Goals', kind: 'choice', default: 'all',

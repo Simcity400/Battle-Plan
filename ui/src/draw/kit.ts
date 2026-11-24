@@ -19,13 +19,14 @@ import {
   PARTIAL_TAB_WIDTH,
 } from '../families/valueCanvas.ts';
 import {
+  formatDateOnly,
   formatDateParts,
   GAME_WINDOW_MISSING_LABEL,
   NOT_APPLICABLE_LABEL,
   notRecordedLabel,
 } from '../families/valueFormat.ts';
-import { isDark, mix, parseColor } from '../shell/appearance/color.ts';
-import { engineHour, gameDate, monthNames } from '../dashboard/calendar.ts';
+import { luminance, mix, parseColor } from '../shell/appearance/color.ts';
+import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
 import type { KitRaster, PathBuilder, PathPaint } from './path';
 
 export type Align = 'left' | 'right' | 'center';
@@ -1074,7 +1075,7 @@ export function drawDateTab(
 export function contrastInkForFill(fill: string, theme: FamilyTheme): string {
   const rgb = parseColor(fill);
   if (!rgb) return theme.text;
-  return isDark(rgb) ? '#f4f6f9' : '#0f141c';
+  return luminance(rgb) > 0.32 ? 'rgba(17, 17, 17, 0.88)' : 'rgba(255, 255, 255, 0.96)';
 }
 
 export function drawChevron(
@@ -1200,25 +1201,51 @@ export function drawTimelineBar(ctx: Canvas2D, options: TimelineBarOptions): Tim
 export interface TimeAxisTick {
   readonly hour: number;
   readonly label: string;
+  readonly major?: boolean;
 }
 
-export function computeTimeAxisTicks(startHour: number, endHour: number, plotWidth: number): TimeAxisTick[] {
+export function computeTimeAxisTicks(startHour: number, endHour: number, plotWidth: number, dayHours = 24): TimeAxisTick[] {
+  if (plotWidth <= 20 || endHour <= startHour) return [];
+  const hoursPerDay = Math.max(1, dayHours);
+  const spanHours = endHour - startHour;
   const start = gameDate(Math.floor(startHour));
   const end = gameDate(Math.floor(endHour));
-  if (!start || !end || plotWidth <= 20 || endHour <= startHour) return [];
   const ticks: TimeAxisTick[] = [];
-  if (endHour - startHour < 2 * 365 * 24) {
+  if (!start || !end || spanHours <= 62 * hoursPerDay) {
+    const spanDays = Math.max(1, (spanHours + 1) / hoursPerDay);
+    const fit = Math.max(2, Math.floor(plotWidth / 64));
+    const step = [1, 2, 3, 5, 7, 14].find(candidate => Math.ceil(spanDays / candidate) <= fit) ?? 14;
+    const firstDay = Math.floor((startHour - HOUR_EPOCH) / hoursPerDay);
+    const lastDay = Math.floor((endHour - HOUR_EPOCH) / hoursPerDay);
+    for (let day = firstDay; day <= lastDay; day++) {
+      if (((day % step) + step) % step !== 0) continue;
+      const hour = HOUR_EPOCH + day * hoursPerDay;
+      if (hour <= startHour || hour > endHour) continue;
+      const parts = formatDateParts(hour);
+      const date = gameDate(hour);
+      ticks.push({ hour, label: parts?.dayMonth ?? formatDateOnly(hour), major: date ? date.day === 1 : false });
+    }
+    return ticks;
+  }
+  if (spanHours < 2 * 365 * hoursPerDay) {
     const months = (end.year - start.year) * 12 + (end.month - start.month) + 1;
     const fit = Math.max(2, Math.floor(plotWidth / 56));
     const step = [1, 2, 3, 6, 12].find(candidate => Math.ceil(months / candidate) <= fit) ?? 12;
     let year = start.year;
-    let month = start.month + 1;
-    if (month > 12) { month = 1; year++; }
+    let month = start.month;
+    if (start.day > 15) {
+      month++;
+      if (month > 12) { month = 1; year++; }
+    }
     while (year < end.year || (year === end.year && month <= end.month)) {
       if ((month - 1) % step === 0) {
-        const hour = engineHour({ year, month, day: 1, hour: 1 });
-        if (hour !== null && hour > startHour && hour <= endHour) {
-          ticks.push({ hour, label: month === 1 ? String(year) : monthNames[month - 1]!.slice(0, 3) });
+        const rawHour = engineHour({ year, month, day: 1, hour: 1 });
+        const hour = rawHour !== null && rawHour < startHour && year === start.year && month === start.month && start.day <= 15
+          ? startHour
+          : rawHour;
+        if (hour !== null && hour >= startHour && hour <= endHour) {
+          const major = month === 1;
+          ticks.push({ hour, label: major ? String(year) : monthNames[month - 1]!.slice(0, 3), major });
         }
       }
       month++;
@@ -1229,10 +1256,13 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
   const years = end.year - start.year + 1;
   const fit = Math.max(2, Math.floor(plotWidth / 48));
   const step = [1, 2, 5, 10, 20, 50].find(candidate => Math.ceil(years / candidate) <= fit) ?? 100;
-  for (let year = start.year + 1; year <= end.year; year++) {
+  for (let year = start.year; year <= end.year; year++) {
     if (year % step !== 0) continue;
-    const hour = engineHour({ year, month: 1, day: 1, hour: 1 });
-    if (hour !== null && hour > startHour && hour <= endHour) ticks.push({ hour, label: String(year) });
+    const rawHour = engineHour({ year, month: 1, day: 1, hour: 1 });
+    const hour = rawHour !== null && rawHour < startHour && year === start.year && start.month === 1 && start.day <= 15
+      ? startHour
+      : rawHour;
+    if (hour !== null && hour >= startHour && hour <= endHour) ticks.push({ hour, label: String(year), major: true });
   }
   return ticks;
 }
@@ -1276,45 +1306,73 @@ export interface TimeAxisOptions extends TimeAxisFrame {
   readonly axisTop: number;
   readonly playhead: number | null;
   readonly playheadLabel: string;
+  readonly hover?: number | null;
+  readonly hoverLabel?: string;
+  readonly playheadLineTop?: number | null;
+  readonly hairline?: 'normal' | 'strong' | 'band' | 'none';
+  readonly tickMarks?: boolean;
+  readonly tabBounds?: { readonly left: number; readonly right: number };
+  readonly tabY?: number;
+  readonly labelY?: number;
   readonly theme: FamilyTheme;
 }
 
 export function drawTimeAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], options: TimeAxisOptions): void {
   const { plotLeft, plotRight, axisTop, theme } = options;
   const tokens = resolveKitTokens(theme);
-  drawRowHairline(ctx, plotLeft, plotRight, axisTop, theme, 'band');
+  const hairline = options.hairline ?? 'band';
+  if (hairline !== 'none') drawRowHairline(ctx, plotLeft, plotRight, axisTop, theme, hairline);
+  const tabBounds = options.tabBounds ?? { left: plotLeft, right: plotRight };
+  const tabY = options.tabY ?? axisTop + 4;
+  const labelY = options.labelY ?? axisTop + 14;
+  const showTicks = options.tickMarks !== false;
   ctx.save();
   ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
-  let tabLeft = Infinity;
-  let tabRight = -Infinity;
+  const keepOut: [number, number][] = [];
   let px: number | null = null;
   if (options.playhead !== null) {
     px = timeAxisX(options, options.playhead);
     const tabW = textWidth(ctx, options.playheadLabel) + 14;
-    const left = Math.max(plotLeft, Math.min(plotRight - tabW, Math.round(px - tabW / 2)));
-    tabLeft = left - 6;
-    tabRight = left + tabW + 6;
+    const left = Math.max(tabBounds.left, Math.min(tabBounds.right - tabW, Math.round(px - tabW / 2)));
+    keepOut.push([left - 6, left + tabW + 6]);
+  }
+  let hx: number | null = null;
+  if (options.hover != null && options.hoverLabel) {
+    hx = timeAxisX(options, options.hover);
+    const tabW = textWidth(ctx, options.hoverLabel) + 14;
+    const left = Math.max(tabBounds.left, Math.min(tabBounds.right - tabW, Math.round(hx - tabW / 2)));
+    keepOut.push([left - 6, left + tabW + 6]);
   }
   ctx.fillStyle = theme.muted;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.strokeStyle = tokens.hairlineStrong;
   ctx.lineWidth = 1;
+  let lastRight = -Infinity;
   for (const tick of ticks) {
     const x = timeAxisX(options, tick.hour);
     const half = textWidth(ctx, tick.label) / 2;
-    ctx.beginPath();
-    ctx.moveTo(Math.floor(x) + 0.5, axisTop);
-    ctx.lineTo(Math.floor(x) + 0.5, axisTop + 4);
-    ctx.stroke();
+    if (showTicks) {
+      ctx.beginPath();
+      ctx.moveTo(Math.floor(x) + 0.5, axisTop);
+      ctx.lineTo(Math.floor(x) + 0.5, axisTop + (tick.major === false ? 3 : 4));
+      ctx.stroke();
+    }
     if (x - half < plotLeft - 4 || x + half > plotRight + 4) continue;
-    if (x + half > tabLeft && x - half < tabRight) continue;
-    ctx.fillText(tick.label, x, axisTop + 14);
+    if (keepOut.some(([l, r]) => x + half > l && x - half < r)) continue;
+    if (x - half < lastRight + 8) continue;
+    ctx.fillText(tick.label, x, labelY);
+    lastRight = x + half;
   }
   ctx.restore();
   if (px !== null) {
-    drawPlayheadLine(ctx, px, 0, axisTop, theme);
-    drawDateTab(ctx, options.playheadLabel, px, axisTop + 4, theme, 'playhead', { left: plotLeft, right: plotRight });
+    if (options.playheadLineTop !== null) {
+      drawPlayheadLine(ctx, px, options.playheadLineTop ?? 0, axisTop, theme);
+    }
+    drawDateTab(ctx, options.playheadLabel, px, tabY, theme, 'playhead', tabBounds);
+  }
+  if (hx !== null && options.hoverLabel) {
+    drawDateTab(ctx, options.hoverLabel, hx, tabY, theme, 'hover', tabBounds);
   }
 }
 

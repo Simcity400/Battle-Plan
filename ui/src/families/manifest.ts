@@ -54,7 +54,7 @@ export interface FamilyManifestModule {
   readonly family: FamilyId;
   readonly laneView: (wake: (widget: number) => void) => LaneView;
   readonly views: readonly FamilyViewEntry[];
-  readonly hostAdapter?: FamilyHostAdapter<any, any, any>;
+  readonly hostAdapter?: FamilyHostAdapter<any, any, any, any>;
 }
 
 export interface LegacyWidgetEntry {

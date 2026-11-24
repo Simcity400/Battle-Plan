@@ -1,6 +1,6 @@
 import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
-import { mix, parseColor, toHex } from '../../shell/appearance/color.ts';
+import { mix, toHex } from '../../shell/appearance/color.ts';
 import type { AuditRow } from '../../draw/notifications';
 import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
@@ -99,20 +99,6 @@ export function tintColour(hex: string, amount: number): string {
 
 export function shadeColour(hex: string, amount: number): string {
   return mix(hex, '#000000', amount);
-}
-
-export function relativeLuminance(hex: string): number {
-  const rgb = parseColor(hex);
-  if (!rgb) return 0;
-  const channel = (c: number) => {
-    const v = c / 255;
-    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-  };
-  return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
-}
-
-export function inkOnColour(hex: string): string {
-  return relativeLuminance(hex) > 0.32 ? 'rgba(17, 17, 17, 0.88)' : 'rgba(255, 255, 255, 0.96)';
 }
 
 export function rgbHex(r: number, g: number, b: number): string {

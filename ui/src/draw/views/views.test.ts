@@ -93,7 +93,7 @@ test('lazy projection arriving after first next wakes the lane and reports its t
       later: run => queueMicrotask(run),
     });
 
-    const settings = tableSettingsOf(undefined, [], { density: 'normal', overflow: 'tooltip', sort: { column: '', direction: 'ascending' } });
+    const settings = tableSettingsOf(undefined, [], { density: 'normal', sort: { column: '', direction: 'ascending' } });
     const binding: FamilyTableBinding = {
       family: 'table',
       kind: 'synthetic-deferred-next',
