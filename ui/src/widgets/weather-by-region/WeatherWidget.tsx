@@ -100,7 +100,7 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics }
     : !heat || !heat.rows.length ? <WidgetState kind="empty" message="No regions match these filters." />
     : <div className="weather-chart"><HeatChart label="Weather by region" rows={heat.rows} periods={periods} labelCatalogue={regions.map(region => region.name)}
       extent={extent} playhead={widget.time.mode === 'follow' ? clockHour() : null} liveHead={liveHead} branchStart={track.branch.firstHour}
-      legend={legend} afterPlayhead={widget.time.mode !== 'follow'} look="split" active={active} revision={heat}
+      legend={legend} afterPlayhead={widget.time.mode !== 'follow'} look="split" active={active} revision={`${show}:${modifier}:${data.lastHour}`}
       hoursPerSecond={hoursPerSecond} loading={unreached} tooltip={tooltip} onContextMenu={onMenu} onSummaryView={onSummaryView}
       pickOwner={track.source.id} onPick={(row, _period, hour) => {
         const region = regions.find(item => item.id === row.id);

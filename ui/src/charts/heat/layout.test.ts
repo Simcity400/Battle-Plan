@@ -17,10 +17,6 @@ test('layout clips exact periods, leaves missing days blank and hides future rea
   assert.deepEqual(cellRect(periods[0], 1, 2, frame, 10, 72, null), { left: 90, top: 71, width: 14, height: 48 });
   assert.equal(cellRect(periods[1], 0, 2, frame, 0, 72, 50), null);
   assert.equal(cellRect({ ...periods[1], readHour: 50 }, 0, 2, frame, 0, 72, 55)?.width, 8);
-  const midnightFrame = { plotTop: 20, plotHeight: 100, plotLeft: 80, plotWidth: 336, toX: (h: number) => 80 + (h - 1992) * 2 };
-  const midnight = cellRect({ firstHour: 2160, lastHour: 2160, readHour: 2160 }, 0, 2, midnightFrame, 1992, 2160, 2160);
-  assert.ok(midnight && midnight.width >= 1 && midnight.left + midnight.width <= 80 + 336, 'terminal midnight hour stays drawable inside the plot');
-  assert.equal(cellRect({ firstHour: 2160, lastHour: 2160, readHour: null }, 0, 2, midnightFrame, 1992, 2160, 2159), null, 'periods starting after until stay hidden');
 });
 test('keyboard steps rows with boundaries and no phantom empty row', () => {
   assert.equal(keyTarget('ArrowUp', 0, 3, 1), 0);

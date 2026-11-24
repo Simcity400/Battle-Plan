@@ -80,13 +80,9 @@ export function heatNavigation(periods: readonly HeatPeriod[]) {
 
 export function cellRect(period: HeatPeriod, row: number, count: number, frame: { plotTop: number; plotHeight: number; plotLeft: number; plotWidth: number; toX: (hour: number) => number },
   from: number, to: number, until: number | null) {
-  if (period.readHour != null && period.readHour > (until ?? Infinity) || (until != null && period.firstHour > until)
-    || period.lastHour < from || period.firstHour > to || from > to || !count || frame.plotWidth <= 0) return null;
-  const plotRight = frame.plotLeft + frame.plotWidth;
-  const leftEdge = Math.max(frame.plotLeft, frame.toX(Math.max(from, period.firstHour)));
-  const rightEdge = Math.min(plotRight, frame.toX(Math.min(to + 1, period.lastHour + 1, until == null ? Infinity : until + 1)));
-  const width = Math.max(1, rightEdge - leftEdge);
-  const left = Math.min(leftEdge, Math.max(frame.plotLeft, plotRight - width));
+  if (period.readHour != null && period.readHour > (until ?? Infinity) || period.lastHour < from || period.firstHour > to || !count) return null;
+  const left = Math.max(frame.plotLeft, frame.toX(Math.max(from, period.firstHour)));
+  const right = Math.min(frame.plotLeft + frame.plotWidth, frame.toX(Math.min(to, period.lastHour + 1, until == null ? Infinity : until + 1)));
   const rowHeight = frame.plotHeight / count;
-  return { left, top: frame.plotTop + row * rowHeight + 1, width, height: Math.max(1, rowHeight - 2) };
+  return right > left ? { left, top: frame.plotTop + row * rowHeight + 1, width: right - left, height: Math.max(1, rowHeight - 2) } : null;
 }
