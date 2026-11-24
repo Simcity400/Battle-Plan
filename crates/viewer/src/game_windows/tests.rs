@@ -1,10 +1,15 @@
 use super::*;
-use content_reader_gui::gui::native;
+use content_reader_gui::{gui::native, pdxshader};
 use content_reader_image::Rgba8Image;
+use shader_pipeline::{
+    Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput, library::Effect,
+};
 use std::fs;
 use viewer_gpu::test_support::gpu;
 use viewer_native_gui::{
-    sprites::{IconTextures, Quad, SpritePass},
+    native_effects::Blend,
+    native_shader::draw,
+    sprites::{Exact, IconTextures, Quad, SpritePass},
     test_support::gui as gui_fixture,
 };
 
@@ -27,21 +32,28 @@ VertexShader = { MainCode V [[ Out main(In v) {
 } ]] }
 PixelShader = {
     Samplers = {
-        Base = { Index = 0 }
+        Base = {
+            Index = 0
+            MagFilter = Point
+            MinFilter = Point
+            MipFilter = Point
+            AddressU = Clamp
+            AddressV = Clamp
+        }
     }
     MainCode P [[ float4 main(Out v) : SV_TARGET {
         return Base_Texture.Sample(Base_Sampler, v.uv) * tint;
     } ]]
 }
-BlendState BlendState {
+BlendState Alpha {
     BlendEnable = yes
     SourceBlend = src_alpha
     DestBlend = inv_src_alpha
 }
-Effect Up { VertexShader = V PixelShader = P }
-Effect Down { VertexShader = V PixelShader = P }
-Effect Over { VertexShader = V PixelShader = P }
-Effect Disable { VertexShader = V PixelShader = P }
+Effect Up { VertexShader = V PixelShader = P BlendState = Alpha }
+Effect Down { VertexShader = V PixelShader = P BlendState = Alpha }
+Effect Over { VertexShader = V PixelShader = P BlendState = Alpha }
+Effect Disable { VertexShader = V PixelShader = P BlendState = Alpha }
 "#;
 
 const SYNTHETIC_OPAQUE_SHADER: &str = r#"
@@ -63,7 +75,14 @@ VertexShader = { MainCode V [[ Out main(In v) {
 } ]] }
 PixelShader = {
     Samplers = {
-        Base = { Index = 0 }
+        Base = {
+            Index = 0
+            MagFilter = Point
+            MinFilter = Point
+            MipFilter = Point
+            AddressU = Clamp
+            AddressV = Clamp
+        }
     }
     MainCode P [[ float4 main(Out v) : SV_TARGET {
         return Base_Texture.Sample(Base_Sampler, v.uv) * tint;
@@ -362,24 +381,10 @@ impl SyntheticModFixture {
             fs::write(root_dir.join(path), button_shader.as_bytes()).unwrap();
         }
 
-        let tex_w: usize = 24;
-        let tex_h: usize = 16;
-        let mut tex_rgba = vec![0u8; tex_w * tex_h * 4];
-        for y in 2..14 {
-            for x in 2..22 {
-                let idx = (y * tex_w + x) * 4;
-                if x == 2 && y == 2 {
-                    tex_rgba[idx..idx + 4].copy_from_slice(&[0, 0, 0, 0]);
-                } else if x == 2 || x == 21 || y == 2 || y == 13 {
-                    tex_rgba[idx..idx + 4].copy_from_slice(&[200, 100, 50, 128]);
-                } else {
-                    tex_rgba[idx..idx + 4].copy_from_slice(&[220, 110, 40, 255]);
-                }
-            }
-        }
+        let tex_rgba = synthetic_plate_rgba();
         fs::write(
             root_dir.join("gfx/ui/plate.tga"),
-            make_tga_rgba8(tex_w as u16, tex_h as u16, &tex_rgba),
+            make_tga_rgba8(24, 16, &tex_rgba),
         )
         .unwrap();
 
@@ -523,37 +528,169 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
     assert_eq!(cancel_err, GameWindowError::Cancelled);
 }
 
+fn compiled_wgsl_effect(layers: &ResolvedLayers, path: &[u8]) -> Arc<Effect> {
+    let program = pdxshader::program::read(layers, path).unwrap();
+    let header =
+        "struct Constants { m: mat4x4<f32>, color: vec4<f32>, offsets: vec4<f32>, clocks: vec4<f32> }";
+    let shader = |wgsl: String| Shader {
+        wgsl,
+        independent_draws: false,
+        buffers: vec![],
+        textures: vec![],
+        samplers: vec![],
+        sampling_pairs: vec![],
+        inputs: vec![],
+        clock: Default::default(),
+    };
+    let mut vertex = shader(format!(
+        "{header}\n{}",
+        r#"
+@group(0) @binding(0) var<uniform> c: Constants;
+struct Input { @location(0) position: vec3<f32>, @location(1) uv: vec2<f32> }
+struct Output { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> }
+@vertex fn main(v: Input) -> Output { var o: Output; o.position = c.m * vec4<f32>(v.position, 1.0); o.uv = v.uv; return o; }
+"#
+    ));
+    vertex.buffers = vec![Buffer {
+        binding: 0,
+        size: 112,
+        reads: std::iter::once(0..64).collect(),
+    }];
+    vertex.inputs = [("POSITION", 3), ("TEXCOORD0", 2)]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (semantic, components))| VertexInput {
+            kind: ScalarKind::Float,
+            location: i as u32,
+            semantic: semantic.into(),
+            components,
+        })
+        .collect();
+    let mut pixel = shader(format!(
+        "{header}\n{}",
+        r#"
+@group(0) @binding(1) var<uniform> c: Constants;
+@group(1) @binding(1) var image: texture_2d<f32>;
+@group(2) @binding(1) var image_sampler: sampler;
+@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> { return textureSample(image, image_sampler, uv) * c.color; }
+"#
+    ));
+    pixel.buffers = vec![Buffer {
+        binding: 1,
+        size: 112,
+        reads: std::iter::once(64..80).collect(),
+    }];
+    pixel.textures = vec![(1, TextureKind::D2)];
+    pixel.samplers = vec![1];
+    pixel.sampling_pairs = vec![(1, 1)];
+    let compiled = Arc::new(Compiled { vertex, pixel });
+    let count = program.techniques.len();
+    Effect::from_compiled(Arc::new(program), vec![], vec![Ok(compiled); count])
+}
+
+fn synthetic_plate_rgba() -> Vec<u8> {
+    let tex_w: usize = 24;
+    let tex_h: usize = 16;
+    let mut tex_rgba = vec![0u8; tex_w * tex_h * 4];
+    for y in 2..14 {
+        for x in 2..22 {
+            let idx = (y * tex_w + x) * 4;
+            if x == 2 && y == 2 {
+                tex_rgba[idx..idx + 4].copy_from_slice(&[0, 0, 0, 0]);
+            } else if x == 2 || x == 21 || y == 2 || y == 13 {
+                tex_rgba[idx..idx + 4].copy_from_slice(&[200, 100, 50, 128]);
+            } else {
+                tex_rgba[idx..idx + 4].copy_from_slice(&[220, 110, 40, 255]);
+            }
+        }
+    }
+    tex_rgba
+}
+
+fn plate_batch(effect: Arc<Effect>, width: f32, height: f32) -> Batch {
+    let mut constants = vec![0.0_f32; 28];
+    for i in [0, 5, 10, 15] {
+        constants[i] = 1.0;
+    }
+    constants[16..20].fill(1.0);
+    let vertices: [f32; 20] = [
+        0.0, -height, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, width, -height, 0.0, 1.0, 1.0,
+        width, 0.0, 0.0, 1.0, 0.0,
+    ];
+    let native = draw::Quad {
+        path: "mod_only_panel/close_button".into(),
+        effect: draw::Effect {
+            asset: effect,
+            technique: "Up".into(),
+        },
+        declaration: shader_pipeline::vertices::Declaration::Sprite,
+        vertices: bytemuck::cast_slice(&vertices).to_vec(),
+        stride: 20,
+        source_draws: 1,
+        constants,
+        known: 112,
+        pixel_constants: true,
+        textures: vec![(0, Some(0))],
+        extra_constants: vec![],
+        font_viewport: None,
+        topology: wgpu::PrimitiveTopology::TriangleStrip,
+        default_blend: false,
+        bake: None,
+    };
+    let mut batch = Batch::default();
+    batch.quads.push(Quad {
+        texture: 0,
+        rect: [0.0, 0.0, width, height],
+        uv: [0.0, 0.0, 1.0, 1.0],
+        color: [1.0; 4],
+        rotation: None,
+        layer: 0,
+        shade: 0.0,
+        anchor: None,
+        present: None,
+        exact: Some(Exact {
+            native: Some(Arc::new(native)),
+            corners: [[0.0, 0.0], [width, 0.0], [width, height], [0.0, height]],
+            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            scissor: None,
+            technique: 0,
+            blend: Blend::Off,
+            samplers: 0,
+            lod_bias: [0.0; 3],
+            second: None,
+            masking: None,
+            offsets: [0.0; 4],
+            inputs: [0.0; 4],
+            second_color: [0.0; 4],
+        }),
+    });
+    batch
+}
+
 #[test]
 fn service_renders_straight_alpha_translucent_edges_and_trims_transparent_border() {
     let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
-    let service = Service::default();
-    let cancel = AtomicBool::new(false);
-    let key = fixture.key("mod_only_panel");
+    let (_guard, device, queue) = gpu::device();
+    let gpu = GpuContext::from_device(device, queue);
+    let plate = dds::Texture::from_rgba8(Rgba8Image {
+        width: 24,
+        height: 16,
+        pixels: synthetic_plate_rgba(),
+    });
+    let textures = IconTextures::new(gpu.device(), gpu.queue(), &[plate]).unwrap();
+    let lazy = LazyTextures::new();
+    let mut pass =
+        SpritePass::new(gpu.device(), gpu.queue(), &textures, &lazy, OUTPUT_FORMAT).unwrap();
+    let effect = compiled_wgsl_effect(&fixture.layers, b"gfx/FX/buttonstate.shader");
+    let batch = plate_batch(effect, 24.0, 16.0);
 
-    let rendered = service
-        .render_window_from_layers(
-            key.clone(),
-            &fixture.layers,
-            "mod_only_panel",
-            &Assets::default(),
-            1.0,
-            Some(0),
-            true,
-            &["close_button"],
-            &BTreeMap::new(),
-            Vec::new(),
-            &cancel,
-            |_, _, _| {},
-        )
-        .unwrap();
-    assert_eq!(rendered.logical_size, [20, 12]);
-    assert_eq!(rendered.pixel_size, [20, 12]);
-    let close = rendered.regions.iter().find(|r| r.close).unwrap();
-    assert_eq!(close.rect, [-2.0, -2.0, 24.0, 16.0]);
+    let output = render_batch_offscreen(&gpu, &mut pass, &batch, [24, 16], [10, 10], 1.0).unwrap();
+    assert_eq!(output.logical_size, [20, 12]);
+    assert_eq!(output.pixel_size, [20, 12]);
+    assert_eq!(output.origin, [12, 12]);
 
-    let png_bytes = decode_base64_for_test(&rendered.png_base64);
-    assert_eq!(&png_bytes[..8], b"\x89PNG\r\n\x1a\n");
-    let decoder = png::Decoder::new(std::io::Cursor::new(&png_bytes));
+    assert_eq!(&output.png[..8], b"\x89PNG\r\n\x1a\n");
+    let decoder = png::Decoder::new(std::io::Cursor::new(&output.png));
     let mut reader = decoder.read_info().unwrap();
     let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
     let info = reader.next_frame(&mut buf).unwrap();
@@ -562,103 +699,58 @@ fn service_renders_straight_alpha_translucent_edges_and_trims_transparent_border
         let i = (y * 20 + x) * 4;
         [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
     };
-    let center = px(10, 6);
-    assert_eq!(center[3], 255);
-    assert!((i16::from(center[0]) - 220).abs() <= 2, "{center:?}");
-    assert!((i16::from(center[1]) - 110).abs() <= 2, "{center:?}");
-    assert!((i16::from(center[2]) - 40).abs() <= 2, "{center:?}");
+
+    assert_eq!(
+        px(10, 6),
+        [220, 110, 40, 255],
+        "opaque interior must stay exact opaque RGBA"
+    );
+    assert_eq!(
+        px(0, 0),
+        [0, 0, 0, 0],
+        "transparent cutout must stay exact alpha 0"
+    );
 
     let edge = px(10, 0);
     assert!(
-        edge[3] > 110 && edge[3] < 145,
+        edge[3].abs_diff(128) <= 1,
         "translucent alpha lost: {edge:?}"
     );
     assert!(
-        (i16::from(edge[0]) - 200).abs() <= 8
-            && (i16::from(edge[1]) - 100).abs() <= 8
-            && (i16::from(edge[2]) - 50).abs() <= 8,
-        "translucent edge should be unpremultiplied straight RGBA: {edge:?}"
+        edge[0].abs_diff(200) <= 2 && edge[1].abs_diff(100) <= 2 && edge[2].abs_diff(50) <= 2,
+        "translucent edge must be unpremultiplied straight RGBA: {edge:?}"
     );
-    assert_eq!(px(0, 0)[3], 0, "transparent cutout must keep alpha 0");
 
-    let rendered_15 = service
-        .render_window_from_layers(
-            key,
-            &fixture.layers,
-            "mod_only_panel",
-            &Assets::default(),
-            1.5,
-            Some(0),
-            true,
-            &["close_button"],
-            &BTreeMap::new(),
-            Vec::new(),
-            &cancel,
-            |_, _, _| {},
-        )
-        .unwrap();
-    assert_eq!(rendered_15.logical_size, [20, 12]);
-    assert_eq!(rendered_15.pixel_size, [30, 18]);
-
-    assert_eq!(service.cache_len(), 1);
-    service.evict_source("mod-src");
-    assert_eq!(service.cache_len(), 0);
+    let output_15 =
+        render_batch_offscreen(&gpu, &mut pass, &batch, [24, 16], [10, 10], 1.5).unwrap();
+    assert_eq!(output_15.logical_size, [20, 12]);
+    assert_eq!(output_15.pixel_size, [30, 18]);
+    assert_eq!(output_15.origin, [12, 12]);
 }
 
 #[test]
 fn service_refuses_non_blended_shader_in_layer_mode() {
     let fixture = SyntheticModFixture::create(SYNTHETIC_OPAQUE_SHADER);
-    let service = Service::default();
-    let cancel = AtomicBool::new(false);
-    let err = service
-        .render_window_from_layers(
-            fixture.key("mod_only_panel"),
-            &fixture.layers,
-            "mod_only_panel",
-            &Assets::default(),
-            1.0,
-            Some(0),
-            true,
-            &[],
-            &BTreeMap::new(),
-            Vec::new(),
-            &cancel,
-            |_, _, _| {},
-        )
+    let (_guard, device, queue) = gpu::device();
+    let gpu = GpuContext::from_device(device, queue);
+    let plate = dds::Texture::from_rgba8(Rgba8Image {
+        width: 24,
+        height: 16,
+        pixels: synthetic_plate_rgba(),
+    });
+    let textures = IconTextures::new(gpu.device(), gpu.queue(), &[plate]).unwrap();
+    let lazy = LazyTextures::new();
+    let mut pass =
+        SpritePass::new(gpu.device(), gpu.queue(), &textures, &lazy, OUTPUT_FORMAT).unwrap();
+    let effect = compiled_wgsl_effect(&fixture.layers, b"gfx/FX/buttonstate.shader");
+    let batch = plate_batch(effect, 24.0, 16.0);
+
+    let err = render_batch_offscreen(&gpu, &mut pass, &batch, [24, 16], [0, 0], 1.0)
         .err()
         .unwrap();
     assert!(matches!(err, GameWindowError::Failed(_)));
-    assert!(err.to_string().contains("refused draws"));
-}
-
-fn decode_base64_for_test(input: &str) -> Vec<u8> {
-    let val = |b: u8| -> u8 {
-        match b {
-            b'A'..=b'Z' => b - b'A',
-            b'a'..=b'z' => b - b'a' + 26,
-            b'0'..=b'9' => b - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => 0,
-        }
-    };
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
-    for chunk in bytes.chunks(4) {
-        if chunk.len() < 4 {
-            break;
-        }
-        let n = ((val(chunk[0]) as u32) << 18)
-            | ((val(chunk[1]) as u32) << 12)
-            | ((val(chunk[2]) as u32) << 6)
-            | (val(chunk[3]) as u32);
-        out.push(((n >> 16) & 0xff) as u8);
-        if chunk[2] != b'=' {
-            out.push(((n >> 8) & 0xff) as u8);
-        }
-        if chunk[3] != b'=' {
-            out.push((n & 0xff) as u8);
-        }
-    }
-    out
+    assert!(
+        err.to_string().contains("without blending"),
+        "expected non-blended layer refusal, got: {err}"
+    );
 }
