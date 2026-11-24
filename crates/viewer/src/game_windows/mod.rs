@@ -41,6 +41,7 @@ mod tests;
 mod compose;
 pub mod equipment_designer;
 pub mod industrial_organisation;
+pub mod intelligence_agency;
 
 pub const SETTLE_TICK: Tick = Tick {
     time: 10.0,
@@ -176,6 +177,14 @@ pub struct GameWindowRegion {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GameWindowPlaceholder {
+    pub path: String,
+    pub rect: [f32; 4],
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameWindowRender {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -189,6 +198,8 @@ pub struct GameWindowRender {
     pub regions: Vec<GameWindowRegion>,
     pub warnings: Vec<String>,
     pub text: Vec<GameWindowText>,
+    #[serde(default)]
+    pub placeholders: Vec<GameWindowPlaceholder>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -928,6 +939,7 @@ pub struct ComposedPlan {
     scroll: BTreeMap<String, f32>,
     scrollbars: Vec<ComposedSubWindow>,
     text: Vec<GameWindowText>,
+    placeholders: Vec<(String, Option<[f32; 4]>, GameWindowTooltip)>,
 }
 
 impl ComposedPlan {
@@ -949,6 +961,53 @@ impl ComposedPlan {
             value,
             missing,
         });
+    }
+
+    pub fn placeholder(&mut self, path: &str, rect: Option<[f32; 4]>, item: &str, asset: &str, reason: &str) {
+        let missing = format!("{asset}: {reason}");
+        self.text(path, item, Err(missing.clone()));
+        self.placeholders.push((
+            path.to_owned(),
+            rect,
+            GameWindowTooltip {
+                title: item.to_owned(),
+                body: Some(missing),
+                detail: None,
+            },
+        ));
+    }
+
+    fn place_placeholders(&mut self, layout: &mut Layout) -> Vec<GameWindowPlaceholder> {
+        let mut placed = Vec::with_capacity(self.placeholders.len());
+        for (path, rect, tooltip) in std::mem::take(&mut self.placeholders) {
+            let rect = rect.or_else(|| blank(layout, &path).map(|region| region.rect));
+            let Some(rect) = rect else {
+                self.warnings.push(format!(
+                    "{}: {} is not drawn at {path}, so its placeholder is given in the text only.",
+                    tooltip.title,
+                    tooltip.body.as_deref().unwrap_or_default()
+                ));
+                continue;
+            };
+            placed.push(GameWindowPlaceholder {
+                path: path.clone(),
+                rect,
+                label: tooltip.title.clone(),
+            });
+            self.extra_regions.push(GameWindowRegion {
+                path,
+                rect,
+                clip: None,
+                disabled: true,
+                close: false,
+                passthrough: false,
+                view: None,
+                tooltip: Some(tooltip),
+                alpha_mask: None,
+                scroll: None,
+            });
+        }
+        placed
     }
 
     pub fn list_rows(
@@ -1083,6 +1142,13 @@ impl ComposedPlan {
             })
             .collect())
     }
+}
+
+pub fn blank(layout: &mut Layout, path: &str) -> Option<Region> {
+    let region = layout.regions.iter().find(|region| region.path == path)?.clone();
+    layout.parts.retain(|part| part.path != path);
+    layout.regions.retain(|region| region.path != path);
+    Some(region)
 }
 
 fn list_overflow(smooth: bool, vertical: bool, fields: &native::ListBox, sizes: &[[i32; 2]]) -> i32 {
@@ -2255,7 +2321,7 @@ impl Service {
             (DEFAULT_VIEWPORT[1] as f32 * scale).round() as i32,
         ];
 
-        let (output, regions, warnings, title, effective_read_hour, effective_art_label, text) = {
+        let (output, regions, warnings, title, effective_read_hour, effective_art_label, text, placeholders) = {
             let reloaded_entry: Option<Arc<Mutex<CachedWindow>>>;
             let mut cached = match window_entry.lock() {
                 Ok(guard) => guard,
@@ -2319,7 +2385,7 @@ impl Service {
             instance
                 .tick(root, &assets, STEADY_TICK)
                 .map_err(GameWindowError::failed)?;
-            let layout = instance
+            let mut layout = instance
                 .layout_with_regions(root, &assets, None, true)
                 .map_err(|refusals| GameWindowError::failed(format_refusals(&refusals)))?
                 .ok_or_else(|| {
@@ -2339,6 +2405,7 @@ impl Service {
             )?;
             let mut scrollbars = std::mem::take(&mut plan.scrollbars);
             plan.sub_windows.append(&mut scrollbars);
+            let mut placeholders = plan.place_placeholders(&mut layout);
             if cancel.load(Ordering::SeqCst) {
                 return Err(GameWindowError::Cancelled);
             }
@@ -2421,6 +2488,10 @@ impl Service {
                 }
                 regions.push(region);
             }
+            for placeholder in &mut placeholders {
+                placeholder.rect[0] -= output.origin[0];
+                placeholder.rect[1] -= output.origin[1];
+            }
             let mut warnings = extra_warnings;
             warnings.extend(cached.warnings.iter().cloned());
             warnings.extend(plan.warnings);
@@ -2446,6 +2517,7 @@ impl Service {
                 plan.read_hour.or(read_hour),
                 plan.art_label,
                 plan.text,
+                placeholders,
             )
         };
 
@@ -2470,6 +2542,7 @@ impl Service {
             regions,
             warnings,
             text,
+            placeholders,
         };
         if let Some(frame_key) = frame_key {
             self.store_render(frame_key, expected_gen, &render);
@@ -2562,6 +2635,22 @@ impl Service {
                 cancel,
             ),
             "industrialOrganisation" => industrial_organisation::render(
+                self,
+                equipment_designer::RenderContext {
+                    source,
+                    content: &content,
+                    layers: &layers,
+                    resolve: &resolve,
+                    visual_revision: &visual_revision,
+                    language: &language,
+                    decode,
+                    admitted_gen,
+                    extra_warnings: visual_warnings,
+                },
+                request,
+                cancel,
+            ),
+            "intelligenceAgency" => intelligence_agency::render(
                 self,
                 equipment_designer::RenderContext {
                     source,

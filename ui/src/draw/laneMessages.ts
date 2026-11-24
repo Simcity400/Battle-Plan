@@ -11,7 +11,7 @@ export type ToLane =
   | { type: 'unfollow'; sub: number }
   | { type: 'mount'; widget: number; subs: number[]; view: string; model?: unknown }
   | { type: 'unmount'; widget: number }
-  | { type: 'bind'; widget: number; binding: Binding; model?: unknown; retry?: boolean }
+  | { type: 'bind'; widget: number; binding: Binding; model?: unknown; retry?: boolean; remounted?: boolean }
   | ({ type: 'supply'; widget: number } & Supply)
   | PayloadsMessage
   | { type: 'exact'; sub: number; hour: number; data: unknown; refused: string | null }

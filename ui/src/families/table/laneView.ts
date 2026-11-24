@@ -22,7 +22,7 @@ import {
   type TableModel,
   type TableRow,
 } from './model.ts';
-import { createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hitFamilyTable, hitPanes, rankHoldForSpeed, type FamilyTablePicture } from './painter.ts';
+import { createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
 import { combinedPaneGeometry, combinedPaneRows, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, showsIcon, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
@@ -76,7 +76,9 @@ interface TableShape {
 
 interface TableMotion {
   readonly markers: ReadonlyMap<string, RankMarker>;
-  readonly glide: ReadonlyMap<string, GlideOffset>;
+  readonly expiries: readonly number[];
+  readonly glide: TableGlide;
+  readonly started: number;
 }
 
 interface TableLayout {
@@ -236,7 +238,7 @@ function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Su
   return { shape, localScrollTop, rowWindow, tops, heights, focusedIndex, height: surface.height };
 }
 
-const NO_MOTION: TableMotion = { markers: new Map(), glide: new Map() };
+const NO_MOTION: TableMotion = { markers: new Map(), expiries: [], glide: NO_GLIDE, started: -Infinity };
 const motions = new WeakMap<TableShape, { readonly continuity: number; readonly motion: TableMotion }>();
 
 function motionOf(frame: TableFrame): TableMotion {
@@ -266,27 +268,26 @@ function transition(shape: TableShape, frame: TableFrame): TableMotion {
       const before = oldIndex.get(item.key);
       if (before !== undefined && before !== index) glide.set(item.key, { from: (before - index) * shape.rowHeight, to: 0, started });
       else {
-        const existing = prior.glide.get(item.key);
+        const existing = prior.glide.offsets.get(item.key);
         if (existing && started - existing.started < glideMs) glide.set(item.key, existing);
       }
     });
   }
-  return { markers, glide };
+  const expiries = [...new Set([...markers.values()].map(marker => marker.until))].sort((a, b) => a - b);
+  let latest = -Infinity;
+  for (const offset of glide.values()) if (offset.started > latest) latest = offset.started;
+  return { markers, expiries, glide: tableGlide(glide, shape.flatRows, shape.rowIndex, shape.rowGeom, shape.rowHeight), started: latest };
 }
 
-function liveGlide(frame: TableFrame): { readonly duration: number; readonly glide: ReadonlyMap<string, GlideOffset> } {
+function liveGlide(frame: TableFrame): { readonly duration: number; readonly glide: TableGlide } {
   const duration = glideDurationForSpeed(frame.speed, frame.binding.reducedMotion === true);
-  const all = motionOf(frame).glide;
-  if (duration === 0 || all.size === 0) return { duration, glide: new Map() };
-  const live = new Map<string, GlideOffset>();
-  for (const [key, g] of all) if (frame.now - g.started < duration) live.set(key, g);
-  return { duration, glide: live };
+  const motion = motionOf(frame);
+  return { duration, glide: duration > 0 && frame.now - motion.started < duration ? motion.glide : NO_GLIDE };
 }
 
-function liveMarkers(frame: TableFrame): Map<string, RankMarker> {
-  const live = new Map<string, RankMarker>();
-  for (const [key, m] of motionOf(frame).markers) if (m.until > frame.now) live.set(key, m);
-  return live;
+function nextExpiry(motion: TableMotion, now: number): number {
+  for (const until of motion.expiries) if (until > now) return until;
+  return Infinity;
 }
 
 function visibleRange(layout: TableLayout, gliding: boolean): readonly [number, number] {
@@ -308,10 +309,58 @@ function visibleRange(layout: TableLayout, gliding: boolean): readonly [number, 
   return [Math.max(0, Math.floor(localScrollTop / rowHeight)), Math.min(flatRows.length, Math.ceil((localScrollTop + height) / rowHeight) + extra)];
 }
 
+const shapeFieldCache = new WeakMap<TableShape, { readonly width: number; readonly fields: Readonly<Record<string, unknown>> }>();
+
+function shapeFields(shape: TableShape, layout: TableLayout, width: number): Readonly<Record<string, unknown>> {
+  const held = shapeFieldCache.get(shape);
+  if (held && held.width === width) return held.fields;
+  const { model, columns, allLayouts, paneGeom, panes, flatRows } = shape;
+  const fields: Record<string, unknown> = {
+    widths: {
+      widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...columns.columns].map(col => [col.key, col.width])),
+      visible: columns.columns.map(col => col.key),
+      totalWidth: paneGeom ? width + Math.max(0, columns.totalWidth - paneGeom.width) : columns.totalWidth,
+      scrollable: columns.scrollable,
+      pinnedCount: columns.pinnedCount,
+    },
+    meta: {
+      empty: model.empty ?? null,
+      emptyDetail: model.emptyDetail ?? null,
+      emptyKind: model.emptyKind ?? 'empty',
+      summaryText: model.titleSummary ?? null,
+      summaryPartial: model.titleSummaryPartial ?? null,
+      hideHeader: model.hideHeader === true,
+      rowHeightMode: shape.rowHeightMode,
+      notes: model.notes ?? [],
+      warnings: model.warnings ?? [],
+      hasTree: shape.hasTree,
+      unsorted: keepsProductOrder(model),
+      rankShown: shape.rankShown,
+      rankWidth: shape.rankWidth,
+      columns: model.columns,
+    },
+    nav: flatRows.flatMap((item, i) => (item.kind === 'data'
+      ? [[item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null, layout.tops(i), layout.heights(i)] as const]
+      : [])),
+  };
+  if (panes && paneGeom) {
+    fields.panes = {
+      width: paneGeom.width,
+      gutter: paneGeom.gutter,
+      xs: paneGeom.xs,
+      tableWidth: columns.totalWidth,
+      titles: panes.map(pane => ({ key: pane.key, name: paneTitleText(pane.title), missing: pane.title.name.kind === 'notRecorded', flag: pane.title.flag ?? null, flagPending: pane.title.flagPending === true, country: pane.title.country ?? null })),
+    };
+  }
+  shapeFieldCache.set(shape, { width, fields });
+  return fields;
+}
+
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
 export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
   family: 'table',
+  incremental: true,
   boundary: nextTableChange,
   redraw: () => Infinity,
   status(model) {
@@ -325,7 +374,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     const { layout, binding, model, theme } = frame;
     const shape = layout.shape;
     const { duration, glide } = liveGlide(frame);
-    const markers = liveMarkers(frame);
+    const motion = motionOf(frame);
     const list = picturesFor(ctx, frame.surface, frame.art.version);
     const common = {
       layout: shape.columns,
@@ -365,9 +414,8 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
           rankShown: false,
           rankWidth: 0,
           glideDuration: 0,
-          glide,
+          glide: NO_GLIDE,
           hasGroupHeaders: true,
-          rowIndex: pane.rowIndex,
           rowGeom: pane.geom,
         }, picture);
         ctx.restore();
@@ -386,18 +434,16 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         rankWidth: shape.rankWidth,
         glideDuration: duration,
         glide,
-        markers,
+        markers: motion.markers,
         empty: model.empty,
         hasGroupHeaders: shape.hasGroups,
         dateGrouped: model.dateGrouped === true,
-        rowIndex: shape.rowIndex,
         rowGeom: shape.rowGeom,
         clockSummary: model.clockSummary,
       }, picture);
     }
-    if (duration > 0 && glide.size > 0) return true;
-    let until = Infinity;
-    for (const m of markers.values()) if (m.until < until) until = m.until;
+    if (glide.offsets.size > 0) return true;
+    const until = nextExpiry(motion, frame.now);
     return Number.isFinite(until) ? until : false;
   },
   hit(frame, point) {
@@ -408,7 +454,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       return hitPanes(shape.columns, shape.panes, shape.paneGeom, { x: point[0], y: point[1] }, shape.rowHeight, paneScroll(shape.columns, shape.paneGeom, binding.scrollLeft), binding.scrollTop);
     }
     const { duration, glide } = liveGlide(frame);
-    const at = hitFamilyTable(shape.columns, shape.flatRows, { x: point[0], y: point[1] }, shape.rowHeight, binding.scrollLeft, layout.localScrollTop, shape.rankShown, shape.rankWidth, glide.size ? glide : undefined, frame.now, duration, shape.rowGeom, shape.rowIndex, layout.height);
+    const at = hitFamilyTable(shape.columns, shape.flatRows, { x: point[0], y: point[1] }, shape.rowHeight, binding.scrollLeft, layout.localScrollTop, shape.rankShown, shape.rankWidth, glide, frame.now, duration, shape.rowGeom);
     if (at.kind !== 'row' || !at.rowKey) return null;
     return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
   },
@@ -416,50 +462,11 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     const rowKey = focus ? key : inspectedRow(key);
     if (!rowKey) return null;
     const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns, frame.model.hour);
-    return content ? { hour: frame.model.hour, rowKey, content } : null;
+    return content ? { rowKey, content } : null;
   },
-  structure({ model, layout, binding }) {
+  structure({ layout, binding }) {
     const shape = layout.shape;
-    const { columns, allLayouts, paneGeom, panes, flatRows } = shape;
-    const fields: Record<string, unknown> = {
-      widths: {
-        widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...columns.columns].map(col => [col.key, col.width])),
-        visible: columns.columns.map(col => col.key),
-        totalWidth: paneGeom ? binding.width + Math.max(0, columns.totalWidth - paneGeom.width) : columns.totalWidth,
-        scrollable: columns.scrollable,
-        pinnedCount: columns.pinnedCount,
-      },
-      meta: {
-        empty: model.empty ?? null,
-        emptyDetail: model.emptyDetail ?? null,
-        emptyKind: model.emptyKind ?? 'empty',
-        summaryText: model.titleSummary ?? null,
-        summaryPartial: model.titleSummaryPartial ?? null,
-        hideHeader: model.hideHeader === true,
-        rowHeightMode: shape.rowHeightMode,
-        notes: model.notes ?? [],
-        warnings: model.warnings ?? [],
-        hasTree: shape.hasTree,
-        unsorted: keepsProductOrder(model),
-        rankShown: shape.rankShown,
-        rankWidth: shape.rankWidth,
-        columns: model.columns,
-      },
-      nav: flatRows.flatMap((item, i) => (item.kind === 'data'
-        ? [[item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null, layout.tops(i), layout.heights(i)] as const]
-        : [])),
-      table: { count: shape.totalCount, totalHeight: shape.totalHeight, focusedIndex: layout.focusedIndex },
-      range: layout.rowWindow,
-    };
-    if (panes && paneGeom) {
-      fields.panes = {
-        width: paneGeom.width,
-        gutter: paneGeom.gutter,
-        xs: paneGeom.xs,
-        tableWidth: columns.totalWidth,
-        titles: panes.map(pane => ({ key: pane.key, name: paneTitleText(pane.title), missing: pane.title.name.kind === 'notRecorded', flag: pane.title.flag ?? null, flagPending: pane.title.flagPending === true, country: pane.title.country ?? null })),
-      };
-    }
+    const fields: Record<string, unknown> = { ...shapeFields(shape, layout, binding.width), table: { count: shape.totalCount, totalHeight: shape.totalHeight, focusedIndex: layout.focusedIndex }, range: layout.rowWindow };
     return fields;
   },
   mirror({ model, layout, binding }) {
@@ -489,7 +496,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         return visibleCellArtItems(pane.rows, shape.columns.columns, model.hour, first, last);
       }));
     }
-    const [first, last] = visibleRange(layout, liveGlide(frame).glide.size > 0);
+    const [first, last] = visibleRange(layout, liveGlide(frame).glide.offsets.size > 0);
     return collectArtUrls(visibleCellArtItems(shape.flatRows, shape.columns.columns, model.hour, first, last));
   },
 };

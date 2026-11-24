@@ -1,6 +1,7 @@
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import { sameRevision, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { LaneView, Painted, PaintInput, Scene, Surface } from '../draw/lane.ts';
+import { markCanvasPainted } from '../draw/laneDispatch.ts';
 import { LaneArtCache, type LaneArtFetcher } from './art/laneCache.ts';
 import { createLaneArtProvider, type ArtResolutions } from './art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from './cadence.ts';
@@ -81,8 +82,13 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
 
 export type LaneStatus = 'picture' | 'scene' | { readonly refused: string };
 
+type Undated<T> = T extends unknown ? Omit<T, 'hour'> & { readonly hour?: number } : never;
+
+export type LaneTooltip = Undated<FamilyTooltipEntry>;
+
 export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly family: FamilyId;
+  readonly incremental?: boolean;
   boundary(model: TModel, hour: number): number;
   redraw(model: TModel, hour: number): number;
   status(model: TModel): LaneStatus;
@@ -90,7 +96,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
   paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number;
   hit(frame: LaneFrame<TBinding, TModel, TLayout>, point: readonly [number, number]): string | null;
-  tooltip(frame: LaneFrame<TBinding, TModel, TLayout>, key: string, focus: boolean): FamilyTooltipEntry | null;
+  tooltip(frame: LaneFrame<TBinding, TModel, TLayout>, key: string, focus: boolean): LaneTooltip | null;
   structure(frame: LaneFrame<TBinding, TModel, TLayout>): Readonly<Record<string, unknown>>;
   readonly mirror: ((frame: LaneFrame<TBinding, TModel, TLayout>) => unknown) | null;
   audit(frame: LaneFrame<TBinding, TModel, TLayout>): readonly unknown[];
@@ -104,6 +110,16 @@ export interface LaneRuntimeOptions {
 }
 
 type Field = { readonly value: unknown; readonly content: string };
+
+interface Tip {
+  field: Field | null;
+  frame: number;
+  key: string;
+  entry: LaneTooltip | null;
+  hour: number;
+}
+
+const noTip = (): Tip => ({ field: null, frame: -1, key: '', entry: null, hour: -Infinity });
 
 interface Painting {
   readonly seek: number;
@@ -158,19 +174,15 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   artKey: string;
   structureKey: readonly unknown[];
   structureFields: Record<string, Field>;
-  kept: Map<string, { readonly text: string; readonly content: string }>;
+  kept: Map<string, { readonly text: string; readonly field: Field }>;
   frameKey: readonly unknown[];
   frameRevision: number;
   mirrorGate: CadenceGate;
   mirrorField: Field | null;
   mirrorFrame: number;
   mirrorView: string;
-  tipField: Field | null;
-  tipFrame: number;
-  tipKey: string;
-  focusField: Field | null;
-  focusFrame: number;
-  focusKey: string;
+  tip: Tip;
+  focusTip: Tip;
   flusher: TrailingFlushScheduler;
   auditKey: readonly unknown[];
   auditField: Field | null;
@@ -223,12 +235,12 @@ function sameKey(a: readonly unknown[], b: readonly unknown[]): boolean {
 }
 
 function field(held: Held<LaneBinding, unknown, unknown>, slot: string, value: unknown, content: () => string): Field {
-  const text = stringifyTooltipPayload(value);
   const prev = held.kept.get(slot);
-  if (prev && prev.text === text) return { value, content: prev.content };
-  const tag = content();
-  held.kept.set(slot, { text, content: tag });
-  return { value, content: tag };
+  if (prev && prev.field.value === value) return prev.field;
+  const text = stringifyTooltipPayload(value);
+  const made = { value, content: prev && prev.text === text ? prev.field.content : content() };
+  held.kept.set(slot, { text, field: made });
+  return made;
 }
 
 function windowKeyOf(binding: LaneBinding): string {
@@ -390,7 +402,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       kept: new Map(),
       frameKey: [], frameRevision: 0,
       mirrorGate, mirrorField: null, mirrorFrame: -1, mirrorView: '',
-      tipField: null, tipFrame: -1, tipKey: '', focusField: null, focusFrame: -1, focusKey: '',
+      tip: noTip(), focusTip: noTip(),
       flusher: new TrailingFlushScheduler(family.mirror ? [mirrorGate] : [], options?.timers),
       auditKey: [], auditField: null,
       tiles: new SceneTiles(),
@@ -428,8 +440,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
       const binding = input.model;
       const surface = input.binding.surfaces[0];
+      if (!surface || surface.width <= 0 || surface.height <= 0) return WAITING;
       const waiting: Painted = { ...EMPTY, nextChangeAt: input.hour + 1 };
-      if (!isBinding(binding) || !surface || !binding.theme) return waiting;
+      if (!isBinding(binding) || !binding.theme) return waiting;
       const theme = binding.theme;
       const projection = projectionOf(binding, input.widget);
       if (projection === 'loading') return WAITING;
@@ -581,10 +594,15 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.artKey = artKey;
           keep.art.requestVisible(shown, projected.artUrls);
         }
-        keep.ctx.save();
-        keep.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const painted = family.paint(keep.ctx, frame);
-        keep.ctx.restore();
+        const drawCanvas = () => {
+          keep.ctx.save();
+          keep.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          const result = family.paint(keep.ctx, frame);
+          keep.ctx.restore();
+          return result;
+        };
+        const painted = drawCanvas();
+        if (!family.incremental) markCanvasPainted(keep.canvas, drawCanvas);
         keep.motion = painted === true;
         keep.expiry = typeof painted === 'number' ? painted : Infinity;
         keep.drawn = { binding, model, layout, hour: drawn };
@@ -625,29 +643,27 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         if (keep.mirrorField && keep.mirrorFrame === frameRevision && keep.mirrorView === mirrorView && keep.mirrorField.value !== null) fields.mirror = keep.mirrorField;
       }
 
-      if (input.inspect) {
-        if (!keep.tipField || keep.tipFrame !== frameRevision || keep.tipKey !== input.inspect) {
-          const tip: FamilyTooltipField = { key: input.inspect, text: family.tooltip(frame, input.inspect, false) };
-          keep.tipField = field(keep, 'tooltip', tip, content);
-          keep.tipFrame = frameRevision;
-          keep.tipKey = input.inspect;
+      const tipOf = (tip: Tip, slot: string, key: string, wire: string, focus: boolean): Field => {
+        if (!tip.field || tip.frame !== frameRevision || tip.key !== key) {
+          tip.entry = family.tooltip(frame, key, focus);
+          tip.frame = frameRevision;
+          tip.key = key;
+          tip.field = null;
         }
-        fields.tooltip = keep.tipField;
-      } else {
-        keep.tipField = null;
-      }
+        const undated = tip.entry !== null && tip.entry.hour === undefined;
+        if (!tip.field || (undated && tip.hour !== hour)) {
+          const entry = tip.entry;
+          const text = (undated && entry ? { ...entry, hour, ...(entry.payload?.hour !== undefined ? { payload: { ...entry.payload, hour } } : {}) } : entry) as FamilyTooltipEntry | null;
+          tip.field = field(keep, slot, { key: wire, text } satisfies FamilyTooltipField, content);
+          tip.hour = hour;
+        }
+        return tip.field;
+      };
+      if (input.inspect) fields.tooltip = tipOf(keep.tip, 'tooltip', input.inspect, input.inspect, false);
+      else keep.tip.field = null;
       const focused = binding.focusedKey;
-      if (focused) {
-        if (!keep.focusField || keep.focusFrame !== frameRevision || keep.focusKey !== focused) {
-          const tip: FamilyTooltipField = { key: `focus:${focused}`, text: family.tooltip(frame, focused, true) };
-          keep.focusField = field(keep, 'focusTooltip', tip, content);
-          keep.focusFrame = frameRevision;
-          keep.focusKey = focused;
-        }
-        fields.focusTooltip = keep.focusField;
-      } else {
-        keep.focusField = null;
-      }
+      if (focused) fields.focusTooltip = tipOf(keep.focusTip, 'focusTooltip', focused, `focus:${focused}`, true);
+      else keep.focusTip.field = null;
       keep.flusher.sync(now, input.speed, () => keep.wake(), keep.expiry);
       const tFields = timed ? performance.now() : 0;
 

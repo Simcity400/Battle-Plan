@@ -24,14 +24,14 @@ export interface EquipmentDesignerSelection extends RowSource {
   variant: string;
 }
 
-export interface AgencyUpgradesSelection extends RowSource {
-  kind: 'agencyUpgrades';
-  tag: string;
+export interface IntelligenceAgencySelection extends RowSource {
+  kind: 'intelligenceAgency';
+  country: number;
 }
 
 export type GameWindowSelection =
   | IndustrialOrganisationSelection
-  | AgencyUpgradesSelection
+  | IntelligenceAgencySelection
   | DivisionDesignerSelection
   | EquipmentDesignerSelection;
 
@@ -122,11 +122,6 @@ export function registerGameWindow<S extends GameWindowSelection>(kind: S['kind'
   for (const listener of listeners) listener();
 }
 
-export function unregisterGameWindow(kind: GameWindowSelection['kind']) {
-  if (!windows.delete(kind)) return;
-  for (const listener of listeners) listener();
-}
-
 export const gameWindow = <K extends GameWindowSelection['kind']>(
   kind: K,
 ): ComponentType<GameWindowProps<Extract<GameWindowSelection, { kind: K }>>> | null =>
@@ -137,10 +132,3 @@ export function subscribeGameWindows(listener: () => void): () => void {
   return () => { listeners.delete(listener); };
 }
 
-export function withWindowDiagnostics(own: readonly string[], window: readonly string[]): readonly string[] {
-  if (!window.length) return own;
-  const seen = new Set(own);
-  const lines = [...own];
-  for (const line of window) if (!seen.has(line)) { seen.add(line); lines.push(line); }
-  return lines;
-}

@@ -3,18 +3,7 @@ import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { ArtResult } from '../../families/contract.ts';
 import type { BalanceHistory, BalanceRecord, PoliticsHistoryReply, PoliticsStateReply } from '../../generated/dashboard';
-import {
-  SIDE_UNAVAILABLE,
-  balanceAbsence,
-  balanceAxis,
-  chooseBalance,
-  countryHolder,
-  holderRecord,
-  recordFor,
-  sumWeeklyDrift,
-  validateBalanceList,
-  validateCountryBalances,
-} from './balanceOfPowerData.ts';
+import { balanceAxis, balanceHistoryProof, recordAt, selectedBalance, validateBalanceList, validateCountryBalances } from './balanceOfPowerData.ts';
 import { balanceOfPowerProjection } from './balanceOfPowerProjection.ts';
 
 const run = (firstHour: number, lastHour: number, value: string) => ({ firstHour, lastHour, value });
@@ -29,177 +18,104 @@ const balance = (token: string, values: ReturnType<typeof run>[], extra: Partial
   ],
   values,
   record: values.map(item => run(item.firstHour, item.lastHour, '0')),
-  range: values.map(item => run(item.firstHour, item.lastHour, BigInt(item.value) > 25000n ? `${token}_high` : BigInt(item.value) < -25000n ? `${token}_low` : `${token}_mid`)),
-  trending: values.map(item => run(item.firstHour, item.lastHour, `${token}_right`)),
+  range: [],
+  trending: [],
   ...extra,
 });
-const history = (fields: Record<string, unknown>, mode = 'country'): PoliticsHistoryReply => ({
+const history = (hour: number, fields: Partial<PoliticsHistoryReply> = {}): PoliticsHistoryReply => ({
   branchId: '1',
-  mode: mode as PoliticsHistoryReply['mode'],
+  mode: 'country',
   lastHour: 10_000,
-  tag: mode === 'country' ? 'MOD' : null,
-  known: [{ firstHour: 0, lastHour: 10_000 }],
+  hour,
+  nextChange: null,
+  unread: null,
+  selected: null,
+  tag: 'AAA',
+  known: [{ firstHour: 0, lastHour: hour }],
   elections: [],
   names: {},
   holderBalances: [],
   warnings: [],
   ...fields,
 });
-const holder = (id: string, tags: [number, string][], balances: BalanceHistory[], shown: ReturnType<typeof run>[] = []) =>
-  ({ holder: id, tags: tags.map(([hour, tag]) => ({ hour, tag })), balances, shown });
-const record = (ordinal: number, token: string, members: (string | null)[], extra: Partial<BalanceRecord> = {}): BalanceRecord => ({
+const holder = (balances: BalanceHistory[]) => ({ holder: '1', tags: [{ hour: 0, tag: 'AAA' }], balances, shown: [] });
+const record = (ordinal: number, token: string, extra: Partial<BalanceRecord> = {}): BalanceRecord => ({
   ordinal,
   token,
-  name: `${token} name`,
-  left: { token: `${token}_left`, name: 'Left' },
-  right: { token: `${token}_right`, name: 'Right' },
-  trending: { token: `${token}_right`, name: 'Right' },
-  range: { token: `${token}_high`, name: 'High', min: '25000', max: '100000' },
+  name: 'Invented balance',
+  left: { token: 'side_west', name: 'West Council' },
+  right: { token: 'side_east', name: 'East Assembly' },
+  trending: { token: 'side_east', name: 'East Assembly' },
+  range: { token: 'range_high', name: 'Upper Hand', min: '25000', max: '100000' },
   ranges: [],
-  members: members.map(tag => ({ tag, daily: '10', weekly: '70' })),
-  sources: [{ token: 'mod_source', name: 'Source', daily: '5', weekly: '35' }],
+  members: [{ tag: 'AAA', daily: '1000', weekly: null }],
+  change: { daily: '1000', weekly: '0', weeklyChange: '7000', shown: 'daily', rate: '1000' },
+  sources: null,
   ...extra,
 });
-const detail = (balances: BalanceRecord[], extra: Record<string, unknown> = {}): PoliticsStateReply => ({
-  branchId: '1',
-  view: 'balances',
-  exiles: [],
-  exilesMissing: null,
-  balances,
-  current: [{ tag: 'MOD', record: 0 }],
-  unavailable: [],
-  warnings: [],
-  ...extra,
+const detail = (balances: BalanceRecord[]): PoliticsStateReply => ({
+  branchId: '1', view: 'balances', exiles: [], exilesMissing: null, balances, current: [{ tag: 'AAA', record: 0 }], unavailable: [], warnings: [],
 });
-
 const NO_ART: ArtResult = { status: 'noArtExpected' };
+const options = { subject: '\u00007', extent: [0, 1000] as const, branchFirstHour: 0, branchGaps: [], gaps: [] };
+const project = (hour: number, panels: [string, unknown][], hovers?: Map<string, { hour: number; data: unknown }>) => balanceOfPowerProjection.project(createBoundedReadView({
+  hour, panels: new Map<string, unknown>(panels), ...(hovers ? { hovers } : {}), art: { resolve: () => NO_ART },
+}), options);
 
-test('a country history holds each holder its tag held, and the view follows the one holding it then', () => {
-  const data = validateCountryBalances(history({
-    holderBalances: [
-      holder('1', [[0, 'MOD'], [500, 'NEW']], [balance('guild', [run(0, 900, '30000')])], [run(0, 900, 'guild')]),
-      holder('2', [[600, 'MOD']], [balance('court', [run(600, 900, '-5000')])], [run(600, 900, 'court')]),
-    ],
-  }));
-  assert.equal(countryHolder(data, 'MOD', 100)!.holder, '1');
-  assert.equal(countryHolder(data, 'MOD', 700)!.holder, '2', 'a reused tag is another holder');
-  assert.equal(countryHolder(data, 'MOD', 550)!.holder, '1', 'between holders, the one that held it last');
-  assert.throws(() => validateCountryBalances(history({ holderBalances: [holder('1', [[0, 'MOD']], [balance('a', [run(0, 10, '1.5')])])] })));
-  assert.throws(() => validateCountryBalances(history({}, 'elections')));
+test('the history is the product\'s answer at its hour: its balance, its proof and only one holder', () => {
+  const reply = validateCountryBalances(history(800, { selected: 'bop_a', nextChange: 900, holderBalances: [holder([balance('bop_a', [run(500, 800, '36000')])])] }));
+  assert.equal(selectedBalance(reply)?.token, 'bop_a');
+  assert.deepEqual(balanceHistoryProof(reply, [0, 800], 850), [800, 899]);
+  assert.equal(balanceHistoryProof(reply, [0, 800], 900), null);
+  assert.throws(() => validateCountryBalances(history(800, { known: [{ firstHour: 0, lastHour: 801 }] })), 'nothing read after the hour');
+  assert.throws(() => validateCountryBalances(history(800, { holderBalances: [holder([]), holder([])] })), 'one recorded slot, one holder');
+  assert.deepEqual(balanceAxis(balance('bop_a', [])), { min: -1, max: 1, ticks: [-1, -0.25, 0.25, 1] });
 });
 
-test('validators accept optional refusal reasons on sides, ranges, and records, and balance helpers stay exact', () => {
-  const guild = balance('guild', [run(0, 99, '30000'), run(200, 400, '-30000')]);
-  const court = balance('court', [run(50, 400, '1000')]);
-  const subject = { balances: [guild, court], shown: [run(0, 99, 'guild'), run(100, 400, 'court')] };
-  assert.equal(chooseBalance(subject, '', 10, 400).balance?.token, 'guild');
-  assert.equal(chooseBalance(subject, '', 150, 400).balance?.token, 'court');
-  assert.equal(chooseBalance(subject, 'guild', 150, 400).balance?.token, 'guild');
-  assert.deepEqual(balanceAbsence([{ firstHour: 0, lastHour: 99 }], 150, 400, [{ firstHour: 100, lastHour: 199 }]), { kind: 'unread' });
-  assert.deepEqual(balanceAxis(guild), { min: -1, max: 1, ticks: [-1, -0.25, 0.25, 1] });
-
-  const stateReply = validateBalanceList(detail([
-    record(0, 'guild', ['MOD', 'OTH'], {
-      left: { token: 'guild_left', name: null, reason: 'no localisation in the recorded content' },
-      right: { token: 'guild_right', name: 'Council' },
-    }),
-  ]));
-  assert.equal(recordFor(stateReply, null, 'MOD')?.token, 'guild');
-  assert.equal(holderRecord({ ...stateReply, hour: 100 }, holder('1', [[0, 'MOD']], [guild]), 'guild')?.ordinal, 0);
-  assert.equal(sumWeeklyDrift(stateReply.balances[0]!), 140n);
+test('a record is joined by the ordinal the history recorded at that hour, never by its token alone', () => {
+  const bop = balance('bop_a', [run(0, 99, '1000'), run(100, 200, '2000')], { record: [run(0, 99, '0'), run(100, 200, '3')] });
+  const state = validateBalanceList(detail([record(0, 'bop_a'), record(3, 'bop_a', { name: 'Later record' })]));
+  assert.equal(recordAt(state, bop, 50)?.ordinal, 0);
+  assert.equal(recordAt(state, bop, 150)?.name, 'Later record');
+  assert.equal(recordAt(detail([record(5, 'bop_a')]), bop, 150), null, 'another record with the same balance is never taken');
 });
 
-test('balance-of-power time-chart projection renders pre-first-reading hatched gap, causal side overlays, and hover refusal reasons', () => {
-  const hist = history({
-    names: { ita_bop: 'Power Balance' },
-    holderBalances: [
-      holder('1', [[0, 'ITA']], [balance('ita_bop', [run(500, 800, '36000'), run(801, 1200, '50000')])], [run(500, 1200, 'ita_bop')]),
-    ],
-  });
-  const stateAt800 = detail([
-    record(0, 'ita_bop', ['ITA'], {
-      name: 'Power Balance',
-      left: { token: 'ita_left', name: 'Grand Council of Fascism' },
-      right: { token: 'ita_right', name: 'Benito Mussolini' },
-      range: { token: 'ita_high', name: 'Consolidated Power', min: '25000', max: '100000' },
-    }),
-  ], { current: [{ tag: 'ITA', record: 0 }] });
-  const hoverAt600 = detail([
-    record(0, 'ita_bop', ['ITA'], {
-      name: 'Power Balance',
-      left: { token: 'ita_left', name: null, reason: 'characters table was not recorded' },
-      right: { token: 'ita_right', name: 'Benito Mussolini' },
-      range: { token: 'ita_high', name: 'Early Power', min: '25000', max: '100000' },
-    }),
-  ], { current: [{ tag: 'ITA', record: 0 }] });
+test('the chart draws the answer, keeps an unnamed range and side by key with its reason, and audits what it shows', () => {
+  const hist = history(800, { selected: 'bop_a', nextChange: 900, holderBalances: [holder([balance('bop_a', [run(500, 800, '36000')])])] });
+  const named = project(820, [['history', hist], ['state', detail([record(0, 'bop_a')])]]);
+  const line = named.series[0]!;
+  assert.equal(line.points!.at(-1)!.hour, 820, 'the open run reaches the displayed hour inside the proof');
+  assert.equal(line.endLabel?.name, 'Upper Hand');
+  assert.equal(line.endLabel?.value, '0.36');
+  assert.deepEqual(named.overlays?.map(item => item.text), ['East Assembly', 'West Council']);
+  assert.deepEqual(named.gaps?.map(gap => [gap.firstHour, gap.lastHour]), [[0, 500]]);
+  assert.equal(named.auditRows![0]!.value, '+0.36|Upper Hand|range_high|East Assembly|West Council');
 
-  const view = createBoundedReadView({
-    hour: 800,
-    panels: new Map<string, unknown>([['history', hist], ['state', stateAt800]]),
-    hovers: new Map([['hover', { hour: 600, data: hoverAt600 }]]),
-    art: { resolve: () => NO_ART },
-  });
-  const model = balanceOfPowerProjection.project(view, {
-    tag: 'ITA',
-    extent: [0, 1000],
-    branchFirstHour: 0,
-    branchGaps: [],
-    gaps: [],
-  });
+  const unnamed = project(800, [['history', hist], ['state', detail([record(0, 'bop_a', {
+    range: { token: 'range_high', name: null, reason: 'missing localisation', min: '25000', max: '100000' },
+    left: { token: 'side_west', name: null, reason: 'characters table was not recorded' },
+  })])]]);
+  assert.equal(unnamed.series[0]!.endLabel?.name, 'Range name unavailable', 'an unresolved active range is said, never dropped');
+  assert.equal(unnamed.overlays?.[1]?.text, 'side_west', 'an unresolved side shows its recorded key');
+  assert.notEqual(unnamed.auditRows![0]!.value, named.auditRows![0]!.value, 'correcting the displayed range changes the audit');
+});
 
-  assert.equal(model.mode, 'lines');
-  assert.deepEqual(model.yAxis.fixed, [-1, 1]);
-  assert.equal(model.series.length, 1);
-  assert.equal(model.series[0]!.step, true);
-  assert.equal(model.series[0]!.headValue, 0.36);
-  assert.equal(model.series[0]!.endLabel?.name, 'Consolidated Power');
-  assert.equal(model.series[0]!.endLabel?.value, '0.36');
-  assert.ok(model.series[0]!.points!.every(pt => pt.hour <= 800), 'no future points past playhead');
-  assert.equal(model.gaps?.length, 1);
-  assert.deepEqual([model.gaps![0]!.firstHour, model.gaps![0]!.lastHour], [0, 500]);
-  assert.deepEqual(model.overlays?.map(o => [o.position, o.arrow, o.text]), [
-    ['top-right', 'right', 'Benito Mussolini'],
-    ['bottom-right', 'left', 'Grand Council of Fascism'],
-  ]);
-  assert.equal(model.hoverDetail?.hour, 600);
-  assert.ok(model.hoverDetail?.items.some(i => i.label === 'Range' && i.value === 'Early Power'));
-  assert.ok(model.hoverDetail?.items.some(i => i.label.includes(SIDE_UNAVAILABLE) && i.value === 'characters table was not recorded'));
+test('a hover reads the record at the hit hour: unread is not "Not active", and the change is the product\'s', () => {
+  const hist = history(800, { selected: 'bop_a', known: [{ firstHour: 0, lastHour: 299 }, { firstHour: 400, lastHour: 800 }],
+    holderBalances: [holder([balance('bop_a', [run(500, 800, '36000')])])] });
+  const hover = (hour: number, data: PoliticsStateReply) => project(800, [['history', hist], ['state', detail([record(0, 'bop_a')])]], new Map([['hover', { hour, data }]])).hoverDetail!;
+  const unread = hover(350, detail([]));
+  assert.equal(unread.items[0]!.missingReason, 'The balance of power was not recorded at this hour');
+  assert.equal(hover(450, detail([])).items[0]!.value, 'Not active', 'read and not a member is not active');
+  const at = hover(600, detail([record(0, 'bop_a', { change: { daily: '1000', weekly: '0', weeklyChange: '7000', shown: 'daily', rate: '1000' } })]));
+  assert.ok(at.items.some(item => item.label === 'Daily change' && item.value === '+0.01'), 'a daily drift is never a zero weekly change');
+  const other = hover(600, detail([record(9, 'bop_a', { range: { token: 'range_low', name: 'Other', min: null, max: null } })]));
+  assert.ok(other.items.some(item => item.label === 'Range' && item.missingReason), 'another record of the same balance is never joined');
+});
 
-  const unnamedView = createBoundedReadView({
-    hour: 800,
-    panels: new Map<string, unknown>([['history', hist], ['state', detail([
-      record(0, 'ita_bop', ['ITA'], {
-        range: { token: 'ita_high', name: null, reason: 'missing localisation', min: '25000', max: '100000' },
-      }),
-    ], { current: [{ tag: 'ITA', record: 0 }] })]]),
-    art: { resolve: () => NO_ART },
-  });
-  const unnamedModel = balanceOfPowerProjection.project(unnamedView, {
-    tag: 'ITA',
-    extent: [0, 1000],
-    branchFirstHour: 0,
-    branchGaps: [],
-    gaps: [],
-  });
-  assert.equal(unnamedModel.series[0]!.endLabel?.name, null);
-  assert.equal(unnamedModel.series[0]!.endLabel?.value, '0.36');
-
-  const truncHist = history({
-    names: { ita_bop: 'Power Balance' },
-    holderBalances: [
-      holder('1', [[0, 'ITA']], [balance('ita_bop', [run(500, 799, '500'), run(800, 1200, '36500')])], [run(500, 1200, 'ita_bop')]),
-    ],
-  });
-  const truncModel = balanceOfPowerProjection.project(createBoundedReadView({
-    hour: 800,
-    panels: new Map<string, unknown>([['history', truncHist]]),
-    art: { resolve: () => NO_ART },
-  }), { tag: 'ITA', extent: [0, 1000], branchFirstHour: 0, branchGaps: [], gaps: [] });
-  assert.equal(truncModel.series[0]!.endLabel?.value, '0.36', '36,500 fixed5 truncates toward zero to 0.36, never rounds to 0.37');
-  const tinyModel = balanceOfPowerProjection.project(createBoundedReadView({
-    hour: 600,
-    panels: new Map<string, unknown>([['history', truncHist]]),
-    art: { resolve: () => NO_ART },
-  }), { tag: 'ITA', extent: [0, 1000], branchFirstHour: 0, branchGaps: [], gaps: [] });
-  assert.equal(tinyModel.series[0]!.endLabel?.value, '<0.01', 'non-zero 500 fixed5 prints <0.01, never rounds to 0.01');
+test('no balance is said with its reason: unread, unread before, or none by this date', () => {
+  const none = (fields: Partial<PoliticsHistoryReply>, hour = 800) => project(hour, [['history', history(800, fields)]]).empty;
+  assert.equal(none({ known: [] })?.kind, 'unavailable');
+  assert.equal(none({ unread: 'The balance of power was not read for part of this campaign before this date' })?.kind, 'unavailable');
+  assert.match(none({})?.message ?? '', /has no balance of power by /);
 });

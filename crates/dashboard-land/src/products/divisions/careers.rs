@@ -3,7 +3,7 @@ use dashboard_base::products::Country;
 use super::{Content, Countries, Refusals, attributed, find, token_key};
 use dashboard_base::{Source, catalogue, products::{LoadContext, at_hour::{At, AtHour, Keys, Read}}};
 use crate::products::army::ArmyAttribution;
-use dashboard_query::identity::Holder;
+use dashboard_query::{coverage::{Witness, witnessed}, identity::Holder};
 use dashboard_text::division_history;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{CountryLinkRow, CountryRow, DivisionHistoryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, mask, tables};
@@ -386,7 +386,7 @@ impl AtHour for DivisionRecord {
 
     fn reads(params: &Self::Params, _owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         if step != 0 {
-            let template = held.complete::<tables::Divisions>().ok().and_then(|rows| find(Some(rows), division(params), |row| row.id)).map(|row| row.template);
+            let template = witnessed::<tables::Divisions>(held, u128::from(division(params))).row().map(|row| row.template);
             return match (step, template) {
                 (1, Some(template)) => vec![Read::these(TableId::DivisionTemplateIcons, [u128::from(template)])],
                 _ => Vec::new(),
@@ -559,11 +559,11 @@ impl Facts<'_> {
 }
 
 fn status_of(frame: &DecodedFrame, division: u64) -> Option<&DivisionStatusRow> {
-    find(frame.complete::<tables::DivisionStatus>().ok(), division, |row| row.division)
+    witnessed::<tables::DivisionStatus>(frame, u128::from(division)).row()
 }
 
 fn manpower_of(frame: &DecodedFrame, division: u64) -> Option<i32> {
-    let row = find(frame.complete::<tables::DivisionLandInputs>().ok(), division, |row| row.division)?;
+    let row = witnessed::<tables::DivisionLandInputs>(frame, u128::from(division)).row()?;
     Some(row.manpower.iter().fold(0i32, |sum, part| sum.wrapping_add(part.amount)))
 }
 
@@ -823,14 +823,21 @@ fn record(frame: &DecodedFrame, division: u64, at: &At<'_, Content>, refusals: &
         entries: Vec::new(),
         warnings: Vec::new(),
     };
-    let divisions = frame.complete::<tables::Divisions>()?;
-    let Some(row) = find(Some(divisions), division, |row| row.id) else {
-        reply.absent = true;
-        return Ok(reply);
+    let row = match witnessed::<tables::Divisions>(frame, u128::from(division)) {
+        Witness::Row(row) => row,
+        Witness::Absent => {
+            reply.absent = true;
+            return Ok(reply);
+        }
+        Witness::NotRecorded(why) => return Err(io::Error::new(io::ErrorKind::InvalidData, why)),
     };
     let content = at.context;
     content.group_notes(refusals);
-    let countries = Countries::read(frame)?.named(at.holders, at.hour);
+    let (countries, links_missing) = Countries::witnessed(frame);
+    if let Some(why) = links_missing {
+        refusals.note(format!("Division countries unavailable: {why}"));
+    }
+    let countries = countries.named(at.holders, at.hour);
     reply.tag = countries.tag(attributed(row, ArmyAttribution::Owner));
     let status = status_of(frame, division);
     (reply.name, reply.name_missing) = refusals.keep(content.division_name(status));

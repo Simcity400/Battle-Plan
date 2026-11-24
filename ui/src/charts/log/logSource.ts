@@ -89,14 +89,6 @@ export const noPages = <R, N>(lane: string | null): HeldPages<R, N> => ({ lane, 
 
 export const pagesOf = <R, N>(held: HeldPages<R, N>, lane: string | null): HeldPages<R, N> => held.lane === lane ? held : noPages(lane);
 
-export function heldPage<R, N>(held: HeldPages<R, N>, shown: string | null, asked: string | null, index: number, rows: R,
-  said: readonly N[] | undefined): HeldPages<R, N> {
-  if (asked !== shown) return held;
-  const base = pagesOf(held, asked);
-  return { lane: asked, rows: new Map(base.rows).set(index, rows), notes: said ? new Map(base.notes).set(index, said) : base.notes,
-    errors: base.errors.has(index) ? new Map([...base.errors].filter(([at]) => at !== index)) : base.errors };
-}
-
 export function failedPage<R, N>(held: HeldPages<R, N>, shown: string | null, asked: string | null, index: number, failure: Failure): HeldPages<R, N> {
   if (asked !== shown) return held;
   const base = pagesOf(held, asked);

@@ -314,6 +314,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     zoomWindow: null as readonly [number, number] | null,
   });
   const scrollGeometryRef = useRef<ScrollGeometry>(computeScrollGeometry(0, 0));
+  const measuredRef = useRef(false);
   const lastViewportReportRef = useRef('');
 
   const focusedKeyRef = useRef<string | null>(null);
@@ -349,7 +350,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const lastTableRef = useRef<unknown>(null);
   const lastRowCountRef = useRef(-1);
   const lastFocusNavRef = useRef<unknown>(null);
-  const lastAuditRef = useRef<{ readonly id: number; readonly key: readonly unknown[]; readonly context: { fields: Readonly<Record<string, unknown>> } } | null>(null);
+  const lastAuditRef = useRef<{ readonly id: number; readonly key: readonly unknown[] } | null>(null);
 
   const [meta, setMeta] = useState<FamilyMetaState>(() => ({
     mode: staticSources ? 'picture' : 'reading',
@@ -533,8 +534,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const curAdapter = cur.adapter;
     const [defW, defH] = curAdapter.defaultSize ?? [320, 200];
     const vp = viewportRef.current;
-    const w = Math.max(1, vp.width || defW);
-    const h = Math.max(1, vp.height || defH);
+    if (!measuredRef.current && bodyRef.current && typeof ResizeObserver === 'function') {
+      vp.width = Math.floor(bodyRef.current.clientWidth);
+      vp.height = Math.floor(bodyRef.current.clientHeight);
+      measuredRef.current = true;
+    }
+    const hidden = measuredRef.current && (vp.width <= 0 || vp.height <= 0);
+    const w = hidden ? 0 : Math.max(1, vp.width || defW);
+    const h = hidden ? 0 : Math.max(1, vp.height || defH);
     const dpr = currentDpr();
     vp.dpr = dpr;
     const viewport: FamilyViewportState = {
@@ -558,16 +565,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       } else {
         const deriveRows = curAdapter.deriveAuditRows;
         const readExact = cur.exactReadView;
-        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme, fields: fieldsNow() };
+        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme };
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,
           exactReadView: hour => readExact(hour, rowWindow),
-          deriveRows: (model, hour) => deriveRows(model, hour, context),
+          deriveRows: (model, hour, fields) => deriveRows(model, hour, { ...context, fields: fields ?? EMPTY_FIELDS }),
           ...(curAdapter.auditOrdered !== undefined ? { ordered: curAdapter.auditOrdered } : {}),
         };
         auditId = audit.capture(snapshot, PLAN_VERIFIER);
-        lastAuditRef.current = { id: auditId, key, context };
+        lastAuditRef.current = { id: auditId, key };
       }
     }
 
@@ -598,10 +605,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     requestedWindowRef.current = rowWindow;
     reportWindow();
 
-    const widthPx = `${w}px`;
-    const heightPx = `${h}px`;
-    if (mounted.canvas.style.width !== widthPx) mounted.canvas.style.width = widthPx;
-    if (mounted.canvas.style.height !== heightPx) mounted.canvas.style.height = heightPx;
+    if (!hidden) {
+      const widthPx = `${w}px`;
+      const heightPx = `${h}px`;
+      if (mounted.canvas.style.width !== widthPx) mounted.canvas.style.width = widthPx;
+      if (mounted.canvas.style.height !== heightPx) mounted.canvas.style.height = heightPx;
+    }
     pipeline.present(pipe, curAdapter.family);
     pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }] }, {}, binding);
     const bound = pipeline.view(pipe)?.binding;
@@ -856,8 +865,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         scrollTop: viewportRef.current.scrollTop,
       };
       const installedAuditId = auditIdOf(fields.audit);
-      const capturedAudit = lastAuditRef.current;
-      if (capturedAudit && capturedAudit.id === installedAuditId) capturedAudit.context.fields = fields;
       const installed: InstalledPicture = {
         id: shown.id,
         owner: shown.installedOwner ?? shown.owner ?? '',
@@ -1082,13 +1089,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   useLayoutEffect(() => {
     const node = bodyRef.current;
     if (!node) return;
-    const measure = (width: number, height: number) => {
+    const measure = (width: number, height: number, observed = false) => {
       refreshFocusAnchor();
       const w = Math.floor(width);
       const h = Math.floor(height);
       const dpr = currentDpr();
       const vp = viewportRef.current;
-      if (w === vp.width && h === vp.height && dpr === vp.dpr) return;
+      const canMeasure = observed || typeof ResizeObserver === 'function';
+      const newlyMeasured = canMeasure && !measuredRef.current;
+      if (canMeasure) measuredRef.current = true;
+      if (!newlyMeasured && w === vp.width && h === vp.height && dpr === vp.dpr) return;
       vp.width = w;
       vp.height = h;
       vp.dpr = dpr;
@@ -1100,7 +1110,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (typeof ResizeObserver !== 'function') return;
     const observer = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
-      measure(rect ? rect.width : node.clientWidth, rect ? rect.height : node.clientHeight);
+      measure(rect ? rect.width : node.clientWidth, rect ? rect.height : node.clientHeight, true);
     });
     observer.observe(node);
     return () => observer.disconnect();

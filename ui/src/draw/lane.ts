@@ -579,16 +579,25 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const [id, owner] of this.presented) if (owner.widget === widget) this.presented.delete(id);
   }
 
-  bind(widget: number, binding: Binding, model?: unknown, retry = false) {
+  bind(widget: number, binding: Binding, model?: unknown, retry = false, remounted = false) {
     const held = this.widgets.get(widget);
     if (!held) return;
     const ownerChanged = binding.owner !== undefined && held.binding.owner !== undefined && binding.owner !== held.binding.owner;
+    const prev = held.binding;
     held.binding = binding;
     if (ownerChanged) held.supplied = { stamp: undefined, statics: null, identity: held.supplied.identity };
     if (model !== undefined) held.own = this.store.resolve(model);
     if (model !== undefined || ownerChanged) held.model = this.compose(held);
     this.bounded(held);
-    held.sent = {};
+    const keepSurfaces = !ownerChanged && !retry && !remounted && held.installed !== null
+      && prev.pin === binding.pin && prev.offset === binding.offset
+      && prev.surfaces.length === binding.surfaces.length
+      && prev.surfaces.every((surface, at) => {
+        const next = binding.surfaces[at];
+        return !!next && surface.width === next.width && surface.height === next.height && surface.dpr === next.dpr;
+      });
+    if (!keepSurfaces && held.installed) held.installed = { ...held.installed, contents: {} };
+    held.sent = keepSurfaces ? { ...held.installed!.contents } : {};
     held.forceFull = false;
     held.inflight = null;
     if (ownerChanged) {

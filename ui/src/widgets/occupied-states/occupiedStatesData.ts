@@ -1,8 +1,4 @@
-import { formatAmount } from '../../charts/valueAxis.ts';
-import { liveKey } from '../../charts/live.ts';
-import type { LiveValues } from '../../charts/live';
 import { artworkUrlValue } from '../../dashboard/payload.ts';
-import { amountCell, strengthBar } from '../../families/table/settings.ts';
 import type { OccupiedState as RepliedState, OccupiedStatesReply as Replied } from '../../generated/dashboard';
 
 export type OccupiedState = Omit<RepliedState, 'garrisonStrengthRaw' | 'garrisonRed'>;
@@ -35,7 +31,6 @@ export function validateOccupiedStates(data: unknown): OccupiedStatesReply {
 
 export interface OccupiedRow { key: string; state: number; value: OccupiedState }
 export type CountryRole = 'occupier' | 'occupied';
-export const stateName = (row: OccupiedRow) => row.value.name ?? `State ${row.state}`;
 
 export function occupiedRows(reply: OccupiedStatesReply, matches: ((tag: string) => boolean) | null, role: CountryRole, unrecorded: string | null = null):
   { rows: OccupiedRow[]; selectionUnknown: boolean; membership: string | null } {
@@ -60,16 +55,6 @@ export function emptyReason(reply: OccupiedStatesReply, view: { rows: readonly u
   return reply.complete ? 'No occupied states match these countries at this moment.' : 'Some occupied states are missing.';
 }
 
-export function liveRaw(values: LiveValues<number>, row: string, column: string): string | null {
-  const value = values.get(liveKey(row, column));
-  return value === undefined || !Number.isFinite(value) ? null : BigInt(Math.trunc(value)).toString();
-}
-
-export const strengthPercent = (raw: string) => `${formatAmount((BigInt(raw) * 100n).toString(), 5, 5)}%`;
-export const percent = (raw: string) => `${formatAmount(raw, 5, 5)}%`;
-export { percentCell, strengthBar } from '../../families/table/settings.ts';
-export const garrisonText = (raw: number) => amountCell(BigInt(Math.trunc(raw)));
-
 export function garrisonCell(value: OccupiedState): { bar: 0n | 'cell' | null; red: boolean } {
   if (value.garrisonRequiredSign === null || value.garrisonRequiredSign === 0) return { bar: null, red: false };
   if (value.garrisonRequiredSign < 0) return { bar: 0n, red: true };
@@ -78,4 +63,3 @@ export function garrisonCell(value: OccupiedState): { bar: 0n | 'cell' | null; r
 
 export const STRENGTH = 'garrisonStrength';
 export const NOT_NAMED = 'Not a live cell of this reply';
-export const garrisonBar = (value: number) => strengthBar(BigInt(Math.trunc(value)).toString());

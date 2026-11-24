@@ -4,6 +4,7 @@ import type { BoundedSeries } from '../plan.ts';
 import { formatDateOnly, formatRational, formatRecordedPercent, formatScalar, formatShare, formatShareRatio, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import { seriesLookAt, type ChartValueFormat, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
+import { hitChartRows, rowsTooltip } from './rows.ts';
 
 export type ParsedChartInspect =
   | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
@@ -141,6 +142,7 @@ export function hitTestTimeChart(
 ): string | null {
   const [px, py] = point;
   if (px < 0 || py < 0 || px > layout.width || py > layout.height) return null;
+  if (layout.rows) return hitChartRows(layout.rows, point);
 
   for (const label of layout.endLabels) {
     if (px >= label.x - 4 && px <= label.x + label.width + 4 && py >= label.y - label.height / 2 - 2 && py <= label.y + label.height / 2 + 2) {
@@ -392,6 +394,7 @@ export function deriveTimeChartTooltip(
   layout: TimeChartLayout,
   inspectKey: string | null | undefined,
 ): FamilyTooltipEntry | null {
+  if (layout.rows) return rowsTooltip(model, inspectKey);
   const parsed = parseChartInspect(inspectKey);
   if (!parsed || !inspectKey) return null;
 

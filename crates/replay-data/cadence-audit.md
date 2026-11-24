@@ -29,10 +29,10 @@ otherwise reads its independently demanded XP fresh before resume.
 |---|---|---|
 | hourly tick | Native writer class | 163 |
 | any hour | Native writer class | 108 |
-| hook log | Native writer class | 21 |
+| hook log | Native writer class | 22 |
 | load | Native writer class | 2 |
 | recorder | Native writer class | 95 |
-| total | | 389 |
+| total | | 390 |
 
 The market family publishes exact Hourly rows through certified owner and exact agreement-key updates, not daily slices. Initial/load and lost-interval recovery use the existing authenticated economy resource/contract census. A fresh epoch publishes all three complete state baselines independently of event-interval refusal or the caller full flag; off the daily contract slot the resource census completes only a skipped owned-contract census once, never retrying a failed attempt. A spool-only loss requires no second census in the next intact interval. Quiet epochs add no native list read. Ordinary inventory, agreement transfer/once and contract/route callbacks publish constant-size identity marks; the worker reads only marked surviving holders and differences native cumulative totals. Rare amendment/removal callbacks copy final delivered/sunk pools before erasure into prepared storage; worker differencing retains the final increment and discards intermediate snapshots. Actual agreement amendments copy all three schedules; both local incoming/outgoing action drafts are excluded. Country reset and variable stores keep their existing patch owners, using nonzero encoded country receiver keys including country zero. Active contract removal retains final scalar totals before handle retirement; deferred destruction does not duplicate the lifetime. All 25 dedicated sites (23 detours plus 2 taps) and both forwarding owners gate carry; four nested per-item/pool sites are covered by the outer delivery/rebuild owners and are unpatched. There is no new hourly native task, roster scan or callback allocation. Missing closure/lost intervals refuse uncertified state; selected-read failures stay local to their table.
 
@@ -193,6 +193,7 @@ NavalRefitShips.line also carries its stored full reference without destination-
 | LandCombatModifiers | hourly tick | Hourly combat manager updates. |
 | LandCombatProgress | hourly tick | Hourly combat manager updates. |
 | LandCombatResults | hook log | land_events log. |
+| LandCombatEdges | hook log | land_events log: each land combat's opening roster at the start routine's return and each division's exit around its loss flush. |
 | CombatEngagementRefreshes | hook log | combat_engagement_refreshes sparse hourly event ledger: unit add/remove, naval convoy transfer, controller reassignment target, and local all-combat refresh hooks. |
 | LandCombatSides | hourly tick | Hourly combat manager updates. |
 | LandCombats | hourly tick | Combat manager updates from the hourly game-state update. |

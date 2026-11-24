@@ -59,6 +59,7 @@ test('occupation-reserve-manpower race preserves Rust ranking, builds source-cou
     ],
     readHour: 240,
     unnamed: 1,
+    noneMissing: null,
     missing: null,
     warnings: [],
   };
@@ -91,6 +92,7 @@ test('occupation-reserve-manpower surfaces missing refusal as unavailable and ha
     holders: [],
     readHour: null,
     unnamed: 0,
+    noneMissing: null,
     missing: 'Occupation reserve was not recorded at this hour',
     warnings: [],
   };
@@ -100,6 +102,11 @@ test('occupation-reserve-manpower surfaces missing refusal as unavailable and ha
   );
   assert.equal(refused.emptyKind, 'unavailable');
   assert.equal(refused.empty, missing.missing);
+  const unproven = occupationReserveRaceProjection.project(
+    createBoundedReadView({ hour: displayedHour(240), panels: new Map([['main', { ...missing, missing: null, unnamed: 2, noneMissing: '2 holders the recording names no tag for hold reserve manpower at this hour' }]]) }),
+    { top: 10, all: false, group: false },
+  );
+  assert.deepEqual([unproven.emptyKind, unproven.empty], ['unavailable', '2 holders the recording names no tag for hold reserve manpower at this hour'], 'an empty reserve is claimed only with the evidence for it');
 });
 
 test('occupation-reserve-manpower breakdown asks history to the hour, asks hover by recorded slot, and rejects future or foreign-holder leaks', async () => {
@@ -188,6 +195,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
     }],
     readHour: 150,
     unnamed: 0,
+    noneMissing: null,
     missing: null,
     warnings: [],
   };
@@ -231,7 +239,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
   assert.equal(model.note, 'Negative entries: Beta −50');
   assert.deepEqual(model.auditRows?.map(r => [r.key, r.value]), [['__total__', '450'], ['9', '400'], ['12', '50']]);
 
-  const layout = hoverTimeChartLayout(layoutTimeChart(model, 600, 260, 'sans-serif', t => t.length * 6), model.hour, 'sans-serif', t => t.length * 6, 150, null);
+  const layout = hoverTimeChartLayout(layoutTimeChart(model, 600, 260, 'sans-serif', t => t.length * 6), null);
   const tip = deriveTimeChartTooltip(model, layout, 'plot:150');
   assert.ok(tip?.payload?.items?.some(item => item.label === 'Old Gamma' && item.value === '300'), 'hover resolves source name at hovered hour');
   assert.ok(tip?.payload?.items?.some(item => item.label === 'Negative entries'));
@@ -241,6 +249,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
     holders: [{ country: { id: 99, tag: 'AAA' }, slot: null, admitted: true, total: 999, entries: [{ ordinal: 0, source: { id: 8, tag: 'BBB' }, amount: 999 }] }],
     readHour: 220,
     unnamed: 0,
+    noneMissing: null,
     missing: null,
     warnings: [],
   };

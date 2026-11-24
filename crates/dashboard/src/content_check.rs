@@ -265,7 +265,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             divisions::equipment::template_needs(&content.catalogue().cloned())?;
             Ok("A country's division equipment is its rows of the derived division equipment tables; a drill compares recorded pools with each template's need from the content stack's sub-unit requirements and recorded local clones. Division, template, archetype and design names share the recorded content stack.".into())
         }
-        subjects::Subjects::KEY => {
+        subjects::Subjects::KEY | dashboard_world::products::history_at::SubjectsAt::KEY => {
             let catalogue = content.catalogue()?;
             let (states, _) = content_reader_politics::autonomy::read(&content.resolved.layers).map_err(|error| error.to_string())?;
             let named = states.states.iter().map(|state| state.id.as_str()).collect();
@@ -351,7 +351,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.push(Finding::new(Kind::Offline, key, "cumulative lend-lease histories need recorded WarLendLeaseHistories rows; unavailable offline"));
             Ok("No content dependency: countries are named by their recorded tags.".into())
         }
-        economy::resources::ResourceSizes::KEY => Ok("No content dependency: bar lengths are computed from the recorded pools.".into()),
+        economy::resource_months::ResourceMonths::KEY => Ok("Resource names and icons resolve through the recorded content stack; monthly net per day is computed from the recorded pools.".into()),
         key if key == <economy::fuel::CountryFuel as at_hour::AtHour>::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "the tank, its days and current consumption need recorded CountryFuel, FuelDays and FuelDemandTotals rows; unavailable offline"));
             Ok("Consumer and source labels are the fuel panel's own localisation keys, resolved through the recorded content stack.".into())

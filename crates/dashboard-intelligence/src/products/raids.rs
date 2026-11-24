@@ -1299,6 +1299,8 @@ impl Product for RaidLog {
     }
 }
 
+pub mod tally;
+
 pub struct RaidTallyAt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]

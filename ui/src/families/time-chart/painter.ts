@@ -1,4 +1,4 @@
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { measureCanvasText, textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   DEFAULT_FAMILY_THEME,
   drawArtSlot,
@@ -10,18 +10,59 @@ import {
   drawPlayheadLine,
   drawSeriesMissingStrip,
   drawTimeAxis,
+  fitLegendStrip,
   resolveKitTokens,
+  type LegendFit,
+  type LegendMeasure,
+  type LegendStripSpec,
 } from '../../draw/kit.ts';
 import { parseColor, rgbaRgb } from '../../shell/appearance/color.ts';
 import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
-import type { FamilyTheme } from '../contract.ts';
+import type { BoundedSeries, FamilyTheme } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
+import { historyFits, lineHistory, LineTrace, type LineWindow } from './history.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import { seriesLookAt, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
+import { drawChartRows, parseRowsInspect } from './rows.ts';
 
-export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout): string[] {
+export function timeChartLegendSpec(model: TimeChartModel): LegendStripSpec | null {
+  const legend = model.legend;
+  if (!legend || legend.length === 0) return null;
+  const isLineLegend = model.mode === 'lines';
+  let ordinaryLen = legend.length;
+  while (ordinaryLen > 0 && legend[ordinaryLen - 1]!.hatch) ordinaryLen--;
+  const trailing = ordinaryLen < legend.length
+    ? legend.slice(ordinaryLen).map(item => ({ label: item.label, color: item.color, hatch: true, muted: false }))
+    : undefined;
+  return {
+    entries: {
+      length: ordinaryLen,
+      at: i => {
+        const item = legend[i]!;
+        return {
+          label: item.label,
+          color: item.color,
+          ...(isLineLegend && !item.hatch ? { line: true } : {}),
+          dash: item.dash,
+          hatch: item.hatch,
+          flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
+          muted: false,
+        };
+      },
+      ...(trailing ? { trailing } : {}),
+    },
+    entryGap: 14,
+  };
+}
+
+export function fitTimeChartLegend(model: TimeChartModel, layout: TimeChartLayout, theme: FamilyTheme, measure: LegendMeasure): LegendFit | null {
+  const spec = layout.legendTop === null ? null : timeChartLegendSpec(model);
+  return spec ? fitLegendStrip(layout.left, layout.width - layout.left, spec, theme, measure) : null;
+}
+
+export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout, legend: LegendFit | null): string[] {
   const items: ArtUrlInput[] = [];
   for (const label of layout.endLabels) {
     items.push(label.flag, label.icon);
@@ -30,134 +71,52 @@ export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartL
     if (m.kind === 'flag') items.push(m.marker.flag);
     if (m.kind === 'icon') items.push(m.marker.icon);
   }
-  if (model.legend) {
-    for (const item of model.legend) items.push(item.flag);
+  if (legend && model.legend) {
+    for (let i = 0; i < legend.shown.length; i++) items.push(model.legend[i]!.flag);
   }
   if (model.overlays) {
     for (const ov of model.overlays) items.push(ov.icon);
   }
+  for (const placed of layout.rows?.rows.rows ?? []) items.push(placed.row.icon);
   return collectArtUrls(items);
 }
 
-export function buildLineSubpaths(
-  series: TimeChartSeriesModel,
-  layout: TimeChartLayout,
-  until: number,
-): { readonly subpaths: readonly (readonly [number, number][])[]; readonly end: readonly [number, number] | null } {
-  const step = series.step === true;
-  const scale = series.valueScale ?? 1;
-  const subpaths: [number, number][][] = [];
-  let end: readonly [number, number] | null = null;
-  const bounded = series.bounded;
+interface LinePoints {
+  readonly subpaths: readonly (readonly [number, number][])[];
+  readonly end: readonly [number, number] | null;
+}
 
-  if (bounded) {
-    if (bounded.runs && bounded.runs.length > 0) {
-      let cur: [number, number][] = [];
-      for (const run of bounded.runs) {
-        if (run.lastHour < layout.xDomain[0] || run.firstHour > layout.xDomain[1]) continue;
-        if (run.breakBefore && cur.length) {
-          subpaths.push(cur);
-          cur = [];
-        }
-        const x0 = layout.toX(Math.max(run.firstHour, layout.xDomain[0]));
-        const x1 = layout.toX(Math.min(run.lastHour, layout.xDomain[1]));
-        const y = layout.toY(run.value * scale);
-        if (!cur.length) {
-          cur.push([x0, y]);
-          if (step && x1 > x0) cur.push([x1, y]);
-        } else if (step) {
-          cur.push([x0, cur[cur.length - 1]![1]], [x0, y]);
-          if (x1 > x0) cur.push([x1, y]);
-        } else {
-          cur.push([x0, y]);
-        }
-        end = [step && x1 > x0 ? x1 : x0, y];
-      }
-      if (cur.length) subpaths.push(cur);
-    } else {
-      let cur: [number, number][] = [];
-      let prevLastHour = -Infinity;
-      const pushPoint = (h: number, v: number) => {
-        const x = layout.toX(Math.max(layout.xDomain[0], Math.min(layout.xDomain[1], h)));
-        const y = layout.toY(v * scale);
-        if (!cur.length) {
-          cur.push([x, y]);
-        } else {
-          const prev = cur[cur.length - 1]!;
-          if (prev[0] === x && prev[1] === y) return;
-          if (step) cur.push([x, prev[1]], [x, y]);
-          else cur.push([x, y]);
-        }
-        end = [x, y];
-      };
-      for (const b of bounded.buckets) {
-        if (!b || b.lastHour < layout.xDomain[0] || b.firstHour > layout.xDomain[1]) continue;
-        const disconnected = cur.length > 0 && (b.firstBreak || b.firstHour > prevLastHour + Math.max(1, bounded.binHours));
-        if (disconnected) {
-          subpaths.push(cur);
-          cur = [];
-        }
-        if (step) {
-          pushPoint(b.firstHour, b.firstValue);
-          if (b.minValue !== b.firstValue || b.maxValue !== b.firstValue) {
-            if (b.minHour <= b.maxHour) {
-              if (b.minValue !== b.firstValue) pushPoint(b.minHour, b.minValue);
-              if (b.maxValue !== b.minValue) pushPoint(b.maxHour, b.maxValue);
-            } else {
-              if (b.maxValue !== b.firstValue) pushPoint(b.maxHour, b.maxValue);
-              if (b.minValue !== b.maxValue) pushPoint(b.minHour, b.minValue);
-            }
-          }
-          if (b.lastHour !== b.firstHour || b.lastValue !== b.firstValue) {
-            pushPoint(b.lastHour, b.lastValue);
-          }
-        } else {
-          pushPoint(b.firstHour, b.firstValue);
-          const loEnd = Math.min(b.firstValue, b.lastValue);
-          const hiEnd = Math.max(b.firstValue, b.lastValue);
-          const hasLower = b.minValue < loEnd;
-          const hasHigher = b.maxValue > hiEnd;
-          if (hasLower && hasHigher) {
-            if (b.minHour <= b.maxHour) {
-              pushPoint(b.minHour, b.minValue);
-              pushPoint(b.maxHour, b.maxValue);
-            } else {
-              pushPoint(b.maxHour, b.maxValue);
-              pushPoint(b.minHour, b.minValue);
-            }
-          } else if (hasLower) {
-            pushPoint(b.minHour, b.minValue);
-          } else if (hasHigher) {
-            pushPoint(b.maxHour, b.maxValue);
-          }
-          const endHour = b.lastValueHour >= b.firstHour ? b.lastValueHour : b.lastHour;
-          if (endHour > b.firstHour || b.lastValue !== b.firstValue) {
-            pushPoint(endHour, b.lastValue);
-          }
-        }
-        prevLastHour = b.lastHour;
-      }
-      if (cur.length) subpaths.push(cur);
-    }
-    const headHour = series.headHour ?? until;
-    if (series.headValue != null && Number.isFinite(series.headValue) && headHour >= layout.xDomain[0] && headHour <= layout.xDomain[1]) {
-      const hx = layout.toX(headHour);
-      const hy = layout.toY(series.headValue);
-      const last = subpaths[subpaths.length - 1];
-      if (last && last.length > 0 && hx >= last[last.length - 1]![0]) {
-        if (hx > last[last.length - 1]![0] || hy !== last[last.length - 1]![1]) {
-          if (step) last.push([hx, last[last.length - 1]![1]]);
-          last.push([hx, hy]);
-        }
-      } else if (!last) {
-        subpaths.push([[hx, hy]]);
-      }
-      end = [hx, hy];
-    }
-    return { subpaths, end };
+function headOf(series: TimeChartSeriesModel, window: LineWindow, until: number): readonly [number, number] | null {
+  const headHour = series.headHour ?? until;
+  return series.headValue != null && Number.isFinite(series.headValue) && headHour >= window.from && headHour <= window.to ? [headHour, series.headValue] : null;
+}
+
+function traceBounded(trace: LineTrace, bounded: BoundedSeries, window: LineWindow, from: number): void {
+  if (bounded.runs && bounded.runs.length > 0) {
+    for (let i = from; i < bounded.runs.length; i++) trace.run(bounded.runs.at(i)!, window);
+  } else {
+    for (let i = from; i < bounded.buckets.length; i++) trace.bucket(bounded.buckets.at(i), window);
   }
+}
 
+export function buildLineSubpaths(series: TimeChartSeriesModel, layout: TimeChartLayout, until: number): LinePoints {
+  const subpaths: [number, number][][] = [];
+  const window = { from: layout.xDomain[0], to: layout.xDomain[1] };
+  const bounded = series.bounded;
+  if (bounded) {
+    const sink = {
+      move: (hour: number, value: number) => { subpaths.push([[layout.toX(hour), layout.toY(value)]]); },
+      line: (hour: number, value: number) => { subpaths[subpaths.length - 1]!.push([layout.toX(hour), layout.toY(value)]); },
+    };
+    const trace = new LineTrace(series.step === true, series.valueScale ?? 1, bounded.binHours, sink);
+    traceBounded(trace, bounded, window, 0);
+    const head = headOf(series, window, until);
+    if (head) trace.head(head[0], head[1]);
+    return { subpaths, end: trace.ended ? [layout.toX(trace.lastHour), layout.toY(trace.lastValue)] : null };
+  }
+  let end: readonly [number, number] | null = null;
   if (series.points && series.points.length > 0) {
+    const step = series.step === true;
     let cur: [number, number][] = [];
     for (const pt of series.points) {
       if (pt.hour > until) break;
@@ -187,6 +146,61 @@ export function buildLineSubpaths(
   return { subpaths, end };
 }
 
+interface LinePath {
+  readonly path: Path2D;
+  readonly first: readonly [number, number];
+  last: readonly [number, number];
+  count: number;
+}
+
+function pathOfPoints(pts: readonly (readonly [number, number])[]): LinePath {
+  const path = new Path2D();
+  path.moveTo(pts[0]![0], pts[0]![1]);
+  for (let i = 1; i < pts.length; i++) path.lineTo(pts[i]![0], pts[i]![1]);
+  return { path, first: pts[0]!, last: pts[pts.length - 1]!, count: pts.length };
+}
+
+export function lineOf(series: TimeChartSeriesModel, layout: TimeChartLayout, until: number): { readonly paths: readonly LinePath[]; readonly end: readonly [number, number] | null } {
+  const bounded = series.bounded;
+  const window = { from: layout.xDomain[0], to: layout.xDomain[1] };
+  const history = bounded && !layout.logShown ? lineHistory(bounded, series.step === true, series.valueScale ?? 1) : null;
+  if (!bounded || !history || !historyFits(history, window)) {
+    const { subpaths, end } = buildLineSubpaths(series, layout, until);
+    return { paths: subpaths.map(pathOfPoints), end };
+  }
+  const paths: LinePath[] = [];
+  const [x0, x1] = layout.xDomain;
+  const [y0, y1] = layout.yDomain;
+  const [h0, v0] = history.origin ?? [0, 0];
+  const a = layout.plotWidth / (x1 - x0);
+  const d = layout.plotHeight / (y1 - y0);
+  const matrix = { a, b: 0, c: 0, d: -d, e: layout.left + (h0 - x0) * a, f: layout.top + layout.plotHeight - (v0 - y0) * d };
+  for (const sub of history.subpaths) {
+    const path = new Path2D();
+    path.addPath(sub.path, matrix);
+    paths.push({ path, first: [layout.toX(sub.firstHour), layout.toY(sub.firstValue)], last: [layout.toX(sub.lastHour), layout.toY(sub.lastValue)], count: sub.count });
+  }
+  const trace = history.trace.continueInto({
+    move(hour, value) {
+      const at = [layout.toX(hour), layout.toY(value)] as const;
+      const path = new Path2D();
+      path.moveTo(at[0], at[1]);
+      paths.push({ path, first: at, last: at, count: 1 });
+    },
+    line(hour, value) {
+      const at = [layout.toX(hour), layout.toY(value)] as const;
+      const sub = paths[paths.length - 1]!;
+      sub.path.lineTo(at[0], at[1]);
+      sub.last = at;
+      sub.count++;
+    },
+  });
+  traceBounded(trace, bounded, window, history.items);
+  const head = headOf(series, window, until);
+  if (head) trace.head(head[0], head[1]);
+  return { paths, end: trace.ended ? [layout.toX(trace.lastHour), layout.toY(trace.lastValue)] : null };
+}
+
 function colourStretches(s: TimeChartSeriesModel, layout: TimeChartLayout, hour: number): readonly { readonly color: string; readonly x0: number; readonly x1: number }[] | null {
   const runs = s.identities;
   if (!runs || runs.length < 2) return null;
@@ -206,15 +220,6 @@ function colourStretches(s: TimeChartSeriesModel, layout: TimeChartLayout, hour:
   return out;
 }
 
-function tracePolyline(ctx: Canvas2D, pts: readonly (readonly [number, number])[]): void {
-  if (!pts.length) return;
-  ctx.beginPath();
-  ctx.moveTo(pts[0]![0], pts[0]![1]);
-  for (let i = 1; i < pts.length; i++) {
-    ctx.lineTo(pts[i]![0], pts[i]![1]);
-  }
-}
-
 export function drawTimeChart(
   ctx: Canvas2D,
   model: TimeChartModel,
@@ -222,6 +227,7 @@ export function drawTimeChart(
   themeInput: FamilyTheme | undefined,
   inspectKey: string | null | undefined,
   dpr: number,
+  legendFit?: LegendFit | null,
 ): void {
   const theme = themeInput ?? DEFAULT_FAMILY_THEME;
   const tokens = resolveKitTokens(theme);
@@ -237,6 +243,10 @@ export function drawTimeChart(
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, layout.width, layout.height);
+  if (layout.rows) {
+    drawChartRows(ctx, model, layout.rows, theme, parseRowsInspect(inspectKey));
+    return;
+  }
 
   const smallFont = `${theme.fontSize.small}px ${theme.font}`;
   const labelNameFont = `500 ${theme.fontSize.body}px ${theme.font}`;
@@ -244,38 +254,11 @@ export function drawTimeChart(
   const overlayFont = `${theme.fontSize.body}px ${theme.font}`;
   const textSecondary = tokens.textSecondary;
 
-  if (layout.legendTop !== null && model.legend && model.legend.length > 0) {
-    const legend = model.legend;
-    const isLineLegend = model.mode === 'lines';
-    let ordinaryLen = legend.length;
-    while (ordinaryLen > 0 && legend[ordinaryLen - 1]!.hatch) ordinaryLen--;
-    const trailing = ordinaryLen < legend.length
-      ? legend.slice(ordinaryLen).map(item => ({
-          label: item.label,
-          color: item.color,
-          hatch: true,
-          muted: false,
-        }))
-      : undefined;
-    drawLegendStrip(ctx, layout.left, layout.legendTop, layout.width - layout.left, 14, {
-      entries: {
-        length: ordinaryLen,
-        at: i => {
-          const item = legend[i]!;
-          return {
-            label: item.label,
-            color: item.color,
-            ...(isLineLegend && !item.hatch ? { line: true } : {}),
-            dash: item.dash,
-            hatch: item.hatch,
-            flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
-            muted: false,
-          };
-        },
-        ...(trailing ? { trailing } : {}),
-      },
-      entryGap: 14,
-    }, theme);
+  const legendSpec = layout.legendTop === null ? null : timeChartLegendSpec(model);
+  if (legendSpec && layout.legendTop !== null) {
+    const width = layout.width - layout.left;
+    drawLegendStrip(ctx, layout.left, layout.legendTop, width, 14, legendSpec, theme,
+      legendFit ?? fitLegendStrip(layout.left, width, legendSpec, theme, (text, font) => measureCanvasText(ctx, text, font)));
   }
 
   for (const v of layout.yTicks) {
@@ -586,7 +569,7 @@ export function drawTimeChart(
 
     for (let idx = model.series.length - 1; idx >= 0; idx--) {
       const s = model.series[idx]!;
-      const { subpaths, end } = buildLineSubpaths(s, layout, model.hour);
+      const { paths, end } = lineOf(s, layout, model.hour);
       const baseOpacity = s.opacity ?? (s.role === 'tail' ? 0.22 : s.role === 'ceiling' ? 0.55 : 1);
       const opacity = hoveredSeriesId && hoveredSeriesId !== s.id ? Math.min(baseOpacity, 0.33) : baseOpacity;
       const lineWidth = s.width ?? (s.role === 'tail' ? 1 : s.role === 'ceiling' ? 1.4 : model.series.length > 2 ? 1.6 : 1.75);
@@ -596,21 +579,21 @@ export function drawTimeChart(
       ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
       ctx.clip();
 
-      if (s.area && subpaths.length > 0) {
+      if (s.area && paths.length > 0) {
         const baselineY = layout.toY(Math.max(layout.yDomain[0], 0));
         const areaRgb = parseColor(s.color);
         const topStop = areaRgb ? rgbaRgb(areaRgb, 0.26 * opacity) : '';
         const botStop = areaRgb ? rgbaRgb(areaRgb, 0.02 * opacity) : s.color;
-        for (const pts of subpaths) {
-          if (pts.length < 2) continue;
+        for (const line of paths) {
+          if (line.count < 2) continue;
           ctx.save();
           ctx.beginPath();
           ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, Math.max(0, clipZeroY - (layout.top - 2)));
           ctx.clip();
-          tracePolyline(ctx, pts);
-          ctx.lineTo(pts[pts.length - 1]![0], baselineY);
-          ctx.lineTo(pts[0]![0], baselineY);
-          ctx.closePath();
+          const area = new Path2D(line.path);
+          area.lineTo(line.last[0], baselineY);
+          area.lineTo(line.first[0], baselineY);
+          area.closePath();
           const grad = ctx.createLinearGradient(0, layout.top, 0, baselineY);
           if (topStop) {
             grad.addColorStop(0, topStop);
@@ -622,7 +605,7 @@ export function drawTimeChart(
             ctx.globalAlpha = 0.22 * opacity;
           }
           ctx.fillStyle = grad;
-          ctx.fill();
+          ctx.fill(area);
           ctx.restore();
 
           if (s.negRed && layout.yDomain[0] < 0) {
@@ -630,21 +613,20 @@ export function drawTimeChart(
             ctx.beginPath();
             ctx.rect(layout.left, clipZeroY, layout.plotWidth + 1, Math.max(0, layout.baseY + 4 - clipZeroY));
             ctx.clip();
-            tracePolyline(ctx, pts);
-            ctx.lineTo(pts[pts.length - 1]![0], zeroY);
-            ctx.lineTo(pts[0]![0], zeroY);
-            ctx.closePath();
+            const below = new Path2D(line.path);
+            below.lineTo(line.last[0], zeroY);
+            below.lineTo(line.first[0], zeroY);
+            below.closePath();
             ctx.globalAlpha = 0.16 * opacity;
             ctx.fillStyle = theme.red;
-            ctx.fill();
+            ctx.fill(below);
             ctx.restore();
           }
         }
       }
 
       const stretches = colourStretches(s, layout, model.hour);
-      for (const pts of subpaths) {
-        if (pts.length < 1) continue;
+      for (const line of paths) {
         const strokeSegment = (strokeColor: string, clipTop: number, clipHeight: number, x0?: number, x1?: number) => {
           ctx.save();
           if (clipHeight > 0) {
@@ -663,8 +645,7 @@ export function drawTimeChart(
           ctx.lineCap = 'round';
           const dash = s.dash?.length ? s.dash : s.role === 'ceiling' ? [5, 4] : null;
           if (dash) ctx.setLineDash([...dash]);
-          tracePolyline(ctx, pts);
-          ctx.stroke();
+          ctx.stroke(line.path);
           ctx.restore();
         };
         if (s.negRed && layout.yDomain[0] < 0) {

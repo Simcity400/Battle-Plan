@@ -10,7 +10,7 @@ use super::{
 };
 
 const MAGIC: &[u8; 4] = b"H4XT";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 
 pub fn encode(tables: &ExecutableTables) -> Vec<u8> {
     let mut out = Out(Vec::with_capacity(1 << 20));
@@ -76,7 +76,7 @@ pub fn decode(bytes: &[u8]) -> io::Result<ExecutableTables> {
         version: input.verified(|input| input.string())?,
         keywords: input.verified(keywords_in)?,
         registries: input.verified(registries_in)?,
-        auxiliary: input.verified(auxiliary_in)?,
+        auxiliary: input.verified(|input| auxiliary_in(input, version))?,
         variables: input.verified(variables_in)?,
         numeric: input.verified(numeric_in)?,
         commands: input.verified(commands_in)?,
@@ -271,9 +271,21 @@ fn auxiliary_out(out: &mut Out, table: &auxiliary::AuxiliaryTables) {
     out.verified(&table.air_detection_override_prefix, |out, prefix| {
         out.str(prefix)
     });
+    out.verified(&table.category_families, |out, families| {
+        for mask in [
+            families.land,
+            families.air,
+            families.naval,
+            families.ship_designer,
+            families.tank_designer,
+            families.plane_designer,
+        ] {
+            out.u64(mask);
+        }
+    });
 }
 
-fn auxiliary_in(input: &mut In) -> io::Result<auxiliary::AuxiliaryTables> {
+fn auxiliary_in(input: &mut In, version: u16) -> io::Result<auxiliary::AuxiliaryTables> {
     let named = |input: &mut In| {
         input.verified(|input| input.list(|input| Ok((input.leaked()?, input.u32()?))))
     };
@@ -318,6 +330,23 @@ fn auxiliary_in(input: &mut In) -> io::Result<auxiliary::AuxiliaryTables> {
         })?,
         air_graph_scale: input.verified(|input| Ok(f32::from_bits(input.u32()?)))?,
         air_detection_override_prefix: input.verified(In::leaked)?,
+        category_families: if version < 4 {
+            Err(Withheld::new(
+                auxiliary::CATEGORY_FAMILIES,
+                "not recorded in this recording",
+            ))
+        } else {
+            input.verified(|input| {
+                Ok(auxiliary::CategoryFamilies {
+                    land: input.u64()?,
+                    air: input.u64()?,
+                    naval: input.u64()?,
+                    ship_designer: input.u64()?,
+                    tank_designer: input.u64()?,
+                    plane_designer: input.u64()?,
+                })
+            })?
+        },
     })
 }
 
@@ -680,6 +709,60 @@ mod tests {
             folding,
             cursors,
         }
+    }
+
+    #[test]
+    fn the_category_families_round_trip_and_an_earlier_recording_lacks_them_by_name() {
+        fn withheld<T>(part: &'static str) -> Verified<T> {
+            Err(Withheld::new(part, "synthetic"))
+        }
+        let families = auxiliary::CategoryFamilies {
+            land: 0x3c,
+            air: 0xfc00,
+            naval: 0x3c1,
+            ship_designer: 0x1c0,
+            tank_designer: 0x4,
+            plane_designer: 0x3c00,
+        };
+        let mut table = tables(withheld(FOLDING), withheld(CURSORS));
+        table.auxiliary = Ok(auxiliary::AuxiliaryTables {
+            equipment_categories: withheld("categories"),
+            category_names: withheld("names"),
+            stat_metadata: withheld("stats"),
+            ai_strategy_types: withheld("strategies"),
+            missions: withheld("missions"),
+            equipment_missions: withheld("equipment missions"),
+            execution_types: withheld("execution"),
+            order_types: withheld("orders"),
+            selectors: withheld("selectors"),
+            rules: withheld("rules"),
+            air_graph_channels: withheld("channels"),
+            air_graph_colors: withheld("colours"),
+            air_graph_scale: withheld("scale"),
+            air_detection_override_prefix: withheld("prefix"),
+            category_families: Ok(families),
+        });
+        let encoded = encode(&table);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded.auxiliary.unwrap().category_families, Ok(families));
+
+        let part: Vec<u8> = std::iter::once(0)
+            .chain(
+                [0x3c_u64, 0xfc00, 0x3c1, 0x1c0, 0x4, 0x3c00]
+                    .into_iter()
+                    .flat_map(u64::to_le_bytes),
+            )
+            .collect();
+        let at = encoded
+            .windows(part.len())
+            .position(|window| window == part)
+            .unwrap();
+        let mut version_three = [&encoded[..at], &encoded[at + part.len()..]].concat();
+        version_three[4..6].copy_from_slice(&3_u16.to_le_bytes());
+        let decoded = decode(&version_three).unwrap();
+        let missing = decoded.auxiliary.unwrap().category_families.unwrap_err();
+        assert_eq!(missing.part, auxiliary::CATEGORY_FAMILIES);
+        assert_eq!(missing.reason, "not recorded in this recording");
     }
 
     #[test]

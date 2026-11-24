@@ -10,7 +10,8 @@ import type { AnyTableWidgetDeclaration, DeclaredTableContext } from '../../fami
 import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
 import type { TableModel, TableProjection } from '../../families/table/model.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, type TableSettings } from '../../families/table/settings.ts';
-import type { MarketLendLeaseReply } from '../../generated/dashboard';
+import type { AgencyComparisonReply } from '../../generated/dashboard';
+import { registerGameWindow } from '../../dashboard/gameWindows.ts';
 import { TABLE_VIEWS } from './table.ts';
 
 const identity: IdentityProvider = {
@@ -90,26 +91,32 @@ test('stored table settings of the tables A widgets reach the table host through
   }
 });
 
-test('lend-lease agreements shows what the chosen countries receive when the stored direction is Received', async () => {
+test('lend-lease agreements asks the product for what the chosen group receives when the stored direction is Received', async () => {
   const table = await hosted('lend-lease-agreements');
-  const item = (amount: number) => [{ variant: '7', name: 'Rifle', amountRaw: String(amount * 100000) }];
-  const reply: MarketLendLeaseReply = {
-    branchId: '1', offers: null, contracts: null, purchasesMissing: null, unattributed: 0, variants: [], icons: [], warnings: [],
-    agreements: [{
-      key: '1', id: '01', giver: 'AAA', receiver: 'BBB', revision: '1', activeSince: 10, lastDelivery: 0,
-      monthly: item(50), percentage: [], once: [], delivered: item(200), sunk: [],
-      fuelDailyRaw: '0', fuelPercentageRaw: '0', lastFuelDeliveredRaw: '0',
-    }],
+  const widget = { countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false } } as Partial<WidgetSpec>;
+  const params = (stored: WidgetOptions) => {
+    const ctx = context(table.options(stored), widget) as FamilyPlanContext;
+    return (table.declaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!.read as unknown as { params: Record<string, unknown> }).params;
   };
-  const readView = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity });
-  const onlyReceiver = { passing: { BBB: [[0, 1000]] as [number, number][] }, unrecorded: [], bounds: [] };
-  const draw = (stored: WidgetOptions): TableModel => {
-    const ctx = context(table.options(stored));
-    const filtered = { ...ctx, countries: { ...ctx.countries, filter: onlyReceiver } } as DeclaredTableContext;
-    return table.projection.project(readView, table.declaration.projectionOptions(filtered));
+  assert.deepEqual(params({ direction: 'received' }), { branchId: '1', countries: [], group: { type: 'faction', id: '42', membership: 'hour' }, only: 'agreements', leaseSide: 'received' },
+    'the dated group goes to the product, never every tag that was ever a member');
+  assert.equal(params({}).leaseSide, 'sent', 'Sent stays the default');
+});
+
+test('next elections and the market send the group and the open tab to the product', async () => {
+  const widget = { countries: { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } } as Partial<WidgetSpec>;
+  const params = async (kind: string) => {
+    const table = await hosted(kind);
+    const ctx = context(table.options({}), widget) as FamilyPlanContext;
+    return (table.declaration.sources(ctx, { following: true, staticSpan: null }).entries[0]!.read as unknown as { params: Record<string, unknown> }).params;
   };
-  assert.deepEqual(draw({ direction: 'received' }).rows.map(row => row.key), ['1:7']);
-  assert.equal(draw({}).empty, 'No lend-lease sent', 'Sent stays the default');
+  assert.deepEqual(await params('next-elections'), { branchId: '1', group: { type: 'humans', membership: 'hour' } });
+  const market = TABLE_VIEWS.filter(entry => entry.kind === 'international-market').map(entry => entry.view).sort();
+  assert.ok(market.includes('requests'), 'the requests tab has its own view');
+  const spec = await TABLE_VIEWS.find(entry => entry.kind === 'international-market' && entry.view === 'requests')!.loadSpec();
+  const declaration = spec.declaration as AnyTableWidgetDeclaration;
+  const read = declaration.sources(context({}, widget) as FamilyPlanContext, { following: true, staticSpan: null }).entries[0]!.read as unknown as { params: Record<string, unknown> };
+  assert.deepEqual(read.params, { branchId: '1', countries: [], group: { type: 'humans', membership: 'hour' }, only: 'requests' }, 'requests are asked as requests, not every kind of terms');
 });
 
 test('agency comparison asks the product for the stored top measure and for uncreated agencies', async () => {
@@ -124,6 +131,24 @@ test('agency comparison asks the product for the stored top measure and for uncr
   assert.equal(params({}).top?.by, 'defense', 'counter intelligence stays the default');
   assert.equal(params({ includeUncreated: true }).includeUncreated, true);
   assert.equal(params({}).includeUncreated, false);
+});
+
+test('agency comparison opens the agency window by country id, and only for a created agency', async () => {
+  const table = await hosted('agency-comparison');
+  const agency = (id: number, created: boolean) => ({
+    country: { id, tag: `T${id}` }, created, name: created ? `Agency ${id}` : null, nameMissing: created ? null : 'Not created',
+    defenseRaw: '0', defenseText: null, defenseValue: null, activeCount: 0, maximum: 0, upgrades: null,
+  });
+  const reply: AgencyComparisonReply = {
+    agencies: [agency(7, true), agency(9, false)], defenseLabel: null, upgradesMissing: null, missing: null, warnings: [],
+  };
+  const readView = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity });
+  const draw = () => table.projection.project(readView, table.declaration.projectionOptions(context(table.options({ includeUncreated: true }))));
+  const view = (model: TableModel) => model.rows.map(row => [row.key, row.cells.view?.value.kind, row.tooltipAction ?? null]);
+  assert.deepEqual(view(draw()).map(([key, status]) => [key, status]), [['7', 'notApplicable'], ['9', 'notApplicable']],
+    'no View while no agency window is registered');
+  registerGameWindow('intelligenceAgency', () => null);
+  assert.deepEqual(view(draw()), [['7', 'known', 'Open its agency window'], ['9', 'notApplicable', null]]);
 });
 
 test('governments in exile does not report none when an exile with a known other country has an unknown host', async () => {

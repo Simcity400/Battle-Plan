@@ -22,7 +22,7 @@ import { pagedTailEntry } from '../table/logHelpers.ts';
 import { DEFAULT_TAIL_PAGE_SIZE } from '../table/rowSource.ts';
 import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
 import type { TableModel } from '../table/model.ts';
-import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry } from './auditBinding.ts';
+import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry, type PlanAuditSnapshot } from './auditBinding.ts';
 import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
@@ -287,6 +287,21 @@ test('F6: bound audit reader verifies an earlier snapshot with the verifier capt
   }, undefined);
   assert.equal(pictureError('bars', shown, await exactOf(shown)), null, 'two rows with the same cell names compare cell by cell and a correct picture passes');
   await assert.rejects(exactOf([auditRow('GER', '3'), auditRow('GER', '4')]), /Audit key GER repeats/, 'a repeated audit key is refused, never collapsed');
+  const ranged = new AuditSnapshotStore<BoundAuditEntry<PlanAuditSnapshot<readonly string[], Record<string, never>>>>(16);
+  const rangedId = ranged.create({ verify: createPlanAuditVerifier<readonly string[], Record<string, never>>(), snapshot: {
+    projection: { family: 'table', kind: 'synthetic-audit', project: () => ['GER', 'FRA', 'ITA', 'ENG'] },
+    options: {},
+    exactReadView: async () => createBoundedReadView({ hour: 5, panels: new Map() }),
+    deriveRows: (rows, _hour, fields) => {
+      const range = fields?.range as { first: number; count: number } | undefined;
+      return rows.slice(range?.first ?? 0, (range?.first ?? 0) + (range?.count ?? rows.length)).map(key => auditRow(key, key));
+    },
+  } });
+  const sampled = createBoundAuditReader(ranged);
+  const full = await sampled(5, rangedId, { range: { first: 0, count: 4 } });
+  const shorter = await sampled(5, rangedId, { range: { first: 0, count: 2 } });
+  assert.deepEqual([...full!.values.keys()], ['GER', 'FRA', 'ITA', 'ENG'], 'R4-S6: a full viewport sample is checked against its own installed range');
+  assert.deepEqual([...shorter!.values.keys()], ['GER', 'FRA'], 'R4-S6: a later, shorter sample under the same audit id is checked against its own range, and the earlier one is not changed by it');
 });
 
 test('F8 & F9: listbox mirror uses stable key-based IDs, invalidates on prefix change, and honors explicit selected state', () => {
@@ -659,6 +674,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
   const hoverHits: (ParsedFamilyHit | null)[] = [];
   const dragEvents: string[] = [];
   let doubleClicks = 0;
+  let expired = false;
 
   const stop = bindFamilyPointer({
     bodyNode: body as unknown as HTMLElement,
@@ -674,7 +690,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
     focusAnchorRef: { current: { x: 0, y: 0 } },
     accessibleRef: { current: null },
     pointerMode: 'continuous',
-    isBlocked: () => !installed,
+    isBlocked: () => !installed || expired,
     getInstalled: () => installed,
     getViewportHeight: () => 800,
     parseHit: (hitKey, inst) => parseTimeChartHit(hitKey) ?? parseDefaultRowHit(hitKey) ?? (inst ? null : null),
@@ -708,6 +724,24 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
   body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 2 });
   assert.equal(activations.length, 1, 'drag past CLICK_CANCEL_PX cancels click activation');
   assert.deepEqual(dragEvents, ['start', `move:${CLICK_CANCEL_PX + 10},0`, 'end']);
+
+  dragEvents.length = 0;
+  body.dispatch('pointerdown', { button: 0, clientX: 100, clientY: 70, pointerId: 3 });
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 3 });
+  const panned = installed;
+  installed = { ...installed!, id: 8, owner: 'owner-B' };
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 30, clientY: 70, pointerId: 3 });
+  body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 30, clientY: 70, pointerId: 3 });
+  assert.deepEqual(dragEvents, ['start', `move:${CLICK_CANCEL_PX + 10},0`, 'end'], 'R4-S9: a pan that meets an owner change ends there, and the replacement chart never gets the old owner’s range');
+  dragEvents.length = 0;
+  installed = panned;
+  const blockedBefore = expired;
+  body.dispatch('pointerdown', { button: 0, clientX: 100, clientY: 70, pointerId: 4 });
+  expired = true;
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 4 });
+  body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 4 });
+  assert.deepEqual([blockedBefore, dragEvents], [false, []], 'R4-S9: a pan does not start on an expired picture');
+  expired = false;
 
   let dblPrevented = false;
   body.dispatch('dblclick', { clientX: 100, clientY: 70, preventDefault() { dblPrevented = true; } });

@@ -21,6 +21,7 @@ pub enum Country {
 
 pub const NOT_IN_HISTORY: &str = "This country is not in this branch";
 pub const NOT_HELD_AT_HOUR: &str = "This country holds no tag at this hour";
+pub const TAG_UNLINKED: &str = "a recorded tag's country was not resolved at this hour";
 
 pub const SLOT_MARK: char = '\0';
 
@@ -124,6 +125,7 @@ pub struct Holders {
     pub unknown: Vec<(i32, i32, String)>,
     slots: OnceLock<BTreeMap<u32, SlotHistory>>,
     edges: OnceLock<Vec<i32>>,
+    unlinked: OnceLock<Vec<(i32, i32)>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -134,7 +136,7 @@ struct SlotHistory {
 
 impl Holders {
     pub fn new(tags: BTreeMap<String, Vec<HolderRun>>, unknown: Vec<(i32, i32, String)>) -> Self {
-        Self { tags, unknown, slots: OnceLock::new(), edges: OnceLock::new() }
+        Self { tags, unknown, slots: OnceLock::new(), edges: OnceLock::new(), unlinked: OnceLock::new() }
     }
 
     pub fn next_change(&self, hour: i32) -> Option<i32> {
@@ -153,6 +155,30 @@ impl Holders {
         self.slots.get_or_init(|| slot_histories(&self.tags))
     }
 
+    fn unlinked(&self) -> &[(i32, i32)] {
+        self.unlinked.get_or_init(|| {
+            let mut spans: Vec<(i32, i32)> = self.tags.values().flatten().filter(|run| run.holder == Holder::Unresolved).map(|run| (run.first, run.last)).collect();
+            spans.sort_unstable();
+            let mut out: Vec<(i32, i32)> = Vec::with_capacity(spans.len());
+            for (first, last) in spans {
+                match out.last_mut() {
+                    Some(held) if i64::from(first) <= i64::from(held.1) + 1 => held.1 = held.1.max(last),
+                    _ => out.push((first, last)),
+                }
+            }
+            out
+        })
+    }
+
+    pub fn naming_spans(&self, country: &Country) -> Vec<(i32, i32)> {
+        let mut out: Vec<(i32, i32)> = self.unknown.iter().map(|&(first, last, _)| (first, last)).chain(country.runs(self).iter().map(|run| (run.first, run.last))).collect();
+        if let Country::Slot(slot) = country {
+            out.extend_from_slice(self.unlinked());
+            out.extend(self.slots().get(slot).into_iter().flat_map(|held| held.tags.iter().map(|&(first, last, ..)| (first, last))));
+        }
+        out
+    }
+
     pub fn runs<K: Key + ?Sized>(&self, country: &K) -> &[HolderRun] {
         country.runs(self)
     }
@@ -166,11 +192,7 @@ impl Holders {
     pub fn tag_at<'a>(&'a self, country: &'a Country, hour: i32) -> Option<&'a str> {
         match country {
             Country::Tag(tag) => Some(tag),
-            Country::Slot(slot) => {
-                let Holder::Found { id, .. } = self.at(country, hour)?.holder else { return None };
-                let held = self.slots().get(slot)?;
-                held.tags.iter().find(|(first, last, holder, _)| *first <= hour && hour <= *last && *holder == id).map(|(.., tag)| tag.as_str())
-            }
+            Country::Slot(slot) => self.slot_tag(*slot, hour),
         }
     }
 
@@ -202,6 +224,12 @@ impl Holders {
     pub fn unnamed(&self, country: &Country, hour: i32) -> String {
         if let Some((_, _, reason)) = self.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last) {
             return format!("Who holds {} is not known: {reason}", country.key());
+        }
+        if matches!(country, Country::Slot(_)) {
+            let unlinked = self.unlinked();
+            if unlinked.get(unlinked.partition_point(|&(_, last)| last < hour)).is_some_and(|&(first, _)| first <= hour) {
+                return format!("Who holds {} is not known: {TAG_UNLINKED}", country.key());
+            }
         }
         if country.runs(self).first().is_some_and(|run| run.first <= hour) { NOT_HELD_AT_HOUR } else { NOT_IN_HISTORY }.to_owned()
     }
@@ -247,9 +275,8 @@ impl Holders {
     }
 
     pub fn slot_tag(&self, slot: u32, hour: i32) -> Option<&str> {
-        let held = self.slots().get(&slot)?;
-        let end = held.tags.partition_point(|(first, ..)| *first <= hour);
-        held.tags[..end].iter().rev().find(|(_, last, ..)| hour <= *last).map(|(.., tag)| tag.as_str())
+        let Holder::Found { id, .. } = self.at(&Country::Slot(slot), hour)?.holder else { return None };
+        self.slots().get(&slot)?.tags.iter().find(|(first, last, holder, _)| *first <= hour && hour <= *last && *holder == id).map(|(.., tag)| tag.as_str())
     }
 }
 

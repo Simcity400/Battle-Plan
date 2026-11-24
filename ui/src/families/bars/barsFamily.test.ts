@@ -28,7 +28,7 @@ import { barsHostAdapter } from './hostAdapter.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { barsLane, type FamilyBarsBinding } from './laneView.ts';
-import { assertContinuity, assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDated, firstRow, LaneTransport } from '../laneRuntime.fixture.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { buildShareRowsModel } from './shareRows.ts';
 
@@ -572,6 +572,7 @@ test('a backward seek drops a cached model from a later hour', () => {
   const binding = { family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, reducedMotion: true };
   const surface = { width: 480, height: 240, dpr: 1 };
   assert.equal(assertQuietFrames(() => createLaneView(barsLane, () => {}), { label: 'before the change', binding, hour: 3 }, 24, surface), 10);
+  assertTooltipDated(() => createLaneView(barsLane, () => {}), { label: 'bars', binding, hour: 3 }, firstRow, 5, surface);
   assertFreshPaint(() => createLaneView(barsLane, () => {}), [
     { label: 'before', binding, hour: 5, check: true },
     { label: 'after', binding, hour: 20, speed: 24 },

@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Page, type Bitmap, type PageMessage } from '../dashboard/follow/page.ts';
 import { Lane } from '../draw/lane.ts';
+import { cropSurfaces } from '../draw/laneDispatch.ts';
 import type { BoundedReadView, FamilyProjection } from './contract.ts';
 import { createLaneView, lazyLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
 import { familyBinding, type FamilyBindingContext, type FamilyHostAdapter } from './host/adapter.ts';
-import { assertContinuity, assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME, LaneTransport } from './laneRuntime.fixture.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDated, driveLane, installRecordingCanvas, LANE_THEME as THEME, LaneTransport } from './laneRuntime.fixture.ts';
 import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
 import { IdentityIndex } from './identity/index.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
@@ -55,7 +56,7 @@ const family: LaneFamily<Binding, Model, Layout> = {
   tooltip(frame, key) {
     counts.tooltip++;
     const row = frame.model.rows.find(item => item.key === key);
-    return row ? { hour: frame.hour, rowKey: key, content: { title: key, rows: [] } as never } : null;
+    return row ? { rowKey: key, content: { title: key, rows: [] } as never } : null;
   },
   structure: frame => ({ meta: { count: frame.model.rows.length }, nav: frame.layout.rows.map(row => row.key) }),
   mirror: frame => {
@@ -444,6 +445,10 @@ const gliding: LaneFamily<Binding, Model, Layout> = {
   },
 };
 
+test('a tooltip on a picture that stands across hours is dated by the hour it is shown at, as a fresh paint dates it', () => {
+  assertTooltipDated(() => createLaneView(family, () => {}), { label: 'fixture', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12 }, 'A');
+});
+
 test('a transition continues only from the last drawn placement: a seek, a pin or a refusal between drops it even when the model is reused, and a same-hour tick keeps it', () => {
   assertContinuity(() => createLaneView(gliding, () => {}), {
     from: { label: 'before the swap', binding: binding(rowsAt([{ key: 'A', v: 1 }, { key: 'B', v: 2 }])), hour: 11 },
@@ -528,6 +533,78 @@ test('a drawing that expires at a wall-clock time arms the one timer, even while
     assert.deepEqual([draws, set.length], [1, 1], 'no redraw and no second timer before it passes');
     lane.paint({ label: 'expired', binding: bound, hour: 12, speed: 0, now: 1600 });
     assert.equal(draws, 2, 'the expired drawing is redrawn');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('incremental families keep their backing canvas out of destructive transferToImageBitmap', async () => {
+  const recording = installRecordingCanvas();
+  try {
+    const incremental: LaneFamily<Binding, Model, Layout> = { ...family, incremental: true };
+    const view = createLaneView(incremental, () => {});
+    const lane = driveLane(view, recording.canvases);
+    const painted = lane.paint({ label: 'inc', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 10 });
+    const canvas = painted.surfaces[0]!.source as unknown as { width: number; height: number; transferToImageBitmap?: () => unknown };
+    let transfers = 0;
+    canvas.transferToImageBitmap = () => { transfers++; throw new Error('must not transfer incremental canvas'); };
+    let fallbacks = 0;
+    const bitmaps = await cropSurfaces([canvas], async source => {
+      fallbacks++;
+      return { width: source.width, close() {} };
+    });
+    assert.equal(bitmaps.length, 1);
+    assert.equal(transfers, 0, 'incremental family canvas is never detached');
+    assert.equal(fallbacks, 1, 'incremental family uses non-destructive fallback snapshot');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a zero-sized surface waits without presenting or looping kept-content refusals until resized', async () => {
+  const recording = installRecordingCanvas();
+  try {
+    let presentations = 0;
+    let refusals = 0;
+    const view = createLaneView(family, () => {});
+    let lane!: Lane<Bitmap>;
+    const page = new Page<Bitmap>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') {
+          if (m.refused?.length) refusals += m.refused.length;
+          lane.frame(m);
+        }
+      },
+    });
+    lane = new Lane<Bitmap>({
+      lane: 0,
+      lanes: 1,
+      clock: () => 0,
+      views: () => view,
+      crop: async sources => sources.map(s => ({ width: s.width, close() {} })),
+      present: presentation => { presentations++; page.offer(presentation); },
+      release: () => {},
+      fail: reason => { throw new Error(reason); },
+      later: () => {},
+    });
+    const bound = binding(rowsAt([{ key: 'A', v: 1 }]));
+    lane.mount(1, [], 'test-lane', bound);
+    lane.bind(1, { generation: 1, owner: 'o1', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.mount(1, { route: 0, lane: 0, owner: 'o1', surfaces: [{ install() {}, clear() {} }] });
+    for (let step = 0; step < 4; step++) {
+      page.publish(10, { playing: false, seek: 0 });
+      await new Promise<void>(r => setImmediate(r));
+      page.frame();
+    }
+    assert.equal(presentations, 0, 'zero-sized surface never presents');
+    assert.equal(refusals, 0, 'zero-sized surface never loops kept-content refusals');
+    lane.bind(1, { generation: 2, owner: 'o1', surfaces: [{ width: 200, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'picture', 'resizing to positive dimensions wakes the view and installs');
   } finally {
     recording.restore();
   }

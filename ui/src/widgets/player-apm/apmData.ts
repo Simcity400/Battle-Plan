@@ -1,9 +1,14 @@
+import { formatRational, formatScalar } from '../../families/valueFormat.ts';
 import type { ApmReply, ApmValue } from '../../generated/dashboard';
 
 const count = (value: unknown) => value === null || (typeof value === 'string' && /^\d+$/.test(value));
+const optionalCount = (value: unknown) => value === undefined || count(value);
+const optionalPositiveCount = (value: unknown) => value === undefined || value === null || (typeof value === 'string' && /^[1-9]\d*$/.test(value));
 const rate = (value: unknown) => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
 const validValue = (value: ApmValue) => value && rate(value.apm) && rate(value.confirmedApm) && count(value.orders)
-  && count(value.pausedOrders) && typeof value.complete === 'boolean' && typeof value.gaps === 'boolean' && rate(value.unpausedMinutes);
+  && optionalCount(value.confirmedOrders)
+  && count(value.pausedOrders) && typeof value.complete === 'boolean' && typeof value.gaps === 'boolean'
+  && rate(value.unpausedMinutes) && optionalCount(value.unpausedMinutesNum) && optionalPositiveCount(value.unpausedMinutesDen);
 const identityOrder = new Intl.Collator('en', { numeric: true });
 
 export function validateApm(value: unknown): ApmReply {
@@ -65,13 +70,61 @@ export function playerNames(
   return out;
 }
 
-export const apmText = (value: number | null | undefined) => value == null ? 'Unknown' : value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+export function parseUnsignedInt(value: string | null | undefined): bigint | null {
+  return typeof value === 'string' && /^\d+$/.test(value) ? BigInt(value) : null;
+}
+
+export interface ApmRateOperands {
+  readonly orders: bigint;
+  readonly minutesNum: bigint;
+  readonly minutesDen: bigint;
+}
+
+export function apmRateRational(value: ApmValue, confirmed = false): ApmRateOperands | null {
+  if (!value.complete) return null;
+  if (!confirmed && value.apm === null) return null;
+  const orders = parseUnsignedInt(confirmed ? (value.confirmedOrders ?? value.orders) : value.orders);
+  const minutesNum = parseUnsignedInt(value.unpausedMinutesNum);
+  const minutesDen = parseUnsignedInt(value.unpausedMinutesDen);
+  if (orders === null || minutesNum === null || minutesDen === null || minutesNum <= 0n || minutesDen <= 0n) {
+    return null;
+  }
+  return { orders, minutesNum, minutesDen };
+}
+
+export function formatApmRate(value: ApmValue, maxDecimals: number, confirmed = false): string | null {
+  const rat = apmRateRational(value, confirmed);
+  if (rat) {
+    return formatRational(rat.orders * rat.minutesDen, rat.minutesNum, { maxDecimals });
+  }
+  const raw = confirmed ? value.confirmedApm : value.apm;
+  return raw === null ? null : formatScalar(raw, { decimals: 0, maxDecimals });
+}
+
+export function formatUnpausedMinutesText(value: ApmValue): string | null {
+  const minutesNum = parseUnsignedInt(value.unpausedMinutesNum);
+  const minutesDen = parseUnsignedInt(value.unpausedMinutesDen);
+  if (minutesNum !== null && minutesDen !== null && minutesDen > 0n) {
+    return formatRational(minutesNum, minutesDen, { maxDecimals: 2, unit: 'min' });
+  }
+  return value.unpausedMinutes === null
+    ? null
+    : formatScalar(value.unpausedMinutes, { decimals: 0, maxDecimals: 2, unit: 'min' });
+}
+
+export function formatApmOperands(value: ApmValue, confirmed = false): string | null {
+  const orders = parseUnsignedInt(confirmed ? (value.confirmedOrders ?? value.orders) : value.orders);
+  const minutes = formatUnpausedMinutesText(value);
+  if (orders === null || minutes === null) return null;
+  return `${formatScalar(orders, 'integer')} ${orders === 1n ? 'action' : 'actions'} in ${minutes}`;
+}
+
 export const APM_EXPLANATION = 'Effective actions per minute (eAPM): accepted player-issued gameplay orders per unpaused real minute. Paused orders and paused time never affect eAPM. Camera movement, selections and unsaved interface edits do not count. Automatic battle-plan execution does not add orders.';
 export const GAPS_NOTE = 'Part of this period was not recorded; its orders and minutes are both left out.';
 function rateNote(value: ApmValue): string {
   if (!value.complete) return 'Player orders or unpaused time were not fully recorded for this period; the rate is unknown.';
-  if (value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';
-  if (value.apm === null) return `It is unclear whether some orders count toward eAPM; the rate is unknown. Confirmed orders: ${apmText(value.confirmedApm)} per unpaused minute.`;
+  if (value.unpausedMinutesNum === '0' || value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';
+  if (value.apm === null) return `It is unclear whether some orders count toward eAPM; the rate is unknown. Confirmed orders: ${formatApmRate(value, 1, true) ?? 'Unknown'} per unpaused minute.`;
   return APM_EXPLANATION;
 }
 export function valueNote(value: ApmValue): string {

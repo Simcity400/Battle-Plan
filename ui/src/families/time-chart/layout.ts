@@ -5,6 +5,8 @@ import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
+import { closedExtent, historyFits } from './history.ts';
+import { layoutChartRows, type RowsFrame } from './rows.ts';
 import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
 import type {
   ChartColumnModel,
@@ -20,38 +22,32 @@ function shortMonth(month: number): string {
   return monthNames[month - 1]!.slice(0, 3);
 }
 
-function axisDecimalPlaces(ticks: readonly number[] | undefined, cap: number): number | null {
-  if (!ticks || ticks.length === 0) return null;
-  let max = 0;
-  for (const tick of ticks) {
-    if (!Number.isFinite(tick)) continue;
-    const scale = exactDecimal(tick).scale;
-    if (scale > max) max = scale;
+const AXIS_MAX_DECIMALS = 12;
+
+function axisDecimalPlaces(ticks: readonly number[] | undefined, value: number, cap: number): number {
+  let places = 0;
+  for (const tick of ticks?.length ? ticks : [value]) {
+    if (Number.isFinite(tick)) places = Math.max(places, exactDecimal(tick).scale);
   }
-  return Math.min(cap, max);
+  return Math.min(ticks?.length ? AXIS_MAX_DECIMALS : cap, places);
 }
 
 export function formatChartAxisValue(value: number, format: ChartValueFormat, ticks?: readonly number[]): string {
   if (!Number.isFinite(value)) return '';
   if (format === 'percent' || format === 'share' || format === 'signedPercent') {
-    const places = axisDecimalPlaces(ticks, 2) ?? Math.min(2, exactDecimal(value).scale);
+    const places = axisDecimalPlaces(ticks, value, 2);
     return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, percent: true });
   }
   if (format === 'signed1') {
-    if (Math.abs(value) < 1e-9) return '0';
-    const places = axisDecimalPlaces(ticks, 1) ?? Math.min(1, exactDecimal(value).scale);
+    const places = axisDecimalPlaces(ticks, value, 1);
     return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, signed: true });
   }
   if (format === 'compact') {
     if (value === 0) return '0';
     return formatCompactScalar(Math.round(value), 'integer').text;
   }
-  if (format === 'power') {
-    if (Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
-    const places = axisDecimalPlaces(ticks, 2) ?? 0;
-    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
-  }
-  const places = axisDecimalPlaces(ticks, 2) ?? 0;
+  const places = axisDecimalPlaces(ticks, value, 2);
+  if (format === 'power' && Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
   return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
 }
 
@@ -85,58 +81,11 @@ export interface PlacedMarker {
   readonly size: number;
 }
 
-export interface PlacedAxisTick {
-  readonly hour: number;
-  readonly x: number;
-  readonly label: string | null;
-  readonly major: boolean;
-}
-
-export interface AxisCandidate extends PlacedAxisTick {
-  readonly labelWidth: number;
-}
-
-function placeAxisTicks(candidates: readonly AxisCandidate[], keepOut: readonly (readonly [number, number])[], small: boolean): PlacedAxisTick[] {
-  const ticks: PlacedAxisTick[] = [];
-  let shownFirst = false;
-  let lastLabelRight = -1e9;
-  for (const tick of candidates) {
-    let label = tick.label;
-    if (label) {
-      const hiddenByTab = keepOut.some(([kx, kr]) => Math.abs(tick.x - kx) < kr);
-      const hiddenBySmall = small && shownFirst;
-      const hiddenByOverlap = tick.x - tick.labelWidth / 2 < lastLabelRight + 8;
-      if (hiddenByTab || hiddenBySmall || hiddenByOverlap) {
-        label = null;
-      } else {
-        shownFirst = true;
-        lastLabelRight = tick.x + tick.labelWidth / 2;
-      }
-    }
-    ticks.push({ hour: tick.hour, x: tick.x, label, major: tick.major });
-  }
-  return ticks;
-}
-
-export function hoverTimeChartLayout(
-  base: TimeChartLayout,
-  headHour: number,
-  fontFamily: string,
-  measure: MeasureText,
-  hoverHour: number | null,
-  hoveredSeriesId: string | null,
-): TimeChartLayout {
+export function hoverTimeChartLayout(base: TimeChartLayout, hoveredSeriesId: string | null): TimeChartLayout {
   const endLabels = hoveredSeriesId === null
     ? base.endLabels
     : base.endLabels.map(label => (label.id === TOTAL_LABEL || label.seriesId === hoveredSeriesId ? label : { ...label, faded: true }));
-  if (hoverHour === null || hoverHour < base.xDomain[0] || hoverHour > headHour) return endLabels === base.endLabels ? base : { ...base, endLabels };
-  const hx = base.toX(hoverHour);
-  const hTabW = Math.ceil(measure(formatDateOnly(hoverHour), `600 11px ${fontFamily}`) + 14);
-  const keepOut: [number, number][] = [
-    [base.dateTabX, base.dateTabWidth / 2 + 14],
-    [Math.max(base.left + hTabW / 2, Math.min(hx, base.width - 6 - hTabW / 2)), hTabW / 2 + 14],
-  ];
-  return { ...base, endLabels, axisTicks: placeAxisTicks(base.axisCandidates, keepOut, base.small) };
+  return endLabels === base.endLabels ? base : { ...base, endLabels };
 }
 
 export interface PlacedColumnItem {
@@ -184,13 +133,12 @@ export interface TimeChartLayout {
   readonly dateTabText: string;
   readonly dateTabX: number;
   readonly dateTabWidth: number;
-  readonly axisTicks: readonly PlacedAxisTick[];
   readonly rawAxisTicks: readonly TimeAxisTick[];
-  readonly axisCandidates: readonly AxisCandidate[];
   readonly endLabels: readonly PlacedEndLabel[];
   readonly markers: readonly PlacedMarker[];
   readonly gaps: readonly PlacedGap[];
   readonly columns: readonly PlacedColumnItem[];
+  readonly rows?: RowsFrame;
   readonly legendTop: number | null;
   readonly toX: (hour: number) => number;
   readonly toY: (value: number) => number;
@@ -213,13 +161,23 @@ function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number
     if (scaled < low) low = scaled;
     if (scaled > high) high = scaled;
   };
-  if (bounded.runs && bounded.runs.length > 0) {
-    for (const run of bounded.runs) {
+  const runs = bounded.runs && bounded.runs.length > 0 ? bounded.runs : null;
+  const history = closedExtent(bounded, scale);
+  const fits = historyFits(history, { from: xDomain[0], to: xDomain[1] });
+  if (fits) {
+    if (history.low < low) low = history.low;
+    if (history.high > high) high = history.high;
+  }
+  const from = fits ? history.items : 0;
+  if (runs) {
+    for (let i = from; i < runs.length; i++) {
+      const run = runs.at(i)!;
       if (run.lastHour < xDomain[0] || run.firstHour > xDomain[1]) continue;
       include(run.value);
     }
   } else {
-    for (const bucket of bounded.buckets) {
+    for (let i = from; i < bounded.buckets.length; i++) {
+      const bucket = bounded.buckets.at(i);
       if (!bucket || bucket.lastHour < xDomain[0] || bucket.firstHour > xDomain[1]) continue;
       include(bucket.minValue);
       include(bucket.maxValue);
@@ -405,6 +363,18 @@ function buildColumnsLayout(
   return out;
 }
 
+function rowsChartLayout(model: TimeChartModel, width: number, height: number, small: boolean, fontFamily: string, measure: MeasureText): TimeChartLayout {
+  const frame = layoutChartRows(model, width, height, small, measure, fontFamily);
+  const span = Math.max(1, frame.xDomain[1] - frame.xDomain[0]);
+  return {
+    width, height, small, left: frame.left, right: width - frame.left - frame.plotWidth, top: frame.top, bottom: height - frame.axisY,
+    plotWidth: frame.plotWidth, plotHeight: frame.axisY - frame.top, baseY: frame.axisY, markerLaneHeight: 0, axisY: frame.axisY,
+    xDomain: frame.xDomain, yDomain: [0, 1], yTicks: [], playheadX: frame.toX(model.hour + 1), dateTabText: '', dateTabX: 0, dateTabWidth: 0,
+    rawAxisTicks: frame.axisTicks, endLabels: [], markers: [], gaps: [], columns: [], rows: frame, legendTop: null,
+    logShown: false, logRefused: false, toX: frame.toX, toY: () => frame.axisY, fromX: px => frame.xDomain[0] + ((px - frame.left) / frame.plotWidth) * span,
+  };
+}
+
 export function layoutTimeChart(
   model: TimeChartModel,
   width: number,
@@ -414,6 +384,7 @@ export function layoutTimeChart(
 ): TimeChartLayout {
   const narrow = width <= 490;
   const small = narrow || height <= 200;
+  if (model.mode === 'rows') return rowsChartLayout(model, width, height, small, fontFamily, measure);
   const smallFont = `11px ${fontFamily}`;
   const tabFont = `600 11px ${fontFamily}`;
   const labelNameFont = `500 12px ${fontFamily}`;
@@ -474,6 +445,7 @@ export function layoutTimeChart(
 
   let yLo: number;
   let yHi: number;
+  const fullPercent = !model.view?.y && !model.yAxis.fixed && (model.yAxis.format === 'percent' || model.yAxis.format === 'share') && model.yAxis.fixed !== null;
   const logAsked = model.yAxis.log === true && !model.view?.y && !model.yAxis.fixed;
   const logShown = logAsked && dataMin > 0 && dataMax >= dataMin;
   if (model.view?.y) {
@@ -482,7 +454,7 @@ export function layoutTimeChart(
   } else if (model.yAxis.fixed) {
     yLo = model.yAxis.fixed[0];
     yHi = model.yAxis.fixed[1];
-  } else if ((model.yAxis.format === 'percent' || model.yAxis.format === 'share') && model.yAxis.fixed !== null) {
+  } else if (fullPercent) {
     yLo = 0;
     yHi = 100;
   } else if (logShown) {
@@ -505,7 +477,7 @@ export function layoutTimeChart(
     ? [...model.yAxis.ticks]
     : logShown
       ? thinLogTicks(logTicks(yLo, yHi), value => Math.log10(value) * decadeHeight, 18)
-      : model.yAxis.fixed
+      : model.yAxis.fixed || fullPercent
       ? linearTicks(yLo, yHi, small ? 2 : 4)
       : linearTicks(yLo, yHi, small ? 3 : 5);
 
@@ -774,10 +746,6 @@ export function layoutTimeChart(
   const dateTabX = Math.max(left + dateTabWidth / 2, Math.min(playheadX, width - 6 - dateTabWidth / 2));
 
   const rawAxisTicks: TimeAxisTick[] = model.mode !== 'columns' ? computeTimeAxisTicks(xDomain[0], xDomain[1], plotWidth) : [];
-  const axisCandidates: AxisCandidate[] = rawAxisTicks.map(tick => ({
-    hour: tick.hour, x: toX(tick.hour), label: tick.label || null, major: tick.major ?? true, labelWidth: tick.label ? measure(tick.label, smallFont) : 0,
-  }));
-  const axisTicks = placeAxisTicks(axisCandidates, [[dateTabX, dateTabWidth / 2 + 14]], small);
 
   return {
     width,
@@ -801,9 +769,7 @@ export function layoutTimeChart(
     dateTabText,
     dateTabX,
     dateTabWidth,
-    axisTicks,
     rawAxisTicks,
-    axisCandidates,
     endLabels,
     markers: placedMarkers,
     gaps: placedGaps,
