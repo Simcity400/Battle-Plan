@@ -4,7 +4,7 @@ import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { flagArtHandle } from '../art/provider.ts';
 import { failedArt, missingArt, PENDING_ART } from '../art/types.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries } from '../contract.ts';
-import { holderTagAt, type HolderRun } from '../holders.ts';
+import { holderTagAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { ChartArtSlot, ChartGap, ChartMarker, ChartMissingSpan } from './model.ts';
 
@@ -93,6 +93,7 @@ export function assignCountrySeriesColours(
   hour: number,
   surface: string,
   singleColor?: string,
+  recordedOrdinal: (tag: string) => number = tag => orderedTags.indexOf(tag),
 ): ReadonlyMap<string, string> {
   const map = new Map<string, string>();
   if (orderedTags.length === 1 && singleColor) {
@@ -101,12 +102,12 @@ export function assignCountrySeriesColours(
   }
   const top = orderedTags.slice(0, 8);
   const bg = parseColor(surface) ?? { r: 17, g: 17, b: 17 };
-  const rawRgbs = top.map((tag, ordinal) => {
+  const rawRgbs = top.map(tag => {
     const identityTag = holderTagAt(holders?.[tag], hour) ?? tag;
     const who = readView.who('country', identityTag);
     const hex = who.colour?.status === 'ready'
       ? readableColour(who.colour.value, surface)
-      : colour(surface, ordinal);
+      : colour(surface, recordedOrdinal(tag));
     return parseColor(hex) ?? { r: 120, g: 160, b: 220 };
   });
   const distinct = nudgeApart(rawRgbs, bg);
@@ -134,6 +135,20 @@ export function countrySeriesIdentity(
           ? { art: failedArt(who.flagChoice.reason, who.flagChoice.retryable), tag: identityTag }
           : { art: PENDING_ART, tag: identityTag };
   return { identityTag, name, ...(flag ? { flag } : {}) };
+}
+
+export function memberAt(
+  membership: Readonly<Record<string, HourRanges>> | null | undefined,
+  tag: string,
+  hour: number,
+): boolean {
+  if (!membership) return true;
+  const ranges = membership[tag];
+  if (!ranges) return false;
+  for (const [first, last] of ranges) {
+    if (hour >= first && hour <= last) return true;
+  }
+  return false;
 }
 
 export function branchGapsOf(branch: unknown): ChartGap[] {

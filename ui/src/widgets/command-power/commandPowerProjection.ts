@@ -1,7 +1,8 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { ArtHandle, BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
-import type { HolderRun } from '../../families/holders.ts';
+import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import type { HolderRun, HourRanges } from '../../families/holders.ts';
+import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import {
   registerTimeChart,
   type TimeChartProjection,
@@ -14,6 +15,7 @@ import {
   branchGapsOf,
   countrySeriesIdentity,
   exactHoverReadings,
+  memberAt,
   missingSpansOf,
   seriesHeadValue,
   spendMarkersOf,
@@ -24,6 +26,7 @@ import { OPTIONS } from './definition.ts';
 export interface CommandPowerOptions {
   readonly tags: readonly string[];
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
+  readonly membership?: Readonly<Record<string, HourRanges>> | null;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
@@ -31,7 +34,6 @@ export interface CommandPowerOptions {
   readonly showSpendTicks: boolean;
 }
 
-const CP_ICON_HANDLE: ArtHandle = { kind: 'sprite', key: 'GFX_command_power', frame: 0 };
 
 function formatEndAmount(value: number): string {
   if (Math.abs(value) >= 10_000) return formatChartAxisValue(value, 'power');
@@ -58,9 +60,10 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     const ceilingByTag = new Map<string, number | null>();
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
-      headByTag.set(tag, seriesHeadValue(mainMap?.get(tag), mainAnswer, i, 5));
+      const member = memberAt(options.membership, tag, hour);
+      headByTag.set(tag, member ? seriesHeadValue(mainMap?.get(tag), mainAnswer, i, 5) : null);
       if (options.showCeiling) {
-        ceilingByTag.set(tag, seriesHeadValue(ceilingMap?.get(tag), ceilingAnswer, i, 5));
+        ceilingByTag.set(tag, member ? seriesHeadValue(ceilingMap?.get(tag), ceilingAnswer, i, 5) : null);
       }
     }
 
@@ -74,10 +77,11 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       hour,
       options.surface,
       CHART_MEASURE_COLOURS.commandPower,
+      tag => rowOf.get(tag) ?? 0,
     );
 
     const measureIcon: ChartArtSlot | undefined = single
-      ? { art: readView.art(CP_ICON_HANDLE), label: 'Command power' }
+      ? { art: readView.art(measureArtHandle('commandPower')), label: 'Command power' }
       : undefined;
 
     const series: TimeChartSeriesModel[] = [];
@@ -251,6 +255,7 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
     return {
       tags: ctx.countries.tags,
       holders: ctx.countries.holders,
+      membership: ctx.countries.membership,
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,

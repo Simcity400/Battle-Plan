@@ -705,4 +705,24 @@ describe('time-chart picture authority', () => {
     assert.equal(project({ hour: hoverAt, run: { valueRaw: '1234500000' }, missing: null })?.value, '12,345');
     assert.equal(project({ hour: hoverAt, run: null, missing: 'Countries not read at this hour' })?.missingReason, 'Countries not read at this hour');
   });
+  it('shows a group member only from the hour it joins, and keeps colours by recorded order', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 50;
+    const line = (tag: string, value: number) => boundTiledSeries(makeTiledLine(tag, [makeBucket(base, base + 50, value)]), displayedHour(hour), { headValue: knownValue(value) });
+    const project = (ger: number, ita: number, membership: Readonly<Record<string, readonly (readonly [number, number])[]>> | null) =>
+      politicalPowerProjection.project(createBoundedReadView({
+        hour,
+        series: new Map([['main', new Map([['GER', line('GER', ger)], ['ITA', line('ITA', ita)]])]]),
+      }), { tags: ['GER', 'ITA'], membership, extent: [base, base + 95], gaps: [], surface: '#111111' });
+
+    const joinsLater = project(50, 100, { GER: [[base, base + 95]], ITA: [[hour + 10, base + 95]] });
+    const ita = joinsLater.series.find(s => s.id === 'ITA')!;
+    assert.equal(ita.headValue, null);
+    assert.equal(ita.endLabel, null);
+    assert.deepEqual(joinsLater.auditRows?.map(row => row.key), ['GER']);
+
+    const gerAhead = project(80, 20, null).series.find(s => s.id === 'GER')!.color;
+    const itaAhead = project(20, 80, null).series.find(s => s.id === 'GER')!.color;
+    assert.equal(itaAhead, gerAhead, 'a country keeps its colour when another overtakes it');
+  });
 });
