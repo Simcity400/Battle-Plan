@@ -7,7 +7,7 @@ import type { TimelineWidgetDeclaration } from '../../families/timeline/declarat
 import { urlArtHandle } from '../../families/art/provider.ts';
 import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
 import { spirits, spiritsShown } from '../national-spirits/spiritsData.ts';
 
@@ -33,7 +33,8 @@ const WORDS = {
   lastSeen: (h: number) => `Last recorded ${formatDateOnly(h)}`,
 };
 
-export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerTimelineProjection<SpiritHistoryOptions>({
+export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> = registerFamilyProjection<TimelineProjection<SpiritHistoryOptions>>({
+  family: 'timeline',
   kind: 'spirit-history',
 
   nextChange(readView) {

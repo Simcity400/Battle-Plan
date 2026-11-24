@@ -923,7 +923,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
             }
         };
         if params.regions.is_none() && !pinned_list.is_empty() {
-            let mut combined = pinned_list.clone();
+            let mut combined = pinned_list;
             combined.append(&mut ranked);
             combined
         } else {
