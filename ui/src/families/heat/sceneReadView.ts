@@ -5,7 +5,7 @@ import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { createBoundedReadView } from '../boundedView.ts';
-import type { ArtDemand, ArtProvider, BoundedReadView, IdentityDemand, IdentityProvider } from '../contract.ts';
+import type { ArtDemand, ArtHandle, ArtProvider, BoundedReadView, EntityKind, IdentityDemand, IdentityProvider } from '../contract.ts';
 
 export interface HeatSceneSources {
   readonly sources: Readonly<Record<string, number>>;
@@ -130,6 +130,43 @@ export function readViewFromHeatScene(
     },
     resolveLive,
   });
+}
+
+export type SceneIdentityDemand = readonly [kind: EntityKind, key: string, hour: number];
+
+export interface SceneProjection<TModel> {
+  readonly model: TModel;
+  readonly view: BoundedReadView;
+  readonly identityDemands: readonly SceneIdentityDemand[];
+  readonly artUrls: readonly string[];
+}
+
+export interface SceneProjectionProviders {
+  readonly identity?: IdentityProvider;
+  readonly art?: ArtProvider;
+  readonly artUrl: (handle: ArtHandle) => string | null;
+}
+
+export function projectFromScene<TModel>(
+  scene: Scene,
+  binding: HeatSceneSources,
+  hour: number,
+  providers: SceneProjectionProviders,
+  project: (view: BoundedReadView) => TModel,
+): SceneProjection<TModel> {
+  const identity = new Map<string, SceneIdentityDemand>();
+  const art = new Set<string>();
+  const view = readViewFromHeatScene(scene, binding, hour, {
+    identity: providers.identity,
+    onIdentityDemand: (kind, key, atHour) => { identity.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]); },
+    art: providers.art,
+    onArtDemand: handle => {
+      const url = providers.artUrl(handle);
+      if (url) art.add(url);
+    },
+  });
+  const model = project(view);
+  return { model, view, identityDemands: [...identity.values()], artUrls: [...art] };
 }
 
 export function stringifyTooltipPayload(payload: unknown): string {
