@@ -33,6 +33,7 @@ import {
   buildPlaybackBoundedRequest,
   buildStaticRequest,
   compileFollowPlan,
+  composeProof,
   currentHovers,
   FamilySourceBroker,
   hoverAsks,
@@ -122,22 +123,23 @@ function buildFilterTimeline(
 
 interface BoundRead {
   readonly entry: SourceEntry;
+  readonly anchorHour: number | null;
   readonly span: readonly [number, number] | null;
   readonly data: unknown;
 }
 
 interface BoundBatch {
-  readonly anchorHour: number | null;
   readonly reads: readonly BoundRead[];
   readonly failure: Failure | null;
 }
 
 const NO_SPECS: readonly (StaticRequestSpec | null)[] = [];
 
-function playbackSpecAnchor(specs: readonly (StaticRequestSpec | PlaybackBoundedSpec | null)[]): number | null {
-  for (const spec of specs) if (spec && 'anchorHour' in spec) return spec.anchorHour;
-  return null;
+function askedHour(spec: StaticRequestSpec | PlaybackBoundedSpec | null): number | null {
+  return spec && 'anchorHour' in spec ? spec.anchorHour : null;
 }
+
+const NO_ANCHORS: Readonly<Record<string, number>> = Object.freeze({});
 
 export interface StaticBundle {
   readonly hour: number;
@@ -808,6 +810,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
 
   const [playbackAnchorHour, setPlaybackAnchorHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
+  const [entryAnchorState, setEntryAnchors] = useState<{ readonly sig: string; readonly anchors: Readonly<Record<string, number>> }>({ sig: '', anchors: NO_ANCHORS });
+  const entryAnchors = entryAnchorState.sig === sig ? entryAnchorState.anchors : NO_ANCHORS;
+  const firstAnchorsRef = useRef<{ sig: string; anchors: Record<string, number> }>({ sig: '', anchors: {} });
+  if (firstAnchorsRef.current.sig !== sig) firstAnchorsRef.current = { sig, anchors: {} };
+  const anchorOf = (name: string): number => entryAnchors[name] ?? (firstAnchorsRef.current.anchors[name] ??= playbackAnchorHour);
 
   const playbackOptions = useMemo(
     () => (ctx ? { branch: ctx.branch, effectiveEndHour, currentHour: playbackAnchorHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
@@ -831,9 +838,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const batchSpecs = useMemo<readonly (StaticRequestSpec | PlaybackBoundedSpec | null)[]>(() => {
     if (!batchEntries.length) return NO_SPECS;
-    if (following) return playbackBounded && playbackOptions ? batchEntries.map(entry => buildPlaybackBoundedRequest(entry, playbackOptions)) : NO_SPECS;
+    if (following) {
+      return playbackBounded && playbackOptions
+        ? batchEntries.map(entry => buildPlaybackBoundedRequest(entry, { ...playbackOptions, currentHour: anchorOf(entry.name) }))
+        : NO_SPECS;
+    }
     return pinnedOptions ? batchEntries.map(entry => buildStaticRequest(entry, pinnedOptions)) : NO_SPECS;
-  }, [batchEntries, following, playbackBounded, playbackOptions, pinnedOptions]);
+  }, [batchEntries, following, playbackBounded, playbackOptions, pinnedOptions, entryAnchors]);
   const batchLive = useMemo(() => batchSpecs.filter((spec): spec is StaticRequestSpec => spec !== null), [batchSpecs]);
   const batchRequests = useMemo(() => batchLive.map(spec => spec.request), [batchLive]);
   const batchMoving = useMemo(() => [...new Set(batchLive.flatMap(spec => spec.dynamicKeys))], [batchLive]);
@@ -845,12 +856,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     undefined,
     track?.source,
   );
-  const batchAskedRef = useRef(new Map<string, { readonly anchorHour: number | null; readonly specs: readonly StaticRequestSpec[] }>());
+  const batchAskedRef = useRef(new Map<string, { readonly specs: readonly StaticRequestSpec[] }>());
   if (usesStatic && batchLive.length) {
-    batchAskedRef.current.set(JSON.stringify(batchRequests), {
-      anchorHour: following ? ((batchLive[0] as PlaybackBoundedSpec).anchorHour ?? null) : null,
-      specs: batchLive,
-    });
+    batchAskedRef.current.set(JSON.stringify(batchRequests), { specs: batchLive });
     if (batchAskedRef.current.size > 32) batchAskedRef.current.delete(batchAskedRef.current.keys().next().value!);
   }
   const displayedBatch = useMemo<BoundBatch | null>(() => {
@@ -859,16 +867,16 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (!asked || asked.specs.length !== batchProduct.data.length) return null;
     try {
       return {
-        anchorHour: asked.anchorHour,
         reads: asked.specs.map((spec, index) => ({
           entry: spec.entry,
+          anchorHour: askedHour(spec),
           span: spec.span,
           data: spec.validate ? spec.validate(batchProduct.data![index]) : batchProduct.data![index],
         })),
         failure: null,
       };
     } catch (error) {
-      return { anchorHour: asked.anchorHour, reads: [], failure: asFailure(error) };
+      return { reads: [], failure: asFailure(error) };
     }
   }, [usesStatic, batchLive.length, batchProduct.data, batchProduct.requests]);
 
@@ -966,73 +974,96 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const singleRead = useMemo<BoundRead | null>(() => {
     if (!displayedStatic) return null;
     const entry = displayedStatic.extra.entry;
-    return entry ? { entry, span: displayedStatic.span, data: displayedStatic.data } : null;
+    return entry ? { entry, anchorHour: displayedStatic.anchorHour, span: displayedStatic.span, data: displayedStatic.data } : null;
   }, [displayedStatic]);
 
-  const boundReads = useMemo<{ readonly anchorHour: number | null; readonly reads: readonly BoundRead[] } | null>(() => {
+  const boundReads = useMemo<readonly BoundRead[] | null>(() => {
     if (!usesStatic) return null;
     const wantSingle = staticSpec !== null;
     const wantBatch = batchLive.length > 0;
     if (!wantSingle && !wantBatch) return null;
     if (wantSingle && !singleRead) return null;
     if (wantBatch && (!displayedBatch || displayedBatch.failure)) return null;
-    const singleAnchor = displayedStatic?.anchorHour ?? null;
-    if (playbackBounded && wantSingle && wantBatch && singleAnchor !== displayedBatch!.anchorHour) return null;
-    return {
-      anchorHour: wantSingle ? singleAnchor : displayedBatch!.anchorHour,
-      reads: [...(wantSingle ? [singleRead!] : []), ...(wantBatch ? displayedBatch!.reads : [])],
-    };
-  }, [usesStatic, staticSpec, batchLive.length, singleRead, displayedBatch, displayedStatic, playbackBounded]);
+    return [...(wantSingle ? [singleRead!] : []), ...(wantBatch ? displayedBatch!.reads : [])];
+  }, [usesStatic, staticSpec, batchLive.length, singleRead, displayedBatch]);
 
-  const boundAnchor = playbackBounded ? (boundReads?.anchorHour ?? null) : null;
+  const readProofs = useMemo<ReadonlyMap<string, readonly [number, number]>>(() => {
+    const proofs = new Map<string, readonly [number, number]>();
+    if (!playbackBounded || !boundReads) return proofs;
+    for (const read of boundReads) {
+      if (read.anchorHour === null) continue;
+      proofs.set(read.entry.name, resolvePlaybackProvenInterval(read.entry.read, read.data, { anchorHour: read.anchorHour, span: read.span }, effectiveEndHour));
+    }
+    return proofs;
+  }, [playbackBounded, boundReads, effectiveEndHour]);
+
   const boundProof = useMemo<readonly [number, number] | null>(() => {
-    if (boundAnchor === null || !boundReads) return null;
-    let hi = Infinity;
-    for (const read of boundReads.reads) {
-      hi = Math.min(hi, resolvePlaybackProvenInterval(read.entry.read, read.data, { anchorHour: boundAnchor, span: read.span }, effectiveEndHour)[1]);
+    if (!playbackBounded || !boundReads) return null;
+    const readings: { anchorHour: number; proof: readonly [number, number] }[] = [];
+    for (const read of boundReads) {
+      const proof = readProofs.get(read.entry.name);
+      if (read.anchorHour === null || !proof) return null;
+      readings.push({ anchorHour: read.anchorHour, proof });
     }
-    return [boundAnchor, hi];
-  }, [boundAnchor, boundReads, effectiveEndHour]);
+    return composeProof(readings);
+  }, [playbackBounded, boundReads, readProofs]);
+  const boundAnchor = boundProof ? boundProof[0] : null;
 
-  const playbackWatch = useMemo<readonly [number, number] | null>(() => {
+  const entryWatches = useMemo<readonly { readonly name: string; readonly single: boolean; readonly lo: number; readonly hi: number }[] | null>(() => {
     if (!playbackBounded || !playbackOptions) return null;
-    const specs = [playbackSpec, ...batchSpecs];
-    let lo = -Infinity;
-    let hi = Infinity;
-    const asked = specs.filter(spec => spec !== null).length;
-    specs.forEach((spec, index) => {
-      if (spec !== null) return;
-      const idle = playbackIdleInterval(bounded[index] ?? null, playbackOptions);
-      lo = Math.max(lo, idle[0]);
-      hi = Math.min(hi, idle[1]);
+    const watches: { name: string; single: boolean; lo: number; hi: number }[] = [];
+    bounded.forEach((entry, index) => {
+      const spec = index === 0 ? playbackSpec : batchSpecs[index - 1] ?? null;
+      const asked = index === 0 ? playbackAnchorHour : anchorOf(entry.name);
+      if (spec === null) {
+        const [lo, hi] = playbackIdleInterval(entry, { ...playbackOptions, currentHour: asked });
+        watches.push({ name: entry.name, single: index === 0, lo, hi });
+        return;
+      }
+      const read = boundReads?.find(candidate => candidate.entry.name === entry.name);
+      const proof = readProofs.get(entry.name);
+      if (!read || !proof || read.anchorHour !== askedHour(spec)) return;
+      watches.push({ name: entry.name, single: index === 0, lo: proof[0], hi: proof[1] });
     });
-    if (asked > 0) {
-      if (!boundProof || boundAnchor !== playbackSpecAnchor(specs)) return null;
-      lo = Math.max(lo, boundProof[0]);
-      hi = Math.min(hi, boundProof[1]);
-    }
-    return lo <= hi ? [lo, hi] : null;
-  }, [playbackBounded, playbackOptions, playbackSpec, batchSpecs, bounded, boundProof, boundAnchor]);
-  const watchLo = playbackWatch?.[0];
-  const watchHi = playbackWatch?.[1];
+    return watches;
+  }, [playbackBounded, playbackOptions, bounded, playbackSpec, batchSpecs, playbackAnchorHour, entryAnchors, boundReads, readProofs]);
+  const watchKey = entryWatches ? JSON.stringify(entryWatches.map(watch => [watch.name, watch.lo, watch.hi])) : '';
+  const entryWatchesRef = useRef(entryWatches);
+  entryWatchesRef.current = entryWatches;
 
   useEffect(() => {
-    if (!active || !track || watchLo === undefined || watchHi === undefined) return;
-    const nowHour = Math.floor(runtime.clock.getHour()) + trackOffset;
-    if (nowHour < watchLo || nowHour > watchHi) {
-      setPlaybackAnchorHour(prev => (prev === nowHour ? prev : nowHour));
+    const watches = entryWatchesRef.current;
+    if (!active || !track || !watches || !watches.length) return;
+    const reanchor = () => {
+      const now = Math.floor(runtime.clock.getHour()) + trackOffset;
+      const moved: Record<string, number> = {};
+      let any = false;
+      for (const watch of entryWatchesRef.current ?? []) {
+        if (now >= watch.lo && now <= watch.hi) continue;
+        if (watch.single) setPlaybackAnchorHour(prev => (prev === now ? prev : now));
+        else { moved[watch.name] = now; any = true; }
+      }
+      if (any) {
+        setEntryAnchors(prev => {
+          const base = prev.sig === sig ? prev.anchors : NO_ANCHORS;
+          return { sig, anchors: { ...base, ...moved } };
+        });
+      }
+    };
+    let lo = -Infinity;
+    let hi = Infinity;
+    for (const watch of watches) {
+      lo = Math.max(lo, watch.lo);
+      hi = Math.min(hi, watch.hi);
+    }
+    const now = Math.floor(runtime.clock.getHour()) + trackOffset;
+    if (now < lo || now > hi) {
+      reanchor();
       return;
     }
-    if (watchLo === -Infinity && watchHi === Infinity) return;
-    return watchBoundary(
-      runtime.clock,
-      () => [watchLo - trackOffset, watchHi + 1 - trackOffset],
-      () => {
-        const next = Math.floor(runtime.clock.getHour()) + trackOffset;
-        setPlaybackAnchorHour(prev => (prev === next ? prev : next));
-      },
-    );
-  }, [active, track, trackOffset, runtime.clock, watchLo, watchHi]);
+    if (lo === -Infinity && hi === Infinity) return;
+    return watchBoundary(runtime.clock, () => [lo - trackOffset, hi + 1 - trackOffset], reanchor);
+  }, [active, track, trackOffset, runtime.clock, watchKey, sig]);
 
   const heldBundleRef = useRef<{ readonly sig: string; readonly bundle: StaticBundle } | null>(null);
   const staticBundle = useMemo<StaticBundle | null>(() => {
@@ -1040,7 +1071,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (!usesStatic) return null;
     if (!boundReads) return held;
     if (playbackBounded && (boundAnchor === null || !boundProof)) return held;
-    const first = boundReads.reads[0]!;
+    const first = boundReads[0]!;
     const read = first.entry.read;
     let shownHour = playbackBounded && boundAnchor !== null ? boundAnchor : (pinHour ?? Math.floor(window?.lastHour ?? effectiveEndHour));
     let shownSpan: readonly [number, number] | null = null;
@@ -1065,7 +1096,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const panels: Record<string, unknown> = {};
     const panelsMap = new Map<string, unknown>();
     const live = new Map<string, ReturnType<ReturnType<typeof repliedCells>['read']>>();
-    for (const bound of boundReads.reads) {
+    for (const bound of boundReads) {
       panels[bound.entry.name] = bound.data;
       panelsMap.set(bound.entry.name, bound.data);
       const boundShape = bound.entry.read;

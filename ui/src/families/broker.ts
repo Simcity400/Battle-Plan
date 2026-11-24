@@ -414,6 +414,19 @@ export function resolvePlaybackProvenInterval(
   return [anchor, hi];
 }
 
+export function composeProof(
+  readings: readonly { readonly anchorHour: number; readonly proof: readonly [number, number] }[],
+): readonly [number, number] | null {
+  if (!readings.length) return null;
+  let lo = -Infinity;
+  let hi = Infinity;
+  for (const reading of readings) {
+    lo = Math.max(lo, reading.anchorHour, reading.proof[0]);
+    hi = Math.min(hi, reading.proof[1]);
+  }
+  return lo <= hi ? [lo, hi] : null;
+}
+
 export function playbackIdleInterval(
   entry: SourceEntry | null,
   options: PlaybackBoundedOptions,
