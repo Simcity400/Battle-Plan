@@ -193,6 +193,15 @@ pub(crate) struct Ranking {
     unknown: std::collections::BTreeMap<u32, Option<u32>>,
 }
 
+const UNNAMED: u32 = u32::MAX;
+
+fn unnamed_slot(series: &dashboard_declare::Series, key: u128) -> Option<u32> {
+    match series.key {
+        dashboard_declare::Key::Slot => u32::try_from(key).ok(),
+        _ => None,
+    }
+}
+
 fn unknown_contender(query: &Query, lane: &Lane, at: Option<u32>) -> String {
     let Query::Series { series, measure, countries: names, identity, .. } = query else { return String::new() };
     match at {
@@ -236,7 +245,7 @@ impl Ranking {
             let mut order: Vec<_> = (0..names.len()).collect();
             order.sort_by_cached_key(|&i| names[i].key());
             self.order.resize(order.len(), 0);
-            for (rank, i) in order.into_iter().enumerate() { self.order[i] = rank as u32; }
+            for (rank, i) in order.into_iter().enumerate() { self.order[i] = rank as u32 + 1; }
             self.dirty.extend(cells.rows());
             self.ready = true;
         }
@@ -245,22 +254,23 @@ impl Ranking {
             if let Some(old) = self.slots.remove(&slot) { self.sorted.remove(&old); }
             self.unknown.remove(&slot);
             let Some(key) = cells.key(slot) else { continue };
-            let Some(&at) = tags.by_key.get(&key) else {
+            let at = tags.by_key.get(&key).copied();
+            if at.is_none() && !(*population && unnamed_slot(series, key).is_some()) {
                 if *population {
                     self.unknown.insert(slot, None);
                 }
                 continue;
-            };
+            }
             read += 1;
             let value = match series_value(&source, cells, slot) {
                 (value, State::Value, _) => value,
                 (_, State::Missing, Some(_)) => continue,
                 _ => {
-                    self.unknown.insert(slot, Some(at));
+                    self.unknown.insert(slot, at);
                     continue;
                 }
             };
-            let ranked = (if *least { value } else { !value }, self.order[at as usize], key);
+            let ranked = (if *least { value } else { !value }, at.map_or(0, |at| self.order[at as usize]), key);
             self.sorted.insert(ranked);
             self.slots.insert(slot, ranked);
         }
@@ -285,7 +295,10 @@ impl Ranking {
         for (value, _, key) in top {
             table.row(key);
             table.cell(if *least { value } else { !value }, State::Value);
-            table.name(&names[tags.by_key[&key] as usize].key());
+            match tags.by_key.get(&key) {
+                Some(&at) => table.name(&names[at as usize].key()),
+                None => table.name(&dashboard_query::identity::Country::Slot(unnamed_slot(series, key).unwrap_or_default()).key()),
+            }
         }
         table.encode(out);
         Some(read)
@@ -516,18 +529,20 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             ranked.clear();
             for slot in cells.rows() {
                 let Some(key) = cells.key(slot) else { continue };
-                let Some(&at) = tags.by_key.get(&key) else {
-                    if *population {
+                let at = match tags.by_key.get(&key) {
+                    Some(&at) => at,
+                    None if *population && unnamed_slot(series, key).is_some() => UNNAMED,
+                    None if *population => {
                         answer::not_recorded(&unknown_contender(query, lane, None), out);
                         return;
                     }
-                    continue;
+                    None => continue,
                 };
                 match series_value(&source, cells, slot) {
                     (value, State::Value, _) => ranked.push((value, key, at)),
                     (_, State::Missing, Some(_)) => {}
                     _ => {
-                        answer::not_recorded(&unknown_contender(query, lane, Some(at)), out);
+                        answer::not_recorded(&unknown_contender(query, lane, (at != UNNAMED).then_some(at)), out);
                         return;
                     }
                 }
@@ -538,7 +553,12 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             }
             let by_tag = |a: &(i64, u128, u32), b: &(i64, u128, u32)| {
                 let (a0, b0) = if *least { (b.0, a.0) } else { (a.0, b.0) };
-                b0.cmp(&a0).then_with(|| names[a.2 as usize].key().cmp(&names[b.2 as usize].key()))
+                b0.cmp(&a0).then_with(|| match (a.2 == UNNAMED, b.2 == UNNAMED) {
+                    (true, true) => a.1.cmp(&b.1),
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    (false, false) => names[a.2 as usize].key().cmp(&names[b.2 as usize].key()),
+                })
             };
             if ranked.len() > *n {
                 ranked.select_nth_unstable_by(*n - 1, by_tag);
@@ -548,7 +568,10 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             for &(value, key, at) in ranked.iter() {
                 table.row(key);
                 table.cell(value, State::Value);
-                table.name(&names[at as usize].key());
+                match at {
+                    UNNAMED => table.name(&dashboard_query::identity::Country::Slot(unnamed_slot(series, key).unwrap_or_default()).key()),
+                    at => table.name(&names[at as usize].key()),
+                }
             }
         }
         Query::Series { series, measure, countries: names, mode: SeriesMode::Keyed(scope), identity } => {
