@@ -12,7 +12,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
 export const TABLE_BASE: TableBase = { density: 'comfortable', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'training', direction: 'descending' } };
 export const OPTIONS: readonly OptionField[] = [REACHED_COUNTRY_OPTION, ...tableFamilyOptions(COLUMNS, TABLE_BASE)];
 export const definition = {
-  kind: 'training-queue', version: 1, title: 'Training queue', icon: 'helmet', category: 'Army',
+  kind: 'training-queue', version: 1, title: 'Training queue', icon: 'person', category: 'Army',
   description: 'Divisions in training under each deployment line, with training, equipment and manpower.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: true,
   countries: { max: 1 }, minSize: { w: 4, h: 5 }, defaultSize: { w: 7, h: 9 }, options: OPTIONS,

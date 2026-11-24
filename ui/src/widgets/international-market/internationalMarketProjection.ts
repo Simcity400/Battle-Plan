@@ -2,9 +2,8 @@ import { liveKey } from '../../charts/live.ts';
 import { MARKET, validateMarketReply } from '../../dashboard/market.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { artState, resolveIdentity, urlArtHandle, type ResolvedIdentity } from '../../families/table/identityCell.ts';
 import {
-  resolveArtUrlFromReadView,
-  resolveCountryFromReadView,
   type TableCell,
   type TableModel,
   type TableProjection,
@@ -14,6 +13,10 @@ import {
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { knownValue, notRecorded, valueFromLive, zeroValue } from '../../families/value.ts';
 import { MARKET_TABS, OPTIONS, marketColumns, marketSettingsKey, marketTableBase } from './definition.ts';
+
+const UNKNOWN_COUNTRY: ResolvedIdentity = { value: notRecorded('Unknown country'), name: 'Unknown country' };
+const countryAt = (readView: BoundedReadView, tag: string | null | undefined, hour: number): ResolvedIdentity =>
+  tag ? resolveIdentity(readView, 'country', tag, { atHour: hour }) : UNKNOWN_COUNTRY;
 import { cic, contractRows, levelText, offerRows, units, type MarketTab } from './marketData.ts';
 
 export interface InternationalMarketProjectionOptions {
@@ -76,9 +79,9 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
         };
       }
       const rows: TableRow[] = offers.map(row => {
-        const seller = resolveCountryFromReadView(readView, row.seller, hour);
+        const seller = countryAt(readView, row.seller, hour);
         const eqName = row.name ?? 'Equipment name unavailable';
-        const art = resolveArtUrlFromReadView(readView, row.icon);
+        const art = artState(readView, urlArtHandle(row.icon));
         return {
           key: row.key,
           name: eqName,
@@ -120,11 +123,11 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
     }
 
     const rows: TableRow[] = listed.rows.map(row => {
-      const seller = resolveCountryFromReadView(readView, row.seller, hour);
-      const buyer = resolveCountryFromReadView(readView, row.buyer, hour);
+      const seller = countryAt(readView, row.seller, hour);
+      const buyer = countryAt(readView, row.buyer, hour);
       const allEquipment = row.equipment.map(item => item.name ?? 'Equipment name unavailable').join(', ');
       const firstIcon = row.equipment[0]?.icon ?? null;
-      const art = resolveArtUrlFromReadView(readView, firstIcon);
+      const art = artState(readView, urlArtHandle(firstIcon));
 
       const extra: TooltipExtraRow[] = [
         { label: 'Seller', value: seller.value, divider: true },

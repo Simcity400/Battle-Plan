@@ -69,7 +69,7 @@ const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedO
   { ...KIND!, priority: 5, sortable: false, cellKind: 'kind', extra: () => ({ artShape: 'counter' }), iconSlot: true, icon: item => item.kind.icon, iconPending: item => item.kind.pending,
     value: item => textValue(item.template?.name ?? null, 'Template name unavailable') },
   { ...COUNTRY!, priority: 1, iconSlot: true, icon: item => item.flag.icon, iconPending: item => item.flag.pending, country: item => item.row.tag, value: item => item.country },
-  { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['175 Guangxi Juntuán'],
+  { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['175 Guangxi Juntuán'],
     value: item => textValue(item.row.name, item.row.nameMissing ?? 'Division name unavailable') },
   { ...MEDALS!, priority: 2, numeric: true, cellKind: 'icons', format: 'integer', widest: ['■ ■ ■ ■'],
     extra: item => ({ iconStripKind: 'medals', icons: item.strip }),
