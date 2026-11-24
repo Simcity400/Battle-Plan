@@ -401,9 +401,8 @@ test('territory asks the product for the chosen countries or the group itself, n
   assert.deepEqual(params({ kind: 'tags', tags: ['AAA', countryKey(9)] }), { ...base, countries: ['AAA', 9] });
   assert.deepEqual(params({ kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false }),
     { ...base, group: { type: 'faction', id: '42', membership: 'hour' } }, 'a group is sent as the group: Rust resolves its members at the hour');
-  assert.match(territoryBreakdown.unavailable?.(ctx({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false })) ?? '', /end of the recording/,
-    'members at the end of the recording would read past the displayed hour: refused by name');
-  assert.equal(territoryBreakdown.unavailable?.(ctx({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false })), null);
+  assert.deepEqual(params({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }),
+    { ...base, group: { type: 'humans', membership: 'ever' } }, 'the chosen membership is sent as chosen, never changed into another');
 });
 
 test('a breakdown reply proves the stretch it stands through, so a quiet hundred played hours asks once', () => {

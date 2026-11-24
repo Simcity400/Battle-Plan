@@ -12,7 +12,6 @@ test('whole-branch group requests reuse recorded membership union while pending 
   const choice = { kind: 'group', group: { type: 'faction', id: 'synthetic-faction' }, membership: 'hour', aggregate: false } as const;
   assert.deepEqual(worldRequestTags(choice, [], undefined, 20), { tags: [], ready: false, reason: null });
   assert.deepEqual(worldRequestTags(choice, [], groups, 20), { tags: ['EARLY', 'LATE'], ready: true, reason: null });
-  assert.deepEqual(worldRequestTags({ ...choice, membership: 'end' }, [], groups, 20), { tags: ['LATE'], ready: true, reason: null });
   assert.equal(worldRequestTags({ kind: 'selected' }, [], groups, 20).ready, false);
   assert.deepEqual(worldRequestTags({ kind: 'all' }, [], groups, 20), { tags: [], ready: true, reason: null });
 });

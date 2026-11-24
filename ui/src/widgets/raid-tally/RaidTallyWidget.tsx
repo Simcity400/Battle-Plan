@@ -81,7 +81,7 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   if (!data || !tally || (grouped && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading the raid tally…" /></>;
   if (data.available === false) return <>{groupFailure}<WidgetState kind="unavailable" message="No raid types available." detail={data.unavailable ?? undefined} /></>;
   if (resolved.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={resolved.reason} /></>;
-  const none = coverage.outside ? null : noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
+  const none = coverage.outside ? null : noMembersAt(widget.countries, resolved, groups.data, moment);
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="target" /></>;
   if (resolved.top == null && !tally.series.some(item => item.runs.length)) return <>{groupFailure}<WidgetState kind="unavailable" message="No raid counts were recorded for these countries." /></>;
   const recorded = !data.missing.some(gap => gap.firstHour <= moment && moment <= gap.lastHour);

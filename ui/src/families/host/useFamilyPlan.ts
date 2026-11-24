@@ -1211,10 +1211,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
       if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };
       if (effectiveMulti && !following) {
-        const none = noMembersAt(widget.countries, effectiveMulti, groups.data, moment, lastHour);
+        const none = noMembersAt(widget.countries, effectiveMulti, groups.data, moment);
         if (none) return { kind: 'no-members', reason: none.reason };
         if (effectiveMulti.top == null && !countriesState.rankedAt(moment).length && !policy.allowSingleSlot) {
-          const why = groups.data && widget.countries.kind === 'group' ? worldFilter(widget.countries, [], groups.data, moment, lastHour).reason : null;
+          const why = groups.data && widget.countries.kind === 'group' ? worldFilter(widget.countries, [], groups.data, moment).reason : null;
           return { kind: 'refused', reason: why ?? 'No countries available for this selection.' };
         }
       }
