@@ -1,16 +1,5 @@
 import type { LiveValues } from '../../charts/live';
 
-export interface RowCell {
-  key: string; row: string; text: string; x: number; y: number; width: number; height: number;
-  meter?: 'horizontal' | 'vertical'; knob?: boolean; radius?: number;
-  baseline: number; font: string; color: string; align: 'left' | 'right' | 'center';
-}
-export interface PanelModel {
-  widget?: string;
-  view: string; follow?: number; fixed?: number; offset: number; date?: { since: number; through: number };
-  structure: string; cells: RowCell[];
-  reply?: unknown; clocked?: boolean;
-}
 export interface PanelGeometry {
   rowAttribute?: string;
   layers?: string;

@@ -5,7 +5,7 @@ import type { CategoryInfo, IdeaHistoryReply, IdeaHolding, IdeaInfo, IdeaLook } 
 import { ideaTimelineProjection } from '../../widgets/idea-timeline/ideaTimelineProjection.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { timelineHostAdapter } from './hostAdapter.ts';
-import { frameTimeline, placeTimeline } from './layout.ts';
+import { frameTimeline, LEGEND_HEIGHT, placeTimeline } from './layout.ts';
 import { resolutionFor } from './resolution.ts';
 import { familyTimelineLaneView, nextDayStart, type FamilyTimelineBinding } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
@@ -14,7 +14,7 @@ import type { PaintInput } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { visibleLanes, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
-import { decodeTimelineHit, encodeTimelineHit, hitTimeline } from './painter.ts';
+import { decodeTimelineHit, drawTimeline, encodeTimelineHit, hitTimeline } from './painter.ts';
 
 const H = (year: number, month = 1, day = 1) => engineHour({ year, month, day, hour: 1 })!;
 const FIRST = H(1936);
@@ -233,4 +233,61 @@ test('timelineModel forwards footer notes through to lane meta', () => {
   });
   assert.deepEqual(model.notes, ['Head: 2 in progress · Radio 50%, 10 days left']);
   assert.equal(model.summaryText, '4 completed');
+});
+
+test('timeline legend reserves bodyTop, shifts hit testing, and paints legend entries alongside lane opened markers', () => {
+  const model = timelineModel({
+    hour: H(1940) as TimelineModel['hour'],
+    firstHour: FIRST,
+    labelWidth: 96,
+    legend: [
+      { label: 'Completed', color: '#335577' },
+      { label: 'In progress', color: '#4f86f7' },
+      { label: 'Idle', outlined: true },
+    ],
+    lanes: [
+      {
+        key: 'slot:4',
+        kind: 'item',
+        label: 'Slot 5',
+        openedMarker: { hour: H(1939), label: 'opened' },
+        spans: [{ id: 's1', firstHour: H(1939), lastHour: H(1940), color: '#4f86f7', open: true }],
+        auditValue: 'Slot 5|1',
+      },
+    ],
+  });
+  const layout = frameTimeline(placeTimeline(model, 600, 200, {}), H(1940));
+  const resolution = resolutionFor(null, model, layout);
+  assert.equal(layout.bodyTop, LEGEND_HEIGHT);
+  assert.equal(hitTimeline(layout, resolution, layout.plotLeft + 4, LEGEND_HEIGHT - 2, 0), null);
+  const hit = hitTimeline(layout, resolution, layout.plotRight - 4, layout.bodyTop + layout.lanes[0]!.y + 6, 0);
+  assert.equal(hit?.kind, 'span');
+  assert.equal(hit?.laneKey, 'slot:4');
+
+  const drawnText: string[] = [];
+  const ctx = new Proxy({}, {
+    get: (_target, prop) => {
+      if (prop === 'measureText') return (text: string) => ({ width: text.length * 6 });
+      if (prop === 'createLinearGradient') return () => ({ addColorStop() {} });
+      if (prop === 'fillText') return (text: string) => { drawnText.push(text); };
+      return () => {};
+    },
+    set: () => true,
+  });
+  drawTimeline(ctx as never, {
+    model,
+    layout,
+    readView: createBoundedReadView({ hour: H(1940), panels: new Map() }),
+    theme: LANE_THEME,
+    scrollTop: 0,
+    expanded: {},
+    inspectedKey: null,
+    selectedKey: null,
+    focusedKey: null,
+    resolution,
+  });
+  assert.ok(drawnText.includes('Completed'));
+  assert.ok(drawnText.includes('In progress'));
+  assert.ok(drawnText.includes('Idle'));
+  assert.ok(drawnText.includes('opened'));
 });

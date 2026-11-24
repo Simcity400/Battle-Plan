@@ -191,7 +191,7 @@ fn memo_ace_presentation_heap_bytes_match_raw_and_typed_with_local_failure() {
         GUI,
         engine_native_politics::cgame_gui::VTABLE_RVA.0 as u64,
     );
-    array(&mut bytes, GUI + 0xcb0, POOLS, 3);
+    array(&mut bytes, GUI + cace::GUI_FEMALE_PORTRAIT_POOLS, POOLS, 3);
     array(&mut bytes, POOLS + cpdx_array::STRIDE, SPRITE, 1);
     heap(
         &mut bytes,
