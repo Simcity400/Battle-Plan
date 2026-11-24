@@ -659,7 +659,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         const at = field.add
           ? { x: (box?.left ?? 0) + field.nameLeft, y: (box?.top ?? 0) + field.add.top + field.add.height - viewportRef.current.scrollTop }
           : focusAnchorRef.current;
-        cur.onRegions!({ op: 'open', x: at.x, y: at.y, rows: field.rows, ...(field.active ? { active: field.active } : {}) });
+        cur.onRegions!({ op: 'open', x: at.x, y: at.y, aside: (box?.left ?? 0) + field.nameRight, rows: field.rows, ...(field.active ? { active: field.active } : {}) });
         return true;
       }
       case 'region-remove': {

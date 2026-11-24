@@ -4,7 +4,19 @@ import { createPortal } from 'react-dom';
 import { Icon } from './Icons';
 import './Popover.css';
 
-export interface AnchorRect { left: number; right: number; top: number; bottom: number }
+export interface AnchorRect { left: number; right: number; top: number; bottom: number; aside?: number }
+
+export function popoverPlacement(anchor: AnchorRect, width: number, height: number, viewport: { readonly width: number; readonly height: number }, align: 'start' | 'end'): { readonly left: number; readonly top: number } {
+  const below = anchor.bottom + 6;
+  const fits = below + height <= viewport.height - 12;
+  const beside = !fits && anchor.aside !== undefined;
+  const left = beside ? anchor.aside! + 6 : align === 'start' ? anchor.left : anchor.right - width;
+  const top = fits ? below : beside ? anchor.top : anchor.top - height - 6;
+  return {
+    left: Math.max(12, Math.min(left, viewport.width - width - 12)),
+    top: Math.max(12, Math.min(top, viewport.height - height - 12)),
+  };
+}
 
 const closed = (state: { open: boolean }) => state.open ? { open: false } : state;
 
@@ -19,10 +31,9 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     const anchor = anchorRect.current ? anchorRect.current() : trigger.current?.getBoundingClientRect();
     if (!anchor) return false;
     const viewport = document.documentElement;
-    const below = anchor.bottom + 6;
-    const top = below + height <= viewport.clientHeight - 12 ? below : anchor.top - height - 6;
-    panel.style.left = `${Math.max(12, Math.min(align === 'start' ? anchor.left : anchor.right - width, viewport.clientWidth - width - 12))}px`;
-    panel.style.top = `${Math.max(12, Math.min(top, viewport.clientHeight - height - 12))}px`;
+    const at = popoverPlacement(anchor, width, height, { width: viewport.clientWidth, height: viewport.clientHeight }, align);
+    panel.style.left = `${at.left}px`;
+    panel.style.top = `${at.top}px`;
     panel.style.visibility = 'visible';
     return true;
   }, [align]);

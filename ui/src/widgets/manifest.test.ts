@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { WidgetMeta } from '../dashboard/definitions';
 import { parseStoredOptions, resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import { addRegion, moveRegion, readRegionChoice, regionParams, removeRegion, writeRegionChoice } from '../families/regions/regionChoice.ts';
-import { keyboardMove, regionChooserGroups, regionDropAt, type RegionRowsField } from '../families/regions/regionRows.ts';
+import { chooserFor, keyboardMove, regionChooserGroups, regionDropAt, savedRegionName, type RegionRowsField } from '../families/regions/regionRows.ts';
 import {
   DEFAULT_VIEW,
   declaredViewChoices,
@@ -354,14 +354,15 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   const choice = moveRegion(removeRegion(addRegion(addRegion(readRegionChoice(''), 12), 4), 30), 4, 0);
   assert.deepEqual(choice, { picks: [4, 12], hidden: [30] }, 'removing an automatic region hides it');
   assert.deepEqual(readRegionChoice(writeRegionChoice(choice)), choice);
-  assert.deepEqual(removeRegion(choice, 12), { picks: [4], hidden: [30] }, 'removing a pick does not hide it');
+  assert.deepEqual(removeRegion(choice, 12), { picks: [4], hidden: [30, 12] }, 'removing a pick also hides it, so an active one does not come straight back under a button that said Remove');
+  assert.deepEqual(addRegion(removeRegion(choice, 12), 12), { picks: [4, 12], hidden: [30] }, 'Add is its inverse');
   assert.deepEqual(addRegion(choice, 30), { picks: [4, 12, 30], hidden: [] }, 'choosing a hidden region picks it');
   assert.deepEqual(regionParams(choice), { pinnedRegions: [4, 12], hiddenRegions: [30] });
   const stored = setOption(fields, undefined, 'regions', writeRegionChoice(choice));
   assert.equal(resolveOptions(fields, stored!).regions, writeRegionChoice(choice));
 
   const row = (id: number, picked: boolean, top: number) => ({ key: `r${id}`, id, label: `R${id}`, picked, top, height: 26, active: !picked });
-  const shown: RegionRowsField = { rows: [row(4, true, 20), row(12, true, 50), row(7, false, 100), row(9, false, 130)], add: { top: 160, height: 26 }, nameLeft: 8 };
+  const shown: RegionRowsField = { rows: [row(4, true, 20), row(12, true, 50), row(7, false, 100), row(9, false, 130)], add: { top: 160, height: 26 }, nameLeft: 8, nameRight: 176 };
   assert.deepEqual(regionDropAt(shown, shown.rows[1]!, 22), { to: 0, lineY: 20 }, 'a pick dragged above the first pick leads');
   assert.deepEqual(regionDropAt(shown, shown.rows[2]!, 55), { to: 1, lineY: 50 }, 'an automatic row dragged among the picks becomes a pick');
   assert.equal(regionDropAt(shown, shown.rows[3]!, 140), null, 'an automatic row dropped among the automatic rows does nothing');
@@ -385,6 +386,11 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   const unknown = regionChooserGroups(list, inChart, { ids: [], missing: 'Air scores were read only in part at this hour' }, true, '');
   assert.deepEqual([unknown[0]!.title, unknown[0]!.note], ['Active now', 'Air scores were read only in part at this hour'], 'activity not known at the hour is said, not shown as none');
   assert.equal(regionChooserGroups(list, inChart, null, true, '')[0]!.title, 'Active in this chart', 'without the product answer the group names only what the chart holds');
+  assert.deepEqual([savedRegionName({ kind: 'loading' }, 99), savedRegionName({ kind: 'failed', failure: {} as never, retry: () => {} }, 99), savedRegionName(list, 99), savedRegionName(list, 7)],
+    ['Region 99 · loading its name…', 'Region 99 · its name could not be loaded', 'Region 99 · not in this recording', 'Baltic Sea'], 'a saved pick is "not in this recording" only once the list says so');
+  const opening = { owner: 'air:GER', hour: 400, rows: inChart, active: null };
+  assert.equal(chooserFor(opening, 'air:GER'), opening);
+  assert.equal(chooserFor(opening, 'air:ITA'), null, 'after the owner changes the old list is never shown or applied (R4-S10)');
 
   const tblDefaults = tableDefaults(cols, base);
   assert.equal(tblDefaults.density, 'normal');
