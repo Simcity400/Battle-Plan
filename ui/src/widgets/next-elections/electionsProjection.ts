@@ -5,7 +5,7 @@ import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../famili
 import { filterCandidates } from '../../families/holders.ts';
 import { identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatProgress, formatScalar } from '../../families/valueFormat.ts';
@@ -80,7 +80,7 @@ function electionExtra(entry: ElectionEntry): readonly TooltipExtraRow[] {
   }];
 }
 
-export const electionsProjection: TableProjection<ElectionsProjectionOptions> = registerTableProjection({
+export const electionsProjection: TableProjection<ElectionsProjectionOptions> = registerFamilyProjection({
   kind: 'next-elections',
   family: 'table',
   nextChange: (readView: BoundedReadView, options: ElectionsProjectionOptions) => Math.min(filterNext(options.filter, readView.hour), nextDay(readView.hour)),

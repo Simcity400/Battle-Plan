@@ -2,7 +2,7 @@ import { liveKey } from '../../charts/live.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, valueFromLive, zeroValue } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
@@ -47,7 +47,7 @@ function missionColumns(reply: AirMissionsReply): readonly DeclarativeColumnSpec
   return held;
 }
 
-export const airMissionsProjection: TableProjection<Record<string, never>> = registerTableProjection(
+export const airMissionsProjection: TableProjection<Record<string, never>> = registerFamilyProjection(
   declareTableProjection<AirMissionsReply, MissionRow, Record<string, never>>({
     kind: 'air-missions',
     validate: validateAirMissions,

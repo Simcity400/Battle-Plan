@@ -697,6 +697,7 @@ export interface BoundedReadViewInput {
     readonly refused: ReadonlyMap<string, string>;
   };
   readonly resolveLive?: (name: string) => LiveValues<number | bigint | string> | null | undefined;
+  readonly resolveRows?: (name: string) => TableRowSource<DatedLogRow> | undefined;
 }
 
 const NO_REVISIONS: Readonly<Record<string, number>> = Object.freeze({});
@@ -765,7 +766,7 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
       return { hour: displayedHour(entry.hour), data: entry.data as T };
     },
     rows<TRow extends DatedLogRow = DatedLogRow>(name: string): TableRowSource<TRow> | undefined {
-      const raw = input.rows?.get(name);
+      const raw = input.resolveRows ? input.resolveRows(name) : input.rows?.get(name);
       if (!raw) return undefined;
       let held = wrappedRows.get(name);
       if (!held) {

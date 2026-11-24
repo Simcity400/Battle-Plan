@@ -3,7 +3,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { CountryFactionGoalsReply, CountryGoal, FactionGoalDefinition, GoalFilter, GoalState } from '../../generated/dashboard';
@@ -88,7 +88,7 @@ const GOAL_COLUMNS: readonly DeclarativeColumnSpec<GoalRow, Record<string, never
   { ...STATE!, priority: 2, text: true, widest: ['In progress'], tone: 'blue', status: () => 'dot', cellTone: row => STATE_TONE[row.goal.state], cellKind: 'status', extra: row => ({ statusKind: STATE_MARK[row.goal.state] }), value: row => stateValue(row.goal) },
 ];
 
-export const factionGoalsProjection: TableProjection<Record<string, never>> = registerTableProjection(
+export const factionGoalsProjection: TableProjection<Record<string, never>> = registerFamilyProjection(
   declareTableProjection<CountryFactionGoalsReply, GoalRow, Record<string, never>>({
     kind: 'faction-goals',
     validate: validateCountryFactionGoals,
