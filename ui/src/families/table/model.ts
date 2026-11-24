@@ -366,7 +366,7 @@ export function resolveTableRows(
   const unsorted = model.unsorted === true;
   const sortColumn = settings.sort.column;
   const direction = settings.sort.direction;
-  const hasGroups = model.rows.some(row => row.group !== undefined);
+  const hasGroups = model.rows.some(row => row.group !== undefined && (row.revealAt === undefined || row.revealAt <= hour));
   const flat: FlatTableRow[] = [];
 
   if (hasGroups) {
@@ -1046,7 +1046,7 @@ export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly fromAnswer?: (answer: FollowedAnswer, options: TOptions) => TReply;
   readonly defaultSort?: { readonly column: string; readonly direction: TableSortDirection };
   readonly columns: readonly DeclarativeColumnSpec<TRow, TOptions>[] | ((reply: TReply, options: TOptions) => readonly DeclarativeColumnSpec<TRow, TOptions>[]);
-  readonly rows: (reply: TReply, live: LiveValues<number | bigint | string> | null, hour: number, options: TOptions) => {
+  readonly rows: (reply: TReply, live: LiveValues<number | bigint | string> | null, hour: number, options: TOptions, readView: BoundedReadView) => {
     readonly rows: readonly TRow[];
     readonly empty?: string;
     readonly emptyDetail?: string;
@@ -1249,7 +1249,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
           hideHeader: spec.hideHeader,
         };
       }
-      const extracted = spec.rows(reply, live, hour, options);
+      const extracted = spec.rows(reply, live, hour, options, readView);
       const hasCustomLooks = colSpecs.some(col => col.looks !== undefined);
       const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, labels, row);
       const builtRows = extracted.rows.map(buildRow);

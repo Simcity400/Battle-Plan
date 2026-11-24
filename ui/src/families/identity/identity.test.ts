@@ -8,7 +8,11 @@ import type {
   CountryIdentitiesReply,
   CountryStyleReply,
 } from '../../generated/dashboard';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { artUrlForHandle, flagArtHandle, mergeArtDemands } from '../art/provider.ts';
+import { artHandleKey } from '../art/types.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import type { ArtHandle } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider } from './provider.ts';
 import { readIdentityAtHeadHour, subscribeIdentityAtHead } from './react.ts';
@@ -18,6 +22,7 @@ import {
   countryTagKey,
   designKey,
   factionKey,
+  flagChoiceKey,
   leaderKey,
   regionKey,
   stateKey,
@@ -446,7 +451,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
   assert.deepEqual(ger150.name, { status: 'ready', value: 'Later Empire' });
   assert.deepEqual(ger150.validInterval, [150, 500]);
 
-  const annexed = view.who('country', 'slot:2', 160);
+  const annexed = view.who('country', countryKey(2), 160);
   assert.equal(annexed.holder.status, 'absent');
   assert.deepEqual(annexed.validInterval, [150, 500]);
 
@@ -537,6 +542,32 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
   assert.equal(h3, 150, 'crossing the run boundary advances the hour');
   unsubActive();
   broker.dispose();
+});
+
+test('an identity key and an art handle keep their whole identity from demand to the drawn picture', () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  index.setFacts(sampleFacts(), true);
+  index.setIdentities(sampleIdentities());
+  index.setDrawnFlag('panel', FLAG_A, { url: 'flag://panel' });
+  index.setDrawnFlag('shield', FLAG_A, { url: 'flag://shield' });
+  const worker = IdentityIndex.fromSnapshot(structuredClone(index.exportSnapshot()));
+
+  const view = createBoundedReadView({ hour: 200, identity: createSnapshotIdentityProvider(worker) });
+  const selected = view.who('country', countryKey(1), 100);
+  assert.equal(worker.resolve(countrySlotKey(1), 100).kind, 'known');
+  assert.deepEqual(selected.tag, { status: 'ready', value: 'GER' });
+  assert.deepEqual(selected.name, { status: 'ready', value: 'Early Republic' });
+
+  const choice = flagChoiceKey(FLAG_A);
+  assert.equal(artUrlForHandle(flagArtHandle(choice, 'panel'), worker), 'flag://panel');
+  assert.equal(artUrlForHandle(flagArtHandle(choice, 'shield'), worker), 'flag://shield');
+
+  const plain: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0 };
+  const asText: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
+  const asRecorded: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, recorded: 'GFX_y' };
+  assert.equal(artHandleKey({ kind: 'sprite', key: 'GFX_x' }), artHandleKey(plain));
+  assert.deepEqual(mergeArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
+  assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
 });
 
 test('coalesced sparse identity runs stay missing on unrecorded gaps outside known spans', () => {

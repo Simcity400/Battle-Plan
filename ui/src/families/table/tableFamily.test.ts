@@ -7,6 +7,7 @@ import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
 import { nextLookChange } from '../looks.ts';
 import { resolveHeadSpan } from './declaration.ts';
+import { tableHostAdapter } from './hostAdapter.ts';
 import { familyTableLaneView, liveAdapter } from './laneView.ts';
 import { registerTableProjection } from './registry.ts';
 import type { ApmReply, CampaignClockReply, DivisionTemplatesReply, ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
@@ -546,9 +547,10 @@ test('layout hides lowest-priority columns into tooltip or keeps all columns in 
   const hiddenLayout = layoutFamilyTable(cols, 370, 'tooltip');
   assert.deepEqual(hiddenLayout.columns.map(c => c.key), ['state', 'resistance']);
   assert.deepEqual(hiddenLayout.hidden, ['owner']);
+  assert.deepEqual(hiddenLayout.columns.map(c => [c.leadInset ?? 0, c.trailInset ?? 0]), [[6, 0], [0, 6]], 'the 6 px side margin sits on the first and last columns kept');
   const scrollLayout = layoutFamilyTable(cols, 250, 'scroll');
   assert.equal(scrollLayout.scrollable, true);
-  assert.equal(scrollLayout.pinnedWidth, 140);
+  assert.equal(scrollLayout.pinnedWidth, 146);
 
   const bigModel = {
     columns: specs.slice(0, 2),
@@ -1713,4 +1715,162 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
+});
+
+function gridContext(width: number, height: number) {
+  type Box = readonly [number, number, number, number];
+  const marks = new Map<string, string>();
+  const at = (x: number, y: number) => `${Math.round(x)},${Math.round(y)}`;
+  const canvasBox: Box = [0, 0, width, height];
+  let clipBox: Box = canvasBox;
+  let pending: Box | null = null;
+  const stack: Box[] = [];
+  const inside = (x: number, y: number) => x >= clipBox[0] && x < clipBox[2] && y >= clipBox[1] && y < clipBox[3];
+  const clear = (x: number, y: number, w: number, h: number) => {
+    for (const key of [...marks.keys()]) {
+      const [px, py] = key.split(',').map(Number) as [number, number];
+      if (px >= x && px < x + w && py >= y && py < y + h && inside(px, py)) marks.delete(key);
+    }
+  };
+  const mark = (x: number, y: number, text: string) => { if (inside(x, y)) marks.set(at(x, y), text); };
+  const target: Record<string, unknown> = {
+    font: '', fillStyle: '', strokeStyle: '', lineWidth: 1, textAlign: 'left', textBaseline: 'alphabetic', globalAlpha: 1,
+    save: () => { stack.push(clipBox); },
+    restore: () => { clipBox = stack.pop() ?? canvasBox; },
+    beginPath: () => { pending = null; },
+    rect: (x: number, y: number, w: number, h: number) => { pending = [x, y, x + w, y + h]; },
+    clip: () => {
+      if (pending) clipBox = [Math.max(clipBox[0], pending[0]), Math.max(clipBox[1], pending[1]), Math.min(clipBox[2], pending[2]), Math.min(clipBox[3], pending[3])];
+    },
+    fillText: (text: string, x: number, y: number) => mark(x, y, String(text)),
+    fillRect: (x: number, y: number, w: number, h: number) => clear(x, y, w, h),
+    clearRect: (x: number, y: number, w: number, h: number) => clear(x, y, w, h),
+    drawImage: (_img: unknown, x: number, y: number) => mark(x, y, 'image'),
+    measureText: (text: string) => ({ width: String(text).length * 7 }),
+    createLinearGradient: () => ({ addColorStop() {} }),
+    createPattern: () => null,
+    getTransform: () => ({ a: 1, d: 1 }),
+  };
+  const ctx = new Proxy(target, { get: (t, k) => (k in t ? t[k as string] : () => {}) });
+  return { ctx, marks };
+}
+
+test('an incremental table paint after a seek back, a same-hour correction and a reorder equals a fresh paint, cell by cell', () => {
+  type Row = { id: string; v: number; flag: string };
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'flag', label: 'Flag', as: 'plain', offered: ['plain'], priority: 1, text: true },
+    { key: 'v', label: 'Val', as: 'faint', barEligible: true, offered: ['plain', 'faint'], priority: 2, numeric: true },
+  ];
+  registerTableProjection({
+    kind: 'test-fresh-equals-incremental',
+    family: 'table',
+    project: readView => {
+      const reply = readView.panel('main') as { rows: Row[] };
+      return {
+        hour: readView.hour,
+        rank: true,
+        defaultRankShown: true,
+        rankMarkers: true,
+        columns,
+        rows: reply.rows.map(r => ({
+          key: r.id,
+          name: r.id,
+          cells: {
+            name: { value: knownValue(r.id) },
+            flag: { value: knownValue('Owner'), flags: [{ tag: r.flag }] },
+            v: { value: knownValue(r.v), format: 'integer' },
+          },
+        })),
+      };
+    },
+  });
+  const contexts: ReturnType<typeof gridContext>[] = [];
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { const grid = gridContext(this.width, this.height); contexts.push(grid); return grid.ctx; }
+    transferToImageBitmap() { return { close() {} }; }
+  };
+  try {
+    const settingsFor = (direction: 'ascending' | 'descending') => tableSettingsOf(undefined, columns, { density: 'normal', overflow: 'scroll', sort: { column: 'v', direction } });
+    const lane = () => {
+      const view = familyTableLaneView(() => {}, { clock: () => 5000 });
+      const state = new Map<string, unknown>();
+      let seq = 1;
+      const before = contexts.length;
+      const paint = (rows: Row[], hour: number, settings: TableSettings) => view.paint({
+        widget: 1,
+        subs: [],
+        pictures: [],
+        model: { family: 'table' as const, kind: 'test-fresh-equals-incremental', options: {}, settings, sources: {}, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+        hour,
+        speed: 24,
+        binding: { generation: 1, surfaces: [{ width: 360, height: 200, dpr: 1 }], offset: 0, pin: null },
+        inspect: null,
+        now: 5000,
+      }, state, () => `c${seq++}`);
+      return { paint, marks: () => new Map(contexts[before]!.marks) };
+    };
+    const fresh = (rows: Row[], hour: number, settings: TableSettings) => {
+      const other = lane();
+      other.paint(rows, hour, settings);
+      return other.marks();
+    };
+    const atOne: Row[] = [{ id: 'A', v: 20, flag: 'X' }, { id: 'B', v: 10, flag: 'Y' }, { id: 'C', v: 5, flag: 'Z' }];
+    const atTwo: Row[] = [{ id: 'A', v: 5, flag: 'X' }, { id: 'B', v: 30, flag: 'Y' }, { id: 'C', v: 6, flag: 'Z' }];
+    const corrected: Row[] = [{ id: 'A', v: 20, flag: 'W' }, { id: 'B', v: 10, flag: 'Y' }, { id: 'C', v: 5, flag: 'Z' }];
+    const descending = settingsFor('descending');
+    const ascending = settingsFor('ascending');
+    const played = lane();
+    played.paint(atOne, 1, descending);
+    played.paint(atTwo, 2, descending);
+    assert.ok([...played.marks().values()].some(text => text.includes('▲')), 'a forward step marks the rank change');
+
+    played.paint(atOne, 1, descending);
+    assert.deepEqual(played.marks(), fresh(atOne, 1, descending), 'after a seek back the picture equals a fresh paint');
+
+    played.paint(corrected, 1, descending);
+    assert.deepEqual(played.marks(), fresh(corrected, 1, descending), 'a same-hour correction of a cell’s sole flag repaints it');
+
+    played.paint(corrected, 1, ascending);
+    assert.deepEqual(played.marks(), fresh(corrected, 1, ascending), 'a reorder at the same hour equals a fresh paint');
+
+    const replaced = played.paint([{ id: 'D', v: 40, flag: 'X' }, { id: 'B', v: 10, flag: 'Y' }, { id: 'C', v: 5, flag: 'Z' }], 2, ascending);
+    const navKeys = (replaced.fields.nav?.value as readonly (readonly [string])[]).map(item => item[0]);
+    assert.deepEqual([...navKeys].sort(), ['B', 'C', 'D'], 'navigation installed with the picture offers the subjects painted, never the replaced one');
+
+    const grouped = resolveTableRows({
+      hour: 10,
+      columns,
+      rows: [
+        { key: 'P', name: 'P', cells: { name: { value: knownValue('P') }, v: { value: knownValue(1) } } },
+        { key: 'Q', name: 'Q', revealAt: 20, group: { key: 'g', label: 'Group' }, cells: { name: { value: knownValue('Q') }, v: { value: knownValue(2) } } },
+      ],
+    }, descending);
+    assert.deepEqual(grouped.map(item => item.kind), ['data'], 'a group revealed later adds no heading before its hour');
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+});
+
+test('the table host adapter stores and resolves table settings through its declaration policy and sizes media rows', () => {
+  const columns = [{ key: 'a', label: 'A', priority: 1, as: 'number', offered: ['number'], width: 80 }, { key: 'b', label: 'B', priority: 2, as: 'number', offered: ['number'], width: 80 }] as never;
+  const declaration = { family: 'table', kind: 'synthetic-settings', columns, settings: { kind: 'table', base: { density: 'normal', barsBehind: 'all', overflow: 'scroll', sort: { column: 'a', direction: 'descending' } } } };
+  const policy = tableHostAdapter.settings!;
+  const initial = policy.resolve(declaration, null, {});
+  assert.equal(initial.sort.column, 'a');
+  const stored: Record<string, unknown> = {};
+  const next: TableSettings = { ...initial, density: 'compact', sort: { column: 'b', direction: 'ascending' } };
+  policy.store!(declaration, next, initial, {} as never, (key, value) => { stored[key] = value; });
+  const round = policy.resolve(declaration, null, stored);
+  assert.deepEqual([round.density, round.sort.column, round.sort.direction], ['compact', 'b', 'ascending'], 'what the header stores is what the table resolves next');
+  assert.equal(policy.editable!(declaration), true);
+  assert.equal(policy.editable!({ ...declaration, settings: { kind: 'fixed', base: declaration.settings.base } }), false);
+
+  assert.equal(tableHostAdapter.rowGeometry!(round, { meta: { rowHeightMode: 'standard' } })!.rowHeight, ROW_HEIGHT.compact);
+  assert.ok(tableHostAdapter.rowGeometry!(round, { meta: { rowHeightMode: 'media' } })!.rowHeight > ROW_HEIGHT.compact, 'media rows are taller');
+  assert.deepEqual(tableHostAdapter.getScrollExtent!({ widths: { widths: {}, totalWidth: 640 }, table: { count: 10 } }, { rowHeight: 28, overscan: 4 }), { width: 640, height: 280 });
 });

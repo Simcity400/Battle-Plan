@@ -98,3 +98,13 @@
 .fh-body:not(:hover)::-webkit-scrollbar-thumb:vertical {
   background: transparent;
 }
+
+.fh-detail-anchor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+}

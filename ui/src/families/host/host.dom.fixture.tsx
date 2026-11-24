@@ -196,6 +196,9 @@ function subsForPipe(pipeId: number): number[] {
 }
 
 
+const { rowGeometry: _rows, chromeState: _chrome, ...tableWithoutWindow } = tableHostAdapter;
+const BODY_FOCUS_ADAPTER = { ...tableWithoutWindow, mirrorFocus: 'body' as const };
+
 let root: Root | null = null;
 let genericCommits = 0;
 let genericActivated: InstalledAction[] = [];
@@ -218,6 +221,7 @@ let currentState = {
   secondMounted: false,
   genericMounted: false,
   genericBlocked: false,
+  genericBodyFocus: false,
 };
 
 const origBind = pipeline.bind.bind(pipeline);
@@ -303,8 +307,8 @@ function renderApp() {
             <Profiler id="generic-host" onRender={() => { genericCommits++; }}>
               <div data-slot="generic" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
                 <FamilyHost
-                  adapter={tableHostAdapter}
-                  chrome={TableChrome}
+                  adapter={currentState.genericBodyFocus ? BODY_FOCUS_ADAPTER : tableHostAdapter}
+                  {...(currentState.genericBodyFocus ? {} : { chrome: TableChrome })}
                   settings={SETTINGS}
                   declaration={scoreboardProjection}
                   view="default"
@@ -340,6 +344,8 @@ declare global {
 
 window.hostDom = {
   async mountPrimary() {
+    await document.fonts?.ready;
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     container = document.createElement('div');
     document.body.append(container);
     root = createRoot(container);
@@ -553,7 +559,7 @@ window.hostDom = {
       for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     };
     genericViewports = [];
-    currentState = { ...currentState, genericMounted: true, genericBlocked: true };
+    currentState = { ...currentState, genericMounted: true, genericBlocked: true, genericBodyFocus: true };
     renderApp();
     await frames(3);
     const blockedMeasured = genericViewports.some(width => width > 0);
@@ -579,8 +585,9 @@ window.hostDom = {
     const describedBy = body.getAttribute('aria-describedby');
     const description = describedBy ? document.getElementById(describedBy)?.textContent ?? null : null;
 
-    const firstRow = container!.querySelector<HTMLElement>('[data-slot="generic"] table tbody tr')!;
-    firstRow.focus();
+    body.focus();
+    await frames(2);
+    body.blur();
     await frames(2);
     clock.setSpeed(24);
     clock.setPlaying(true);
@@ -594,7 +601,7 @@ window.hostDom = {
       dateOnly = now?.id !== idBefore && now?.dim === false && (installCalls.get(pipeG) ?? 0) === installsBefore;
     }
     genericActivated = [];
-    (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     const view = pipeline.view(pipeG);
     const activated = genericActivated[0] ?? null;
     clock.setPlaying(false);
@@ -604,7 +611,7 @@ window.hostDom = {
     await frames(2);
     const clearedDescription = body.getAttribute('aria-describedby') === null;
 
-    currentState = { ...currentState, genericMounted: false, genericBlocked: false };
+    currentState = { ...currentState, genericMounted: false, genericBlocked: false, genericBodyFocus: false };
     renderApp();
     return {
       blockedMeasured,

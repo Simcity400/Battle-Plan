@@ -136,6 +136,10 @@ export interface NullableMeaning {
   readonly reason: string;
 }
 
+export function textValue(raw: string | null | undefined, reason: string): Value<string> {
+  return raw === null || raw === undefined || !raw.trim() ? notRecorded(reason) : knownValue(raw);
+}
+
 export function valueFromNullable<T extends Scalar>(
   raw: T | null | undefined,
   whenNull: NullableMeaning | (() => NullableMeaning),

@@ -75,9 +75,7 @@ export type FamilyNavigationKind = 'rows' | 'grid' | 'points';
 export type FamilyMirrorKind = 'listbox' | 'table' | 'none';
 export type FamilySkeletonKind = 'table' | 'chart';
 
-export type FamilyArtDemand =
-  | ArtHandle
-  | { readonly key: string; readonly frame: number };
+export type FamilyArtDemand = ArtHandle;
 
 export interface FamilyStaticSources {
   readonly panels?: Readonly<Record<string, unknown>>;
@@ -156,7 +154,6 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly view: string;
   readonly options: TOptions;
   readonly settings: TSettings | undefined;
-  readonly expanded: Readonly<Record<string, boolean>>;
   readonly window: FamilyRowWindow | null;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -172,6 +169,7 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly identitySnapshot: IdentitySnapshot | null;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
+  readonly expanded: Readonly<Record<string, boolean>>;
   readonly audit: boolean;
   readonly auditId: number | undefined;
   readonly pauseFlush: number;

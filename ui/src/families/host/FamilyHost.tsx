@@ -48,6 +48,7 @@ import {
   handleFamilyPointsKeyDown,
   type FamilyNavTuple,
 } from './keyboard.ts';
+import { NO_EXPANSION, toggleExpansion, type FamilyExpansion } from './expansion.ts';
 import { syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
 import { computeScrollGeometry, physicalToLogicalTop, scrollRangeIntoView, type ScrollGeometry } from './scroll.ts';
@@ -164,7 +165,6 @@ export interface FamilyChromeProps<TSettings = unknown> {
 }
 
 const NO_TARGETS: FamilyChromeTargets = { body: null, bodyWrap: null, extent: null, mirrorHead: null };
-const NO_EXPANDED: Readonly<Record<string, boolean>> = {};
 
 export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, TBinding = unknown, TSettings = unknown> {
   readonly adapter: FamilyHostAdapter<TModel, TOptions, TBinding, TSettings>;
@@ -276,9 +276,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const mirrorHeadRef = useRef<HTMLTableSectionElement>(null);
   const bodyWrapRef = useRef<HTMLDivElement>(null);
   const [targets, setTargets] = useState<FamilyChromeTargets>(NO_TARGETS);
-  const [expanded, setExpanded] = useState<Readonly<Record<string, boolean>>>(NO_EXPANDED);
-  const expandedRef = useRef(expanded);
-  expandedRef.current = expanded;
   const windowRef = useRef<FamilyRowWindow | null>(null);
   const [chromeState, setChromeState] = useState<unknown>(undefined);
   const chromeStateRef = useRef<unknown>(undefined);
@@ -319,6 +316,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const resolveInstalledRef = useRef<() => InstalledPicture | null>(() => installedPictureRef.current);
   const navRef = useRef<readonly FamilyNavTuple[]>(EMPTY_NAV);
   const typeaheadRef = useRef({ query: '', until: 0 });
+  const expansionRef = useRef<FamilyExpansion>(NO_EXPANSION);
 
   const lastMirrorKeyRef = useRef('');
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
@@ -349,6 +347,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const { theme, reducedMotion } = useFamilyTheme(undefined, countryLooks);
   const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer(adapter.family);
+  const announceRef = useRef(announce);
+  announceRef.current = announce;
+  const say = useCallback((message: string) => announceRef.current(message), []);
 
   const hasTiled = !!tiledSeries && Object.keys(tiledSeries).length > 0;
   const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || hasTiled || allowEmptyFollow);
@@ -508,13 +509,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactReadView && curAdapter.deriveAuditRows) {
-      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, cur.settings, expandedRef.current, windowRef.current?.first, windowRef.current?.count, cur.theme];
+      const key = [cur.declaration, cur.options, cur.exactReadView, curAdapter.deriveAuditRows, viewport.width, viewport.height, viewport.scrollLeft, viewport.scrollTop, cur.settings, expansionRef.current, windowRef.current?.first, windowRef.current?.count, cur.theme];
       const prev = lastAuditRef.current;
       if (prev && prev.key.length === key.length && prev.key.every((part, i) => part === key[i])) {
         auditId = prev.id;
       } else {
         const deriveRows = curAdapter.deriveAuditRows;
-        const context = { viewport, settings: cur.settings, expanded: expandedRef.current, window: windowRef.current, theme: cur.theme, fields: installedFieldsRef.current };
+        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, window: windowRef.current, theme: cur.theme, fields: installedFieldsRef.current };
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,
@@ -534,7 +535,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       view: cur.view,
       options: cur.options,
       settings: cur.settings,
-      expanded: expandedRef.current,
       window: windowRef.current,
       sources: sourceIdsRef.current,
       ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
@@ -550,6 +550,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       identitySnapshot: cur.identitySnapshot,
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
+      expanded: expansionRef.current,
       audit: auditId !== undefined,
       auditId,
       pauseFlush: pauseFlushRef.current,
@@ -597,8 +598,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const dispatchAction = useCallback((action: InstalledAction) => {
     const cur = latestRef.current;
     if (action.toggle && cur.onToggle) cur.onToggle(action);
-    else cur.onActivate?.(action);
-  }, []);
+    else if (action.toggle) {
+      const toggled = toggleExpansion(expansionRef.current, navRef.current, action.subject);
+      if (!toggled) return;
+      expansionRef.current = toggled.next;
+      say(`${toggled.label} ${toggled.open ? 'expanded' : 'collapsed'}.`);
+      bindRef.current();
+    } else cur.onActivate?.(action);
+  }, [say]);
 
   const actionFor = useCallback((installed: InstalledPicture, hit: ParsedFamilyHit, toggle: boolean): InstalledAction | null => {
     const refine = latestRef.current.adapter.resolveHitAction;
@@ -649,24 +656,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (command === 'pin') {
       const focusTip = (PICTURE_FIELDS.get(picture) ?? EMPTY_FIELDS).focusTooltip as FamilyTooltipField | undefined;
       if (!focusTip?.text || focusTip.text.rowKey !== input.key) return false;
-      tooltips.pinFocused(focusTip.text, picture.hour, focusAnchorRef.current, latestRef.current.viewportHeight, announce);
+      tooltips.pinFocused(focusTip.text, picture.hour, focusAnchorRef.current, latestRef.current.viewportHeight, say);
       return true;
     }
     const toggle = command === 'toggle';
-    if (activeAdapter.tree && (toggle || picture.actionKeys.get(input.key)?.toggle)) {
-      const entry = navRef.current.find(item => item[0] === input.key);
-      if (!entry || entry[3] < 0) return false;
-      const open = entry[3] === 0;
-      const key = input.key;
-      setExpanded(prev => ({ ...prev, [key]: open }));
-      announce(`${entry[1]} ${open ? 'expanded' : 'collapsed'}.`);
-      return true;
-    }
     const action = actionFor(picture, input.hit ?? activeAdapter.parseHit(input.key) ?? { key: input.key }, toggle);
     if (!action) return false;
     dispatchAction(toggle ? { ...action, toggle: true } : action);
     return true;
-  }, [actionFor, announce, dispatchAction, tooltips]);
+  }, [actionFor, say, dispatchAction, tooltips]);
 
   const revealRow = useCallback((entry: FamilyNavTuple): boolean => {
     const cur = latestRef.current;
@@ -706,15 +704,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       if (nextTop !== node.scrollTop) node.scrollTop = vp.scrollTop = nextTop;
       const rowLabel = metrics.rowLabel?.(row);
       const columnLabel = metrics.columnLabel?.(column);
-      if (rowLabel && columnLabel) announce(`${rowLabel} to ${columnLabel}`);
+      if (rowLabel && columnLabel) say(`${rowLabel} to ${columnLabel}`);
     }
     bindRef.current();
-  }, [announce]);
+  }, [say]);
 
   useLayoutEffect(() => {
     installedPictureRef.current = null;
     installedFieldsRef.current = EMPTY_FIELDS;
     navRef.current = EMPTY_NAV;
+    expansionRef.current = NO_EXPANSION;
     focusedKeyRef.current = null;
     inspectedKeyRef.current = null;
     inspectedHitRef.current = null;
@@ -1080,7 +1079,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     exactReadView,
     audit.captureActive,
     settings,
-    expanded,
   ]);
 
   useFamilyPauseFlush(runtime.clock, () => {
@@ -1106,7 +1104,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       refreshFocusAnchor();
       return dispatch(command, { key, hit: null, picture });
     };
-    const unpin = () => tooltips.unpin(announce);
+    const unpin = () => tooltips.unpin(say);
 
     if (activeAdapter.navigation === 'grid') {
       const metrics = activeAdapter.getGridMetrics?.(fields);
@@ -1165,7 +1163,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       onTogglePinTooltip: key => { run('pin', key); },
       onUnpinTooltip: unpin,
     });
-  }, [announce, dispatch, focusGridCell, focusRowByKey, publishHoverHour, refreshFocusAnchor, tooltips]);
+  }, [say, dispatch, focusGridCell, focusRowByKey, publishHoverHour, refreshFocusAnchor, tooltips]);
 
   const onFocus = useCallback(() => {
     focusInsideRef.current = true;
@@ -1247,7 +1245,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           editable={editableSettings}
           viewportWidth={chromeWidth}
           bodyBlocked={!!bodyStateNode}
-          announce={announce}
+          announce={say}
           targets={targets}
           headerSlot={headerSlot}
         />

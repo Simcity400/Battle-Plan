@@ -772,7 +772,9 @@ export function familyTableLaneView(
       }
       const totalHeight = rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
       if (modelChanged) {
-        if (held.priorRows.length && glideMs > 0) {
+        const forwardStep = input.speed > 0 && Number.isFinite(held.priorHour) && model.hour > held.priorHour;
+        const jumped = !Number.isFinite(held.priorHour) || model.hour < held.priorHour || (model.hour !== held.priorHour && !forwardStep);
+        if (held.priorRows.length && glideMs > 0 && !jumped) {
           const oldIndex = new Map<string, number>();
           held.priorRows.forEach((item, index) => { if (item.kind === 'data') oldIndex.set(item.key, index); });
           const nextGlide = new Map<string, GlideOffset>();
@@ -794,7 +796,7 @@ export function familyTableLaneView(
         if (rankMarkersOn) {
           const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
           const holdMs = rankHoldForSpeed(input.speed);
-          held.markers = held.order?.sort === sortSig ? rankMarkers(held.order.keys, dataKeys, now, held.markers, holdMs) : new Map();
+          held.markers = forwardStep && held.order?.sort === sortSig ? rankMarkers(held.order.keys, dataKeys, now, held.markers, holdMs) : new Map();
           held.order = { sort: sortSig, keys: dataKeys };
         } else {
           held.markers = new Map();
@@ -883,6 +885,7 @@ export function familyTableLaneView(
           hasGroupHeaders: held.cachedHasGroupHeaders,
           precomputedMaxima: maxima,
           staticRowLooks: model.rowTimeBoundaries === false,
+          rowIndex: held.cachedRowIndex,
           rowHeightMode,
           rowGeom,
           clockSummary: model.clockSummary,
@@ -947,7 +950,7 @@ export function familyTableLaneView(
       }
       fields.meta = held.metaField!;
 
-      const navUrgent = !held.navField || input.speed === 0 || focusedKey !== null || hasTree || (held.navItems !== null && held.navItems.length !== flatRows.length && !held.cachedHasGroupHeaders);
+      const navUrgent = !held.navField || input.speed === 0 || focusedKey !== null || hasTree || (modelChanged && !incrementalUsed) || (held.navItems !== null && held.navItems.length !== flatRows.length && !held.cachedHasGroupHeaders);
       if (modelChanged) held.navGate.invalidate();
       if (navUrgent || held.navGate.due(now, input.speed, `${flatRows.length}:${focusedKey ?? ''}`)) {
         if (!held.navField || !sameNavItems(held.navItems, flatRows)) {
@@ -1073,7 +1076,7 @@ export function familyTableLaneView(
       const glideSnapshot = moving ? new Map(held.glide) : undefined;
       const hit = (point: readonly [number, number]) => {
         if (model.clockSummary) return null;
-        const at = hitFamilyTable(layout, flatRows, { x: point[0], y: point[1] }, rowHeight, bound.scrollLeft, bound.scrollTop, rankShown, rankWidth, glideSnapshot, now, glideMs, rowGeom);
+        const at = hitFamilyTable(layout, flatRows, { x: point[0], y: point[1] }, rowHeight, bound.scrollLeft, bound.scrollTop, rankShown, rankWidth, glideSnapshot, now, glideMs, rowGeom, held!.cachedRowIndex, bound.height);
         if (at.kind !== 'row' || !at.rowKey) return null;
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };

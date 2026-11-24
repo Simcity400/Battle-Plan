@@ -11,7 +11,6 @@ import { REWARDS_PANEL, detailTexts, detailsStructure, effectsStructure, rewards
 import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
 import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
 import { HISTORY_PANEL, historyStructure, projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
-import { masteryStructure, trackKey, trackNumbers, trackTexts, trackRatio, validateDoctrineMastery } from '../../widgets/doctrine-mastery/doctrineMasteryData.ts';
 
 function detailValues(reply: SpecialProjectDetails) {
   const values = detailTexts(reply);
@@ -140,17 +139,6 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
     }),
   'special-project-details': recordView(validateProjectDetails, detailsStructure, detailValues, { extendInline }),
   [REWARDS_PANEL]: recordView(validateProjectDetails, rewardsStructure, detailValues, { extendInline }),
-  'doctrine-mastery': recordView(validateDoctrineMastery, masteryStructure, (reply, values) => {
-    const fields = new Map<string, string>();
-    for (const folder of reply.folders) for (const track of folder.tracks) {
-      const key = trackKey(folder, track);
-      const numbers = trackNumbers(values, key);
-      const fraction = trackRatio(track, numbers.mastery);
-      fields.set(key + ':bar', fraction === null ? '' : String(fraction));
-      for (const [field, text] of Object.entries(trackTexts(numbers))) fields.set(key + ':' + field, text);
-    }
-    return fields;
-  }, { rowAttribute: 'data-track', layers: '.doctrine-mastery-tracks' }),
   'special-projects': {
     structure: (raw, hour) => projectStructure(projectHistory(raw), hour),
     nextChange: (raw, hour) => projectChangeAfter(projectHistory(raw), hour),
