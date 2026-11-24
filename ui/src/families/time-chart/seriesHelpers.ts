@@ -1,6 +1,7 @@
 import { colour, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import { rowName, rowReason, type FollowedAnswer } from '../../dashboard/follow/message.ts';
+import { rowName, rowReason } from '../../dashboard/follow/message.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
 import { answerRowOf } from '../sceneTiles.ts';
@@ -10,50 +11,6 @@ import { holderTagAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartMarker, ChartMissingSpan, ChartStackBand, ChartStackModel } from './model.ts';
-
-export function seriesHeadValue(
-  bounded: BoundedSeries | null | undefined,
-  answer: FollowedAnswer | undefined,
-  rowIdx: number,
-  defaultDecimals: number,
-  scale = 1,
-): number | null {
-  const decimals = bounded?.decimals ?? defaultDecimals;
-  if (answer) {
-    const live = rowAmount(answer, rowIdx, decimals);
-    if (live === null) return null;
-    if (live !== undefined && Number.isFinite(live)) return live * scale;
-  }
-  const head = bounded?.headValue;
-  if (head) {
-    if (head.kind === 'notRecorded' || head.kind === 'notApplicable') return null;
-    const num = Number(head.value);
-    return Number.isFinite(num) ? num * scale : null;
-  }
-  if (!bounded) return null;
-  let lastHour = -Infinity;
-  let lastValue: number | null = null;
-  if (bounded.runs && bounded.runs.length > 0) {
-    const last = bounded.runs.at(bounded.runs.length - 1);
-    if (last && Number.isFinite(last.value)) {
-      lastHour = last.lastHour;
-      lastValue = last.value;
-    }
-  } else {
-    for (let b = bounded.buckets.length - 1; b >= 0; b--) {
-      const bucket = bounded.buckets.at(b);
-      if (bucket && Number.isFinite(bucket.lastValue)) {
-        lastHour = bucket.lastHour;
-        lastValue = bucket.lastValue;
-        break;
-      }
-    }
-  }
-  if (lastValue === null) return null;
-  const lastMissing = bounded.missing.length > 0 ? bounded.missing.at(bounded.missing.length - 1) : undefined;
-  if (lastMissing && lastMissing.lastHour > lastHour) return null;
-  return lastValue * scale;
-}
 
 export type HeadReading = { readonly value: number } | { readonly missing: string };
 
@@ -70,7 +27,17 @@ interface PanelState {
   readonly missing: string | null;
 }
 
+interface RankPanel {
+  readonly measures: readonly { readonly decimals: number }[];
+  readonly rows: readonly { readonly country: string | number; readonly readings: readonly (PanelState | undefined)[] }[];
+}
+
 const NOT_READ_AT_HOUR = 'Not recorded at this hour';
+
+export function rankedPanelKeys(readView: BoundedReadView, name: string): readonly string[] {
+  const panel = readView.panel<Partial<RankPanel>>(name);
+  return panel?.rows?.map(row => countryKey(row.country)) ?? [];
+}
 
 export function headReading(
   readView: BoundedReadView,
@@ -94,7 +61,14 @@ export function headReading(
         : { value: value * scale };
     }
   }
-  const panel = readView.panel<{ readonly decimals?: number; readonly states?: readonly PanelState[] }>(name);
+  const panel = readView.panel<{ readonly decimals?: number; readonly states?: readonly PanelState[] } & Partial<RankPanel>>(name);
+  const ranked = panel?.rows?.find(row => countryKey(row.country) === key.tag);
+  if (ranked) {
+    const reading = ranked.readings[0];
+    if (!reading?.run) return { missing: reading?.missing ?? NOT_READ_AT_HOUR };
+    const value = Number(reading.run.valueRaw) / 10 ** (panel?.measures?.[0]?.decimals ?? places);
+    return Number.isFinite(value) ? { value: value * scale } : { missing: NOT_READ_AT_HOUR };
+  }
   const state = panel?.states?.find(item => countryKey(item.country) === key.tag && (key.part === undefined || item.part === key.part));
   if (state) {
     if (!state.run) return { missing: state.missing ?? NOT_READ_AT_HOUR };
@@ -108,8 +82,12 @@ export function headReading(
   return Number.isFinite(value) ? { value: value * scale } : { missing: NOT_READ_AT_HOUR };
 }
 
-export const headValueOf = (reading: HeadReading | null): number | null =>
-  reading !== null && 'value' in reading ? reading.value : null;
+export const headValueOf = (reading: HeadReading | null | undefined): number | null =>
+  reading != null && 'value' in reading ? reading.value : null;
+
+export function auditReading(row: string, reading: HeadReading | null, format: (value: number) => string): FamilyAuditRow {
+  return auditRow(row, reading === null ? NOT_READ_AT_HOUR : 'value' in reading ? format(reading.value) : reading.missing);
+}
 
 export interface ExactReading {
   readonly hour: number;
@@ -302,24 +280,6 @@ export function cardItems(rows: readonly CardRow[], heading: boolean): TooltipLi
 
 interface StatesReply {
   readonly states?: readonly { readonly country: string | number; readonly run: { readonly valueRaw: string } | null; readonly missing: string | null }[];
-}
-
-export function seriesHeadAt(
-  readView: BoundedReadView,
-  name: string,
-  tag: string,
-  row: number,
-  defaultDecimals: number,
-  scale = 1,
-): number | null {
-  const bounded = readView.series(name)?.get(tag) ?? null;
-  const answer = readView.answer(name);
-  if (answer || bounded) return seriesHeadValue(bounded, answer, row, defaultDecimals, scale);
-  const reply = readView.panel<StatesReply>(name);
-  const state = reply?.states?.find(item => countryKey(item.country) === tag);
-  if (!state?.run) return null;
-  const value = Number(state.run.valueRaw) / 10 ** defaultDecimals;
-  return Number.isFinite(value) ? value * scale : null;
 }
 
 export function rankEntry(

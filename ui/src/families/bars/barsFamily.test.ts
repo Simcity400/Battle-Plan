@@ -717,3 +717,56 @@ test('at the deepest scroll the extent allows, the last row sits above the axis,
   assert.ok(lastBottom - deepest <= layout.bodyHeight, 'the last row ends inside the clipped body');
   assert.equal(visibleBarsRange(layout, deepest, 0).last, 40);
 });
+
+test('share rows draw the category legend strip, wrap long category lists cleanly, and draw right-aligned count unit once', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const model: BarsModel = {
+    form: 'share',
+    hour: h,
+    scaleUnit: 'Battalions',
+    legend: [
+      { key: 'armored', label: 'Armored Battalions', color: '#3b82f6' },
+      { key: 'combat-support', label: 'Combat Support Battalions', color: '#ea580c' },
+      { key: 'infantry', label: 'Infantry Battalions', color: '#16a34a' },
+      { key: 'mobile', label: 'Mobile Battalions', color: '#d97706' },
+      { key: 'mobile-cs', label: 'Mobile Combat Support Battalions', color: '#db2777' },
+      { key: 'support', label: 'Support Companies', color: '#7c3aed' },
+    ],
+    rows: [
+      {
+        kind: 'data',
+        key: 'GER',
+        label: 'German Reich',
+        segments: [
+          { key: 'infantry', label: 'Infantry Battalions', share: 0.7, value: knownValue(280), color: '#16a34a' },
+          { key: 'support', label: 'Support Companies', share: 0.3, value: knownValue(120), color: '#7c3aed' },
+        ],
+        readout: { primary: '400' },
+      },
+    ],
+  };
+  const layout = layoutFamilyBars(model, 840, 390);
+  assert.ok(layout.legendHeight >= 44, 'six long category names wrap onto two legend rows');
+  const { ctx, ops } = makeFakeCtx();
+  drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const texts = ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  assert.ok(texts.includes('Armored Battalions'), 'legend includes first category');
+  assert.ok(texts.includes('Support Companies'), 'wrapped legend includes last category');
+  assert.ok(texts.includes('Battalions'), 'legend strip includes count unit once');
+});
+
+test('a bars race view breaks at the exact hour a country enters or leaves selection membership, not midnight', async () => {
+  const { nextSeriesRaceChange } = await import('./seriesRace.ts');
+  const leaveAt = nextSeriesRaceChange(101, {
+    top: null,
+    candidates: ['GER', 'ITA'],
+    membership: { GER: [[100, 102]], ITA: [[100, 200]] },
+  });
+  assert.equal(leaveAt, 103, 'leaves at lastHour + 1 (hour 103), not midnight');
+  const enterAt = nextSeriesRaceChange(101, {
+    top: null,
+    candidates: ['GER', 'ITA'],
+    membership: { GER: [[100, 200]], ITA: [[105, 200]] },
+  });
+  assert.equal(enterAt, 105, 'enters at firstHour (hour 105), not midnight');
+});
