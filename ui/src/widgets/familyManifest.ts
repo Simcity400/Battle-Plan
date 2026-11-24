@@ -128,6 +128,41 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'factories',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: barsSpec(
+      'factories',
+      'race',
+      () => import('./factories/factoriesProjection.ts'),
+      mod => ({ projection: mod.factoriesProjection, declaration: mod.factoriesDeclaration }),
+    ),
+  },
+  {
+    kind: 'air-superiority-region',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: barsSpec(
+      'air-superiority-region',
+      DEFAULT_VIEW,
+      () => import('./air-superiority-region/airSuperiorityProjection.ts'),
+      mod => ({ projection: mod.airSuperiorityRegionProjection, declaration: mod.airSuperiorityRegionDeclaration }),
+    ),
+  },
+  {
+    kind: 'minefields',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: barsSpec(
+      'minefields',
+      DEFAULT_VIEW,
+      () => import('./minefields/minefieldsProjection.ts'),
+      mod => ({ projection: mod.minefieldsProjection, declaration: mod.minefieldsDeclaration }),
+    ),
+  },
+  {
     kind: 'lend-lease-balance',
     view: DEFAULT_VIEW,
     family: 'bars',
