@@ -2,7 +2,7 @@ import { gameWindow } from '../../dashboard/gameWindows.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { identityCell, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
+import { identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
@@ -15,11 +15,6 @@ export interface AgencyProjectionOptions {
   readonly filter: DeclaredCountryFilter;
   readonly topped: boolean;
   readonly canOpen: boolean;
-}
-
-export interface AgencyMeta {
-  readonly tag: string;
-  readonly name: string;
 }
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -109,7 +104,6 @@ export const agencyProjection: TableProjection<AgencyProjectionOptions> = regist
       const tag = agency.country.tag;
       if (!options.topped && !passes(options.filter, tag, hour)) continue;
       const name: Value<string> = agency.name !== null ? knownValue(agency.name) : notRecorded(agency.nameMissing ?? 'Agency name not recorded');
-      const meta: AgencyMeta | undefined = tag ? { tag, name: agency.name ?? identityName(readView, 'country', tag) } : undefined;
       rows.push({
         key: String(agency.country.id),
         name: agency.name ?? tag ?? String(agency.country.id),
@@ -122,14 +116,13 @@ export const agencyProjection: TableProjection<AgencyProjectionOptions> = regist
             value: agency.activeCount === 0 ? zeroValue(0) : knownValue(agency.activeCount),
             secondaryValue: knownValue(formatScalar(agency.maximum, 'integer')),
           },
-          view: { value: options.canOpen && meta ? knownValue('View') : notApplicable('The agency window is not available yet') },
+          view: { value: options.canOpen ? knownValue('View') : notApplicable('The agency window is not available yet') },
         },
         tooltipExtra: () => [
           ...(agency.created ? [] : [{ label: 'Agency', value: knownValue('Not created'), tone: 'muted' as const }]),
           ...upgradeRows(agency),
         ],
-        ...(options.canOpen && meta ? { tooltipAction: 'Open its upgrades' } : {}),
-        ...(meta ? { meta } : {}),
+        ...(options.canOpen ? { tooltipAction: 'Open its agency window' } : {}),
       });
     }
     return {
@@ -189,5 +182,5 @@ export const agencyDeclaration: TableWidgetDeclaration<AgencyProjectionOptions> 
   projection: agencyProjection,
   columns: AGENCY_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
-  projectionOptions: ctx => ({ filter: ctx.countries.filter, topped: topOf(ctx.widget) !== null, canOpen: gameWindow('agencyUpgrades') !== null }),
+  projectionOptions: ctx => ({ filter: ctx.countries.filter, topped: topOf(ctx.widget) !== null, canOpen: gameWindow('intelligenceAgency') !== null }),
 };

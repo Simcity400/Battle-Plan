@@ -35,18 +35,18 @@ export interface EquipmentDesignerSelection {
   variant: string;
 }
 
-export interface AgencyUpgradesSelection {
-  kind: 'agencyUpgrades';
+export interface IntelligenceAgencySelection {
+  kind: 'intelligenceAgency';
   sourceId: string;
   revision: string;
   branchId: string;
   hour: number;
-  tag: string;
+  country: number;
 }
 
 export type GameWindowSelection =
   | IndustrialOrganisationSelection
-  | AgencyUpgradesSelection
+  | IntelligenceAgencySelection
   | DivisionDesignerSelection
   | EquipmentDesignerSelection;
 

@@ -35,8 +35,10 @@ use viewer_native_gui::{
 #[cfg(test)]
 mod tests;
 
+mod compose;
 pub mod equipment_designer;
 pub mod industrial_organisation;
+pub mod intelligence_agency;
 
 pub const SETTLE_TICK: Tick = Tick {
     time: 10.0,
@@ -2330,6 +2332,22 @@ impl Service {
                 cancel,
             ),
             "industrialOrganisation" => industrial_organisation::render(
+                self,
+                equipment_designer::RenderContext {
+                    source,
+                    content: &content,
+                    layers: &layers,
+                    resolve: &resolve,
+                    visual_revision: &visual_revision,
+                    language: &language,
+                    decode,
+                    admitted_gen,
+                    extra_warnings: visual_warnings,
+                },
+                request,
+                cancel,
+            ),
+            "intelligenceAgency" => intelligence_agency::render(
                 self,
                 equipment_designer::RenderContext {
                     source,
