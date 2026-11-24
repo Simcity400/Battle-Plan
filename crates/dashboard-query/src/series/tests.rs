@@ -509,16 +509,20 @@ fn a_rank_at_an_hour_of_a_computed_column_ranks_the_formula_of_each_row() {
     let line = Line::new(&query, &NEGATED, &NEGATED.measures[0]).unwrap();
     let mut both = 0;
     for hour in (FIRST..FIRST + FIRST_HOURS).step_by(37).chain([ITA_FROM + 40 - ITA_FROM.rem_euclid(97) + 97, SECOND + 3]) {
-        let mut wanted: Vec<(i64, u32)> = [9001, 9002].into_iter().filter(|&id| exists(id, hour)).filter_map(|id| Some((-power(id, hour)?, id))).collect();
+        let present: Vec<u32> = [9001, 9002].into_iter().filter(|&id| exists(id, hour)).collect();
+        let mut wanted: Vec<(i64, u32)> = present.iter().filter_map(|&id| Some((-power(id, hour)?, id))).collect();
         wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        let wanted: Vec<String> = wanted.into_iter().map(|(_, id)| tag_of(id).to_owned()).collect();
-        both += usize::from(wanted.len() == 2);
-        assert_eq!(line.rank_at(hour, 2).unwrap(), wanted, "at {hour}");
+        let wanted: Result<Vec<String>, String> = match present.iter().find(|&&id| power(id, hour).is_none()) {
+            Some(&id) => Err(format!("{}'s negated was not recorded at this hour", tag_of(id))),
+            None => Ok(wanted.into_iter().map(|(_, id)| tag_of(id).to_owned()).collect()),
+        };
+        both += usize::from(wanted.as_ref().is_ok_and(|wanted| wanted.len() == 2));
+        assert_eq!(line.rank_at(hour, 2, false).unwrap(), wanted, "at {hour}: an unrecorded contender refuses the rank");
         let states = line.states(&[read("GER", hour, None)], None).unwrap();
         assert_eq!(states[0].run.as_ref().map(|run| run.value_raw.parse::<i64>().unwrap()), power(9001, hour).map(|power| -power), "GER's negated power at {hour}");
     }
     assert!(both > 10, "{both} hours ranked two countries");
-    assert!(resources_line(&query, "used").rank_at(FIRST, 2).is_err(), "a sub-keyed series ranks parts, not countries");
+    assert!(resources_line(&query, "used").rank_at(FIRST, 2, false).is_err(), "a sub-keyed series ranks parts, not countries");
 }
 
 #[test]
@@ -534,28 +538,31 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
         answer(&query, product, &params).unwrap().unwrap()
     };
     for hour in HOURS[..6].iter().copied().chain([end, second + 17, last]) {
-        let reply: SeriesStateReply = serde_json::from_value(ask("series-state", serde_json::json!({ "top": 1, "hour": hour }))).unwrap();
-        let mut wanted: Vec<(i64, &str)> = [9001, 9002]
-            .into_iter()
-            .filter(|&id| held(&query, tag_of(id), hour) && exists(id, hour))
-            .filter_map(|id| Some((power(id, hour)?, tag_of(id))))
-            .collect();
+        let reply: ranked::SeriesRankReply = serde_json::from_value(ask(ranked::PRODUCT, serde_json::json!({ "top": 1, "hour": hour }))).unwrap();
+        let present: Vec<u32> = [9001, 9002].into_iter().filter(|&id| held(&query, tag_of(id), hour) && exists(id, hour)).collect();
+        let mut wanted: Vec<(i64, &str)> = present.iter().filter_map(|&id| Some((power(id, hour)?, tag_of(id)))).collect();
+        if wanted.len() < present.len() {
+            assert!(reply.rows.is_empty() && reply.refused.is_some(), "an unrecorded contender refuses the top at {hour}");
+            continue;
+        }
         wanted.sort_by(|a, b| b.0.cmp(&a.0));
-        let got: Vec<(i64, &str)> = reply.states.iter().map(|state| (state.run.as_ref().unwrap().value_raw.parse().unwrap(), state.country.tag().unwrap())).collect();
+        let got: Vec<(i64, &str)> = reply.rows.iter().map(|row| (row.readings[0].run.as_ref().unwrap().value_raw.parse().unwrap(), row.country.tag().unwrap())).collect();
         assert_eq!(got, wanted.into_iter().take(1).collect::<Vec<_>>(), "the top country at {hour}");
+        assert_eq!(reply.refused, None);
+        assert!(reply.from <= hour && hour <= reply.until);
     }
     for hour in HOURS[..6].iter().copied().chain([second + 17, last]) {
-        let reads = serde_json::json!([{ "country": "GER", "hour": hour }, { "country": "ITA", "hour": hour }]);
         for least in [false, true] {
-            let reply: SeriesStateReply = serde_json::from_value(ask("series-state", serde_json::json!({ "reads": reads, "top": 2, "least": least }))).unwrap();
-            let mut wanted: Vec<(i64, &str)> = [9001, 9002]
-                .into_iter()
-                .filter(|&id| held(&query, tag_of(id), hour) && exists(id, hour))
-                .filter_map(|id| Some((power(id, hour)?, tag_of(id))))
-                .collect();
-            wanted.sort_by(|a, b| if least { a.0.cmp(&b.0) } else { b.0.cmp(&a.0) }.then_with(|| a.1.cmp(b.1)));
-            let got: Vec<(i64, &str)> = reply.states.iter().map(|state| (state.run.as_ref().unwrap().value_raw.parse().unwrap(), state.country.tag().unwrap())).collect();
-            assert_eq!(got, wanted, "the named countries ranked at {hour}, least {least}");
+            let reply: ranked::SeriesRankReply = serde_json::from_value(ask(ranked::PRODUCT, serde_json::json!({ "countries": ["GER", "ITA"], "hour": hour, "least": least }))).unwrap();
+            let value = |id: u32| power(id, hour).filter(|_| held(&query, tag_of(id), hour) && exists(id, hour));
+            let mut known: Vec<(i64, &str)> = [9001, 9002].into_iter().filter_map(|id| Some((value(id)?, tag_of(id)))).collect();
+            known.sort_by(|a, b| if least { a.0.cmp(&b.0) } else { b.0.cmp(&a.0) }.then_with(|| a.1.cmp(b.1)));
+            let mut order: Vec<&str> = known.iter().map(|(_, tag)| *tag).collect();
+            order.extend([9001, 9002].into_iter().filter(|&id| value(id).is_none()).map(tag_of));
+            assert_eq!(reply.rows.iter().map(|row| row.country.tag().unwrap()).collect::<Vec<_>>(), order, "every named country stays, ranked first, at {hour}, least {least}");
+            let got: Vec<(i64, &str)> = reply.rows.iter().filter_map(|row| Some((row.readings[0].run.as_ref()?.value_raw.parse().unwrap(), row.country.tag().unwrap()))).collect();
+            assert_eq!(got, known, "the named countries ranked at {hour}, least {least}");
+            assert_eq!(reply.refused.is_some(), known.len() < 2, "an unrecorded country leaves the order unproven at {hour}");
         }
     }
     let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1, "from": FIRST, "to": last, "width": 64 }))).unwrap();
@@ -603,7 +610,7 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
     .is_err(), "chosen lines are tiles");
     let origin = ITA_FROM + 10;
     let next: SeriesKeyReply = serde_json::from_value(ask("series-next-change", serde_json::json!({ "top": 1, "key": "ArrowRight", "from": origin, "firstHour": FIRST, "lastHour": last }))).unwrap();
-    let leader = line_of(&query).rank_at(origin, 1).unwrap();
+    let leader = line_of(&query).rank_at(origin, 1, false).unwrap().unwrap();
     let wanted = line_of(&query).navigate(&leader, &[dashboard_declare::series("country-measure").unwrap().measure("politicalPower").unwrap()], Some(origin), NavigationKey::ArrowRight, (FIRST, last)).unwrap();
     assert_eq!(next.hour, wanted.map(f64::from));
     assert!(next.hour.is_some_and(|hour| hour > f64::from(origin)));
@@ -732,7 +739,7 @@ fn a_factions_line_is_its_row_and_its_bins_hold_its_members_exact_sums() {
     }
     assert!(checked > 1, "the view's bins hold the faction's values");
     assert!(line.summaries(&["GER".to_owned()], from, to, width).unwrap()[0].0.buckets.iter().all(Option::is_none), "a faction is named by its id");
-    assert!(line.rank_at(from, 1).is_err(), "factions are not ranked as countries are");
+    assert!(line.rank_at(from, 1, false).is_err(), "factions are not ranked as countries are");
 }
 
 static WORLD: Series = Series {
@@ -763,7 +770,7 @@ fn a_singleton_line_reads_its_one_row_in_every_stretch_whatever_it_is_named_and_
     assert_eq!(states[0].missing, None, "a held hour is never refused for its name");
     assert_eq!(states[0].run.as_ref().map(|run| run.value_raw.clone()), Some(fixture::tension(FIRST + 3).to_string()), "the one row's value");
     assert_eq!(states[1].missing.as_deref(), Some(query.timeline.reason(gap_end).as_str()));
-    assert!(line.rank_at(FIRST, 2).is_err());
+    assert!(line.rank_at(FIRST, 2, false).is_err());
     assert!(line.ranked(FIRST, last, 64, 2).is_err());
     let hour = FIRST + 3;
     let reply = crate::tile::tile(&line, "1", &[Ask::whole("World")], None, 1, i64::from(hour).div_euclid(BINS as i64), false).expect("the world's line is a tile");
@@ -779,16 +786,21 @@ fn a_rank_names_the_greatest_countries_at_the_hour_with_their_states() {
     let ask = |hour: i32, top: u32| serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" }, "hour": hour, "top": top });
     let mut ranked_both = 0;
     for hour in [FIRST, ITA_FROM + 40, FIRST + FIRST_HOURS - 1, SECOND + 3] {
-        let reply: SeriesStateReply = serde_json::from_value(answer(&query, "series-state", &ask(hour, 2)).unwrap().unwrap()).unwrap();
-        let mut wanted: Vec<(i64, u32)> = [9001, 9002].into_iter().filter(|&id| exists(id, hour)).filter_map(|id| Some((power(id, hour)?, id))).collect();
+        let reply: ranked::SeriesRankReply = serde_json::from_value(answer(&query, ranked::PRODUCT, &ask(hour, 2)).unwrap().unwrap()).unwrap();
+        let present: Vec<u32> = [9001, 9002].into_iter().filter(|&id| exists(id, hour)).collect();
+        let mut wanted: Vec<(i64, u32)> = present.iter().filter_map(|&id| Some((power(id, hour)?, id))).collect();
+        if wanted.len() < present.len() {
+            assert!(reply.rows.is_empty() && reply.refused.is_some(), "an unrecorded contender refuses the rank at {hour}");
+            continue;
+        }
         wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         ranked_both += usize::from(wanted.len() == 2);
-        let shown: Vec<(String, Option<String>)> = reply.states.iter().map(|state| (state.country.to_string(), state.run.as_ref().map(|run| run.value_raw.clone()))).collect();
+        let shown: Vec<(String, Option<String>)> = reply.rows.iter().map(|row| (row.country.to_string(), row.readings[0].run.as_ref().map(|run| run.value_raw.clone()))).collect();
         let wanted: Vec<(String, Option<String>)> = wanted.into_iter().map(|(value, id)| (tag_of(id).to_owned(), Some(value.to_string()))).collect();
         assert_eq!(shown, wanted, "at {hour}");
     }
     assert!(ranked_both > 0);
-    assert!(answer(&query, "series-state", &ask(FIRST, 0)).is_err());
+    assert!(answer(&query, ranked::PRODUCT, &ask(FIRST, 0)).is_err());
 }
 
 #[test]
@@ -961,7 +973,7 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
     assert!(flags[..BINS].iter().all(|&flag| flag & PRESENT == 0), "binned tile must withhold v1 counts");
     assert!(tile_binned.lines[0].missing.iter().any(|span| span.reason.contains("SupplyHealth")), "{:?}", tile_binned.lines[0].missing);
 
-    assert!(line.rank_at_by(first + 2, 5, false).unwrap().is_empty());
+    assert!(line.rank_at(first + 2, 5, false).unwrap().is_err(), "a withheld hour refuses the rank, never an empty one");
 
     let top_err = replay_lanes::lanes::top(
         replay.recording(),
@@ -1154,8 +1166,8 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
     assert_eq!(states[1].missing, None, "first v2 hour must be admitted: {:?}", states[1]);
     assert_eq!(states[1].run.as_ref().map(|run| run.value_raw.as_str()), Some("1"));
 
-    assert!(line.rank_at_by(last_v1, 5, false).unwrap().is_empty());
-    assert_eq!(line.rank_at_by(first_v2, 5, false).unwrap(), vec!["GER"]);
+    assert!(line.rank_at(last_v1, 5, false).unwrap().is_err(), "a withheld hour refuses the rank, never an empty one");
+    assert_eq!(line.rank_at(first_v2, 5, false).unwrap(), Ok(vec!["GER".to_owned()]));
 
     let v1_top = replay_lanes::lanes::top(replay.recording(), 0, TableId::SupplyHealth, 0, first_v1, last_v1, 2, 5, replay_lanes::lanes::By::Last).unwrap_err();
     assert!(

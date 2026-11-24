@@ -329,20 +329,24 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
         .measure(&params.family.measure)
         .ok_or_else(|| invalid(format!("{} has no measure {}", series.kind, params.family.measure)))?;
     let line = Line::new(query, series, measure)?;
-    let ranking = ranked::top(&line, params.top)?;
     let value = match product {
         "series-state" => serde_json::to_value(SeriesStateReply {
             branch_id: params.branch_id.clone(),
             measure: measure.name.to_owned(),
             decimals: measure.decimals,
-            states: match ranking {
-                Some(n) if params.reads.is_empty() => ranked::states(&line, params.hour, n)?,
-                Some(n) => ranked::among(&line, &params.reads, n, params.least == Some(true))?,
-                None => line.states(&params.reads, params.top.map(|top| top as usize))?,
-            },
+            states: line.states(&params.reads, params.top.map(|top| top as usize))?,
         })?,
+        ranked::PRODUCT => {
+            let mut details = Vec::with_capacity(params.measures.len());
+            for name in params.measures.iter().filter(|name| name.as_str() != measure.name) {
+                let detail = series.measure(name).ok_or_else(|| invalid(format!("{} has no measure {name}", series.kind)))?;
+                details.push(Line::new(query, series, detail)?);
+            }
+            let ask = ranked::Ask { hour: params.hour, top: params.top, least: params.least == Some(true), countries: &params.countries };
+            serde_json::to_value(ranked::rank(&line, &details, &params.branch_id, ask)?)?
+        }
         "series-summary" => {
-            let n = ranking.ok_or_else(|| invalid(format!("A chart of chosen {} lines is served as tiles", series.kind)))?;
+            let n = ranked::top(&line, params.top)?.ok_or_else(|| invalid(format!("A chart of chosen {} lines is served as tiles", series.kind)))?;
             serde_json::to_value(ranked::summary(&line, &params.branch_id, params.from, params.to, params.width, n)?)?
         }
         "series-next-change" => {
@@ -353,7 +357,7 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
             for name in &params.measures {
                 measures.push(series.measure(name).ok_or_else(|| invalid(format!("{} has no measure {name}", series.kind)))?);
             }
-            let asks = match ranking {
+            let asks = match ranked::top(&line, params.top)? {
                 Some(n) => ranked::stepped(&line, origin, key, bounds, n)?.into_iter().map(|tag| Ask::whole(&tag)).collect(),
                 None => line.asks(&params.countries, &params.lines)?,
             };
@@ -633,15 +637,7 @@ impl<'q, 'a> Line<'q, 'a> {
         out
     }
 
-    pub fn rank_at(&self, hour: i32, n: usize) -> io::Result<Vec<String>> {
-        self.rank_at_by(hour, n, false)
-    }
-
-    pub fn rank_at_by(&self, hour: i32, n: usize, least: bool) -> io::Result<Vec<String>> {
-        Ok(self.rank_at_by_checked(hour, n, least)?.unwrap_or_default())
-    }
-
-    pub(crate) fn rank_at_by_checked(&self, hour: i32, n: usize, least: bool) -> io::Result<Result<Vec<String>, String>> {
+    pub fn rank_at(&self, hour: i32, n: usize, least: bool) -> io::Result<Result<Vec<String>, String>> {
         self.owners_only("a rank at an hour")?;
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
             return Ok(Err(self.query.timeline.reason(hour)));
@@ -662,9 +658,21 @@ impl<'q, 'a> Line<'q, 'a> {
         let view = snapshot.view();
         let holders = self.by_key();
         let tag_of = |key: u128| holders.get(&key)?.iter().find(|run| run.0 <= hour && hour <= run.1).map(|run| run.2);
-        let mut values: Vec<(i64, &str)> = view.rows().filter_map(|slot| Some((self.source.value(&view, slot)?, tag_of(view.key(slot)?)?))).collect();
+        let mut values: Vec<(i64, &str)> = Vec::new();
+        let mut held: HashSet<u128> = HashSet::new();
+        for slot in view.rows() {
+            let Some(key) = view.key(slot) else { continue };
+            held.insert(key);
+            let Some(tag) = tag_of(key) else {
+                return Ok(Err(format!("{} holds a row of a country not known at this hour", crate::coverage::table_title(self.series.table))));
+            };
+            match self.source.read(&view, slot) {
+                Computed::Value(value) => values.push((value, tag)),
+                Computed::NotApplicable(_) => {}
+                Computed::Unrecorded => return Ok(Err(board::measure_unrecorded(&self.query.holders.name(&Country::from(tag), hour), self.measure.name))),
+            }
+        }
         if self.series.absent_none {
-            let held: HashSet<u128> = view.rows().filter_map(|slot| view.key(slot)).collect();
             values.extend(holders.iter().filter(|(key, _)| !held.contains(key)).filter_map(|(&key, _)| Some((0, tag_of(key)?))));
         }
         let order = |a: &(i64, &str), b: &(i64, &str)| {
@@ -679,6 +687,22 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(Ok(values.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect()))
     }
 
+    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), same: impl Fn(&[String]) -> bool) -> io::Result<(i32, i32)> {
+        let timeline = &self.query.timeline;
+        let lo = within.0.max(timeline.first).max(hour.saturating_sub(crate::tile::RANK_PROOF_HOURS));
+        let hi = within.1.min(timeline.last).min(hour.saturating_add(crate::tile::RANK_PROOF_HOURS));
+        let holds = |at: i32| -> io::Result<bool> { Ok(matches!(self.rank_at(at, n, least)?, Ok(ranked) if same(&ranked))) };
+        let mut from = hour;
+        while from > lo && holds(from - 1)? {
+            from -= 1;
+        }
+        let mut until = hour;
+        while until < hi && holds(until + 1)? {
+            until += 1;
+        }
+        Ok((from, until))
+    }
+
     pub fn ranked(&self, from: i32, to: i32, width: u32, n: usize) -> io::Result<Vec<RankedLine>> {
         self.owners_only("a ranked view")?;
         if self.query.replay.recording().withheld_reason(self.series.table.index()).is_some() {
@@ -687,7 +711,9 @@ impl<'q, 'a> Line<'q, 'a> {
         let hours = i64::from(to) - i64::from(from) + 1;
         let six = replay_columnar::summary::bucket_hours(0);
         if hours < six {
-            let tags = self.rank_at(to, n)?;
+            let Ok(tags) = self.rank_at(to, n, false)? else {
+                return Ok(Vec::new());
+            };
             let charts = self.summaries(&tags, from, to, width)?;
             return Ok(tags
                 .into_iter()
@@ -944,6 +970,24 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
+    fn absent_reading(&self, state: &mut SeriesState, part: &Part) {
+        if !self.series.absent_none {
+            state.missing = Some(board::measure_unrecorded(&self.query.holders.name(&state.country, state.hour), self.measure.name));
+            return;
+        }
+        state.run = Some(SeriesRun {
+            first_hour: state.hour,
+            last_hour: state.hour,
+            value_raw: "0".to_owned(),
+            slot: part.slot,
+            country_id: part.id,
+            starts_segment: false,
+            segment_first_hour: part.segment_first,
+            first_exact: false,
+            last_exact: false,
+        });
+    }
+
     fn states_of(&self, reads: &[(Ask, i32)]) -> io::Result<Vec<SeriesState>> {
         let recording = self.query.replay.recording();
         let mut blocks: HashMap<(u32, u32), Vec<(usize, Part, (i32, i32))>> = HashMap::new();
@@ -951,7 +995,7 @@ impl<'q, 'a> Line<'q, 'a> {
             .iter()
             .map(|(ask, hour)| SeriesState { country: ask.country.clone(), part: self.part_text(ask), hour: *hour, run: None, drop: None, missing: None, not_applicable: None })
             .collect();
-        let mut unresolved: HashMap<u32, Vec<(usize, i32, u128)>> = HashMap::new();
+        let mut unresolved: HashMap<u32, Vec<(usize, i32, Part)>> = HashMap::new();
         for (at, (ask, hour)) in reads.iter().enumerate() {
             let hour = *hour;
             if let Some(reason) = self.missing_at(&ask.country, hour) {
@@ -1004,17 +1048,17 @@ impl<'q, 'a> Line<'q, 'a> {
                 let hi = block_last.min(part.last);
                 let Some(runs) = runs.get(&part.key) else {
                     if !is_computed && complete_at(hour) {
-                        out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
+                        self.absent_reading(&mut out[at], &part);
                     } else {
-                        unresolved.entry(run).or_default().push((at, hour, part.key));
+                        unresolved.entry(run).or_default().push((at, hour, part));
                     }
                     continue;
                 };
                 let Some(found) = runs.iter().position(|run| run.0 <= hour && hour <= run.1) else {
                     if !is_computed && complete_at(hour) {
-                        out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
+                        self.absent_reading(&mut out[at], &part);
                     } else {
-                        unresolved.entry(run).or_default().push((at, hour, part.key));
+                        unresolved.entry(run).or_default().push((at, hour, part));
                     }
                     continue;
                 };
@@ -1026,11 +1070,11 @@ impl<'q, 'a> Line<'q, 'a> {
                         continue;
                     }
                     read::CoveredValue::Uncovered if !is_computed && complete_at(hour) => {
-                        out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
+                        self.absent_reading(&mut out[at], &part);
                         continue;
                     }
                     read::CoveredValue::Unvalued | read::CoveredValue::Uncovered => {
-                        unresolved.entry(run).or_default().push((at, hour, part.key));
+                        unresolved.entry(run).or_default().push((at, hour, part));
                         continue;
                     }
                 };
@@ -1062,11 +1106,12 @@ impl<'q, 'a> Line<'q, 'a> {
                 NotApplicable(&'static str),
                 TableMissing(String),
                 CompleteUnrecorded,
+                Absent,
             }
             let columns = read::columns_of(&self.source);
             let is_computed = matches!(self.source, Source::Computed { .. });
             for (run, items) in unresolved {
-                let mut asks: Vec<(i32, u128)> = items.iter().map(|&(_, hour, key)| (hour, key)).collect();
+                let mut asks: Vec<(i32, u128)> = items.iter().map(|&(_, hour, part)| (hour, part.key)).collect();
                 asks.sort_unstable();
                 asks.dedup();
                 let mut resolved: HashMap<(i32, u128), Resolved> = HashMap::new();
@@ -1079,15 +1124,16 @@ impl<'q, 'a> Line<'q, 'a> {
                                     Computed::NotApplicable(reason) => Resolved::NotApplicable(reason),
                                     Computed::Unrecorded | Computed::Value(_) => Resolved::CompleteUnrecorded,
                                 },
-                                None => Resolved::CompleteUnrecorded,
+                                None => Resolved::Absent,
                             },
                         };
                         resolved.insert((hour, key), state);
                         Ok(())
                     })
                 })?;
-                for (at, hour, key) in items {
-                    match resolved.get(&(hour, key)) {
+                for (at, hour, part) in items {
+                    match resolved.get(&(hour, part.key)) {
+                        Some(Resolved::Absent) if self.series.absent_none => self.absent_reading(&mut out[at], &part),
                         Some(Resolved::NotApplicable(reason)) => {
                             out[at].missing = Some((*reason).to_owned());
                             out[at].not_applicable = Some(true);
@@ -1095,7 +1141,7 @@ impl<'q, 'a> Line<'q, 'a> {
                         Some(Resolved::TableMissing(reason)) => {
                             out[at].missing = Some(reason.clone());
                         }
-                        Some(Resolved::CompleteUnrecorded) | None => {
+                        Some(Resolved::CompleteUnrecorded | Resolved::Absent) | None => {
                             out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
                             if is_computed {
                                 out[at].not_applicable = Some(false);

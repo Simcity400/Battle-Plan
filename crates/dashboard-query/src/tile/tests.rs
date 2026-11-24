@@ -439,17 +439,21 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
     for hour in (FIRST + 24..LONG_SECOND - GAP).step_by(37) {
         let top = ask(hour);
         let ranking = top.ranking.clone().expect("a top says who it is");
+        if [9001, 9002].into_iter().any(|id| exists(id, hour) && power(id, hour).is_none()) {
+            assert!(ranking.refused.is_some() && top.lines.is_empty(), "an unrecorded contender refuses the top at {hour}");
+            continue;
+        }
         assert_eq!(ranking.refused, None, "hour {hour}");
-        let ranked = line.rank_at(hour, 1).unwrap();
+        let ranked = line.rank_at(hour, 1, false).unwrap().unwrap();
         assert_eq!(top.lines.iter().map(|line| line.country.to_string()).collect::<Vec<_>>(), ranked, "the reply names exactly the top at {hour}");
         let plain = tile(&line, "1", &whole(&ranked.iter().map(String::as_str).collect::<Vec<_>>()), None, bin_hours, top.index, false).unwrap();
         assert_eq!(top.bins, plain.bins, "the top's bins are its countries' tiles at {hour}");
         assert!(ranking.from <= hour && hour <= ranking.until);
         for at in ranking.from..=ranking.until {
-            assert_eq!(line.rank_at(at, 1).unwrap(), ranked, "the same top through its proven hours ({at} for {hour})");
+            assert_eq!(line.rank_at(at, 1, false).unwrap().unwrap(), ranked, "the same top through its proven hours ({at} for {hour})");
         }
         if ranking.from > FIRST && hour - ranking.from < RANK_PROOF_HOURS {
-            assert_ne!(line.rank_at(ranking.from - 1, 1).unwrap(), ranked, "the hour before the proof is another top");
+            assert_ne!(line.rank_at(ranking.from - 1, 1, false).unwrap(), Ok(ranked.clone()), "the hour before the proof is another top");
         }
         proven += usize::try_from(ranking.until - ranking.from).unwrap();
     }

@@ -69,7 +69,7 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
                     return Err(invalid(format!("{} is rows no country owns: it is not ranked", series.kind)));
                 }
                 let least = params.get("least").and_then(Value::as_bool) == Some(true);
-                return Ok(Query::Series { series, measure, countries: tags, mode: SeriesMode::Top { n, least }, identity: identity.clone() });
+                return Ok(Query::Series { series, measure, countries: tags, mode: SeriesMode::Top { n, least, population: false }, identity: identity.clone() });
             }
             let mode = if parts {
                 if scope == CoverageScope::Row {

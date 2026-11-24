@@ -519,7 +519,7 @@ test('41. Factories: GER picked at 103 and pinned after GER passes to another co
   const country = JSON.parse(await act<string>(`content(${JSON.stringify(token)})`)) as { tag: string; originOffset: number };
   assert.deepEqual([country.tag, country.originOffset, saved.countries], ['GER', 3, GER], 'the pin holds the country picked at 103');
   const restored = await act<Read>(scene({ kind: 'factories', time: saved.time, hour: 108, countries: saved.countries, options: saved.options, groups: RENAMED }));
-  const named = restored.asks.filter(ask => ['series-parts', 'series-state', 'follow'].includes(ask.product)).map(ask => JSON.stringify(ask.params));
+  const named = restored.asks.filter(ask => ['series-parts', 'series-state', 'series-rank', 'follow'].includes(ask.product)).map(ask => JSON.stringify(ask.params));
   assert.ok(named.length > 0 && named.every(params => !params.includes('"GER"') && !/"countries":\[3\]|"country":3\b/.test(params)) && named.some(params => params.includes('"GDR"') || /"countries":\[1\]|"country":1\b/.test(params)),
     `the restored pin reads the country it picked, never the new GER: ${JSON.stringify(restored.asks.map(ask => [ask.product, ask.params]))}`);
 }));

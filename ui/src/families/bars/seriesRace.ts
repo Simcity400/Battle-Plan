@@ -1,4 +1,4 @@
-import { validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { rankProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { countryFromKey, countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { rowName, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
@@ -8,7 +8,6 @@ import { holderTagAt, nextHoldersChange, nextMembershipChange, nextRangesChange,
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, valueFromNamedAnswer, valueFromRawBigInt, valueFromWireCell, zeroValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
-import type { SeriesStateReply } from '../../generated/dashboard';
 import { countryRowPresentation, type BarsDataRow, type BarsModel } from './model.ts';
 
 const ALL_POPULATION_TOP = 10_000;
@@ -58,11 +57,7 @@ export function buildSeriesRaceExactParams(
   const activeTags = cfg.membership
     ? cfg.tags.filter(tag => cfg.membership![tag]?.some(([first, last]) => first <= hour && hour <= last))
     : cfg.tags;
-  return {
-    branchId: cfg.branchId,
-    family: cfg.family,
-    reads: activeTags.map(tag => ({ country: countryFromKey(tag), hour })),
-  };
+  return activeTags.length ? { branchId: cfg.branchId, family: cfg.family, hour, countries: activeTags.map(countryFromKey) } : null;
 }
 
 export function seriesRaceSources(
@@ -94,12 +89,13 @@ export function seriesRaceSources(
       shape: 'point',
       channel: 'followed',
       coverage,
-      product: 'series-state',
-      exactProduct: 'series-state',
+      product: 'series-rank',
+      exactProduct: 'series-rank',
       followQuery: null,
       params: exactBase as unknown as Readonly<Record<string, unknown>>,
       buildExactParams: buildSeriesRaceExactParams,
-      dynamicKeys: ['hour', 'reads'],
+      dynamicKeys: ['hour', 'countries'],
+      provenInterval: rankProvenInterval,
       validate: validateRankReply,
     },
   };
@@ -262,10 +258,12 @@ export function projectSeriesRace(
 
   const panel = readView.panel('main');
   if (panel !== undefined) {
-    const reply: SeriesStateReply = validateRankReply(panel);
+    const reply = validateRankReply(panel);
+    if (!reply.rows.length && reply.refused) return { ...baseModel, rows: [], empty: reply.refused, emptyKind: 'unavailable' };
     const rows: BarsDataRow[] = [];
-    for (const state of reply.states) {
-      const key = countryKey(state.country);
+    for (const rankRow of reply.rows) {
+      const state = rankRow.readings[0]!;
+      const key = countryKey(rankRow.country);
       const displayTag = options.holders ? (holderTagAt(options.holders[key], hour) ?? key) : key;
       if (!ranked && options.membership) {
         const inMember = options.membership[key]?.some(([first, last]) => first <= hour && hour <= last)
@@ -280,7 +278,6 @@ export function projectSeriesRace(
       if (ranked && config.positiveOnly && row.numeric !== null && row.numeric !== undefined && row.numeric <= 0) continue;
       rows.push(row);
     }
-    if (!ranked) rows.sort(compareExplicitRows);
     return {
       ...baseModel,
       rows,
