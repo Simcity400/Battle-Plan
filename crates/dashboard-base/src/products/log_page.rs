@@ -146,6 +146,26 @@ pub struct LogTailReply {
     pub warnings: Vec<String>,
 }
 
+pub trait TailPanelReply: Clone + Serialize + Send + Sync + 'static {
+    fn row_count(&self) -> usize;
+    fn missing(&self) -> &[MissingSpan];
+    fn set_missing(&mut self, missing: Vec<MissingSpan>);
+}
+
+impl TailPanelReply for LogTailReply {
+    fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn missing(&self) -> &[MissingSpan] {
+        &self.missing
+    }
+
+    fn set_missing(&mut self, missing: Vec<MissingSpan>) {
+        self.missing = missing;
+    }
+}
+
 crate::reply_warnings!(LogTailReply);
 
 type BlockCoverageKey = (u64, u64, [u8; 16], u32, u32, usize);
@@ -287,7 +307,7 @@ fn unread(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i32, c
     Ok(out)
 }
 
-fn append_unobserved(out: &mut Vec<MissingSpan>, facets: &[FacetFilter], from: i32, to: i32) {
+pub fn append_unobserved(out: &mut Vec<MissingSpan>, facets: &[FacetFilter], from: i32, to: i32) {
     if from > to {
         return;
     }
@@ -405,7 +425,7 @@ pub fn tail_with<R>(
     Ok((page, rows, totals, gaps))
 }
 
-pub fn quiet_tail_missing(
+pub fn quiet_tail_missing<R>(
     query: &Query<'_>,
     log_name: &str,
     caches: &LogCaches,
@@ -415,7 +435,7 @@ pub fn quiet_tail_missing(
     from: Option<f64>,
     prev_hour: i32,
     hour: i32,
-    _prev_reply: &LogTailReply,
+    _prev_reply: &R,
 ) -> io::Result<Option<Vec<MissingSpan>>> {
     if hour <= prev_hour {
         return Ok(None);
@@ -440,25 +460,26 @@ pub fn quiet_tail_missing(
     Ok(Some(gaps))
 }
 
-struct TailSeed {
+struct TailSeed<R> {
     hour: i32,
-    reply: LogTailReply,
+    reply: R,
     value: Arc<dashboard_follow::panel::PanelData>,
     rows: u64,
 }
 
-pub fn dated_tail_panel<F, Q>(
+pub fn dated_tail_panel<R, F, Q>(
     executable: Option<engine_executable::executable_tables::Tables>,
     quiet: Q,
     read: F,
 ) -> Box<dyn Panel>
 where
-    Q: Fn(i32, i32, &LogTailReply, &AtomicBool) -> io::Result<Option<Vec<MissingSpan>>> + Send + Sync + 'static,
-    F: Fn(i32, &AtomicBool) -> io::Result<LogTailReply> + Send + Sync + 'static,
+    R: TailPanelReply,
+    Q: Fn(i32, i32, &R, &AtomicBool) -> io::Result<Option<Vec<MissingSpan>>> + Send + Sync + 'static,
+    F: Fn(i32, &AtomicBool) -> io::Result<R> + Send + Sync + 'static,
 {
     let read = Arc::new(read);
     let step_read = Arc::clone(&read);
-    let held: Arc<Mutex<Option<TailSeed>>> = Arc::new(Mutex::new(None));
+    let held: Arc<Mutex<Option<TailSeed<R>>>> = Arc::new(Mutex::new(None));
     let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _step| {
         if seed {
             let guard = held.lock().unwrap_or_else(PoisonError::into_inner);
@@ -475,7 +496,7 @@ where
                     let checked = engine_executable::executable_tables::scope(executable, || quiet(prev_hour, hour, &prev_reply, cancelled));
                     match checked {
                         Ok(Some(gaps)) => {
-                            if gaps == prev_reply.missing {
+                            if gaps == prev_reply.missing() {
                                 let mut guard = held.lock().unwrap_or_else(PoisonError::into_inner);
                                 if let Some(slot) = guard.as_mut()
                                     && slot.hour == prev_hour
@@ -485,7 +506,7 @@ where
                                 return ProductRead { value: prev_value, rows: prev_rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
                             }
                             let mut next_reply = prev_reply;
-                            next_reply.missing = gaps;
+                            next_reply.set_missing(gaps);
                             let value = Arc::new(serde_json::to_value(&next_reply).map_err(|error| error.to_string()));
                             *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(TailSeed {
                                 hour,
@@ -506,7 +527,7 @@ where
         let made = engine_executable::executable_tables::scope(executable, || step_read(hour, cancelled));
         let (rows, value) = match made {
             Ok(reply) => {
-                let count = reply.rows.len() as u64;
+                let count = reply.row_count() as u64;
                 let value = Arc::new(serde_json::to_value(&reply).map_err(|error| error.to_string()));
                 *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(TailSeed {
                     hour,
