@@ -417,6 +417,19 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/families/table/tableFamily.test.ts": "const c = '#e5484d';\n",
         })[0], 0)
 
+    def test_family_locale_string_is_refused_in_families_and_projections(self):
+        code, out = check({}, {
+            "ui/src/families/table/cellPainters.ts": "const s = count.toLocaleString('en-US');\n",
+            "ui/src/widgets/foo/fooProjection.ts": "import { usNumber } from '../../charts/numberFormat.ts';\nconst f = new Intl.NumberFormat('en-US');\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-locale-string", out)
+        self.assertIn("ui/src/families/valueFormat.ts", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/valueFormat.ts": "const s = count.toLocaleString('en-US');\n",
+            "ui/src/families/table/tableFamily.test.ts": "const s = count.toLocaleString('en-US');\n",
+        })[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

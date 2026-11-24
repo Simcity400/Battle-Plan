@@ -33,6 +33,7 @@ import {
   formatDateValue,
   formatOutOf,
   formatScalar,
+  formatShare,
   formatValueState,
   notRecordedLabel,
   spokenValue,
@@ -336,4 +337,19 @@ test('text from a product that is blank or absent is not recorded, with the reas
   assert.deepEqual(textValue('  ', 'Name not localised'), notRecorded('Name not localised'));
   assert.deepEqual(textValue(null, 'Name not localised'), notRecorded('Name not localised'));
   assert.deepEqual(textValue('Brest', 'Name not localised'), knownValue('Brest'));
+});
+
+test('fixedDecimals and formatShare preserve exact temperature, modifier, and share formatting', () => {
+  assert.equal(formatScalar(0, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '0.0 °C');
+  assert.equal(formatScalar(-5.2, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '−5.2 °C');
+  assert.equal(formatScalar(12, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '12.0 °C');
+  assert.equal(formatScalar(15.5, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '+15.5%');
+  assert.equal(formatScalar(-10.2, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '−10.2%');
+  assert.equal(formatScalar(0, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '0%');
+  assert.equal(formatShare(0), '0%');
+  assert.equal(formatShare(0.0001), '<0.1%');
+  assert.equal(formatShare(0.042), '4.2%');
+  assert.equal(formatShare(0.334), '33%');
+  assert.equal(formatShare(0.9999), '100%');
+  assert.equal(formatShare(null), '');
 });

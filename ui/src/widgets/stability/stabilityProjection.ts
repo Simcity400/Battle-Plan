@@ -23,7 +23,7 @@ import type {
   ChartMarkerItem,
   TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
-import { notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { StabilityBreakdownReply } from '../../generated/dashboard';
 import {
   assignCountrySeriesColours,
@@ -68,8 +68,7 @@ export interface StabilityOptions {
 
 
 function formatPct(value: number): string {
-  const rounded = Math.round(value * 10) / 10;
-  return `${Number.isInteger(rounded) ? Math.round(rounded) : rounded.toFixed(1)}%`;
+  return formatScalar(value, { decimals: 0, maxDecimals: 1, percent: true });
 }
 
 function resolveMarkerTitle(m: StabilityRawMarker, readView: BoundedReadView, limitHour: number): string {

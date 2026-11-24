@@ -1,4 +1,4 @@
-import { colour } from '../../charts/palette.ts';
+import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
@@ -7,10 +7,11 @@ import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../famil
 import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, zeroValue } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { NukeCountry, NukeType } from '../../generated/dashboard';
 import { typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
-const PART_SURFACE = '#1e1e1e';
+const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
 export interface NuclearArsenalRaceOptions {
   readonly all: boolean;
@@ -39,7 +40,7 @@ function makeRow(
   const pres = countryRowPresentation(readView, row.tag);
   const value = row.total === 0 ? zeroValue() : knownValue(row.total);
   const tooltipItems: TooltipListItem[] = [
-    { label: 'Nuclear stockpile', value: Math.round(row.total).toLocaleString('en-US') },
+    { label: 'Nuclear stockpile', value: formatScalar(row.total, { decimals: 0, maxDecimals: 0 }) },
   ];
   let segments: BarsSegment[] | undefined;
   if (split && row.total > 0 && row.counts.length > 0) {
@@ -49,8 +50,8 @@ function makeRow(
       segments = positive.map((count, idx) => {
         const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(PART_SURFACE, types.size + idx) };
         const text = count.ready > 0
-          ? `${count.value.toLocaleString('en-US')} (${count.ready.toLocaleString('en-US')} ready)`
-          : count.value.toLocaleString('en-US');
+          ? `${formatScalar(count.value, 'integer')} (${formatScalar(count.ready, 'integer')} ready)`
+          : formatScalar(count.value, 'integer');
         tooltipItems.push({ label: info.label, swatch: info.color, value: text });
         return {
           key: String(count.ordinal),
@@ -66,7 +67,7 @@ function makeRow(
     row.counts.forEach((count, idx) => {
       if (count.value <= 0) return;
       const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(PART_SURFACE, types.size + idx) };
-      tooltipItems.push({ label: info.label, value: count.value.toLocaleString('en-US') });
+      tooltipItems.push({ label: info.label, value: formatScalar(count.value, 'integer') });
     });
   }
   return {

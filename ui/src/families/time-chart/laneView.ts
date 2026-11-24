@@ -19,6 +19,7 @@ import {
   type SerializedTiledLine,
   type TimeChartBinding,
 } from './declaration.ts';
+import { answerRowOf } from './seriesHelpers.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
 import { layoutTimeChart, type TimeChartLayout } from './layout.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
@@ -156,8 +157,10 @@ function chartSeries(
         if (headCfg.keys && headCfg.partBits !== undefined) {
           const matched = headCfg.keys.find(key => keyId(key) === tag);
           if (matched) tagIdx = followedRow(headAnswer, matched, headCfg.partBits);
-        } else {
+        } else if (headCfg.tags.length) {
           tagIdx = rowIndexOf(headCfg.tags).get(tag) ?? -1;
+        } else {
+          tagIdx = answerRowOf(headAnswer, tag);
         }
         if (tagIdx >= 0) {
           const val = rowAmount(headAnswer, tagIdx, headCfg.decimals ?? line.decimals);
