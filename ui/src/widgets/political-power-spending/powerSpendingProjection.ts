@@ -149,7 +149,6 @@ export function powerSpendingDeclaration(kind: 'political-power-spending' | 'com
     subject,
     emptyCampaign: `Load a campaign to see ${subject}.`,
     icon: 'chart-line',
-    optionFields: powerSpendingOptions(currency),
     countries: { mode: 'single', choose: `Choose a country to see its ${subject}.` },
     sources: ctx => sources(ctx, kind, currency),
     projection: kind === 'political-power-spending' ? politicalSpendingProjection : commandSpendingProjection,
