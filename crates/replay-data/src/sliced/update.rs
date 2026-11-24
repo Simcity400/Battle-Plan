@@ -57,7 +57,7 @@ macro_rules! keyed_pair {
             ResearchSlots, DecisionCounts, Decisions, DynamicModifiers, PreferredTactics,
             NavalCombatShips, OrdersGroupCounterInputs, CountryAppearance,
             TaskForceCounterInputs, ProvinceBuildings, StateBuildings, BuildingConstruction,
-            StateResistance)
+            StateResistance, CharacterPortraits)
     };
 }
 
@@ -122,6 +122,7 @@ pub fn takes_keyed_updates(table: TableId) -> bool {
             | TableId::StateBuildings
             | TableId::BuildingConstruction
             | TableId::StateResistance
+            | TableId::CharacterPortraits
     )
 }
 

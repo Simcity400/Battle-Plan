@@ -1178,7 +1178,34 @@ impl FrameEncoder {
             keyframe,
             ..
         } = prepared;
-        let mut retired = allocation::vec(2 * TABLE_COUNT)?;
+        let mut need = 0_usize;
+        for (table, view) in TableId::ALL.into_iter().zip(&source.tables) {
+            let index = table.index();
+            if !matches!(view, TableInput::ComparedEqual(_)) {
+                need += 1;
+            }
+            if matches!(
+                self.state.tables[index],
+                Some((_, BaselineRows::Owned(_) | BaselineRows::Shared(_)))
+            ) {
+                need += 1;
+            }
+        }
+        let mut retired = if need == 0 {
+            Vec::new()
+        } else {
+            allocation::vec(need)?
+        };
+        let push_input = |retired: &mut Vec<Retiring>, input: TableInput| {
+            if !matches!(input, TableInput::ComparedEqual(_)) {
+                retired.push(Retiring::Input(input));
+            }
+        };
+        let push_baseline = |retired: &mut Vec<Retiring>, baseline: BaselineRows| {
+            if !matches!(baseline, BaselineRows::Meta { .. }) {
+                retired.push(Retiring::Baseline(baseline));
+            }
+        };
         let mut tables = source.tables.map(Some);
         for (table, view) in TableId::ALL.into_iter().zip(tables.iter_mut()) {
             if !matches!(
@@ -1233,9 +1260,9 @@ impl FrameEncoder {
             match retention {
                 BaselineRetention::Drop => {
                     if let Some((_, rows)) = self.state.tables[index].take() {
-                        retired.push(Retiring::Baseline(rows));
+                        push_baseline(&mut retired, rows);
                     }
-                    retired.push(Retiring::Input(view));
+                    push_input(&mut retired, view);
                 }
                 BaselineRetention::Meta => {
                     if unchanged[index] {
@@ -1255,12 +1282,12 @@ impl FrameEncoder {
                             BaselineRows::Meta { .. } => None,
                         };
                         if let Some(meta) = meta {
-                            retired.push(Retiring::Baseline(std::mem::replace(
-                                &mut baseline.1,
-                                meta,
-                            )));
+                            push_baseline(
+                                &mut retired,
+                                std::mem::replace(&mut baseline.1, meta),
+                            );
                         }
-                        retired.push(Retiring::Input(view));
+                        push_input(&mut retired, view);
                     } else if matches!(view, TableInput::SliceUpdate { .. }) {
                         if let Some((_, old)) = std::mem::replace(
                             &mut self.state.tables[index],
@@ -1272,9 +1299,9 @@ impl FrameEncoder {
                                 },
                             )),
                         ) {
-                            retired.push(Retiring::Baseline(old));
+                            push_baseline(&mut retired, old);
                         }
-                        retired.push(Retiring::Input(view));
+                        push_input(&mut retired, view);
                     } else {
                         let next = match &view {
                             TableInput::Sampled(TableView::Complete(rows)) => Some((
@@ -1296,9 +1323,9 @@ impl FrameEncoder {
                         if let Some((_, rows)) =
                             std::mem::replace(&mut self.state.tables[index], next)
                         {
-                            retired.push(Retiring::Baseline(rows));
+                            push_baseline(&mut retired, rows);
                         }
-                        retired.push(Retiring::Input(view));
+                        push_input(&mut retired, view);
                     }
                 }
                 BaselineRetention::Full => {
@@ -1308,10 +1335,11 @@ impl FrameEncoder {
                             .expect("unchanged table has a validated baseline");
                         baseline.0 = source.hour;
                         match view {
-                            TableInput::SharedComplete(rows) => retired.push(Retiring::Baseline(
+                            TableInput::SharedComplete(rows) => push_baseline(
+                                &mut retired,
                                 std::mem::replace(&mut baseline.1, BaselineRows::Shared(rows)),
-                            )),
-                            view => retired.push(Retiring::Input(view)),
+                            ),
+                            view => push_input(&mut retired, view),
                         }
                     } else if let TableInput::ComparedChanges { indices, rows, .. } = view {
                         let (hour, BaselineRows::Owned(previous)) = self.state.tables[index]
@@ -1333,14 +1361,14 @@ impl FrameEncoder {
                                 Some((source.hour, BaselineRows::Shared(rows)))
                             }
                             view => {
-                                retired.push(Retiring::Input(view));
+                                push_input(&mut retired, view);
                                 None
                             }
                         };
                         if let Some((_, rows)) =
                             std::mem::replace(&mut self.state.tables[index], next)
                         {
-                            retired.push(Retiring::Baseline(rows));
+                            push_baseline(&mut retired, rows);
                         }
                     }
                 }

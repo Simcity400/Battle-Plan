@@ -5414,7 +5414,12 @@ impl SizingThread {
             drop(retired);
             return;
         }
-        let wake = !held.is_empty();
+        let wake = held.len() >= 4
+            || held
+                .iter()
+                .map(replay_frame::frame::Retired::len)
+                .sum::<usize>()
+                >= 64;
         drop(held);
         if wake {
             thread.thread().unpark();

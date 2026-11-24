@@ -794,6 +794,8 @@ struct Ledgers<C> {
     seen: Vec<bool>,
     edits: Vec<(u128, Option<usize>)>,
     index: std::collections::HashMap<u128, usize, foldhash::fast::FixedState>,
+    row_bytes: Vec<u8>,
+    fixed_patches: Vec<(usize, Option<C>)>,
 }
 
 impl<C> Default for Ledgers<C> {
@@ -804,6 +806,8 @@ impl<C> Default for Ledgers<C> {
             seen: Vec::new(),
             edits: Vec::new(),
             index: std::collections::HashMap::with_hasher(foldhash::fast::FixedState::default()),
+            row_bytes: Vec::new(),
+            fixed_patches: Vec::new(),
         }
     }
 }
@@ -866,28 +870,110 @@ impl Projection<'_> {
             seen,
             edits,
             index,
+            row_bytes,
+            fixed_patches,
         } = &mut *ledgers;
-        next.clear();
-        let bytes_need = held.bytes.len();
-        let reserved = engine_allocation::reserve(&mut next.keys, source.len())
-            .and_then(|_| engine_allocation::reserve(&mut next.fixed, source.len()))
-            .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()))
-            .and_then(|_| {
-                if next.bytes.capacity() < bytes_need {
-                    engine_allocation::reserve(&mut next.bytes, bytes_need)
-                } else {
-                    Ok(())
-                }
-            });
-        if reserved.is_err() {
-            return unavailable("collector allocation failed").into();
+        let mut building_next = !aligned_eligible;
+        let mut max_row_bytes = 0_usize;
+        if building_next {
+            next.clear();
+            let bytes_need = held.bytes.len();
+            let reserved = engine_allocation::reserve(&mut next.keys, source.len())
+                .and_then(|_| engine_allocation::reserve(&mut next.fixed, source.len()))
+                .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()))
+                .and_then(|_| {
+                    if next.bytes.capacity() < bytes_need {
+                        engine_allocation::reserve(&mut next.bytes, bytes_need)
+                    } else {
+                        Ok(())
+                    }
+                });
+            if reserved.is_err() {
+                return unavailable("collector allocation failed").into();
+            }
         }
         let mut aligned = aligned_eligible;
         let mut first_unaligned = 0;
         if aligned {
             edits.clear();
+            fixed_patches.clear();
         }
         for (at, row) in source.iter().enumerate() {
+            if !building_next {
+                row_bytes.clear();
+                let mut writer = Record {
+                    bytes: &mut *row_bytes,
+                    failed: false,
+                };
+                let fixed = record(at, row, &mut writer);
+                if writer.failed {
+                    return unavailable("collector allocation failed").into();
+                }
+                let row_key = key(row);
+                let mut materialize = false;
+                if held.keys.get(at) == Some(&row_key) {
+                    if fixed.is_some()
+                        && fixed == held.fixed[at]
+                        && row_bytes.as_slice() == held.span(at)
+                    {
+                        continue;
+                    }
+                    if edits.len() == edits.capacity()
+                        && engine_allocation::reserve(edits, 1).is_err()
+                    {
+                        return unavailable("collector allocation failed").into();
+                    }
+                    edits.push((row_key, Some(at)));
+                    if row_bytes.as_slice() == held.span(at) {
+                        if fixed_patches.len() == fixed_patches.capacity()
+                            && engine_allocation::reserve(fixed_patches, 1).is_err()
+                        {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        fixed_patches.push((at, fixed));
+                        continue;
+                    }
+                    materialize = true;
+                } else {
+                    aligned = false;
+                    first_unaligned = at;
+                    materialize = true;
+                }
+                if materialize {
+                    let prefix_bytes = at.checked_sub(1).map_or(0, |before| held.ends[before]);
+                    let bytes_need = held.bytes.len().max(prefix_bytes + row_bytes.len());
+                    next.clear();
+                    let reserved = engine_allocation::reserve(&mut next.keys, source.len())
+                        .and_then(|_| engine_allocation::reserve(&mut next.fixed, source.len()))
+                        .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()))
+                        .and_then(|_| {
+                            if next.bytes.capacity() < bytes_need {
+                                engine_allocation::reserve(&mut next.bytes, bytes_need)
+                            } else {
+                                Ok(())
+                            }
+                        });
+                    if reserved.is_err() {
+                        return unavailable("collector allocation failed").into();
+                    }
+                    next.keys.extend_from_slice(&held.keys[..at]);
+                    next.fixed.extend_from_slice(&held.fixed[..at]);
+                    for &(patch_at, patch_fixed) in fixed_patches.iter() {
+                        next.fixed[patch_at] = patch_fixed;
+                    }
+                    fixed_patches.clear();
+                    next.ends.extend_from_slice(&held.ends[..at]);
+                    next.bytes.extend_from_slice(&held.bytes[..prefix_bytes]);
+                    next.bytes.extend_from_slice(row_bytes);
+                    let end = next.bytes.len();
+                    next.keys.push(row_key);
+                    next.fixed.push(fixed);
+                    next.ends.push(end);
+                    max_row_bytes = max_row_bytes.max(row_bytes.len());
+                    building_next = true;
+                }
+                continue;
+            }
             let start = next.bytes.len();
             let mut writer = Record {
                 bytes: &mut next.bytes,
@@ -898,6 +984,7 @@ impl Projection<'_> {
                 return unavailable("collector allocation failed").into();
             }
             let end = next.bytes.len();
+            max_row_bytes = max_row_bytes.max(end - start);
             let row_key = key(row);
             if aligned {
                 if held.keys.get(at) == Some(&row_key) {
@@ -920,6 +1007,12 @@ impl Projection<'_> {
             next.keys.push(row_key);
             next.fixed.push(fixed);
             next.ends.push(end);
+        }
+        if building_next && row_bytes.capacity() < max_row_bytes {
+            row_bytes.clear();
+            let _ = engine_allocation::advisory(|| {
+                engine_allocation::reserve(row_bytes, max_row_bytes)
+            });
         }
         let input = match shared {
             Some((token, previous_len))
@@ -978,21 +1071,43 @@ impl Projection<'_> {
                 seen,
                 edits,
                 index,
+                row_bytes,
+                fixed_patches,
             } = &mut *ledgers;
-            std::mem::swap(held, next);
-            if next.keys.capacity() * size_of::<u128>()
-                + next.fixed.capacity() * size_of::<Option<C>>()
-                + next.ends.capacity() * size_of::<usize>()
-                + next.bytes.capacity()
-                > 4 * 1024 * 1024
-            {
-                *next = Ledger::default();
+            if building_next {
+                std::mem::swap(held, next);
+                if next.keys.capacity() * size_of::<u128>()
+                    + next.fixed.capacity() * size_of::<Option<C>>()
+                    + next.ends.capacity() * size_of::<usize>()
+                    + next.bytes.capacity()
+                    > 4 * 1024 * 1024
+                {
+                    *next = Ledger::default();
+                }
+            } else {
+                for &(patch_at, patch_fixed) in fixed_patches.iter() {
+                    held.fixed[patch_at] = patch_fixed;
+                }
+                fixed_patches.clear();
+                if source.len() < held.keys.len() {
+                    let keep_bytes = source.len().checked_sub(1).map_or(0, |last| held.ends[last]);
+                    held.keys.truncate(source.len());
+                    held.fixed.truncate(source.len());
+                    held.ends.truncate(source.len());
+                    held.bytes.truncate(keep_bytes);
+                }
             }
             if seen.capacity() > 16_384 {
                 *seen = Vec::new();
             }
             if edits.capacity() > 8_192 {
                 *edits = Vec::new();
+            }
+            if fixed_patches.capacity() > 8_192 {
+                *fixed_patches = Vec::new();
+            }
+            if row_bytes.capacity() > 256 * 1024 {
+                *row_bytes = Vec::new();
             }
             if index.capacity() > 16_384 {
                 *index = std::collections::HashMap::with_hasher(foldhash::fast::FixedState::default());

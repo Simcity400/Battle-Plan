@@ -2401,6 +2401,9 @@ impl Captured {
             &self.status.rows,
             |r| u128::from(r.division),
             |at, r, record| {
+                if self.attack.has_witness(r.division) {
+                    return None;
+                }
                 let attack = self.attack.view_at(at, r.division);
                 let index = self.status_index_at(at, r.division);
                 let naming_held_stamp = self
@@ -2446,9 +2449,6 @@ impl Captured {
                         0
                     }
                 };
-                if self.attack.has_witness(r.division) {
-                    return None;
-                }
                 let dig_in = self.dig_in.factor(r.division, index);
                 let experience = attack.experience();
                 let pending_template = attack.pending_template();

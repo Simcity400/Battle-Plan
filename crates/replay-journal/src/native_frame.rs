@@ -184,11 +184,25 @@ impl Owners {
 struct SliceCheck {
     same: bool,
     keys_unchanged: bool,
+    keys_valid: bool,
 }
 
 enum Slice {
     Same,
-    Update { owners: Vec<u32>, keys: Owners },
+    Update {
+        owners: Vec<u32>,
+        keys: Owners,
+    },
+    Keyed {
+        added: Owners,
+        removed: Owners,
+    },
+    Mixed {
+        owners: Vec<u32>,
+        keys: Owners,
+        added: Owners,
+        removed: Owners,
+    },
     Rebuild,
 }
 
@@ -464,6 +478,7 @@ impl FrameWriter {
                     ops: section.ops,
                 });
             }
+            let complete_status = prepared.evidence.status == Status::Complete;
             tables.push(prepared);
             shared.push(match table {
                 TableInput::SharedComplete(rows) if Arc::strong_count(rows) > 1 => {
@@ -474,24 +489,41 @@ impl FrameWriter {
             slices.push(match table {
                 TableInput::SliceUpdate { update, .. }
                     if update.ranges.is_empty()
-                        && previous.get(index).copied().flatten().is_none() =>
+                        && previous.get(index).copied().flatten().is_none()
+                        && complete_status =>
                 {
                     let check = slice_same[index];
+                    let id = TableId::ALL[index];
                     if update.owners.is_empty() {
-                        (owners[index].is_some() && check.same).then_some(Slice::Same)
+                        if owners[index].is_none() {
+                            None
+                        } else if check.same {
+                            Some(Slice::Same)
+                        } else if check.keys_valid {
+                            let (added, removed) = keyed_delta(id, writer, update)?;
+                            Some(Slice::Keyed { added, removed })
+                        } else {
+                            Some(Slice::Rebuild)
+                        }
                     } else if check.same && owners[index].is_some() {
                         Some(Slice::Same)
                     } else if update.keys.is_empty() {
-                        let id = TableId::ALL[index];
                         Some(Slice::Update {
                             owners: engine_allocation::copy_vec(update.owners())?,
                             keys: Owners::from_rows(id, update.rows())?,
                         })
                     } else if check.keys_unchanged && owners[index].is_some() {
-                        let id = TableId::ALL[index];
                         Some(Slice::Update {
                             owners: engine_allocation::copy_vec(update.owners())?,
                             keys: Owners::from_owner_rows(id, update.rows(), update.owners())?,
+                        })
+                    } else if check.keys_valid && owners[index].is_some() {
+                        let (added, removed) = keyed_delta(id, writer, update)?;
+                        Some(Slice::Mixed {
+                            owners: engine_allocation::copy_vec(update.owners())?,
+                            keys: Owners::from_owner_rows(id, update.rows(), update.owners())?,
+                            added,
+                            removed,
                         })
                     } else {
                         Some(Slice::Rebuild)
@@ -763,6 +795,23 @@ impl FrameWriter {
                             Some(mut known),
                         ) => {
                             hold_slice(&mut known, &slice_owners, &keys, id)?;
+                            Some(known)
+                        }
+                        (Some(Slice::Keyed { added, removed }), Some(mut known)) => {
+                            hold_keyed(&mut known, &added, &removed)?;
+                            Some(known)
+                        }
+                        (
+                            Some(Slice::Mixed {
+                                owners: slice_owners,
+                                keys,
+                                added,
+                                removed,
+                            }),
+                            Some(mut known),
+                        ) => {
+                            hold_slice(&mut known, &slice_owners, &keys, id)?;
+                            hold_keyed(&mut known, &added, &removed)?;
                             Some(known)
                         }
                         (Some(Slice::Rebuild), _) | (Some(_), None) => {
@@ -1273,6 +1322,161 @@ fn merge_slice_keys<T: Copy + Eq>(
     Ok(())
 }
 
+fn keyed_delta(
+    id: TableId,
+    writer: &TableWriter,
+    update: &SliceUpdate,
+) -> io::Result<(Owners, Owners)> {
+    let table = writer.table();
+    let mut added_count = 0_usize;
+    let mut removed_count = 0_usize;
+    for &key in &update.keys {
+        let present = update.rows.contains_key(key);
+        let existed = table.slot(key).is_some();
+        added_count += usize::from(present && !existed);
+        removed_count += usize::from(!present && existed);
+    }
+    let added = Owners::from_keys(
+        id,
+        added_count,
+        update
+            .keys
+            .iter()
+            .copied()
+            .filter(|&key| update.rows.contains_key(key) && table.slot(key).is_none()),
+    )?;
+    let removed = Owners::from_keys(
+        id,
+        removed_count,
+        update
+            .keys
+            .iter()
+            .copied()
+            .filter(|&key| !update.rows.contains_key(key) && table.slot(key).is_some()),
+    )?;
+    Ok((added, removed))
+}
+
+fn merge_keyed_keys<T: Copy + Ord>(
+    known: &mut Vec<T>,
+    added: &[T],
+    removed: &[T],
+) -> io::Result<()> {
+    if added.is_empty() && removed.is_empty() {
+        return Ok(());
+    }
+    if added.len().saturating_add(removed.len()) <= 8 {
+        let growth = added.len().saturating_sub(removed.len());
+        if growth > 0 {
+            engine_allocation::reserve(known, growth)?;
+        }
+        for &key in removed.iter().rev() {
+            if let Ok(at) = known.binary_search(&key) {
+                known.remove(at);
+            }
+        }
+        for &key in added {
+            if let Err(at) = known.binary_search(&key) {
+                known.insert(at, key);
+            }
+        }
+        return Ok(());
+    }
+    let final_len = known.len().saturating_sub(removed.len()) + added.len();
+    let mut out = engine_allocation::vec(final_len)?;
+    let (mut ki, mut ri, mut ai) = (0_usize, 0_usize, 0_usize);
+    while ki < known.len() || ai < added.len() {
+        while ki < known.len() {
+            while ri < removed.len() && removed[ri] < known[ki] {
+                ri += 1;
+            }
+            if ri < removed.len() && removed[ri] == known[ki] {
+                ki += 1;
+                ri += 1;
+            } else {
+                break;
+            }
+        }
+        match (known.get(ki).copied(), added.get(ai).copied()) {
+            (Some(k), Some(a)) => match k.cmp(&a) {
+                std::cmp::Ordering::Less => {
+                    engine_allocation::reserve(&mut out, 1)?;
+                    out.push(k);
+                    ki += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    engine_allocation::reserve(&mut out, 1)?;
+                    out.push(a);
+                    ai += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    engine_allocation::reserve(&mut out, 1)?;
+                    out.push(k);
+                    ki += 1;
+                    ai += 1;
+                }
+            },
+            (Some(k), None) => {
+                engine_allocation::reserve(&mut out, 1)?;
+                out.push(k);
+                ki += 1;
+            }
+            (None, Some(a)) => {
+                engine_allocation::reserve(&mut out, 1)?;
+                out.push(a);
+                ai += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    *known = out;
+    Ok(())
+}
+
+fn hold_keyed(owners: &mut Owners, added: &Owners, removed: &Owners) -> io::Result<()> {
+    match (owners, added, removed) {
+        (Owners::U64(known), Owners::U64(added), Owners::U64(removed)) => {
+            merge_keyed_keys(known, added, removed)
+        }
+        (Owners::U128(known), Owners::U128(added), Owners::U128(removed)) => {
+            merge_keyed_keys(known, added, removed)
+        }
+        (slot, added, removed) => {
+            let mut widened = match std::mem::replace(slot, Owners::U128(Vec::new())) {
+                Owners::U64(old) => {
+                    engine_allocation::collect_vec(old.into_iter().map(u128::from))?
+                }
+                Owners::U128(old) => old,
+            };
+            let added_wide = match added {
+                Owners::U64(keys) => {
+                    Some(engine_allocation::collect_vec(keys.iter().copied().map(u128::from))?)
+                }
+                Owners::U128(_) => None,
+            };
+            let removed_wide = match removed {
+                Owners::U64(keys) => {
+                    Some(engine_allocation::collect_vec(keys.iter().copied().map(u128::from))?)
+                }
+                Owners::U128(_) => None,
+            };
+            let added_slice = match (added, added_wide.as_deref()) {
+                (_, Some(slice)) => slice,
+                (Owners::U128(slice), None) => slice,
+                (Owners::U64(_), None) => unreachable!(),
+            };
+            let removed_slice = match (removed, removed_wide.as_deref()) {
+                (_, Some(slice)) => slice,
+                (Owners::U128(slice), None) => slice,
+                (Owners::U64(_), None) => unreachable!(),
+            };
+            merge_keyed_keys(&mut widened, added_slice, removed_slice)?;
+            *slot = Owners::U128(widened);
+            Ok(())
+        }
+    }
+}
+
 fn hold_slice(
     owners: &mut Owners,
     slice_owners: &[u32],
@@ -1378,6 +1582,7 @@ fn removed(
         return Ok(SliceCheck {
             same: empty,
             keys_unchanged: empty,
+            keys_valid: empty,
         });
     }
     if !update.keys.is_empty() && update.owners.is_empty() && update.ranges.is_empty() {
@@ -1395,10 +1600,12 @@ fn removed(
             matched_present += usize::from(present);
             keys_same &= present == existed;
         }
-        let unchanged = keys_asc && keys_same && matched_present == update.rows.len();
+        let valid = keys_asc && matched_present == update.rows.len();
+        let unchanged = valid && keys_same;
         return Ok(SliceCheck {
             same: unchanged,
             keys_unchanged: unchanged,
+            keys_valid: valid,
         });
     }
     if !update.owners.is_empty() && !update.keys.is_empty() && update.ranges.is_empty() {
@@ -1480,6 +1687,7 @@ fn removed(
                 return Ok(SliceCheck {
                     same: owners_same && keys_same,
                     keys_unchanged: keys_same && all_matched,
+                    keys_valid: all_matched,
                 });
             }
             out.clear();
@@ -1535,6 +1743,7 @@ fn removed(
                 return Ok(SliceCheck {
                     same,
                     keys_unchanged: true,
+                    keys_valid: true,
                 });
             }
             out.clear();
@@ -1573,6 +1782,7 @@ fn removed(
         return Ok(SliceCheck {
             same: false,
             keys_unchanged: true,
+            keys_valid: true,
         });
     }
     let table = writer.table();

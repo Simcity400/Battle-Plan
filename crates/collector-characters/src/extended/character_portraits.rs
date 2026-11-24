@@ -3,7 +3,7 @@ use collector_primitives::{
     table_capture::{Arena, CaptureRows},
 };
 use collector_projection::{
-    projection::{Projection, Witness, held_input, project_table},
+    projection::{Projection, Witness, held_input, ledger_table},
     table_conversion::unavailable,
 };
 use engine_allocation::{collect_vec, copy_vec, map_slice, owned_vec, reserve_exact};
@@ -467,28 +467,27 @@ impl Captured {
         {
             return [unavailable("duplicate character portrait identity").into()];
         }
-        [project_table::<tables::CharacterPortraits, _>(
+        [ledger_table::<tables::CharacterPortraits, _, u32>(
             projection,
             outcome,
             &rows,
             |entry| u128::from(character(entry)),
-            |(part, row), previous| {
-                let part = &self.parts[*part];
-                let row = &part.rows.rows[*row];
+            |_, &(part, row), record| {
+                let part = &self.parts[part];
+                let row = &part.rows.rows[row];
                 let portraits =
                     &part.arena.first[row.portraits[0]..row.portraits[0] + row.portraits[1]];
-                row.character == previous.character
-                    && portraits.len() == previous.portraits.len()
-                    && portraits
-                        .iter()
-                        .zip(&previous.portraits)
-                        .all(|(current, previous)| {
-                            current.category == previous.category
-                                && current.size == previous.size
-                                && current.is_set == previous.is_set
-                                && current.kind == previous.kind
-                                && current.identity.as_bytes() == previous.identity
-                        })
+                record.word(portraits.len() as i64);
+                for portrait in portraits {
+                    record.word(
+                        (u64::from(portrait.category) | (u64::from(portrait.size) << 32)) as i64,
+                    );
+                    record.word(
+                        (u64::from(portrait.kind) | (u64::from(portrait.is_set) << 32)) as i64,
+                    );
+                    record.bytes(Some(portrait.identity.as_bytes()));
+                }
+                Some(row.character)
             },
             |(part, r)| {
                 let part = &self.parts[*part];

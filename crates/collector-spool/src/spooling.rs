@@ -1676,7 +1676,9 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
             .encoder
             .commit_retiring_mode(prepared, |table| baseline_retention(table, live_columnar))?;
         self.adopt_slices(released);
-        self.retired.push(retired);
+        if !retired.is_empty() {
+            self.retired.push(retired);
+        }
         Ok(())
     }
 

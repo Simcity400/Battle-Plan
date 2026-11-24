@@ -1988,7 +1988,42 @@ impl Captured {
                 carry_cost(|cost| cost.row_clones += 1);
                 (self.rows.rows[self.len - 1].clone(), terms)
             });
-        let row_version = self.rows_serial;
+        let matched_previous = carry
+            .as_deref()
+            .or(stale.as_deref())
+            .filter(|held| held.ship == row.id && held.row_version != 0)
+            .and_then(|held| {
+                let (previous, _) = held.row.as_ref()?;
+                let current = &self.rows.rows[self.len - 1];
+                (current.ship == previous.ship
+                    && current.variant == previous.variant
+                    && current.model_number == previous.model_number
+                    && current.formation_flags == previous.formation_flags
+                    && current.definition_valid == previous.definition_valid
+                    && current.carrier_air_base == previous.carrier_air_base
+                    && current.maximum_strength == previous.maximum_strength
+                    && current.anti_air_base == previous.anti_air_base
+                    && current.maximum_organisation == previous.maximum_organisation
+                    && current.has_criticals == previous.has_criticals
+                    && current.air_capacity_kind == previous.air_capacity_kind
+                    && current.positive_equipment_flags == previous.positive_equipment_flags
+                    && current.subunit_index == previous.subunit_index
+                    && current.hull_variant == previous.hull_variant
+                    && current.naval_power == previous.naval_power
+                    && current.hull_sprite.as_bytes() == previous.hull_sprite.as_bytes()
+                    && current.fallback_sprite.as_bytes() == previous.fallback_sprite.as_bytes())
+                .then_some((
+                    held.row_version,
+                    current.roster_ordinal == previous.roster_ordinal,
+                ))
+            });
+        let row_version = matched_previous.map_or(self.rows_serial, |(version, _)| version);
+        if matched_previous.is_some_and(|(_, same_ordinal)| {
+            same_ordinal
+                && original_hot.is_some_and(|hot| hot.roster_ordinal == row.roster_ordinal)
+        }) {
+            self.unchanged_rows += 1;
+        }
         if self.len - 1 < self.row_versions.len() {
             self.row_versions[self.len - 1] = row_version;
         }
