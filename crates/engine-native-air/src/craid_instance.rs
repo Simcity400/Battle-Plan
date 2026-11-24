@@ -1,4 +1,3 @@
-
 use engine_sites::Rva;
 pub const VTABLE_RVA: Rva = Rva(0x029f_ff58);
 pub const REFERENCE_TYPE: usize = 0x08;
@@ -17,8 +16,13 @@ pub const SOURCE: usize = 0xd8;
 pub const EQUIPMENT: usize = 0x110;
 pub const NUKES: usize = 0x150;
 pub const DETECTED: usize = 0x190;
+pub const END_DATE: usize = 0x198;
+pub const END_HOUR: usize = 0x1a0;
+pub const END_PERSISTENT_VTABLE: usize = 0x1a8;
+pub const END_PRESENT: usize = 0x1b0;
 pub const SHOW_FOR_COUNTRIES: usize = 0x1b8;
 pub const SHOW_FOR_COUNTRY_STRIDE: usize = 4;
+pub const COMPLETION_COUNTRY: usize = 0x1d0;
 pub const PHASE_ASSEMBLING: i32 = 1;
 pub const PHASE_PREPARING: i32 = 2;
 pub const PHASE_PREPARED: i32 = 3;
@@ -30,6 +34,13 @@ pub const OUTCOME_LIMITED_SUCCESS: i32 = 2;
 pub const OUTCOME_SUCCESS: i32 = 3;
 pub const OUTCOME_CRITICAL_SUCCESS: i32 = 4;
 pub const OUTCOME_CANCELED: i32 = 5;
+
+pub const END_DATE_VTABLE_WITHHELD: &str = "raid end date vtable withheld";
+pub const END_DATE_VTABLE_MISMATCH: &str = "raid end date vtable mismatch";
+pub const END_DATE_PRESENCE_INVALID: &str = "raid end date presence invalid";
+pub const COMPLETION_COUNTRY_NEGATIVE: &str = "raid completion country handle negative";
+pub const COMPLETION_COUNTRY_UNLINKED: &str = "raid completion country handle unlinked";
+pub const COMPLETION_COUNTRY_OUT_OF_RANGE: &str = "raid completion country handle outside country table";
 
 pub const PHASE_KEYS: [&str; 6] = [
     "RAID_INST_PHASE_NONE",
@@ -77,7 +88,7 @@ pub const fn outcome_key(outcome: i32) -> &'static str {
     }
 }
 
-use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native_memory::{Memory, cgame_date, cpdx_array::Array};
 use engine_native::ccountry;
 use crate::{ccountry_raid_status, craid_source, craid_target};
 
@@ -99,6 +110,10 @@ pub struct Row {
     pub show_for_len: usize,
     pub travelled: i64,
     pub preparation_hours: i32,
+    pub end_hour: Option<Option<i32>>,
+    pub end_hour_refusal: Option<&'static str>,
+    pub completion_country: Option<Option<u32>>,
+    pub completion_country_refusal: Option<&'static str>,
 }
 
 impl Row {
@@ -118,8 +133,7 @@ pub(crate) fn read_row(
     let mut identity = [0_u8; 16];
     let mut state = [0_u8; 16];
     let mut definition = [0_u8; 8];
-    let mut detected = [0_u8; 1];
-    let mut show_for = [0_u8; 16];
+    let mut tail = [0_u8; COMPLETION_COUNTRY + 4 - DETECTED];
     let mut unit = [0_u8; 16];
     let mut travelled = [0_u8; 8];
     let field = |offset| {
@@ -133,7 +147,6 @@ pub(crate) fn read_row(
             field(PHASE)?,
             field(RAID_TYPE)?,
             field(DETECTED)?,
-            field(SHOW_FOR_COUNTRIES)?,
             field(UNIT)?,
             field(DISTANCE)?,
         ],
@@ -141,12 +154,11 @@ pub(crate) fn read_row(
             &mut identity,
             &mut state,
             &mut definition,
-            &mut detected,
-            &mut show_for,
+            &mut tail,
             &mut unit,
             &mut travelled,
         ],
-    ) != 7
+    ) != 6
     {
         return Err("raid instance unreadable");
     }
@@ -172,9 +184,55 @@ pub(crate) fn read_row(
     if !(OUTCOME_NONE..=OUTCOME_CANCELED).contains(&outcome) {
         return Err("raid instance outcome is invalid");
     }
-    if detected[0] > 1 {
+    let detected = tail[0];
+    if detected > 1 {
         return Err("raid detected flag is invalid");
     }
+    let show_for: [u8; 16] = tail[SHOW_FOR_COUNTRIES - DETECTED..][..16]
+        .try_into()
+        .unwrap();
+    let (end_hour, end_hour_refusal) = match (
+        engine_sites::at(base, cgame_date::VTABLE_RVA),
+        engine_sites::at(base, cgame_date::PERSISTENT_VTABLE_RVA),
+    ) {
+        (Some(primary), Some(persistent)) => match tail[END_PRESENT - DETECTED] {
+            0 => (Some(None), None),
+            1 => {
+                let got_primary =
+                    u64::from_le_bytes(tail[END_DATE - DETECTED..][..8].try_into().unwrap());
+                let got_persistent = u64::from_le_bytes(
+                    tail[END_PERSISTENT_VTABLE - DETECTED..][..8]
+                        .try_into()
+                        .unwrap(),
+                );
+                if got_primary == primary as u64 && got_persistent == persistent as u64 {
+                    let hour =
+                        i32::from_le_bytes(tail[END_HOUR - DETECTED..][..4].try_into().unwrap());
+                    (Some(Some(hour)), None)
+                } else {
+                    (None, Some(END_DATE_VTABLE_MISMATCH))
+                }
+            }
+            _ => (None, Some(END_DATE_PRESENCE_INVALID)),
+        },
+        _ => (None, Some(END_DATE_VTABLE_WITHHELD)),
+    };
+    let raw_victim = i32::from_le_bytes(
+        tail[COMPLETION_COUNTRY - DETECTED..][..4]
+            .try_into()
+            .unwrap(),
+    );
+    let (completion_country, completion_country_refusal) = if raw_victim == 0 {
+        (Some(None), None)
+    } else if raw_victim < 0 {
+        (None, Some(COMPLETION_COUNTRY_NEGATIVE))
+    } else {
+        match countries.link(raw_victim as u32) {
+            Ok(Some(_)) => (Some(Some(raw_victim as u32)), None),
+            Ok(None) => (None, Some(COMPLETION_COUNTRY_UNLINKED)),
+            Err(_) => (None, Some(COMPLETION_COUNTRY_OUT_OF_RANGE)),
+        }
+    };
     let definition = usize::try_from(u64::from_le_bytes(definition))
         .map_err(|_| "raid type definition address overflow")?;
     let raid_type = if definition == 0 {
@@ -188,7 +246,7 @@ pub(crate) fn read_row(
         Row {
             target: craid_target::read_row(memory, base, field(TARGET)?)?,
             raid_type,
-            detected: detected[0],
+            detected,
             unit: u64::from_le_bytes(unit[..8].try_into().unwrap()),
             air_wing: u64::from_le_bytes(unit[8..].try_into().unwrap()),
             reference_type,
@@ -202,6 +260,10 @@ pub(crate) fn read_row(
             show_for_len: show_for.count as usize,
             travelled: i64::from_le_bytes(travelled),
             preparation_hours,
+            end_hour,
+            end_hour_refusal,
+            completion_country,
+            completion_country_refusal,
         },
         show_for,
     ))

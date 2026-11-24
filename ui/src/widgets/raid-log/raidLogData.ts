@@ -1,7 +1,7 @@
-import type { LogRow } from '../../charts/log/logData';
+import type { LogRow, LogSection } from '../../charts/log/logData';
 import type { TooltipContent } from '../../charts/tooltip';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { raidAt, raidIcon, raidPlaceId, raidPreparationText, raidStatus, raidTypeChoices, raidTypeText, raidVictimLabel, startedBy } from '../../dashboard/raids.ts';
+import { raidAt, raidIcon, raidPlaceId, raidPreparationText, raidStatus, raidTypeChoices, raidTypeText, raidVictimLabel, raidVictimRole, startedBy } from '../../dashboard/raids.ts';
 import type { RaidAt } from '../../dashboard/raids';
 import type { PlaceNamesReply, RaidEpisode, RaidLogReply } from '../../generated/dashboard';
 
@@ -19,40 +19,80 @@ function compareRaidIds(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function orderRaidRows(rows: readonly LogRow<RaidAt>[]): ReadonlyArray<LogRow<RaidAt>> {
+export interface RaidLogGroup {
+  readonly key: string;
+  readonly label: string | null;
+  readonly unordered: boolean;
+  readonly rows: ReadonlyArray<LogRow<RaidAt>>;
+}
+
+function groupRaidRows(rows: readonly LogRow<RaidAt>[]): ReadonlyArray<RaidLogGroup> {
   const items = rows.map(row => {
     const high = row.item.since;
     const low = row.item.sinceExact ? high : (row.item.afterHour !== null ? row.item.afterHour + 1 : -Infinity);
-    return { row, low, high };
+    return { row, low, high, bounded: !row.item.sinceExact };
   });
-  items.sort((a, b) => a.low - b.low || a.high - b.high || compareRaidIds(a.row.id ?? '', b.row.id ?? ''));
-  const clusters: { maxHigh: number; rows: LogRow<RaidAt>[] }[] = [];
+  items.sort((a, b) => b.high - a.high || b.low - a.low || compareRaidIds(a.row.id ?? '', b.row.id ?? ''));
+  interface Clique { maxLow: number; minHigh: number; minLow: number; maxHigh: number; hasBounded: boolean; rows: LogRow<RaidAt>[] }
+  const cliques: Clique[] = [];
   for (const entry of items) {
-    const last = clusters[clusters.length - 1];
-    if (last && entry.low <= last.maxHigh) {
+    const last = cliques[cliques.length - 1];
+    if (last && (last.hasBounded || entry.bounded) && Math.max(last.maxLow, entry.low) <= Math.min(last.minHigh, entry.high)) {
+      last.maxLow = Math.max(last.maxLow, entry.low);
+      last.minHigh = Math.min(last.minHigh, entry.high);
+      last.minLow = Math.min(last.minLow, entry.low);
       last.maxHigh = Math.max(last.maxHigh, entry.high);
+      last.hasBounded = last.hasBounded || entry.bounded;
       last.rows.push(entry.row);
     } else {
-      clusters.push({ maxHigh: entry.high, rows: [entry.row] });
+      cliques.push({ maxLow: entry.low, minHigh: entry.high, minLow: entry.low, maxHigh: entry.high, hasBounded: entry.bounded, rows: [entry.row] });
     }
   }
-  clusters.sort((a, b) => b.maxHigh - a.maxHigh);
-  const ordered: LogRow<RaidAt>[] = [];
-  for (const cluster of clusters) {
-    cluster.rows.sort((a, b) => compareRaidIds(a.id ?? '', b.id ?? ''));
-    ordered.push(...cluster.rows);
-  }
-  return ordered;
+  return cliques.map((clique, index) => {
+    const unordered = clique.hasBounded && clique.rows.length > 1;
+    if (unordered) clique.rows.sort((a, b) => compareRaidIds(a.id ?? '', b.id ?? ''));
+    const label = !unordered ? null
+      : Number.isFinite(clique.minLow)
+        ? `Unordered · between ${formatDateTime(clique.minLow)} and ${formatDateTime(clique.maxHigh)}`
+        : `Unordered · by ${formatDateTime(clique.maxHigh)}`;
+    return { key: unordered ? `unordered:${clique.minLow}:${clique.maxHigh}:${index}` : `ordered:${index}`, label, unordered, rows: clique.rows };
+  });
+}
+
+export function raidLogGroups(data: Pick<RaidLogReply, 'episodes'>, hour: number, types: readonly string[], matches: (tag: string | null, hour: number) => boolean,
+  from: number | null): ReadonlyArray<RaidLogGroup> {
+  const selected = new Set(types);
+  return groupRaidRows(data.episodes.slice(0, startedBy(data.episodes, hour)).flatMap(episode => {
+    const at = raidAt(episode, hour);
+    if (!at || (selected.size && !selected.has(episode.raidType ?? '')) || !matches(at.raider, at.since) || (from !== null && at.since < from)) return [];
+    return [{ id: episode.id, key: JSON.stringify([episode.id, at.since]), hour: at.since, by: !at.sinceExact, item: at }];
+  }));
 }
 
 export function raidLogRows(data: Pick<RaidLogReply, 'episodes'>, hour: number, types: readonly string[], matches: (tag: string | null, hour: number) => boolean,
   from: number | null): ReadonlyArray<LogRow<RaidAt>> {
-  const selected = new Set(types);
-  return orderRaidRows(data.episodes.slice(0, startedBy(data.episodes, hour)).flatMap(episode => {
-    const at = raidAt(episode, hour);
-    if (!at || (selected.size && !selected.has(episode.raidType ?? '')) || !matches(episode.raider, at.since) || (from !== null && at.since < from)) return [];
-    return [{ id: episode.id, key: JSON.stringify([episode.id, at.since]), hour: at.since, by: !at.sinceExact, item: at }];
-  }));
+  return raidLogGroups(data, hour, types, matches, from).flatMap(group => group.rows);
+}
+
+export function raidLogSections(groups: readonly RaidLogGroup[], months: boolean): ReadonlyArray<LogSection<RaidAt>> | null {
+  if (!groups.some(group => group.unordered)) return null;
+  const sections: LogSection<RaidAt>[] = [];
+  let ordered: LogRow<RaidAt>[] = [];
+  const flush = (index: number) => {
+    if (!ordered.length) return;
+    sections.push({ key: `dated:${index}`, label: 'Dated changes', months, rows: ordered });
+    ordered = [];
+  };
+  groups.forEach((group, index) => {
+    if (group.unordered) {
+      flush(index);
+      sections.push({ key: group.key, label: group.label ?? 'Unordered changes', months: false, rows: group.rows });
+    } else {
+      ordered.push(...group.rows);
+    }
+  });
+  flush(groups.length);
+  return sections;
 }
 
 export function targetNameRequest(episodes: readonly RaidEpisode[], hour: number): { places: { provinceId: number; hour: number }[]; states: { stateId: number; hour: number }[] } {
@@ -85,18 +125,26 @@ export function targetText(episode: RaidEpisode, names?: TargetNames | null): st
 
 export function raidDescription(data: RaidLogReply, at: RaidAt, raider: string, victim: string, target: string, hour: number): string {
   const preparation = raidPreparationText(data, at, hour);
-  return `${raider} targets ${victim} at ${target} with ${raidTypeText(data, at.episode)}. ${raidStatus(data, at)}.${preparation ? ` ${preparation}.` : ''}`;
+  const role = raidVictimRole(at.victim.source);
+  const clause = role === null && at.victim.tag !== null
+    ? `${raider} targets ${victim} at ${target}`
+    : `${raider} targets ${target} (${role ?? 'target country'}: ${victim})`;
+  return `${clause} with ${raidTypeText(data, at.episode)}. ${raidStatus(data, at)}.${preparation ? ` ${preparation}.` : ''}`;
 }
 
 export function raidTooltip(data: RaidLogReply, at: RaidAt, raider: string, victim: string, target: string, hour: number): TooltipContent {
   const preparation = raidPreparationText(data, at, hour);
-  const endedRow = at.episode.endedHour !== null
-    ? [{ label: at.episode.endedExact ? 'Ended' : 'Ended by', value: formatDateTime(at.episode.endedHour) }]
+  const shownEnded = (at.current ?? at.latest).phase === data.phaseEnded && at.episode.endedHour !== null;
+  const endedLabel = at.episode.endedSource === 'nativeEndDate'
+    ? 'Ended (recorded)'
+    : at.episode.endedExact ? 'Ended (observed)' : 'Ended by (observed)';
+  const endedRow = shownEnded
+    ? [{ label: endedLabel, value: formatDateTime(at.episode.endedHour!) }]
     : at.disappeared && at.episode.disappearedHour !== null
       ? [{ label: at.episode.disappearedExact ? 'No longer seen' : 'No longer seen by', value: formatDateTime(at.episode.disappearedHour) }]
       : [];
   return { title: raidTypeText(data, at.episode), icon: raidIcon(data, at.episode) ?? undefined, rows: [
-    { label: 'Raider', value: raider }, { label: raidVictimLabel(at.episode.victimSource), value: victim }, { label: 'Target', value: target },
+    { label: 'Raider', value: raider }, { label: raidVictimLabel(at.victim.source), value: victim }, { label: 'Target', value: target },
     { label: 'Phase / outcome', value: raidStatus(data, at) },
     ...(preparation !== null ? [{ label: 'Hours prepared', value: preparation === 'Preparation not known' ? 'Not known' : preparation.replace(' h prepared', '') }] : []),
     { label: at.episode.firstHourExact ? 'First seen' : 'First seen by', value: formatDateTime(at.episode.firstHour) },
