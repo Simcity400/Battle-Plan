@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useContentRevision } from './contentRevision';
 import type { DashboardClient } from './client';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { loadTransientProduct } from './products';
-import { SpriteCaches, spriteFrames, spriteIcons, spriteId } from './spriteArtwork';
+import { SpriteCaches, spriteFrames, spriteId } from './spriteArtwork';
 import type { SpriteFrame } from './spriteArtwork';
 import { PerClient } from './prepare.ts';
 import { productRequest } from './request.ts';
+import { inFrame } from './frameUpdates.ts';
 
 const held = new PerClient<SpriteCaches>();
 
@@ -24,27 +25,40 @@ export function useSpriteArtwork(runtime: WidgetRuntime, track: BoundTrack | und
   const caches = cachesOf(runtime.client);
   const icons = caches.icons(scope);
   const [, setLanded] = useState(0);
+  const paintRef = useRef(paint);
+  paintRef.current = paint;
+  const asked = spriteFrames(sprites).filter(sprite => !icons.has(spriteId(sprite)));
+  const wantedIds = useMemo(() => new Set(asked.map(spriteId)), [asked.map(spriteId).join('\0')]);
+  const wantedRef = useRef(wantedIds);
+  wantedRef.current = wantedIds;
   useEffect(() => {
     const release = caches.hold(scope);
-    if (caches.icons(scope) !== icons) setLanded(count => count + 1);
-    return release;
-  }, [caches, scope]);
-  const asked = spriteFrames(sprites).filter(sprite => !icons.has(spriteId(sprite)));
-  const request = track && asked.length ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'sprite-artwork',
-    params: { sprites: asked } }) : null;
-  const key = JSON.stringify([request, revision, scope]);
-  useEffect(() => {
-    if (!active || !request) return;
-    const controller = new AbortController();
-    void loadTransientProduct<unknown>(runtime.client, request, controller.signal).then(reply => {
-      if (controller.signal.aborted) return;
-      const held = caches.icons(scope);
-      for (const [id, icon] of spriteIcons(reply, asked)) held.set(id, icon);
-      if (paint) paint(held);
-      else setLanded(count => count + 1);
-    }).catch(() => {
+    let scheduled = false;
+    const stop = caches.watch(scope, next => {
+      if (scheduled) return;
+      let relevant = false;
+      for (const id of wantedRef.current) {
+        if (next.has(id)) { relevant = true; break; }
+      }
+      if (!relevant && wantedRef.current.size > 0) return;
+      scheduled = true;
+      inFrame(() => {
+        scheduled = false;
+        if (paintRef.current) paintRef.current(next);
+        else setLanded(count => count + 1);
+      });
     });
-    return () => controller.abort();
-  }, [runtime.client, key, active, paint]);
+    if (caches.icons(scope) !== icons) setLanded(count => count + 1);
+    return () => { stop(); release(); };
+  }, [caches, scope]);
+  const key = JSON.stringify([track?.source.id, track?.source.revision, revision, scope, asked]);
+  useEffect(() => {
+    if (!active || !track || !asked.length) return;
+    caches.request(scope, asked, (batch, signal) => loadTransientProduct<unknown>(
+      runtime.client,
+      productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'sprite-artwork', params: { sprites: batch } }),
+      signal,
+    ));
+  }, [runtime.client, caches, scope, key, active]);
   return sprite => (sprite && icons.get(spriteId(sprite))) ?? null;
 }

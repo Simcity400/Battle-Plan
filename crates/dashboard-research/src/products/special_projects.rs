@@ -1283,29 +1283,23 @@ struct CompletionWatch {
 
 fn see_run_evidence(
     tag_facts: &mut BTreeMap<String, Facts>,
+    seen: &mut std::collections::HashSet<(usize, u32, u32, u32, u32, Entry)>,
+    query: &Query<'_>,
     campaign_start: i32,
     recording: &Recording,
     run: u32,
     held_run: &RecordingRun,
-    prepared: &[(String, Piece, Custody, Vec<u32>)],
+    prepared: &[(usize, String, Piece, Custody, Vec<u32>)],
     history_by_owner: &HashMap<u32, Vec<(u32, u32, Vec<Step>)>>,
     from: i32,
     to: i32,
+    run_reach: i32,
+    run_last: i32,
     sample: &[usize; 1],
-    projects_complete: &[(i32, i32)],
-    history_complete: &[(i32, i32)],
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    let mut seen: std::collections::HashSet<(String, u32, u32, u32, u32, Entry)> = std::collections::HashSet::new();
-    for (tag, facts) in tag_facts.iter() {
-        for (&(slot, id, owner, local), evidence) in &facts.evidence {
-            for kept in &evidence.entries {
-                seen.insert((tag.clone(), slot, id, owner, local, kept.entry));
-            }
-        }
-    }
     let mut watches: Vec<CompletionWatch> = Vec::new();
-    for (piece_idx, (tag, piece, _, owners)) in prepared.iter().enumerate() {
+    for (piece_idx, (tag_id, _, piece, _, owners)) in prepared.iter().enumerate() {
         let reach = piece.reach();
         for &raw in owners {
             let Some(held) = history_by_owner.get(&raw) else { continue };
@@ -1315,7 +1309,7 @@ fn see_run_evidence(
                     if !entry.completion() || !(from..=to).contains(&entry.date) {
                         continue;
                     }
-                    if seen.contains(&(tag.clone(), piece.slot, piece.id, raw, *project, entry)) {
+                    if seen.contains(&(*tag_id, piece.slot, piece.id, raw, *project, entry)) {
                         continue;
                     }
                     let step_end = steps.get(idx + 1).map_or(piece.last, |next| (next.hour - 1).min(piece.last));
@@ -1334,6 +1328,8 @@ fn see_run_evidence(
     if watches.is_empty() {
         return Ok(());
     }
+    let projects_complete = available(query, run, TableId::Projects, run_reach, run_last)?;
+    let history_complete = available(query, run, TableId::ProjectHistory, run_reach, run_last)?;
     watches.sort_unstable_by_key(|w| (w.win_start, w.piece_idx, w.raw, w.project));
     let mut slice_reader = dashboard_query::cost::storage(|| TableReader::new(recording, run, TableId::SliceReads, Some(sample)))?;
     slice_reader.index_keys();
@@ -1353,14 +1349,14 @@ fn see_run_evidence(
             if hour > watch.win_end {
                 return false;
             }
-            let (tag, piece, ..) = &prepared[watch.piece_idx];
-            !seen.contains(&(tag.clone(), piece.slot, piece.id, watch.raw, watch.project, watch.entry))
+            let (tag_id, _, piece, ..) = &prepared[watch.piece_idx];
+            !seen.contains(&(*tag_id, piece.slot, piece.id, watch.raw, watch.project, watch.entry))
         });
         if active.is_empty() {
             while next_watch < watches.len() {
                 let watch = &watches[next_watch];
-                let (tag, piece, ..) = &prepared[watch.piece_idx];
-                if !seen.contains(&(tag.clone(), piece.slot, piece.id, watch.raw, watch.project, watch.entry)) {
+                let (tag_id, _, piece, ..) = &prepared[watch.piece_idx];
+                if !seen.contains(&(*tag_id, piece.slot, piece.id, watch.raw, watch.project, watch.entry)) {
                     break;
                 }
                 next_watch += 1;
@@ -1372,8 +1368,8 @@ fn see_run_evidence(
         }
         while next_watch < watches.len() && watches[next_watch].win_start <= hour {
             let watch = &watches[next_watch];
-            let (tag, piece, ..) = &prepared[watch.piece_idx];
-            if hour <= watch.win_end && !seen.contains(&(tag.clone(), piece.slot, piece.id, watch.raw, watch.project, watch.entry)) {
+            let (tag_id, _, piece, ..) = &prepared[watch.piece_idx];
+            if hour <= watch.win_end && !seen.contains(&(*tag_id, piece.slot, piece.id, watch.raw, watch.project, watch.entry)) {
                 active.push(next_watch);
             }
             next_watch += 1;
@@ -1390,15 +1386,15 @@ fn see_run_evidence(
             active_pairs.sort_unstable();
             active_pairs.dedup();
             for &(piece_idx, raw) in &active_pairs {
-                let (tag, piece, custody, _) = &prepared[piece_idx];
+                let (tag_id, _, piece, custody, _) = &prepared[piece_idx];
                 let h_raw = slice_read_value(&slice_reader, sample_col, TableId::ProjectHistory, raw);
-                let Some(hs) = custody.usable(raw, h_raw, history_complete, hour) else { continue };
+                let Some(hs) = custody.usable(raw, h_raw, &history_complete, hour) else { continue };
                 if last_h_stamp.get(&(piece_idx, raw)) == Some(&hs) {
                     continue;
                 }
                 last_h_stamp.insert((piece_idx, raw), hs);
                 let p_raw = slice_read_value(&slice_reader, sample_col, TableId::Projects, raw);
-                let ps = custody.usable(raw, p_raw, projects_complete, hour);
+                let ps = custody.usable(raw, p_raw, &projects_complete, hour);
                 let Some(held) = history_by_owner.get(&raw) else { continue };
                 let cursors = history_cursors
                     .entry((piece_idx, raw))
@@ -1414,7 +1410,7 @@ fn see_run_evidence(
                 let mut introduces = false;
                 for (&(_, project), entries) in &listed {
                     for (at, &entry) in entries.iter().enumerate() {
-                        if seen.insert((tag.clone(), piece.slot, piece.id, raw, project, entry)) {
+                        if seen.insert((*tag_id, piece.slot, piece.id, raw, project, entry)) {
                             introduces = true;
                             if entry.completion()
                                 && at + 1 == entries.len()
@@ -1459,7 +1455,7 @@ fn see_run_evidence(
     let mut histories_read: BTreeMap<u32, i32> = BTreeMap::new();
     let mut rows: Vec<(Row, i32)> = Vec::new();
     for hit in hits {
-        let (tag, piece, custody, _) = &prepared[hit.piece_idx];
+        let (_, tag, piece, custody, _) = &prepared[hit.piece_idx];
         histories_read.clear();
         histories_read.insert(hit.raw, hit.h_stamp);
         projects_read.clear();
@@ -1488,29 +1484,82 @@ fn see_run_evidence(
     Ok(())
 }
 
+fn slot_tag_index<'a>(query: &'a Query<'_>) -> HashMap<u32, Vec<(&'a str, Vec<(i32, i32)>)>> {
+    let mut grouped: HashMap<u32, HashMap<&str, Vec<(i32, i32)>>> = HashMap::new();
+    for (tag, runs) in &query.holders.tags {
+        for run in runs {
+            if let Holder::Found { slot, .. } = run.holder {
+                grouped.entry(slot).or_default().entry(tag.as_str()).or_default().push((run.first, run.last));
+            }
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|(slot, by_tag)| {
+            let list = by_tag
+                .into_iter()
+                .map(|(tag, mut spans)| {
+                    spans.sort_unstable();
+                    (tag, spans)
+                })
+                .collect();
+            (slot, list)
+        })
+        .collect()
+}
+
+fn span_contains(spans: &[(i32, i32)], hour: i32) -> bool {
+    let at = spans.partition_point(|&(_, last)| last < hour);
+    spans.get(at).is_some_and(|&(first, _)| first <= hour)
+}
+
+#[cfg(test)]
 fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<Counted>, Vec<HourSpan>)> {
+    counted_with(None, query, from, to, cancelled)
+}
+
+fn counted_with(source: Option<&Source>, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<Counted>, Vec<HourSpan>)> {
     let recording = query.replay.recording();
     let mut unrecorded: Vec<HourSpan> = Vec::new();
-    let mut links: HashMap<u32, RunLinks> = HashMap::new();
+    let mut cached_links: HashMap<u32, Arc<RunLinks>> = HashMap::new();
     let mut tags: BTreeSet<String> = BTreeSet::new();
     let mut scanned_histories: HashMap<u32, (i32, i32, History)> = HashMap::new();
+    let by_slot = slot_tag_index(query);
+    let get_links = |cached: &mut HashMap<u32, Arc<RunLinks>>, run: u32| -> io::Result<Arc<RunLinks>> {
+        if let Some(held) = cached.get(&run) {
+            return Ok(Arc::clone(held));
+        }
+        let loaded = match source {
+            Some(source) => dashboard_base::queries::links(source, run)?,
+            None => Arc::new(dashboard_query::cost::storage(|| country_ids::run_links(recording, run))?),
+        };
+        cached.insert(run, Arc::clone(&loaded));
+        Ok(loaded)
+    };
     for stretch in query.timeline.within(from, to) {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let held = available(query, stretch.run, TableId::ProjectHistory, stretch.first, stretch.last)?;
         unrecorded.extend(uncovered(&held, stretch.first, stretch.last).into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }));
         let history = dashboard_query::cost::storage(|| lanes::history(recording, stretch.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, stretch.first, stretch.last))?;
-        let run_links = links_of(query, &mut links, stretch.run)?;
+        let mut run_links: Option<Arc<RunLinks>> = None;
         for (key, steps) in &history.keys {
             for step in steps {
                 let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*key as u32, cells)) else { continue };
                 if !entry.completion() || !(from..=to).contains(&entry.date) {
                     continue;
                 }
-                let Some(slot) = run_links.slot_at((key >> 64) as u32, step.hour) else { continue };
-                let holds = |runs: &[dashboard_query::identity::HolderRun]| {
-                    runs.iter().any(|run| run.first <= step.hour && step.hour <= run.last && matches!(run.holder, Holder::Found { slot: held, .. } if held == slot))
+                let links = match &run_links {
+                    Some(links) => links,
+                    None => run_links.insert(get_links(&mut cached_links, stretch.run)?),
                 };
-                tags.extend(query.holders.tags.iter().filter(|(_, runs)| holds(runs)).map(|(tag, _)| tag.clone()));
+                let Some(slot) = links.slot_at((key >> 64) as u32, step.hour) else { continue };
+                if let Some(holders) = by_slot.get(&slot) {
+                    for (tag, spans) in holders {
+                        if !tags.contains(*tag) && span_contains(spans, step.hour) {
+                            tags.insert((*tag).to_owned());
+                        }
+                    }
+                }
             }
         }
         if let std::collections::hash_map::Entry::Vacant(slot) = scanned_histories.entry(stretch.run) {
@@ -1529,16 +1578,17 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
             at
         });
     }
-    let mut by_run: Vec<Vec<(String, Piece)>> = (0..stretch_runs.len()).map(|_| Vec::new()).collect();
-    for tag in &tags {
+    let mut by_run: Vec<Vec<(usize, String, Piece)>> = (0..stretch_runs.len()).map(|_| Vec::new()).collect();
+    for (tag_id, tag) in tags.iter().enumerate() {
         let (pieces, _) = pieces(query, &Country::Tag(tag.clone()), query.timeline.first, to);
         for piece in pieces {
             if let Some(&order) = run_order.get(&piece.run) {
-                by_run[order].push((tag.clone(), piece));
+                by_run[order].push((tag_id, tag.clone(), piece));
             }
         }
     }
     let mut tag_facts: BTreeMap<String, Facts> = BTreeMap::new();
+    let mut seen: std::collections::HashSet<(usize, u32, u32, u32, u32, Entry)> = std::collections::HashSet::new();
     let sample = read_columns()?;
     for (order, batch) in by_run.into_iter().enumerate() {
         if batch.is_empty() {
@@ -1546,18 +1596,18 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
         }
         dashboard_text::metadata::check_cancel(cancelled)?;
         let run = stretch_runs[order];
-        let run_links = links_of(query, &mut links, run)?;
+        let run_links = get_links(&mut cached_links, run)?;
         let mut run_reach = i32::MAX;
         let mut run_last = i32::MIN;
         let mut all_owners: BTreeSet<u32> = BTreeSet::new();
-        let mut prepared: Vec<(String, Piece, Custody, Vec<u32>)> = Vec::with_capacity(batch.len());
-        for (tag, piece) in batch {
+        let mut prepared: Vec<(usize, String, Piece, Custody, Vec<u32>)> = Vec::with_capacity(batch.len());
+        for (tag_id, tag, piece) in batch {
             run_reach = run_reach.min(piece.reach());
             run_last = run_last.max(piece.last);
-            let custody = Custody::new(run_links, piece.slot, piece.held_from, piece.last);
+            let custody = Custody::new(&run_links, piece.slot, piece.held_from, piece.last);
             let owners: Vec<u32> = custody.owners.iter().filter(|(_, spans)| spans.iter().any(|&(_, last)| last >= piece.reach())).map(|(&raw, _)| raw).collect();
             all_owners.extend(&owners);
-            prepared.push((tag, piece, custody, owners));
+            prepared.push((tag_id, tag, piece, custody, owners));
         }
         let history = match scanned_histories.remove(&run) {
             Some((first, last, history)) if first <= run_reach && run_last <= last => history,
@@ -1589,9 +1639,7 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
             }
         }
         let held_run = recording.run(run)?;
-        let projects_complete = available(query, run, TableId::Projects, run_reach, run_last)?;
-        let history_complete = available(query, run, TableId::ProjectHistory, run_reach, run_last)?;
-        see_run_evidence(&mut tag_facts, query.timeline.first, recording, run, held_run, &prepared, &history_by_owner, from, to, &sample, &projects_complete, &history_complete, cancelled)?;
+        see_run_evidence(&mut tag_facts, &mut seen, query, query.timeline.first, recording, run, held_run, &prepared, &history_by_owner, from, to, run_reach, run_last, &sample, cancelled)?;
     }
     let mut found: BTreeMap<(u32, u32, u32, i32), Counted> = BTreeMap::new();
     for (tag, facts) in tag_facts {
@@ -1667,7 +1715,7 @@ fn spell_completions(query: &Query<'_>, found: &[Counted], cancelled: &AtomicBoo
 
 pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Completions> {
     let content = content(source, load)?;
-    let (mut found, unrecorded) = counted(query, from, to, cancelled)?;
+    let (mut found, unrecorded) = counted_with(Some(source), query, from, to, cancelled)?;
     found.sort_by_key(|counted| (counted.read, counted.owner, counted.local, counted.entry.ordinal, counted.entry.date));
     let spelled = spell_completions(query, &found, cancelled)?;
     let mut naming = Naming::new(&content);

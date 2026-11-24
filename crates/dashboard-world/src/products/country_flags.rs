@@ -899,6 +899,26 @@ impl FlagFolders {
         Ok(())
     }
 
+    pub fn warm_all(&self, chains: &[Chain]) {
+        if chains.len() <= 1 {
+            for chain in chains {
+                let _ = self.warm(chain);
+            }
+            return;
+        }
+        let workers = std::thread::available_parallelism().map_or(4, usize::from).min(8).min(chains.len());
+        let chunk = chains.len().div_ceil(workers);
+        std::thread::scope(|scope| {
+            for part in chains.chunks(chunk) {
+                scope.spawn(move || {
+                    for chain in part {
+                        let _ = self.warm(chain);
+                    }
+                });
+            }
+        });
+    }
+
     pub fn choose(&self, chain: &Chain) -> io::Result<CountryFlagChoice> {
         let (slot, _) = self.slot(chain)?;
         match slot.get_or_init(|| self.search(chain).ok()) {

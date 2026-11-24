@@ -4,6 +4,7 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_land::registrations::ARMY_TEMPLATEROSTER,
     dashboard_air::registrations::AIR_STATISTICS_AIRSTATISTICSAT,
     dashboard_politics::registrations::POLITICS_STATE_POLITICSSTATE,
+    dashboard_politics::registrations::POLITICS_ELECTIONS_NEXTELECTIONS,
     dashboard_politics::registrations::COUNTRY_PEOPLE_COUNTRYPEOPLE,
     dashboard_world::registrations::TERRITORY_TERRITORYSHARE,
     dashboard_world::registrations::TERRITORY_TERRITORYBREAKDOWN,

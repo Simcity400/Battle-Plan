@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SpriteCaches, spriteFrames, spriteIcons, spriteId } from './spriteArtwork.ts';
+import { SPRITE_BATCH, SpriteCaches, spriteFrames, spriteIcons, spriteId } from './spriteArtwork.ts';
 
 const png = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
 
@@ -68,4 +68,31 @@ test('two recordings mounting together keep their own icons whatever order their
   b.set('icon', png);
   assert.equal(caches.icons('b').get('icon'), png);
   releaseA(); releaseB();
+});
+
+test('sprite requests from multiple callers in the same tick coalesce into bounded batches without duplicate or cancelled calls', async () => {
+  const caches = new SpriteCaches();
+  const release = caches.hold('s');
+  const calls: number[] = [];
+  let aborted = 0;
+  const fetcher = async (batch: readonly { key: string; frame: number }[], signal: AbortSignal) => {
+    calls.push(batch.length);
+    signal.addEventListener('abort', () => { aborted++; });
+    await Promise.resolve();
+    return { items: batch.map(item => ({ ...item, icon: png })), warnings: [] };
+  };
+  const first = Array.from({ length: 10 }, (_, i) => ({ key: `GFX_${i}`, frame: 0 }));
+  const second = Array.from({ length: 10 }, (_, i) => ({ key: `GFX_${i + 5}`, frame: 0 }));
+  const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  caches.request('s', first, fetcher);
+  caches.request('s', second, fetcher);
+  await flush();
+  assert.deepEqual(calls, [15]);
+  assert.equal(aborted, 0);
+  assert.equal(caches.icons('s').get(spriteId({ key: 'GFX_14', frame: 0 })), png);
+  const large = Array.from({ length: SPRITE_BATCH + 10 }, (_, i) => ({ key: `GFX_L_${i}`, frame: 0 }));
+  caches.request('s', large, fetcher);
+  await flush();
+  assert.deepEqual(calls, [15, SPRITE_BATCH, 10]);
+  release();
 });

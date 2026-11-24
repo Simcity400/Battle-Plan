@@ -31,6 +31,7 @@ interface Drawings {
   asked: Set<string>;
   queue: Map<string, { recording: DashboardSource; size: CountryFlagSize; choices: Map<string, CountryFlagChoice> }>;
   running: number;
+  pumpScheduled: boolean;
   controllers: Set<{ sourceId: string; controller: AbortController }>;
   watchers: Set<(drawn: ReadonlySet<string>) => void>;
   told: Set<string> | null;
@@ -52,7 +53,7 @@ function drawings(client: DashboardClient, content: number): Drawings {
   let state = states.get(client);
   if (state && state.content === content) return state;
   for (const { controller } of state?.controllers ?? []) controller.abort();
-  const fresh: Drawings = { content, entries: new Map(), failures: new Map(), asked: new Set(), queue: new Map(), running: 0, controllers: new Set(),
+  const fresh: Drawings = { content, entries: new Map(), failures: new Map(), asked: new Set(), queue: new Map(), running: 0, pumpScheduled: false, controllers: new Set(),
     watchers: state?.watchers ?? new Set(), told: null };
   states.set(client, fresh);
   return fresh;
@@ -94,7 +95,13 @@ export function drawFlags(client: DashboardClient, recording: DashboardSource, c
     if (!queued) state.queue.set(group, queued = { recording, size, choices: new Map() });
     queued.choices.set(key, choice);
   }
-  pump(client, state);
+  if (!state.pumpScheduled) {
+    state.pumpScheduled = true;
+    queueMicrotask(() => {
+      state.pumpScheduled = false;
+      if (states.get(client) === state) pump(client, state);
+    });
+  }
 }
 
 function pump(client: DashboardClient, state: Drawings): void {
@@ -144,7 +151,13 @@ async function draw(client: DashboardClient, state: Drawings, recording: Dashboa
     }
     tell(state, key);
   });
-  pump(client, state);
+  if (!state.pumpScheduled) {
+    state.pumpScheduled = true;
+    queueMicrotask(() => {
+      state.pumpScheduled = false;
+      if (states.get(client) === state) pump(client, state);
+    });
+  }
 }
 
 export function watchFlagDrawings(client: DashboardClient, watcher: (drawn: ReadonlySet<string>) => void): () => void {

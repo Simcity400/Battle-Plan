@@ -345,12 +345,12 @@ pub fn reply(query: &Query<'_>, params: &NavalLossesParams, cancelled: &AtomicBo
     };
     let Some(range) = interval else { return Ok(reply) };
     let (first, last) = (range.first_hour, range.last_hour);
-    let stretch = query.timeline.at(first).ok_or_else(|| invalid("The window's hours are not recorded"))?;
-    let run = stretch.run;
+    let stretches: Vec<_> = query.timeline.within(first, last).collect();
+    let last_stretch = stretches.last().copied().ok_or_else(|| invalid("The window's hours are not recorded"))?;
     let series = dashboard_declare::series("naval-losses").ok_or_else(|| invalid("naval-losses is not declared"))?;
     let line = Line::new(query, series, series.measure("total").ok_or_else(|| invalid("naval-losses has no total"))?)?;
     let tags: Vec<Country> = match params.top {
-        Some(top) => ranked(query, run, params, last, top, &mut reply.warnings)?.into_iter().map(Country::from).collect(),
+        Some(top) => ranked(query, last_stretch.run, params, last_stretch.last, top, &mut reply.warnings)?.into_iter().map(Country::from).collect(),
         None => {
             let mut seen = BTreeSet::new();
             params.countries.iter().filter(|tag| seen.insert((*tag).clone())).cloned().collect()
@@ -359,37 +359,51 @@ pub fn reply(query: &Query<'_>, params: &NavalLossesParams, cancelled: &AtomicBo
     let mut held: BTreeMap<Country, Vec<Part>> = BTreeMap::new();
     for tag in &tags {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        held.insert(tag.clone(), line.parts(tag, first, last).into_iter().filter(|part| part.run == run).collect());
+        held.insert(tag.clone(), line.parts(tag, first, last));
     }
     let kinds = params.kind.kinds();
     let attribution = params.attribution.code();
-    let mut keys: Vec<u128> = held.values().flatten().flat_map(|part| kinds.iter().map(move |&kind| row_key(Key::Holder.of(part.slot, part.id), attribution, kind))).collect();
-    keys.sort_unstable();
-    keys.dedup();
-    let from = match params.period {
-        NavalPeriod::Running => first,
-        NavalPeriod::Month => (month_start(first) - 1).clamp(stretch.first, first),
-    };
     let recording = query.replay.recording();
-    let counts = Counts::read(recording, run, kinds, &keys, from, last)?;
-    for (tag, parts) in &held {
+    let mut runs_by_tag: BTreeMap<Country, Vec<ForceRun>> = BTreeMap::new();
+    for stretch in &stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let mut runs = Vec::new();
-        for part in parts {
-            let (lo, hi) = (first.max(part.first), last.min(part.last));
-            if lo <= hi {
-                part_runs(part, lo, hi, &counts, params, &mut runs);
+        let mut keys: Vec<u128> = held
+            .values()
+            .flatten()
+            .filter(|part| part.run == stretch.run)
+            .flat_map(|part| kinds.iter().map(move |&kind| row_key(Key::Holder.of(part.slot, part.id), attribution, kind)))
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let full_first = query.timeline.at(stretch.first).map_or(stretch.first, |held| held.first);
+        let from = match params.period {
+            NavalPeriod::Running => stretch.first,
+            NavalPeriod::Month => (month_start(stretch.first) - 1).clamp(full_first, stretch.first),
+        };
+        let counts = Counts::read(recording, stretch.run, kinds, &keys, from, stretch.last)?;
+        for (tag, parts) in &held {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let runs = runs_by_tag.entry(tag.clone()).or_default();
+            for part in parts.iter().filter(|part| part.run == stretch.run) {
+                let (lo, hi) = (stretch.first.max(part.first), stretch.last.min(part.last));
+                if lo <= hi {
+                    part_runs(part, lo, hi, &counts, params, runs);
+                }
             }
         }
+        warn(recording, stretch.run, kinds, &keys, stretch.first, stretch.last, &mut reply.warnings)?;
+    }
+    for (tag, parts) in &held {
         reply.series.push(ForceSeries {
             country: tag.clone(),
             identities: if params.top.is_none() { forces::identities(parts) } else { Vec::new() },
-            runs,
+            runs: runs_by_tag.remove(tag).unwrap_or_default(),
             segments: forces::segments(query, tag, first, last),
             membership: params.top.map(|_| vec![ArmySpan { first_hour: first, last_hour: last }]),
         });
     }
-    warn(recording, run, kinds, &keys, first, last, &mut reply.warnings)?;
+    let mut seen_warnings = BTreeSet::new();
+    reply.warnings.retain(|warning| seen_warnings.insert(warning.clone()));
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)
 }

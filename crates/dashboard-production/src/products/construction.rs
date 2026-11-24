@@ -297,19 +297,11 @@ pub fn run_lines(source: &Source, run: u32) -> io::Result<RunLines> {
     Ok(RunLines { lines })
 }
 
-pub fn windows(query: &Query<'_>) -> io::Result<Vec<(u32, BattleWindow)>> {
-    let recording = query.replay.recording();
-    let mut out = Vec::new();
-    for stretch in &query.timeline.stretches {
-        let run = recording.run(stretch.run)?;
-        let (Some(first), Some(last)) = (run.ordinal(stretch.first), run.ordinal(stretch.last)) else { continue };
-        for block in run.place(first).0..=run.place(last).0 {
-            let start = run.block_first_hour(block);
-            let end = start + run.block(block as usize).1 as i32 - 1;
-            out.push((stretch.run, BattleWindow { first_hour: start.max(stretch.first), last_hour: end.min(stretch.last) }));
-        }
-    }
-    Ok(out)
+pub fn windows(query: &Query<'_>) -> io::Result<Vec<BattleWindow>> {
+    Ok(dashboard_world::products::army_windows::windows(query)?
+        .into_iter()
+        .map(|span| BattleWindow { first_hour: span.first_hour, last_hour: span.last_hour })
+        .collect())
 }
 
 pub fn recorded(query: &Query<'_>) -> io::Result<bool> {

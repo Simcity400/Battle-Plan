@@ -34,20 +34,103 @@ export function spriteIcons(reply: unknown, asked: readonly SpriteFrame[]): Map<
   return icons;
 }
 
-export class SpriteCaches {
-  private scopes = new Map<string, { users: number; icons: Map<string, string | null> }>();
+export const SPRITE_BATCH = 64;
+export const MAX_SPRITE_CONCURRENCY = 2;
 
-  private held(scope: string) {
+export type SpriteFetcher = (sprites: readonly SpriteFrame[], signal: AbortSignal) => Promise<unknown>;
+
+interface SpriteScope {
+  users: number;
+  icons: Map<string, string | null>;
+  inFlight: Set<string>;
+  queued: Map<string, SpriteFrame>;
+  watchers: Set<(icons: ReadonlyMap<string, string | null>) => void>;
+  controllers: Set<AbortController>;
+  scheduled: boolean;
+  running: number;
+}
+
+export class SpriteCaches {
+  private scopes = new Map<string, SpriteScope>();
+
+  private held(scope: string): SpriteScope {
     let held = this.scopes.get(scope);
-    if (!held) { held = { users: 0, icons: new Map() }; this.scopes.set(scope, held); }
+    if (!held) {
+      held = { users: 0, icons: new Map(), inFlight: new Set(), queued: new Map(), watchers: new Set(), controllers: new Set(), scheduled: false, running: 0 };
+      this.scopes.set(scope, held);
+    }
     return held;
   }
 
   icons(scope: string): Map<string, string | null> { return this.held(scope).icons; }
 
+  watch(scope: string, watcher: (icons: ReadonlyMap<string, string | null>) => void): () => void {
+    const held = this.held(scope);
+    held.watchers.add(watcher);
+    return () => { held.watchers.delete(watcher); };
+  }
+
+  request(scope: string, sprites: readonly SpriteFrame[], fetch: SpriteFetcher): void {
+    const held = this.held(scope);
+    let added = false;
+    for (const sprite of sprites) {
+      const id = spriteId(sprite);
+      if (held.icons.has(id) || held.inFlight.has(id)) continue;
+      held.inFlight.add(id);
+      held.queued.set(id, sprite);
+      added = true;
+    }
+    if (!added || held.scheduled) return;
+    held.scheduled = true;
+    queueMicrotask(() => {
+      held.scheduled = false;
+      if (this.scopes.get(scope) !== held) return;
+      this.pump(scope, held, fetch);
+    });
+  }
+
+  private pump(scope: string, held: SpriteScope, fetch: SpriteFetcher): void {
+    while (held.running < MAX_SPRITE_CONCURRENCY && held.queued.size > 0) {
+      const entries = [...held.queued.entries()].slice(0, SPRITE_BATCH);
+      for (const [id] of entries) held.queued.delete(id);
+      const batch = entries.map(([, sprite]) => sprite);
+      const ids = entries.map(([id]) => id);
+      const controller = new AbortController();
+      held.controllers.add(controller);
+      held.running++;
+      void fetch(batch, controller.signal).then(reply => {
+        if (controller.signal.aborted || this.scopes.get(scope) !== held) return;
+        const resolved = spriteIcons(reply, batch);
+        for (const id of ids) {
+          held.inFlight.delete(id);
+          held.icons.set(id, resolved.get(id) ?? null);
+        }
+        for (const watcher of [...held.watchers]) watcher(held.icons);
+      }).catch(() => {
+        if (this.scopes.get(scope) !== held) return;
+        for (const id of ids) {
+          held.inFlight.delete(id);
+          if (!controller.signal.aborted && !held.icons.has(id)) held.icons.set(id, null);
+        }
+      }).finally(() => {
+        held.controllers.delete(controller);
+        held.running--;
+        if (this.scopes.get(scope) === held) this.pump(scope, held, fetch);
+      });
+    }
+  }
+
   hold(scope: string): () => void {
     const held = this.held(scope);
     held.users++;
-    return () => { if (--held.users === 0 && this.scopes.get(scope) === held) this.scopes.delete(scope); };
+    return () => {
+      if (--held.users === 0 && this.scopes.get(scope) === held) {
+        for (const controller of held.controllers) controller.abort();
+        held.controllers.clear();
+        held.queued.clear();
+        held.inFlight.clear();
+        this.scopes.delete(scope);
+      }
+    };
   }
 }

@@ -3,7 +3,7 @@ import type { DashboardClient, DashboardSource, ProductRequest } from '../../das
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { useHeldFailures } from '../../dashboard/heldFailures.ts';
 import { loadProduct } from '../../dashboard/products';
-import type { ProductWindows } from '../../dashboard/productWindows';
+import { MAX_WINDOW_CONCURRENCY, type ProductWindows } from '../../dashboard/productWindows.ts';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { withWindowEntries } from '../../dashboard/windowMap.ts';
 
@@ -26,7 +26,8 @@ export function useFrameWindows<T>(client: DashboardClient, identity: string | n
   useEffect(() => {
     if (!active || identity == null) return;
     const controller = new AbortController();
-    const asked = new Set<number>();
+    const inFlight = new Map<number, AbortController>();
+    const queued: number[] = [];
     const arrived: { data: [number, T][]; errors: [number, Failure][] } = { data: [], errors: [] };
     let scheduled = false;
     const commit = () => {
@@ -37,23 +38,56 @@ export function useFrameWindows<T>(client: DashboardClient, identity: string | n
       const keep = <V>(map: ReadonlyMap<number, V>) => new Map([...map].filter(([window]) => want.has(window)));
       setHeld(previous => previous.owner !== owner ? { owner, data: withWindowEntries(new Map(), data), errors: withWindowEntries(new Map(), errors), attempt: 0 }
         : { ...previous, data: withWindowEntries(keep(previous.data), data), errors: withWindowEntries(keep(previous.errors), errors) });
-      for (const window of asked) if (!want.has(window) && !data.some(([at]) => at === window) && !errors.some(([at]) => at === window)) asked.delete(window);
+    };
+    const pump = () => {
+      if (controller.signal.aborted) return;
+      while (inFlight.size < MAX_WINDOW_CONCURRENCY && queued.length > 0) {
+        const window = queued.shift()!;
+        const now = shown.current;
+        if (inFlight.has(window) || now?.data.has(window) || now?.errors.has(window)) continue;
+        const item = new AbortController();
+        inFlight.set(window, item);
+        void loadProduct<T>(client, latest.current.request(window), item.signal, latest.current.validate, latest.current.source, attempt > 0, undefined, undefined, true).then(
+          data => { if (!item.signal.aborted && !controller.signal.aborted) { arrived.data.push([window, data]); if (!scheduled) { scheduled = true; inFrame(commit); } } },
+          error => { if (!item.signal.aborted && !controller.signal.aborted) { arrived.errors.push([window, asFailure(error)]); if (!scheduled) { scheduled = true; inFrame(commit); } } },
+        ).finally(() => {
+          inFlight.delete(window);
+          pump();
+        });
+      }
     };
     const run = () => {
       const now = shown.current;
-      for (const window of latest.current.wanted()) {
-        if (asked.has(window) || now?.data.has(window) || now?.errors.has(window)) continue;
-        asked.add(window);
-        void loadProduct<T>(client, latest.current.request(window), controller.signal, latest.current.validate, latest.current.source, attempt > 0, undefined, undefined, true).then(
-          data => { if (!controller.signal.aborted) { arrived.data.push([window, data]); if (!scheduled) { scheduled = true; inFrame(commit); } } },
-          error => { if (!controller.signal.aborted) { arrived.errors.push([window, asFailure(error)]); if (!scheduled) { scheduled = true; inFrame(commit); } } },
-        );
+      const wantedList = latest.current.wanted();
+      const want = new Set(wantedList);
+      for (const [window, item] of inFlight) {
+        if (!want.has(window)) {
+          item.abort();
+          inFlight.delete(window);
+        }
       }
+      for (let i = queued.length - 1; i >= 0; i--) {
+        if (!want.has(queued[i])) queued.splice(i, 1);
+      }
+      const pending = new Set(queued);
+      for (const window of wantedList) {
+        if (inFlight.has(window) || pending.has(window) || now?.data.has(window) || now?.errors.has(window)) continue;
+        queued.push(window);
+        pending.add(window);
+      }
+      pump();
     };
     check.current = run;
     run();
     const stop = subscribe(run);
-    return () => { stop(); controller.abort(); check.current = () => {}; };
+    return () => {
+      stop();
+      controller.abort();
+      for (const item of inFlight.values()) item.abort();
+      inFlight.clear();
+      queued.length = 0;
+      check.current = () => {};
+    };
   }, [owner, active, attempt]);
   useEffect(() => { check.current(); });
   const data = current?.data, errors = current?.errors;
