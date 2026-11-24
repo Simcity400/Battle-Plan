@@ -28,7 +28,7 @@ import { barsHostAdapter } from './hostAdapter.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
-import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
 import { buildShareRowsModel } from './shareRows.ts';
 
 const THEME: FamilyTheme = {
@@ -449,8 +449,18 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
     const state = new Map<string, unknown>();
     let seq = 0;
     const content = () => `c${++seq}`;
-    const options: Record<string, never> = {};
-    const sources = {};
+    const model = new LaneTransport().carry({
+      family: 'bars',
+      kind: 'test-bars-1500',
+      options: {},
+      sources: {},
+      width: 480,
+      height: 240,
+      scrollTop: 0,
+      theme: THEME,
+      audit: true,
+      auditId: 7,
+    } satisfies FamilyBarsBinding<Record<string, never>>);
     const mkInput = (hour: number, speed: number, now: number): PaintInput => ({
       widget: 1,
       subs: [],
@@ -461,18 +471,7 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
       now,
       inspect: null,
       binding: { generation: 1, surfaces: [{ width: 480, height: 240, dpr: 1 }], offset: 0, pin: null },
-      model: {
-        family: 'bars',
-        kind: 'test-bars-1500',
-        options,
-        sources,
-        width: 480,
-        height: 240,
-        scrollTop: 0,
-        theme: THEME,
-        audit: true,
-        auditId: 7,
-      } satisfies FamilyBarsBinding<Record<string, never>>,
+      model,
     });
 
     const first = view.paint(mkInput(h, 24, 1000), state, content);
@@ -639,10 +638,10 @@ test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mi
     const state = new Map<string, unknown>();
     const options: Record<string, never> = {};
     let seq = 0;
+    const model = new LaneTransport().carry({ family: 'bars', kind: 'test-bars-hover', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME } satisfies FamilyBarsBinding<Record<string, never>>);
     const input = (inspect: string | null, now: number): PaintInput => ({
-      widget: 1, subs: [], pictures: [], hour: 50, seek: 0, speed: 24, now, inspect,
+      widget: 1, subs: [], pictures: [], hour: 50, seek: 0, speed: 24, now, inspect, model,
       binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
-      model: { family: 'bars', kind: 'test-bars-hover', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME } satisfies FamilyBarsBinding<Record<string, never>>,
     });
     const first = view.paint(input(null, 0), state, () => `c${++seq}`);
     const hovered = view.paint(input('row:K3', 16), state, () => `c${++seq}`);
