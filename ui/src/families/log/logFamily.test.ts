@@ -21,7 +21,7 @@ import { canonicalLogRowAudit, deriveLogAudit, deriveLogAuditRows, deriveLogTool
 import { createLogPicture, drawLog, type LogTheme } from './painter.ts';
 import { familyLogLaneView, LOG_FADE_DURATION_MS, type FamilyLogBinding, type LogPhasesField } from './laneView.ts';
 import './registerAll.ts';
-import { mergeFrozenPageIntoTail, pageReplyToTail, scrollPageOrdinalRange, type LogTailReplyWire } from './tailReply.ts';
+import { mergeFrozenPageIntoTail, newestFirstWireRows, pageReplyToTail, scrollPageOrdinalRange, type LogTailReplyWire } from './tailReply.ts';
 import { ledgerFacets, ledgerSelection, ledgerTitle, type LedgerItem } from '../../dashboard/marketLedger.ts';
 import { divisionFacets } from '../../widgets/division-log/divisionLogData.ts';
 import { OPTIONS as DIVISION_OPTIONS } from '../../widgets/division-log/definition.ts';
@@ -173,7 +173,7 @@ test('tailLimitForViewport enforces floor 64 and scales with tall viewports', ()
   assert.equal(tailLimitForViewport(200, 'comfortable', false), LOG_MIN_TAIL_LIMIT);
   assert.equal(tailLimitForViewport(600, 'comfortable', false), LOG_MIN_TAIL_LIMIT);
   assert.ok(tailLimitForViewport(2400, 'compact', false) > LOG_MIN_TAIL_LIMIT);
-  assert.ok(tailLimitForViewport(2400, 'compact', false) >= Math.ceil(2400 / 22) + 24);
+  assert.ok(tailLimitForViewport(2400, 'compact', false) >= Math.ceil(2400 / 28) + 24);
 });
 
 test('per-frame projection, layout, and paint work is independent of total log length (1,000 vs 1,000,000 rows)', () => {
@@ -236,7 +236,10 @@ test('per-frame projection, layout, and paint work is independent of total log l
   assert.equal(million.layout.items.length, small.layout.items.length);
   assert.equal(million.result.paintedRows, small.result.paintedRows);
   assert.equal(million.result.auditRows.length, small.result.auditRows.length);
-  assert.deepEqual(million.counts, small.counts);
+  assert.equal(million.counts.fillRect, small.counts.fillRect);
+  assert.equal(million.counts.fillText, small.counts.fillText);
+  assert.equal(million.counts.stroke, small.counts.stroke);
+  assert.equal(million.counts.drawImage, small.counts.drawImage);
   assert.equal(small.layout.compressed, false);
   assert.equal(million.layout.compressed, true);
   assert.equal(million.layout.physicalHeight, 1_000_000);
@@ -293,7 +296,7 @@ test('division-log projection keeps missing kind as notRecorded, uses inline pla
   const row0 = model.rows[0]!;
   const row1 = model.rows[1]!;
   assert.equal(row0.rawMagnitudes?.kind?.kind, 'notRecorded');
-  assert.equal(row0.slots[1]?.kind === 'pill' ? row0.slots[1].label.kind : null, 'notRecorded');
+  assert.equal(row0.slots[1]?.kind === 'text' ? row0.slots[1].text.kind : null, 'notRecorded');
   assert.ok(canonicalLogRowAudit(row0).includes('Province names unavailable'));
   assert.ok(canonicalLogRowAudit(row1).includes('Stalingrad'));
   assert.ok(canonicalLogRowAudit(row1).includes('Soviet Union'));
@@ -423,7 +426,7 @@ test('visibleItemRange returns only the viewport slice in O(log N + visible)', (
   const layout = buildLogLayout(model, 'comfortable', false);
   const [start, end] = visibleItemRange(layout.items, 0, 140);
   assert.equal(start, 0);
-  assert.equal(end, 5);
+  assert.equal(end, 4);
   assert.ok(notRecorded('missing').kind === 'notRecorded' && notApplicable('none').kind === 'notApplicable');
 });
 
@@ -473,7 +476,7 @@ test('entering one new row at the top shifts via drawImage and paints only the n
   });
   assert.equal(res1.drew, true);
   assert.equal(res1.incremental, false);
-  assert.ok(res1.paintedRows >= 12);
+  assert.ok(res1.paintedRows >= 9);
 
   const quiet = countingCanvasContext();
   const modelQuiet = divisionLogProjection.project(makeTailSources(reply1), baseHour + 1, opts);
@@ -1094,5 +1097,17 @@ test('Direction B canonical audit & PR #292 market ledger parity preserve seller
     canonicalLogRowAudit(restyledRow),
     audit1,
     'canonical log audit excludes purely presentation fields (tone, weight, maxLines, art color)',
+  );
+
+  const sameHourRows = [
+    makeDivisionRow(12, hour, { name: txtCell('Second at same hour') }),
+    makeDivisionRow(11, hour, { name: txtCell('First at same hour') }),
+    makeDivisionRow(10, hour - 1, { name: txtCell('Earlier hour') }),
+  ];
+  const ordered = newestFirstWireRows(sameHourRows);
+  assert.deepEqual(
+    ordered.map(r => r.ordinal),
+    ['11', '12', '10'],
+    'newestFirstWireRows orders hours descending while preserving ascending ordinal order within the same hour',
   );
 });

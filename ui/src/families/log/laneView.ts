@@ -1,6 +1,7 @@
 import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
+import type { MissingSpan } from '../../generated/dashboard';
 import { FamilyArtLoader, type FamilyArtFetcher } from '../artLoader.ts';
 import type { FamilyAuditField } from '../audit.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
@@ -77,6 +78,7 @@ export interface LogMetaField {
   readonly offset: number;
   readonly geometry: LogScrollGeometry;
   readonly facetPills: readonly LogFacetPill[];
+  readonly missing: readonly MissingSpan[];
   readonly warnings: readonly string[];
 }
 
@@ -460,6 +462,7 @@ export function familyLogLaneView(
           offset: 0,
           geometry: EMPTY_GEOMETRY,
           facetPills: [],
+          missing: [],
           warnings: [],
         };
         const sig = 'reading';
@@ -586,6 +589,7 @@ export function familyLogLaneView(
         .map(p => `${p.key}:${p.label}:${p.tone ?? ''}:${p.count.kind}:${p.count.kind === 'known' || p.count.kind === 'zero' || p.count.kind === 'partial' ? String(p.count.value) : ''}:${p.count.kind === 'notRecorded' || p.count.kind === 'notApplicable' || p.count.kind === 'partial' ? p.count.reason : ''}`)
         .join('|');
       const warnSig = (model.warnings ?? []).join('|');
+      const missingSig = model.gaps.map(g => `${g.firstHour}-${g.lastHour}:${g.reason}`).join('|');
       const meta: LogMetaField = {
         mode: isEmpty ? 'empty' : 'picture',
         reason: null,
@@ -602,9 +606,10 @@ export function familyLogLaneView(
         offset: model.offset,
         geometry: scrollGeometryOf(layout),
         facetPills: model.facetPills ?? [],
+        missing: model.gaps,
         warnings: model.warnings ?? [],
       };
-      const metaSig = `${meta.mode}|${meta.hour}|${meta.baseOrdinal}|${meta.total}|${meta.loadedCount}|${meta.offset}|${meta.logicalHeight}|${meta.physicalHeight}|${meta.rowHeight}|${pillsSig}|${warnSig}|${isEmpty ? model.empty.message : ''}`;
+      const metaSig = `${meta.mode}|${meta.hour}|${meta.baseOrdinal}|${meta.total}|${meta.loadedCount}|${meta.offset}|${meta.logicalHeight}|${meta.physicalHeight}|${meta.rowHeight}|${pillsSig}|${missingSig}|${warnSig}|${isEmpty ? model.empty.message : ''}`;
       if (metaSig !== held.metaSig || !held.metaField) {
         held.metaSig = metaSig;
         held.metaField = { value: meta, content: content() };

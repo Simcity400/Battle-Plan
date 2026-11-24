@@ -2,6 +2,7 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import {
   LEDGER_EMPTY,
   ledgerFigure,
+  ledgerIcon,
   ledgerPartyName,
   ledgerTitle,
   type AmountState,
@@ -20,6 +21,7 @@ import {
   cellText,
   columnIndex,
   isLogTailReply,
+  newestFirstWireRows,
   nonEmptyText,
   parseOrdinal,
 } from '../../families/log/tailReply.ts';
@@ -36,23 +38,23 @@ export interface MarketLedgerProjectionOptions {
 }
 
 const COLUMNS: readonly LogColumnTrack[] = [
-  { id: 'date', width: 68 },
-  { id: 'art', width: 24 },
+  { id: 'date', width: 58 },
+  { id: 'art', width: 28 },
   { id: 'body', flex: 1, minWidth: 160 },
-  { id: 'figure', width: 120, align: 'end', priority: 2 },
+  { id: 'figure', width: 76, align: 'end', priority: 2 },
 ];
 
-const KIND_COLOR: Readonly<Record<number, string>> = {
-  3: '#4c9aff',
-  4: '#f87171',
-  5: '#f59e0b',
-  6: '#f87171',
-  10: '#60a5fa',
-  11: '#34d399',
-  12: '#f87171',
-  20: '#4c9aff',
-  21: '#a78bfa',
-  34: '#4c9aff',
+const KIND_CATEGORY: Readonly<Record<number, number>> = {
+  3: 1,
+  4: 5,
+  5: 4,
+  6: 5,
+  10: 0,
+  11: 2,
+  12: 5,
+  20: 1,
+  21: 3,
+  34: 1,
 };
 
 function partyStateOf(cell: LogCell | undefined): PartyState {
@@ -142,9 +144,10 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
     const baseOrdinal = parseOrdinal(rawTail.baseOrdinal);
     const firstOrdinal = parseOrdinal(rawTail.firstOrdinal);
 
-    const rows: LogRowSpec[] = new Array(rawTail.rows.length);
-    for (let i = 0; i < rawTail.rows.length; i++) {
-      const wire = rawTail.rows[i]!;
+    const orderedRows = newestFirstWireRows(rawTail.rows);
+    const rows: LogRowSpec[] = new Array(orderedRows.length);
+    for (let i = 0; i < orderedRows.length; i++) {
+      const wire = orderedRows[i]!;
       rows[i] = rowCache.getOrProject(options.looks, wire, () => {
         const sellerCell = cellAt(wire, index, 'seller');
         const buyerCell = cellAt(wire, index, 'buyer');
@@ -245,8 +248,8 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
           key: wire.key,
           hour: wire.hour,
           ordinal: parseOrdinal(wire.ordinal),
-          art: item.kind !== null && KIND_COLOR[item.kind]
-            ? { color: KIND_COLOR[item.kind] }
+          art: item.kind !== null
+            ? { glyph: ledgerIcon(item.kind), color: `cat:${KIND_CATEGORY[item.kind] ?? 0}` }
             : { missingReason: 'Market event kind not recorded' },
           slots: [
             { kind: 'text', text: titleVal, weight: 'bold' },

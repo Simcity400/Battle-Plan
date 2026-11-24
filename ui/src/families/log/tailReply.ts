@@ -84,6 +84,28 @@ export function scrollPageOrdinalRange(baseOrdinal: number, total: number, offse
   };
 }
 
+export function compareOrdinalStrings(a: string | undefined, b: string | undefined): number {
+  const left = a ?? '0';
+  const right = b ?? '0';
+  if (left.length !== right.length) return left.length - right.length;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function newestFirstWireRows(rows: readonly LogPageRow[]): readonly LogPageRow[] {
+  if (rows.length <= 1) return rows;
+  let alreadyOrdered = true;
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1]!;
+    const cur = rows[i]!;
+    if (prev.hour < cur.hour || (prev.hour === cur.hour && compareOrdinalStrings(prev.ordinal, cur.ordinal) > 0)) {
+      alreadyOrdered = false;
+      break;
+    }
+  }
+  if (alreadyOrdered) return rows;
+  return [...rows].sort((a, b) => b.hour - a.hour || compareOrdinalStrings(a.ordinal, b.ordinal));
+}
+
 export function pageReplyToTail(
   page: LogPageReply,
   baseOrdinal: number,
@@ -97,7 +119,7 @@ export function pageReplyToTail(
     baseOrdinal: String(baseOrdinal),
     firstOrdinal: page.firstOrdinal,
     total: String(total),
-    rows: [...page.rows].reverse(),
+    rows: newestFirstWireRows(page.rows),
     facetTotals,
     missing: page.missing,
     warnings: page.warnings,

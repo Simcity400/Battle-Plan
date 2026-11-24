@@ -2,7 +2,7 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { MissingSpan } from '../../generated/dashboard';
 import type { FamilySources } from '../../families/contract.ts';
 import { logLookAt, type LogLooksMap, type LogProjection } from '../../families/log/declaration.ts';
-import type { LogColumnTrack, LogFacetPill, LogModel, LogRowSpec, LogTextPart, LogTone, LogTooltipField } from '../../families/log/model.ts';
+import type { LogColumnTrack, LogFacetPill, LogModel, LogRowSpec, LogTextPart, LogTooltipField } from '../../families/log/model.ts';
 import { registerLogProjection } from '../../families/log/registry.ts';
 import {
   cellAt,
@@ -11,12 +11,13 @@ import {
   columnIndex,
   facetTotalMap,
   isLogTailReply,
+  newestFirstWireRows,
   nonEmptyText,
   parseOrdinal,
 } from '../../families/log/tailReply.ts';
 import { LogRowProjectionCache } from '../../families/log/rowCache.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../../families/value.ts';
-import { divisionKindFromNumber, divisionStatus, type DivisionKind } from './divisionLogData.ts';
+import { divisionKindFromNumber, divisionStatus } from './divisionLogData.ts';
 
 export const DIVISION_LOG_PROJECTION_KIND = 'division-log';
 const rowCache = new LogRowProjectionCache();
@@ -33,20 +34,11 @@ export interface DivisionLogProjectionOptions {
 }
 
 const COLUMNS: readonly LogColumnTrack[] = [
-  { id: 'date', width: 68 },
+  { id: 'date', width: 58 },
   { id: 'art', width: 24 },
   { id: 'body', flex: 1, minWidth: 180 },
-  { id: 'status', width: 120, align: 'end', priority: 2 },
+  { id: 'status', width: 78, align: 'end', priority: 2 },
 ];
-
-function kindTone(kind: DivisionKind | null): LogTone {
-  switch (kind) {
-    case 'created': return 'positive';
-    case 'lost': return 'negative';
-    case 'transfer': return 'accent';
-    default: return 'muted';
-  }
-}
 
 function countryValue(
   looks: LogLooksMap,
@@ -201,9 +193,10 @@ export const divisionLogProjection: LogProjection<DivisionLogProjectionOptions> 
     const firstOrdinal = parseOrdinal(rawTail.firstOrdinal);
     const totals = facetTotalMap(rawTail);
 
-    const rows: LogRowSpec[] = new Array(rawTail.rows.length);
-    for (let i = 0; i < rawTail.rows.length; i++) {
-      const wire = rawTail.rows[i]!;
+    const orderedRows = newestFirstWireRows(rawTail.rows);
+    const rows: LogRowSpec[] = new Array(orderedRows.length);
+    for (let i = 0; i < orderedRows.length; i++) {
+      const wire = orderedRows[i]!;
       rows[i] = rowCache.getOrProject(options.looks, wire, () => {
         const readHour = cellNumber(cellAt(wire, index, 'readHour')) ?? wire.hour;
         const eventHour = cellNumber(cellAt(wire, index, 'hour')) ?? readHour;
@@ -257,7 +250,7 @@ export const divisionLogProjection: LogProjection<DivisionLogProjectionOptions> 
 
         const parts: LogTextPart[] = [
           { text: country.value, flag: tag ? country.look : undefined, weight: 'bold' },
-          { text: knownValue(': '), tone: 'muted' },
+          { text: knownValue(': '), weight: 'bold' },
           { text: nameVal, weight: 'bold' },
           { text: knownValue(' · '), tone: 'muted' },
           { text: templateVal, tone: 'muted' },
@@ -292,7 +285,7 @@ export const divisionLogProjection: LogProjection<DivisionLogProjectionOptions> 
           },
           slots: [
             { kind: 'rich', parts },
-            { kind: 'pill', label: statusVal, tone: kindTone(kind) },
+            { kind: 'text', text: statusVal, tone: 'muted' },
           ],
           rawMagnitudes: {
             kind: kindVal,

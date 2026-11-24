@@ -4,6 +4,8 @@ import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { useViewportHeight } from '../../charts/useChartTokens';
+import LogGaps from '../../charts/log/LogGaps.tsx';
+import type { MissingSpan } from '../../generated/dashboard';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -143,6 +145,25 @@ async function verifyLogAuditSnapshot<TOptions>(hour: number, snap: LogAuditSnap
   return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
 }
 
+function dedupeMissingSpans(spans: readonly MissingSpan[]): readonly MissingSpan[] {
+  if (spans.length <= 1) return spans;
+  const byRange = new Map<string, { firstHour: number; lastHour: number; reasons: string[] }>();
+  for (const span of spans) {
+    const key = `${span.firstHour}:${span.lastHour}`;
+    const held = byRange.get(key);
+    if (!held) {
+      byRange.set(key, { firstHour: span.firstHour, lastHour: span.lastHour, reasons: span.reason ? [span.reason] : [] });
+    } else if (span.reason && !held.reasons.includes(span.reason)) {
+      held.reasons.push(span.reason);
+    }
+  }
+  return [...byRange.values()].map(entry => ({
+    firstHour: entry.firstHour,
+    lastHour: entry.lastHour,
+    reason: entry.reasons.join('; '),
+  }));
+}
+
 function logFadeDisabled(): boolean {
   if ((globalThis as { __logNoFade?: boolean }).__logNoFade === true) return true;
   if (typeof localStorage !== 'undefined') {
@@ -175,6 +196,7 @@ export interface FamilyLogHostProps<TOptions> {
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
   readonly controls?: LogControlsSpec | null;
+  readonly gapsSubject?: string;
   readonly note?: ReactNode;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
@@ -193,6 +215,7 @@ interface LogHostMetaState {
   reason: string | null;
   failureOrigin: FailureOrigin;
   empty: LogMetaField['empty'];
+  missing: readonly MissingSpan[];
   warnings: readonly string[];
 }
 
@@ -216,6 +239,7 @@ export default function FamilyLogHost<TOptions>({
   pin,
   bounds,
   controls = null,
+  gapsSubject,
   note = null,
   selectedKey = null,
   onActivate,
@@ -277,6 +301,7 @@ export default function FamilyLogHost<TOptions>({
     reason: null,
     failureOrigin: 'local',
     empty: null,
+    missing: [],
     warnings: [],
   }));
   const metaSigRef = useRef('');
@@ -726,11 +751,13 @@ export default function FamilyLogHost<TOptions>({
       ) {
         lastMetaKeyRef.current = { mode: effectiveMode, reason, failureOrigin, rawMeta };
         const empty = rawMeta?.mode === 'empty' ? rawMeta.empty : null;
+        const missing = rawMeta?.missing ?? [];
         const warnings = rawMeta?.warnings ?? [];
-        const nextMetaSig = JSON.stringify([effectiveMode, reason, failureOrigin, empty?.kind ?? '', empty?.message ?? '', empty?.detail ?? '', warnings]);
+        const missingKey = missing.map(g => `${g.firstHour}-${g.lastHour}:${g.reason}`).join('|');
+        const nextMetaSig = JSON.stringify([effectiveMode, reason, failureOrigin, empty?.kind ?? '', empty?.message ?? '', empty?.detail ?? '', missingKey, warnings]);
         if (nextMetaSig !== metaSigRef.current) {
           metaSigRef.current = nextMetaSig;
-          setMeta({ mode: effectiveMode, reason, failureOrigin, empty, warnings });
+          setMeta({ mode: effectiveMode, reason, failureOrigin, empty, missing, warnings });
         }
       }
 
@@ -1048,6 +1075,7 @@ export default function FamilyLogHost<TOptions>({
         </div>
       )}
       {note && <p className="family-log-note">{note}</p>}
+      {gapsSubject && meta.missing.length > 0 && <LogGaps missing={dedupeMissingSpans(meta.missing)} until={lastHourRef.current} subject={gapsSubject} />}
       <div className="family-log-body">
         <div
           ref={scrollRef}

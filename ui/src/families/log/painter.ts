@@ -198,6 +198,41 @@ function drawFlag(
   return FLAG_W;
 }
 
+const GLYPH_PATHS: Readonly<Record<string, readonly { readonly d?: string; readonly cx?: number; readonly cy?: number; readonly r?: number }[]>> = {
+  'chart-bars': [{ d: 'M4 3.5v17h17' }, { d: 'M8 16V11M13 16V6M18 16V9' }],
+  anchor: [
+    { cx: 12, cy: 3.75, r: 2 },
+    { d: 'M13.75 5v1.5h2.75v2.75h-2.75v7.93A5 5 0 0 0 16.77 14l2.33-1.25.76 1.25a8 8 0 0 1-15.72 0l.76-1.25 2.33 1.25a5 5 0 0 0 3.02 3.18V9.25H7.5V6.5h2.75V5' },
+  ],
+  close: [{ d: 'm6.5 6.5 11 11m0-11-11 11' }],
+  search: [{ cx: 11, cy: 11, r: 6.5 }, { d: 'm20 20-4.2-4.2' }],
+  handshake: [{ d: 'm3 8 4-3 4 2 2-1 4 1 4 5-4 7-3 1-7-5-4-7ZM7 5l-3 7M17 7l4 5M11 7l-3 4 2 2 4-3 5 5M11 16l3 3M14 14l3 3' }],
+};
+
+const cachedPath2D = new Map<string, Path2D>();
+
+function path2DOf(d: string): Path2D | null {
+  if (typeof Path2D === 'undefined') return null;
+  let path = cachedPath2D.get(d);
+  if (!path) {
+    path = new Path2D(d);
+    cachedPath2D.set(d, path);
+  }
+  return path;
+}
+
+function resolveArtColor(color: string | undefined, theme: LogTheme): string | null {
+  if (!color) return null;
+  if (color.startsWith('cat:')) {
+    const idx = Number(color.slice(4));
+    if (Number.isInteger(idx) && idx >= 0 && theme.categories.length > 0) {
+      return theme.categories[idx % theme.categories.length] ?? theme.accent;
+    }
+    return theme.accent;
+  }
+  return color;
+}
+
 function drawArt(
   ctx: ValueCanvasContext,
   row: LogRowSpec,
@@ -208,7 +243,8 @@ function drawArt(
 ): void {
   const art = row.art;
   if (!art) return;
-  const size = Math.min(ICON_SIZE, Math.max(14, Math.floor(col.width)));
+  const maxBox = art.glyph ? 24 : ICON_SIZE;
+  const size = Math.min(maxBox, Math.max(14, Math.floor(col.width)));
   const x = Math.round(col.left + (col.width - size) / 2);
   const y = Math.round(middleY - size / 2);
   if (art.icon) {
@@ -218,18 +254,43 @@ function drawArt(
       return;
     }
   }
-  if (art.color) {
+  const color = resolveArtColor(art.color, theme);
+  if (color) {
     ctx.save();
-    ctx.fillStyle = art.color;
-    ctx.globalAlpha = 0.18;
+    const baseAlpha = ctx.globalAlpha;
+    ctx.fillStyle = color;
+    ctx.globalAlpha = baseAlpha * 0.14;
     ctx.beginPath();
-    ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
+    ctx.roundRect(x, y, size, size, 5);
     ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = art.color;
-    ctx.beginPath();
-    ctx.arc(x + size / 2, y + size / 2, 3.5, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.globalAlpha = baseAlpha;
+    const shapes = art.glyph ? GLYPH_PATHS[art.glyph] : undefined;
+    const rawCtx = ctx as unknown as CanvasRenderingContext2D;
+    if (shapes && typeof Path2D !== 'undefined' && typeof rawCtx.translate === 'function' && typeof rawCtx.scale === 'function') {
+      const iconPx = 14;
+      const scale = iconPx / 24;
+      rawCtx.translate(x + (size - iconPx) / 2, y + (size - iconPx) / 2);
+      rawCtx.scale(scale, scale);
+      rawCtx.strokeStyle = color;
+      rawCtx.lineWidth = 1.9;
+      rawCtx.lineCap = 'round';
+      rawCtx.lineJoin = 'round';
+      for (const shape of shapes) {
+        if (shape.d) {
+          const p = path2DOf(shape.d);
+          if (p) rawCtx.stroke(p);
+        } else if (shape.cx !== undefined && shape.cy !== undefined && shape.r !== undefined) {
+          rawCtx.beginPath();
+          rawCtx.arc(shape.cx, shape.cy, shape.r, 0, Math.PI * 2);
+          rawCtx.stroke();
+        }
+      }
+    } else {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x + size / 2, y + size / 2, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
     return;
   }
@@ -273,11 +334,25 @@ function drawBand(
       return;
     }
     case 'value': {
+      if (band.value.kind === 'notApplicable') return;
       const formatted = formatValueState(band.value, band.format);
+      const endAligned = (band.align ?? align) === 'end';
+      if (formatted.kind === 'known' || formatted.kind === 'zero') {
+        const font = fontOf(theme, size, endAligned ? VALUE_WEIGHT : LABEL_WEIGHT);
+        const fitted = fit(formatted.text, font, width);
+        if (!fitted) return;
+        ctx.font = font;
+        ctx.fillStyle = toneColor(theme, band.tone);
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = endAligned ? 'right' : 'left';
+        ctx.fillText(fitted, endAligned ? right : left, middleY);
+        ctx.textAlign = 'left';
+        return;
+      }
       drawFormattedValue(
         ctx,
         formatted,
-        { left, right, middle: middleY, endAligned: (band.align ?? align) === 'end', muted: band.tone === 'muted' },
+        { left, right, middle: middleY, endAligned, muted: band.tone === 'muted' },
         theme,
         measure,
         fit,
@@ -396,7 +471,7 @@ function drawBand(
         ctx.font = font;
         ctx.fillStyle = toneColor(theme, part.tone);
         ctx.fillText(text, x, middleY);
-        x += measure(text, font) + 3;
+        x += measure(text, font);
       }
       return;
     }
@@ -453,6 +528,7 @@ function paintItem(
   item: FlatLogItem,
   y: number,
   width: number,
+  density: LogDensity,
   twoLine: boolean,
   dateCol: ResolvedLogColumn | undefined,
   artCol: ResolvedLogColumn | undefined,
@@ -534,28 +610,24 @@ function paintItem(
     ctx.strokeRect(1, y + 1, width - 2, h - 2);
   }
 
-  ctx.strokeStyle = theme.lineSoft;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(0, y + h - 0.5);
-  ctx.lineTo(width, y + h - 0.5);
-  ctx.stroke();
-
   const middleY = y + h / 2;
   if (dateCol) {
     const parts = shortDateParts(row.hour);
     const dayText = row.by ? `by ${parts.day}` : parts.day;
-    const dayFont = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
+    const dayFont = fontOf(theme, theme.fontSize.small, LABEL_WEIGHT);
     const yearFont = fontOf(theme, Math.max(10, theme.fontSize.small - 1), LABEL_WEIGHT);
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
-    if (twoLine) {
+    if (twoLine || density === 'comfortable') {
       ctx.font = dayFont;
-      ctx.fillStyle = theme.text;
-      ctx.fillText(fitText(ctx, picture, dayText, dayFont, dateCol.width), dateCol.left, y + h * 0.34);
+      ctx.fillStyle = theme.muted;
+      ctx.fillText(fitText(ctx, picture, dayText, dayFont, dateCol.width), dateCol.left, y + h * 0.35);
       ctx.font = yearFont;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(parts.year, dateCol.left, y + h * 0.68);
+      const curAlpha = ctx.globalAlpha;
+      ctx.globalAlpha = curAlpha * 0.8;
+      ctx.fillText(parts.year, dateCol.left, y + h * 0.69);
+      ctx.globalAlpha = curAlpha;
     } else {
       const line = `${dayText} ${parts.year}`;
       ctx.font = dayFont;
@@ -699,7 +771,7 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
     }
   }
 
-  const columns = resolveLogColumns(model.columns, width);
+  const columns = resolveLogColumns(model.columns, width, 12, 10);
   const colById = new Map<string, ResolvedLogColumn>();
   for (const col of columns) colById.set(col.id, col);
   const dateCol = colById.get('date');
@@ -734,7 +806,7 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
         const y = Math.round(item.top - scrollTop);
         if (y + item.height <= stickyH || y >= height) continue;
         const alpha = item.kind === 'row' && rowAlphas ? (rowAlphas.get(item.row.key) ?? 1) : 1;
-        paintItem(ctx, picture, item, y, width, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons, alpha);
+        paintItem(ctx, picture, item, y, width, density, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons, alpha);
         visitedItems++;
         if (item.kind === 'row') paintedRows++;
         visIdx++;
@@ -758,7 +830,7 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
       const h = item.height;
       if (y + h <= stickyH || y >= height) continue;
       const alpha = item.kind === 'row' && rowAlphas ? (rowAlphas.get(item.row.key) ?? 1) : 1;
-      paintItem(ctx, picture, item, y, width, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons, alpha);
+      paintItem(ctx, picture, item, y, width, density, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons, alpha);
       visitedItems++;
       if (item.kind === 'row') paintedRows++;
     }

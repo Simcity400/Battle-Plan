@@ -3,13 +3,13 @@ import type { MissingSpan } from '../../generated/dashboard';
 import type { FlatLogItem, LogColumnTrack, LogDensity, LogModel } from './model.ts';
 
 export const LOG_ROW_HEIGHT: Record<LogDensity, number> = {
-  comfortable: 28,
-  compact: 22,
+  comfortable: 38,
+  compact: 28,
 };
 
 export const LOG_TWO_LINE_HEIGHT: Record<LogDensity, number> = {
   comfortable: 44,
-  compact: 36,
+  compact: 34,
 };
 
 export const LOG_MONTH_HEIGHT: Record<LogDensity, number> = {

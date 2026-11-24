@@ -288,6 +288,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
       pin={pinHour}
       bounds={bounds}
       controls={controls}
+      gapsSubject="Division events are not recorded whole"
       note={!losses && events !== 'created' ? 'Losses and transfers: Not in this recording.' : null}
       contextMenuItems={contextMenuItems}
       headerSlot={headerSlot}
