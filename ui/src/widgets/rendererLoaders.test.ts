@@ -61,7 +61,7 @@ test('every widget module loads with its registered lazy body and the catalogue 
       }
       if (renderer.usePresets) assert.equal(registered.usePresets, renderer.usePresets, `${meta.kind} presets are available on first catalogue open`);
     }
-    const { FAMILY_VIEWS: views, LEGACY_WIDGETS: legacy } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
+    const { FAMILY_VIEWS: views, LEGACY_WIDGETS: legacy, OPTION_CHOICES: kindChoices } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
     const legacyKeys = new Set((legacy as readonly { kind: string; view?: string }[]).map(item => viewKey(item.kind, item.view)));
     for (const entry of views as readonly FamilyViewEntry[]) {
       const key = viewKey(entry.kind, entry.view);
@@ -73,8 +73,6 @@ test('every widget module loads with its registered lazy body and the catalogue 
       assert.deepEqual([drawn?.family, drawn?.kind], [spec.declaration.family, spec.declaration.kind], named);
       assert.equal(drawn?.projection, spec.declaration.projection, named);
     }
-    const { LEGACY_WIDGETS: legacy } = await vite.ssrLoadModule('/ui/src/widgets/legacyManifest.ts');
-    const { OPTION_CHOICES: kindChoices } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
     const choiceHooks = new Map<string, Set<unknown>>();
     for (const entry of [...views as readonly FamilyViewEntry[], ...legacy as readonly { kind: string; view?: string }[]]) {
       const hooks = choiceHooks.get(entry.kind) ?? new Set<unknown>();
