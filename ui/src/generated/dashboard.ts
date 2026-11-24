@@ -1452,6 +1452,11 @@ export type RaidArtwork = { key: string, image: string | null, missing: string |
 export type RaidVictimSource = "completionCountry" | "fixedTarget" | "controllerAtFirstEndedRead" | "controllerAtObservedRead" | "captorAtFirstEndedRead" | "captorAtObservedRead";
 export type RaidEndedSource = "nativeEndDate" | "observedEndedRead";
 export type RaidVictimAt = { hour: number, tag: string | null, missing: string | null, source: RaidVictimSource | null, };
+export type RaidEndAt = { hour: number, endedHour: number, exact: boolean, source: RaidEndedSource,
+/**
+ * The raider slot's tag at the end.
+ */
+raider: string | null, };
 export type RaidPhaseRun = { firstHour: number, lastHour: number, firstExact: boolean, afterHour: number | null, raider: string | null, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null, };
 export type RaidPreparationRun = [number, number, number, number];
 export type RaidEpisode = {
@@ -1462,11 +1467,15 @@ id: string,
 /**
  * The first and last hour its row lived within the span.
  */
-firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, raiderSlot: number | null, launchedRaider: string | null, endedRaider: string | null, victim: string | null,
+firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, raiderSlot: number | null, launchedRaider: string | null, victim: string | null,
 /**
  * Why the victim is not named, when it is not.
  */
 victimMissing: string | null, victimSource: RaidVictimSource | null, victims: Array<RaidVictimAt>,
+/**
+ * The hour the raid type's spelling was first read; none, and no type, before it.
+ */
+raidTypeHour: number | null,
 /**
  * The raid type's token and its name in the reader's language.
  */
@@ -1474,15 +1483,23 @@ raidType: string | null, raidTypeName: string | null,
 /**
  * The sprite key into the reply's artwork, or why there is none.
  */
-icon: string | null, iconMissing: string | null, province: number | null, state: number | null,
+icon: string | null, iconMissing: string | null,
 /**
- * Its last phase and outcome.
+ * The hour the target's place was first read; none, and no place, before it.
+ */
+placeHour: number | null, province: number | null, state: number | null,
+/**
+ * Its last phase, and its last outcome read.
  */
 phase: number | null, phaseName: string | null, outcome: number | null, outcomeName: string | null, outcomeMissing: string | null,
 /**
  * Its phases over the span, in hour order.
  */
-runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean, endedHour: number | null, endedExact: boolean, endedSource: RaidEndedSource | null,
+runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean,
+/**
+ * What was known of its end, by the hour it was read: an observed end, then a native end date once read.
+ */
+ends: Array<RaidEndAt>,
 /**
  * The first read that saw it ended and successful: what a later read reveals is never counted before it.
  */
