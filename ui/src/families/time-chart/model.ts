@@ -1,5 +1,6 @@
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { AuditRow } from '../../draw/notifications.ts';
+import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ArtResult, BoundedSeries } from '../plan.ts';
 
 export { CHART_MEASURE_COLOURS };
@@ -31,6 +32,7 @@ export interface ChartEndLabel {
   readonly value: string;
   readonly exactValue?: string;
   readonly valueColor?: string;
+  readonly valueMuted?: boolean;
 }
 
 export interface ChartInlinePoint {
@@ -51,6 +53,7 @@ export interface TimeChartSeriesModel {
   readonly area?: boolean;
   readonly negRed?: boolean;
   readonly bounded?: BoundedSeries | null;
+  readonly valueScale?: number;
   readonly points?: readonly ChartInlinePoint[];
   readonly headValue?: number | null;
   readonly headHour?: number | null;
@@ -147,6 +150,11 @@ export interface ChartOverlayLabel {
   readonly color?: string;
 }
 
+export interface ChartHoverDetail {
+  readonly hour: number;
+  readonly items: readonly TooltipListItem[];
+}
+
 export type ChartValueFormat = 'number' | 'percent' | 'compact' | 'signed1' | 'power';
 
 export interface ChartYAxisSpec {
@@ -175,6 +183,7 @@ export interface TimeChartModel {
   readonly legend?: readonly ChartLegendEntry[];
   readonly overlays?: readonly ChartOverlayLabel[];
   readonly note?: string | null;
+  readonly hoverDetail?: ChartHoverDetail | null;
   readonly warnings?: readonly string[];
   readonly empty?: {
     readonly message: string;
