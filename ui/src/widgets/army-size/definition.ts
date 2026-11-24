@@ -5,7 +5,7 @@ import type { WidgetOptions, OptionField } from '../../dashboard/options';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race', choices: [
-    { value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' },
+    { value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines' },
     { value: 'mix', label: 'Battalion mix' }, { value: 'breakdown', label: 'Army breakdown' },
   ] },
   { ...DRILL_OPTION, visibleWhen: options => options.view !== 'breakdown' },
