@@ -236,7 +236,7 @@ export interface StaticRequestSpec {
 }
 
 export function buildStaticRequest(
-  plan: SourcePlan,
+  entry: SourceEntry | null,
   options: {
     readonly timeMode: WidgetTime['mode'];
     readonly branch: { readonly firstHour: number; readonly lastHour: number };
@@ -246,7 +246,6 @@ export function buildStaticRequest(
     readonly countriesKnown?: (first: number, last: number) => boolean;
   },
 ): StaticRequestSpec | null {
-  const entry = primaryStaticEntry(plan);
   if (!entry) return null;
   const read = entry.read;
 
@@ -333,21 +332,43 @@ export function stabilizeCanvasDimension(
   return Math.max(1, Math.round(measured));
 }
 
+function readsWithoutFollow(read: SourceTimeShape): boolean {
+  if (read.shape === 'range') return true;
+  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
+}
+
+function boundedReadable(read: SourceTimeShape): boolean {
+  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window';
+}
+
+const NO_ENTRIES: readonly SourceEntry[] = [];
+
+export function boundedEntries(
+  plan: SourcePlan | null,
+  following: boolean,
+  subscriptions: readonly CompiledFollowSubscription[],
+): readonly SourceEntry[] {
+  if (!plan || plan.refused || plan.unavailable) return NO_ENTRIES;
+  const primary = primaryStaticEntry(plan);
+  const out: SourceEntry[] = [];
+  if (!following) {
+    if (primary && boundedReadable(primary.read)) out.push(primary);
+  } else if (primary && subscriptions.length === 0 && !plan.allowEmptyFollow && readsWithoutFollow(primary.read)) {
+    out.push(primary);
+  }
+  const followed = new Set(subscriptions.map(sub => sub.name));
+  for (const entry of plan.entries) {
+    if (entry === primary || followed.has(entry.name) || !readsWithoutFollow(entry.read)) continue;
+    out.push(entry);
+  }
+  return out.length ? out : NO_ENTRIES;
+}
+
 export function needsPlaybackBoundedRead(
   plan: SourcePlan | null,
   subscriptions: readonly CompiledFollowSubscription[],
 ): boolean {
-  if (!plan || subscriptions.length > 0 || plan.allowEmptyFollow || plan.refused || plan.unavailable) {
-    return false;
-  }
-  const entry = primaryStaticEntry(plan);
-  if (!entry) return false;
-  const read = entry.read;
-  if (read.shape === 'range') return true;
-  if (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') {
-    return read.followQuery === null;
-  }
-  return false;
+  return boundedEntries(plan, true, subscriptions).length > 0;
 }
 
 export interface PlaybackBoundedSpec extends StaticRequestSpec {
@@ -393,15 +414,27 @@ export function resolvePlaybackProvenInterval(
   return [anchor, hi];
 }
 
+export function composeProof(
+  readings: readonly { readonly anchorHour: number; readonly proof: readonly [number, number] }[],
+): readonly [number, number] | null {
+  if (!readings.length) return null;
+  let lo = -Infinity;
+  let hi = Infinity;
+  for (const reading of readings) {
+    lo = Math.max(lo, reading.anchorHour, reading.proof[0]);
+    hi = Math.min(hi, reading.proof[1]);
+  }
+  return lo <= hi ? [lo, hi] : null;
+}
+
 export function playbackIdleInterval(
-  plan: SourcePlan,
+  entry: SourceEntry | null,
   options: PlaybackBoundedOptions,
 ): readonly [number, number] {
   const first = options.branch.firstHour;
   const end = playbackEnd(options);
   const raw = Math.floor(options.currentHour);
   if (raw < first) return [-Infinity, first - 1];
-  const entry = primaryStaticEntry(plan);
   const read = entry?.read;
   if (read?.shape === 'range' && raw < read.firstHour) return [-Infinity, read.firstHour - 1];
   if (raw > end) return [end + 1, Infinity];
@@ -414,10 +447,9 @@ export function playbackIdleInterval(
 }
 
 export function buildPlaybackBoundedRequest(
-  plan: SourcePlan,
+  entry: SourceEntry | null,
   options: PlaybackBoundedOptions,
 ): PlaybackBoundedSpec | null {
-  const entry = primaryStaticEntry(plan);
   if (!entry) return null;
   const read = entry.read;
   const first = options.branch.firstHour;
