@@ -127,12 +127,12 @@ export function resolveKitTokens(theme: FamilyTheme) {
     gridLine: theme.gridLine ?? `rgba(${ink}, ${dark ? 0.055 : 0.07})`,
     zeroLine: theme.zeroLine ?? `rgba(${ink}, ${dark ? 0.18 : 0.22})`,
     tailLine: theme.tailLine ?? rgba(theme.muted, 0.22, `rgba(${ink}, 0.22)`),
-    playhead: theme.playhead ?? `rgba(${ink}, ${dark ? 0.42 : 0.46})`,
+    playhead: theme.playhead ?? `rgba(${ink}, ${dark ? 0.28 : 0.34})`,
     crosshair: theme.crosshair ?? `rgba(${ink}, ${dark ? 0.5 : 0.52})`,
-    dateTabBg: theme.dateTabBg ?? theme.accent,
-    dateTabText: theme.dateTabText ?? (dark ? '#0b1018' : '#ffffff'),
-    hoverTabBg: theme.hoverTabBg ?? (theme.raised ?? theme.surface),
-    hoverTabText: theme.hoverTabText ?? theme.text,
+    dateTabBg: theme.dateTabBg ?? (theme.raised ?? theme.surface),
+    dateTabText: theme.dateTabText ?? theme.text,
+    hoverTabBg: theme.hoverTabBg ?? theme.text,
+    hoverTabText: theme.hoverTabText ?? theme.surface,
   };
 }
 
@@ -715,40 +715,59 @@ export function drawLegendEntry(
   label: string,
   color: string,
   theme: FamilyTheme,
-  options?: { readonly dash?: readonly number[]; readonly maxWidth?: number; readonly muted?: boolean },
+  options?: {
+    readonly dash?: readonly number[];
+    readonly hatch?: boolean;
+    readonly flag?: FlagSlotState;
+    readonly maxWidth?: number;
+    readonly muted?: boolean;
+  },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const swatchW = options?.dash?.length ? 14 : 9;
+  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : 12;
   const gap = 6;
+  let cursor = x;
   ctx.save();
-  if (options?.dash?.length) {
+  if (options?.hatch) {
+    drawHatchRect(ctx, cursor, Math.round(middleY - 5), swatchW, 10, 1.5, theme);
+    cursor += swatchW + gap;
+  } else if (options?.dash?.length) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.setLineDash([...options.dash]);
     ctx.beginPath();
-    ctx.moveTo(x, middleY);
-    ctx.lineTo(x + swatchW, middleY);
+    ctx.moveTo(cursor, middleY);
+    ctx.lineTo(cursor + swatchW, middleY);
     ctx.stroke();
     ctx.setLineDash([]);
-  } else {
+    cursor += swatchW + gap;
+  } else if (color) {
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.roundRect(x, Math.round(middleY - swatchW / 2), swatchW, swatchW, 2);
+    ctx.roundRect(cursor, Math.round(middleY - 1.5), swatchW, 3, 1.5);
     ctx.fill();
+    cursor += swatchW + gap;
+  }
+  if (options?.flag && options.flag.kind !== 'pending') {
+    const fw = 16;
+    const fh = 10;
+    drawFlagSlot(ctx, cursor, Math.round(middleY - fh / 2), options.flag, theme, { width: fw, height: fh });
+    cursor += fw + gap;
   }
   const fontSize = theme.fontSize.small;
   ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
   ctx.fillStyle = options?.muted ? theme.muted : theme.text;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  const textMax = options?.maxWidth !== undefined ? Math.max(0, options.maxWidth - swatchW - gap) : 10_000;
-  const fitted = drawFittedLabel(ctx, label, x + swatchW + gap, middleY, textMax, {
+  const usedW = cursor - x;
+  const textMax = options?.maxWidth !== undefined ? Math.max(0, options.maxWidth - usedW) : 10_000;
+  const fitted = drawFittedLabel(ctx, label, cursor, middleY, textMax, {
     fontSize,
     lineHeight: labelLineHeight(fontSize),
     maxLines: 1,
   });
   const drawnW = fitted.lines[0] ? textWidth(ctx, fitted.lines[0]) : 0;
   ctx.restore();
-  return { width: swatchW + gap + drawnW, label: fitted };
+  return { width: usedW + drawnW, label: fitted };
 }
 
 export function drawDateColumn(
@@ -917,6 +936,7 @@ export function drawCrosshairLine(
   top: number,
   bottom: number,
   theme: FamilyTheme,
+  dash?: readonly number[],
 ): void {
   if (bottom <= top) return;
   const tokens = resolveKitTokens(theme);
@@ -924,12 +944,12 @@ export function drawCrosshairLine(
   ctx.save();
   ctx.strokeStyle = tokens.crosshair;
   ctx.lineWidth = 1;
-  ctx.setLineDash([3, 3]);
+  if (dash?.length) ctx.setLineDash([...dash]);
   ctx.beginPath();
   ctx.moveTo(px, top);
   ctx.lineTo(px, bottom);
   ctx.stroke();
-  ctx.setLineDash([]);
+  if (dash?.length) ctx.setLineDash([]);
   ctx.restore();
 }
 
@@ -943,8 +963,8 @@ export function drawDateTab(
   bounds?: { readonly left: number; readonly right: number },
 ): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } {
   const tokens = resolveKitTokens(theme);
-  const padX = 6;
-  const height = 18;
+  const padX = 7;
+  const height = 19;
   ctx.save();
   ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
   const textW = textWidth(ctx, text);
@@ -957,8 +977,8 @@ export function drawDateTab(
   ctx.beginPath();
   ctx.roundRect(x, y, width, height, 4);
   ctx.fill();
-  if (variant === 'hover') {
-    ctx.strokeStyle = theme.line;
+  if (variant === 'playhead') {
+    ctx.strokeStyle = tokens.bandDivider;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.roundRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1), 4);
@@ -967,7 +987,7 @@ export function drawDateTab(
   ctx.fillStyle = variant === 'playhead' ? tokens.dateTabText : tokens.hoverTabText;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, x + width / 2, y + height / 2);
+  ctx.fillText(text, x + width / 2, y + height / 2 + 0.5);
   ctx.restore();
   return { x, y, width, height };
 }

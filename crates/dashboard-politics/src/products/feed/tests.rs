@@ -460,7 +460,10 @@ fn two_projects_completing_in_one_hour_are_two_rows() {
 #[test]
 fn decision_failed_state_requires_container_and_decodes_each_container_without_guessing() {
     use super::decision_state::{
-        DecisionLifecycleState, MISSION_FAILURE_NOT_RECORDED, decode, enforce_same_incarnation, not_recorded, resolve_in_pack,
+        COUNTRY_DECISION_STATE_REFUSED, DECISION_CONTAINER_NOT_RECORDED, DECISION_INSTANCE_MISMATCH,
+        DECISION_NO_MISSION_LIFECYCLE, DECISION_OCCURRENCE_NOT_FOUND, DecisionLifecycleState,
+        EVENT_FEED_HISTORY_INCOMPLETE, decode, enforce_same_incarnation, not_applicable, not_recorded,
+        resolve_in_pack,
     };
     use replay_data::event_feed_rows::{
         EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript, EventFeedScriptChange,
@@ -484,8 +487,9 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
         assert_eq!(decode(container, -7, 100), DecisionLifecycleState::Unsupported { raw: -7 });
     }
     for container in [TAKEN, REENABLE, REMOVAL] {
-        assert_eq!(decode(container, 2, 100), not_recorded());
+        assert_eq!(decode(container, 2, 100), not_applicable(DECISION_NO_MISSION_LIFECYCLE));
     }
+    assert_eq!(decode(255, 2, 100), not_recorded(DECISION_CONTAINER_NOT_RECORDED));
 
     let actor = EventFeedCountry { reference: 11, id: 11, instance: 1 };
     let feed_ev = |sequence: u64, source: EventFeedSource, instance: Option<u32>, lifecycle: Option<i32>| {
@@ -539,39 +543,80 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
     );
     assert_eq!(resolve_in_pack(&timed_fail, &targeted_not_failed), DecisionLifecycleState::ReEnableCooldown);
 
+    let instant = feed_ev(12, EventFeedSource::DecisionSelected, None, None);
+    let instant_pack = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(12, EventFeedSource::DecisionSelected, None, None, None)],
+    );
+    assert_eq!(resolve_in_pack(&instant, &instant_pack), not_applicable(DECISION_NO_MISSION_LIFECYCLE));
+    let taken_pack = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(12, EventFeedSource::DecisionSelected, Some(DecisionChange::new(Operation::Store, TAKEN)), None, None)],
+    );
+    assert_eq!(resolve_in_pack(&instant, &taken_pack), not_applicable(DECISION_NO_MISSION_LIFECYCLE));
+    let effect = feed_ev(13, EventFeedSource::DecisionTimeoutEffect, None, None);
+    let effect_pack = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(13, EventFeedSource::DecisionTimeoutEffect, None, None, None)],
+    );
+    assert_eq!(resolve_in_pack(&effect, &effect_pack), not_applicable(DECISION_NO_MISSION_LIFECYCLE));
+
+    let partial_instant = make_pack(EventFeedCoverage::Partial, 0, instant_pack.events.clone());
+    assert_eq!(resolve_in_pack(&instant, &partial_instant), not_recorded(EVENT_FEED_HISTORY_INCOMPLETE));
+    let refused_instant = make_pack(EventFeedCoverage::Complete, 1, instant_pack.events.clone());
+    assert_eq!(resolve_in_pack(&instant, &refused_instant), not_recorded(EVENT_FEED_HISTORY_INCOMPLETE));
+
     let partial = make_pack(EventFeedCoverage::Partial, 0, ok_pack.events.clone());
-    assert_eq!(resolve_in_pack(&timed_fail, &partial), not_recorded());
+    assert_eq!(resolve_in_pack(&timed_fail, &partial), not_recorded(EVENT_FEED_HISTORY_INCOMPLETE));
     let unavailable = make_pack(EventFeedCoverage::Unavailable, 0, ok_pack.events.clone());
-    assert_eq!(resolve_in_pack(&timed_fail, &unavailable), not_recorded());
+    assert_eq!(resolve_in_pack(&timed_fail, &unavailable), not_recorded(EVENT_FEED_HISTORY_INCOMPLETE));
     let refused_family = make_pack(EventFeedCoverage::Complete, 1, ok_pack.events.clone());
-    assert_eq!(resolve_in_pack(&timed_fail, &refused_family), not_recorded());
+    assert_eq!(resolve_in_pack(&timed_fail, &refused_family), not_recorded(EVENT_FEED_HISTORY_INCOMPLETE));
 
     for bad_op in [Operation::Refused, Operation::Invalidate] {
         let mut events = ok_pack.events.clone();
         events.push(history_ev(11, EventFeedSource::ScriptState, Some(DecisionChange::new(bad_op, 0)), None, None));
-        assert_eq!(resolve_in_pack(&timed_fail, &make_pack(EventFeedCoverage::Complete, 0, events)), not_recorded());
+        assert_eq!(resolve_in_pack(&timed_fail, &make_pack(EventFeedCoverage::Complete, 0, events)), not_recorded(COUNTRY_DECISION_STATE_REFUSED));
+
+        let mut instant_events = instant_pack.events.clone();
+        instant_events.push(history_ev(14, EventFeedSource::ScriptState, Some(DecisionChange::new(bad_op, 0)), None, None));
+        assert_eq!(resolve_in_pack(&instant, &make_pack(EventFeedCoverage::Complete, 0, instant_events)), not_recorded(COUNTRY_DECISION_STATE_REFUSED));
     }
+
+    let empty_pack = make_pack(EventFeedCoverage::Complete, 0, Vec::new());
+    assert_eq!(resolve_in_pack(&timed_fail, &empty_pack), not_recorded(DECISION_OCCURRENCE_NOT_FOUND));
+
+    let missing_lifecycle_timeout = feed_ev(15, EventFeedSource::DecisionTimedOut, Some(50), None);
+    let missing_lifecycle_pack = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(15, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Update, TIMED)), Some(50), None)],
+    );
+    assert_eq!(resolve_in_pack(&missing_lifecycle_timeout, &missing_lifecycle_pack), not_recorded(DECISION_CONTAINER_NOT_RECORDED));
 
     let no_container = make_pack(
         EventFeedCoverage::Complete,
         0,
         vec![history_ev(10, EventFeedSource::DecisionTimedOut, None, Some(50), Some(2))],
     );
-    assert_eq!(resolve_in_pack(&timed_fail, &no_container), not_recorded());
+    assert_eq!(resolve_in_pack(&timed_fail, &no_container), not_recorded(DECISION_CONTAINER_NOT_RECORDED));
 
     let no_instance = make_pack(
         EventFeedCoverage::Complete,
         0,
         vec![history_ev(10, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Update, TIMED)), None, Some(2))],
     );
-    assert_eq!(resolve_in_pack(&timed_fail, &no_instance), not_recorded());
+    assert_eq!(resolve_in_pack(&timed_fail, &no_instance), not_recorded(DECISION_CONTAINER_NOT_RECORDED));
 
     let erase_op = make_pack(
         EventFeedCoverage::Complete,
         0,
         vec![history_ev(10, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Erase, TIMED)), Some(50), Some(2))],
     );
-    assert_eq!(resolve_in_pack(&timed_fail, &erase_op), not_recorded());
+    assert_eq!(resolve_in_pack(&timed_fail, &erase_op), not_recorded(DECISION_CONTAINER_NOT_RECORDED));
 
     let opener = feed_ev(9, EventFeedSource::DecisionActivated, Some(49), Some(0));
     let mut rows = vec![
@@ -616,7 +661,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
     );
     assert_eq!(
         rows[1].as_ref().and_then(|row| row.decision_state.as_ref()),
-        Some(&DecisionLifecycleState::NotRecorded { reason: MISSION_FAILURE_NOT_RECORDED.to_owned() })
+        Some(&DecisionLifecycleState::NotRecorded { reason: DECISION_INSTANCE_MISMATCH.to_owned() })
     );
 }
 
@@ -624,7 +669,10 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
 fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_missing_inputs() {
     use super::{
         Decisions, EventFeed, FeedPageParams,
-        decision_state::{DecisionLifecycleState, MISSION_FAILURE_NOT_RECORDED, resolve_all},
+        decision_state::{
+            DECISION_CONTAINER_NOT_RECORDED, DECISION_INSTANCE_MISMATCH, DECISION_NO_MISSION_LIFECYCLE,
+            DecisionLifecycleState, EVENT_FEED_HISTORY_NOT_RECORDED, resolve_all,
+        },
     };
     use dashboard_base::{
         products::{LoadContext, Product},
@@ -634,7 +682,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     use replay_data::{
         event_feed_rows::{
             EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript, EventFeedScriptChange,
-            decisions::{DecisionChange, Operation, TARGETED_TIMED, TIMED},
+            decisions::{DecisionChange, Operation, TAKEN, TARGETED_TIMED, TIMED},
         },
         rows::{Recorded, TableId, TableRows},
     };
@@ -642,7 +690,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     use std::sync::{Arc, atomic::AtomicBool};
 
     let ger = EventFeedCountry { reference: 9001, id: 9001, instance: 1 };
-    let tokens = b"mod_mission_amod_mission_bmod_mission_cmod_mission_d";
+    let tokens = b"mod_mission_amod_mission_bmod_mission_cmod_mission_dmod_instant_e";
     let span = |index: u32| (index * 13, 13);
     let dec_ev = |sequence: u64, hour: i32, source: EventFeedSource, tok: u32, change: Option<DecisionChange>, instance: Option<u32>, lifecycle: Option<i32>, target: Option<u32>| {
         let (token_start, token_len) = span(tok);
@@ -700,6 +748,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
             dec_ev(2, 100, EventFeedSource::DecisionActivated, 1, Some(DecisionChange::new(Operation::Store, TIMED)), Some(11), Some(0), None),
             dec_ev(3, 100, EventFeedSource::DecisionActivated, 2, Some(DecisionChange::new(Operation::Store, TARGETED_TIMED)), Some(12), Some(0), Some(9001)),
             dec_ev(4, 100, EventFeedSource::DecisionActivated, 3, Some(DecisionChange::new(Operation::Store, TIMED)), Some(13), Some(0), None),
+            dec_ev(9, 100, EventFeedSource::DecisionSelected, 4, Some(DecisionChange::new(Operation::Store, TAKEN)), None, None, None),
         ],
     );
     let b1_h101 = pack(
@@ -762,6 +811,10 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     assert_eq!(state_of(&feed_b1, "native:1:6"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(state_of(&feed_b1, "native:1:7"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(state_of(&feed_b1, "native:1:8"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(
+        state_of(&feed_b1, "native:1:9"),
+        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
+    );
 
     let card_end_state = |page: &super::cards::ScriptOccurrencePage, opener_id: &str| {
         page.rows
@@ -780,6 +833,10 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     .unwrap();
     assert_eq!(card_end_state(&cards_b1_at_100, "native:1:2"), Some(DecisionLifecycleState::Active));
     assert_eq!(card_end_state(&cards_b1_at_100, "native:1:4"), Some(DecisionLifecycleState::Active));
+    assert_eq!(
+        card_end_state(&cards_b1_at_100, "native:1:9"),
+        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
+    );
 
     let cards_b1 = Decisions::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
     assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
@@ -787,14 +844,14 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     assert_eq!(card_end_state(&cards_b1, "native:1:3"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(
         card_end_state(&cards_b1, "native:1:4"),
-        Some(DecisionLifecycleState::NotRecorded { reason: MISSION_FAILURE_NOT_RECORDED.to_owned() }),
+        Some(DecisionLifecycleState::NotRecorded { reason: DECISION_INSTANCE_MISMATCH.to_owned() }),
         "different instance incarnation across opener and end must withhold failure state"
     );
 
     let feed_b2 = EventFeed::load(&replay_source, &ask("2"), &context, &cancel).unwrap();
     assert_eq!(
         state_of(&feed_b2, "native:1:6"),
-        Some(DecisionLifecycleState::NotRecorded { reason: MISSION_FAILURE_NOT_RECORDED.to_owned() }),
+        Some(DecisionLifecycleState::NotRecorded { reason: DECISION_CONTAINER_NOT_RECORDED.to_owned() }),
         "branch 2 lacks container metadata and must never join branch 1"
     );
 
@@ -804,9 +861,15 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     bare_timed_out.actor = party(9001, Slot::Of(7));
     bare_timed_out.instance = Some(11);
     bare_timed_out.lifecycle = Some(2);
+    let mut bare_instant = event(EventFeedSource::DecisionSelected as u8, 100, Slot::Of(7), Slot::None);
+    bare_instant.sequence = 9;
+    bare_instant.actor = party(9001, Slot::Of(7));
     assert_eq!(
-        resolve_all(&query_b3, &[&bare_timed_out]).unwrap(),
-        vec![Some(DecisionLifecycleState::NotRecorded { reason: MISSION_FAILURE_NOT_RECORDED.to_owned() })],
-        "missing EventFeedHistory table must refuse by name rather than guessing from bare lifecycle"
+        resolve_all(&query_b3, &[&bare_timed_out, &bare_instant]).unwrap(),
+        vec![
+            Some(DecisionLifecycleState::NotRecorded { reason: EVENT_FEED_HISTORY_NOT_RECORDED.to_owned() }),
+            Some(DecisionLifecycleState::NotRecorded { reason: EVENT_FEED_HISTORY_NOT_RECORDED.to_owned() }),
+        ],
+        "missing EventFeedHistory table must refuse by name rather than guessing or returning notApplicable"
     );
 }

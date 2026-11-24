@@ -8,11 +8,15 @@ import { Page, type Bitmap, type Entry, type PageSurface } from '../dashboard/fo
 import { Pipeline, type LaneWorker, type PipelineHost } from '../dashboard/follow/pipeline.ts';
 import { lastRecordedBranchHour, recordingEndTime, resolveWindow, type BoundTrack, type WidgetSpec } from '../dashboard/model.ts';
 import { PlaybackController } from '../dashboard/playback.ts';
+import { RefusedError } from '../dashboard/queryError.ts';
 import { axisAt, lastRecordedHour, resolveRegion, SPEC } from '../dashboard/regionTime.ts';
 import type { TiledLine } from '../dashboard/tiles/view';
 import { Lane, type LaneView } from '../draw/lane.ts';
 import type { FromLane } from '../draw/laneMessages';
 import type { MissingSpan } from '../generated/dashboard';
+import { LaneArtCache } from './art/laneCache.ts';
+import { artUrlForHandle, createLaneArtProvider, flagArtHandle } from './art/provider.ts';
+import { readyArt } from './art/types.ts';
 import { AuditSnapshotStore } from './audit.ts';
 import {
   BoundedSeriesCursor,
@@ -25,14 +29,20 @@ import {
 } from './boundedView.ts';
 import {
   assertValidCoverage,
+  buildPlaybackBoundedRequest,
   compileFollowPlan,
   CoverageContractError,
   FamilySourceBroker,
+  needsPlaybackBoundedRead,
   planQueryKey,
   planSignature,
+  resolvePlaybackProvenInterval,
+  stabilizeCanvasDimension,
 } from './broker.ts';
 import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry, type PlanAuditSnapshot } from './host/auditBinding.ts';
 import { clientPointToInstalled, resolveInstalledAction } from './host/pointer.ts';
+import { IdentityIndex } from './identity/index.ts';
+import { identityResultFromIndex } from './identity/provider.ts';
 import type {
   ArtHandle,
   ArtProvider,
@@ -42,6 +52,7 @@ import type {
   InstalledPicture,
   SourcePlan,
 } from './plan.ts';
+import type { FrozenGate } from './sources.ts';
 import type { DatedLogRow, TableRowSource } from './table/rowSource.ts';
 import { knownValue } from './value.ts';
 
@@ -292,8 +303,9 @@ test('BoundedReadView rejects any read after displayed hour H across panels, hov
   };
 
   const artProvider: ArtProvider = {
+    demandOwner: 'view',
     resolve(handle) {
-      if (handle.choice === 'ready-flag') {
+      if (handle.kind === 'flag' && handle.choice === 'ready-flag') {
         return {
           status: 'ready',
           assetId: 'flag-1',
@@ -355,11 +367,11 @@ test('BoundedReadView rejects any read after displayed hour H across panels, hov
 
   assert.throws(() => view.who('country', 'GER', 101), FutureDataError);
 
-  const readyArt = view.art({ scope: 'flag', choice: 'ready-flag' });
-  assert.equal(readyArt.status, 'ready');
+  const readyArtResult = view.art({ kind: 'flag', choice: 'ready-flag', size: 'panel' });
+  assert.equal(readyArtResult.status, 'ready');
   assert.equal(artDemands.length, 0);
 
-  const pendingHandle: ArtHandle = { scope: 'flag', choice: 'pending-flag' };
+  const pendingHandle: ArtHandle = { kind: 'flag', choice: 'pending-flag', size: 'panel' };
   const pendingArt = view.art(pendingHandle);
   assert.equal(pendingArt.status, 'pending');
   assert.deepEqual(artDemands, [pendingHandle]);
@@ -861,4 +873,314 @@ test('a recording ending in a trailing gap resolves campaign mode and end pins t
     gaps: [{ firstHour: 100, lastHour: 105, reason: 'unrecorded' }],
   };
   assert.equal(lastRecordedBranchHour(allGapBranch), null);
+});
+
+test('no-follow branch-to-hour, range, and trailing-window reads are answered during playback and never re-asked inside their proven interval', () => {
+  const src = fakeSource();
+  const gate: FrozenGate = {
+    recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
+    span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
+  };
+  const branch = { firstHour: 0, lastHour: 1000 };
+
+  const branchPlan: SourcePlan = {
+    owner: 'weather:1',
+    entries: [{
+      name: 'main',
+      source: src,
+      branch: '1',
+      offset: 0,
+      read: {
+        shape: 'branch-to-hour',
+        coverage: { mode: 'population', form: 'all' },
+        product: 'regional-weather',
+        followQuery: null,
+        params: { branchId: '1' },
+        chunkHours: 240,
+      },
+    }],
+  };
+
+  const compiled = compileFollowPlan(branchPlan, () => ({ query: null, refused: null }));
+  assert.equal(compiled.subscriptions.length, 0);
+  assert.equal(needsPlaybackBoundedRead(branchPlan, compiled.subscriptions), true);
+  assert.equal(needsPlaybackBoundedRead({ ...branchPlan, allowEmptyFollow: true }, []), false);
+
+  const firstAsk = buildPlaybackBoundedRequest(branchPlan, {
+    branch,
+    effectiveEndHour: 1000,
+    currentHour: 50,
+    gate,
+  });
+  assert.ok(firstAsk);
+  assert.deepEqual(firstAsk.provenInterval, [0, 239]);
+  assert.deepEqual(firstAsk.span, [0, 239]);
+
+  let queriesIssued = 1;
+  let lastKey = firstAsk.queryKey;
+  let proven: readonly [number, number] = resolvePlaybackProvenInterval(
+    firstAsk.entry.read,
+    { rows: [{ hour: 20 }, { hour: 200 }] },
+    firstAsk.provenInterval,
+    firstAsk.anchorHour,
+  );
+  for (let h = 51; h <= 239; h++) {
+    const next = buildPlaybackBoundedRequest(branchPlan, {
+      branch,
+      effectiveEndHour: 1000,
+      currentHour: h,
+      gate,
+      previousProven: proven,
+      previousAnchorHour: firstAsk.anchorHour,
+    });
+    assert.ok(next);
+    if (next.queryKey !== lastKey) {
+      queriesIssued++;
+      lastKey = next.queryKey;
+    }
+    assert.deepEqual(next.provenInterval, [0, 239]);
+  }
+  assert.equal(queriesIssued, 1, 'advancing inside proven interval issues zero additional requests');
+
+  const outsideAsk = buildPlaybackBoundedRequest(branchPlan, {
+    branch,
+    effectiveEndHour: 1000,
+    currentHour: 240,
+    gate,
+    previousProven: proven,
+    previousAnchorHour: firstAsk.anchorHour,
+  });
+  assert.ok(outsideAsk);
+  assert.notEqual(outsideAsk.queryKey, firstAsk.queryKey);
+  assert.deepEqual(outsideAsk.provenInterval, [0, 479]);
+
+  const unchunkedPlan: SourcePlan = {
+    owner: 'convoy:1',
+    entries: [{
+      name: 'main',
+      source: src,
+      branch: '1',
+      offset: 0,
+      read: {
+        shape: 'branch-to-hour',
+        coverage: { mode: 'population', form: 'all' },
+        product: 'convoy-health',
+        followQuery: null,
+        params: { branchId: '1' },
+      },
+    }],
+  };
+  const unchunked = buildPlaybackBoundedRequest(unchunkedPlan, {
+    branch,
+    effectiveEndHour: 1000,
+    currentHour: 120,
+    gate,
+  });
+  assert.ok(unchunked);
+  assert.deepEqual(unchunked.provenInterval, [0, 1000]);
+
+  const trailingPlan: SourcePlan = {
+    owner: 'naval:1',
+    entries: [{
+      name: 'main',
+      source: src,
+      branch: '1',
+      offset: 0,
+      read: {
+        shape: 'trailing-window',
+        windowHours: 168,
+        coverage: { mode: 'population', form: 'all' },
+        product: 'naval-supremacy',
+        followQuery: null,
+        params: { branchId: '1' },
+        chunkHours: 100,
+      },
+    }],
+  };
+  assert.equal(needsPlaybackBoundedRead(trailingPlan, []), true);
+  const trailingFirst = buildPlaybackBoundedRequest(trailingPlan, {
+    branch,
+    effectiveEndHour: 1000,
+    currentHour: 200,
+    gate,
+  });
+  assert.ok(trailingFirst);
+  assert.deepEqual(trailingFirst.provenInterval, [33, 300]);
+  const trailingSame = buildPlaybackBoundedRequest(trailingPlan, {
+    branch,
+    effectiveEndHour: 1000,
+    currentHour: 260,
+    gate,
+    previousProven: trailingFirst.provenInterval,
+  });
+  assert.equal(trailingSame?.queryKey, trailingFirst.queryKey);
+
+  const rangePlan: SourcePlan = {
+    owner: 'range:1',
+    entries: [{
+      name: 'main',
+      source: src,
+      branch: '1',
+      offset: 0,
+      read: {
+        shape: 'range',
+        coverage: { mode: 'population', form: 'all' },
+        product: 'regional-weather',
+        firstHour: 100,
+        lastHour: 500,
+        params: { branchId: '1' },
+      },
+    }],
+  };
+  assert.equal(needsPlaybackBoundedRead(rangePlan, []), true);
+  const rangeAsk = buildPlaybackBoundedRequest(rangePlan, {
+    branch,
+    effectiveEndHour: 1000,
+    currentHour: 250,
+    gate,
+  });
+  assert.deepEqual(rangeAsk?.provenInterval, [100, 500]);
+
+  const boundedView = createBoundedReadView({
+    hour: 120,
+    validInterval: unchunked.provenInterval,
+    panels: new Map([['main', { hour: 120, items: ['ok'] }]]),
+  });
+  assert.deepEqual(boundedView.validInterval, [0, 1000]);
+  assert.deepEqual(boundedView.panel('main'), { hour: 120, items: ['ok'] });
+  const futureView = createBoundedReadView({
+    hour: 120,
+    validInterval: unchunked.provenInterval,
+    panels: new Map([['main', { hour: 500, items: ['future'] }]]),
+  });
+  assert.throws(() => futureView.panel('main'), FutureDataError);
+});
+
+test('canvas pixel dimensions stay stable across sub-pixel jitter without changing planSignature', () => {
+  const src = fakeSource();
+  const makePlan = (width: number | undefined, height: number | undefined): SourcePlan => ({
+    owner: 'chart:1',
+    entries: [{
+      name: 'main',
+      source: src,
+      branch: '1',
+      offset: 0,
+      read: {
+        shape: 'branch-to-hour',
+        coverage: { mode: 'population', form: 'all' },
+        product: 'regional-weather',
+        followQuery: null,
+        params: { width, height },
+      },
+    }],
+  });
+
+  const w0 = stabilizeCanvasDimension(400.2, undefined);
+  const h0 = stabilizeCanvasDimension(240.3, undefined);
+  assert.equal(w0, 400);
+  assert.equal(h0, 240);
+  const baseSig = planSignature(makePlan(w0, h0));
+
+  for (const jitter of [400.49, 400.51, 400.9, 399.2, 401.1]) {
+    const wNext = stabilizeCanvasDimension(jitter, w0);
+    assert.equal(wNext, w0, `jitter ${jitter} keeps width stable`);
+    assert.equal(planSignature(makePlan(wNext, h0)), baseSig);
+  }
+
+  const wSubPixelDeadband1 = stabilizeCanvasDimension(400.8, 400, 1);
+  assert.equal(wSubPixelDeadband1, 400);
+  assert.equal(planSignature(makePlan(wSubPixelDeadband1, h0)), baseSig);
+
+  const wResized = stabilizeCanvasDimension(520, w0);
+  assert.equal(wResized, 520);
+  assert.notEqual(planSignature(makePlan(wResized, h0)), baseSig);
+});
+
+test('FieldStatus failed distinguishes retryable transport errors and non-retryable refusals from genuine absence', () => {
+  const scope = { sourceId: 's1', revision: 'r1', branchId: '1', content: 1 };
+  const retryableIndex = new IdentityIndex(scope, [0, 500]);
+  retryableIndex.setFactsFailure(new Error('IPC timeout'));
+  const retryableRes = identityResultFromIndex(retryableIndex, 'country', 'GER', displayedHour(100));
+  assert.deepEqual(retryableRes.name, { status: 'failed', reason: 'IPC timeout', retryable: true });
+  assert.deepEqual(retryableRes.holder, { status: 'failed', reason: 'IPC timeout', retryable: true });
+
+  const refusedIndex = new IdentityIndex(scope, [0, 500]);
+  refusedIndex.setFactsFailure(new RefusedError('Unsupported mod table'));
+  const refusedRes = identityResultFromIndex(refusedIndex, 'country', 'GER', displayedHour(100));
+  assert.deepEqual(refusedRes.name, { status: 'failed', reason: 'Unsupported mod table', retryable: false });
+
+  const absentIndex = new IdentityIndex(scope, [0, 500]);
+  absentIndex.setFacts({ branchId: '1', known: [[0, 500]], names: [], reasons: [], flags: [], countries: [], warnings: [] }, true);
+  absentIndex.setIdentities({ branchId: '1', countries: [], unknown: [], warnings: [] });
+  const absentRes = identityResultFromIndex(absentIndex, 'country', 'ZZZ', displayedHour(100));
+  assert.equal(absentRes.name.status, 'absent');
+});
+
+test('ArtHandle discriminated union covers flag, sprite, portrait, path, and url, and BoundedReadView fires demand callbacks once', () => {
+  const handles: readonly ArtHandle[] = [
+    flagArtHandle('GER_fascism', 'shield', 64),
+    { kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'pol_power', text: true },
+    { kind: 'portrait', key: 'GFX_portrait_ger', owner: 'GER', recorded: 'leader_1' },
+    { kind: 'path', path: 'gfx/interface/icons/icon.dds', frame: 1, frames: 2 },
+    { kind: 'url', url: 'https://art.test/direct.png' },
+  ];
+  assert.equal(handles[0]!.kind, 'flag');
+  assert.equal(artUrlForHandle(handles[4]!), 'https://art.test/direct.png');
+  assert.equal(artUrlForHandle(handles[1]!), null);
+
+  const cache = new LaneArtCache();
+  const seenKinds: string[] = [];
+  const artProvider = createLaneArtProvider(cache, {
+    resolveHandle(handle) {
+      seenKinds.push(handle.kind);
+      if (handle.kind === 'sprite' && handle.text) {
+        return readyArt('art://sprite-text');
+      }
+      return { status: 'pending' };
+    },
+  });
+  assert.equal(artProvider.demandOwner, 'view');
+
+  const identityResolveArgs: number[] = [];
+  const identityProvider: IdentityProvider = {
+    demandOwner: 'view',
+    resolve(kind, key, atHour) {
+      identityResolveArgs.push(arguments.length);
+      return {
+        kind,
+        key,
+        atHour,
+        holder: { status: 'pending' },
+        name: { status: 'pending' },
+        validInterval: [atHour, atHour],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+
+  let identityDemandCount = 0;
+  let artDemandCount = 0;
+  const view = createBoundedReadView({
+    hour: 100,
+    identity: identityProvider,
+    onIdentityDemand: () => { identityDemandCount++; },
+    art: artProvider,
+    onArtDemand: () => { artDemandCount++; },
+  });
+
+  const whoRes = view.who('country', 'GER', 80);
+  assert.equal(whoRes.name.status, 'pending');
+  assert.equal(identityDemandCount, 1);
+  assert.deepEqual(identityResolveArgs, [3]);
+
+  const spriteRes = view.art(handles[1]!);
+  assert.equal(spriteRes.status, 'pending');
+  assert.equal(artDemandCount, 1);
+  assert.deepEqual(seenKinds, ['sprite']);
+
+  const portraitRes = view.art(handles[2]!);
+  assert.equal(portraitRes.status, 'pending');
+  assert.equal(artDemandCount, 2);
+
+  cache.dispose();
 });
