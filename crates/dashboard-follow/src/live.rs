@@ -1,9 +1,9 @@
 
 use crate::{
-    evaluate,
     query::{Query, Rows},
     table_name,
 };
+use dashboard_query::coverage::row_coverage;
 use replay_columnar::manifest::Status;
 use replay_data::rows::{Field, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -166,25 +166,27 @@ impl Live {
     }
 }
 
-fn rows_of(table: TableId, view: &TableView) -> Result<&TableRows, String> {
-    match view {
-        TableView::Complete(rows) => Ok(rows),
-        TableView::Truncated { missing, .. } => Err(evaluate::unrecorded(table.index(), Status::Truncated { missing: *missing }, None).unwrap_or_default()),
-        TableView::NotRecorded { .. } => Err(evaluate::unrecorded(table.index(), Status::NotRecorded, None).unwrap_or_default()),
-        TableView::Unavailable { reason } => Err(evaluate::unrecorded(table.index(), Status::Unavailable { reason: 0 }, Some(reason)).unwrap_or_default()),
-    }
-}
-
 fn group_values(group: &Group, view: &TableView) -> Vec<CellValue> {
     let width = group.columns.len();
-    let rows = match rows_of(group.table, view) {
-        Ok(rows) => rows,
-        Err(reason) => return vec![CellValue::Missing(reason); group.keys.len() * width],
+    let (rows, absent_reason) = match view {
+        TableView::Complete(rows) => (rows, NO_ROW.to_owned()),
+        TableView::Truncated { rows, missing } => (
+            rows,
+            row_coverage(group.table, Status::Truncated { missing: *missing }, None, false).into_missing().unwrap_or_default(),
+        ),
+        TableView::NotRecorded { .. } => {
+            let reason = row_coverage(group.table, Status::NotRecorded, None, false).into_missing().unwrap_or_default();
+            return vec![CellValue::Missing(reason); group.keys.len() * width];
+        }
+        TableView::Unavailable { reason } => {
+            let reason = row_coverage(group.table, Status::Unavailable { reason: 0 }, Some(reason), false).into_missing().unwrap_or_default();
+            return vec![CellValue::Missing(reason); group.keys.len() * width];
+        }
     };
     let mut out = Vec::with_capacity(group.keys.len() * width);
     for &key in &group.keys {
         let Some(row) = find(rows, key) else {
-            out.extend(std::iter::repeat_n(CellValue::Missing(NO_ROW.to_owned()), width));
+            out.extend(std::iter::repeat_n(CellValue::Missing(absent_reason.clone()), width));
             continue;
         };
         let start = out.len();

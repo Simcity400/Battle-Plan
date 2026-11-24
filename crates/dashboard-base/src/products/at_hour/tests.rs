@@ -923,11 +923,13 @@ fn at_hour_live_cells_apply_witness_rule_on_cold_and_incremental_across_truncate
     ] {
         let cold = (exact.cold)(hour, &token).unwrap();
         assert_eq!(res_values(&cold), expected, "cold live cells at hour {hour}");
+        let adv = (exact.advance)(hour, true, &token, None);
+        assert_eq!(adv.value.as_ref().as_ref().unwrap(), &cold, "incremental with values equals cold at hour {hour}");
     }
 
     let reads = stepped(&pages, exact, 1, 108, 1);
     for read in reads.into_iter().filter(|read| !read.pending) {
-        let cold = (exact.cold)(read.hour, &token).unwrap();
-        assert_eq!(read.value.as_ref().as_ref().unwrap(), &cold, "incremental equals cold at hour {}", read.hour);
+        let cold = (exact.cold)(read.hour, &token);
+        assert_eq!(streamed(&read.value, read.fresh), streamed(&cold, read.fresh), "stepped equals cold at hour {}", read.hour);
     }
 }
