@@ -1,5 +1,4 @@
 import type { DashboardSource } from '../../dashboard/client';
-import type { CountryFlagSize } from '../../generated/dashboard';
 import type { IdentityBroker } from '../identity/broker.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { parseFlagChoiceKey, type DrawnFlagEntry, type IdentityScope } from '../identity/types.ts';
@@ -10,17 +9,26 @@ import type { LaneArtCache } from './laneCache.ts';
 import {
   CURRENT_INSTALL_PROVENANCE,
   PENDING_ART,
+  artHandleKey,
   defaultArtFrame,
   readyArt,
   type ArtResolution,
 } from './types.ts';
 
-export function flagArtHandle(flagChoice: string, size: ArtFlagSize = 'panel', maxEdge?: number): ArtHandle {
-  return { kind: 'flag', choice: flagChoice, size, ...(maxEdge !== undefined ? { maxEdge } : {}) };
+export function flagArtHandle(flagChoice: string, size: ArtFlagSize = 'panel'): ArtHandle {
+  return { kind: 'flag', choice: flagChoice, size };
 }
 
-function brokerFlagSize(size: ArtFlagSize): CountryFlagSize {
-  return size === 'shield' ? 'shield' : 'panel';
+export function mergeArtDemands(held: readonly ArtHandle[], asked: readonly ArtHandle[]): readonly ArtHandle[] {
+  const seen = new Set(held.map(artHandleKey));
+  let merged: ArtHandle[] | null = null;
+  for (const handle of asked) {
+    const key = artHandleKey(handle);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    (merged ??= [...held]).push(handle);
+  }
+  return merged ?? held;
 }
 
 function isDirectUrl(candidate: string): boolean {
@@ -44,7 +52,7 @@ export function artUrlForHandle(handle: ArtHandle, index?: IdentityIndex | null)
   if (handle.kind === 'flag' && index) {
     const choice = parseFlagChoiceKey(handle.choice);
     if (choice) {
-      const drawn = index.getDrawnFlag(choice);
+      const drawn = index.getDrawnFlag(handle.size, choice);
       const res = drawn?.image?.resolution;
       if (res) return res.status === 'ready' ? res.url : null;
       if (drawn?.url) return drawn.url;
@@ -55,7 +63,7 @@ export function artUrlForHandle(handle: ArtHandle, index?: IdentityIndex | null)
 
 function resolutionFromHandle(
   handle: ArtHandle,
-  lookupFlag: (choiceKey: string, size: CountryFlagSize) => DrawnFlagEntry | undefined,
+  lookupFlag: (choiceKey: string, size: ArtFlagSize) => DrawnFlagEntry | undefined,
   resolveHandle?: (handle: ArtHandle) => ArtResolution,
 ): ArtResolution {
   if (resolveHandle) {
@@ -74,7 +82,7 @@ function resolutionFromHandle(
     });
   }
   if (handle.kind === 'flag') {
-    return flagEntryToArt(lookupFlag(handle.choice, brokerFlagSize(handle.size)));
+    return flagEntryToArt(lookupFlag(handle.choice, handle.size));
   }
   return PENDING_ART;
 }
@@ -88,10 +96,10 @@ export function createLaneArtProvider(
   cache: LaneArtCache,
   options: LaneArtProviderOptions = {},
 ): ArtProvider {
-  const lookupFlag = (choiceKey: string): DrawnFlagEntry | undefined => {
+  const lookupFlag = (choiceKey: string, size: ArtFlagSize): DrawnFlagEntry | undefined => {
     if (!options.index) return undefined;
     const choice = parseFlagChoiceKey(choiceKey);
-    return choice ? options.index.getDrawnFlag(choice) : undefined;
+    return choice ? options.index.getDrawnFlag(size, choice) : undefined;
   };
   return {
     demandOwner: 'view',
@@ -112,7 +120,7 @@ export function createDomArtProvider(
   cache: DomArtCache,
   options: DomArtProviderOptions = {},
 ): ArtProvider {
-  const lookupFlag = (choiceKey: string, size: CountryFlagSize): DrawnFlagEntry | undefined => {
+  const lookupFlag = (choiceKey: string, size: ArtFlagSize): DrawnFlagEntry | undefined => {
     if (!options.broker || !options.scope) return undefined;
     const choice = parseFlagChoiceKey(choiceKey);
     if (!choice) return undefined;

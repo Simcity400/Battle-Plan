@@ -22,6 +22,41 @@ pub struct AgencyComparisonParams {
     #[doc = " Countries whose agency is not created yet are listed too."]
     #[serde(default)]
     pub include_uncreated: bool,
+    #[doc = " Only the first agencies by this measure, largest first; every agency, by country id, when none."]
+    #[serde(default)]
+    pub top: Option<AgencyTop>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum AgencyRank {
+    Defense,
+    Active,
+    Maximum,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgencyTop {
+    pub count: u32,
+    pub by: AgencyRank,
+}
+
+fn measure(agency: &Agency, by: AgencyRank) -> i64 {
+    match by {
+        AgencyRank::Defense => agency.defense_raw.parse().unwrap_or(i64::MIN),
+        AgencyRank::Active => i64::from(agency.active_count),
+        AgencyRank::Maximum => i64::from(agency.maximum),
+    }
+}
+
+pub fn ranked(mut agencies: Vec<Agency>, top: Option<AgencyTop>) -> Vec<Agency> {
+    let Some(top) = top else { return agencies };
+    agencies.sort_by(|a, b| measure(b, top.by).cmp(&measure(a, top.by)).then(a.country.id.cmp(&b.country.id)));
+    agencies.truncate(usize::try_from(top.count).unwrap_or(usize::MAX));
+    agencies
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -180,13 +215,13 @@ impl AtHour for AgencyComparison {
     const TITLE: &'static str = "Agency comparison";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AgencyComparisonParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, includeUncreated];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, includeUncreated, top, "top.count", "top.by"];
     type Reply = AgencyComparisonReply;
     type Context = Result<Arc<AgencyContent>, String>;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![AgencyComparisonParams::decl(), Country::decl(), UpgradeItem::decl(), Upgrades::decl(), Agency::decl(), AgencyComparisonReply::decl()]
+        vec![AgencyComparisonParams::decl(), AgencyTop::decl(), AgencyRank::decl(), Country::decl(), UpgradeItem::decl(), Upgrades::decl(), Agency::decl(), AgencyComparisonReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -208,8 +243,9 @@ impl AtHour for AgencyComparison {
         stage == 1 && edits.fields(TableId::AgencyUpgradeLevels, u64::MAX)
     }
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         let table = TableId::IntelligenceAgencies;
+        if params.top.is_some() { return Ok(false); }
         if !edits.only_columns(table, dashboard_base::products::at_hour::field_mask(table, &["defense_raw", "active_count", "unknown_f0"])) { return Ok(false); }
         let rows = frame.complete::<tables::IntelligenceAgencies>()?;
         let Some(agencies) = data["agencies"].as_array_mut() else { return Ok(false) };
@@ -260,7 +296,7 @@ impl AtHour for AgencyComparison {
         };
         let defense_label = content.ok().and_then(|content| content.defense_label().ok().map(str::to_owned));
         Ok(match agencies(frame, params.include_uncreated, content, &mut warnings) {
-            Ok((agencies, upgrades_missing)) => AgencyComparisonReply { agencies, defense_label, upgrades_missing, missing: None, warnings },
+            Ok((agencies, upgrades_missing)) => AgencyComparisonReply { agencies: ranked(agencies, params.top), defense_label, upgrades_missing, missing: None, warnings },
             Err(error) => AgencyComparisonReply { agencies: Vec::new(), defense_label, upgrades_missing: None, missing: Some(error.to_string()), warnings },
         })
     }

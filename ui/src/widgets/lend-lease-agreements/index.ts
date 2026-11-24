@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import LendLeaseAgreementsWidget from './LendLeaseAgreementsWidget';
+import { agreementsDeclaration } from './agreementsProjection';
 
-export default { render: LendLeaseAgreementsWidget } satisfies WidgetRenderer;
+export default { declaration: agreementsDeclaration } satisfies WidgetRenderer;

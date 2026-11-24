@@ -23,7 +23,6 @@ import { SPEC } from './regionTime.ts';
 import { classifyFailure, ShownError } from './queryError.ts';
 import { useProduct } from './products.ts';
 import { productRequest } from './request.ts';
-import ActiveResearchWidget from '../widgets/active-research/ActiveResearchWidget.tsx';
 import { scoreboardDeclaration } from '../widgets/scoreboard/scoreboardProjection.ts';
 import FactionTotalsView from '../charts/race/FactionTotalsView.tsx';
 
@@ -777,128 +776,6 @@ window.captionLayout = {
       return { firstError, callsBeforeRetry, callsAfterRetry, openCalls, errorWhileInFlight, loadingWhileInFlight };
     } finally {
       (releaseRetryFollow as (() => void) | null)?.();
-      root.unmount();
-    }
-  },
-
-  async testActiveResearchPopupOnEmpty() {
-    document.body.innerHTML = '';
-    const host = document.createElement('div');
-    host.className = 'dash-grid-scroll';
-    host.style.width = '900px';
-    host.style.height = '400px';
-    document.body.appendChild(host);
-    const clock = makeClock();
-    let releaseHour150: (() => void) | null = null;
-    let notifyHour150Started: (() => void) | null = null;
-    const hour150Started = new Promise<void>(resolve => { notifyHour150Started = resolve; });
-    const mockClient = {
-      available: true,
-      setMapViews: async () => {},
-      onMapStates: async () => () => {},
-      product: async (req: { sourceId: string; revision: string; product: string; params: Record<string, unknown> }) => {
-        if (req.product === 'research') {
-          return {
-            sourceId: req.sourceId, revision: req.revision, product: req.product,
-            data: {
-              history: {
-                coverage: [{ firstHour: 43800000, lastHour: 43800200 }],
-                slots: [{
-                  index: 0,
-                  availability: [{ firstHour: 43800000, lastHour: 43800110 }],
-                  entries: [{
-                    token: 'tech_a', level: 0, technologyHandle: 1, databaseIndex: 1,
-                    continuityStartHour: 43800000, firstObservedHour: 43800000, lastObservedHour: 43800110,
-                    startedAfterHour: null, endedByHour: 43800110, outcomeObservedHour: 43800110, outcome: 'completed',
-                  }],
-                }],
-              },
-              definitions: [{ token: 'tech_a', databaseIndex: 1, name: 'Synthetic Tech', description: null }],
-              artwork: [],
-              folders: [],
-              technologyFolders: [],
-              warnings: [],
-            },
-          };
-        }
-        if (req.product === 'research-slots') {
-          const hour = Number(req.params.hour ?? 43800100);
-          if (hour === 43800150) {
-            notifyHour150Started?.();
-            await new Promise<void>(resolve => { releaseHour150 = resolve; });
-          }
-          if (hour === 43800160) {
-            throw new ShownError('Research slot read failed.', 'slots 503');
-          }
-          const slots = hour <= 43800110
-            ? [{
-                index: 0,
-                state: {
-                  firstHour: 43800000, lastHour: 43800110,
-                  token: 'tech_a', databaseIndex: 1, entryFirstObservedHour: 43800000,
-                  speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0',
-                  aheadReductionYearsRaw: null, details: null,
-                },
-                progress: null,
-                definition: null,
-              }]
-            : [];
-          return {
-            sourceId: req.sourceId, revision: req.revision, product: req.product,
-            data: { tag: 'GER', readHour: hour, slots, missing: null, warnings: [], grants: { nextId: null, unavailable: null, grants: [] } },
-          };
-        }
-        if (req.product === 'technology-effects') {
-          return { sourceId: req.sourceId, revision: req.revision, product: req.product, data: { hour: Number(req.params.hour ?? 43800100), runs: [], refusals: {}, unavailable: null, warnings: [] } };
-        }
-        if (req.product === 'research-breakdown') {
-          return { sourceId: req.sourceId, revision: req.revision, product: req.product, data: { parts: [] } };
-        }
-        return { sourceId: req.sourceId, revision: req.revision, product: req.product, data: { artwork: [], warnings: [] } };
-      },
-    };
-    const runtime = makeRuntime(clock, tracks, mockClient);
-    const makeWidget = (offset: number): WidgetSpec => ({
-      id: 'ar1', kind: 'active-research', configVersion: 1, title: 'Active research', campaign: 'default',
-      trackIds: ['t1'], time: { mode: 'pin', windows: { t1: { firstOffset: offset, lastOffset: offset } } },
-      countries: { kind: 'tags', tags: ['GER'] }, options: {},
-    });
-    const root = createRoot(host);
-    try {
-      root.render(createElement(ActiveResearchWidget, { widget: makeWidget(100), runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} }));
-      const rowName = await waitFor(() => host.querySelector<HTMLElement>('.active-row-name'), host);
-      rowName.click();
-      const panelBefore = await waitFor(() => document.querySelector<HTMLElement>('.research-window'), host);
-      await settle();
-      const openBeforeEmpty = !!panelBefore;
-      panelBefore.style.left = '120px';
-      panelBefore.style.top = '48px';
-      const closeBtn = panelBefore.querySelector<HTMLButtonElement>('.floating-panel-close')!;
-      closeBtn.focus();
-      const leftBefore = panelBefore.offsetLeft;
-      const topBefore = panelBefore.offsetTop;
-      root.render(createElement(ActiveResearchWidget, { widget: makeWidget(150), runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} }));
-      await hour150Started;
-      await settle();
-      const pendingShowsLoading = !!panelBefore.querySelector('.dossier > [data-state="loading"]');
-      const pendingShowsGoneVerdict = !!panelBefore.querySelector('.dossier > .dossier-missing');
-      (releaseHour150 as (() => void) | null)?.();
-      await waitFor(() => host.querySelector('[data-state="empty"]'), host);
-      await settle();
-      const panelAfter = document.querySelector<HTMLElement>('.research-window');
-      const openAfterEmpty = !!panelAfter;
-      const samePanelNode = panelAfter === panelBefore;
-      const positionBefore = { left: leftBefore, top: topBefore };
-      const positionAfter = panelAfter ? { left: panelAfter.offsetLeft, top: panelAfter.offsetTop } : null;
-      const focusKept = document.activeElement === closeBtn;
-      root.render(createElement(ActiveResearchWidget, { widget: makeWidget(160), runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} }));
-      await waitFor(() => panelBefore.querySelector('.dossier > [data-state="error"]'), host);
-      await settle();
-      const failedShowsError = !!panelBefore.querySelector('.dossier > [data-state="error"]');
-      const failedShowsGoneVerdict = !!panelBefore.querySelector('.dossier > .dossier-missing');
-      return { openBeforeEmpty, openAfterEmpty, samePanelNode, positionBefore, positionAfter, focusKept, pendingShowsLoading, pendingShowsGoneVerdict, failedShowsError, failedShowsGoneVerdict };
-    } finally {
-      (releaseHour150 as (() => void) | null)?.();
       root.unmount();
     }
   },

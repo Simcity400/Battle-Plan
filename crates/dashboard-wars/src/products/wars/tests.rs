@@ -240,6 +240,7 @@ fn a_countrys_naming_operands_at_an_hour_are_its_holders_look_with_every_overlor
             (21, look(2, vec![(2, ops("TWO", Some(1))), (1, ops("ONE", None))])),
             (30, look(9, vec![(9, ops("THREE", None))])),
         ]),
+        raw_looks: HashMap::new(),
         tags: HashMap::from([(1, Arc::from("ONE")), (2, Arc::from("TWO")), (3, Arc::from("THREE"))]),
     };
     let naming = RunNaming::new(Arc::new(looks));

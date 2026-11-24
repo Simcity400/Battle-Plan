@@ -7,8 +7,15 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
+  PlaceNamesReply,
+  StrategicRegionsReply,
+  UnitLeadersReply,
 } from '../../generated/dashboard';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { artUrlForHandle, flagArtHandle, mergeArtDemands } from '../art/provider.ts';
+import { artHandleKey } from '../art/types.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import type { ArtHandle } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider } from './provider.ts';
 import { readIdentityAtHeadHour, subscribeIdentityAtHead } from './react.ts';
@@ -18,6 +25,7 @@ import {
   countryTagKey,
   designKey,
   factionKey,
+  flagChoiceKey,
   leaderKey,
   regionKey,
   stateKey,
@@ -63,6 +71,7 @@ function sampleFacts(): CountryFactsReply {
 function sampleIdentities(): CountryIdentitiesReply {
   return {
     branchId: '1',
+    known: [{ firstHour: 0, lastHour: 500 }],
     countries: [
       {
         tag: 'GER',
@@ -110,6 +119,12 @@ function sampleGroups(): CountryGroupReply {
     warnings: [],
   };
 }
+
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNames' | 'loadLeaders'> = {
+  loadRegions: () => deferred<StrategicRegionsReply>().promise,
+  loadPlaceNames: () => deferred<PlaceNamesReply>().promise,
+  loadLeaders: () => deferred<UnitLeadersReply>().promise,
+};
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -177,6 +192,7 @@ test('point style answer without interval proves only its point; interval style 
   let includeValid = false;
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -238,6 +254,7 @@ test('picker opened at hour 100 stays pending rather than borrowing hour 300, an
   const flagHoldB = deferred<CountryFlagReply>();
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -381,8 +398,9 @@ test('1,500 countries use one facts request, batched flags, zero requests advanc
   };
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: async () => { factsCalls++; return factsReply; },
-    loadIdentities: async () => ({ branchId: '1', countries: [], unknown: [], warnings: [] }),
+    loadIdentities: async () => ({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] }),
     loadGroups: async () => sampleGroups(),
     loadStyles: (_scope, _hour, _tags, signal) => new Promise((_res, rej) => {
       signal.addEventListener('abort', () => { abortedStyles++; rej(new DOMException('Aborted', 'AbortError')); }, { once: true });
@@ -445,7 +463,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
   assert.deepEqual(ger150.name, { status: 'ready', value: 'Later Empire' });
   assert.deepEqual(ger150.validInterval, [150, 500]);
 
-  const annexed = view.who('country', 'slot:2', 160);
+  const annexed = view.who('country', countryKey(2), 160);
   assert.equal(annexed.holder.status, 'absent');
   assert.deepEqual(annexed.validInterval, [150, 500]);
 
@@ -459,6 +477,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
   const factsHold = deferred<CountryFactsReply>();
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -491,6 +510,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
 test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots when scope is null or keys are empty', async () => {
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: async () => sampleFacts(),
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -536,4 +556,126 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
   assert.equal(h3, 150, 'crossing the run boundary advances the hour');
   unsubActive();
   broker.dispose();
+});
+
+test('an identity key and an art handle keep their whole identity from demand to the drawn picture', () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  index.setFacts(sampleFacts(), true);
+  index.setIdentities(sampleIdentities());
+  index.setDrawnFlag('panel', FLAG_A, { url: 'flag://panel' });
+  index.setDrawnFlag('shield', FLAG_A, { url: 'flag://shield' });
+  const worker = IdentityIndex.fromSnapshot(structuredClone(index.exportSnapshot()));
+
+  const view = createBoundedReadView({ hour: 200, identity: createSnapshotIdentityProvider(worker) });
+  const selected = view.who('country', countryKey(1), 100);
+  assert.equal(worker.resolve(countrySlotKey(1), 100).kind, 'known');
+  assert.deepEqual(selected.tag, { status: 'ready', value: 'GER' });
+  assert.deepEqual(selected.name, { status: 'ready', value: 'Early Republic' });
+
+  const choice = flagChoiceKey(FLAG_A);
+  assert.equal(artUrlForHandle(flagArtHandle(choice, 'panel'), worker), 'flag://panel');
+  assert.equal(artUrlForHandle(flagArtHandle(choice, 'shield'), worker), 'flag://shield');
+
+  const plain: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0 };
+  const asText: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
+  const asRecorded: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, recorded: 'GFX_y' };
+  assert.equal(artHandleKey({ kind: 'sprite', key: 'GFX_x' }), artHandleKey(plain));
+  assert.deepEqual(mergeArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
+  assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
+});
+
+test('leader, state, province and region asks each start their product read and answer with its validity', async () => {
+  const calls: string[] = [];
+  const transport: IdentityTransport = {
+    loadFacts: () => deferred<CountryFactsReply>().promise,
+    loadIdentities: () => deferred<CountryIdentitiesReply>().promise,
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: () => deferred<CountryFlagReply>().promise,
+    loadRegions: async () => {
+      calls.push('regions');
+      return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true }], warnings: [] };
+    },
+    loadPlaceNames: async (_scope, hour, states, provinces) => {
+      calls.push(`places ${hour} ${states.join(',')} ${provinces.join(',')}`);
+      return {
+        states: states.map(stateId => ({ stateId, hour, name: `State ${stateId}`, missing: null })),
+        places: provinces.map(provinceId => ({ provinceId, hour, name: null, missing: 'Province unnamed in this map' })),
+        warnings: [],
+      };
+    },
+    loadLeaders: async (_scope, owner, hour) => {
+      calls.push(`leaders ${owner} ${hour}`);
+      return {
+        leaders: [{ reference: 'L1', name: 'Ada Vance', role: { owner: 'ALP', kind: 0, category: 0, rank: null, attributeNames: [null, null, null, null], maximumSkill: null }, skill: 3, components: [1, 1, 1, 0], traits: null, traitDates: [], firstSeenHour: 0, fought: 0, won: 0, lost: 0 }],
+        traits: [], withheld: [], missing: null, battlesPartialFrom: null, resultsMissing: '', warnings: [],
+      };
+    },
+  };
+  const broker = new IdentityBroker({ transport });
+  const provider = createBrokerIdentityProvider(broker, SCOPE, {}, { branchBounds: [0, 500], needFlags: false });
+  const view = createBoundedReadView({ hour: 200, identity: provider });
+  const ask = () => [
+    view.who('region', '3', 150), view.who('region', '9', 150),
+    view.who('state', '64', 150), view.who('province', '7', 150), view.who('leader', 'ALP:L1', 150), view.who('leader', 'ALP:L2', 150),
+  ];
+  assert.ok(ask().every(result => result.name.status === 'pending'));
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  ask();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 150 64 7', 'regions']);
+
+  const [region, unknownRegion, state, province, leader, otherLeader] = ask();
+  assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
+  assert.deepEqual(region!.validInterval, [0, 500]);
+  assert.equal(unknownRegion!.name.status, 'absent');
+  assert.deepEqual(state!.name, { status: 'ready', value: 'State 64' });
+  assert.deepEqual(state!.validInterval, [150, 150]);
+  assert.deepEqual(province!.name, { status: 'absent', reason: 'Province unnamed in this map' });
+  assert.deepEqual(leader!.name, { status: 'ready', value: 'Ada Vance' });
+  assert.equal(otherLeader!.holder.status, 'absent');
+  assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
+  broker.dispose();
+});
+
+test('coalesced sparse identity runs stay missing on unrecorded gaps outside known spans', () => {
+  const index = new IdentityIndex(SCOPE, [0, 40]);
+  index.setFacts({ ...sampleFacts(), known: [[10, 10], [30, 30]] }, true);
+  index.setIdentities({
+    branchId: '1',
+    known: [{ firstHour: 10, lastHour: 10 }, { firstHour: 30, lastHour: 30 }],
+    countries: [
+      {
+        tag: 'GER',
+        identities: [{ firstHour: 10, lastHour: 30, slot: 1, countryId: 10 }],
+        unresolved: [],
+      },
+    ],
+    unknown: [],
+    warnings: [],
+  });
+
+  const at10 = index.resolve(countrySlotKey(1), 10);
+  assert.equal(at10.kind, 'known');
+  assert.deepEqual(at10.tag, { kind: 'known', value: 'GER' });
+  assert.deepEqual(at10.valid, [10, 10]);
+  assert.equal(at10.nextBoundary, 11);
+
+  const gap20 = index.resolve(countrySlotKey(1), 20);
+  assert.equal(gap20.kind, 'known');
+  assert.equal(gap20.holder.kind, 'missing');
+  assert.equal(gap20.tag.kind, 'missing');
+  assert.deepEqual(gap20.valid, [11, 29]);
+  assert.equal(gap20.nextBoundary, 30);
+  assert.equal(index.slotHolderAt(1, 20), null);
+
+  const byTagGap = index.resolve(countryTagKey('GER'), 20);
+  assert.equal(byTagGap.kind, 'known');
+  assert.equal(byTagGap.holder.kind, 'missing');
+  assert.deepEqual(byTagGap.valid, [11, 29]);
+
+  const at30 = index.resolve(countrySlotKey(1), 30);
+  assert.equal(at30.kind, 'known');
+  assert.deepEqual(at30.tag, { kind: 'known', value: 'GER' });
+  assert.deepEqual(at30.valid, [30, 30]);
 });

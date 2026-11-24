@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import { useViewportHeight } from '../../charts/useChartTokens';
@@ -37,9 +37,10 @@ import {
 } from '../host/index.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import type { FamilyTableBinding } from './laneView.ts';
+import { syncTableEdges } from './edges.ts';
 import { buildColumnLayouts, layoutFamilyTable } from './layout.ts';
 import { deriveTableAudit, resolveTableRows, type CountryColorSource, type TableColumnSpec, type TableProjection } from './model.ts';
-import { ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
+import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 import './tableFamily.css';
 
@@ -189,7 +190,10 @@ interface TableMetaState {
   empty: string | null;
   emptyDetail: string | null;
   emptyKind: 'empty' | 'unavailable';
-  summaryPill: string | null;
+  titleSummary: string | null;
+  titleSummaryPartial: string | null;
+  hideHeader: boolean;
+  rowHeightMode: 'standard' | 'media';
   notes: readonly string[];
   warnings: readonly string[];
   hasTree: boolean;
@@ -205,6 +209,7 @@ interface WidthsState {
   hidden: readonly string[];
   totalWidth: number;
   scrollable: boolean;
+  pinnedCount: number;
   moreWidth: number;
   signature: string;
 }
@@ -253,13 +258,14 @@ export default function FamilyTableHost<TOptions>({
   contextMenuRef.current = contextMenu;
   const frameRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const edgesRef = useRef<HTMLDivElement>(null);
   const accessibleRef = useRef<HTMLTableElement>(null);
   const mirrorBodyRef = useRef<HTMLTableSectionElement>(null);
 
   const viewportRef = useRef({ width: 0, height: 0, scrollLeft: 0, scrollTop: 0 });
   const [viewportWidth, setViewportWidth] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
-  const [resizing, setResizing] = useState<{ key: string; width: number } | null>(null);
+  const [resizing, setResizing] = useState<{ key: string; width: number; guideX?: number | null } | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
@@ -301,7 +307,10 @@ export default function FamilyTableHost<TOptions>({
     empty: null,
     emptyDetail: null,
     emptyKind: 'empty',
-    summaryPill: null,
+    titleSummary: null,
+    titleSummaryPartial: null,
+    hideHeader: false,
+    rowHeightMode: 'standard',
     notes: [],
     warnings: [],
     hasTree: false,
@@ -326,6 +335,7 @@ export default function FamilyTableHost<TOptions>({
     hidden: [],
     totalWidth: 0,
     scrollable: false,
+    pinnedCount: 1,
     moreWidth: 0,
     signature: '',
   });
@@ -381,7 +391,7 @@ export default function FamilyTableHost<TOptions>({
   reportShownRef.current = reportShown;
 
   const surfaceRef = useRef<MountedFamilyCanvas | null>(null);
-  const rowHeight = ROW_HEIGHT[settings.density];
+  const rowHeight = meta.rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
 
   const latestRef = useRef({
     declaration,
@@ -657,14 +667,17 @@ export default function FamilyTableHost<TOptions>({
           rawMeta?.empty ?? null,
           rawMeta?.emptyDetail ?? null,
           rawMeta?.emptyKind ?? 'empty',
-          rawMeta?.summaryPill ?? null,
+          rawMeta?.titleSummary ?? null,
+          rawMeta?.titleSummaryPartial ?? null,
+          rawMeta?.hideHeader ?? false,
+          rawMeta?.rowHeightMode ?? 'standard',
           rawMeta?.notes ?? [],
           rawMeta?.warnings ?? [],
           rawMeta?.hasTree ?? false,
           rawMeta?.unsorted ?? false,
           rawMeta?.rankShown ?? false,
           rawMeta?.rankWidth ?? 0,
-          rawMeta?.columns?.map(c => [c.key, c.label, c.priority, c.as, c.offered, c.text ?? false, c.hideable ?? true, c.sortable ?? true, c.numeric ?? false, c.hint ?? '']) ?? [],
+          rawMeta?.columns?.map(c => [c.key, c.label, c.unit ?? '', c.priority, c.as, c.offered, c.text ?? false, c.hideable ?? true, c.sortable ?? true, c.numeric ?? false, c.hint ?? '', c.notRecordedReason ?? '', c.cellKind ?? '', c.pinned ?? false]) ?? [],
         ]);
         if (nextMetaSig !== metaSigRef.current) {
           metaSigRef.current = nextMetaSig;
@@ -675,7 +688,10 @@ export default function FamilyTableHost<TOptions>({
             empty: rawMeta?.empty ?? null,
             emptyDetail: rawMeta?.emptyDetail ?? null,
             emptyKind: rawMeta?.emptyKind ?? 'empty',
-            summaryPill: rawMeta?.summaryPill ?? null,
+            titleSummary: rawMeta?.titleSummary ?? null,
+            titleSummaryPartial: rawMeta?.titleSummaryPartial ?? null,
+            hideHeader: rawMeta?.hideHeader ?? false,
+            rowHeightMode: rawMeta?.rowHeightMode ?? 'standard',
             notes: rawMeta?.notes ?? [],
             warnings: rawMeta?.warnings ?? [],
             hasTree: rawMeta?.hasTree ?? false,
@@ -760,17 +776,18 @@ export default function FamilyTableHost<TOptions>({
         }
       }
 
-      const tableInfo = shown.fields.table as { count: number; focusedIndex: number; inspectedPresent: boolean } | undefined;
+      const tableInfo = shown.fields.table as { count: number; totalHeight?: number; focusedIndex: number; inspectedPresent: boolean } | undefined;
       if (tableInfo && (tableInfo !== lastTableInfoRef.current || focusInsideRef.current || inspectedKeyRef.current)) {
         lastTableInfoRef.current = tableInfo;
         if (lastExtentRef.current.count !== tableInfo.count) {
           lastExtentRef.current.count = tableInfo.count;
           accessibleRef.current?.setAttribute('aria-rowcount', String(tableInfo.count + 1));
         }
-        const extHeight = Math.max(viewportRef.current.height, latestRef.current.rowHeight * tableInfo.count);
+        const extHeight = Math.max(viewportRef.current.height, tableInfo.totalHeight ?? (latestRef.current.rowHeight * tableInfo.count));
         if (lastExtentRef.current.height !== extHeight) {
           lastExtentRef.current.height = extHeight;
           mounted.extent.style.height = `${extHeight}px`;
+          syncTableEdges(edgesRef.current, viewportRef.current, extHeight);
         }
         if (focusInsideRef.current && focusedKeyRef.current) {
           const entry = navRef.current.find(item => item[0] === focusedKeyRef.current);
@@ -877,18 +894,20 @@ export default function FamilyTableHost<TOptions>({
       viewportRef.current.scrollLeft = sl;
       viewportRef.current.scrollTop = st;
       if (sl !== prevSl) setScrollLeft(sl);
+      syncTableEdges(edgesRef.current, viewportRef.current, lastExtentRef.current.height);
       syncViewWindow();
       bindRef.current();
     };
 
     const resizeObserver = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
-      const w = Math.round(rect ? rect.width : node.clientWidth);
-      const h = Math.round(rect ? rect.height : node.clientHeight);
+      const w = Math.floor(rect ? rect.width : node.clientWidth);
+      const h = Math.floor(rect ? rect.height : node.clientHeight);
       refreshFocusAnchorRef.current();
       if (w === viewportRef.current.width && h === viewportRef.current.height) return;
       viewportRef.current.width = w;
       viewportRef.current.height = h;
+      syncTableEdges(edgesRef.current, viewportRef.current, lastExtentRef.current.height);
       syncViewWindow();
       setViewportWidth(w);
       latestRef.current.onViewportSize?.(w, h);
@@ -1004,12 +1023,14 @@ export default function FamilyTableHost<TOptions>({
       if (visibleCols.length === widthsState.visible.length) {
         const rank = meta.rankShown ? (meta.rankWidth || 36) : 0;
         const totalWidth = rank + widthsState.moreWidth + visibleCols.reduce((sum, col) => sum + col.width, 0);
+        const pinnedCount = widthsState.pinnedCount || 1;
         return {
           columns: visibleCols,
           hidden: [...widthsState.hidden],
           totalWidth,
           scrollable: widthsState.scrollable,
-          pinnedWidth: rank + (visibleCols[0]?.width ?? 0),
+          pinnedWidth: rank + visibleCols.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0),
+          pinnedCount,
           moreWidth: widthsState.moreWidth,
         };
       }
@@ -1027,10 +1048,13 @@ export default function FamilyTableHost<TOptions>({
     const spec = specMap.get(col.key);
     return {
       ...col,
+      unit: spec?.unit,
       text: spec?.text,
       hideable: spec?.hideable,
       sortable: spec?.sortable,
       hint: spec?.hint,
+      notRecordedReason: spec?.notRecordedReason,
+      headerGroup: spec?.headerGroup,
       displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
     };
   }), [layout.columns, specMap]);
@@ -1039,8 +1063,8 @@ export default function FamilyTableHost<TOptions>({
 
   if (blockedState) return <>{blockedState}</>;
 
-  const summaryPillNode = headerSlot && meta.mode === 'picture' && !meta.empty && meta.summaryPill
-    ? createPortal(<span className="pill">{meta.summaryPill}</span>, headerSlot)
+  const summaryNode = headerSlot && meta.mode === 'picture' && !meta.empty && meta.titleSummary
+    ? createPortal(<span className="tf-title-summary">{meta.titleSummary}{meta.titleSummaryPartial && <span className="tf-title-hatch" role="img" aria-label={meta.titleSummaryPartial} title={meta.titleSummaryPartial} />}</span>, headerSlot)
     : null;
 
   const bodyStateNode = renderFamilyBodyState({
@@ -1059,11 +1083,12 @@ export default function FamilyTableHost<TOptions>({
   });
 
   const hiddenCols = settings.overflow === 'tooltip' ? (widthsState.hidden.length ? widthsState.hidden : layout.hidden) : [];
+  const canScrollRight = layout.scrollable && scrollLeft < Math.max(0, layout.totalWidth - (viewportWidth || 320)) - 1;
 
   return <div ref={frameRef} className={`tf-frame${className ? ` ${className}` : ''}`} data-density={settings.density} data-overflow={settings.overflow}>
-    {summaryPillNode}
+    {summaryNode}
     {meta.notes.length > 0 && !bodyStateNode && <WidgetCaption>{meta.notes.join(' ')}</WidgetCaption>}
-    <div className="tf-head-clip" style={bodyStateNode ? { display: 'none' } : undefined}>
+    {!meta.hideHeader && <div className="tf-head-clip" style={bodyStateNode ? { display: 'none' } : undefined}>
       <FamilyTableHeader
         columns={headerColumns}
         allColumns={activeColumns}
@@ -1072,20 +1097,35 @@ export default function FamilyTableHost<TOptions>({
         unsorted={meta.unsorted}
         editableColumns={editableColumns}
         rankWidth={meta.rankShown ? meta.rankWidth : 0}
+        pinnedCount={layout.pinnedCount}
         pinned={layout.scrollable}
         scrollLeft={settings.overflow === 'scroll' ? scrollLeft : 0}
+        canScrollRight={canScrollRight}
         onChange={changeSettings}
-        onResizing={(key, nextWidth) => setResizing({ key, width: nextWidth })}
+        onResizing={(key, nextWidth, guideX) => setResizing(guideX === null ? null : { key, width: nextWidth, guideX })}
         onResize={(key, nextWidth) => {
           setResizing(null);
           changeSettings(draft => { if (draft.columns[key]) draft.columns[key]!.width = nextWidth; });
         }}
       />
-    </div>
+    </div>}
     <div className="tf-body-wrap">
+      {resizing?.guideX != null && <div className="tf-resize-guide" style={{ left: resizing.guideX }} aria-hidden="true" />}
+      <div
+        ref={edgesRef}
+        className="tf-edges"
+        data-right={canScrollRight ? 'true' : undefined}
+        data-pinned={layout.scrollable && scrollLeft > 0 && layout.pinnedWidth > 0 ? 'true' : undefined}
+        style={{ '--tf-pinned-width': `${layout.pinnedWidth}px` } as CSSProperties}
+        aria-hidden="true"
+      >
+        <i className="tf-edge-right" />
+        <i className="tf-edge-bottom" />
+        <i className="tf-edge-pinned" />
+      </div>
       <div
         ref={bodyRef}
-        className="tf-body"
+        className="tf-body themed-scrollbar"
         data-overflow={settings.overflow}
         data-clickable={onActivate ? 'true' : undefined}
       />

@@ -23,6 +23,7 @@ dashboard_base::register_products! {
 
 dashboard_base::register_hourly_products! {
     POLITICS_STATE_POLITICSSTATE => crate::products::politics::state::PoliticsState,
+    POLITICS_ELECTIONS_NEXTELECTIONS => crate::products::politics::elections::NextElections,
     COUNTRY_PEOPLE_COUNTRYPEOPLE => crate::products::country_people::CountryPeople,
     FOCUS_FOCUSUNAVAILABLEAT => crate::products::focus::FocusUnavailableAt,
     STABILITY_COUNTRYSTABILITYBREAKDOWN => crate::products::stability::CountryStabilityBreakdown,

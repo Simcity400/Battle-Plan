@@ -15,8 +15,8 @@ type FocusFactsMode = 'titles' | 'images' | 'details';
 function useFocusFacts(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
   database: FocusDatabase, wanted: readonly NameAt[], active: boolean, mode: FocusFactsMode) {
   const spec = useMemo<FactSpec<FocusArtworkFact>>(() => ({
-    product: 'focus-artwork', identity: JSON.stringify([country, database, mode]), perRequest: mode === 'images' ? 8 : 256,
-    requestOrder: 'wanted',
+    product: 'focus-artwork', identity: JSON.stringify([country, database, mode]), perRequest: mode === 'images' ? 64 : 256,
+    requestOrder: 'wanted', shared: true,
     params: (branchId, hour, tokens) => ({ branchId, hour, country: country === undefined ? undefined : countryFromKey(country), database, tokens,
       textOnly: mode !== 'images', includeDescriptions: mode === 'details',
       ...(mode === 'images' ? { iconsOnly: true } : {}) }),
