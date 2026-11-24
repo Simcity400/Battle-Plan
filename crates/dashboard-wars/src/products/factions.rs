@@ -330,6 +330,21 @@ fn ids_of(members: &BTreeMap<u64, Vec<(String, i32, i32)>>, from: i32, to: i32) 
     members.iter().filter(|(_, runs)| runs.iter().any(|&(_, first, last)| first <= to && from <= last)).map(|(id, _)| id.to_string()).collect()
 }
 
+fn join_missing(mut spans: Vec<MissingSpan>) -> Vec<MissingSpan> {
+    spans.sort_unstable_by(|a, b| a.reason.cmp(&b.reason).then((a.first_hour, a.last_hour).cmp(&(b.first_hour, b.last_hour))));
+    let mut out: Vec<MissingSpan> = Vec::new();
+    for span in spans {
+        match out.last_mut() {
+            Some(held) if held.reason == span.reason && i64::from(held.last_hour) + 1 >= i64::from(span.first_hour) => {
+                held.last_hour = held.last_hour.max(span.last_hour);
+            }
+            _ => out.push(span),
+        }
+    }
+    out.sort_unstable_by_key(|span| (span.first_hour, span.last_hour));
+    out
+}
+
 fn summed_line(line: &Line<'_, '_>, id: String, drawn: &[(Ask, Vec<(i32, i32)>)], unread: &[MissingSpan], from: i32, to: i32, width: u32) -> io::Result<Option<FactionLine>> {
     if drawn.is_empty() {
         return Ok(None);
@@ -339,7 +354,7 @@ fn summed_line(line: &Line<'_, '_>, id: String, drawn: &[(Ask, Vec<(i32, i32)>)]
     for ((_, spans), (_, gaps)) in drawn.iter().zip(&charts) {
         missing.extend(within(gaps, spans));
     }
-    missing.sort_unstable_by_key(|gap| (gap.first_hour, gap.last_hour));
+    let missing = join_missing(missing);
     let summaries: Vec<ChartSummary> = charts.into_iter().map(|(summary, _)| summary).collect();
     Ok(Some(FactionLine { id, summary: summed(&summaries, &missing, from, to, width), missing }))
 }

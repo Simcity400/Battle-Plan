@@ -701,20 +701,75 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub fn ranked(&self, from: i32, to: i32, width: u32, n: usize) -> io::Result<Vec<RankedLine>> {
-        self.owners_only("a ranked view")?;
-        if self.query.replay.recording().withheld_reason(self.series.table.index()).is_some() {
-            return Ok(Vec::new());
+        Ok(self.ranked_with_missing(from, to, width, n)?.0)
+    }
+
+    fn ranked_refused(&self, from: i32, to: i32) -> io::Result<Vec<MissingSpan>> {
+        let mut refused: Vec<MissingSpan> = Vec::new();
+        for stretch in self.query.timeline.within(from, to) {
+            let mut first = stretch.first;
+            if let Some((w_first, w_last, reason)) = self.withheld_span(stretch.run, first, stretch.last) {
+                refused.push(MissingSpan { first_hour: w_first, last_hour: w_last, reason: reason.to_owned() });
+                first = w_last.saturating_add(1);
+                if first > stretch.last {
+                    continue;
+                }
+            }
+            let statuses = self.statuses(stretch.run, first, stretch.last)?;
+            for held in statuses.0.iter().filter(|held| held.last >= first && held.first <= stretch.last) {
+                if matches!(held.status, Status::Complete) {
+                    continue;
+                }
+                let reason = match held.status {
+                    Status::Unavailable { reason } => statuses.1.get(&reason).map(String::as_str),
+                    _ => None,
+                };
+                if let Some(reason) = crate::coverage::row_coverage(self.series.table, held.status, reason, false).into_missing() {
+                    refused.push(MissingSpan { first_hour: held.first.max(first), last_hour: held.last.min(stretch.last), reason });
+                }
+            }
         }
+        Ok(joined(refused))
+    }
+
+    pub fn ranked_with_missing(&self, from: i32, to: i32, width: u32, n: usize) -> io::Result<(Vec<RankedLine>, Vec<MissingSpan>)> {
+        self.owners_only("a ranked view")?;
+        if let Some(reason) = self.query.replay.recording().withheld_reason(self.series.table.index()) {
+            return Ok((Vec::new(), vec![MissingSpan { first_hour: from, last_hour: to, reason: reason.to_owned() }]));
+        }
+        let refused = self.ranked_refused(from, to)?;
+        let refused_at = |lo: i32, hi: i32| refused.iter().any(|span| span.first_hour <= hi && lo <= span.last_hour);
         let hours = i64::from(to) - i64::from(from) + 1;
         let six = replay_columnar::summary::bucket_hours(0);
         if hours < six {
-            let tags = self.rank_at(to, n)?;
+            let rank_hour = (from..=to).rev().find(|&hour| !refused_at(hour, hour));
+            let Some(rank_hour) = rank_hour else {
+                return Ok((Vec::new(), refused));
+            };
+            let tags = match self.rank_at_by_checked(rank_hour, n, false)? {
+                Ok(tags) => tags,
+                Err(_) => return Ok((Vec::new(), refused)),
+            };
             let charts = self.summaries(&tags, from, to, width)?;
-            return Ok(tags
-                .into_iter()
-                .zip(charts)
-                .map(|(tag, (summary, missing))| RankedLine { tag, summary, membership: vec![(from, to)], missing })
-                .collect());
+            let mut out = Vec::new();
+            for (tag, (mut summary, mut missing)) in tags.into_iter().zip(charts) {
+                if !refused.is_empty() {
+                    for bucket in &mut summary.buckets {
+                        if bucket.is_some_and(|b| refused_at(b.first_hour, b.last_hour)) {
+                            *bucket = None;
+                        }
+                    }
+                    if let Some(runs) = &mut summary.runs {
+                        runs.retain(|run| !refused_at(run.first_hour, run.last_hour));
+                    }
+                    missing.extend(refused.iter().cloned());
+                    missing = joined(missing);
+                }
+                if summary.buckets.iter().any(Option::is_some) {
+                    out.push(RankedLine { tag, summary, membership: vec![(from, to)], missing });
+                }
+            }
+            return Ok((out, refused));
         }
         let asked = width;
         let width = if hours / i64::from(width.max(1)) < six { (hours / six) as u32 } else { width };
@@ -726,7 +781,6 @@ impl<'q, 'a> Line<'q, 'a> {
         let holders = self.by_key();
         let tag_of = |key: u128, hour: i32| holders.get(&key)?.iter().find(|run| run.0 <= hour && hour <= run.1).map(|run| run.2);
         let mut lines: BTreeMap<String, (Vec<Option<ChartBucket>>, Vec<(i32, i32)>)> = BTreeMap::new();
-        let mut withheld_spans: Vec<(i32, i32)> = Vec::new();
         let mut place = |slot: usize, drawn: Vec<(&str, ChartBucket, Vec<(i32, i32)>)>| {
             for (tag, bucket, hours) in drawn {
                 let (buckets, spans) = lines.entry(tag.to_owned()).or_insert_with(|| (vec![None; bins], Vec::new()));
@@ -745,8 +799,7 @@ impl<'q, 'a> Line<'q, 'a> {
             }
         };
         for mut stretch in self.query.timeline.within(from, to) {
-            if let Some((w_first, w_last, _)) = self.withheld_span(stretch.run, stretch.first, stretch.last) {
-                withheld_spans.push((w_first, w_last));
+            if let Some((_, w_last, _)) = self.withheld_span(stretch.run, stretch.first, stretch.last) {
                 if w_last >= stretch.last {
                     continue;
                 }
@@ -810,35 +863,53 @@ impl<'q, 'a> Line<'q, 'a> {
                 place(slot, drawn);
             }
         }
-        if !withheld_spans.is_empty() {
+        if !refused.is_empty() {
             for slot in 0..bins {
                 let lo = (first_bin + slot as i64 * bin_hours).max(i64::from(from)) as i32;
                 let hi = (first_bin + (slot as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
-                if withheld_spans.iter().any(|&(a, b)| a <= hi && lo <= b) {
+                if refused_at(lo, hi) {
                     for (buckets, _) in lines.values_mut() {
                         buckets[slot] = None;
                     }
                 }
             }
+            lines.retain(|_, (buckets, _)| buckets.iter().any(Option::is_some));
         }
         if hours <= i64::from(asked) {
             let drawn: Vec<(Ask, Vec<(i32, i32)>)> = lines.iter().map(|(tag, (_, spans))| (Ask::whole(tag), spans.clone())).collect();
             let charts = self.summaries_within(&drawn, from, to, asked)?;
-            return Ok(drawn
-                .into_iter()
-                .zip(charts)
-                .map(|((ask, membership), (summary, missing))| RankedLine { tag: ask.country.key().into_owned(), summary, membership, missing })
-                .collect());
+            let mut out = Vec::new();
+            for ((ask, membership), (mut summary, mut missing)) in drawn.into_iter().zip(charts) {
+                if !refused.is_empty() {
+                    for bucket in &mut summary.buckets {
+                        if bucket.is_some_and(|b| refused_at(b.first_hour, b.last_hour)) {
+                            *bucket = None;
+                        }
+                    }
+                    if let Some(runs) = &mut summary.runs {
+                        runs.retain(|run| !refused_at(run.first_hour, run.last_hour));
+                    }
+                    missing.extend(refused.iter().cloned());
+                    missing = joined(missing);
+                }
+                if summary.buckets.iter().any(Option::is_some) {
+                    out.push(RankedLine { tag: ask.country.key().into_owned(), summary, membership, missing });
+                }
+            }
+            return Ok((out, refused));
         }
-        lines
-            .into_iter()
-            .map(|(tag, (buckets, membership))| {
-                let country = Country::from(&tag);
-                let parts = self.parts(&country, from, to);
-                let missing = self.missing(&country, from, to, &parts)?;
-                Ok(RankedLine { summary: ChartSummary { from: f64::from(from), to: f64::from(to), width, buckets, runs: None }, membership, missing, tag })
-            })
-            .collect()
+        let mut out = Vec::with_capacity(lines.len());
+        for (tag, (buckets, membership)) in lines {
+            let country = Country::from(&tag);
+            let parts = self.parts(&country, from, to);
+            let mut missing = self.missing(&country, from, to, &parts)?;
+            if !refused.is_empty() {
+                missing.extend(refused.iter().cloned());
+                missing = joined(missing);
+            }
+            out.push(RankedLine { summary: ChartSummary { from: f64::from(from), to: f64::from(to), width, buckets, runs: None }, membership, missing, tag });
+        }
+        Ok((out, refused))
     }
 
     pub fn parts(&self, country: impl Into<Country>, from: i32, to: i32) -> Vec<Part> {
@@ -1303,6 +1374,15 @@ impl<'q, 'a> Line<'q, 'a> {
             let (run, first, last) = extent;
             read.insert(extent, self.charts_within(run, &keys, (first, last), level, bin_hours)?);
         }
+        let mut run_incomplete: HashMap<(u32, i32, i32), Arc<Vec<replay_lanes::lanes::StatusRun>>> = HashMap::new();
+        for (&run, spans) in &covered {
+            for &(a, b) in spans {
+                let statuses = self.statuses(run, a, b)?;
+                if statuses.0.iter().any(|s| !matches!(s.status, Status::Complete)) {
+                    run_incomplete.insert((run, a, b), Arc::new(statuses.0.clone()));
+                }
+            }
+        }
         let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
         let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
         let mut out = Vec::with_capacity(drawn.len());
@@ -1312,14 +1392,29 @@ impl<'q, 'a> Line<'q, 'a> {
                 let own = read.get(&(part.run, part.first, part.last)).filter(|reads| reads.iter().any(|read| read.index.contains_key(&part.key)));
                 let span = span_of(part);
                 let Some(reads) = own.or_else(|| read.get(&(part.run, span.0, span.1))) else { continue };
+                let part_gaps = match run_incomplete.get(&(part.run, span.0, span.1)) {
+                    Some(statuses) => self.unwitnessed_gaps(part, statuses)?,
+                    None => Vec::new(),
+                };
                 let mut previous = false;
                 for (slot, bucket) in self.fold_reads(reads, part.key, (part.first, part.last), level, first_bin, bin_hours, bins).into_iter().enumerate() {
-                    let Some(bucket) = bucket else {
+                    let Some(mut bucket) = bucket else {
                         previous = false;
                         continue;
                     };
                     let start = first_bin + slot as i64 * bin_hours;
-                    let now = ChartBucket { first_break: !previous || (part.starts && i64::from(part.first) >= start), ..bucket };
+                    let mut first_break = !previous || (part.starts && i64::from(part.first) >= start);
+                    if !part_gaps.is_empty() {
+                        let lo = start.max(i64::from(part.first)) as i32;
+                        let hi = (start + bin_hours - 1).min(i64::from(part.last)) as i32;
+                        if part_gaps.iter().any(|&(ga, gb)| ga <= hi && lo <= gb) {
+                            bucket.has_break = true;
+                        }
+                        if lo > part.first && part_gaps.iter().any(|&(ga, gb)| ga <= lo - 1 && lo - 1 <= gb) {
+                            first_break = true;
+                        }
+                    }
+                    let now = ChartBucket { first_break, ..bucket };
                     buckets[slot] = match buckets[slot].take() {
                         None => Some(now),
                         Some(held) => crate::chart::merge(Some(held), Some(now)),
@@ -1605,6 +1700,65 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(joined(out))
     }
 
+    fn witnessed_spans(&self, run: u32, key: u128, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
+        let mut out: Vec<(i32, i32)> = Vec::new();
+        let mut open: Option<i32> = None;
+        crate::cost::storage(|| {
+            replay_lanes::points::points(
+                self.query.replay.recording(),
+                run,
+                self.series.table,
+                &[],
+                None,
+                read::Keys::These(&[key]),
+                first,
+                last,
+                &mut |point| {
+                    if point.key != key {
+                        return true;
+                    }
+                    if point.covered {
+                        open.get_or_insert(point.hour);
+                    } else if let Some(start) = open.take()
+                        && start < point.hour
+                    {
+                        out.push((start, point.hour - 1));
+                    }
+                    true
+                },
+            )
+        })?;
+        if let Some(start) = open {
+            out.push((start, last));
+        }
+        Ok(out)
+    }
+
+    fn unwitnessed_gaps(&self, part: &Part, statuses: &[replay_lanes::lanes::StatusRun]) -> io::Result<Vec<(i32, i32)>> {
+        let mut out: Vec<(i32, i32)> = Vec::new();
+        for held in statuses.iter().filter(|held| held.last >= part.first && held.first <= part.last) {
+            let (a, b) = (held.first.max(part.first), held.last.min(part.last));
+            match held.status {
+                Status::Complete => {}
+                Status::Truncated { .. } => {
+                    let witnessed = self.witnessed_spans(part.run, part.key, a, b)?;
+                    let mut cursor = a;
+                    for (wa, wb) in witnessed {
+                        if wa > cursor {
+                            out.push((cursor, wa - 1));
+                        }
+                        cursor = wb.saturating_add(1);
+                    }
+                    if cursor <= b {
+                        out.push((cursor, b));
+                    }
+                }
+                Status::NotRecorded | Status::Unavailable { .. } => out.push((a, b)),
+            }
+        }
+        Ok(out)
+    }
+
     fn incomplete(&self, part: &Part, from: i32, to: i32, out: &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>> {
         let (mut first, last) = (part.first.max(from), part.last.min(to));
         let mut complete = Vec::new();
@@ -1621,13 +1775,31 @@ impl<'q, 'a> Line<'q, 'a> {
         let statuses = self.statuses(part.run, first, last)?;
         for held in statuses.0.iter().filter(|held| held.last >= first && held.first <= last) {
             let (a, b) = (held.first.max(first), held.last.min(last));
-            let reason = match held.status {
-                Status::Unavailable { reason } => statuses.1.get(&reason).map(String::as_str),
-                _ => None,
-            };
-            match crate::coverage::row_coverage(self.series.table, held.status, reason, false) {
-                crate::coverage::Coverage::NotRecorded(reason) => out.push(MissingSpan { first_hour: a, last_hour: b, reason }),
-                crate::coverage::Coverage::Recorded => complete.push((i64::from(a), i64::from(b))),
+            match held.status {
+                Status::Complete => complete.push((i64::from(a), i64::from(b))),
+                Status::Truncated { .. } => {
+                    let reason = crate::coverage::row_coverage(self.series.table, held.status, None, false).into_missing().expect("truncated reason");
+                    let witnessed = self.witnessed_spans(part.run, part.key, a, b)?;
+                    let mut cursor = a;
+                    for (wa, wb) in witnessed {
+                        if wa > cursor {
+                            out.push(MissingSpan { first_hour: cursor, last_hour: wa - 1, reason: reason.clone() });
+                        }
+                        cursor = wb.saturating_add(1);
+                    }
+                    if cursor <= b {
+                        out.push(MissingSpan { first_hour: cursor, last_hour: b, reason });
+                    }
+                }
+                Status::NotRecorded | Status::Unavailable { .. } => {
+                    let reason = match held.status {
+                        Status::Unavailable { reason } => statuses.1.get(&reason).map(String::as_str),
+                        _ => None,
+                    };
+                    if let Some(reason) = crate::coverage::row_coverage(self.series.table, held.status, reason, false).into_missing() {
+                        out.push(MissingSpan { first_hour: a, last_hour: b, reason });
+                    }
+                }
             }
         }
         Ok(complete)

@@ -30,6 +30,9 @@ pub struct SeriesRankedReply {
     pub measure: String,
     pub decimals: u8,
     pub lines: Vec<SeriesRankedLine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub missing: Option<Vec<MissingSpan>>,
 }
 
 const WIDTH: u32 = 8192;
@@ -60,8 +63,9 @@ pub(super) fn summary(line: &Line<'_, '_>, branch_id: &str, from: Option<f64>, t
         return Err(invalid("Invalid view"));
     }
     let width = width.filter(|width| (1..=WIDTH).contains(width)).ok_or_else(|| invalid("Invalid width"))?;
-    let mut lines = Vec::new();
-    for ranked in line.ranked(from, to, width, n)? {
+    let (ranked_lines, missing) = line.ranked_with_missing(from, to, width, n)?;
+    let mut lines = Vec::with_capacity(ranked_lines.len());
+    for ranked in ranked_lines {
         let parts = line
             .parts(&ranked.tag, from, to)
             .into_iter()
@@ -75,7 +79,13 @@ pub(super) fn summary(line: &Line<'_, '_>, branch_id: &str, from: Option<f64>, t
             missing: ranked.missing,
         });
     }
-    Ok(SeriesRankedReply { branch_id: branch_id.to_owned(), measure: line.measure_name().to_owned(), decimals: line.decimals(), lines })
+    Ok(SeriesRankedReply {
+        branch_id: branch_id.to_owned(),
+        measure: line.measure_name().to_owned(),
+        decimals: line.decimals(),
+        lines,
+        missing: (!missing.is_empty()).then_some(missing),
+    })
 }
 
 pub(super) fn stepped(line: &Line<'_, '_>, origin: Option<i32>, key: NavigationKey, bounds: (i32, i32), n: usize) -> io::Result<Vec<String>> {
