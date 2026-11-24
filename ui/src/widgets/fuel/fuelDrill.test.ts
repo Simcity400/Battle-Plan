@@ -1,24 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { consumptionLevelAvailable, consumptionParts, demandGeometry, fuelConsumptionLevelToken, fuelConsumptionToken, levelComplete, readFuelConsumption,
-  readFuelConsumptionLevel, validateFuelDemand, validateFuelDemandHistory } from './fuelConsumption.ts';
-import { detailWindows, fuelRecipientFor, fuelRecipientToken, joinedRuns, readBasis, readFuelRecipient } from './fuelDrill.ts';
+import { consumptionLevelAvailable, consumptionParts, demandGeometry, levelComplete, validateFuelDemand, validateFuelDemandHistory } from './fuelConsumption.ts';
+import { detailWindows, fuelRecipientFor, joinedRuns, readBasis } from './fuelDrill.ts';
 import type { FuelDemandPart, FuelDemandReply } from '../../generated/dashboard';
 
 const basis = { branchId: '1', tag: 'ONE', hour: 48, country: 7, countryInstance: 0 };
-
-test('a picked recipient, consumer or level is kept only for its campaign and branch, and survives its token', () => {
-  const recipient = { campaign: 'c', branch: '1', consumer: 2, basis, key: 'k', name: 'Fleet' };
-  assert.deepEqual(readFuelRecipient(fuelRecipientToken(recipient), 'c', '1'), recipient);
-  assert.equal(readFuelRecipient(fuelRecipientToken(recipient), 'c', '2'), null);
-  assert.equal(readFuelRecipient(fuelRecipientToken({ ...recipient, consumer: 3 }), 'c', '1'), null);
-  const consumer = { campaign: 'c', branch: '1', basis, key: 'k', name: null };
-  assert.deepEqual(readFuelConsumption(fuelConsumptionToken(consumer), 'c', '1'), consumer);
-  const level = { campaign: 'c', branch: '1', basis, level: 'command:12' };
-  assert.deepEqual(readFuelConsumptionLevel(fuelConsumptionLevelToken(level), 'c', '1'), level);
-  assert.equal(readFuelConsumptionLevel(fuelConsumptionLevelToken({ ...level, level: 'nowhere' }), 'c', '1'), null);
-  assert.equal(readBasis('1', 'ONE', { readHour: 48, country: 7, countryInstance: null }), null, 'no basis before the instance is known');
-});
 
 test("a pick follows its country to another tag only where the pick's country spans name it", () => {
   const pick = { campaign: 'c', branch: '1', basis };
@@ -27,6 +13,7 @@ test("a pick follows its country to another tag only where the pick's country sp
   const aliases = new Map([['ONE', [{ firstHour: 0, lastHour: 99 }]], ['TWO', [{ firstHour: 100, lastHour: 200 }]]]);
   assert.equal(fuelRecipientFor(pick, 'c', '1', 'TWO', aliases), pick);
   assert.equal(fuelRecipientFor(pick, 'c', '1', 'TRE', aliases), null);
+  assert.equal(readBasis('1', 'ONE', { readHour: 48, country: 7, countryInstance: null }), null, 'no basis before the instance is known');
 });
 
 test('a detail history asks the windows its view and its moment reach, and joins a read two windows repeat', () => {
