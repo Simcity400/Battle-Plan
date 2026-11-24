@@ -9,7 +9,7 @@ import { IdentityIndex } from './identity/index.ts';
 import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
 import type { FamilyId } from './plan.ts';
-import { ensureFamilyProjection } from './registry.ts';
+import { ensureFamilyProjection, familyProjectionFailure } from './registry.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders } from './scene.ts';
 
 export interface LaneBinding<TOptions = unknown> {
@@ -146,8 +146,14 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   const isBinding = (value: unknown): value is TBinding => !!value && typeof value === 'object'
     && (value as { family?: unknown }).family === family.family
     && typeof (value as { kind?: unknown }).kind === 'string';
+  const wakers = new Map<number, () => void>();
+  const wakerOf = (widget: number): (() => void) => {
+    let waker = wakers.get(widget);
+    if (!waker) wakers.set(widget, waker = () => wake(widget));
+    return waker;
+  };
   const projectionOf = (binding: TBinding, widget: number) =>
-    ensureFamilyProjection<TModel, unknown>(family.family, binding.kind, binding.view, () => wake(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
+    ensureFamilyProjection<TModel, unknown>(family.family, binding.kind, binding.view, wakerOf(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
   const sameInputs = (held: Held<TModel, TLayout>, binding: TBinding, scene: Scene, hour: number): boolean =>
     held.projected !== null
     && held.kind === binding.kind
@@ -179,7 +185,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     const focusGate = new CadenceGate(TOOLTIP_CADENCE_MS);
     const held: Held<TModel, TLayout> = {
       canvas, ctx, art,
-      wake: () => wake(widget),
+      wake: wakerOf(widget),
       artRevision: 0,
       snapshot: undefined, artResolutions: undefined, index: null, identity: undefined,
       artProvider: createLaneArtProvider(art),
@@ -206,15 +212,15 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const binding = scene.model;
       if (!isBinding(binding)) return Infinity;
       const projection = projectionOf(binding, scene.widget);
-      if (projection === 'loading') return hour + 1;
-      if (projection === 'unknown') return Infinity;
+      if (projection === 'loading' || projection === 'unknown') return Infinity;
       const held = state?.get(stateKey) as Held<TModel, TLayout> | undefined;
       if (held && sameInputs(held, binding, scene, hour)) return held.validUntil;
       if (!projection.nextChange) return Infinity;
       return projection.nextChange(sceneReadView(scene, binding, hour, held ? readersOf(held) : undefined), binding.options);
     },
 
-    unmount(_widget: number, state: Map<string, unknown>): void {
+    unmount(widget: number, state: Map<string, unknown>): void {
+      wakers.delete(widget);
       const held = state.get(stateKey) as Held<TModel, TLayout> | undefined;
       if (!held) return;
       held.flusher.cancel();
@@ -228,8 +234,11 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (!isBinding(binding) || !surface || !binding.theme) return EMPTY;
       const theme = binding.theme;
       const projection = projectionOf(binding, input.widget);
-      if (projection === 'loading') return { ...EMPTY, nextChangeAt: input.hour + 1 };
-      if (projection === 'unknown') return { ...EMPTY, mode: 'refused', reason: `Unknown ${family.family} view: ${binding.kind}` };
+      if (projection === 'loading') return EMPTY;
+      if (projection === 'unknown') {
+        const failure = familyProjectionFailure(family.family, binding.kind, binding.view);
+        return { ...EMPTY, mode: 'refused', reason: failure ? `The ${binding.kind} view did not load: ${failure}` : `Unknown ${family.family} view: ${binding.kind}` };
+      }
 
       let held = state.get(stateKey) as Held<TModel, TLayout> | undefined;
       if (!held) {
@@ -239,7 +248,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         state.set(stateKey, held);
       }
       const keep = held;
-      keep.wake = () => wake(input.widget);
+      keep.wake = wakerOf(input.widget);
 
       const [width, height, dpr] = backing(surface);
       if (keep.canvas.width !== width || keep.canvas.height !== height) {

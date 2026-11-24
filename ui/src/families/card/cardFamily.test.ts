@@ -7,6 +7,9 @@ import { nationalSpiritsProjection } from '../../widgets/national-spirits/nation
 import { warGoalsProjection } from '../../widgets/war-goals/warGoalsProjection.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
+import { registerFamilyProjection } from '../registry.ts';
+import { familyCardLaneView } from './laneView.ts';
 import { layoutCards } from './layout.ts';
 import { assertCardModelValid, deriveCardAudit, FutureCardDataError, type CardHeroRow, type CardItemRow, type CardModel } from './model.ts';
 
@@ -120,6 +123,20 @@ test('national spirits list only what is held at the displayed hour, with since 
   assert.equal(model.nextChangeAt, first + 40 * DAY);
   const unseen = nationalSpiritsProjection.project(view(first + 60 * DAY, reply), { branchFirst: first });
   assert.equal(unseen.emptyKind, 'unavailable');
+
+  registerFamilyProjection(nationalSpiritsProjection);
+  const options = { branchFirst: first };
+  const lane = (panel: unknown) => ({ family: 'card', kind: 'national-spirits', options, sources: {}, staticPanels: { main: panel }, scrollTop: 0, theme: LANE_THEME, width: 420, height: 160 });
+  const held = lane(reply);
+  const renamed = { ...reply, artwork: reply.artwork.map(entry => (entry.token === 'home_free' ? { ...entry, name: 'Arsenal of Democracy' } : entry)) } as IdeaHistoryReply;
+  const surface = { width: 420, height: 160, dpr: 1 };
+  assert.equal(assertQuietFrames(() => familyCardLaneView(() => {}), { label: 'spirits', binding: held, hour }, 24, surface), first + 40 * DAY);
+  assertFreshPaint(() => familyCardLaneView(() => {}), [
+    { label: 'held', binding: held, hour, check: true },
+    { label: 'a spirit gained', binding: held, hour: first + 45 * DAY, speed: 24 },
+    { label: 'seek back', binding: held, hour, check: true },
+    { label: 'same-hour correction', binding: lane(renamed), hour, check: true },
+  ], surface);
 });
 
 test('a card dated after the displayed hour is refused, and narrow cards fold the place under the title', () => {

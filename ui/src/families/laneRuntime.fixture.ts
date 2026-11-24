@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import type { Picture } from '../dashboard/follow/facts.ts';
 import type { LaneView, Painted, Sub, Value } from '../draw/lane.ts';
+import type { FamilyTheme } from './contract.ts';
+
+export const LANE_THEME: FamilyTheme = {
+  surface: '#16181d', raised: '#1e2128', dark: true, text: '#eef1f6', muted: '#8c95a6', line: '#2e3440', lineSoft: '#222630',
+  accent: '#4f86f7', blue: '#4f86f7', red: '#e5534b', shortage: '#ff6b6f', amber: '#d29922', green: '#3fb950', grey: '#8c95a6',
+  hatch: '#6e7681', hatchEdge: '#484f58', font: 'Inter', fontSize: { small: 11, body: 12 }, lineWidth: 1, hatchSpacing: 6,
+};
 
 export interface RecordedCanvas {
   readonly width: number;
@@ -141,11 +148,37 @@ export function assertFreshPaint(makeView: () => LaneView, steps: readonly LaneS
       if (!step.check) continue;
       const fresh = driveLane(makeView(), recording.canvases, surface);
       const freshPainted = fresh.paint(step);
+      assert.ok(fresh.picture().length > 0, `${step.label}: a fresh paint draws`);
       assert.deepEqual(played.picture(), fresh.picture(), `${step.label}: the picture equals a fresh paint`);
       assert.deepEqual(fieldValues(painted, step.speed ?? 0), fieldValues(freshPainted, step.speed ?? 0), `${step.label}: the fields equal a fresh paint`);
       assert.equal(painted.mode, freshPainted.mode, `${step.label}: the mode equals a fresh paint`);
       assert.equal(painted.nextChangeAt, freshPainted.nextChangeAt, `${step.label}: the proven interval equals a fresh paint`);
     }
+  } finally {
+    recording.restore();
+  }
+}
+
+export function assertQuietFrames(makeView: () => LaneView, step: LaneStep, hours = 24, surface?: { width: number; height: number; dpr: number }): number {
+  const recording = installRecordingCanvas();
+  try {
+    const view = makeView();
+    const lane = driveLane(view, recording.canvases, surface);
+    const first = lane.paint({ ...step, speed: step.speed ?? 24 });
+    const boundary = first.nextChangeAt ?? Infinity;
+    const drawn = recording.canvases.reduce((sum, canvas) => sum + canvas.frames.length, 0);
+    const contents = (painted: Painted) => [painted.surfaces.map(surface => surface?.content ?? null), Object.fromEntries(Object.entries(painted.fields).map(([name, entry]) => [name, entry.content]))];
+    const scene = { widget: 1, subs: step.subs ?? [], pictures: step.pictures ?? [], model: step.binding };
+    const last = Math.min(boundary - 1, step.hour + hours);
+    for (let hour = step.hour; hour <= last; hour++) {
+      if (view.next) assert.equal(view.next(scene, hour, lane.state), boundary, `${step.label}: next() at hour ${hour} answers the proven boundary`);
+      for (const speed of [step.speed ?? 24, 0]) {
+        const painted = lane.paint({ ...step, hour, speed });
+        assert.deepEqual(contents(painted), contents(first), `${step.label}: a quiet frame at hour ${hour} (speed ${speed}) keeps every content tag`);
+      }
+    }
+    assert.equal(recording.canvases.reduce((sum, canvas) => sum + canvas.frames.length, 0), drawn, `${step.label}: quiet, steady and paused frames draw nothing`);
+    return boundary;
   } finally {
     recording.restore();
   }

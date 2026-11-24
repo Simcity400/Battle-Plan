@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { BoundedReadView, FamilyTheme } from './contract.ts';
+import type { BoundedReadView } from './contract.ts';
 import { createLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
-import { assertFreshPaint, driveLane, installRecordingCanvas } from './laneRuntime.fixture.ts';
-import { registerFamilyProjection } from './registry.ts';
+import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME } from './laneRuntime.fixture.ts';
+import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
 
 type Row = { readonly key: string; readonly v: number };
 type Options = { readonly order: 'up' | 'down'; readonly name?: string };
@@ -60,7 +60,6 @@ const family: LaneFamily<Binding, Model, Layout> = {
   visibleArt: () => [],
 };
 
-const THEME = { text: '#111', surface: '#fff', muted: '#666', line: '#ccc', lineSoft: '#eee', accent: '#06c', blue: '#06c', red: '#c00', amber: '#c80', green: '#080', grey: '#888', font: 'sans-serif', fontSize: { body: 12 } } as unknown as FamilyTheme;
 const rowsAt = (rows: readonly Row[]) => ({ main: { rows } });
 const DOWN: Options = { order: 'down' };
 const binding = (staticPanels: Readonly<Record<string, unknown>>, options: Options = DOWN, extra: Partial<Binding> = {}): Binding => ({
@@ -142,4 +141,44 @@ test('after a seek back, a same-hour correction and a reorder the picture equals
     { label: 'reorder', binding: binding(corrected, { order: 'up' }), hour: 10, check: true },
     { label: 'scroll', binding: binding(corrected, { order: 'up' }, { scrollTop: 20 }), hour: 10, check: true },
   ]);
+});
+
+test('the shared quiet-frame check: no drawing or new field between boundaries, and a playing chart’s next hour is a real boundary', () => {
+  assert.equal(assertQuietFrames(() => createLaneView(family, () => {}), { label: 'fixture', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12 }), 20);
+  const hourly: LaneFamily<Binding, Model, Layout> = { ...family, boundary: (_model, hour) => hour + 1 };
+  assert.equal(assertQuietFrames(() => createLaneView(hourly, () => {}), { label: 'hourly', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12 }), 13);
+});
+
+test('a cold projection load walks no history, keeps one waiter per placement, and a failed import is refused by name, not retried', async () => {
+  let release: (value: unknown) => void = () => {};
+  let loads = 0;
+  bindFamilyManifest([
+    { family: 'test-lane', kind: 'cold', loadSpec: () => { loads++; return new Promise(resolve => { release = resolve; }) as never; } },
+    { family: 'test-lane', kind: 'broken', loadSpec: () => { loads++; return Promise.reject(new Error('chunk missing')); } },
+  ]);
+  const recording = installRecordingCanvas();
+  try {
+    let wakes = 0;
+    const view = createLaneView(family, () => { wakes++; });
+    const lane = driveLane(view, recording.canvases);
+    const cold = { ...binding(rowsAt([])), kind: 'cold' };
+    const scene = { widget: 1, subs: [], pictures: [], model: cold };
+    for (let hour = 0; hour < 1000; hour++) assert.equal(view.next!(scene, hour, lane.state), Infinity, 'loading answers no boundary, so the lane walks no history');
+    for (let i = 0; i < 5; i++) assert.equal(lane.paint({ label: 'loading', binding: cold, hour: 10 }).surfaces.length, 0);
+    release({ projection: { kind: 'cold', family: 'test-lane', project: (view: BoundedReadView) => ({ hour: view.hour, bucket: 0, rows: [], name: '' }) } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual([loads, wakes], [1, 1], 'one import and one wake for the placement');
+
+    const broken = { ...binding(rowsAt([])), kind: 'broken' };
+    lane.paint({ label: 'broken', binding: broken, hour: 10 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    for (let i = 0; i < 5; i++) {
+      const refused = lane.paint({ label: 'broken', binding: broken, hour: 10 });
+      assert.equal(refused.mode, 'refused');
+      assert.match(refused.reason ?? '', /chunk missing/);
+    }
+    assert.equal(loads, 2, 'a failed import is not retried on every paint');
+  } finally {
+    recording.restore();
+  }
 });
