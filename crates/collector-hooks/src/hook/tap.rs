@@ -19,7 +19,6 @@ pub struct Registers {
     pub rax: usize,
     pub flags: usize,
 }
-#[cfg(any(test, feature = "test-support"))]
 impl Registers {
     pub fn rsp(&self) -> usize {
         std::ptr::from_ref::<Self>(self) as usize + CALL_RETURN_OFFSET + size_of::<usize>()

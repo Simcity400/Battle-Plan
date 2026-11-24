@@ -158,6 +158,8 @@ pub struct MilitaryAirReply {
     pub observed: Vec<HourSpan>,
     #[doc = " Reads that may miss events: read only in part, or holding a caller whose membership in aircraft bombing is unknown."]
     pub incomplete: Vec<HourSpan>,
+    #[doc = " Hours whose events were read but whose country links were not, so no event can be credited to a country."]
+    pub unjoined: Vec<HourSpan>,
     pub countries: Vec<MilitaryAirCountry>,
     pub openings: Vec<MilitaryAirOpening>,
     pub parts: Vec<MilitaryAirPart>,
@@ -213,6 +215,7 @@ pub(crate) struct Span {
 pub(crate) struct Fold {
     observed: Vec<HourSpan>,
     incomplete: Vec<HourSpan>,
+    unjoined: Vec<HourSpan>,
     leaves: BTreeMap<LeafKey, BTreeMap<(i32, i32), i128>>,
     warnings: BTreeMap<String, usize>,
     last_event: Option<u64>,
@@ -265,7 +268,10 @@ impl Fold {
                 self.unread_since.get_or_insert(span.first);
                 return Ok(());
             }
-            Held::Unjoined => return Ok(()),
+            Held::Unjoined => {
+                append_hours(&mut self.unjoined, span.first, span.last);
+                return Ok(());
+            }
             Held::InPart => append_hours(&mut self.incomplete, span.first, span.last),
             Held::Observed => {}
         }
@@ -1022,6 +1028,7 @@ pub(crate) fn reply(fold: &Fold, (first, last): (i32, i32), countries: &BTreeMap
         available: !fold.observed.is_empty(),
         observed: fold.observed.clone(),
         incomplete: fold.incomplete.clone(),
+        unjoined: fold.unjoined.clone(),
         countries: ranked_countries(countries, membership.as_ref(), cancelled)?,
         openings: openings
             .iter()

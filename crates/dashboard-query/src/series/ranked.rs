@@ -76,20 +76,81 @@ pub struct SeriesRankReply {
     pub until: i32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum GroupKind {
+    Humans,
+    Faction,
+    War,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum GroupMembership {
+    #[default]
+    Hour,
+    Ever,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GroupSelection {
+    #[serde(rename = "type")]
+    pub kind: GroupKind,
+    #[doc = " The recorded faction id, for a faction."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub id: Option<String>,
+    #[doc = " The country whose enemies are the group, for a war."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tag: Option<String>,
+    #[doc = " Members at the asked hour, or every country that was one at or before it."]
+    #[serde(default)]
+    pub membership: GroupMembership,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Members {
+    pub tags: Vec<String>,
+    pub refused: Option<String>,
+    pub from: i32,
+    pub until: i32,
+}
+
+pub type Resolve<'r> = &'r dyn Fn(&GroupSelection, i32) -> io::Result<Members>;
+
 pub struct Ask<'a> {
     pub hour: Option<f64>,
     pub top: Option<u32>,
     pub least: bool,
     pub countries: &'a [Country],
+    pub group: Option<(&'a GroupSelection, Resolve<'a>)>,
 }
 
 pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &str, ask: Ask<'_>) -> io::Result<SeriesRankReply> {
     line.owners_only("a rank")?;
     let hour = hour_of(ask.hour, "hour")?;
-    let mut countries: Vec<Country> = Vec::with_capacity(ask.countries.len());
-    for country in ask.countries {
-        if !countries.contains(country) {
-            countries.push(country.clone());
+    let mut held = (i32::MIN, i32::MAX);
+    let named: Vec<Country> = match ask.group {
+        None => ask.countries.to_vec(),
+        Some(_) if ask.top.is_some() || !ask.countries.is_empty() => return Err(invalid("A rank names a group, a top or countries, one of them")),
+        Some((group, resolve)) => {
+            let members = resolve(group, hour)?;
+            held = (members.from.min(hour), members.until.max(hour));
+            if members.refused.is_some() || members.tags.is_empty() {
+                let mut measures = vec![SeriesRankMeasure { name: line.measure_name().to_owned(), decimals: line.decimals() }];
+                measures.extend(details.iter().map(|detail| SeriesRankMeasure { name: detail.measure_name().to_owned(), decimals: detail.decimals() }));
+                let (from, until) = if members.refused.is_some() { (hour, hour) } else { held };
+                return Ok(SeriesRankReply { branch_id: branch_id.to_owned(), hour, measures, rows: Vec::new(), refused: members.refused, from, until });
+            }
+            members.tags.into_iter().map(Country::from).collect()
+        }
+    };
+    let mut countries: Vec<Country> = Vec::with_capacity(named.len());
+    for country in named {
+        if !countries.contains(&country) {
+            countries.push(country);
         }
     }
     let (asked, mut refused, top) = match (ask.top, countries.is_empty()) {
@@ -118,7 +179,6 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         });
         refused = order.iter().find(|&&at| value(at).is_none()).map(|&at| columns[0][at].missing.clone().unwrap_or_else(|| super::board::measure_unrecorded(&asked[at].to_string(), line.measure.name)));
     }
-    let mut held = (i32::MIN, i32::MAX);
     for state in columns.iter().flatten() {
         held = match &state.run {
             Some(run) => (held.0.max(run.first_hour), held.1.min(run.last_hour)),
