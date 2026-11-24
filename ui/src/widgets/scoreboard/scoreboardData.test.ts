@@ -14,7 +14,7 @@ import { tableDefaults, tableSettingsOf } from '../../families/table/settings.ts
 import type { ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
 import { gatedHour } from '../../test-support/gated.ts';
 import { DEFAULT_SORT, OPTIONS, TABLE_BASE, definition } from './definition.ts';
-import { isPartial, rankedTags, scoreboardParams, scoreboardSort, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
+import { rankedTags, scoreboardParams, scoreboardSort, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
 import { scoreboardColumnsSpec, scoreboardDeclaration, scoreboardProjection } from './scoreboardProjection.ts';
 
 const family = (kind: string, measure: string) => ({ kind, measure });
@@ -79,9 +79,6 @@ test('followed values and rankings preserve exact precision, partial markers and
   const followed = answer({ keys: [7n, 8n, 0n], columns: 1, names: ['ITA', 'GER', 'SOV'], values: [(1n << 60n) + 3n, 0n, 0n], states: [V, U, CELL.noRow],
     reasons: [null, null, 'SOV is held by no country'] });
   assert.deepEqual(rankedTags(followed), ['ITA']);
-  assert.equal(isPartial(1n), true);
-  assert.equal(isPartial(0n), false);
-  assert.equal(isPartial(undefined), false);
 
   const model = scoreboardProjection.project(
     createBoundedReadView({ hour: 40, answers: new Map([['factories', followed]]) }),

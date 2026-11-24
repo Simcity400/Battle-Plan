@@ -203,3 +203,64 @@ fn a_tie_at_the_cut_or_between_shown_divisions_decided_by_an_unread_measure_is_n
     assert_eq!(ids(ranked(known, DecoratedRank::Medals, true, 1)), (vec![1], false), "a tie the read experience decides is proven, though a later measure is unread");
     assert_eq!(ids(ranked(tied, DecoratedRank::Experience, true, 2)), (vec![3, 1], false), "no tie on the ranked measure");
 }
+
+#[test]
+fn the_selected_division_s_witnessed_rows_give_its_record_though_the_reads_were_truncated_elsewhere() {
+    use super::careers::{DivisionRecord, DivisionRecordParams};
+    use dashboard_base::products::{LoadContext, at_hour::{At, AtHour}};
+    use dashboard_follow::live::Cells;
+    use dashboard_query::identity::Holders;
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let mut frame = decorated_world(1_000, |id| 30 * id as i64);
+    let truncate = |view: &TableView| match view {
+        TableView::Complete(TableRows::Divisions(rows)) => TableView::Truncated { rows: TableRows::Divisions(rows.iter().filter(|row| row.id == 2).cloned().collect()), missing: 2 },
+        TableView::Complete(TableRows::DivisionStatus(rows)) => TableView::Truncated { rows: TableRows::DivisionStatus(rows.iter().filter(|row| row.division == 2).cloned().collect()), missing: 2 },
+        TableView::Complete(TableRows::DivisionLandInputs(rows)) => TableView::Truncated { rows: TableRows::DivisionLandInputs(rows.iter().filter(|row| row.division == 2).cloned().collect()), missing: 2 },
+        _ => unreachable!(),
+    };
+    for table in [TableId::Divisions, TableId::DivisionStatus, TableId::DivisionLandInputs] {
+        let truncated = truncate(&frame.tables[table.index()]);
+        *frame.tables[table.index()] = truncated;
+    }
+    let source = decorated_source(vec![decorated_world(1_000, |id| 30 * id as i64)]);
+    let content = DivisionRecord::context(&source, &LoadContext { content: None }).unwrap();
+    let (holders, live, cancelled) = (Holders::default(), Cells::default(), std::sync::atomic::AtomicBool::new(false));
+    let at = At { owner: None, holders: &holders, hour: 1_000, context: &content, cancelled: &cancelled, live: &live };
+    let asked = |division: &str| DivisionRecordParams { branch_id: "1".into(), division: division.into() };
+    let reply = DivisionRecord::reply(&frame, &asked("2"), &at).unwrap();
+    assert!(!reply.absent);
+    let facts = reply.facts.expect("the witnessed division has its facts");
+    assert_eq!((facts.casualties_taken, facts.experience_raw.as_deref()), (Some(10), Some("6")), "its status and manpower rows were read");
+    assert!(DivisionRecord::reply(&frame, &asked("3"), &at).is_err(), "an unwitnessed division is not said to be absent");
+}
+
+#[test]
+fn the_type_view_keeps_its_rows_when_the_designs_behind_its_tooltip_are_unread() {
+    use super::equipment::{DivisionEquipment, DivisionEquipmentParams, DivisionEquipmentView};
+    use crate::products::army::ArmyAttribution;
+    use dashboard_base::products::{Country, LoadContext, at_hour::{At, AtHour, Owner}};
+    use dashboard_follow::live::Cells;
+    use dashboard_query::identity::Holders;
+    use replay_data::rows::{DivisionEquipmentCountRow, DivisionEquipmentTypeRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let side = super::side(ArmyAttribution::Owner);
+    let mut frame = dashboard_base::test_fixtures::source(1, 1_000, Some(1));
+    *frame.tables[TableId::DivisionEquipmentCounts.index()] = TableView::Complete(TableRows::DivisionEquipmentCounts(vec![DivisionEquipmentCountRow {
+        slot: 7, side, divisions: Recorded::Value(2), short: Recorded::Value(1), unknown: Recorded::Value(0), unpooled: Recorded::Value(0), unclassified: Recorded::Value(0), ..Default::default()
+    }]));
+    *frame.tables[TableId::DivisionEquipmentByType.index()] = TableView::Complete(TableRows::DivisionEquipmentByType(vec![DivisionEquipmentTypeRow {
+        slot: 7, side, archetype: None, held: Recorded::Value(300_000), needed: Recorded::Value(500_000), filled: Recorded::Value(300_000), missing: Recorded::Value(200_000), short: Recorded::Value(1), stock: Recorded::NotRecorded,
+    }]));
+    *frame.tables[TableId::DivisionEquipmentByDesign.index()] = TableView::Unavailable { reason: "designs unread in the fixture".into() };
+    let source = decorated_source(vec![decorated_world(1_000, |id| 30 * id as i64)]);
+    let context = DivisionEquipment::context(&source, &LoadContext { content: None }).unwrap();
+    let (holders, live, cancelled) = (Holders::default(), Cells::default(), std::sync::atomic::AtomicBool::new(false));
+    let at = At { owner: Some(Owner { slot: 7, id: 9001 }), holders: &holders, hour: 1_000, context: &context, cancelled: &cancelled, live: &live };
+    let params = DivisionEquipmentParams { branch_id: "1".into(), country: Country::from("GER"), count_for: ArmyAttribution::Owner, view: DivisionEquipmentView::Types };
+    let reply = DivisionEquipment::reply(&frame, &params, &at).unwrap();
+    assert_eq!(reply.missing, None, "the by-type holdings are complete");
+    let row = &reply.types[0];
+    assert_eq!((row.held_raw.as_deref(), row.missing_raw.as_deref(), row.divisions_short), (Some("300000"), Some("200000"), Some(1)));
+    assert!(row.variants.is_empty() && row.variants_missing.as_deref().is_some_and(|why| why.contains("designs unread in the fixture")), "the design list says why it is missing");
+}

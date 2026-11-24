@@ -15,9 +15,6 @@ export interface StockpilePrepared {
 export type PreparedStockpileReply = EquipmentStockpileReply & { prepared?: StockpilePrepared };
 export interface StockpileView { from: number; to: number; width: number }
 
-export const servedHour = (reply: EquipmentStockpileReply | undefined, hour: number) =>
-  (reply as PreparedStockpileReply | undefined)?.prepared?.hour ?? hour;
-
 export const stockpileGroupKey = (group: StockGroup) => JSON.stringify([group.kind, group.kind === 'variant' ? group.variants[0]?.id : group.key]);
 
 export const stockpileHolders = (spans: ReadonlyMap<string, readonly Span[]>): StockpileHolder[] =>

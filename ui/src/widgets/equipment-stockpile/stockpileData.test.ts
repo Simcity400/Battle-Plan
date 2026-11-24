@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { AmountRun, EquipmentStockpileReply, StockVariant } from './types';
 import { resolveY } from '../../charts/view.ts';
 import { storableToken } from '../../dashboard/options.ts';
-import { choiceKey, choiceRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, shareOf, shareRuns, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
+import { choiceKey, choiceRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupTooltip, labelAt, shareOf, shareRuns, stockAt, stockGroups, stockRuns, variantName, dailyAt } from './stockpileData.ts';
 
 const U = 100000;
 const run = (firstHour: number, lastHour: number, amount: number): AmountRun => ({ firstHour, lastHour, amountRaw: String(Math.round(amount * U)) });
@@ -44,10 +44,7 @@ const REPLY: EquipmentStockpileReply = {
   needBoundRaw: String(0x53e2d620fb40),
 };
 
-test('the reply is validated and groups follow the game’s order, logistics-only types included', () => {
-  assert.equal(validateStockpileReply(REPLY), REPLY);
-  assert.throws(() => validateStockpileReply({ ...REPLY, variants: [{ ...REPLY.variants[0], archetype: 'unknown_type' }] }));
-  assert.throws(() => validateStockpileReply({ ...REPLY, logistics: [{ key: 'unknown_type', available: [], balance: [], stock: [] }] }));
+test('groups follow the game’s order, logistics-only types included', () => {
   assert.deepEqual(stockGroups(REPLY, 'type', 110).map(group => [group.key, group.variants.length, group.types.join()]), [
     ['infantry_equipment', 1, 'infantry_equipment'], ['light_tank_chassis', 2, 'light_tank_chassis'], ['anti_tank_equipment', 0, 'anti_tank_equipment'],
     ['motorized_equipment', 1, 'motorized_equipment'], ['cas_equipment', 1, ''], ['fighter_equipment', 1, '']]);
@@ -108,7 +105,7 @@ test('stock and daily output work for AI countries and variants', () => {
 
 test('chips toggle groups', () => {
   const groups = stockGroups(REPLY, 'type', 110);
-  const source = groupChoices(groups, 'equipment type');
+  const source = stockChoices(groups, 'equipment type');
   assert.equal(source.lines('anti_tank_equipment'), 1);
   assert.equal(source.lines('mod_rifle'), 0);
 });
@@ -134,31 +131,15 @@ test('tooltips give the game’s surplus for a player, the note for an AI countr
   assert.match(byVariant.note ?? '', /Need is available by equipment type/);
   const short = groupTooltip(REPLY, tanks, 'type', 110, { title: tanks.label }, 150);
   assert.ok(short.rows.length < player.rows.length && short.rows[0].label === 'In stock' && short.spoken);
-  assert.equal(groupLabel(REPLY, tanks, 110), 'Light Tank: shortage −373, −34% of need');
-  assert.equal(groupLabel(REPLY, tanks, 145), 'Light Tank: 0 in stock');
 });
 
 test('an uncomputable daily rate is unknown, never zero or a partial sum', () => {
   const costless: EquipmentStockpileReply = { ...REPLY, variants: [variant('1326', 'infantry_equipment_1', 'infantry_equipment', [run(100, 130, 5)],
     [{ firstHour: 100, lastHour: 123, amountRaw: null }]), variant('1327', 'infantry_equipment_1', 'infantry_equipment', [], [run(100, 123, 541.9)])] };
-  assert.equal(validateStockpileReply(costless), costless);
   const infantry = stockGroups(costless, 'type', 110)[0];
   assert.equal(dailyAt(costless, infantry, 110), null);
   const tip = groupTooltip(costless, infantry, 'type', 110, { title: 'Infantry' }, 1000);
   assert.deepEqual(tip.rows.find(row => row.label === 'Output per day')?.value, 'Not recorded');
-});
-
-test('an older bridge without the per-day output shows output as not recorded, never a weekly seventh or zero', () => {
-  const older = structuredClone(REPLY) as unknown as { variants: Record<string, unknown>[] };
-  for (const item of older.variants) {
-    item.weekly = [{ firstHour: 100, lastHour: 130, amountRaw: '700000' }];
-    for (const key of ['daily', 'dailyIc', 'unitCostLow', 'unitCostHigh']) delete item[key];
-  }
-  const reply = validateStockpileReply(older);
-  const infantry = stockGroups(reply, 'type', 110)[0];
-  assert.equal(stockAt(reply, infantry, 110) != null, true);
-  assert.equal(dailyAt(reply, infantry, 110), null);
-  assert.equal(groupTooltip(reply, infantry, 'type', 110, { title: 'Infantry' }, 1000).rows.find(row => row.label === 'Output per day')?.value, 'Not recorded');
 });
 
 test('a recorded zero balance shows as zero; a type with nothing but zeros adds no row', () => {
@@ -168,7 +149,6 @@ test('a recorded zero balance shows as zero; a type with nothing but zeros adds 
   const groups = stockGroups(zeros, 'type', 110);
   const fighters = groups.find(group => group.key === 'fighter_equipment')!;
   assert.deepEqual(balanceAt(zeros, fighters, 110), { balance: 0n, stock: 0n, need: 0n, needNote: null });
-  assert.equal(groupLabel(zeros, fighters, 110), 'Fighter: surplus 0');
   const cas = groups.find(group => group.key === 'cas_equipment')!;
   assert.deepEqual(cas.types, ['cas_equipment']);
   const bare: EquipmentStockpileReply = { ...REPLY, logistics: [...REPLY.logistics, { key: 'fighter_equipment', available: [], balance: [run(96, 130, 0)], stock: [] }],
@@ -214,7 +194,6 @@ test('a group whose variants cannot be told has unknown stock and production, ne
   const unresolved: EquipmentStockpileReply = { ...REPLY, types: [],
     variants: [variant('1', 'rifle_1', null, [run(100, 130, 500)], [run(100, 123, 70)])],
     logistics: [{ key: ':rifle', available: [], balance: [run(96, 130, 10)], stock: [run(96, 130, 500)] }] };
-  assert.equal(validateStockpileReply(unresolved), unresolved);
   const groups = stockGroups(unresolved, 'type', 110);
   const archetype = groups.find(group => group.key === ':rifle')!;
   const variantRow = groups.find(group => group.key === ':rifle_1')!;
@@ -282,7 +261,6 @@ test('an arm is unknown wherever an unresolved logistics type could belong to it
   assert.equal(balanceAt(reply, land, 110), null);
   assert.equal(shareOf(balanceAt(reply, land, 110)), null);
   assert.deepEqual(shareRuns(reply, land), []);
-  assert.equal(groupLabel(reply, land, 110), 'Land: surplus or shortage not known');
   const tip = groupTooltip(reply, land, 'domain', 110, { title: 'Land' }, 1000);
   assert.equal(tip.rows.find(row => row.label === 'Surplus or shortage')?.value, 'Not known');
   assert.equal(tip.note, 'Total unavailable.');
@@ -320,7 +298,6 @@ test('a modded campaign’s types, arms and default lines come from its own data
       variant('2', 'mod_hovertank_chassis_1', 'mod_hovertank_chassis', [run(100, 130, 40)]),
       variant('3', 'mod_airship_equipment_1', 'mod_airship_equipment', [run(100, 130, 7)]),
     ] };
-  assert.equal(validateStockpileReply(modded), modded);
   const groups = stockGroups(modded, 'type', 110);
   assert.deepEqual(groups.map(group => group.key), ['mod_walker_equipment', 'mod_hovertank_chassis', 'mod_airship_equipment']);
   assert.equal(typeName(modded, 'mod_walker_equipment'), 'Equipment type name unavailable');
@@ -374,17 +351,17 @@ test('excluded types never make a filtered arm unknown; variants of unknown type
 });
 
 test('a saved variant selects only the same design of the same campaign', () => {
-  const tank = variant('1351', 'light_tank_chassis_1', 'light_tank_chassis', [run(100, 130, 1)]);
-  const plane = variant('1351', 'fighter_equipment_1', 'fighter_equipment', [run(100, 130, 1)]);
+  const tank = variant('1351', 'light_tank_chassis_1', 'light_tank_chassis', [run(100, 130, 1)], [], [{ firstHour: 90, name: 'Tank', known: true, design: 'd1' }]);
+  const plane = variant('1351', 'fighter_equipment_1', 'fighter_equipment', [run(100, 130, 1)], [], [{ firstHour: 90, name: 'Plane', known: true, design: 'd2' }]);
   assert.equal(variantKey(REPLY, tank), 'c0ffee:1351:light_tank_chassis_1');
   const other: EquipmentStockpileReply = { ...REPLY, variants: [plane] };
-  const source = groupChoices(stockGroups(other, 'variant', 110), 'variant');
-  assert.equal(source.lines(variantKey(REPLY, tank)), 0);
-  assert.equal(source.lines(variantKey(REPLY, plane)), 1);
+  const source = stockChoices(stockGroups(other, 'variant', 110), 'variant');
+  assert.equal(source.lines(choiceKey(stockGroups(REPLY, 'variant', 110)[1], 110) ?? variantKey(REPLY, tank)), 0);
+  assert.equal(source.lines(choiceKey(stockGroups(other, 'variant', 110)[0], 110)!), 1);
   const campaignB: EquipmentStockpileReply = { ...REPLY, campaignKey: 'beef', variants: [tank] };
-  const inB = groupChoices(stockGroups(campaignB, 'variant', 110), 'variant');
-  assert.equal(inB.lines(variantKey(REPLY, tank)), 0);
-  assert.equal(inB.lines(variantKey(campaignB, tank)), 1);
+  const inB = stockChoices(stockGroups(campaignB, 'variant', 110), 'variant');
+  assert.equal(inB.lines(`${variantKey(REPLY, tank)}/d1`), 0);
+  assert.equal(inB.lines(choiceKey(stockGroups(campaignB, 'variant', 110)[0], 110)!), 1);
   assert.notEqual(variantKey(REPLY, tank), variantKey(campaignB, tank));
 });
 

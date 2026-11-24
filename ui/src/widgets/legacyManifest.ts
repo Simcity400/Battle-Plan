@@ -30,7 +30,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'peace-deals', load: () => import('./peace-deals') },
   { kind: 'production-spending', load: () => import('./production-spending') },
   { kind: 'raid-log', load: () => import('./raid-log') },
-  { kind: 'raid-tally', view: 'lines', label: 'Lines', load: () => import('./raid-tally') },
   { kind: 'ships-sunk', load: () => import('./ships-sunk') },
   { kind: 'territory', view: 'lines', label: 'Lines', load: () => import('./territory') },
   { kind: 'territory', view: 'share', label: 'Share', load: () => import('./territory') },

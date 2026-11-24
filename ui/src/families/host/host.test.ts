@@ -674,6 +674,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
   const hoverHits: (ParsedFamilyHit | null)[] = [];
   const dragEvents: string[] = [];
   let doubleClicks = 0;
+  let expired = false;
 
   const stop = bindFamilyPointer({
     bodyNode: body as unknown as HTMLElement,
@@ -689,7 +690,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
     focusAnchorRef: { current: { x: 0, y: 0 } },
     accessibleRef: { current: null },
     pointerMode: 'continuous',
-    isBlocked: () => !installed,
+    isBlocked: () => !installed || expired,
     getInstalled: () => installed,
     getViewportHeight: () => 800,
     parseHit: (hitKey, inst) => parseTimeChartHit(hitKey) ?? parseDefaultRowHit(hitKey) ?? (inst ? null : null),
@@ -723,6 +724,24 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
   body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 2 });
   assert.equal(activations.length, 1, 'drag past CLICK_CANCEL_PX cancels click activation');
   assert.deepEqual(dragEvents, ['start', `move:${CLICK_CANCEL_PX + 10},0`, 'end']);
+
+  dragEvents.length = 0;
+  body.dispatch('pointerdown', { button: 0, clientX: 100, clientY: 70, pointerId: 3 });
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 3 });
+  const panned = installed;
+  installed = { ...installed!, id: 8, owner: 'owner-B' };
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 30, clientY: 70, pointerId: 3 });
+  body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 30, clientY: 70, pointerId: 3 });
+  assert.deepEqual(dragEvents, ['start', `move:${CLICK_CANCEL_PX + 10},0`, 'end'], 'R4-S9: a pan that meets an owner change ends there, and the replacement chart never gets the old owner’s range');
+  dragEvents.length = 0;
+  installed = panned;
+  const blockedBefore = expired;
+  body.dispatch('pointerdown', { button: 0, clientX: 100, clientY: 70, pointerId: 4 });
+  expired = true;
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 4 });
+  body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 4 });
+  assert.deepEqual([blockedBefore, dragEvents], [false, []], 'R4-S9: a pan does not start on an expired picture');
+  expired = false;
 
   let dblPrevented = false;
   body.dispatch('dblclick', { clientX: 100, clientY: 70, preventDefault() { dblPrevented = true; } });

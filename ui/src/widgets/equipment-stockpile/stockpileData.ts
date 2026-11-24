@@ -22,8 +22,6 @@ const HOUR = (value: unknown) => Number.isInteger(value);
 
 const ordered = <T extends { firstHour: number; lastHour: number }>(runs: readonly T[]) =>
   runs.every((run, index) => run.firstHour <= run.lastHour && (index === 0 || runs[index - 1].lastHour < run.firstHour));
-const amounts = (runs: readonly AmountRun[]) => Array.isArray(runs) && ordered(runs)
-  && runs.every(run => HOUR(run.firstHour) && HOUR(run.lastHour) && (run.amountRaw === null || RAW.test(run.amountRaw)));
 const ascending = (hours: unknown) => Array.isArray(hours) && hours.every((hour, index) => HOUR(hour) && (index === 0 || hours[index - 1] < hour));
 const typesValid = (types: readonly StockType[]) => Array.isArray(types) && types.every(type => typeof type.key === 'string' && type.key.length > 0
   && (type.name === null || typeof type.name === 'string') && DOMAINS.includes(type.domain)
@@ -35,34 +33,6 @@ const namesValid = (names: readonly StockVariantName[]) => Array.isArray(names) 
   && (index === 0 || names[index - 1].firstHour < name.firstHour));
 const spansValid = (spans: unknown) => Array.isArray(spans) && ordered(spans);
 const strings = (values: unknown) => Array.isArray(values) && values.every(value => typeof value === 'string');
-
-export function validateStockpileReply(data: unknown): EquipmentStockpileReply {
-  const reply = data as EquipmentStockpileReply;
-  if (typeof reply === 'object' && reply != null && Array.isArray(reply.variants)
-    && reply.variants.some(variant => variant != null && (variant as Partial<StockVariant>).daily === undefined)) {
-    for (const variant of reply.variants) if (variant != null) Object.assign(variant, { daily: [], dailyIc: [], unitCostLow: [], unitCostHigh: [] });
-    reply.lineHours = [];
-  }
-  const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string' && typeof reply.campaignKey === 'string'
-    && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
-    && typesValid(reply.types)
-    && Array.isArray(reply.variants) && reply.variants.every(variant => RAW.test(variant.id) && typeof variant.token === 'string'
-      && (variant.archetype === null || reply.types.some(type => type.key === variant.archetype))
-      && namesValid(variant.names)
-      && amounts(variant.stock) && amounts(variant.daily) && amounts(variant.dailyIc)
-      && amounts(variant.unitCostLow) && amounts(variant.unitCostHigh))
-    && new Set(reply.variants.map(variant => variant.id)).size === reply.variants.length
-    && ascending(reply.reads)
-    && Array.isArray(reply.stockHours) && ordered(reply.stockHours) && Array.isArray(reply.lineHours) && ordered(reply.lineHours)
-    && Array.isArray(reply.logistics) && reply.logistics.every(item => typeof item.key === 'string'
-      && (item.key.startsWith(UNRESOLVED_MARK) || reply.types.some(type => type.key === item.key)) && amounts(item.balance) && amounts(item.stock) && amounts(item.available))
-    && new Set(reply.logistics.map(item => item.key)).size === reply.logistics.length
-    && ascending(reply.logisticsReads) && ascending(reply.lineReads) && Array.isArray(reply.balanceHours) && ordered(reply.balanceHours)
-    && Array.isArray(reply.aiHours) && ordered(reply.aiHours) && RAW.test(reply.needBoundRaw)
-    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
-  if (!ok) throw new Error('The equipment stockpile reply is malformed.');
-  return reply;
-}
 
 export function validateStockpileCatalogue(data: unknown): StockpileCatalogueReply {
   const reply = data as StockpileCatalogueReply;
@@ -360,12 +330,6 @@ export function stockRuns(reply: EquipmentStockpileReply, group: Summed): Run[] 
   return runs;
 }
 
-export const groupChoices = (groups: readonly StockGroup[], noun: string): ChoiceSource => ({
-  lines: key => groups.some(group => group.key === key) ? 1 : 0,
-  name: key => groups.find(group => group.key === key)?.label ?? 'Equipment group name unavailable',
-  noun,
-});
-
 const DESIGN_MARK = '#';
 const rowOf = (key: string) => {
   const at = key.lastIndexOf(DESIGN_MARK);
@@ -497,15 +461,4 @@ export function groupTooltip(reply: EquipmentStockpileReply, group: StockGroup, 
     for (let count = Math.min(MAX_VARIANTS, listed.length); count >= 0; count--) yield form(count);
   }
   return fitTooltip(forms(), height, { keep: 0, full: form(listed.length) });
-}
-
-export function groupLabel(reply: EquipmentStockpileReply, group: StockGroup, hour: number): string {
-  if (balanceMode(reply, hour) === 'player' && group.types.length && !typesComplete(reply, group, hour)) return `${group.label}: surplus or shortage not known`;
-  const logistics = balanceAt(reply, group, hour);
-  if (logistics) {
-    const share = shareOf(logistics);
-    return `${group.label}: ${logistics.balance < 0n ? 'shortage' : 'surplus'} ${formatSigned(logistics.balance, reply.decimals)}${share != null ? `, ${formatPercent(share)} of need` : ''}`;
-  }
-  const stock = stockAt(reply, group, hour);
-  return stock == null ? `${group.label}: not recorded at this time` : `${group.label}: ${amount(stock, reply.decimals)} in stock`;
 }

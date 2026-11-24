@@ -3,12 +3,13 @@ import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import { widgetMetas } from './definitions.ts';
-import { FAMILY_VIEW_UI, familyViewsForKind, manifestSlotsForKind } from './manifest.ts';
-import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, rendererKinds, setPlaybackActive } from './rendererLoaders.ts';
+import { FAMILY_VIEWS, FAMILY_VIEW_UI, LEGACY_WIDGETS, familyViewsForKind, manifestSlotsForKind } from './manifest.ts';
+import { buildRendererLoaders, isPlaybackActive, loadWidgetRenderer, preloadAllWidgetRenderers, setPlaybackActive } from './rendererLoaders.ts';
 import { viewKey, type FamilyViewEntry } from '../families/manifest.ts';
 
 test('all installed kinds have independent lazy loaders and unknown saved kinds remain unknown', async () => {
-  assert.deepEqual([...rendererKinds()].sort(), widgetMetas.map(meta => meta.kind).sort());
+  const kinds = [...new Set([...buildRendererLoaders(LEGACY_WIDGETS, FAMILY_VIEWS, FAMILY_VIEW_UI).values()].map(entry => entry.kind))];
+  assert.deepEqual(kinds.sort(), widgetMetas.map(meta => meta.kind).sort());
   assert.equal(await loadWidgetRenderer('uninstalled-synthetic-kind'), undefined);
   const registry = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(registry, /import \w+ from ['"]\.\/[^'"]+['"]/);
@@ -61,17 +62,18 @@ test('every widget module loads with its registered lazy body and the catalogue 
       }
       if (renderer.usePresets) assert.equal(registered.usePresets, renderer.usePresets, `${meta.kind} presets are available on first catalogue open`);
     }
-    const { FAMILY_VIEWS: views, FAMILY_VIEW_UI: overrides } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
-    for (const entry of (views as readonly FamilyViewEntry[]).filter(item => Object.hasOwn(overrides, item.kind))) {
+    const { FAMILY_VIEWS: views, LEGACY_WIDGETS: legacy, OPTION_CHOICES: kindChoices } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
+    const legacyKeys = new Set((legacy as readonly { kind: string; view?: string }[]).map(item => viewKey(item.kind, item.view)));
+    for (const entry of views as readonly FamilyViewEntry[]) {
+      const key = viewKey(entry.kind, entry.view);
+      assert.equal(legacyKeys.has(key), false, `${key} is not shadowed by a LEGACY_WIDGETS entry`);
       const renderer = await load(entry.kind, entry.view);
       const spec = await entry.loadSpec();
       const drawn = renderer.declaration;
-      const named = `${viewKey(entry.kind, entry.view)} draws the declaration its manifest entry names`;
+      const named = `${key} draws the declaration its manifest entry names`;
       assert.deepEqual([drawn?.family, drawn?.kind], [spec.declaration.family, spec.declaration.kind], named);
       assert.equal(drawn?.projection, spec.declaration.projection, named);
     }
-    const { LEGACY_WIDGETS: legacy } = await vite.ssrLoadModule('/ui/src/widgets/legacyManifest.ts');
-    const { OPTION_CHOICES: kindChoices } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
     const choiceHooks = new Map<string, Set<unknown>>();
     for (const entry of [...views as readonly FamilyViewEntry[], ...legacy as readonly { kind: string; view?: string }[]]) {
       const hooks = choiceHooks.get(entry.kind) ?? new Set<unknown>();

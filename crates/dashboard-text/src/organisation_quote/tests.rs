@@ -43,11 +43,7 @@ fn attach_quote_keeps_every_native_narrowing_under_overflow() {
 }
 
 #[test]
-fn affordability_compares_the_exact_pool_with_the_rescaled_quote() {
-    assert!(affordable(2_300_000, 23));
-    assert!(!affordable(2_299_999, 23));
-    assert!(affordable(-100_000, -1));
-    assert!(!affordable(-100_001, -1));
+fn only_a_positive_quote_on_a_policy_not_attached_shows_its_cost() {
     assert!(shows_attach_cost(1, false));
     assert!(!shows_attach_cost(1, true));
     assert!(!shows_attach_cost(0, false));
@@ -166,6 +162,8 @@ fn details(policy: u32) -> rows::IndustrialOrganisationDetailsRow {
     }
 }
 
+static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 struct Content {
     root: std::path::PathBuf,
     traits: content_reader_military::mio_traits::Catalog,
@@ -179,7 +177,7 @@ impl Content {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("modifier name tests require BATTLEPLAN_GAME_DIR with the supported installation");
         let modifier = engine_executable::modifier_keys::fixed_name(KEY).unwrap();
-        let root = std::env::temp_dir().join(format!("mio_policy_quote_{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("mio_policy_quote_{}_{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         let write = |path: &str, text: &str| {
             let path = root.join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -220,7 +218,7 @@ fn quote(
     policy: u32,
     base: i32,
 ) -> Result<(i64, i32), String> {
-    use dashboard_text::triggers::{ContentFacts, World};
+    use crate::triggers::{ContentFacts, World};
     let dlcs = Default::default();
     let triggers = Default::default();
     let aliases = Default::default();
@@ -291,17 +289,6 @@ fn organisation_conditions_read_the_owner_through_from() {
             canonical_slot: 3,
         }]));
     assert!(quote(&content, &unlinked, 300, 25).is_err());
-}
-
-#[test]
-fn a_false_organisation_condition_decides_whatever_the_other() {
-    let unknown = || Err::<bool, String>("unknown".into());
-    assert_eq!(both(unknown(), || Ok(false)), Ok(false));
-    assert_eq!(both(Ok(false), || panic!("not evaluated")), Ok(false));
-    assert_eq!(both(Ok(true), || Ok(false)), Ok(false));
-    assert_eq!(both(Ok(true), || Ok(true)), Ok(true));
-    assert!(both(unknown(), || Ok(true)).is_err());
-    assert!(both(Ok(true), unknown).is_err());
 }
 
 #[test]
