@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../components/WidgetState';
 import CountryPicker from '../components/CountryPicker';
-import { formatRatio } from '../charts/butterfly/layout';
 import DrillHost from '../charts/drill/DrillHost';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill } from '../charts/race/partsRaceDrill';
 import type { PartsRaceDrillAction, PartsRaceDrillState } from '../charts/race/partsRaceDrill';
@@ -26,7 +25,6 @@ import LiveText, { liveTexts } from '../charts/LiveText';
 import { useCountryGroups } from './useCountryGroups';
 import { useMilitaryAirLedger } from './useMilitaryAirLedger';
 import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerLabel, ledgerNames, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip } from './militaryAirLedger';
-import { liveAt, sameBy } from '../charts/live';
 import { stickyLimit, stickyMembers } from './follow/stickyMembers.ts';
 import type { StickyMembers } from './follow/stickyMembers';
 import type { LedgerRow } from './militaryAirLedger';
@@ -40,11 +38,11 @@ import type { MilitaryAirLedger } from './militaryAirLedger';
 import { coverageOf, useRegion } from './widgetTime.ts';
 
 const NO_WARNINGS: string[] = [];
+const NO_RANKED: CountryRaceEntry[] = [];
 const airOperands = (reply: MilitaryAirLedger): MilitaryAirLedger => ({ ...reply, regions: [], buildings: [], warnings: [] });
 
 const SEP = String.fromCharCode(0);
 const rowsKey = (rows: readonly LedgerRow[]) => rows.map(row => row.tag + SEP + row.identity).join(SEP + SEP);
-const entryKey = (entry: CountryRaceEntry) => [entry.tag, entry.label, entry.value, entry.stretch].join(SEP);
 
 const HOLDERS = { holders: true };
 
@@ -114,16 +112,6 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const tags = useMemo(() => [...new Set([...selected.rows.map(row => row.tag), ...(stickyHeld?.tags ?? []).map(member => member.split(SEP)[0]!)])],
     [selected.rows, stickyHeld]);
   const dates = useMemo(() => new Map(selected.rows.map(row => [row.tag, hour])), [selected.rows, hour]);
-  const shownValue = metric === 'dealt' ? 'dealt' : 'taken';
-  const raceEntries = (rows: readonly LedgerRow[], at: number): CountryRaceEntry[] => rows.map(row => ({ tag: row.tag, value: Number(row[shownValue]) / ledgerScale(family),
-    label: ledgerLabel(row[shownValue], family) + (options.ratio !== false ? ' · ' + (row.complete ? formatRatio(row.dealt, row.taken) : 'Not known') : ''),
-    stretch: JSON.stringify([row.identity, row.segment]), hour: at }));
-  const ranked = useMemo(() => air ? raceEntries(selected.rows, hour) : [], [air, selected.rows, shownValue, family, options.ratio, hour]);
-  const liveRanked = useMemo(() => {
-    if (!following || !air || options.view === 'lines' || !index) return undefined;
-    const live = liveAt(runtime.clock, position => hourAt(position), at => raceEntries(rowsAt(at), at), sameBy(entryKey));
-    return { entries: live.read, hour: live.hour, bind: live.subscribe };
-  }, [liveScope, shownValue, index, groups.data, runtime.clock, axisOffset]);
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
   const raceTags = useMemo(() => options.view === 'lines' ? [...new Set(lines.map(line => line.tag))] : tags, [options.view, lines, tags]);
@@ -216,7 +204,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
           ? <WidgetState kind="empty" message={metric === 'dealt' ? 'No country has downed aircraft yet.' : 'No country has lost aircraft yet.'} /> : undefined;
   const content = <CountryRaceView runtime={runtime} track={track} active={active && (!airOpen || options.drill === 'popout')} options={options} view={options.view === 'lines' ? 'lines' : 'race'}
     extent={raceExtent} playhead={widget.time.mode === 'follow' || widget.time.mode === 'pin' ? hour : null}
-    moment={hour} slots={selected.rows.length} ranked={ranked} liveRanked={liveRanked} liveHead={liveHead}
+    moment={hour} slots={selected.rows.length} ranked={NO_RANKED} liveHead={liveHead}
     countryTags={raceTags} countryLookHours={dates} segmentAt={segmentAt} lines={lines}
     label={title} empty="No selected country was recorded at this moment." formatValue={formatAxisValue}
     state={airMainState} onPick={openAir} pickOwner={airPickOwner} selectedHour={airOpen ? airAt : undefined} resetKey={airKey}

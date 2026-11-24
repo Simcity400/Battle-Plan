@@ -33,6 +33,17 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'casualties-between',
+    view: 'opponents',
+    label: 'By opponent',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../casualties-between/casualtiesBetweenProjection.ts').then(mod => ({
+      family: 'bars', kind: 'casualties-between', view: 'opponents',
+      projection: mod.casualtyOpponentsProjection, declaration: mod.casualtyOpponentsDeclaration,
+    })),
+  },
+  {
     kind: 'factories',
     view: 'race',
     label: 'Race',
@@ -70,6 +81,17 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
       family: 'bars', kind: 'naval-supremacy', view: 'shares',
       projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
+    })),
+  },
+  {
+    kind: 'who-spies-on-whom',
+    view: 'pairs',
+    label: 'Top pairs',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../who-spies-on-whom/whoSpiesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'who-spies-on-whom', view: 'pairs',
+      projection: mod.operativePairsProjection, declaration: mod.operativePairsDeclaration,
     })),
   },
 ];

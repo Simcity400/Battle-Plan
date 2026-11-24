@@ -23,11 +23,13 @@ const identity: IdentityProvider = {
 
 const AIR: MilitaryAirAtOptions = { family: 'airLosses', scale: 100_000, digits: 5, leftHeader: 'Own losses', rightHeader: 'Enemy aircraft destroyed', unit: 'Aircraft', ratio: true, chosen: null };
 
+const aircraft = (count: number) => String(BigInt(count) * 100_000n);
+
 const reply = (patch: Partial<MilitaryAirAtReply>): MilitaryAirAtReply => ({
   family: 'airLosses', hour: 500, countedFrom: 0, validUntil: 520, missing: null, rankMissing: null, unattributed: ['0', '0'], warnings: [],
   rows: [
-    { tag: 'GER', identity: '7:1', segmentFirstHour: 0, dealt: '445300000', taken: '247400000', complete: true },
-    { tag: 'ENG', identity: '8:2', segmentFirstHour: 0, dealt: '143900000', taken: '208500000', complete: true },
+    { tag: 'GER', identity: '7:1', segmentFirstHour: 0, dealt: aircraft(4453), taken: aircraft(2474), complete: true },
+    { tag: 'ENG', identity: '8:2', segmentFirstHour: 0, dealt: aircraft(1439), taken: aircraft(2085), complete: true },
   ],
   ...patch,
 });

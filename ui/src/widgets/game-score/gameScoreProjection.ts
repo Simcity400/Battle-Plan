@@ -22,7 +22,7 @@ import {
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { compareValues, hasMeasuredValue, knownValue, notRecorded, valueFromLive, type Value } from '../../families/value.ts';
+import { knownValue, notRecorded, valueFromLive, type Value } from '../../families/value.ts';
 import type { GameScoreRow } from '../../generated/dashboard';
 import { OPTIONS, TABLE_BASE } from './definition.ts';
 import { SCORE_LABELS, SCORE_PARTS, scoreHint, scorePart, validateGameScore, type GameScoreReply, type ScorePart } from './gameScoreData.ts';
@@ -159,7 +159,7 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
         })),
       ];
     },
-    rows: (reply, live, hour, options) => {
+    rows: (reply, _live, hour, options) => {
       if (reply.missing !== null) {
         return { rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
       }
@@ -168,14 +168,10 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
       }
       let filtered: GameScoreRow[];
       if (options.top != null) {
-        const scored: { row: GameScoreRow; val: Value }[] = [];
-        for (const row of reply.rows) {
-          if (row[options.by].missing !== null) continue;
-          const v = valueFromLive(live, liveKey(row.tag, options.by));
-          if (hasMeasuredValue(v)) scored.push({ row, val: v });
-        }
-        scored.sort((a, b) => compareValues(a.val, b.val, 'descending') || (a.row.tag < b.row.tag ? -1 : a.row.tag > b.row.tag ? 1 : 0));
-        filtered = scored.slice(0, options.top).map(item => item.row);
+        if (!reply.top) return { rows: [], empty: 'The top countries were not answered for this reading.', emptyKind: 'unavailable', warnings: reply.warnings };
+        if (reply.top.missing !== null) return { rows: [], empty: reply.top.missing, emptyKind: 'unavailable', warnings: reply.warnings };
+        const byTag = new Map(reply.rows.map(row => [row.tag, row]));
+        filtered = reply.top.tags.flatMap(tag => byTag.get(tag) ?? []);
       } else if (options.all) {
         filtered = reply.rows;
       } else if (options.membership) {
@@ -234,24 +230,28 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
     allTagsForLabels: true,
     requireGroupsWhen: (widget, options) => options.factions === true || (widget.countries.kind === 'group' && widget.countries.group.type !== 'top'),
   },
-  sources: ctx => ({
-    owner: `game-score:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage: { mode: 'population', form: 'all' },
-        product: 'game-score',
-        followQuery: { panel: 'game-score', branchId: ctx.branch.id },
-        params: { branchId: ctx.branch.id },
-        validate: validateGameScore,
-      },
-    }],
-  }),
+  sources: ctx => {
+    const top = ctx.countries.top;
+    const asked = top != null ? { branchId: ctx.branch.id, top: { count: top, by: scorePart(ctx.options.topMeasure) } } : { branchId: ctx.branch.id };
+    return {
+      owner: `game-score:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+      entries: [{
+        name: 'main',
+        source: ctx.track.source,
+        branch: ctx.branch.id,
+        offset: ctx.track.axisOffset,
+        read: {
+          shape: 'point',
+          channel: 'panel',
+          coverage: top != null ? { mode: 'population', form: 'top', limit: top } : { mode: 'population', form: 'all' },
+          product: 'game-score',
+          followQuery: { panel: 'game-score', ...asked },
+          params: asked,
+          validate: validateGameScore,
+        },
+      }],
+    };
+  },
   projection: gameScoreProjection,
   columns: () => gameScoreColumns(),
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },

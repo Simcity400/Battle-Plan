@@ -1,5 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
-import type { WidgetOptions, OptionField } from '../../dashboard/options';
+import type { OptionField } from '../../dashboard/options';
 import { END_LABELS_OPTION } from '../../dashboard/lineChartOptions.ts';
 import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
@@ -24,12 +24,6 @@ export const definition = {
   description: 'Aircraft losses and enemy aircraft destroyed, including operational losses.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES,
-  migrate: (_from, widget) => ({ ...widget, configVersion: 3, options: normaliseAirOptions(widget.options) }),
   options: OPTIONS,
   variants: raceViewVariants('Air kills & losses', OPTIONS, { breakdown: 'Aircraft loss causes' }),
 } as const satisfies WidgetMeta;
-
-export function normaliseAirOptions(options: WidgetOptions = {}): WidgetOptions {
-  const { show, ...rest } = options;
-  return { ...rest, view: show === 'breakdown' ? 'breakdown' : rest.view === 'lines' || rest.view === 'breakdown' ? rest.view : 'butterfly' };
-}

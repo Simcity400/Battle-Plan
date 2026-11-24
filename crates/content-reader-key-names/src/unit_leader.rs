@@ -664,6 +664,11 @@ impl Traits {
         }
     }
 
+    pub fn by_ordinal(&self, ordinal: u32) -> Option<&str> {
+        let index = usize::try_from(ordinal).ok()?.checked_sub(1)?;
+        self.names.get(&identity(self.definitions.get(index)?))?.as_deref().ok()
+    }
+
     pub fn spellings(&self) -> impl Iterator<Item = &str> {
         self.order
             .iter()

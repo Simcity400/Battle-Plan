@@ -1,5 +1,0 @@
-.who-spies-on-whom { position: relative; width: 100%; height: 100%; min-height: 0; }
-.who-spies-on-whom > .widget-state:not(.is-error) { position: absolute; inset: 0; pointer-events: none; }
-.has-chart-error > .chord-chart { visibility: hidden; }
-.has-chart-error > .widget-state { position: absolute; inset: 0; }
-.has-chart-error > .widget-state:not(.is-error) { display: none; }

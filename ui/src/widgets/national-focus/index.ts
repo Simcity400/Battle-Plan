@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import NationalFocusWidget from './NationalFocusWidget';
+import { nationalFocusDeclaration } from './nationalFocusProjection';
 
-export default { render: NationalFocusWidget } satisfies WidgetRenderer;
+export default { declaration: nationalFocusDeclaration } satisfies WidgetRenderer;

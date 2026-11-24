@@ -619,7 +619,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const node = bodyRef.current;
     if (node && metrics) {
       const vp = viewportRef.current;
-      const nextLeft = revealGridAxis(column, metrics.cellSize, node.scrollLeft, Math.max(1, vp.width - metrics.gridLeft));
+      const nextLeft = revealGridAxis(column, metrics.cellWidth ?? metrics.cellSize, node.scrollLeft, Math.max(1, vp.width - metrics.gridLeft));
       const nextTop = revealGridAxis(row, metrics.cellSize, node.scrollTop, Math.max(1, vp.height - metrics.gridTop));
       if (nextLeft !== node.scrollLeft) node.scrollLeft = vp.scrollLeft = nextLeft;
       if (nextTop !== node.scrollTop) node.scrollTop = vp.scrollTop = nextTop;
