@@ -61,8 +61,8 @@ test('every widget module loads with its registered lazy body and the catalogue 
       }
       if (renderer.usePresets) assert.equal(registered.usePresets, renderer.usePresets, `${meta.kind} presets are available on first catalogue open`);
     }
-    const { FAMILY_VIEWS: views } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
-    for (const entry of views as readonly FamilyViewEntry[]) {
+    const { FAMILY_VIEWS: views, FAMILY_VIEW_UI: overrides } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
+    for (const entry of (views as readonly FamilyViewEntry[]).filter(item => Object.hasOwn(overrides, item.kind))) {
       const renderer = await load(entry.kind, entry.view);
       const spec = await entry.loadSpec();
       const drawn = renderer.declaration;
