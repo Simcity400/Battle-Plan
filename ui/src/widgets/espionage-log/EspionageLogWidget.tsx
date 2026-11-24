@@ -30,7 +30,7 @@ import { useLogPages } from '../../dashboard/useLogPages';
 import type { LogCut, LogSpec } from '../../dashboard/useLogPages';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { useDistinctState } from '../../dashboard/useDistinctState';
-import type { Country, EspionageEndedReply, EspionageOperationsReply, FacetFilter, OperationState } from '../../generated/dashboard';
+import type { Country, EspionageEndedReply, EspionageOperationsReply, OperationState } from '../../generated/dashboard';
 import type { Failure } from '../../dashboard/queryError';
 import { OPTIONS } from './definition';
 import { completionRow, endedRows, endedThrough, filteredPages, jumpHours, operationChoices, operationName, operationProgress, operationState,
@@ -97,7 +97,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
 
   const tagged = widget.countries.kind === 'tags' || widget.countries.kind === 'selected';
   const serverRole = tagged && role !== 'either' ? role : null;
-  const facets = useMemo<FacetFilter[]>(() => [...(tokens ? [{ name: 'operation', values: tokens, countries: [] }] : []),
+  const facets = useMemo(() => [...(tokens ? [{ name: 'operation', values: tokens, countries: [] }] : []),
     ...(serverRole ? [{ name: serverRole, values: [], countries: fallback.map(countryFromKey) }] : [])], [tokens, serverRole, fallback]);
   const logSpan = track ? gate.span(from ?? track.branch.firstHour, track.branch.lastHour) : null;
   const spec = useMemo<LogSpec | null>(() => track && logSpan && tokens !== undefined && !(tokens && tokens.length === 0) ? { source: track.source, branchId: track.branch.id, log: 'operation-completions',

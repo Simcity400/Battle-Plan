@@ -1,22 +1,26 @@
 import { useCallback, useMemo } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, ReactNode, RefCallback } from 'react';
 import { CountryFlagUrl } from '../components/CountryFlag';
 import { Icon } from '../components/Icons';
 import WidgetState from '../components/WidgetState';
 import { dayLabel } from '../charts/draw';
 import { jumpItem } from '../charts/jump';
 import LogList from '../charts/log/LogList';
-import { useRevealClock } from '../charts/reveal';
+import { useRevealClock, type RevealClock } from '../charts/reveal';
 import { logCountryRequests, NO_COUNTRY_REQUESTS, sameCountryRequests } from '../charts/log/logData';
-import type { CountryRequest, LogDensity, LogRow } from '../charts/log/logData';
+import type { CountryRequest, LogDensity, LogPage, LogRow } from '../charts/log/logData';
 import { useChartTokens } from '../charts/useChartTokens';
 import { useCountryLabelsAt } from './countryFlagsAt';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
+import type { Failure } from './queryError';
+import type { Gate } from './regionGate';
 import { useLogPages } from './useLogPages';
+import { useLogTail, type LogTailSpec } from './useLogTail';
 import { useDistinctState } from './useDistinctState';
+import { useShownEachFrame } from './widgetPerf';
 import type { LogCut, LogSpec } from './useLogPages';
-import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerIcon, ledgerPartyName, ledgerSelection, ledgerTitle, MARKET_LEDGER, MARKET_LOG } from './marketLedger.ts';
+import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerIcon, ledgerPartyName, ledgerSelection, ledgerTitle, MARKET_LEDGER, MARKET_LEDGER_TAIL, MARKET_LOG } from './marketLedger.ts';
 import type { LedgerItem, PartyState } from './marketLedger';
 import '../widgets/event-feed/eventFeed.css';
 import './market.css';
@@ -28,6 +32,8 @@ const PALETTE: Record<number, number> = { 3: 1, 4: 5, 5: 4, 6: 5, 10: 0, 11: 2, 
 export interface MarketOccurrencesProps {
   runtime: WidgetRuntime;
   track: BoundTrack;
+  gate?: Gate;
+  deduplicate?: boolean;
   kinds: readonly number[];
   tags: readonly string[] | null;
   span: BoundWindow | null;
@@ -41,27 +47,31 @@ export interface MarketOccurrencesProps {
   empty?: ReactNode;
 }
 
-export default function MarketOccurrences({ runtime, track, kinds, tags, span, cut, active, label, density, months, animate, onOpen, empty }: MarketOccurrencesProps) {
+interface OccurrencesSource {
+  pages: readonly LogPage<LedgerItem>[];
+  onWantedPages: (keys: readonly string[]) => void;
+  ready: boolean;
+  error?: Failure;
+  retry: () => void;
+  playhead: number | null;
+  reveal?: RevealClock;
+  root?: RefCallback<Element>;
+}
+
+function MarketOccurrencesList({ runtime, track, cut, active, label, density, months, animate, onOpen, empty, source }: MarketOccurrencesProps & { source: OccurrencesSource }) {
   const tokens = useChartTokens();
-  const facets = useMemo(() => ledgerFacets(kinds, tags), [kinds, tags]);
-  const spec = useMemo<LogSpec | null>(() => kinds.length && span ? { source: track.source, branchId: track.branch.id, log: MARKET_LOG, product: MARKET_LEDGER, facets,
-    firstHour: span.firstHour, lastHour: span.lastHour } : null, [track.source, track.branch.id, kinds.length, facets, span?.firstHour, span?.lastHour]);
-  const list = useLogPages<LedgerItem>(runtime.client, runtime.clock, spec, cut, active, ledgerEntry);
-  const offset = cut.follow ? cut.offset : 0;
-  const trackHour = useCallback((clockHour: number) => Math.floor(clockHour) + offset, [offset]);
-  const reveal = useRevealClock(runtime.clock, cut.follow, trackHour);
   const [wanted, setWanted] = useDistinctState<readonly CountryRequest[]>(NO_COUNTRY_REQUESTS, sameCountryRequests);
   const onVisible = useCallback((rows: readonly LogRow<LedgerItem>[]) => setWanted(logCountryRequests(rows, row => ({ hour: row.hour, tags: [row.item.seller, row.item.buyer] }))), [setWanted]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const name = useCallback((row: LogRow<LedgerItem>) => (tag: string | null, state: PartyState = 'notRecorded') =>
     ledgerPartyName(tag, state, t => labelAt(row.hour)(t).name), [labelAt]);
-  if (list.error) return <WidgetState kind="error" failure={list.error} onRetry={list.retry} />;
+  if (source.error) return <WidgetState kind="error" failure={source.error} onRetry={source.retry} />;
   const describe = (row: LogRow<LedgerItem>) => {
     const named = name(row), figure = ledgerFigure(row.item);
     return [dayLabel(row.hour), ledgerTitle(row.item, named), `${named(row.item.seller, row.item.sellerState)} → ${named(row.item.buyer, row.item.buyerState)}`, row.item.equipment, figure?.text].filter(Boolean).join(' · ');
   };
-  return <LogList pages={list.pages} onWantedPages={list.onWantedPages} label={label} density={density} months={months}
-    animate={animate && cut.follow} playhead={cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : null} reveal={reveal} columns={COLUMNS} onVisible={onVisible}
+  const list = <LogList pages={source.pages} onWantedPages={source.onWantedPages} label={label} density={density} months={months}
+    animate={animate && cut.follow} playhead={source.playhead} reveal={source.reveal} columns={COLUMNS} onVisible={onVisible}
     renderRow={row => {
       const named = name(row), figure = ledgerFigure(row.item), seller = row.item.seller === null ? null : labelAt(row.hour)(row.item.seller);
       const open = onOpen && ledgerSelection(row.item) !== null ? () => onOpen(row.item, row.hour) : undefined;
@@ -86,5 +96,39 @@ export default function MarketOccurrences({ runtime, track, kinds, tags, span, c
       ] }];
     }}
     menu={row => [...onOpen && ledgerSelection(row.item) !== null ? [{ label: 'Show contract', run: () => onOpen(row.item, row.hour) }] : [], jumpItem(runtime, track.id, row.hour)]}
-    empty={list.counts ? empty ?? 'No market activity matches these settings.' : <WidgetState kind="loading" label="Loading market activity…" />} />;
+    empty={source.ready ? empty ?? 'No market activity matches these settings.' : <WidgetState kind="loading" label="Loading market activity…" />} />;
+  return source.root ? <div ref={source.root} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>{list}</div> : list;
+}
+
+function MarketOccurrencesTail(props: MarketOccurrencesProps & { gate: Gate }) {
+  const { runtime, track, gate, deduplicate = false, kinds, tags, span, cut, active } = props;
+  const facets = useMemo(() => ledgerFacets(kinds, tags, deduplicate), [kinds, tags, deduplicate]);
+  const spec = useMemo<LogTailSpec | null>(() => kinds.length && span ? {
+    source: track.source, branchId: track.branch.id, facets, from: span.firstHour, lastHour: span.lastHour,
+  } : null, [track.source, track.branch.id, kinds.length, facets, span?.firstHour, span?.lastHour]);
+  const tail = useLogTail<LedgerItem>(runtime, gate, MARKET_LEDGER_TAIL, spec, cut, active, ledgerEntry);
+  useShownEachFrame(runtime.clock, tail.shownAt, tail.live);
+  return <MarketOccurrencesList {...props} source={{
+    pages: tail.pages, onWantedPages: tail.onWantedPages, ready: tail.ready, error: tail.error, retry: tail.retry,
+    playhead: cut.follow ? tail.at : null, root: tail.root,
+  }} />;
+}
+
+function MarketOccurrencesPaged(props: MarketOccurrencesProps) {
+  const { runtime, track, deduplicate = false, kinds, tags, span, cut, active } = props;
+  const facets = useMemo(() => ledgerFacets(kinds, tags, deduplicate), [kinds, tags, deduplicate]);
+  const spec = useMemo<LogSpec | null>(() => kinds.length && span ? { source: track.source, branchId: track.branch.id, log: MARKET_LOG, product: MARKET_LEDGER, facets,
+    firstHour: span.firstHour, lastHour: span.lastHour } : null, [track.source, track.branch.id, kinds.length, facets, span?.firstHour, span?.lastHour]);
+  const list = useLogPages<LedgerItem>(runtime.client, runtime.clock, spec, cut, active, ledgerEntry);
+  const offset = cut.follow ? cut.offset : 0;
+  const trackHour = useCallback((clockHour: number) => Math.floor(clockHour) + offset, [offset]);
+  const reveal = useRevealClock(runtime.clock, cut.follow, trackHour);
+  return <MarketOccurrencesList {...props} source={{
+    pages: list.pages, onWantedPages: list.onWantedPages, ready: !!list.counts, error: list.error, retry: list.retry,
+    playhead: cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : null, reveal,
+  }} />;
+}
+
+export default function MarketOccurrences(props: MarketOccurrencesProps) {
+  return props.gate ? <MarketOccurrencesTail {...props} gate={props.gate} /> : <MarketOccurrencesPaged {...props} />;
 }

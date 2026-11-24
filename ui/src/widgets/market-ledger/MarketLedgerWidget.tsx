@@ -20,8 +20,6 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { LogCut } from '../../dashboard/useLogPages';
-import { trackHourOf } from '../../dashboard/settledHour';
-import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { DETAILS, OPTIONS } from './definition';
 import './marketLedger.css';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
@@ -29,7 +27,6 @@ import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 export default function MarketLedgerWidget({ widget, runtime, active, setOption }: WidgetProps) {
   const [drillShown, setDrillShown] = useState<number | undefined>();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const follow = widget.time.mode === 'follow';
@@ -80,7 +77,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
       selected={KINDS.filter(kind => enabled(kind.key)).map(kind => kind.key)} max={KINDS.length} onToggle={key => setOption?.(key, !enabled(key as KindKey))} /></div>}
     {tags === undefined ? <WidgetState kind="loading" label="Loading market activity…" />
       : !stableKinds.length ? <WidgetState kind="empty" icon="history" message="Choose the occurrences to show in the widget settings." />
-        : <MarketOccurrences runtime={runtime} track={track} kinds={stableKinds} tags={tags} span={track ? gate.span(firstHour, track.branch.lastHour) : null} cut={cut} active={active} label="Market ledger"
+        : <MarketOccurrences runtime={runtime} track={track} gate={gate} deduplicate kinds={stableKinds} tags={tags} span={track ? gate.span(firstHour, track.branch.lastHour) : null} cut={cut} active={active} label="Market ledger"
           density={log.density} months={log.months} animate={log.animate} onOpen={open} />}
   </div>;
   return <div ref={anchor} className="market-ledger-host">

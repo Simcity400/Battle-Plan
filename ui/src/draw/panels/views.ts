@@ -52,6 +52,11 @@ const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => s
   'technology-effects': raw => technologyEffectsStructure(validateTechnologyEffects(raw)),
   'content-entity-stats': raw => entityStatsStructure(validateEntityStats(raw)),
   [HISTORY_PANEL]: (raw, hour) => historyStructure(validateSpecialProjectsReply(raw), hour),
+  'market-ledger-tail': raw => {
+    const r = raw as { total?: string | number; firstOrdinal?: string; rows?: readonly { key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
+    const missing = (r.missing ?? []).map(span => `${span.firstHour ?? ''}-${span.lastHour ?? ''}:${span.reason ?? ''}`).join(',');
+    return `${r.total ?? ''}|${r.firstOrdinal ?? ''}|${r.rows?.[0]?.key ?? ''}|${r.rows?.length ?? 0}|${missing}`;
+  },
 };
 
 export function panelStructure(product: string, raw: unknown, hour: number): string {
@@ -96,6 +101,14 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
       ...(r.projects ?? []).flatMap(p => [JSON.stringify([p.owner, p.id]), ...(p.variables ?? []).map(v => JSON.stringify([p.owner, p.id, v.name])),
         ...(p.pending?.options ?? []).map(o => JSON.stringify([p.owner, p.id, p.pending?.label.token, o.label.token])),
         ...(p.choices ?? []).map(c => JSON.stringify([p.owner, p.id, c.ordinal, c.reward.token, c.option.token]))])];
+  }
+  if (product === 'market-ledger-tail') {
+    const r = raw as { total?: string | number; rows?: readonly { hour?: number; key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
+    return [
+      JSON.stringify(['total', String(r.total ?? '')]),
+      ...(r.rows ?? []).map(row => JSON.stringify([row.hour, row.key])),
+      ...(r.missing ?? []).map(span => JSON.stringify(['missing', span.firstHour, span.lastHour, span.reason])),
+    ];
   }
   return [];
 }
