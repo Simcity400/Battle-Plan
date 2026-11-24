@@ -1,17 +1,49 @@
+import type { OptionField } from '../../dashboard/options.ts';
 import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
 import { familyBarsLaneView } from '../../families/bars/laneView.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
+import { OPTIONS as AIR_FORCE_OPTIONS } from '../air-force-size/definition.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
+import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
+import { OPTIONS as NAVY_SIZE_OPTIONS } from '../navy-size/definition.ts';
+import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_TREND_OPTIONS } from '../occupation-trend/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
 
+function raceScopedOptions(fields: readonly OptionField[], keys: ReadonlySet<string>): readonly OptionField[] {
+  return fields
+    .filter(field => keys.has(field.key))
+    .map(field => (field.key === 'view' || field.key === 'split' ? { ...field, visibleWhen: undefined } : field));
+}
+
+const AIR_FORCE_RACE_OPTION_KEYS = new Set(['view', 'measure', 'ownership', 'split']);
+const AIR_FORCE_RACE_OPTIONS = raceScopedOptions(AIR_FORCE_OPTIONS, AIR_FORCE_RACE_OPTION_KEYS);
 const GAME_SCORE_RACE_OPTION_KEYS = new Set(['view', 'topMeasure', 'split']);
 const GAME_SCORE_RACE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_RACE_OPTION_KEYS.has(field.key));
+const NAVAL_LOSSES_RACE_OPTION_KEYS = new Set(['view', 'kind', 'attribution', 'period', 'split']);
+const NAVAL_LOSSES_RACE_OPTIONS = raceScopedOptions(NAVAL_LOSSES_OPTIONS, NAVAL_LOSSES_RACE_OPTION_KEYS)
+  .map(field => (field.key === 'split' ? { ...field, visibleWhen: options => options.kind === 'both' } : field));
+const NAVY_SIZE_RACE_OPTION_KEYS = new Set(['view', 'measure', 'ownership', 'grouping', 'split']);
+const NAVY_SIZE_RACE_OPTIONS = raceScopedOptions(NAVY_SIZE_OPTIONS, NAVY_SIZE_RACE_OPTION_KEYS);
+const NUCLEAR_ARSENAL_RACE_OPTION_KEYS = new Set(['view', 'split']);
+const NUCLEAR_ARSENAL_RACE_OPTIONS = raceScopedOptions(NUCLEAR_ARSENAL_OPTIONS, NUCLEAR_ARSENAL_RACE_OPTION_KEYS);
 const OCCUPATION_TREND_RACE_OPTION_KEYS = new Set(['view', 'measure', 'rankingMeasure', 'digits']);
 const OCCUPATION_TREND_RACE_OPTIONS = OCCUPATION_TREND_OPTIONS.filter(field => OCCUPATION_TREND_RACE_OPTION_KEYS.has(field.key));
 const WORLD_TENSION_RACE_OPTIONS = WORLD_TENSION_OPTIONS.filter(field => field.key === 'view');
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
+  {
+    kind: 'air-force-size',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    options: AIR_FORCE_RACE_OPTIONS,
+    loadSpec: () => import('../air-force-size/airForceSizeRaceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-force-size', view: 'race',
+      projection: mod.airForceSizeRaceProjection, declaration: mod.airForceSizeRaceDeclaration,
+    })),
+  },
   {
     kind: 'air-superiority-region',
     view: DEFAULT_VIEW,
@@ -96,6 +128,18 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
+    kind: 'naval-losses',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    options: NAVAL_LOSSES_RACE_OPTIONS,
+    loadSpec: () => import('../naval-losses/navalLossesRaceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'naval-losses', view: 'race',
+      projection: mod.navalLossesRaceProjection, declaration: mod.navalLossesRaceDeclaration,
+    })),
+  },
+  {
     kind: 'naval-supremacy',
     view: 'shares',
     label: 'Shares',
@@ -104,6 +148,30 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
       family: 'bars', kind: 'naval-supremacy', view: 'shares',
       projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
+    })),
+  },
+  {
+    kind: 'navy-size',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    options: NAVY_SIZE_RACE_OPTIONS,
+    loadSpec: () => import('../navy-size/navySizeRaceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'navy-size', view: 'race',
+      projection: mod.navySizeRaceProjection, declaration: mod.navySizeRaceDeclaration,
+    })),
+  },
+  {
+    kind: 'nuclear-arsenal',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    options: NUCLEAR_ARSENAL_RACE_OPTIONS,
+    loadSpec: () => import('../nuclear-arsenal/nuclearArsenalRaceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'nuclear-arsenal', view: 'race',
+      projection: mod.nuclearArsenalRaceProjection, declaration: mod.nuclearArsenalRaceDeclaration,
     })),
   },
   {

@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
+import DefaultCountryChip from '../dashboard/CountryChip';
 import type { FamilyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
 import { familyHost } from '../families/host/registry';
 import type { FamilyViewModule } from '../families/manifest';
@@ -37,6 +38,9 @@ export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer
     const pick = (view: string, loaded: WidgetRenderer | undefined) => {
       if (slot === 'render' && !loaded?.render && loaded?.declaration) {
         return rendererForDeclaration(loaded.declaration, view) as ComponentType<object>;
+      }
+      if (slot === 'countryChip' && !loaded?.countryChip) {
+        return DefaultCountryChip as ComponentType<object>;
       }
       return (loaded?.[slot] as ComponentType<object> | undefined) ?? nothing;
     };

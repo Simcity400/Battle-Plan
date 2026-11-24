@@ -71,6 +71,8 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_land::registrations::ARMY_LOSSES_ARMYLOSSES,
     dashboard_politics::registrations::POWER_LEDGER_DAY_POWERDAY,
     dashboard_wars::registrations::FACTION_STATE_REWARDS_FACTIONGOALREWARDS,
+    dashboard_land::registrations::FORCES_AIRFORCEAT,
+    dashboard_land::registrations::FORCES_NAVYAT,
 ];
 
 const OWN: &[Registered] = &[
@@ -152,6 +154,7 @@ const OWN: &[Registered] = &[
     dashboard_naval::registrations::NAVAL_SUNK_SHIPSSUNKMANIFEST,
     dashboard_naval::registrations::NAVAL_SUNK_SHIPSSUNK,
     dashboard_naval::registrations::NAVAL_LOSSES_NAVALLOSSES,
+    dashboard_naval::registrations::NAVAL_LOSSES_NAVALLOSSESAT,
     dashboard_research::registrations::RESEARCH_RESEARCH,
     dashboard_research::registrations::RESEARCH_BREAKDOWN_RESEARCHBREAKDOWN,
     dashboard_politics::registrations::FEED_EVENTFEED,
@@ -265,6 +268,7 @@ const MOVED_OWN: &[&str] = &[
     dashboard_naval::registrations::NAVAL_SUNK_SHIPSSUNKMANIFEST.key,
     dashboard_naval::registrations::NAVAL_SUNK_SHIPSSUNK.key,
     dashboard_naval::registrations::NAVAL_LOSSES_NAVALLOSSES.key,
+    dashboard_naval::registrations::NAVAL_LOSSES_NAVALLOSSESAT.key,
     dashboard_research::registrations::RESEARCH_RESEARCH.key,
     dashboard_research::registrations::RESEARCH_BREAKDOWN_RESEARCHBREAKDOWN.key,
     dashboard_politics::registrations::FEED_EVENTFEED.key,
