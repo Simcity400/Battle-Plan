@@ -186,6 +186,36 @@ struct Inner {
     package: Option<Arc<Vec<u8>>>,
     busy: bool,
     checking: bool,
+    revision: u64,
+}
+
+struct Slot<'a> {
+    updates: &'a Updates,
+    action: Action,
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let action = self.action;
+        self.updates.finish(|inner| {
+            inner.state.download_percent = None;
+            if action != Action::Check || inner.update.is_none() {
+                inner.state.status = Status::Error;
+            }
+            inner.state.error_context = Some(action);
+            inner.state.message = Some(
+                match action {
+                    Action::Check => "The update check stopped unexpectedly.",
+                    Action::Download => "The update download stopped unexpectedly.",
+                    Action::Install => "The update install stopped unexpectedly.",
+                }
+                .into(),
+            );
+        });
+    }
 }
 
 pub struct Updates {
@@ -197,6 +227,7 @@ pub struct Updates {
     current: semver::Version,
     load_channel: LoadChannel,
     publish: Publish,
+    sent: Mutex<u64>,
     inner: Mutex<Inner>,
     wake: Condvar,
 }
@@ -341,12 +372,14 @@ impl Updates {
             current: semver::Version::parse(VERSION).expect("Cargo versions are semver"),
             load_channel,
             publish,
+            sent: Mutex::new(0),
             inner: Mutex::new(Inner {
                 state,
                 update: None,
                 package: None,
                 busy: false,
                 checking: false,
+                revision: 0,
             }),
             wake: Condvar::new(),
         }
@@ -356,26 +389,35 @@ impl Updates {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn emit(&self, state: UpdateState) {
-        (self.publish)(state);
+    fn snapshot(inner: &mut Inner) -> (u64, UpdateState) {
+        inner.revision += 1;
+        (inner.revision, inner.state.clone())
+    }
+
+    fn emit(&self, (revision, state): (u64, UpdateState)) {
+        let mut sent = self.sent.lock().unwrap_or_else(PoisonError::into_inner);
+        if revision > *sent {
+            *sent = revision;
+            (self.publish)(state);
+        }
     }
 
     fn change<T>(&self, change: impl FnOnce(&mut Inner) -> T) -> T {
-        let (result, state) = {
+        let (result, snapshot) = {
             let mut inner = self.lock();
             let result = change(&mut inner);
-            (result, inner.state.clone())
+            (result, Self::snapshot(&mut inner))
         };
-        self.emit(state);
+        self.emit(snapshot);
         result
     }
 
     fn start<T>(
         &self,
-        checking: bool,
+        action: Action,
         start: impl FnOnce(&mut Inner) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let (found, state) = {
+    ) -> Result<(T, Slot<'_>), String> {
+        let (found, snapshot) = {
             let mut inner = self.lock();
             while inner.checking {
                 inner = self
@@ -387,11 +429,12 @@ impl Updates {
             let found = start(&mut inner);
             if found.is_ok() {
                 inner.busy = true;
-                inner.checking = checking;
+                inner.checking = action == Action::Check;
             }
-            (found, inner.state.clone())
+            (found, Self::snapshot(&mut inner))
         };
-        self.emit(state);
+        let found = found.map(|found| (found, Slot { updates: self, action }));
+        self.emit(snapshot);
         found
     }
 
@@ -434,8 +477,7 @@ impl Updates {
                 next_check = now + CHECK_EVERY;
                 let _ = tauri::async_runtime::block_on(self.check());
             }
-            let waiting = self.lock().package.is_some();
-            if waiting {
+            if self.lock().package.is_some() {
                 self.refresh_blocked();
             }
             let until = next_check.saturating_duration_since(Instant::now());
@@ -443,16 +485,14 @@ impl Updates {
             if self.check_now.load(std::sync::atomic::Ordering::Acquire) {
                 continue;
             }
+            let limit = if inner.package.is_some() {
+                until.min(BLOCKED_EVERY)
+            } else {
+                until
+            };
             let _ = self
                 .wake
-                .wait_timeout(
-                    inner,
-                    if waiting {
-                        until.min(BLOCKED_EVERY)
-                    } else {
-                        until
-                    },
-                )
+                .wait_timeout(inner, limit)
                 .unwrap_or_else(PoisonError::into_inner);
         }
     }
@@ -461,18 +501,18 @@ impl Updates {
         let blocked = self.blocked();
         let changed = {
             let mut inner = self.lock();
-            let changed = inner.state.install_blocked != blocked;
+            if inner.package.is_none() || inner.state.install_blocked == blocked {
+                return;
+            }
             inner.state.install_blocked = blocked;
-            changed.then(|| inner.state.clone())
+            Self::snapshot(&mut inner)
         };
-        if let Some(state) = changed {
-            self.emit(state);
-        }
+        self.emit(changed);
     }
 
     pub async fn check(&self) -> Result<UpdateState, String> {
-        let saved = (self.load_channel)();
-        let channel = self.start(true, |inner| {
+        let ((saved, channel), _slot) = self.start(Action::Check, |inner| {
+            let saved = (self.load_channel)();
             let channel = match &saved {
                 Ok(saved) => saved.unwrap_or(inner.state.build.channel()),
                 Err(_) => inner.state.channel,
@@ -486,7 +526,7 @@ impl Updates {
                 inner.state.error_context = None;
                 inner.state.message = None;
             }
-            Ok(channel)
+            Ok((saved, channel))
         })?;
         let switching = channel != Build::current().channel();
         let result = match (saved, feed(channel), &self.client) {
@@ -502,6 +542,9 @@ impl Updates {
                 }),
         };
         let state = self.finish(|inner| {
+            if inner.state.channel != channel {
+                return;
+            }
             inner.state.checked_at = now_ms();
             match result {
                 Ok(Some(update)) => {
@@ -586,7 +629,7 @@ impl Updates {
     }
 
     pub async fn download(self: &Arc<Self>) -> Result<UpdateState, String> {
-        let update = self.start(false, |inner| {
+        let (update, _slot) = self.start(Action::Download, |inner| {
             self.reconcile_channel(inner)?;
             let update = inner
                 .update
@@ -643,7 +686,7 @@ impl Updates {
     }
 
     pub fn install(&self) -> Result<(), String> {
-        let (package, version) = self.start(false, |inner| {
+        let ((package, version), _slot) = self.start(Action::Install, |inner| {
             self.reconcile_channel(inner)?;
             let found = inner
                 .package
@@ -675,10 +718,12 @@ impl Updates {
 
     pub fn set_channel(&self, channel: Channel) -> Result<UpdateState, String> {
         self.change(|inner| {
-            if inner.busy {
+            if !inner.state.enabled {
+                return Err(inner.state.message.clone().unwrap_or_default());
+            }
+            if inner.busy && !inner.checking {
                 return Err("Wait for the update to finish before changing the channel.".into());
             }
-            Self::available(inner)?;
             inner.state.channel_warning = channel::save(channel, |path, bytes| self.host.write_preference(path, bytes))?;
             if inner.state.channel != channel {
                 inner.state.channel = channel;

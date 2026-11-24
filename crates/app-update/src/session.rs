@@ -135,8 +135,9 @@ fn on_message(follow: &Followed, window: &dyn Blocking, message: u32, wparam: WP
                 2 => Some(UNCHECKED),
                 _ => None,
             };
-            if let Some(reason) = reason(ending.saving(), drafts) {
-                window.block(&reason);
+            match reason(ending.saving(), drafts) {
+                Some(reason) => window.block(&reason),
+                None => window.unblock(),
             }
         }
         WM_ENDSESSION => {
