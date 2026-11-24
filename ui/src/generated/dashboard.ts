@@ -442,6 +442,19 @@ export type TilePart = { firstHour: number, lastHour: number, slot: number, coun
  */
 segmentFirstHour: number, };
 export type TileMarks = { before: string, bins: Array<[number, number]>, };
+export type TileRanking = {
+/**
+ * The hour the top was ranked at.
+ */
+hour: number,
+/**
+ * The hours over which the same countries are the top; ask again outside them.
+ */
+from: number, until: number,
+/**
+ * Why the top is not ranked at this hour; no lines then.
+ */
+refused: string | null, };
 export type TileLine = { country: CountryRef,
 /**
  * The part's key, for a sub-keyed series.
@@ -479,7 +492,11 @@ hourBytes: number, lines: Array<TileLine>,
 /**
  * The bins, base64.
  */
-bins: string, };
+bins: string,
+/**
+ * Asked for a top: who it is at the asked hour, and for how long.
+ */
+ranking?: TileRanking, };
 export type NavigationKey = "ArrowLeft" | "ArrowRight" | "Home" | "End";
 export type SeriesRead = { country: CountryRef, hour: number,
 /**
@@ -3741,7 +3758,16 @@ unknown: string | null,
 /**
  * The idea in `ideaTooltips` its tooltip shows.
  */
-tooltipToken: string | null, };
+tooltipToken: string | null,
+/**
+ * A decision's category or an advisor's role, from the installed content; none for other spending.
+ */
+kind: SpendKind | null, };
+export type SpendKind = { id: string | null, name: string | null,
+/**
+ * Why the category or role is not known.
+ */
+unknown: string | null, };
 export type SpendCategory = { id: string, name: string,
 /**
  * False for payments whose cause was not recorded.
@@ -5523,7 +5549,11 @@ export type CareerAward = {
  * Index into the reply's medals.
  */
 medal: number, count: number, };
-export type CareerMedal = { key: string, name: string | null, };
+export type CareerMedal = { key: string, name: string | null,
+/**
+ * The medal's sprite and frame as its definition names them; none with `icon_missing` saying why.
+ */
+icon: SpriteFrame | null, iconMissing: string | null, };
 export type CareerTemplate = { template: string, name: string | null, icon: string | null, };
 export type DivisionCareersParamsAtHour = DivisionCareersParams & { hour: number };
 export type DivisionRecordParams = { branchId: string,
