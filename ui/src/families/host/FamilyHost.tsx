@@ -696,6 +696,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (command === 'activate' && regionCommand(input, input.hit)) return true;
     const action = actionFor(picture, input.hit ?? parseFamilyHit(activeAdapter, input.key) ?? { key: input.key }, toggle);
     if (!action) return false;
+    if (!toggle) tooltips.dismissActivated(input.key);
     dispatchAction(toggle ? { ...action, toggle: true } : action);
     return true;
   }, [actionFor, say, dispatchAction, tooltips, regionCommand]);
