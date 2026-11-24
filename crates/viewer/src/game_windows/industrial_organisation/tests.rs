@@ -41,10 +41,7 @@ fn funds_progress_uses_defines_formula_and_withholds_when_defines_missing() {
     );
 }
 
-#[test]
-fn missing_details_sets_na_and_not_recorded_tooltips() {
-    content_reader_script::test_game::enter();
-    let gui = br#"
+const DETAIL_WINDOW_GUI: &[u8] = br#"
         guiTypes = {
             containerWindowType = {
                 name = "industrial_organisation_detail_window"
@@ -83,6 +80,11 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
             }
         }
     "#;
+
+#[test]
+fn missing_details_sets_na_and_not_recorded_tooltips() {
+    content_reader_script::test_game::enter();
+    let gui = DETAIL_WINDOW_GUI;
     let guis = super::super::load_native_guis_from_bytes("test.gui", gui).unwrap();
     let root = guis.template(DETAIL_WINDOW_NAME.as_bytes()).unwrap();
     let localisation = Localisation::default();
@@ -107,8 +109,8 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
             warnings: Vec::new(),
         },
         sub_view: SubView::Traits,
-        catalog: None,
-        org_db: None,
+        catalog: Err("not read in this test".to_owned()),
+        org_db: Err("not read in this test".to_owned()),
         emblem_sprite: UNKNOWN_ICON_SPRITE.to_owned(),
         tree_background: None,
         attached_policy_sprite: None,
@@ -154,9 +156,12 @@ fn missing_mio_window_template_is_refused_by_name() {
         ("interface/empty.gui", b"guiTypes = {}"),
         ("localisation/english/empty_l_english.yml", b"l_english:\n"),
     ]);
-    let service = Service::default();
-    let cancel = AtomicBool::new(false);
-    let key = WindowCacheKey {
+    let reason = refusal(&layers, "synthetic_works_organisation", SubView::History);
+    assert!(reason.contains(DETAIL_WINDOW_NAME), "{reason}");
+}
+
+fn cache_key(layers: &ResolvedLayers, window: &str) -> WindowCacheKey {
+    WindowCacheKey {
         source_id: "src".to_owned(),
         revision: "rev".to_owned(),
         game_dir: std::path::PathBuf::from("synthetic"),
@@ -165,15 +170,18 @@ fn missing_mio_window_template_is_refused_by_name() {
         language: "english".to_owned(),
         force_pow2_textures: false,
         art_stack: layers.art_stack_key(),
-        window: DETAIL_WINDOW_NAME.to_owned(),
-    };
-    let data = OrganisationViewData {
+        window: window.to_owned(),
+    }
+}
+
+fn unread_organisation(token: &str) -> OrganisationViewData {
+    OrganisationViewData {
         organisation_id: 1,
         request_hour: 0,
         read_hour: 0,
         owner_tag: None,
-        token: "mod_org".to_owned(),
-        custom_name: "Mod Org".to_owned(),
+        token: token.to_owned(),
+        custom_name: String::new(),
         recorded_icon: String::new(),
         details: RecordedDetails::Unavailable("not recorded".to_owned()),
         policy_costs: Ok(BTreeMap::new()),
@@ -181,20 +189,86 @@ fn missing_mio_window_template_is_refused_by_name() {
         history_reason: None,
         funds_defines: Err("no defines".to_owned()),
         warnings: Vec::new(),
-    };
-    let err = render_data(
+    }
+}
+
+fn refusal(layers: &ResolvedLayers, token: &str, sub_view: SubView) -> String {
+    let service = Service::default();
+    let cancel = AtomicBool::new(false);
+    let result = render_data(
         &service,
-        &layers,
-        key,
-        data,
-        SubView::Traits,
+        layers,
+        cache_key(layers, sub_view.window_name()),
+        unread_organisation(token),
+        sub_view,
         1.0,
         &BTreeMap::new(),
         None,
         &cancel,
-    )
-    .expect_err("missing template must refuse");
-    assert!(matches!(err, GameWindowError::Refused(msg) if msg.contains(DETAIL_WINDOW_NAME)));
+    );
+    match result {
+        Err(GameWindowError::Refused(reason)) => reason,
+        Err(other) => panic!("expected a refusal by name, got {other:?}"),
+        Ok(_) => panic!("expected a refusal by name, got a rendered window"),
+    }
+}
+
+const SYNTHETIC_ORGANISATION_SCRIPT: &[u8] = br#"
+    synthetic_works_organisation = {
+        trait = {
+            token = synthetic_trait
+            name = synthetic_trait_name
+            position = { x = 0 y = 0 }
+            equipment_bonus = { soft_attack = 0.1 }
+        }
+    }
+"#;
+
+#[test]
+fn a_withheld_stat_table_refuses_the_traits_and_policies_by_name_instead_of_panicking() {
+    let layers = synthetic_layers(&[(
+        "common/military_industrial_organization/organizations/00_synthetic.txt",
+        SYNTHETIC_ORGANISATION_SCRIPT,
+    )]);
+    content_reader_script::test_game::with(|game| {
+        game.auxiliary(|tables| {
+            tables.stat_metadata = Err(engine_executable::availability::Withheld::new(
+                "equipment stat metadata",
+                "not decoded from this build",
+            ));
+        })
+    });
+    for sub_view in [SubView::Traits, SubView::Policy] {
+        let reason = refusal(&layers, "synthetic_works_organisation", sub_view);
+        assert!(reason.contains("synthetic_works_organisation"), "{reason}");
+        assert!(
+            reason.contains("equipment stat metadata withheld: not decoded from this build"),
+            "{reason}"
+        );
+    }
+}
+
+#[test]
+fn an_organisation_missing_from_the_recorded_scripts_refuses_its_trait_tree_by_name() {
+    content_reader_script::test_game::enter();
+    let layers = synthetic_layers(&[(
+        "common/military_industrial_organization/organizations/00_synthetic.txt",
+        SYNTHETIC_ORGANISATION_SCRIPT,
+    )]);
+    let reason = refusal(&layers, "synthetic_absent_organisation", SubView::Traits);
+    assert!(reason.contains("synthetic_absent_organisation"), "{reason}");
+    assert!(reason.contains("is not defined in the recorded mod stack"), "{reason}");
+}
+
+#[test]
+fn a_tab_whose_interface_lacks_a_required_list_refuses_by_name_instead_of_omitting_it() {
+    content_reader_script::test_game::enter();
+    let layers = synthetic_layers(&[
+        ("interface/synthetic_mio.gui", DETAIL_WINDOW_GUI),
+        ("localisation/english/empty_l_english.yml", b"l_english:\n"),
+    ]);
+    let reason = refusal(&layers, "synthetic_works_organisation", SubView::History);
+    assert!(reason.contains("progressbar_widget"), "{reason}");
 }
 
 #[test]
