@@ -82,26 +82,30 @@ interface ColumnCell {
 
 function conditionCell(reply: RegionalWeatherReply, region: RegionalWeatherColumnRegion, column: number, colours: Palette): ColumnCell {
   const observed = region.observed?.[column] ?? 0;
+  const shown = reply.columns.columns[column]!;
+  const span = Math.max(observed, Math.ceil((shown.lastHour - shown.firstHour + 1) / reply.dayHours));
   if (observed === 0) return { key: 'missing', cell: { kind: 'missing', reason: 'Region weather was not recorded' }, items: [], missing: 'Region weather was not recorded' };
+  const clear = region.clear?.[column] ?? 0;
+  const counted = reply.flags.map(flag => [flag, measureOf(region, flag.id)?.days[column] ?? 0] as const).filter(([, days]) => days > 0);
+  const total = counted.reduce((sum, [, days]) => sum + days, clear);
+  const scale = total > 0 ? observed / Math.max(observed, total) / span : 0;
   const parts = [];
   const items = [];
-  for (const flag of reply.flags) {
-    const days = measureOf(region, flag.id)?.days[column] ?? 0;
-    if (days <= 0) continue;
+  for (const [flag, days] of counted) {
     const color = colours.flag.get(flag.id)!;
-    parts.push({ id: flag.id, label: flag.name, color, share: days / observed });
-    items.push({ label: flag.name, swatch: color, ...(observed > 1 ? { value: `${days} of ${observed} days` } : {}) });
+    parts.push({ id: flag.id, label: flag.name, color, share: days * scale });
+    items.push({ label: flag.name, swatch: color, ...(span > 1 ? { value: `${days} of ${span} days` } : {}) });
   }
-  const clear = region.clear?.[column] ?? 0;
-  if (parts.length === 0) return { key: 'clear', cell: { kind: 'clear', label: 'Clear' }, items: [{ label: 'Clear' }] };
-  if (parts.length === 1 && clear === 0) {
+  if (parts.length === 0 && observed === span) return { key: 'clear', cell: { kind: 'clear', label: 'Clear' }, items: [{ label: 'Clear' }] };
+  if (parts.length === 1 && clear === 0 && observed === span) {
     const part = parts[0]!;
     return { key: `solid:${part.id}`, cell: { kind: 'solid', color: part.color, label: part.label }, items };
   }
   if (clear > 0) {
-    parts.push({ id: 'clear', label: 'Clear', color: colours.track, share: clear / observed });
-    items.push({ label: 'Clear', ...(observed > 1 ? { value: `${clear} of ${observed} days` } : {}) });
+    parts.push({ id: 'clear', label: 'Clear', color: colours.track, share: clear * scale });
+    items.push({ label: 'Clear', ...(span > 1 ? { value: `${clear} of ${span} days` } : {}) });
   }
+  if (observed < span) items.push({ label: 'Not recorded', value: `${span - observed} of ${span} days` });
   return { key: `parts:${parts.map(part => `${part.id}=${part.share}`).join(',')}`, cell: { kind: 'parts', parts, look: 'split' }, items };
 }
 

@@ -194,7 +194,10 @@ export function deriveLanesTooltip(
       missingReason: gap?.reason ?? 'Recording gap',
     };
   }
-  if (!run) {
+  if (!run && hour !== null) {
+    return { title: row.label, hour: effectiveHour, missingReason: 'Not recorded at this hour' };
+  }
+  if (!run || (hour === null && row.readout)) {
     if (row.readout) {
       if (row.readout.kind === 'missing') {
         return { title: row.label, hour: effectiveHour, missingReason: row.readout.reason };

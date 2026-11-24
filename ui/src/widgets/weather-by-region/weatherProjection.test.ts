@@ -107,3 +107,17 @@ test('a temperature column shows the mean of its days and a missing reading name
   assert.deepEqual(second!.cell, { kind: 'missing', reason: 'Weather reading was not recorded' });
   assert.deepEqual(model.rows[0]!.readout, { kind: 'missing', reason: 'Weather reading was not recorded at this hour' });
 });
+
+test('a folded column with unrecorded days keeps them unknown instead of spreading the known days over the column', () => {
+  const data = reply(95, {
+    columns: {
+      days: 4,
+      columns: [{ firstHour: 0, lastHour: 95, sampledHour: 95, readHour: 95, recorded: 2 }],
+      regions: [{ id: '5', pinned: false, observed: [2], clear: [1], measures: [{ id: 'light_rain', days: [1] }] }],
+    },
+  });
+  const cell = projectWeather(view(95, data), OPTIONS).rows[0]!.runs[0]!.cell;
+  assert.equal(cell.kind, 'parts');
+  const shares = cell.kind === 'parts' ? cell.parts.map(part => [part.id, part.share]) : [];
+  assert.deepEqual(shares, [['light_rain', 0.25], ['clear', 0.25]]);
+});

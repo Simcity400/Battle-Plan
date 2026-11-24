@@ -396,10 +396,13 @@ export function drawHeatLanes(
       }
       if (cell.look === 'split') {
         const stripes = splitStripes(cell.parts, barY, laneBarHeight);
+        let filled = 0;
         for (const stripe of stripes) {
           ctx.fillStyle = stripe.color;
           ctx.fillRect(span.x, stripe.top, span.width, stripe.height);
+          filled += stripe.height;
         }
+        if (filled < laneBarHeight - 0.5) drawHatchRect(ctx, span.x, barY + filled, span.width, laneBarHeight - filled, 0, theme);
         if (cell.label && stripes.length === 1) {
           drawInRunLabel(ctx, cell.label, span.x, barY, span.width, laneBarHeight, stripes[0]!.color, theme);
         }

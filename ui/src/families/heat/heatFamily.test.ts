@@ -388,3 +388,35 @@ test('heat scale helpers preserve zero neutrality, signed extremes, margin blend
     { color: '#e55353', top: 15, height: 15 },
   ]);
 });
+
+test('a sub-pixel last observation gets one pixel at its own hour, and an uncovered hour is not the current readout', () => {
+  const runs = [{ firstHour: 500, lastHour: 500, readHour: 500, cell: { kind: 'solid' as const, color: '#4f86f7' } }];
+  const spans = projectLaneRunsToPixels(runs, 0, 1000, 500, 0, 100);
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0]!.width, 1, 'the observation is one pixel wide, not stretched to the plot edge');
+  assert.ok(Math.abs(spans[0]!.x - 49.95) < 0.1, 'at its witnessed position');
+  const model: HeatLanesModel = {
+    hour: 500, firstHour: 0, lastHour: 1000, dayHours: 24, playhead: 500,
+    rows: [{ id: 'r', label: 'Region', runs, readout: { kind: 'value', primary: '71%', secondary: 'Allies' } }],
+  };
+  assert.deepEqual(deriveLanesTooltip(model, 0, 100), { title: 'Region', hour: 100, missingReason: 'Not recorded at this hour' });
+  assert.equal(deriveLanesTooltip(model, 0, null)?.exactValue, '71%', 'the readout answers only when the readout itself is hit');
+  const layout = layoutHeatLanes({ width: 400, height: 120, scrollTop: 0, firstHour: 0, lastHour: 1000, displayedHour: 500, rows: model.rows });
+  const pastPlayhead = layout.plotLeft + layout.plotWidth * 0.9;
+  assert.equal(hitHeatLanes(pastPlayhead, layout.plotTop + 4, 0, layout, 1), null, 'nothing after the displayed hour is hit');
+});
+
+test('stripes draw the fractions they are given and leave an unknown remainder unfilled', () => {
+  const stripes = splitStripes(
+    [
+      { id: 'a', label: 'A', color: '#4f86f7', share: 0.25 },
+      { id: 'b', label: 'B', color: '#e55353', share: 0.35 },
+    ],
+    10,
+    20,
+  );
+  assert.deepEqual(stripes, [
+    { color: '#4f86f7', top: 10, height: 5 },
+    { color: '#e55353', top: 15, height: 7 },
+  ]);
+});

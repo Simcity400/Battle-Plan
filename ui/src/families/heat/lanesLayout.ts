@@ -232,11 +232,7 @@ export function projectLaneRunsToPixels(
           out[out.length - 2] = { ...prev, width: Math.max(0, terminalX - prev.x) };
         }
       }
-      out[out.length - 1] = {
-        ...last,
-        x: terminalX,
-        width: Math.max(1, plotLeft + plotWidth - terminalX),
-      };
+      out[out.length - 1] = { ...last, x: terminalX, width: 1 };
     }
   }
 
@@ -263,7 +259,7 @@ export function hitHeatLanes(
   if (inRowY > layout.rowHeight) return null;
   if (x >= layout.plotLeft && x <= layout.plotLeft + layout.plotWidth) {
     const hour = laneXToHour(x, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
-    return { kind: 'lane', rowIndex, hour: Math.min(hour, layout.displayedHour) };
+    return hour > layout.displayedHour ? null : { kind: 'lane', rowIndex, hour };
   }
   return { kind: 'row', rowIndex };
 }
