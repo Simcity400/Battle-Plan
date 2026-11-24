@@ -26,10 +26,10 @@ const icText = (raw: string | null, reason: string): Value<string> => raw === nu
 const [NAME, PROGRESS, STRENGTH, DOCKYARDS] = COLUMNS;
 
 const REFIT_COLUMNS: readonly DeclarativeColumnSpec<RefitRow, Record<string, never>>[] = [
-  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Early Cruiser C Klasse'],
+  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Early Cruiser C Klasse refit line'],
     value: row => row.kind === 'line' ? lineName(row.line) : knownValue(shipLabel(row.ship).name) },
-  { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'], value: () => notApplicable(ON_LINE) },
-  { ...STRENGTH!, priority: 2, numeric: true, format: PERCENT, widest: ['100%'], value: () => notApplicable(ON_SHIP) },
+  { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_LINE) },
+  { ...STRENGTH!, priority: 2, numeric: true, format: PERCENT, widest: ['100.0%'], value: () => notApplicable(ON_SHIP) },
   { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'],
     value: row => row.kind === 'line'
       ? valueFromNullable(row.line.dockyards, { kind: 'notRecorded', reason: 'Refit dockyards not recorded' })
