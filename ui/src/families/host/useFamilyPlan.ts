@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
@@ -910,14 +910,18 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const retryUnits = useCallback(() => { readsRef.current?.retry(); }, []);
 
   const subscribed = following && compiledFollow.subscriptions.length > 0;
+  const subscribePlaying = useCallback((changed: () => void) => (following ? runtime.clock.subscribe(changed) : () => {}), [following, runtime.clock]);
+  const readPlaying = useCallback(() => following && runtime.clock.getSnapshot().playing, [following, runtime.clock]);
+  const moving = useSyncExternalStore(subscribePlaying, readPlaying, readPlaying);
   const settlement = useMemo<Settlement>(
     () => settleUnits(units, results, {
       following,
+      moving,
       hour: following ? Math.floor(runtime.clock.getHour()) + trackOffset : displayHour,
       subscribed,
       endHour: effectiveEndHour,
     }),
-    [units, results, following, runtime.clock, trackOffset, displayHour, subscribed, effectiveEndHour],
+    [units, results, following, moving, runtime.clock, trackOffset, displayHour, subscribed, effectiveEndHour],
   );
 
   const watch = useMemo(
