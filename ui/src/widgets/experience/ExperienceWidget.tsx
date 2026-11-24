@@ -122,8 +122,8 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   })), [lines, summaryOf, until, single]);
   const endLabels = useMemo<EndLabelsResolver | undefined>(() => {
     if (!options.endLabels) return undefined;
-    return (frame, drawnUntil) => {
-      const at = Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]);
+    return frame => {
+      const at = Math.min(until ?? extent[1], frame.x[1], extent[1]);
       return lines.flatMap(line => {
         const value = summaryEnd(summaryOf(line.branch, line.tag), at);
         if (value === null) return [];
@@ -132,7 +132,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
           suffix: formatExperience(value * SCALE, measure !== 'banked') }];
       });
     };
-  }, [options.endLabels, extent[1], lines, summaryOf, single, labels, styleAt, measure]);
+  }, [options.endLabels, until, extent[1], lines, summaryOf, single, labels, styleAt, measure]);
   const data = useMemo<ChartData>(() => ({ revision: () => BRANCHES.map(branch => tiles[branch].read()),
     subscribe: listener => { const stops = BRANCHES.map(branch => tiles[branch].subscribe(listener)); return () => stops.forEach(stop => stop()); } }),
   [tiles.army.subscribe, tiles.navy.subscribe, tiles.air.subscribe]);

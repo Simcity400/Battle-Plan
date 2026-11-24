@@ -257,11 +257,14 @@ test('TimeChart keeps painted geometry for picks, preserves zoom across renderer
   const slots = new Map<number, unknown>(), effects = new Map<number, Effect>(), pending = new Map<number, Effect>();
   const listeners = new Map<string, (event: unknown) => void>();
   let cursor = 0, task: FrameTask | undefined, workerDraws = 0, workerDetaches = 0, syncDraws = 0, asyncPending = false;
+  let nextSlotFrameId = 1;
   let triggerFallback: ((reason: string) => void) | null = null;
   let onPainted: ((frameId: number) => void) | null = null;
   let lastPostedFrameId = 0;
   let lastPostedEndLabels: readonly { text: string; color: string; y: number }[] | undefined;
   let lastSyncFrame: PlotFrame | null = null;
+  let overlayClears = 0;
+  let canvasWidth = 400;
   const fixture = {
     useId: () => 'time-chart-worker-lifecycle',
     useRef(initial: unknown) {
@@ -288,6 +291,13 @@ test('TimeChart keeps painted geometry for picks, preserves zoom across renderer
       }
       pending.clear();
     },
+    replayEffects() {
+      for (const effect of effects.values()) {
+        effect.cleanup?.();
+        const cleanup = effect.run();
+        effect.cleanup = typeof cleanup === 'function' ? cleanup : undefined;
+      }
+    },
     unmount() { for (const effect of effects.values()) effect.cleanup?.(); effects.clear(); slots.clear(); pending.clear(); },
     scheduler: {
       add(next: FrameTask) { task = next; return () => { task = undefined; asyncPending = false; }; },
@@ -306,6 +316,7 @@ test('TimeChart keeps painted geometry for picks, preserves zoom across renderer
       }
       return {
         id: 1,
+        nextFrameId: () => nextSlotFrameId++,
         draw(scene: { frameId?: number; endLabels?: readonly { text: string; color: string; y: number }[] }) {
           workerDraws++;
           lastPostedFrameId = scene.frameId ?? workerDraws;
@@ -318,12 +329,29 @@ test('TimeChart keeps painted geometry for picks, preserves zoom across renderer
   };
   const context = { setTransform() {}, clearRect() {}, save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {},
     closePath() {}, fill() {}, stroke() {}, arc() {}, fillText() {}, setLineDash() {}, drawImage() {}, measureText: () => ({ width: 10 }) };
+  const overlayCtx = { ...context, clearRect() { overlayClears++; } };
   const makeElement = () => ({
-    clientWidth: 400, clientHeight: 200, width: 400, height: 200, style: styleOf(), focus() {}, setPointerCapture() {},
-    getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }),
+    get clientWidth() { return canvasWidth; },
+    clientHeight: 200,
+    get width() { return canvasWidth; },
+    set width(_v: number) {},
+    height: 200,
+    style: styleOf(),
+    focus() {},
+    setPointerCapture() {},
+    getContext: () => context,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: canvasWidth, height: 200 }),
     addEventListener: (type: string, callback: (event: unknown) => void) => listeners.set(type, callback),
     removeEventListener: (type: string) => listeners.delete(type),
   });
+  const overlayEl = {
+    get clientWidth() { return canvasWidth; },
+    clientHeight: 200,
+    width: 400,
+    height: 200,
+    style: styleOf(),
+    getContext: () => overlayCtx,
+  };
   const host = globalThis as typeof globalThis & { __timeChartFallback?: typeof fixture };
   host.__timeChartFallback = fixture;
   const globals = new Map(['window', 'ResizeObserver'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -376,17 +404,22 @@ test('TimeChart keeps painted geometry for picks, preserves zoom across renderer
     };
     const render = () => {
       cursor = 0;
-      const tree = Chart(props) as ReactElement<{ children: ReactElement<{ ref: { current: unknown } }>[] }>;
+      const tree = Chart(props) as ReactElement<{ children: ReactElement<{ ref?: { current: unknown } }>[] }>;
       const canvasNode = tree.props.children[0];
-      canvasNode.props.ref.current = makeElement();
+      canvasNode.props.ref!.current = makeElement();
+      const overlayNode = tree.props.children[3];
+      if (overlayNode?.props?.ref) overlayNode.props.ref.current = overlayEl;
       fixture.commit();
       return canvasNode.key;
     };
-    const clickMidpoint = () => {
-      const midX = 44 + (400 - 44 - 14) / 2;
-      const at = { clientX: midX, clientY: 100, button: 0, pointerId: 1, detail: 1, preventDefault() {} };
+    const clickAt = (clientX: number, clientY = 100) => {
+      const at = { clientX, clientY, button: 0, pointerId: 1, detail: 1, preventDefault() {} };
       listeners.get('pointerdown')!(at);
       listeners.get('pointerup')!(at);
+    };
+    const clickMidpoint = () => {
+      const midX = 44 + (400 - 44 - 14) / 2;
+      clickAt(midX, 100);
     };
 
     const firstKey = render();
@@ -412,22 +445,118 @@ test('TimeChart keeps painted geometry for picks, preserves zoom across renderer
     clickMidpoint();
     assert.deepEqual(picked, [50, 50, 75]);
 
+    const pickedA: number[] = [];
+    const pickedB: number[] = [];
+    props.axes = { xFrom: 0, xTo: 100, yMin: 0, yMax: 100, log: false };
+    props.pickOwner = { id: 'A' };
+    props.onPick = hour => { pickedA.push(Math.round(hour)); };
+    props.revision = 2;
+    render();
+    task!.frame({ now: 20, dt: 16 });
+    const frameA = lastPostedFrameId;
+    props.pickOwner = { id: 'B' };
+    props.onPick = hour => { pickedB.push(Math.round(hour)); };
+    props.revision = 3;
+    render();
+    onPainted!(frameA);
+    clickMidpoint();
+    assert.deepEqual(pickedA, []);
+    assert.deepEqual(pickedB, []);
+
+    const hoveredHours: (number | null)[] = [];
+    const menuHours: number[] = [];
+    let liveValue = 80;
+    props.pickOwner = { id: 'live' };
+    props.onPick = hour => { picked.push(Math.round(hour)); };
+    props.onHover = hour => { hoveredHours.push(hour); };
+    props.onContextMenu = hour => { menuHours.push(hour); };
+    props.playback = 'draw-in';
+    props.extent = [0, 100];
+    props.playhead = 20;
+    props.liveHead = { read: () => liveValue, subscribe: () => () => {} };
+    props.axes = { xFrom: 0, xTo: 100, yMin: 0, yMax: 100, log: false };
+    props.revision = 4;
+    render();
+    task!.frame({ now: 30, dt: 16 });
+    onPainted!(lastPostedFrameId);
+    const x50 = 44 + (400 - 44 - 14) * 0.5;
+    clickAt(x50, 100);
+    assert.equal(picked.at(-1), 50);
+
+    liveValue = 20;
+    props.revision = 5;
+    render();
+    task!.frame({ now: 40, dt: 16 });
+    onPainted!(lastPostedFrameId);
+    liveValue = 80;
+    props.revision = 6;
+    render();
+    task!.frame({ now: 50, dt: 16 });
+    listeners.get('pointermove')!({ clientX: x50, clientY: 100 });
+    task!.frame({ now: 250, dt: 16 });
+    task!.frame({ now: 450, dt: 16 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.ok(hoveredHours.at(-1) == null || hoveredHours.at(-1)! <= 20);
+    listeners.get('contextmenu')!({ clientX: x50, clientY: 100, preventDefault() {} });
+    assert.equal(menuHours.at(-1), 20);
+    onPainted!(lastPostedFrameId);
+    listeners.get('pointermove')!({ clientX: x50, clientY: 100 });
+    listeners.get('contextmenu')!({ clientX: x50, clientY: 100, preventDefault() {} });
+    assert.equal(menuHours.at(-1), 50);
+
+    const inFlightBeforeReplay = lastPostedFrameId + 1;
+    props.revision = 7;
+    render();
+    task!.frame({ now: 260, dt: 16 });
+    assert.equal(lastPostedFrameId, inFlightBeforeReplay);
+    fixture.replayEffects();
+    props.revision = 8;
+    render();
+    task!.frame({ now: 270, dt: 16 });
+    const replayedFrameId = lastPostedFrameId;
+    assert.ok(replayedFrameId > inFlightBeforeReplay);
+    assert.equal(asyncPending, true);
+    onPainted!(inFlightBeforeReplay);
+    assert.equal(asyncPending, true);
+    onPainted!(replayedFrameId);
+    assert.equal(asyncPending, false);
+
+    canvasWidth = 800;
+    props.revision = 9;
+    render();
+    task!.frame({ now: 280, dt: 16 });
+    const stretchedMidX = (44 + (400 - 44 - 14) * 0.5) * 2;
+    const beforeResizeClick = picked.length;
+    clickAt(stretchedMidX, 100);
+    assert.equal(picked.length, beforeResizeClick + 1);
+    assert.equal(picked.at(-1), 50);
+    onPainted!(lastPostedFrameId);
+    canvasWidth = 400;
+
+    props.liveHead = undefined;
+    props.playback = 'cursor';
     props.axes = { xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false };
     props.extent = [0, 1000];
     props.playhead = 1000;
+    props.revision = 10;
     render();
-    task!.frame({ now: 32, dt: 16 });
+    task!.frame({ now: 300, dt: 16 });
     onPainted!(lastPostedFrameId);
     const midX = 44 + (400 - 44 - 14) / 2;
     listeners.get('wheel')!({ clientX: midX, clientY: 100, deltaY: -240, deltaMode: 0, preventDefault() {} });
-    task!.frame({ now: 48, dt: 16 });
+    task!.frame({ now: 316, dt: 16 });
     onPainted!(lastPostedFrameId);
 
+    listeners.get('pointerdown')!({ clientX: midX - 20, clientY: 80, button: 0, pointerId: 2, detail: 1, preventDefault() {} });
+    listeners.get('pointermove')!({ clientX: midX + 20, clientY: 120 });
+    task!.frame({ now: 332, dt: 16 });
+    const clearsBeforeFallback = overlayClears;
     triggerFallback!('worker crashed');
     const secondKey = render();
     assert.equal(secondKey, 'sync');
-    assert.equal(workerDetaches, 1);
-    task!.frame({ now: 64, dt: 16 });
+    assert.ok(overlayClears > clearsBeforeFallback);
+    assert.equal(workerDetaches, 2);
+    task!.frame({ now: 348, dt: 16 });
     assert.equal(syncDraws, 1);
     const syncFrame = lastSyncFrame as PlotFrame | null;
     assert.ok(syncFrame !== null && syncFrame.x[1] - syncFrame.x[0] < 999);
@@ -439,13 +568,40 @@ test('TimeChart keeps painted geometry for picks, preserves zoom across renderer
   }
 });
 
-test('TimeChart resolves endLabels on main thread with the visible frame for exact-run and zoomed-rename parity', async () => {
+test('TimeChart hands Stability widget endLabels using widget cutoff during liveHead playback', async () => {
+  const { stabilityEndLabels } = await import('../widgets/stability/stabilityData.ts');
+  const { END_LABEL_HEIGHT } = await import('./draw.ts');
   const { plotFrame } = await import('./frame.ts');
   const { summaryGeometry } = await import('./chartSummary.ts');
   const { lineEndHour } = await import('./series.ts');
-  const { stabilityEnd, formatPercent } = await import('../widgets/stability/stabilityData.ts');
   const { resolveDeclarativeEndLabels } = await import('./renderTimeChart.ts') as Record<string, unknown>;
   assert.equal(resolveDeclarativeEndLabels, undefined);
+
+  const summary = {
+    from: 0, to: 100, width: 342,
+    buckets: [
+      { firstHour: 0, lastHour: 20, firstValue: 0.6, lastValue: 0.6, lastValueHour: 20, minHour: 0, minValue: 0.6, maxHour: 0, maxValue: 0.6, firstBreak: false, hasBreak: false },
+      { firstHour: 21, lastHour: 80, firstValue: 0.8, lastValue: 0.8, lastValueHour: 80, minHour: 21, minValue: 0.8, maxHour: 21, maxValue: 0.8, firstBreak: false, hasBreak: false },
+    ],
+  };
+  const nameAt = (hour: number) => (_tag: string) => ({ name: hour < 50 ? 'Old Name' : 'New Name' });
+  const widgetUntil = 20;
+  const resolver = (frame: PlotFrame) => stabilityEndLabels(
+    frame,
+    widgetUntil,
+    100,
+    [{ tag: 'ITA', hex: '#44aa44' }, { tag: 'GER', hex: '#555555' }],
+    [{ key: 'stability', label: 'Stability' }],
+    (_measure, tag) => tag === 'ITA' ? summary : undefined,
+    nameAt,
+    3,
+    END_LABEL_HEIGHT,
+    4,
+  );
+  const frameAtLive80 = plotFrame(400, 200, { left: 44, right: 14, top: 12, bottom: 24 }, [0, 80], [0, 1], false, 0, false);
+  const resolved = resolver(frameAtLive80);
+  assert.ok('ends' in resolved && resolved.ends.length === 1);
+  assert.equal(resolved.ends[0]!.text, 'Old Name: Stability 60.0%');
 
   const runOnlyFrame = plotFrame(400, 200, { left: 44, right: 14, top: 12, bottom: 24 }, [0, 100], [0, 100], false, 0, false);
   const runOnly = {
@@ -464,17 +620,4 @@ test('TimeChart resolves endLabels on main thread with the visible frame for exa
     runs: [{ firstHour: 0, lastHour: 30, value: 50, breakBefore: false }],
   };
   assert.equal(summaryGeometry(offPlotFrame, offPlot, false, 100).end, null);
-
-  const zoomedFrame = plotFrame(400, 200, { left: 44, right: 14, top: 12, bottom: 24 }, [0, 50], [0, 1], false, 0, false);
-  const summary = {
-    from: 0, to: 100, width: Math.ceil(zoomedFrame.plotWidth),
-    buckets: [
-      { firstHour: 0, lastHour: 50, firstValue: 0.6, lastValue: 0.6, lastValueHour: 50, minHour: 0, minValue: 0.6, maxHour: 0, maxValue: 0.6, firstBreak: false, hasBreak: false },
-      { firstHour: 51, lastHour: 100, firstValue: 0.8, lastValue: 0.8, lastValueHour: 100, minHour: 51, minValue: 0.8, maxHour: 51, maxValue: 0.8, firstBreak: false, hasBreak: false },
-    ],
-  };
-  const visibleEnd = Math.min(100, zoomedFrame.x[1], 100);
-  const at = stabilityEnd(summary, visibleEnd, 3);
-  const nameAt = (hour: number) => hour < 80 ? 'Old Name' : 'Future Name';
-  assert.equal(`${nameAt(visibleEnd)}: Stability ${formatPercent(at!.raw, 3)}`, 'Old Name: Stability 60.0%');
 });

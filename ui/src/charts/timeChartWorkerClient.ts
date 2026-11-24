@@ -51,6 +51,7 @@ export interface TimeChartWorkerCallbacks {
 
 export interface TimeChartWorkerAttachment {
   readonly id: number;
+  nextFrameId(): number;
   draw(scene: WorkerDrawScene): boolean;
   detach(): void;
 }
@@ -59,20 +60,20 @@ interface ManagedSlot {
   readonly id: number;
   readonly element: HTMLCanvasElement;
   readonly widget: string | null;
+  nextFrameId: number;
   active: boolean;
   disposed: boolean;
   onFallback: ((reason: string) => void) | null;
   onPainted: ((frameId: number) => void) | null;
   readonly retainedSummaries: Set<number>;
   readonly retainedMarks: Set<number>;
-  lastLayers: readonly ChartLayer[] | null;
   lastLayerDescs: readonly (DeclarativeLayer | null)[] | null;
   lastLayerRefs: readonly WorkerLayerRef[] | null;
-  lastMarkSummaries: readonly MarkSummary[] | null | undefined;
-  lastBadges: readonly EventBadge[] | null | undefined;
-  lastGaps: readonly LostSpan[] | null | undefined;
-  lastRowLabels: readonly string[] | null | undefined;
-  lastFormatValue: ChartAxisFormatterId | null | undefined;
+  lastMarkSummaries: readonly MarkSummary[] | null;
+  lastBadges: readonly EventBadge[] | null;
+  lastGaps: readonly LostSpan[] | null;
+  lastRowLabels: readonly string[] | null;
+  lastFormatValue: ChartAxisFormatterId | null;
 }
 
 const summaryRevs = new WeakMap<ChartSummary, number>();
@@ -378,20 +379,20 @@ export class TimeChartWorkerPool {
         id,
         element,
         widget,
+        nextFrameId: 1,
         active: true,
         disposed: false,
         onFallback: resolved.onFallback,
         onPainted: resolved.onPainted ?? null,
         retainedSummaries: new Set(),
         retainedMarks: new Set(),
-        lastLayers: null,
         lastLayerDescs: null,
         lastLayerRefs: null,
-        lastMarkSummaries: undefined,
-        lastBadges: undefined,
-        lastGaps: undefined,
-        lastRowLabels: undefined,
-        lastFormatValue: undefined,
+        lastMarkSummaries: null,
+        lastBadges: null,
+        lastGaps: null,
+        lastRowLabels: null,
+        lastFormatValue: null,
       };
       this.slots.set(id, slot);
       this.canvasSlots.set(element, slot);
@@ -413,6 +414,7 @@ export class TimeChartWorkerPool {
 
     return {
       id: boundSlot.id,
+      nextFrameId: () => boundSlot.nextFrameId++,
       draw: (scene: WorkerDrawScene): boolean => {
         if (handleDetached || !boundSlot.active || boundSlot.disposed || !this.worker) return false;
         const drawUntil = scene.until ?? scene.frame.x[1];
@@ -435,7 +437,7 @@ export class TimeChartWorkerPool {
           return tiled ? tiled.valueAt(drawUntil) : null;
         });
 
-        const layersChanged = boundSlot.lastLayers !== scene.layers || !sameDescList(boundSlot.lastLayerDescs, descs);
+        const layersChanged = !sameDescList(boundSlot.lastLayerDescs, descs);
         const marksChanged = !sameMarkList(boundSlot.lastMarkSummaries, scene.markSummaries);
 
         let newSummaries: PackedChartSummary[] | undefined;
@@ -491,7 +493,6 @@ export class TimeChartWorkerPool {
           }
           if (prunedSummaries) keepSummaries = [...activeSummaries];
           layerRefsUpdate = refs;
-          boundSlot.lastLayers = scene.layers;
           boundSlot.lastLayerDescs = descs;
           boundSlot.lastLayerRefs = refs;
         }
@@ -519,20 +520,24 @@ export class TimeChartWorkerPool {
             if (!activeMarks.has(rev)) { boundSlot.retainedMarks.delete(rev); prunedMarks = true; }
           }
           if (prunedMarks) keepMarks = [...activeMarks];
-          boundSlot.lastMarkSummaries = scene.markSummaries ?? null;
+          boundSlot.lastMarkSummaries = scene.markSummaries?.length ? scene.markSummaries : null;
         }
 
-        const badgesUpdate = scene.badges !== boundSlot.lastBadges
-          ? (boundSlot.lastBadges = scene.badges ?? null, scene.badges?.length ? stripBadgesForWorker(scene.badges) : null)
+        const nextBadges = scene.badges?.length ? scene.badges : null;
+        const badgesUpdate = nextBadges !== boundSlot.lastBadges
+          ? (boundSlot.lastBadges = nextBadges, nextBadges ? stripBadgesForWorker(nextBadges) : null)
           : undefined;
-        const gapsUpdate = scene.gaps !== boundSlot.lastGaps
-          ? (boundSlot.lastGaps = scene.gaps ?? null, scene.gaps ?? null)
+        const nextGaps = scene.gaps ?? null;
+        const gapsUpdate = nextGaps !== boundSlot.lastGaps
+          ? (boundSlot.lastGaps = nextGaps, nextGaps)
           : undefined;
-        const rowLabelsUpdate = scene.rowLabels !== boundSlot.lastRowLabels
-          ? (boundSlot.lastRowLabels = scene.rowLabels ?? null, scene.rowLabels ?? null)
+        const nextRowLabels = scene.rowLabels ?? null;
+        const rowLabelsUpdate = nextRowLabels !== boundSlot.lastRowLabels
+          ? (boundSlot.lastRowLabels = nextRowLabels, nextRowLabels)
           : undefined;
-        const formatValueUpdate = scene.formatValue !== boundSlot.lastFormatValue
-          ? (boundSlot.lastFormatValue = scene.formatValue ?? null, scene.formatValue ?? null)
+        const nextFormatValue = scene.formatValue ?? null;
+        const formatValueUpdate = nextFormatValue !== boundSlot.lastFormatValue
+          ? (boundSlot.lastFormatValue = nextFormatValue, nextFormatValue)
           : undefined;
 
         const drawMsg: DrawMessage = {

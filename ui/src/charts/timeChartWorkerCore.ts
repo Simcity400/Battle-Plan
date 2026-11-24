@@ -430,8 +430,8 @@ interface ChartSlot {
   formatValue: ChartAxisFormatterId | undefined;
   pending: DrawMessage | null;
   lastDrawn: DrawMessage | null;
-  deferredKeepSummaries: readonly number[] | null;
-  deferredKeepMarks: readonly number[] | null;
+  readonly pruneSummaries: Set<number>;
+  readonly pruneMarks: Set<number>;
   replaced: number;
 }
 
@@ -447,9 +447,11 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
   let rate = 1;
   let measuring = false;
   let scheduled = false;
+  let fontsReady = true;
+  let pendingFonts = 0;
 
   const scheduleDrain = () => {
-    if (scheduled) return;
+    if (scheduled || !fontsReady || pendingFonts > 0) return;
     scheduled = true;
     host.schedule(() => {
       scheduled = false;
@@ -466,21 +468,45 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
     if (job.formatValue !== undefined) slot.formatValue = job.formatValue ?? undefined;
   };
 
+  const markPrunableSummaries = (slot: ChartSlot, keepList: readonly number[]) => {
+    const keep = new Set(keepList);
+    for (const rev of slot.summaries.keys()) {
+      if (keep.has(rev)) slot.pruneSummaries.delete(rev);
+      else slot.pruneSummaries.add(rev);
+    }
+  };
+
+  const markPrunableMarks = (slot: ChartSlot, keepList: readonly number[]) => {
+    const keep = new Set(keepList);
+    for (const rev of slot.marks.keys()) {
+      if (keep.has(rev)) slot.pruneMarks.delete(rev);
+      else slot.pruneMarks.add(rev);
+    }
+  };
+
   const applyDeferredPrunes = (slot: ChartSlot) => {
-    if (slot.deferredKeepSummaries !== null) {
-      const keep = new Set(slot.deferredKeepSummaries);
-      const needed = layerSummaryRevs(slot.layers);
-      if (needed.every(rev => keep.has(rev))) {
-        for (const rev of slot.summaries.keys()) if (!keep.has(rev)) slot.summaries.delete(rev);
-        slot.deferredKeepSummaries = null;
+    if (slot.pruneSummaries.size > 0) {
+      const inUse = new Set<number>(layerSummaryRevs(slot.layers));
+      if (slot.pending?.layers) {
+        for (const rev of layerSummaryRevs(slot.pending.layers)) inUse.add(rev);
+      }
+      for (const rev of [...slot.pruneSummaries]) {
+        if (!inUse.has(rev)) {
+          slot.summaries.delete(rev);
+          slot.pruneSummaries.delete(rev);
+        }
       }
     }
-    if (slot.deferredKeepMarks !== null) {
-      const keep = new Set(slot.deferredKeepMarks);
-      const needed = slot.markRevs ?? [];
-      if (needed.every(rev => keep.has(rev))) {
-        for (const rev of slot.marks.keys()) if (!keep.has(rev)) slot.marks.delete(rev);
-        slot.deferredKeepMarks = null;
+    if (slot.pruneMarks.size > 0) {
+      const inUse = new Set<number>(slot.markRevs ?? []);
+      if (slot.pending?.markRevs) {
+        for (const rev of slot.pending.markRevs) inUse.add(rev);
+      }
+      for (const rev of [...slot.pruneMarks]) {
+        if (!inUse.has(rev)) {
+          slot.marks.delete(rev);
+          slot.pruneMarks.delete(rev);
+        }
       }
     }
   };
@@ -593,6 +619,7 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
   };
 
   const drain = () => {
+    if (!fontsReady || pendingFonts > 0) return;
     for (const slot of slots.values()) {
       const job = slot.pending;
       if (!job) continue;
@@ -628,8 +655,8 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
           formatValue: undefined,
           pending: null,
           lastDrawn: null,
-          deferredKeepSummaries: null,
-          deferredKeepMarks: null,
+          pruneSummaries: new Set(),
+          pruneMarks: new Set(),
           replaced: 0,
         });
         break;
@@ -653,18 +680,30 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
       case 'fonts': {
         const fontKey = message.fontKey ?? '';
         if (!host.loadFonts || !message.faces.length) {
+          fontsReady = true;
           if (fontKey) host.onFontsResult?.(fontKey, true, []);
+          if (pendingFonts === 0) {
+            for (const slot of slots.values()) {
+              if (slot.pending) { scheduleDrain(); break; }
+            }
+          }
           break;
         }
+        fontsReady = false;
+        pendingFonts++;
         void host.loadFonts(message.faces).then(result => {
+          pendingFonts = Math.max(0, pendingFonts - 1);
           const added = typeof result === 'boolean' ? result : result.added;
           const failed = typeof result === 'boolean' ? [] : result.failed;
           if (fontKey) host.onFontsResult?.(fontKey, failed.length === 0, failed);
-          if (!added) return;
-          clearTextWidthCache();
+          if (failed.length > 0 || pendingFonts > 0) return;
+          fontsReady = true;
+          if (added) clearTextWidthCache();
           let any = false;
           for (const slot of slots.values()) {
-            if (!slot.pending && slot.lastDrawn) {
+            if (slot.pending) {
+              any = true;
+            } else if (added && slot.lastDrawn) {
               slot.pending = slot.lastDrawn;
               any = true;
             }
@@ -677,27 +716,39 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
         const slot = slots.get(message.id);
         if (!slot) break;
         if (message.summaries) {
-          for (const packed of message.summaries) slot.summaries.set(packed.rev, retainSummary(packed));
+          for (const packed of message.summaries) {
+            slot.summaries.set(packed.rev, retainSummary(packed));
+            slot.pruneSummaries.delete(packed.rev);
+          }
         }
         if (message.marks) {
-          for (const entry of message.marks) slot.marks.set(entry.rev, entry.summary);
+          for (const entry of message.marks) {
+            slot.marks.set(entry.rev, entry.summary);
+            slot.pruneMarks.delete(entry.rev);
+          }
         }
-        if (message.keepSummaries) slot.deferredKeepSummaries = message.keepSummaries;
-        if (message.keepMarks) slot.deferredKeepMarks = message.keepMarks;
-        if (!slot.pending) applyDeferredPrunes(slot);
+        if (message.keepSummaries) markPrunableSummaries(slot, message.keepSummaries);
+        if (message.keepMarks) markPrunableMarks(slot, message.keepMarks);
+        applyDeferredPrunes(slot);
         break;
       }
       case 'draw': {
         const slot = slots.get(message.id);
         if (!slot) break;
         if (message.summaries) {
-          for (const packed of message.summaries) slot.summaries.set(packed.rev, retainSummary(packed));
+          for (const packed of message.summaries) {
+            slot.summaries.set(packed.rev, retainSummary(packed));
+            slot.pruneSummaries.delete(packed.rev);
+          }
         }
         if (message.marks) {
-          for (const entry of message.marks) slot.marks.set(entry.rev, entry.summary);
+          for (const entry of message.marks) {
+            slot.marks.set(entry.rev, entry.summary);
+            slot.pruneMarks.delete(entry.rev);
+          }
         }
-        if (message.keepSummaries) slot.deferredKeepSummaries = message.keepSummaries;
-        if (message.keepMarks) slot.deferredKeepMarks = message.keepMarks;
+        if (message.keepSummaries) markPrunableSummaries(slot, message.keepSummaries);
+        if (message.keepMarks) markPrunableMarks(slot, message.keepMarks);
         if (slot.pending) {
           applyStaticUpdates(slot, slot.pending);
           slot.replaced++;

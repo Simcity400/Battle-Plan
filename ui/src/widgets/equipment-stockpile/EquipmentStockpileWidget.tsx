@@ -270,14 +270,14 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
   const endLabels = options.endLabels !== false;
   const endLabelsSpec = useMemo<EndLabelsResolver | undefined>(() => {
     if (!endLabels) return undefined;
-    return (frame, drawnUntil) => lines.flatMap(line => {
+    return frame => lines.flatMap(line => {
       if (!line.summary) return [];
-      const end = summaryGeometry(frame, line.summary, false, drawnUntil).end;
+      const end = summaryGeometry(frame, line.summary, false, until).end;
       const last = line.summary.buckets.filter(bucket => bucket !== null).at(-1)?.lastHour
-        ?? lineEndHour(line.summary.runs ?? [], frame.x[0], Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]));
+        ?? lineEndHour(line.summary.runs ?? [], frame.x[0], Math.min(until ?? extent[1], frame.x[1], extent[1]));
       return end && last != null ? [{ id: line.group.key, color: line.color, muted: false, y: end.y, text: labelAt(line.group, grouping, last) }] : [];
     });
-  }, [endLabels, lines, extent[1], grouping]);
+  }, [endLabels, lines, until, extent[1], grouping]);
   const actions = new Map(groups.map(group => {
     const choice = choiceKey(group, head, chosenTokens.map(contentKey));
     if (choice == null) return [group.key, { reason: SAVED_DESIGN_UNAVAILABLE }];

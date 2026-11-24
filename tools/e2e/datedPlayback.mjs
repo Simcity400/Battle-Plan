@@ -366,7 +366,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
   return { pass: reasons.length === 0, reasons, notMigrated: notMigratedPlacements.length, notMigratedKinds, metrics, widgets, placements };
 }
 
-export const COST_FORMULA = 'mainDelta.p95 + worker.p95';
+export const COST_FORMULA = 'mainDelta.p95 + worker.p95 + chartWorker.p95';
 export const BASELINE_MIN_FRAMES = 30;
 export const WIDGET_LOW_FRAMES = 30;
 export const BASELINE_MAX_P50_SPREAD_MS = 3;
@@ -548,20 +548,25 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       ? winRecords.filter(r => r.t === 'picture' && r.widget === w.widget && r.at >= (w.seekStart ?? w.from) && r.at <= w.to) : [];
     const playingPictures = pictures.filter(r => r.at >= w.from && r.at <= w.to && r.renderer === 'page');
     const drawMsValues = playingPictures.filter(r => !r.detached && Number.isFinite(r.drawMs)).map(r => r.drawMs);
-    const sumStat = (a, b) => (a != null && b != null ? a + b : a ?? b);
-    const picDrawP95 = p95(drawMsValues);
-    const combinedDrawP95 = chartQ.p95 != null ? Math.max(picDrawP95 ?? 0, chartQ.p95) : picDrawP95;
     const worker = {
-      frames: workerFrames.length + chartWorkerFrames.length,
-      changedFrames: changed.length + chartWorkerFrames.length,
-      p50: sumStat(workerQ.p50, chartQ.p50),
-      p95: sumStat(workerQ.p95, chartQ.p95),
-      max: sumStat(workerQ.max, chartQ.max),
-      mean: sumStat(workerMean, mean(chartWorkerFrames.map(r => r.ms))),
-      totalMsPerSec: seconds > 0 ? (workerTotalMs + chartTotalMs) / seconds : null,
-      drawMsP95: combinedDrawP95,
-      ...(chartWorkerFrames.length ? { chartPaints: chartWorkerFrames.length, chartReplaced, chartP95: chartQ.p95 } : {}),
+      frames: workerFrames.length,
+      changedFrames: changed.length,
+      p50: workerQ.p50,
+      p95: workerQ.p95,
+      max: workerQ.max,
+      mean: workerMean,
+      totalMsPerSec: seconds > 0 ? workerTotalMs / seconds : null,
+      drawMsP95: p95(drawMsValues),
     };
+    const chartWorker = chartWorkerFrames.length ? {
+      paints: chartWorkerFrames.length,
+      replaced: chartReplaced,
+      p50: chartQ.p50,
+      p95: chartQ.p95,
+      max: chartQ.max,
+      mean: mean(chartWorkerFrames.map(r => r.ms)),
+      totalMsPerSec: seconds > 0 ? chartTotalMs / seconds : null,
+    } : null;
     const commits = frames.reduce((sum, r) => sum + (Number.isFinite(r.commits) ? r.commits : 0), 0);
     const commitsPerSec = seconds > 0 ? commits / seconds : null;
     const queries = w.from != null && w.to != null
@@ -635,10 +640,10 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     const pass = outcome !== 'error' && outcome !== 'placeholder' && complete && correctnessErrors.length === 0;
     const belowBaselineNoise = Number.isFinite(mainDelta.p95) && mainDelta.p95 < 0;
     const lowFrameCount = main.n > 0 && main.n < WIDGET_LOW_FRAMES;
-    const costScoreMs = complete && Number.isFinite(mainDelta.p95) ? mainDelta.p95 + (worker.p95 ?? 0) : null;
+    const costScoreMs = complete && Number.isFinite(mainDelta.p95) ? mainDelta.p95 + (worker.p95 ?? 0) + (chartWorker?.p95 ?? 0) : null;
     return {
       kind: w.kind, title: w.title ?? w.kind, outcome, detail,
-      seconds, clockHps: clock.hps, main, mainDelta, interval, worker,
+      seconds, clockHps: clock.hps, main, mainDelta, interval, worker, chartWorker,
       commits, commitsPerSec,
       requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,
       lagP95Hours, futureFrames,

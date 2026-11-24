@@ -475,7 +475,10 @@ if (sweep) {
     for (const [index, w] of costReport.widgets.entries()) {
       const reqList = Object.entries(w.requestsByProduct ?? {}).slice(0, 4).map(([prod, r]) => `${prod} ${r.toFixed(1)}`).join(', ');
       const reqCell = w.requestsPerSec == null ? '–' : `${w.requestsPerSec.toFixed(1)}${reqList ? ` (${reqList})` : ''}`;
-      const workerCell = w.worker.changedFrames > 0 ? `${ms1(w.worker.p95)} / ${ms1(w.worker.mean)}` : '–';
+      const workerParts = [];
+      if (w.worker.changedFrames > 0) workerParts.push(`${ms1(w.worker.p95)} / ${ms1(w.worker.mean)}`);
+      if (w.chartWorker?.paints) workerParts.push(`chart ${ms1(w.chartWorker.p95)} / ${ms1(w.chartWorker.mean)}`);
+      const workerCell = workerParts.length ? workerParts.join(' + ') : '–';
       const framesCell = `${w.main.n} (${ms1(w.seconds)} s)`;
       const notes = [];
       if (w.detail) notes.push(w.detail);

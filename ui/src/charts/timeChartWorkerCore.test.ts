@@ -41,6 +41,7 @@ interface RecordedCall {
   readonly args: readonly unknown[];
   readonly width: number;
   readonly height: number;
+  readonly strokeStyle?: string;
 }
 
 function makeFakeCanvas(initialWidth = 400, initialHeight = 200, options?: { nullContext?: boolean; throwOnClear?: string }) {
@@ -54,7 +55,7 @@ function makeFakeCanvas(initialWidth = 400, initialHeight = 200, options?: { nul
     },
   };
   const record = (op: string) => (...args: unknown[]) => {
-    calls.push({ op, args, width: canvas.width, height: canvas.height });
+    calls.push({ op, args, width: canvas.width, height: canvas.height, strokeStyle: String(ctx.strokeStyle) });
   };
   const ctx: Canvas2D = {
     fillStyle: '',
@@ -477,6 +478,162 @@ test('worker client retries font loading once and falls back to synchronous draw
     workerInstance!.onmessage!({ data: { type: 'fontsResult', fontKey: 'TestSans', ok: false, failed: ['TestSans'] } } as MessageEvent);
     assert.equal(fallbacks.length, 1);
     assert.match(fallbacks[0]!, /TestSans/);
+  } finally {
+    for (const [k, desc] of saved) {
+      if (desc) Object.defineProperty(globalThis, k, desc); else Reflect.deleteProperty(globalThis, k);
+    }
+  }
+});
+
+test('worker prunes superseded revisions even when a later draw adds a revision without a new keep set', () => {
+  const scheduled: (() => void)[] = [];
+  const handler = createTimeChartWorkerHandler({ schedule: fn => scheduled.push(fn) });
+  handler.handle({ type: 'tokens', tokens: TOKENS });
+  const { canvas, calls } = makeFakeCanvas(400, 200);
+  handler.handle({ type: 'attach', id: 30, canvas });
+
+  const makeLine = (rev: number, color: string) => ({ kind: 'line-summary' as const, summaryRev: rev, color, held: false });
+  handler.handle(makeDraw(30, {
+    summaries: [packChartSummary(1, constantSummary(25)).packed],
+    layers: [makeLine(1, '#111111')],
+    headValues: [null],
+  }));
+  scheduled.shift()!();
+  assert.ok(calls.some(c => c.op === 'stroke' && c.strokeStyle === '#111111'));
+
+  for (let step = 0; step < 5; step++) {
+    const revB = 10 + step * 2;
+    const revC = revB + 1;
+    handler.handle(makeDraw(30, {
+      summaries: [packChartSummary(revB, constantSummary(40)).packed],
+      keepSummaries: [revB],
+      layers: [makeLine(revB, '#222222')],
+      headValues: [null],
+    }));
+    handler.handle(makeDraw(30, {
+      summaries: [packChartSummary(revC, constantSummary(60)).packed],
+      layers: [makeLine(revB, '#222222'), makeLine(revC, '#333333')],
+      headValues: [null, null],
+    }));
+    scheduled.shift()!();
+  }
+
+  calls.length = 0;
+  handler.handle(makeDraw(30, {
+    layers: [makeLine(1, '#aa0000')],
+    headValues: [null],
+  }));
+  scheduled.shift()!();
+  assert.equal(calls.some(c => c.op === 'stroke' && c.strokeStyle === '#aa0000'), false);
+});
+
+test('worker holds pending draws while fonts are loading and emits one painted ack after fonts resolve', async () => {
+  const scheduled: (() => void)[] = [];
+  const acks: number[] = [];
+  let resolveFonts!: (result: { added: boolean; failed: readonly string[] }) => void;
+  const handler = createTimeChartWorkerHandler({
+    schedule: fn => scheduled.push(fn),
+    loadFonts: () => new Promise(resolve => { resolveFonts = resolve; }),
+    onPainted: (_id, frameId) => { acks.push(frameId); },
+  });
+  handler.handle({ type: 'tokens', tokens: TOKENS });
+  handler.handle({ type: 'fonts', fontKey: 'TestSans', faces: [{ family: 'TestSans', source: 'url("x.woff2")' }] });
+  const { canvas } = makeFakeCanvas(400, 200);
+  handler.handle({ type: 'attach', id: 31, canvas });
+
+  handler.handle(makeDraw(31, { frameId: 1 }));
+  handler.handle(makeDraw(31, { frameId: 2 }));
+  handler.drain();
+  assert.deepEqual(acks, []);
+
+  resolveFonts({ added: true, failed: [] });
+  await Promise.resolve();
+  assert.equal(scheduled.length, 1);
+  scheduled.shift()!();
+  assert.deepEqual(acks, [2]);
+});
+
+test('worker client skips resending equal descriptors across new layer arrays and stops resending cleared optional fields', async () => {
+  const { plotFrame } = await import('./frame.ts');
+  const { lineSummaryLayer } = await import('./renderTimeChart.ts');
+  const { TimeChartWorkerPool } = await import('./timeChartWorkerClient.ts');
+  const posted: Record<string, unknown>[] = [];
+  class FakeWorker {
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: ErrorEvent) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    postMessage(msg: unknown) { posted.push(msg as Record<string, unknown>); }
+    terminate() {}
+  }
+  class FakeOffscreenCanvas {}
+  class FakeHTMLCanvasElement { transferControlToOffscreen() { return new FakeOffscreenCanvas(); } }
+  const fakeDoc = {
+    documentElement: { dataset: {} },
+    body: { append() {} },
+    createElement: () => ({ style: { display: '', color: '' }, remove() {} }),
+    styleSheets: [],
+  };
+  const saved = new Map(['Worker', 'OffscreenCanvas', 'HTMLCanvasElement', 'document', 'getComputedStyle', 'window']
+    .map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  Object.defineProperty(globalThis, 'Worker', { configurable: true, value: FakeWorker });
+  Object.defineProperty(globalThis, 'OffscreenCanvas', { configurable: true, value: FakeOffscreenCanvas });
+  Object.defineProperty(globalThis, 'HTMLCanvasElement', { configurable: true, value: FakeHTMLCanvasElement });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: fakeDoc });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { addEventListener() {}, removeEventListener() {} } });
+  Object.defineProperty(globalThis, 'getComputedStyle', {
+    configurable: true,
+    value: () => ({ color: 'rgb(20, 24, 30)', getPropertyValue: () => 'sans-serif' }),
+  });
+  try {
+    const pool = new TimeChartWorkerPool();
+    const el = { transferControlToOffscreen: () => new FakeOffscreenCanvas(), closest: () => null } as unknown as HTMLCanvasElement;
+    const handle = pool.attach(el, () => {})!;
+    const frame = plotFrame(400, 200, { left: 44, right: 14, top: 12, bottom: 24 }, [0, 100], [0, 100], false, 0, false);
+    const sharedSummary = constantSummary(50);
+
+    handle.draw({
+      frameId: handle.nextFrameId(),
+      backingWidth: 400, backingHeight: 200, layoutWidth: 400, layoutHeight: 200, scaleX: 1, scaleY: 1, frame,
+      layers: [lineSummaryLayer({ summary: () => sharedSummary, color: '#ff0000', options: { area: true } })],
+      playhead: 100, playback: 'draw-in', until: 100,
+      badges: [{ hour: 10, glyph: '*', label: 'ev' }],
+      gaps: [{ firstHour: 20, lastHour: 30 }],
+      rowLabels: ['A'],
+      formatValue: 'powerAxis',
+    });
+    handle.draw({
+      frameId: handle.nextFrameId(),
+      backingWidth: 400, backingHeight: 200, layoutWidth: 400, layoutHeight: 200, scaleX: 1, scaleY: 1, frame,
+      layers: [lineSummaryLayer({ summary: () => sharedSummary, color: '#ff0000', options: { area: true } })],
+      playhead: 100, playback: 'draw-in', until: 100,
+      badges: undefined,
+      gaps: undefined,
+      rowLabels: undefined,
+      formatValue: undefined,
+    });
+    handle.draw({
+      frameId: handle.nextFrameId(),
+      backingWidth: 400, backingHeight: 200, layoutWidth: 400, layoutHeight: 200, scaleX: 1, scaleY: 1, frame,
+      layers: [lineSummaryLayer({ summary: () => sharedSummary, color: '#ff0000', options: { area: true } })],
+      playhead: 100, playback: 'draw-in', until: 100,
+      badges: undefined,
+      gaps: undefined,
+      rowLabels: undefined,
+      formatValue: undefined,
+    });
+    const draws = posted.filter(m => m.type === 'draw');
+    assert.equal(draws.length, 3);
+    assert.ok(draws[0]!.layers !== undefined);
+    assert.equal(draws[1]!.layers, undefined);
+    assert.equal(draws[1]!.badges, null);
+    assert.equal(draws[1]!.gaps, null);
+    assert.equal(draws[1]!.rowLabels, null);
+    assert.equal(draws[1]!.formatValue, null);
+    assert.equal(draws[2]!.layers, undefined);
+    assert.equal(draws[2]!.badges, undefined);
+    assert.equal(draws[2]!.gaps, undefined);
+    assert.equal(draws[2]!.rowLabels, undefined);
+    assert.equal(draws[2]!.formatValue, undefined);
   } finally {
     for (const [k, desc] of saved) {
       if (desc) Object.defineProperty(globalThis, k, desc); else Reflect.deleteProperty(globalThis, k);

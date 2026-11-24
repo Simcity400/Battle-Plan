@@ -163,8 +163,8 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   ]), [tags, showCapacity, capacity.lineOf, fuel.lineOf, colourOf, single, options.areaFill, until]);
   const endLabels = useMemo<EndLabelsResolver | undefined>(() => {
     if (options.endLabels === false) return undefined;
-    return (frame, drawnUntil) => {
-      const end = Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]);
+    return frame => {
+      const end = Math.min(until ?? extent[1], frame.x[1], extent[1]);
       return tags.flatMap(tag => (['fuel', ...showCapacity ? ['capacity'] as const : []] as const).flatMap(of => {
         const value = summaryEnd(of === 'fuel' ? fuel.lineOf(tag) : capacity.lineOf(tag), end);
         if (value == null) return [];
@@ -173,7 +173,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
           text: single ? what : `${nameOf(tag)} · ${what}`, suffix: formatFuel(BigInt(Math.round(value)), QUANTITY_SCALE, digits) }];
       }));
     };
-  }, [options.endLabels, showCapacity, extent[1], tags, fuel.lineOf, capacity.lineOf, colourOf, single, nameOf, digits]);
+  }, [options.endLabels, until, showCapacity, extent[1], tags, fuel.lineOf, capacity.lineOf, colourOf, single, nameOf, digits]);
   const gainFailure = gain.error?.message ?? null, burnFailure = burn.error?.message ?? null;
   const strip = useMemo<ChartStrip | undefined>(() => {
     if (!withStrip || !tags[0]) return undefined;

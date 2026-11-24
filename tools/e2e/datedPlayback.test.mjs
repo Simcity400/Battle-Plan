@@ -926,16 +926,18 @@ test('S20: per-picture audit coverage checks every painted picture including own
   assert.equal(costWrongGen.widgets[0].exact, 'fail', 'S20: widget-cost verdict isolates generations in audit keys');
 
   const chartWorkerRecords = [
-    ...costRecords.filter(r => r.t !== 'picture'),
-    ...presented.map(at => ({ t: 'chartWorker', at: 5000 + at, widget: 'w-chart', ms: 3.5, replaced: 0 })),
+    ...costRecords.filter(r => r.t !== 'picture' && r.t !== 'workerFrame'),
+    ...presented.map((at, i) => ({ t: 'workerFrame', at: 5000 + at, playing: true, changed: 1, workMs: i < 6 ? 9 : 1 })),
+    ...presented.map((at, i) => ({ t: 'chartWorker', at: 5000 + at, widget: 'w-chart', ms: i >= 6 && i < 12 ? 9 : 1, replaced: 0 })),
   ];
   const chartWorkerCost = summarizeWidgetCosts(
     [{ kind: 'political-power', widget: 'w-chart', from: 5000, to: 6000, seconds: 1, outcome: 'content', complete: true, audit: [] }],
     chartWorkerRecords,
     { baselines: [baseStart, baseEnd] },
   );
-  assert.equal(chartWorkerCost.widgets[0].worker.p95, 4.5);
-  assert.equal(chartWorkerCost.widgets[0].costScoreMs, 5.5);
+  assert.equal(chartWorkerCost.widgets[0].worker.p95, 9);
+  assert.equal(chartWorkerCost.widgets[0].chartWorker.p95, 9);
+  assert.equal(chartWorkerCost.widgets[0].costScoreMs, 19);
 });
 
 test('cancelled workerFrame is excluded from worker presentation rate, workerGapP95, and emptyMs', () => {

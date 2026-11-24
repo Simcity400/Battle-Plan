@@ -18,6 +18,32 @@ export function stabilityEnd(summary: ChartSummary | undefined, end: number, dec
   return value == null ? null : { value, raw: rawOf(value, decimals) };
 }
 
+export function stabilityEndLabels(
+  frame: { readonly x: readonly [number, number]; readonly plotHeight: number; toY(value: number): number },
+  until: number | null,
+  extentEnd: number,
+  lines: readonly { readonly tag: string; readonly hex: string }[],
+  shown: readonly { readonly key: Measure; readonly label: string }[],
+  lineOf: (measure: Measure, tag: string) => ChartSummary | undefined,
+  labelAt: (hour: number) => (tag: string) => { readonly name: string },
+  decimals: number,
+  endLabelHeight: number,
+  endLabelGap: number,
+): { readonly ends: readonly { id: string; y: number; text: string; color: string }[]; readonly gap: number } | readonly [] {
+  const end = Math.min(until ?? extentEnd, frame.x[1], extentEnd);
+  if (end < frame.x[0]) return [];
+  const ends = lines.flatMap(item => shown.flatMap(measure => {
+    const at = stabilityEnd(lineOf(measure.key, item.tag), end, decimals);
+    if (!at) return [];
+    const text = `${lines.length > 1 ? `${labelAt(end)(item.tag).name}: ` : ''}${measure.label} ${formatPercent(at.raw, decimals)}`;
+    return [{ id: `${item.tag}:${measure.key}`, y: frame.toY(at.value), text, color: item.hex }];
+  }));
+  const room = Math.floor((frame.plotHeight + endLabelGap) / (endLabelHeight + endLabelGap));
+  const fitted = ends.length <= room ? ends : ends.filter(item => item.id.endsWith(':stability'));
+  if (fitted.length > room) return [];
+  return { ends: fitted, gap: endLabelGap };
+}
+
 export function percentRuns(runs: readonly FixedRun[], decimals: number): Run[] {
   return runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: fixedNumber(run.valueRaw, decimals) * 100, breakBefore: run.startsSegment }));
 }

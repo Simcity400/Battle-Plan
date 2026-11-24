@@ -251,8 +251,8 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
 
   const endLabels = useMemo<EndLabelsResolver | undefined>(() => {
     if (!options.endLabels) return undefined;
-    return (frame, drawnUntil) => {
-      const at = Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]);
+    return frame => {
+      const at = Math.min(until ?? extent[1], frame.x[1], extent[1]);
       return decimals === null ? [] : series.flatMap(item => {
         const value = summaryEnd(balances.lineOf(item.tag), at);
         if (value == null) return [];
@@ -262,7 +262,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
         return [{ id: item.tag, y: frame.toY(value), ...text, color: item.hex }];
       });
     };
-  }, [options.endLabels, decimals, digits, config.unit, series, extent[1], balances.lineOf, labelAt, shownAt]);
+  }, [options.endLabels, until, decimals, digits, config.unit, series, extent[1], balances.lineOf, labelAt, shownAt]);
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message={`Load a campaign to see ${config.noun}.`} />;
   if (refused) return <WidgetState kind="unavailable" technical={refused} />;

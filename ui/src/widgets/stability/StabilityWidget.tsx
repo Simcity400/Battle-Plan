@@ -71,7 +71,7 @@ import { useMeasureSeries } from '../country-measure/measureSeries';
 import { STABILITY_BREAKDOWNS, STABILITY_OPTIONS } from './definition';
 import { historyMarks, stabilityMarkers } from './markers';
 import type { FocusMarks, MarkerKind } from './markers';
-import { breakdownRows, formatPercent, linesPerMeasure, readHourOf, stabilityEnd, validateStabilityReads } from './stabilityData';
+import { breakdownRows, formatPercent, linesPerMeasure, readHourOf, stabilityEndLabels, validateStabilityReads } from './stabilityData';
 import type { Measure } from './stabilityData';
 import { chooseStabilityActor, pinStabilityDrill, stabilityPickAction } from './stabilityDrillData';
 import type { StabilityPick } from './stabilityDrillData';
@@ -345,21 +345,19 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   }))), [lines, shown, until, stability.lineOf, warSupport.lineOf]);
   const endLabels = useMemo<EndLabelsResolver | undefined>(() => {
     if (!options.endLabels) return undefined;
-    return (frame, drawnUntil) => {
-      const end = Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]);
-      if (end < frame.x[0]) return [];
-      const ends = lines.flatMap(item => shown.flatMap(measure => {
-        const at = stabilityEnd(series[measure.key].lineOf(item.tag), end, decimals);
-        if (!at) return [];
-        const text = `${lines.length > 1 ? `${labelAt(end)(item.tag).name}: ` : ''}${measure.label} ${formatPercent(at.raw, decimals)}`;
-        return [{ id: `${item.tag}:${measure.key}`, y: frame.toY(at.value), text, color: item.hex }];
-      }));
-      const room = Math.floor((frame.plotHeight + END_LABEL_GAP) / (END_LABEL_HEIGHT + END_LABEL_GAP));
-      const fitted = ends.length <= room ? ends : ends.filter(item => item.id.endsWith(':stability'));
-      if (fitted.length > room) return [];
-      return { ends: fitted, gap: END_LABEL_GAP };
-    };
-  }, [options.endLabels, extent[1], lines, shown, stability.lineOf, warSupport.lineOf, labelAt, decimals]);
+    return frame => stabilityEndLabels(
+      frame,
+      until,
+      extent[1],
+      lines,
+      shown,
+      (measure, tag) => series[measure].lineOf(tag),
+      labelAt,
+      decimals,
+      END_LABEL_HEIGHT,
+      END_LABEL_GAP,
+    );
+  }, [options.endLabels, until, extent[1], lines, shown, stability.lineOf, warSupport.lineOf, labelAt, decimals]);
   const error = stability.error ?? warSupport.error;
   const retry = () => { stability.retry(); warSupport.retry(); };
 
