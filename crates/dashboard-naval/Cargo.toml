@@ -43,6 +43,7 @@ ts-rs = "11.1"
 [dev-dependencies]
 content-reader-script = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
+replay-journal = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
 content-reader-division-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }

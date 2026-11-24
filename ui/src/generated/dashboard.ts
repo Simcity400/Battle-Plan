@@ -2869,8 +2869,8 @@ export type NavalBattlesReply = { window: number, interval: BattleWindow, rows: 
  * The window's hours whose live combats were read.
  */
 observed: Array<[number, number]>, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
-export type NavalBattleHistory = { id: string, provinceId: number, runs: Array<NavalBattleRun>, };
-export type NavalBattleRun = { firstHour: number, lastHour: number, row: BattleRow, peakHour: number | null,
+export type NavalBattleHistory = { id: string, provinceId: number | null, runs: Array<NavalBattleRun>, };
+export type NavalBattleRun = { firstHour: number, lastHour: number, provinceId: number | null, row: BattleRow, peakHour: number | null,
 /**
  * Ships sunk, Peak ships and Length.
  */
@@ -3139,7 +3139,16 @@ rows: Array<EventFeedRow>,
  * read, refusals of their rows.
  */
 unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
-export type EndedLease = { terms: LeaseTerms, fuelSentRaw: string, fuelSunkRaw: string,
+export type EndedLeaseTerms = { key: string,
+/**
+ * The handle, hexadecimal.
+ */
+id: string, giver: string | null, giverMissing?: string, receiver: string | null, receiverMissing?: string, revision: string | null, revisionMissing?: string, activeSince: number | null, activeSinceMissing?: string, lastDelivery: number | null, lastDeliveryMissing?: string, monthly: Array<MarketItem> | null, monthlyMissing?: string,
+/**
+ * Production shares, /1000 percent.
+ */
+percentage: Array<MarketItem> | null, percentageMissing?: string, once: Array<MarketItem> | null, onceMissing?: string, delivered: Array<MarketItem> | null, deliveredMissing?: string, sunk: Array<MarketItem> | null, sunkMissing?: string, fuelDailyRaw: string | null, fuelDailyRawMissing?: string, fuelPercentageRaw: string | null, fuelPercentageRawMissing?: string, lastFuelDeliveredRaw: string | null, lastFuelDeliveredRawMissing?: string, };
+export type EndedLease = { terms: EndedLeaseTerms, fuelSentRaw: string | null, fuelSentRawMissing?: string, fuelSunkRaw: string | null, fuelSunkRawMissing?: string,
 /**
  * The first hour it stood in its run, within the branch.
  */

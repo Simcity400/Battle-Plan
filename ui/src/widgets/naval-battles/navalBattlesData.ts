@@ -1,7 +1,7 @@
 import type { PlaybackIntervals } from '../../charts/playbackIntervals';
 import { playbackRows, spanChanges } from '../../charts/playbackIntervals.ts';
 import { countryMatchChangeHours } from '../../dashboard/groups.ts';
-import { battleChanges, isBattleRow, isBattleValue, battleValueText } from '../battles/battleRows.ts';
+import { battleChanges, battleState, isBattleRow, isBattleValue, battleValueText } from '../battles/battleRows.ts';
 import type { BattleChanges } from '../battles/battleRows';
 import { isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
@@ -12,7 +12,7 @@ export const NAVAL_BATTLE_SIZE_LABELS = ['Ships sunk', 'Peak ships', 'Length'] a
 export const NAVAL_BATTLE_DEFAULT_MEASURE = NAVAL_BATTLE_SIZE_LABELS[0];
 export type NavalBattleMeasure = typeof NAVAL_BATTLE_SIZE_LABELS[number];
 export type NavalBattleRow = BattleRow & {
-  provinceId: number;
+  provinceId: number | null;
   windowIndex: number;
   observedHour: number;
   runHour: number;
@@ -25,7 +25,8 @@ const warnings = (v: unknown) => Array.isArray(v) && v.every(w => object(w) && i
   && typeof w.reason === 'string' && w.reason.length > 0 && int(w.count) && w.count > 0);
 const contentWarnings = (v: unknown) => Array.isArray(v) && v.every((warning: unknown) => typeof warning === 'string');
 function run(v: unknown): v is NavalBattleRun {
-  if (!object(v) || !span(v) || !isBattleRow(v.row) || v.row.place.name !== null || v.row.sides.length !== 2
+  if (!object(v) || !span(v) || !(v.provinceId === null || int(v.provinceId) && v.provinceId >= 0 && v.provinceId <= 0xffff_ffff)
+    || !isBattleRow(v.row) || v.row.place.name !== null || v.row.sides.length !== 2
     || !(v.peakHour === null || int(v.peakHour) && isEngineHour(v.peakHour) && v.peakHour <= v.firstHour)
     || !Array.isArray(v.measures) || v.measures.length !== 3 || !v.measures.every(isBattleValue)
     || new Set(v.measures.map(value => value.label)).size !== 3) return false;
@@ -37,7 +38,7 @@ function run(v: unknown): v is NavalBattleRun {
     && r.row.sides.every(side => side.countries.every(country => country.hour === r.lastHour));
 }
 function history(v: unknown): v is NavalBattleHistory {
-  if (!object(v) || !int(v.provinceId) || v.provinceId < 0 || v.provinceId > 0xffff_ffff
+  if (!object(v) || !(v.provinceId === null || int(v.provinceId) && v.provinceId >= 0 && v.provinceId <= 0xffff_ffff)
     || !Array.isArray(v.runs) || v.runs.length === 0 || !v.runs.every(run)) return false;
   const h = v as unknown as NavalBattleHistory;
   return h.runs.every((r, i) => r.row.id === h.id && (i === 0 || h.runs[i - 1].lastHour < r.firstHour));
@@ -83,6 +84,10 @@ export function navalBattleMeasureText(value: BattleValue, row: NavalBattleRow):
   return text;
 }
 
+export function navalBattleState(row: NavalBattleRow): string {
+  return JSON.stringify([row.provinceId, battleState(row)]);
+}
+
 export function navalBattleChanges(windows: ReadonlyMap<number, NavalBattlesReply>): BattleChanges {
   const whole: number[] = [];
   const battles: [string, number[]][] = [];
@@ -102,8 +107,9 @@ export function navalBattleChanges(windows: ReadonlyMap<number, NavalBattlesRepl
 export function navalWindowPlaces(windows: ReadonlyMap<number, NavalBattlesReply>): { provinceId: number; hour: number }[] {
   const places = new Map<string, { provinceId: number; hour: number }>();
   for (const window of windows.values()) for (const history of window.rows) for (const run of history.runs) {
+    if (run.provinceId === null) continue;
     const hour = run.row.place.namedAt ?? run.row.place.hour;
-    places.set(JSON.stringify([history.provinceId, hour]), { provinceId: history.provinceId, hour });
+    places.set(JSON.stringify([run.provinceId, hour]), { provinceId: run.provinceId, hour });
   }
   return [...places.values()].sort((a, b) => a.hour - b.hour || a.provinceId - b.provinceId);
 }
@@ -190,7 +196,7 @@ function navalRowAt(h: NavalBattleHistory, index: number, at: number, matches: C
   if (!all && !sides.some(side => side.countriesUnknown || side.countries.some(country => matches(country.tag, country.hour)))) return null;
   const measures = run.measures.map(value => run.row.end === null && value.label === 'Length' && run.row.start !== null
     ? { label: 'Length', value: read - run.row.start.hour, atLeast: true } : value);
-  return { ...run.row, provinceId: h.provinceId, windowIndex: index, sides, observedHour: read, runHour: run.firstHour, peakHour: run.peakHour, measures };
+  return { ...run.row, provinceId: run.provinceId, windowIndex: index, sides, observedHour: read, runHour: run.firstHour, peakHour: run.peakHour, measures };
 }
 export function rankedNavalBattleRows(data: NavalBattlesRankingReply | undefined, at: number): ReadonlyArray<NavalBattleRow> {
   if (!data) return [];
