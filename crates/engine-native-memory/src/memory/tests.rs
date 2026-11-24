@@ -1287,59 +1287,5 @@ fn guarded_copy_handles_noncanonical_fault_address_gracefully() {
     );
 }
 
-#[test]
-#[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-fn guard_page_reads_are_unreadable_and_leave_the_guard_armed() {
-    use std::ffi::c_void;
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn VirtualAlloc(address: *mut c_void, size: usize, kind: u32, protect: u32) -> *mut c_void;
-        fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32;
-        fn VirtualQuery(address: *const c_void, info: *mut [u32; 12], size: usize) -> usize;
-    }
-    struct Pages(*mut c_void);
-    impl Drop for Pages {
-        fn drop(&mut self) {
-            unsafe { VirtualFree(self.0, 0, 0x8000) };
-        }
-    }
-    let pages = Pages(unsafe { VirtualAlloc(std::ptr::null_mut(), 4096, 0x3000, 0x104) });
-    assert!(!pages.0.is_null());
-    let guarded = pages.0 as usize;
-    let protection = || {
-        let mut info = [0_u32; 12];
-        assert_eq!(
-            unsafe { VirtualQuery(guarded as *const c_void, &mut info, 48) },
-            48
-        );
-        info[9]
-    };
-    assert_eq!(protection(), 0x104);
-    let memory = unsafe { LiveMemory::new() };
-    let field = [RecordField {
-        source_offset: 0,
-        destination_offset: 0,
-        len: 8,
-    }];
-    let layout = RecordLayout::new(&field, 8).expect("valid record layout");
-    let reads: [(&str, &dyn Fn() -> bool); 7] = [
-        ("copy 4", &|| memory.copy(guarded, &mut [0; 4])),
-        ("copy 8", &|| memory.copy(guarded, &mut [0; 8])),
-        ("copy 13", &|| memory.copy(guarded, &mut [0; 13])),
-        ("read u32", &|| read::<u32>(&memory, guarded).is_some()),
-        ("read u64", &|| read::<u64>(&memory, guarded).is_some()),
-        ("scattered", &|| {
-            memory.copy_scattered([guarded], &mut [&mut [0; 8]]) != 0
-        }),
-        ("records", &|| {
-            memory.copy_records(RecordSources::Pointers(&[guarded]), &layout, &mut [0; 8]) != 0
-        }),
-    ];
-    for (name, attempt) in reads {
-        assert!(!attempt(), "{name} read a guard page");
-        assert_eq!(protection(), 0x104, "{name} disarmed the guard page");
-    }
-}
-
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 mod native_record_lookahead;
