@@ -214,7 +214,7 @@ inputs = ["ui/src/generated/dashboard.ts"]
 package = "dashboard"
 ci-only = true
 command = ["cargo", "run", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--bin", "export-types", "--", "--check"]
-warm = ["cargo", "build", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--bin", "export-types"]
+warm = ["cargo", "build", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--lib"]
 
 [[job]]
 name = "dashboard-shipped"
