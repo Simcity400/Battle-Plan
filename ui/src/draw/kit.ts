@@ -798,6 +798,7 @@ export function drawLegendEntry(
   color: string,
   theme: FamilyTheme,
   options?: {
+    readonly line?: boolean;
     readonly dash?: readonly number[];
     readonly hatch?: boolean;
     readonly outlined?: boolean;
@@ -807,8 +808,8 @@ export function drawLegendEntry(
     readonly muted?: boolean;
   },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const isSquare = options?.swatch === 'square' && !options?.hatch && !options?.outlined && !options?.dash?.length;
-  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : options?.outlined || isSquare ? 9 : 12;
+  const isLine = Boolean(options?.line || options?.swatch === 'line' || options?.dash?.length);
+  const swatchW = isLine ? 14 : options?.hatch ? 10 : 9;
   const gap = 6;
   let cursor = x;
   ctx.save();
@@ -824,26 +825,20 @@ export function drawLegendEntry(
     ctx.stroke();
     ctx.setLineDash([]);
     cursor += swatchW + gap;
-  } else if (options?.dash?.length) {
+  } else if (isLine) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
-    ctx.setLineDash([...options.dash]);
+    if (options?.dash?.length) ctx.setLineDash([...options.dash]);
     ctx.beginPath();
     ctx.moveTo(cursor, middleY);
     ctx.lineTo(cursor + swatchW, middleY);
     ctx.stroke();
-    ctx.setLineDash([]);
-    cursor += swatchW + gap;
-  } else if (color && isSquare) {
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.roundRect(cursor, Math.round(middleY - 4.5), swatchW, 9, 2);
-    ctx.fill();
+    if (options?.dash?.length) ctx.setLineDash([]);
     cursor += swatchW + gap;
   } else if (color) {
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.roundRect(cursor, Math.round(middleY - 1.5), swatchW, 3, 1.5);
+    ctx.roundRect(cursor, Math.round(middleY - 4.5), swatchW, 9, 2);
     ctx.fill();
     cursor += swatchW + gap;
   }
@@ -1909,6 +1904,7 @@ export interface LegendStripGradient {
 export interface LegendStripEntry {
   readonly label: string;
   readonly color?: string;
+  readonly line?: boolean;
   readonly dash?: readonly number[];
   readonly hatch?: boolean;
   readonly outlined?: boolean;
@@ -1917,13 +1913,51 @@ export interface LegendStripEntry {
   readonly muted?: boolean;
 }
 
+export interface LegendEntrySource {
+  readonly length: number;
+  at(index: number): LegendStripEntry;
+  readonly trailing?: readonly LegendStripEntry[];
+}
+
 export interface LegendStripSpec {
   readonly gradient?: LegendStripGradient;
-  readonly entries?: readonly LegendStripEntry[];
+  readonly entries?: readonly LegendStripEntry[] | LegendEntrySource;
   readonly rightNote?: string;
   readonly padX?: number;
   readonly entryGap?: number;
   readonly hairline?: boolean;
+}
+
+function measureLegendEntryWidth(ctx: Canvas2D, entry: LegendStripEntry): number {
+  const isLine = Boolean(entry.line || entry.swatch === 'line' || entry.dash?.length);
+  const gap = 6;
+  let width = 0;
+  if (entry.hatch) width += 10 + gap;
+  else if (entry.outlined) width += 9 + gap;
+  else if (isLine) width += 14 + gap;
+  else if (entry.color) width += 9 + gap;
+  if (entry.flag && entry.flag.kind !== 'pending') width += 16 + gap;
+  return width + textWidth(ctx, entry.label);
+}
+
+function drawEntryItem(
+  ctx: Canvas2D,
+  cursor: number,
+  middleY: number,
+  entry: LegendStripEntry,
+  theme: FamilyTheme,
+  maxWidth?: number,
+): number {
+  return drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color ?? '', theme, {
+    ...(entry.line ? { line: true } : {}),
+    ...(entry.swatch ? { swatch: entry.swatch } : {}),
+    ...(entry.dash?.length ? { dash: entry.dash } : {}),
+    ...(entry.hatch ? { hatch: true } : {}),
+    ...(entry.outlined ? { outlined: true } : {}),
+    ...(entry.flag ? { flag: entry.flag } : {}),
+    ...(entry.muted ?? (entry.hatch || entry.outlined) ? { muted: true } : {}),
+    ...(maxWidth !== undefined ? { maxWidth } : {}),
+  }).width;
 }
 
 export function drawLegendStrip(
@@ -1953,27 +1987,121 @@ export function drawLegendStrip(
     );
     cursor += drawn.width + 14;
   }
-  if (spec.entries) {
-    for (const entry of spec.entries) {
-      const room = rightLimit - cursor;
-      if (room < 32) break;
-      const drawn = drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color ?? '', theme, {
-        ...(entry.dash?.length ? { dash: entry.dash } : {}),
-        ...(entry.hatch ? { hatch: true } : {}),
-        ...(entry.outlined ? { outlined: true } : {}),
-        ...(entry.swatch ? { swatch: entry.swatch } : {}),
-        ...(entry.flag ? { flag: entry.flag } : {}),
-        ...(entry.muted ?? (entry.hatch || entry.outlined) ? { muted: true } : {}),
-        maxWidth: room,
-      });
-      cursor += drawn.width + entryGap;
+  const smallFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  ctx.save();
+  ctx.font = smallFont;
+  const rightNoteW = spec.rightNote ? textWidth(ctx, spec.rightNote) : 0;
+  const entryLimit = spec.rightNote ? Math.max(cursor, rightLimit - rightNoteW - entryGap) : rightLimit;
+  const avail = Math.max(0, entryLimit - cursor);
+
+  if (spec.entries && avail > 0) {
+    const isArray = Array.isArray(spec.entries);
+    const missingEntries: LegendStripEntry[] = [];
+    const ordinaryIndices: number[] = [];
+    let ordinaryCount: number;
+    let getOrdinary: (index: number) => LegendStripEntry;
+
+    if (isArray) {
+      const list = spec.entries as readonly LegendStripEntry[];
+      for (let i = 0; i < list.length; i++) {
+        if (list[i]!.hatch) missingEntries.push(list[i]!);
+        else ordinaryIndices.push(i);
+      }
+      ordinaryCount = ordinaryIndices.length;
+      getOrdinary = i => list[ordinaryIndices[i]!]!;
+    } else {
+      const source = spec.entries as LegendEntrySource;
+      if (source.trailing) {
+        for (const item of source.trailing) missingEntries.push(item);
+      }
+      ordinaryCount = source.length;
+      getOrdinary = i => source.at(i);
+    }
+
+    const missingWidths = missingEntries.map(entry => measureLegendEntryWidth(ctx, entry));
+    const missingTotalW = missingWidths.reduce((sum, w) => sum + w, 0)
+      + Math.max(0, missingEntries.length - 1) * entryGap;
+
+    const fetched: LegendStripEntry[] = [];
+    const fetchedWidths: number[] = [];
+    let sumOrdinary = 0;
+    let allFit = true;
+    for (let i = 0; i < ordinaryCount; i++) {
+      const entry = getOrdinary(i);
+      const w = measureLegendEntryWidth(ctx, entry);
+      fetched.push(entry);
+      fetchedWidths.push(w);
+      sumOrdinary += (i > 0 ? entryGap : 0) + w;
+      const totalWithMissing = sumOrdinary + (missingEntries.length > 0 ? entryGap + missingTotalW : 0);
+      if (totalWithMissing > avail) {
+        allFit = false;
+        break;
+      }
+    }
+    if (allFit && ordinaryCount === 0 && missingTotalW > avail) {
+      allFit = false;
+    }
+
+    if (allFit) {
+      if (isArray) {
+        for (const entry of spec.entries as readonly LegendStripEntry[]) {
+          cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + entryGap;
+        }
+      } else {
+        for (const entry of fetched) {
+          cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + entryGap;
+        }
+        for (const entry of missingEntries) {
+          cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + entryGap;
+        }
+      }
+    } else {
+      const keepMissing = missingEntries.length > 0 && missingTotalW <= avail;
+      const ordinaryBudget = keepMissing ? Math.max(0, avail - missingTotalW - entryGap) : avail;
+      if (ordinaryCount === 1 && fetched.length === 1) {
+        if (ordinaryBudget >= 24) {
+          cursor += drawEntryItem(ctx, cursor, middleY, fetched[0]!, theme, ordinaryBudget) + entryGap;
+        }
+      } else if (ordinaryCount > 0) {
+        let bestK = 0;
+        let prefixW = 0;
+        for (let k = 1; k <= fetched.length && k < ordinaryCount; k++) {
+          prefixW += (k > 1 ? entryGap : 0) + fetchedWidths[k - 1]!;
+          const moreLabel = `+${ordinaryCount - k} more`;
+          const needed = prefixW + entryGap + textWidth(ctx, moreLabel);
+          if (needed <= ordinaryBudget) bestK = k;
+          else break;
+        }
+        for (let i = 0; i < bestK; i++) {
+          cursor += drawEntryItem(ctx, cursor, middleY, fetched[i]!, theme) + entryGap;
+        }
+        const hidden = ordinaryCount - bestK;
+        if (hidden > 0) {
+          const moreLabel = `+${hidden} more`;
+          const moreW = textWidth(ctx, moreLabel);
+          if (cursor + moreW <= (keepMissing ? x + padX + avail - missingTotalW - entryGap : entryLimit) + 0.5) {
+            ctx.fillStyle = theme.muted;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(moreLabel, cursor, middleY);
+            cursor += moreW + entryGap;
+          }
+        }
+      }
+      if (keepMissing) {
+        for (const entry of missingEntries) {
+          cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + entryGap;
+        }
+      }
     }
   }
+  ctx.restore();
+
   if (spec.rightNote) {
     const maxW = Math.max(0, rightLimit - cursor);
     if (maxW >= 24) {
       ctx.save();
-      ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = smallFont;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';

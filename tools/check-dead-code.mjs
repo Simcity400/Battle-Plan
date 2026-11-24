@@ -925,6 +925,7 @@ async function loadManifestData(root) {
   const familyByKind = new Map();
   const legacyEntries = [];
   const familyViewUiEntries = new Map();
+  const familyViewUiViews = new Map();
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   const definitionsPath = resolve(root, 'ui/src/widgets/definitions.ts');
@@ -1004,6 +1005,7 @@ async function loadManifestData(root) {
         for (const [kind, loader] of Object.entries(mod.FAMILY_VIEW_UI)) {
           const target = resolveImportFromFunction(loader?.load, manifestPath, root) ?? astUiTargets.get(kind) ?? null;
           familyViewUiEntries.set(kind, target);
+          if (Array.isArray(loader?.views)) familyViewUiViews.set(kind, loader.views);
         }
       }
     } catch {
@@ -1018,6 +1020,7 @@ async function loadManifestData(root) {
     legacyFileExists,
     legacyEntries,
     familyViewUiEntries,
+    familyViewUiViews,
   };
 }
 
@@ -2077,7 +2080,8 @@ export function checkConvertedLegacyReach(root, uiResult, legacyResult, loaded, 
   const violations = [];
   for (const entry of familyViews) {
     const starts = [entry.specTarget];
-    const uiEntry = familyViewUi.get(entry.kind);
+    const uiViews = loaded.familyViewUiViews.get(entry.kind);
+    const uiEntry = !uiViews || uiViews.includes(entry.view) ? familyViewUi.get(entry.kind) : undefined;
     if (uiEntry && !starts.includes(uiEntry)) starts.push(uiEntry);
     const chain = shortestChain(starts);
     if (chain) {

@@ -223,24 +223,21 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
   ctx.save();
   ctx.textBaseline = 'middle';
   if (model.form === 'two-sided' && layout.twoSidedLayout === 'stacked-pair') {
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-    ctx.textAlign = 'left';
-    let cursor = layout.nameX;
-    const swatch = 9;
-    (model.legend ?? []).forEach((item, at) => {
-      const top = Math.round(middleY - swatch / 2);
-      ctx.fillStyle = theme.text;
-      ctx.strokeStyle = theme.muted;
-      if (at === 0) {
-        ctx.fillRect(cursor, top, swatch, swatch);
-      } else {
-        ctx.lineWidth = 1;
-        ctx.strokeRect(cursor + 0.5, top + 0.5, swatch - 1, swatch - 1);
-      }
-      ctx.fillStyle = theme.muted;
-      ctx.fillText(item.label, cursor + swatch + 6, middleY);
-      cursor += swatch + 6 + textWidth(ctx, item.label) + 18;
-    });
+    const legend = model.legend ?? [];
+    if (legend.length > 0) {
+      drawLegendStrip(ctx, layout.nameX, layout.headerTop, Math.max(0, layout.width - layout.nameX - BARS_PAD_X), layout.headerHeight, {
+        entries: {
+          length: legend.length,
+          at: at => ({
+            label: legend[at]!.label,
+            color: theme.text,
+            ...(at > 0 ? { outlined: true } : {}),
+            muted: true,
+          }),
+        },
+        entryGap: 18,
+      }, theme);
+    }
   } else if (model.form === 'two-sided' && layout.twoSidedLayout === 'paired') {
     ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
     ctx.fillStyle = theme.text;
@@ -748,11 +745,18 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   ctx.restore();
 
   if (layout.legendHeight > 0 && model.legend?.length) {
+    const legend = model.legend;
     drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
-      entries: model.legend.map(entry => ({
-        label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
-        color: entry.color,
-      })),
+      entries: {
+        length: legend.length,
+        at: i => {
+          const entry = legend[i]!;
+          return {
+            label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
+            color: entry.color,
+          };
+        },
+      },
       padX: BARS_PAD_X,
       entryGap: 14,
     }, theme);

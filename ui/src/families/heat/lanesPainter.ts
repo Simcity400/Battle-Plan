@@ -222,15 +222,35 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
   ctx.fillRect(0, 0, layout.width, layout.height);
 
   if (model.legend && layout.legendHeight > 0) {
+    const rawEntries = model.legend.entries;
+    let ordinaryLen = rawEntries?.length ?? 0;
+    while (ordinaryLen > 0 && rawEntries![ordinaryLen - 1]!.hatched) ordinaryLen--;
+    const trailing = rawEntries && ordinaryLen < rawEntries.length
+      ? rawEntries.slice(ordinaryLen).map(entry => ({
+          label: entry.label,
+          color: entry.color,
+          hatch: true,
+          ...(entry.muted ? { muted: true } : {}),
+        }))
+      : undefined;
     drawLegendStrip(ctx, 0, 0, layout.width, layout.legendHeight, {
       gradient: model.legend.gradient,
-      entries: model.legend.entries?.map(entry => ({
-        label: entry.label,
-        color: entry.color,
-        ...(entry.hatched ? { hatch: true } : {}),
-        ...(entry.dashed ? { dash: [4, 2] } : {}),
-        ...(entry.muted ? { muted: true } : {}),
-      })),
+      ...(rawEntries ? {
+        entries: {
+          length: ordinaryLen,
+          at: i => {
+            const entry = rawEntries[i]!;
+            return {
+              label: entry.label,
+              color: entry.color,
+              ...(entry.hatched ? { hatch: true } : {}),
+              ...(entry.dashed ? { dash: [4, 2] } : {}),
+              ...(entry.muted ? { muted: true } : {}),
+            };
+          },
+          ...(trailing ? { trailing } : {}),
+        },
+      } : {}),
       rightNote: model.legend.rightNote,
       padX: LANE_PAD,
       hairline: true,
