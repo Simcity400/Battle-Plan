@@ -93,6 +93,17 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.rulingPartyProjection, declaration: mod.rulingPartyDeclaration }),
     ),
   },
+  {
+    kind: 'balance-of-power',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'balance-of-power',
+      DEFAULT_VIEW,
+      () => import('../balance-of-power/balanceOfPowerProjection.ts'),
+      mod => ({ projection: mod.balanceOfPowerProjection, declaration: mod.balanceOfPowerDeclaration }),
+    ),
+  },
 ];
 
 export const timeChartFamilyManifest: FamilyManifestModule = {

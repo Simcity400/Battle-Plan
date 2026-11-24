@@ -1,7 +1,6 @@
 use content_reader_politics::faction_templates::FactionTemplateProducts as _;
 
 use job_priority::SpawnCarried as _;
-#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::DecodedFrame;
 
 use crate::scope::{RecordedScopes, table_in as rows};
@@ -244,6 +243,12 @@ impl EventScopes {
         }
     }
 
+    pub fn empty() -> Self {
+        Self::new(vec![EventScope::of(EventObject::State(
+            crate::triggers::NULL_STATE,
+        ))])
+    }
+
     pub fn organisation(organisation: u64, owner: Option<u32>) -> Self {
         let this = EventScope::of(EventObject::IndustrialOrganisation(organisation));
         Self::new(match owner {
@@ -428,7 +433,7 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
     ) -> Result<crate::triggers::Evaluator<'s, 'a>, String> {
         let world = match self.world {
             Some(world) => world,
-            None => text.world()?,
+            None => text.trigger_world()?,
         };
         let mut graph = self.targets.borrow().clone();
         graph.scopes = self.scopes.borrow().clone();
@@ -934,6 +939,10 @@ impl<'a> ScriptedText<'a> {
         self.expand_in(text, &scopes)
     }
 
+    pub fn expand_empty(&self, text: &str) -> Result<String, String> {
+        self.expand_in(text, &EventScopes::empty())
+    }
+
     pub fn expand_faction(&self, text: &str, faction: u64) -> Result<String, String> {
         let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(self.root))]);
         self.expand_in_description(text, &scopes, 0, None, None, Some(Some(faction)))
@@ -1333,6 +1342,20 @@ impl<'a> ScriptedText<'a> {
         result
     }
 
+    fn expand_fresh_empty(
+        &self,
+        text: &str,
+        name: &str,
+        scopes: &ExpansionScopes<'_, 'a>,
+    ) -> Result<String, String> {
+        self.expand_fresh_object(
+            text,
+            EventObject::State(crate::triggers::NULL_STATE),
+            name,
+            scopes,
+        )
+    }
+
     fn expand_fresh_country(
         &self,
         text: &str,
@@ -1340,9 +1363,19 @@ impl<'a> ScriptedText<'a> {
         name: &str,
         scopes: &ExpansionScopes<'_, 'a>,
     ) -> Result<String, String> {
+        self.expand_fresh_object(text, EventObject::Country(slot), name, scopes)
+    }
+
+    fn expand_fresh_object(
+        &self,
+        text: &str,
+        object: EventObject,
+        name: &str,
+        scopes: &ExpansionScopes<'_, 'a>,
+    ) -> Result<String, String> {
         if scopes.needs_large_stack() {
             return self.on_large_stack(scopes, |scopes| {
-                self.expand_fresh_country(text, slot, name, scopes)
+                self.expand_fresh_object(text, object, name, scopes)
             });
         }
         let depth = scopes.fresh_depth.get();
@@ -1350,10 +1383,7 @@ impl<'a> ScriptedText<'a> {
             return Err(nesting_refusal(name));
         }
         let at = scopes.scopes.borrow().len();
-        scopes
-            .scopes
-            .borrow_mut()
-            .push(EventScope::of(EventObject::Country(slot)));
+        scopes.scopes.borrow_mut().push(EventScope::of(object));
         scopes.prev_distance.borrow_mut().push(None);
         let variables = scopes.variables.replace(ScopeVariables::default());
         scopes.fresh_depth.set(depth + 1);
@@ -1994,7 +2024,9 @@ impl<'a> ScriptedText<'a> {
             EventObject::Country(slot) | EventObject::CountryState { country: slot, .. } => {
                 Object::Country(slot)
             }
-            EventObject::State(id) => Object::State(Some(id)),
+            EventObject::State(id) => {
+                Object::State((id != crate::triggers::NULL_STATE).then_some(id))
+            }
             EventObject::Character(id) => Object::Character(id),
             EventObject::UnitLeader(reference)
             | EventObject::CountryUnitLeader {
@@ -2322,6 +2354,58 @@ impl<'a> ScriptedText<'a> {
             |name| self.lexical_names().token_of(name),
         )
     }
+}
+
+pub fn probe_unselected_tables(
+    frame: &DecodedFrame,
+    run: impl FnOnce(),
+) -> Vec<replay_data::rows::TableId> {
+    let ((_, failures), inputs) = crate::triggers::inputs::capture(frame, || {
+        crate::triggers::refusal::capture(run)
+    });
+    let mut tables = std::collections::BTreeSet::new();
+    let mut keep = |table: replay_data::rows::TableId| {
+        if frame.tables[table.index()].held().is_not_selected() {
+            tables.insert(table);
+        }
+    };
+    for key in inputs.keys() {
+        match key {
+            crate::triggers::inputs::Key::Table(table)
+            | crate::triggers::inputs::Key::Fields(table, _) => keep(*table),
+            crate::triggers::inputs::Key::ClockSeed => keep(replay_data::rows::TableId::Clock),
+            crate::triggers::inputs::Key::FocusTag(_) => {
+                keep(replay_data::rows::TableId::Countries);
+                keep(replay_data::rows::TableId::CountryLinks);
+            }
+            crate::triggers::inputs::Key::Names(query) => {
+                for read in query.dependence() {
+                    keep(read.table);
+                }
+            }
+            crate::triggers::inputs::Key::Text(query) => {
+                if let Some(reads) = query.dependence() {
+                    for read in reads {
+                        keep(read.table);
+                    }
+                }
+            }
+            crate::triggers::inputs::Key::Scopes(query) => {
+                if let Some(reads) = query.dependence() {
+                    for read in reads {
+                        keep(read.table);
+                    }
+                }
+            }
+            crate::triggers::inputs::Key::World(_) => {}
+        }
+    }
+    for failure in &failures {
+        for table in failure.input_tables() {
+            keep(table);
+        }
+    }
+    tables.into_iter().collect()
 }
 
 const NO_FACTION: &str = "NO_FACTION";

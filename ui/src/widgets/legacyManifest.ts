@@ -8,7 +8,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'army-losses-by-month', load: () => import('./army-losses-by-month') },
   { kind: 'army-size', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'autonomy', load: () => import('./autonomy') },
-  { kind: 'balance-of-power', load: () => import('./balance-of-power') },
   { kind: 'bombing-damage', load: () => import('./bombing-damage') },
   { kind: 'bombing-damage-breakdown', slots: ['render', 'countryChip'], load: () => import('./bombing-damage-breakdown') },
   { kind: 'casualties-breakdown', load: () => import('./casualties-breakdown') },
