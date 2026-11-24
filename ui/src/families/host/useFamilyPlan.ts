@@ -83,6 +83,7 @@ import {
   extractFactionData,
   freezeGate,
   selectionUnobservedReason,
+  trackGate,
   type FrozenGate,
 } from '../sources.ts';
 
@@ -135,6 +136,7 @@ export interface StaticBundle {
   readonly span: readonly [number, number] | null;
   readonly follows?: boolean;
   readonly panels: Readonly<Record<string, unknown>>;
+  readonly shifts?: Readonly<Record<string, number>>;
 }
 
 export type StaticProof = FamilyStaticProof;
@@ -795,10 +797,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const currentTiled = tiledState.key === pixelBinnedKey ? tiledState : null;
   const trackOffset = track?.axisOffset ?? 0;
 
-  const [tileClockHour, setTileClockHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
+  const [tileCrossings, setTileCrossings] = useState(0);
   const tileSeenHour = useMemo(
     () => Math.floor(runtime.clock.getHour()) + trackOffset,
-    [currentTiled, tileClockHour, runtime.clock, trackOffset],
+    [currentTiled, tileCrossings, runtime.clock, trackOffset],
   );
   const tileHour = following ? tileSeenHour : Math.floor(pinHour ?? window?.lastHour ?? effectiveEndHour);
   useEffect(() => {
@@ -831,14 +833,14 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (!following || !active || tileLo === undefined || tileHi === undefined) return;
     const now = Math.floor(runtime.clock.getHour()) + trackOffset;
     if (now < tileLo || now > tileHi) {
-      setTileClockHour(now);
+      setTileCrossings(value => value + 1);
       return;
     }
     if (tileLo === -Infinity && tileHi === Infinity) return;
     return watchBoundary(
       runtime.clock,
       () => [tileLo - trackOffset, tileHi + 1 - trackOffset],
-      () => { setTileClockHour(Math.floor(runtime.clock.getHour()) + trackOffset); },
+      () => { setTileCrossings(value => value + 1); },
     );
   }, [following, active, runtime.clock, trackOffset, tileLo, tileHi]);
 
@@ -884,20 +886,32 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     targetRef.current?.dispose();
     targetRef.current = null;
   }, []);
-  const playback = useMemo(
-    () => (branch ? { branch, effectiveEndHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
-    [branch, effectiveEndHour, frozenGate, countriesState.known],
-  );
+  const playback = useMemo(() => {
+    if (!branch || !track) return null;
+    const own = { branch, effectiveEndHour, gate: frozenGate, countriesKnown: countriesState.known };
+    const others = new Map<string, typeof own | Omit<typeof own, 'countriesKnown'>>();
+    return (entry: SourceEntry) => {
+      if (entry.source.id === track.source.id && entry.branch === track.branch.id) return own;
+      const key = JSON.stringify([entry.source.id, entry.branch]);
+      let made = others.get(key);
+      if (!made) {
+        const other = runtime.tracks.find(item => item.source.id === entry.source.id && item.branch.id === entry.branch);
+        made = other ? { branch: other.branch, effectiveEndHour: lastRecordedHour(other) ?? other.branch.lastHour, gate: trackGate(other) } : own;
+        others.set(key, made);
+      }
+      return made;
+    };
+  }, [branch, track, effectiveEndHour, frozenGate, countriesState.known, runtime.tracks]);
   const pinned = useMemo(
     () => (branch ? { timeMode: widget.time.mode, branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
     [branch, widget.time.mode, window, pinHour, frozenGate, countriesState.known],
   );
   useLayoutEffect(() => {
-    const common = { entries: branch ? entries : NO_ENTRIES, active, content, endHour: effectiveEndHour, trackOffset };
+    const common = { entries: branch ? entries : NO_ENTRIES, active, content, trackOffset };
     if (following && playback) readTarget().configure({ ...common, following: true, subscribed, playback });
     else if (!following && pinned) readTarget().configure({ ...common, following: false, displayHour, pinned });
     else readTarget().configure({ ...common, entries: NO_ENTRIES, following: false, displayHour, pinned: NO_PIN });
-  }, [readTarget, branch, entries, active, content, effectiveEndHour, trackOffset, following, subscribed, playback, pinned, displayHour]);
+  }, [readTarget, branch, entries, active, content, trackOffset, following, subscribed, playback, pinned, displayHour]);
   const subscribeView = useCallback((changed: () => void) => readTarget().subscribe(() => inFrame(changed)), [readTarget]);
   const readView = useCallback(() => targetRef.current?.view() ?? NO_VIEW, []);
   const view = useSyncExternalStore(subscribeView, readView, readView);
@@ -938,7 +952,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const viewBundle = view.bundle;
   const viewedBundle = useMemo<StaticBundle | null>(
     () => (viewBundle
-      ? { hour: viewBundle.hour, span: viewBundle.span, ...(viewBundle.follows ? { follows: true } : {}), panels: Object.fromEntries(viewBundle.panels) }
+      ? { hour: viewBundle.hour, span: viewBundle.span, ...(viewBundle.follows ? { follows: true } : {}), panels: Object.fromEntries(viewBundle.panels), ...(viewBundle.shifts ? { shifts: viewBundle.shifts } : {}) }
       : null),
     [viewBundle],
   );

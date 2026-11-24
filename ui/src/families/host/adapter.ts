@@ -82,6 +82,7 @@ export type FamilyArtDemand = ArtHandle;
 export interface FamilyStaticSources {
   readonly panels?: Readonly<Record<string, unknown>>;
   readonly answers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly shifts?: Readonly<Record<string, number>>;
   readonly hour: number;
   readonly follows?: boolean;
 }

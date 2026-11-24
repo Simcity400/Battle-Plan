@@ -677,6 +677,7 @@ export interface BoundedReadViewInput {
   readonly validInterval?: readonly [lo: number, hi: number];
   readonly revisions?: Readonly<Record<string, number>>;
   readonly panels?: ReadonlyMap<string, unknown>;
+  readonly panelShifts?: Readonly<Record<string, number>>;
   readonly answers?: ReadonlyMap<string, FollowedAnswer | undefined>;
   readonly live?: ReadonlyMap<string, LiveValues<number | bigint | string> | null>;
   readonly refused?: ReadonlyMap<string, string>;
@@ -728,7 +729,7 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
       const raw = ensure().panels.get(name);
       if (raw !== undefined && raw !== null && typeof raw === 'object') {
         const maybeHour = (raw as { hour?: unknown }).hour;
-        if (typeof maybeHour === 'number' && Number.isFinite(maybeHour) && maybeHour > h) {
+        if (typeof maybeHour === 'number' && Number.isFinite(maybeHour) && maybeHour - (input.panelShifts?.[name] ?? 0) > h) {
           throw new FutureDataError(`Panel "${name}" carries hour ${maybeHour} after displayed hour ${h}`);
         }
       }

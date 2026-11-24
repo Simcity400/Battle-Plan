@@ -54,6 +54,7 @@ export interface ReadUnit {
   readonly spec: StaticRequestSpec | null;
   readonly key: string | null;
   readonly idle: Interval;
+  readonly end: number;
 }
 
 export type UnitResult =
@@ -74,7 +75,7 @@ export type UnitAsk =
       readonly following: true;
       readonly trackOffset: number;
       readonly hour: number;
-      readonly playback: Omit<PlaybackBoundedOptions, 'currentHour'>;
+      readonly playback: (entry: SourceEntry) => Omit<PlaybackBoundedOptions, 'currentHour'>;
       readonly content: number;
     }
   | {
@@ -98,7 +99,7 @@ export function askUnits(entries: readonly SourceEntry[], ask: UnitAsk): readonl
     const shift = entry.offset - ask.trackOffset;
     if (ask.following) {
       const asked = ask.hour;
-      const options = { ...ask.playback, currentHour: asked + shift };
+      const options = { ...ask.playback(entry), currentHour: asked + shift };
       const spec = buildPlaybackBoundedRequest(entry, options);
       return {
         name: entry.name,
@@ -109,6 +110,7 @@ export function askUnits(entries: readonly SourceEntry[], ask: UnitAsk): readonl
         spec,
         key: unitKey(spec, ask.content),
         idle: spec ? EVERY_HOUR : shifted(playbackIdleInterval(entry, options), shift),
+        end: options.effectiveEndHour,
       };
     }
     const pinned = ask.pinned;
@@ -126,6 +128,7 @@ export function askUnits(entries: readonly SourceEntry[], ask: UnitAsk): readonl
       spec,
       key: unitKey(spec, ask.content),
       idle: EVERY_HOUR,
+      end: Infinity,
     };
   });
 }
@@ -139,13 +142,12 @@ export function unitEvidence(
   unit: ReadUnit,
   result: UnitResult | undefined,
   following: boolean,
-  endHour: number,
 ): UnitEvidence {
   if (!unit.spec) return { kind: 'held', data: undefined, proof: unit.idle };
   if (!result || result.key !== unit.key) return { kind: 'pending' };
   if ('failure' in result) return { kind: 'failed', failure: result.failure };
   if (!following) return { kind: 'held', data: result.data, proof: EVERY_HOUR };
-  const proof = resolvePlaybackProvenInterval(unit.entry.read, result.data, { anchorHour: unit.anchor, span: unit.spec.span }, endHour);
+  const proof = resolvePlaybackProvenInterval(unit.entry.read, result.data, { anchorHour: unit.anchor, span: unit.spec.span }, unit.end);
   return { kind: 'held', data: result.data, proof: shifted(proof, unit.shift) };
 }
 
@@ -154,6 +156,7 @@ export interface UnitBundle {
   readonly span: Interval | null;
   readonly proof: Interval | null;
   readonly panels: ReadonlyMap<string, unknown>;
+  readonly shifts: Readonly<Record<string, number>> | null;
 }
 
 export type Settlement =
@@ -168,7 +171,6 @@ export interface SettleInput {
   readonly moving: boolean;
   readonly hour: number;
   readonly subscribed: boolean;
-  readonly endHour: number;
 }
 
 function answeredHour(unit: ReadUnit, data: unknown): number {
@@ -196,8 +198,9 @@ export function settleUnits(
   let answered = -Infinity;
   let pending = false;
   const panels = new Map<string, unknown>();
+  let shifts: Record<string, number> | null = null;
   for (const unit of units) {
-    const evidence = unitEvidence(unit, results.get(unit.name), input.following, input.endHour);
+    const evidence = unitEvidence(unit, results.get(unit.name), input.following);
     if (evidence.kind === 'failed') return { kind: 'failed', name: unit.name, failure: evidence.failure };
     if (evidence.kind === 'pending') {
       pending = true;
@@ -207,6 +210,7 @@ export function settleUnits(
     hi = Math.min(hi, evidence.proof[1]);
     if (!unit.spec) continue;
     panels.set(unit.name, evidence.data);
+    if (unit.shift !== 0) (shifts ??= {})[unit.name] = unit.shift;
     if (unit.spec.span) {
       spanLo = Math.min(spanLo, unit.spec.span[0] - unit.shift);
       spanHi = Math.max(spanHi, unit.spec.span[1] - unit.shift);
@@ -216,11 +220,11 @@ export function settleUnits(
   if (pending) return { kind: 'hold' };
   const span: Interval | null = spanLo <= spanHi ? [spanLo, spanHi] : null;
   if (!input.following) {
-    return { kind: 'complete', bundle: { hour: Number.isFinite(answered) ? answered : input.hour, span, proof: null, panels } };
+    return { kind: 'complete', bundle: { hour: Number.isFinite(answered) ? answered : input.hour, span, proof: null, panels, shifts } };
   }
   if (lo > hi || lo > input.hour || (!input.moving && input.hour > hi)) return { kind: 'hold' };
   const hour = Number.isFinite(lo) ? lo : Math.min(input.hour, hi);
-  return { kind: 'complete', bundle: { hour, span, proof: [lo, hi], panels } };
+  return { kind: 'complete', bundle: { hour, span, proof: [lo, hi], panels, shifts } };
 }
 
 export interface ShownBundle<B, F> {
@@ -245,12 +249,11 @@ export function showBundle<B, F>(
 function jointProof(
   units: readonly ReadUnit[],
   results: ReadonlyMap<string, UnitResult>,
-  endHour: number,
 ): Interval | null {
   let lo = -Infinity;
   let hi = Infinity;
   for (const unit of units) {
-    const evidence = unitEvidence(unit, results.get(unit.name), true, endHour);
+    const evidence = unitEvidence(unit, results.get(unit.name), true);
     if (evidence.kind !== 'held') return null;
     lo = Math.max(lo, evidence.proof[0]);
     hi = Math.min(hi, evidence.proof[1]);
@@ -387,17 +390,17 @@ interface TargetCommon {
   readonly entries: readonly SourceEntry[];
   readonly active: boolean;
   readonly content: number;
-  readonly endHour: number;
   readonly trackOffset: number;
 }
 
 export type TargetConfig = TargetCommon & (
-  | { readonly following: true; readonly subscribed: boolean; readonly playback: Omit<PlaybackBoundedOptions, 'currentHour'> }
+  | { readonly following: true; readonly subscribed: boolean; readonly playback: (entry: SourceEntry) => Omit<PlaybackBoundedOptions, 'currentHour'> }
   | { readonly following: false; readonly displayHour: number; readonly pinned: PinnedAsk }
 );
 
 export interface TargetBundle {
   readonly panels: ReadonlyMap<string, unknown>;
+  readonly shifts: Readonly<Record<string, number>> | null;
   readonly span: Interval | null;
   readonly hour: number;
   readonly follows: boolean;
@@ -418,7 +421,7 @@ export interface TargetProof {
 const NOTHING: TargetView = { kind: 'none', failure: null, bundle: null, held: false };
 
 function sameConfig(a: TargetConfig, b: TargetConfig): boolean {
-  if (a.entries !== b.entries || a.active !== b.active || a.content !== b.content || a.endHour !== b.endHour || a.trackOffset !== b.trackOffset) return false;
+  if (a.entries !== b.entries || a.active !== b.active || a.content !== b.content || a.trackOffset !== b.trackOffset) return false;
   if (a.following && b.following) return a.subscribed === b.subscribed && a.playback === b.playback;
   if (!a.following && !b.following) return a.displayHour === b.displayHour && a.pinned === b.pinned;
   return false;
@@ -533,19 +536,19 @@ export class ReadTarget {
       this.units = askUnits(config.entries, { following: false, trackOffset: config.trackOffset, displayHour: config.displayHour, pinned: config.pinned, content: config.content });
     } else {
       const asked = askUnits(config.entries, { following: true, trackOffset: config.trackOffset, hour, playback: config.playback, content: config.content });
-      this.units = keep ? this.keepProven(asked, hour, config.endHour) : asked;
+      this.units = keep ? this.keepProven(asked, hour) : asked;
     }
     this.reads.sync(this.units, config.active, retryFailed);
     this.settle();
   }
 
-  private keepProven(asked: readonly ReadUnit[], hour: number, endHour: number): readonly ReadUnit[] {
+  private keepProven(asked: readonly ReadUnit[], hour: number): readonly ReadUnit[] {
     const before = new Map(this.units.map(unit => [unit.name, unit]));
     const results = this.reads.results;
     return asked.map(unit => {
       const prev = before.get(unit.name);
       if (!prev || prev.entry !== unit.entry || prev.key === unit.key) return unit;
-      const evidence = unitEvidence(prev, results.get(prev.name), true, endHour);
+      const evidence = unitEvidence(prev, results.get(prev.name), true);
       return evidence.kind === 'held' && evidence.proof[0] <= hour && hour <= evidence.proof[1] ? prev : unit;
     });
   }
@@ -564,14 +567,13 @@ export class ReadTarget {
         moving,
         hour: now,
         subscribed: following && config.subscribed,
-        endHour: config.endHour,
       });
       let bundle: TargetBundle | null = null;
       let failure: TargetView['failure'] = null;
       if (settlement.kind === 'complete') {
         const made = settlement.bundle;
         const kept = this.last && sameReplies(this.last.panels, made.panels) && (following || this.last.hour === made.hour) ? this.last : null;
-        bundle = kept ?? { panels: made.panels, span: made.span, hour: made.hour, follows: following };
+        bundle = kept ?? { panels: made.panels, shifts: made.shifts, span: made.span, hour: made.hour, follows: following };
         this.last = bundle;
         this.lastProof = made.proof ? { hour: made.hour, proof: made.proof } : null;
       } else if (settlement.kind === 'failed') {
@@ -599,11 +601,10 @@ export class ReadTarget {
   }
 
   private arm(results: ReadonlyMap<string, UnitResult>, now: number, failed: boolean): void {
-    const config = this.config!;
     let watch: Interval | null;
     if (failed) watch = [this.hour, this.hour];
     else {
-      watch = jointProof(this.units, results, config.endHour);
+      watch = jointProof(this.units, results);
       if (watch === null) {
         this.disarm();
         return;

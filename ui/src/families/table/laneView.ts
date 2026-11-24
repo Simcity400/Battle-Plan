@@ -53,6 +53,7 @@ export interface FamilyTableBinding<TOptions = unknown> {
   readonly settings: TableSettings;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
+  readonly staticShifts?: Readonly<Record<string, number>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly width: number;
   readonly height: number;
@@ -266,6 +267,7 @@ export function readViewFromScene(
   return createBoundedReadView({
     hour,
     revisions,
+    ...(binding.staticShifts ? { panelShifts: binding.staticShifts } : {}),
     ensureNonLive: () => {
       const answers = new Map<string, FollowedAnswer | undefined>();
       const panels = new Map<string, unknown>();

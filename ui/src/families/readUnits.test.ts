@@ -4,6 +4,7 @@ import type { DashboardSource } from '../dashboard/client';
 import { inProcess } from '../dashboard/follow/inProcess.fixture.ts';
 import type { PageSurface } from '../dashboard/follow/page.ts';
 import type { LaneView } from '../draw/lane';
+import { createBoundedReadView, FutureDataError } from './boundedView.ts';
 import type { CompiledFollowSubscription, SourceEntry, SourcePlan, SourceTimeShape } from './plan.ts';
 import {
   askUnits,
@@ -56,7 +57,7 @@ function subscribed(name: string): CompiledFollowSubscription {
 }
 
 function following(entries: readonly SourceEntry[], hour: number, trackOffset = 0): readonly ReadUnit[] {
-  return askUnits(entries, { following: true, trackOffset, content: 0, hour, playback: PLAYBACK });
+  return askUnits(entries, { following: true, trackOffset, content: 0, hour, playback: () => PLAYBACK });
 }
 function pinned(entries: readonly SourceEntry[], hour: number): readonly ReadUnit[] {
   return askUnits(entries, {
@@ -78,9 +79,9 @@ function answered(results: ReadonlyMap<string, UnitResult>, ...replies: (readonl
   return out;
 }
 const settleFollowing = (units: readonly ReadUnit[], results: ReadonlyMap<string, UnitResult>, hour: number, subscribed = false, moving = true) =>
-  settleUnits(units, results, { following: true, moving, hour, subscribed, endHour: END });
+  settleUnits(units, results, { following: true, moving, hour, subscribed });
 const settlePinned = (units: readonly ReadUnit[], results: ReadonlyMap<string, UnitResult>, hour: number) =>
-  settleUnits(units, results, { following: false, moving: false, hour, subscribed: false, endHour: END });
+  settleUnits(units, results, { following: false, moving: false, hour, subscribed: false });
 const NONE: ReadonlyMap<string, UnitResult> = new Map();
 const settled = () => new Promise<void>(resolve => { setImmediate(resolve); });
 
@@ -161,7 +162,7 @@ function fakeServer(auto?: (unit: ReadUnit) => unknown) {
 }
 
 function followConfig(entries: readonly SourceEntry[], extra: Partial<Extract<TargetConfig, { following: true }>> = {}): TargetConfig {
-  return { following: true, entries, active: true, content: 0, endHour: END, trackOffset: 0, subscribed: false, playback: PLAYBACK, ...extra };
+  return { following: true, entries, active: true, content: 0, trackOffset: 0, subscribed: false, playback: () => PLAYBACK, ...extra };
 }
 function pinConfig(entries: readonly SourceEntry[], hour: number): TargetConfig {
   return {
@@ -169,7 +170,6 @@ function pinConfig(entries: readonly SourceEntry[], hour: number): TargetConfig 
     entries,
     active: true,
     content: 0,
-    endHour: END,
     trackOffset: 0,
     displayHour: hour,
     pinned: { timeMode: 'pin', branch, window: { firstHour: hour, lastHour: hour }, pinHour: hour, gate },
@@ -417,6 +417,8 @@ test('removing or adding a unit never cancels or re-asks a sibling in flight (R2
   await settled();
   assert.equal(reads.results.has('a'), true);
   assert.equal(reads.inFlight, 1);
+  const slots = (reads as unknown as { broker: { slots: Map<string, unknown> } }).broker.slots;
+  assert.equal(slots.has('a'), false, 'R3-S12: a settled flight releases its broker slot, so removing its unit later holds nothing');
   reads.dispose();
 });
 
@@ -430,6 +432,22 @@ test('each unit is asked at its own track hour and proofs are joined on the comm
   const joined = settleFollowing(units, answered(NONE, [unit(units, 'shifted'), {}], [unit(units, 'plain'), {}]), 10);
   assert.deepEqual(joined.kind === 'complete' && joined.bundle.proof, [10, 12]);
   assert.equal(joined.kind === 'complete' && joined.bundle.hour, 10);
+});
+
+test('each entry uses its own branch, gate and recording end, and its panel dates are checked on its own clock (R3-S8)', () => {
+  const longer = { ...source, id: 'other', branches: [{ id: '2', firstHour: 0, lastHour: 1000 }] } as unknown as DashboardSource;
+  const shifted: SourceEntry = { name: 'shifted', source: longer, branch: '2', offset: 24, read: point('shifted', { channel: 'panel', exactProduct: undefined }).read };
+  const plain = aggregate('plain');
+  const short = { branch: { firstHour: 0, lastHour: 100 }, effectiveEndHour: 100, gate };
+  const long = { branch: { firstHour: 0, lastHour: 1000 }, effectiveEndHour: 1000, gate };
+  const units = askUnits([shifted, plain], { following: true, trackOffset: 0, content: 0, hour: 90, playback: entry => (entry.branch === '2' ? long : short) });
+  assert.equal(unit(units, 'shifted').anchor, 114, 'common hour 90 asks the longer track at its own 114, not the first track’s end');
+  const joined = settleFollowing(units, answered(NONE, [unit(units, 'shifted'), { hour: 114 }], [unit(units, 'plain'), {}]), 90);
+  assert.deepEqual(joined.kind === 'complete' && joined.bundle.proof, [90, 90], 'nor is it proven forever because the first track has ended');
+  assert.deepEqual(joined.kind === 'complete' && joined.bundle.shifts, { shifted: 24 });
+  const view = createBoundedReadView({ hour: 10, panels: new Map([['shifted', { hour: 34 }]]), panelShifts: { shifted: 24 } });
+  assert.deepEqual(view.panel('shifted'), { hour: 34 }, 'a panel dated 34 on its own clock is hour 10 on the common one');
+  assert.throws(() => createBoundedReadView({ hour: 10, panels: new Map([['shifted', { hour: 35 }]]), panelShifts: { shifted: 24 } }).panel('shifted'), FutureDataError);
 });
 
 test('a builder that returns nothing is re-run only when its inputs can change (R2-S9)', () => {

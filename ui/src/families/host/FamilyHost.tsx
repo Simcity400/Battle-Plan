@@ -1092,7 +1092,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   useLayoutEffect(() => {
     if (!pipeline || pipe === null) return;
-    pipeline.supply(pipe, { statics: staticSources ? { staticPanels: staticSources.panels, staticAnswers: staticSources.answers } : null });
+    pipeline.supply(pipe, { statics: staticSources ? { staticPanels: staticSources.panels, staticAnswers: staticSources.answers, ...(staticSources.shifts ? { staticShifts: staticSources.shifts } : {}) } : null });
     supplyDated();
   }, [pipeline, pipe, staticSources, supplyDated]);
 

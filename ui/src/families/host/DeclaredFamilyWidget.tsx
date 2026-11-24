@@ -249,6 +249,7 @@ export default function DeclaredFamilyWidget<
     if (!plan.staticBundle) return null;
     return {
       panels: plan.staticBundle.panels,
+      ...(plan.staticBundle.shifts ? { shifts: plan.staticBundle.shifts } : {}),
       hour: plan.staticBundle.hour,
       ...(plan.staticBundle.follows ? { follows: true } : {}),
     };
