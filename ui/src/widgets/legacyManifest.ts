@@ -27,7 +27,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'decryption', load: () => import('./decryption') },
   { kind: 'diplomatic-pacts', load: () => import('./diplomatic-pacts') },
   { kind: 'diplomatic-relations', load: () => import('./diplomatic-relations') },
-  { kind: 'division-equipment', load: () => import('./division-equipment') },
   { kind: 'division-log', load: () => import('./division-log') },
   { kind: 'division-service-record', load: () => import('./division-service-record') },
   { kind: 'dockyard-spending', load: () => import('./dockyard-spending') },
