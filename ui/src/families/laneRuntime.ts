@@ -438,11 +438,11 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
 
       const drawKey = [layout, binding.scrollTop, input.inspect, binding.selectedKey, binding.focusedKey, keep.index, keep.artProvider, keep.artRevision, width, height];
       if (keep.motion || !sameKey(keep.drawKey, drawKey)) {
-        const wanted = [...family.visibleArt(frame), ...projected.artUrls];
-        const artKey = wanted.join('\u0000');
+        const shown = [...family.visibleArt(frame)];
+        const artKey = `${shown.join('\u0000')}\u0001${projected.artUrls.join('\u0000')}`;
         if (artKey !== keep.artKey) {
           keep.artKey = artKey;
-          keep.art.requestVisible(wanted);
+          keep.art.requestVisible(shown, projected.artUrls);
         }
         keep.ctx.save();
         keep.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
