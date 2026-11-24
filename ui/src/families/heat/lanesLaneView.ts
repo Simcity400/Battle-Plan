@@ -23,6 +23,7 @@ import {
 } from './lanesModel.ts';
 import { collectVisibleLaneArt, createLanesPicture, drawHeatLanes, type HeatLanesPicture } from './lanesPainter.ts';
 import { ensureHeatLanesProjection } from './lanesRegistry.ts';
+import { unknownProjectionReason } from '../registry.ts';
 
 export interface FamilyHeatLanesBinding<TOptions = unknown> {
   readonly family: 'heat-lanes';
@@ -121,7 +122,7 @@ export function familyHeatLanesLaneView(
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyHeatLanesBinding(bound)) return Infinity;
-      const projection = ensureHeatLanesProjection(bound.kind, bound.view, () => wake(scene.widget));
+      const projection = ensureHeatLanesProjection(bound, () => wake(scene.widget));
       if (projection === 'loading') return hour + 1;
       if (projection === 'unknown') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
@@ -143,12 +144,12 @@ export function familyHeatLanesLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyHeatLanesBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = ensureHeatLanesProjection(bound.kind, bound.view, () => wake(input.widget));
+      const projection = ensureHeatLanesProjection(bound, () => wake(input.widget));
       if (projection === 'loading') {
         return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       }
       if (projection === 'unknown') {
-        return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown timeline declaration: ${bound.kind}` };
+        return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: unknownProjectionReason(bound) };
       }
 
       let held = state.get('heatLanes') as HeldHeatLanes | undefined;

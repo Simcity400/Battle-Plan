@@ -211,6 +211,7 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
       ];
     },
   }),
+  'table',
 );
 
 export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOptions> = {

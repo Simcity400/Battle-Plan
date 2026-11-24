@@ -27,6 +27,7 @@ import {
   type BarsGlideOffset,
 } from './painter.ts';
 import { ensureBarsProjection } from './registry.ts';
+import { unknownProjectionReason } from '../registry.ts';
 
 export interface FamilyBarsBinding<TOptions = unknown> {
   readonly family: 'bars';
@@ -141,7 +142,7 @@ export function familyBarsLaneView(
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyBarsBinding(bound)) return Infinity;
-      const proj = ensureBarsProjection(bound.kind, bound.view, () => wake(scene.widget));
+      const proj = ensureBarsProjection(bound, () => wake(scene.widget));
       if (proj === 'loading') return hour + 1;
       if (proj === 'unknown') return Infinity;
       let next = Infinity;
@@ -161,10 +162,10 @@ export function familyBarsLaneView(
       if (!isFamilyBarsBinding(bound) || !surface || !bound.theme) {
         return { surfaces: [], fields: {}, motion: false };
       }
-      const proj = ensureBarsProjection(bound.kind, bound.view, () => wake(input.widget));
+      const proj = ensureBarsProjection(bound, () => wake(input.widget));
       if (proj === 'loading') return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       if (proj === 'unknown') {
-        return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown bars declaration: ${bound.kind}` };
+        return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: unknownProjectionReason(bound) };
       }
 
       let held = state.get('bars') as HeldFamilyBars | undefined;

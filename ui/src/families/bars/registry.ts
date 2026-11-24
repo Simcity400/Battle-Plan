@@ -1,6 +1,7 @@
 import {
   DEFAULT_VIEW,
-  ensureFamilyProjection,
+  ensureBoundProjection,
+  type BoundProjectionKey,
   familyProjection,
   registerFamilyProjection,
   registeredFamilyProjections,
@@ -19,11 +20,10 @@ export function barsProjection(kind: string, view?: string): BarsProjection<any>
 }
 
 export function ensureBarsProjection(
-  kind: string,
-  view: string | undefined,
+  binding: BoundProjectionKey,
   onReady: () => void,
 ): BarsProjection<any> | 'loading' | 'unknown' {
-  return ensureFamilyProjection<BarsModel, any>('bars', kind, view, onReady) as BarsProjection<any> | 'loading' | 'unknown';
+  return ensureBoundProjection<BarsModel, any>(binding, onReady) as BarsProjection<any> | 'loading' | 'unknown';
 }
 
 export function registeredBarsKinds(): string[] {

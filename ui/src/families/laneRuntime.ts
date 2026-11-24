@@ -9,7 +9,7 @@ import { IdentityIndex } from './identity/index.ts';
 import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
 import type { FamilyId } from './plan.ts';
-import { ensureFamilyProjection, familyProjectionFailure } from './registry.ts';
+import { ensureBoundProjection, unknownProjectionReason } from './registry.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders } from './scene.ts';
 
 export interface LaneBinding<TOptions = unknown> {
@@ -157,7 +157,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     return waker;
   };
   const projectionOf = (binding: TBinding, widget: number) =>
-    ensureFamilyProjection<TModel, unknown>(family.family, binding.kind, binding.view, wakerOf(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
+    ensureBoundProjection<TModel, unknown>(binding, wakerOf(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
   const sameInputs = (held: Held<TModel, TLayout>, binding: TBinding, scene: Scene, hour: number): boolean =>
     held.projected !== null
     && held.kind === binding.kind
@@ -240,8 +240,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const projection = projectionOf(binding, input.widget);
       if (projection === 'loading') return EMPTY;
       if (projection === 'unknown') {
-        const failure = familyProjectionFailure(family.family, binding.kind, binding.view);
-        return { ...EMPTY, mode: 'refused', reason: failure ? `The ${binding.kind} view did not load: ${failure}` : `Unknown ${family.family} view: ${binding.kind}` };
+        return { ...EMPTY, mode: 'refused', reason: unknownProjectionReason(binding) };
       }
 
       let held = state.get(stateKey) as Held<TModel, TLayout> | undefined;

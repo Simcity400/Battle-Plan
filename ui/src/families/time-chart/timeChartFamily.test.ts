@@ -470,7 +470,7 @@ describe('time-chart laneView integration', () => {
       widget: 1,
       subs: [],
       pictures: [],
-      model: { ...binding, view: { x: zoomWindow } },
+      model: { ...binding, zoom: { x: zoomWindow } },
       hour: H1936 + 100 * 24,
       speed: 0,
       binding: { generation: 2, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },

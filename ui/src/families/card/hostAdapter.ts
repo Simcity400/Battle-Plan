@@ -27,9 +27,6 @@ export const cardHostAdapter: FamilyHostAdapter<CardModel, unknown, FamilyCardBi
   buildBinding: ctx => {
     if (!ctx.theme) return null;
     return {
-      family: 'card',
-      kind: ctx.kind,
-      view: ctx.view,
       options: ctx.options,
       sources: ctx.sources,
       ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
