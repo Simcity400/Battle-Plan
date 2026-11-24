@@ -47,8 +47,3 @@ export function playbackRows<T>(hours: Iterable<number>, read: (hour: number) =>
   return new PlaybackIntervals(hours, hour => { const rows = read(hour); return rows.length ? rows : NO_ROWS; }, bounds);
 }
 
-export function retainPlaybackMap<K, V>(previous: ReadonlyMap<K, V>, next: ReadonlyMap<K, V>): ReadonlyMap<K, V> {
-  if (previous.size !== next.size) return next;
-  for (const [key, value] of next) if (!previous.has(key) || previous.get(key) !== value) return next;
-  return previous;
-}

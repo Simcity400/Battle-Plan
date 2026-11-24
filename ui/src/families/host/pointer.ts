@@ -296,11 +296,6 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
       down.hit = parsed;
       down.toggle = parsed?.toggle === true;
       down.resolved = true;
-      if (parsed && rowKey) {
-        inspectedKeyRef.current = rowKey;
-        notifyHover(parsed);
-        pipeline.inspect(pipe, tokenFor(parsed));
-      }
     });
   };
 

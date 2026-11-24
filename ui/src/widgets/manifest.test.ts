@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { WidgetMeta } from '../dashboard/definitions';
 import { parseStoredOptions, resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import { addRegion, moveRegion, readRegionChoice, regionParams, removeRegion, writeRegionChoice } from '../families/regions/regionChoice.ts';
-import { keyboardMove, regionChooserGroups, regionDropAt, type RegionRowsField } from '../families/regions/regionRows.ts';
+import { chooserFor, keyboardMove, regionChooserGroups, regionDropAt, savedRegionName, type RegionRowsField } from '../families/regions/regionRows.ts';
 import {
   DEFAULT_VIEW,
   declaredViewChoices,
@@ -42,7 +42,7 @@ import {
   resolveWidgetScopedOptions,
   resolveWidgetViewSwitch,
   familyViewOptionFields,
-  presetStoredOptions,
+  presetWidget,
   widgetOptionFields,
   widgetViewOptions,
 } from './manifest.ts';
@@ -354,14 +354,15 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   const choice = moveRegion(removeRegion(addRegion(addRegion(readRegionChoice(''), 12), 4), 30), 4, 0);
   assert.deepEqual(choice, { picks: [4, 12], hidden: [30] }, 'removing an automatic region hides it');
   assert.deepEqual(readRegionChoice(writeRegionChoice(choice)), choice);
-  assert.deepEqual(removeRegion(choice, 12), { picks: [4], hidden: [30] }, 'removing a pick does not hide it');
+  assert.deepEqual(removeRegion(choice, 12), { picks: [4], hidden: [30, 12] }, 'removing a pick also hides it, so an active one does not come straight back under a button that said Remove');
+  assert.deepEqual(addRegion(removeRegion(choice, 12), 12), { picks: [4, 12], hidden: [30] }, 'Add is its inverse');
   assert.deepEqual(addRegion(choice, 30), { picks: [4, 12, 30], hidden: [] }, 'choosing a hidden region picks it');
   assert.deepEqual(regionParams(choice), { pinnedRegions: [4, 12], hiddenRegions: [30] });
   const stored = setOption(fields, undefined, 'regions', writeRegionChoice(choice));
   assert.equal(resolveOptions(fields, stored!).regions, writeRegionChoice(choice));
 
   const row = (id: number, picked: boolean, top: number) => ({ key: `r${id}`, id, label: `R${id}`, picked, top, height: 26, active: !picked });
-  const shown: RegionRowsField = { rows: [row(4, true, 20), row(12, true, 50), row(7, false, 100), row(9, false, 130)], add: { top: 160, height: 26 }, nameLeft: 8 };
+  const shown: RegionRowsField = { rows: [row(4, true, 20), row(12, true, 50), row(7, false, 100), row(9, false, 130)], add: { top: 160, height: 26 }, nameLeft: 8, nameRight: 176 };
   assert.deepEqual(regionDropAt(shown, shown.rows[1]!, 22), { to: 0, lineY: 20 }, 'a pick dragged above the first pick leads');
   assert.deepEqual(regionDropAt(shown, shown.rows[2]!, 55), { to: 1, lineY: 50 }, 'an automatic row dragged among the picks becomes a pick');
   assert.equal(regionDropAt(shown, shown.rows[3]!, 140), null, 'an automatic row dropped among the automatic rows does nothing');
@@ -385,6 +386,11 @@ test('shared data-driven settings controls expose bars-behind, three row heights
   const unknown = regionChooserGroups(list, inChart, { ids: [], missing: 'Air scores were read only in part at this hour' }, true, '');
   assert.deepEqual([unknown[0]!.title, unknown[0]!.note], ['Active now', 'Air scores were read only in part at this hour'], 'activity not known at the hour is said, not shown as none');
   assert.equal(regionChooserGroups(list, inChart, null, true, '')[0]!.title, 'Active in this chart', 'without the product answer the group names only what the chart holds');
+  assert.deepEqual([savedRegionName({ kind: 'loading' }, 99), savedRegionName({ kind: 'failed', failure: {} as never, retry: () => {} }, 99), savedRegionName(list, 99), savedRegionName(list, 7)],
+    ['Region 99 · loading its name…', 'Region 99 · its name could not be loaded', 'Region 99 · not in this recording', 'Baltic Sea'], 'a saved pick is "not in this recording" only once the list says so');
+  const opening = { owner: 'air:GER', hour: 400, rows: inChart, active: null };
+  assert.equal(chooserFor(opening, 'air:GER'), opening);
+  assert.equal(chooserFor(opening, 'air:ITA'), null, 'after the owner changes the old list is never shown or applied (R4-S10)');
 
   const tblDefaults = tableDefaults(cols, base);
   assert.equal(tblDefaults.density, 'normal');
@@ -463,11 +469,61 @@ test('two table views of one kind each draw their own projection, and a missing 
   assert.equal(familyProjection('table', 'synthetic-same-family'), undefined, 'a kind with named views has no default view to fall back to');
 });
 
-test('a preset is stored through the mapping of the view it opens, so the view reads what the preset chose (R3-S3)', () => {
-  const stored = presetStoredOptions('world-tension', { values: 'recorded' });
+test('a preset is materialised once through the mapping of the view it opens, and the catalogue preview and the placed widget are that one record (R3-S3, R4-S4)', () => {
+  const initial = { title: 'World tension contributions', options: { values: 'recorded' } };
+  const shown = presetWidget('world-tension', initial);
+  assert.equal(presetWidget('world-tension', initial), shown, 'R4-S4: preview and Add get the same materialised preset');
+  const stored = shown.options!;
+  assert.equal(shown.title, 'World tension contributions');
   assert.equal(resolveWidgetActiveView('world-tension', stored), 'tension');
   assert.equal(widgetViewOptions('world-tension', stored).values, 'recorded', 'the Tension view shows recorded contributions, not its default share');
-  const race = presetStoredOptions('army-size', { view: 'race', countFor: 'host' });
+  const race = presetWidget('army-size', { options: { view: 'race', countFor: 'host' } }).options!;
   assert.equal(widgetViewOptions('army-size', race).countFor, 'host', 'R3-S2: a race preset counting expeditionary forces for the host is what the race view and its detail read');
   assert.equal(viewSlotProps('army-size', { widget: { kind: 'army-size', options: race } as unknown as WidgetSpec }).options.countFor, 'host');
+});
+
+test('every setting a time-chart view shows reaches what that view reads or projects (rv11 S19)', async () => {
+  const silent: string[] = [];
+  const checked: string[] = [];
+  const owned = new Set(['political-power', 'command-power', 'stability', 'fuel', 'experience', 'supply-health', 'ruling-party',
+    'army-size:lines', 'navy-size:lines', 'air-force-size:lines', 'factories:lines', 'occupation-trend:lines']);
+  for (const entry of FAMILY_VIEWS.filter(item => item.family === 'time-chart' && (owned.has(item.kind) || owned.has(`${item.kind}:${normalizeView(item.view)}`)))) {
+    const view = normalizeView(entry.view);
+    const spec = await entry.loadSpec();
+    const declaration = spec.declaration as {
+      readonly sources: (ctx: unknown, viewport: unknown) => unknown;
+      readonly projectionOptions: (ctx: unknown, extra: unknown) => unknown;
+    };
+    const selected: WidgetOptions = view === DEFAULT_VIEW ? {} : { [entry.viewOption ?? 'view']: view };
+    const read = familyViewOptionFields(entry.kind, view);
+    const fields = read;
+    const seen = (stored: WidgetOptions) => {
+      const options = resolveOptions(read, stored);
+      const ctx = {
+        track: { source: { id: 's', revision: '1' }, branch: { id: '1', firstHour: 0, lastHour: 1000, gaps: [] }, axisOffset: 0 },
+        branch: { id: '1', firstHour: 0, lastHour: 1000, gaps: [] }, lastRecordedHour: 1000, widget: { kind: entry.kind, options: stored, countries: { kind: 'tags', tags: ['GER'] } },
+        options, following: false, aux: undefined, countryTag: 'GER', countrySubject: 'GER', countryName: 'Germany',
+        countries: { all: false, tags: ['GER'], holders: null, every: ['GER'], top: null, membership: null, membershipRuns: null, unobserved: [],
+          filter: { passing: null, unrecorded: [], bounds: [] }, labels: {}, factions: null, factionUnobserved: [], factionIncomplete: [],
+          rankedAt: () => ['GER'], reason: null, known: () => true, unobservedIn: () => false },
+        gateSpan: () => null, staticSpan: null,
+      };
+      return JSON.stringify([declaration.sources(ctx, { width: 800, height: 300 }), declaration.projectionOptions(ctx, { extent: [0, 1000], surface: '#111111' })],
+        (_key, value) => typeof value === 'function' ? String(value) : typeof value === 'bigint' ? String(value) : value);
+    };
+    const base = seen(selected);
+    for (const field of fields) {
+      if (field.key === (entry.viewOption ?? 'view')) continue;
+      const value = otherValue(field);
+      if (value === field.default) continue;
+      const written = setOption(fields, selected, field.key, value);
+      if (!written) continue;
+      const shown = field.visibleWhen ? field.visibleWhen(resolveOptions(read, written), undefined as never) : true;
+      if (!shown) continue;
+      checked.push(`${entry.kind}/${view}: ${field.key}`);
+      if (seen(written) === base) silent.push(`${entry.kind}/${view}: ${field.key}`);
+    }
+  }
+  assert.ok(checked.length > 30, `the walk reaches the views' settings: ${checked.length}`);
+  assert.deepEqual(silent, [], 'a setting that changes neither the read nor the projection does nothing: wire it or remove it');
 });

@@ -5,7 +5,7 @@ import { Lane } from '../draw/lane.ts';
 import type { BoundedReadView, FamilyProjection } from './contract.ts';
 import { createLaneView, lazyLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
 import { familyBinding, type FamilyBindingContext, type FamilyHostAdapter } from './host/adapter.ts';
-import { assertContinuity, assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME, LaneTransport } from './laneRuntime.fixture.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDated, driveLane, installRecordingCanvas, LANE_THEME as THEME, LaneTransport } from './laneRuntime.fixture.ts';
 import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
 import { IdentityIndex } from './identity/index.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
@@ -55,7 +55,7 @@ const family: LaneFamily<Binding, Model, Layout> = {
   tooltip(frame, key) {
     counts.tooltip++;
     const row = frame.model.rows.find(item => item.key === key);
-    return row ? { hour: frame.hour, rowKey: key, content: { title: key, rows: [] } as never } : null;
+    return row ? { rowKey: key, content: { title: key, rows: [] } as never } : null;
   },
   structure: frame => ({ meta: { count: frame.model.rows.length }, nav: frame.layout.rows.map(row => row.key) }),
   mirror: frame => {
@@ -443,6 +443,10 @@ const gliding: LaneFamily<Binding, Model, Layout> = {
     return moving;
   },
 };
+
+test('a tooltip on a picture that stands across hours is dated by the hour it is shown at, as a fresh paint dates it', () => {
+  assertTooltipDated(() => createLaneView(family, () => {}), { label: 'fixture', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12 }, 'A');
+});
 
 test('a transition continues only from the last drawn placement: a seek, a pin or a refusal between drops it even when the model is reused, and a same-hour tick keeps it', () => {
   assertContinuity(() => createLaneView(gliding, () => {}), {

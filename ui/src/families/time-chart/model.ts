@@ -244,10 +244,3 @@ export interface TimeChartModel {
   } | null;
   readonly auditRows?: readonly FamilyAuditRow[];
 }
-
-export interface TimeChartSettings {
-  readonly foldUnrecorded?: boolean;
-  readonly logScale?: boolean;
-  readonly showMarkers?: boolean;
-  readonly showArea?: boolean;
-}
