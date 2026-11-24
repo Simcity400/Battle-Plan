@@ -1794,8 +1794,9 @@ export type NavalSupremacyParams = { branchId: string, country: CountryRef,
  */
 window?: number, firstHour?: number, lastHour?: number, regions?: Array<number>, pinnedRegions?: Array<number>, hiddenRegions?: Array<number>, top?: number, };
 export type SupremacyRun = { firstDay: number, lastDay: number, control: number | null, friendly: string | null, enemy: string | null, share: string | null, own: string | null, };
-export type SupremacyRegion = { id: string, name: string, pinned: boolean, ownMissionShips?: number, enemyMissionShips?: number, shipsMissing?: string, readout?: SupremacyReadout, runs: Array<SupremacyRun>, };
-export type SupremacyReadout = { "kind": "control", control: number, share: string | null, friendly: string | null, enemy: string | null, own: string | null, own_mission_ships: number | null, enemy_mission_ships: number | null, ships_missing: string | null, as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
+export type SupremacyRegion = { id: string, name: string, pinned: boolean, ownShips: MissionShips, enemyShips: MissionShips, readout?: SupremacyReadout, runs: Array<SupremacyRun>, };
+export type SupremacyReadout = { "kind": "control", control: number, share: string | null, friendly: string | null, enemy: string | null, own: string | null, as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
+export type MissionShips = { "kind": "counted", ships: number, } | { "kind": "notRecorded", reason: string, };
 export type SupremacyLegendItem = { id: string, label: string, control: number, };
 export type UnknownDays = { firstDay: number, lastDay: number, reason: string, };
 export type SeaRegionChoice = { id: string, name: string, };
@@ -2383,7 +2384,7 @@ scale: number,
  */
 known: Array<Array<HourSpan>>,
 /**
- * Hours the tag had no country, or the recording holds none: nothing is known of it there.
+ * Hours no country held the tag: nothing is known of it there. Recording gaps are `gaps`.
  */
 unheld: Array<HourSpan>, gaps: Array<HourSpan>, regions: Array<ConvoyRegion>, deals: Array<ConvoyDeal>, leases: Array<ConvoyLease>, resources: Array<ConvoyResource>, warnings: Array<string>, };
 export type ConvoyView = "regions" | "trade";

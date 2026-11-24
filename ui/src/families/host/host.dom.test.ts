@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../../tools/native-page.ts';
 
-test('shared family host handles F1 campaign switch pin clear, F2 leave-then-deactivate hover cleanup, F3/F4 theme & reduced motion, F5 press across frame update, and F12 dual placement isolation + typeahead', async () => {
+test('shared family host handles F1 campaign switch pin clear, F2 leave-then-deactivate hover cleanup, F3/F4 theme & reduced motion, F5 press across frame update, F12 dual placement isolation + typeahead, and the generic FamilyHost doing no React render, bind or paint on quiet, steady and paused frames', async () => {
   await withNativePage('family-host', '/ui/src/families/host/host.dom.fixture.tsx', page => page.stage('family-host', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.hostDom.${expression}`);
     const mounted = await act<{ pipeId: number }>('mountPrimary()');
@@ -41,6 +41,25 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     } finally {
       cdp.close();
     }
+
+    const generic = await act<{
+      firstPicture: boolean;
+      mountCommits: number;
+      quiet: { hoursAdvanced: number; commits: number; binds: number; paints: number };
+      steady: { commits: number; binds: number; paints: number };
+      paused: { commits: number; binds: number; paints: number };
+      activatedSubject: string | null;
+      activatedMatchesInstalled: boolean;
+    }>('testGenericHostFrames()');
+    assert.equal(generic.firstPicture, true, 'generic host installs its first picture');
+    assert.ok(generic.mountCommits > 0, 'the generic host render counter observes mounting');
+    assert.ok(generic.quiet.hoursAdvanced > 0, 'quiet playback advanced the clock');
+    assert.deepEqual([generic.quiet.commits, generic.quiet.binds, generic.quiet.paints], [0, 0, 0], 'quiet playback ticks: no React render, no bind, no paint');
+    assert.ok(generic.steady.paints > 0, 'steady playback frames repaint in the lane');
+    assert.deepEqual([generic.steady.commits, generic.steady.binds], [0, 0], 'steady playback frames: no React render, no bind');
+    assert.deepEqual([generic.paused.commits, generic.paused.binds, generic.paused.paints], [0, 0, 0], 'paused host settles and sleeps');
+    assert.equal(generic.activatedSubject, 'GER', 'Enter activates the focused row from the installed picture');
+    assert.equal(generic.activatedMatchesInstalled, true, 'the action carries the installed picture id');
 
     const f12 = await act<{
       distinctCanvases: boolean;
