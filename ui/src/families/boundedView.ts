@@ -309,6 +309,13 @@ function clipSingleMark(cluster: MarkCluster, hour: DisplayedHour): MarkCluster 
   };
 }
 
+function clipSingleHourSpan(
+  span: { readonly firstHour: number; readonly lastHour: number },
+  hour: DisplayedHour,
+): { readonly firstHour: number; readonly lastHour: number } {
+  return { firstHour: span.firstHour, lastHour: hour };
+}
+
 export function sliceMissingSpans(
   spans: readonly MissingSpan[],
   hour: DisplayedHour,
@@ -416,18 +423,21 @@ export function boundTiledSeries(
   const bucketsSlice = createBoundedSlice(rawBuckets, closedBuckets, straddlingBucket);
   const runsResult = line.summary.runs ? sliceRuns(line.summary.runs, hour, counter) : undefined;
   const missingResult = sliceMissingSpans(line.missing, hour, counter);
+  const approxResult = line.summary.approximate ? sliceSpansByHour(line.summary.approximate, hour, clipSingleHourSpan, counter) : undefined;
   const marksResult = line.marks ? sliceMarks(line.marks.clusters, hour, counter) : undefined;
 
   const validLo = Math.max(
     bucketValidLo,
     runsResult?.validLo ?? -Infinity,
     missingResult.validLo,
+    approxResult?.validLo ?? -Infinity,
     marksResult?.validLo ?? -Infinity,
   );
   const validHi = Math.min(
     bucketValidHi,
     runsResult?.validHi ?? Infinity,
     missingResult.validHi,
+    approxResult?.validHi ?? Infinity,
     marksResult?.validHi ?? Infinity,
   );
 
@@ -442,6 +452,7 @@ export function boundTiledSeries(
     straddling,
     ...(options?.headValue ? { headValue: options.headValue } : {}),
     missing: missingResult.slice,
+    ...(approxResult ? { approximate: approxResult.slice } : {}),
     marks: marksResult ? marksResult.slice : emptySlice<MarkCluster>(),
     validInterval: [validLo, Math.max(validLo, validHi)],
   };
