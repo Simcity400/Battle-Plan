@@ -158,12 +158,16 @@ export function rampColour(theme: FamilyTheme, ramp: MatrixRamp | undefined, int
 }
 
 function drawCellText(ctx: Canvas2D, text: string, x: number, y: number, w: number, h: number, color: string, theme: FamilyTheme): void {
-  if (w < 18 || h < 11) return;
-  ctx.fillStyle = color;
-  ctx.font = `${VALUE_WEIGHT} ${Math.max(9, Math.min(11, Math.floor(Math.min(w * 0.36, h * 0.72))))}px ${theme.font}`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(ellipsise(text, w - 4, s => textWidth(ctx, s)), x + w / 2, y + h / 2 + 0.5);
+  if (w < 12 || h < 10) return;
+  for (let size = Math.min(11, Math.floor(h * 0.72)); size >= 8; size--) {
+    ctx.font = `${VALUE_WEIGHT} ${size}px ${theme.font}`;
+    if (textWidth(ctx, text) > w - 4) continue;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + w / 2, y + h / 2 + 0.5);
+    return;
+  }
 }
 
 function drawMarginColumn(
@@ -225,7 +229,8 @@ function drawColumnName(ctx: Canvas2D, label: string, x: number, bottom: number,
   ctx.translate(x, bottom);
   ctx.rotate(-MATRIX_COLUMN_NAME_ANGLE);
   ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-  ctx.fillStyle = muted ? theme.muted : theme.text;
+  ctx.fillStyle = theme.muted;
+  ctx.globalAlpha = muted ? 0.7 : 1;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.fillText(ellipsise(label, room, s => textWidth(ctx, s)), 0, 0);
@@ -343,7 +348,7 @@ export function drawHeatMatrix(
         ctx.beginPath();
         ctx.roundRect(cx, cy, innerW, innerH, radius);
         ctx.fill();
-        if (item.text && innerW >= 24) {
+        if (item.text) {
           const rgb = parseColor(fill);
           drawCellText(ctx, item.text, cx, cy, innerW, innerH, rgb ? readableText(rgb) : theme.text, theme);
         }

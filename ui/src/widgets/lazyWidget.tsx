@@ -1,9 +1,11 @@
-import type { ComponentType } from 'react';
+import { useMemo, type ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
 import type { FamilyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
 import { familyHost } from '../families/host/registry';
+import { useFamilyViewSpec } from '../families/host/useFamilyViewSpec';
 import type { FamilyViewModule } from '../families/manifest';
+import { activeFamilyView } from './manifest';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
 type Slot = 'render' | 'countryChip';
@@ -20,8 +22,14 @@ function rendererForDeclaration(declaration: FamilyWidgetDeclaration): Component
       declaration,
     };
     held = (props: WidgetProps) => {
-      const Host = familyHost(spec.family);
-      return Host ? <Host spec={spec} {...props} /> : <WidgetState kind="unavailable" message={`Family host unavailable: ${spec.family}`} />;
+      const entry = useMemo(() => activeFamilyView(spec.kind, props.widget.options), [props.widget.options]);
+      const active = useFamilyViewSpec(entry);
+      if (entry && !active.spec) {
+        return active.failed ? <WidgetState kind="unavailable" message="Widget renderer unavailable." /> : <WidgetState kind="loading" label="Loading widget…" />;
+      }
+      const shown = active.spec ?? spec;
+      const Host = familyHost(shown.family);
+      return Host ? <Host spec={shown} {...props} /> : <WidgetState kind="unavailable" message={`Family host unavailable: ${shown.family}`} />;
     };
     declaredRenderers.set(declaration, held);
   }

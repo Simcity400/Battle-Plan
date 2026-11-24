@@ -47,7 +47,7 @@ function sources(form: OperativeMatrixForm) {
             ? { mode: 'population', form: 'top', limit: top }
             : tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'all' },
           product: 'operative-matrix',
-          followQuery: { product: 'operative-matrix', params },
+          followQuery: { panel: 'operative-matrix', ...params },
           params,
         },
       }],

@@ -12,6 +12,9 @@ export const MATRIX_COL_HEADER_HEIGHT = FLAG_SLOT_HEIGHT + 16;
 export const MATRIX_PAD = 8;
 export const MATRIX_WIDE_MIN_ROW = 16;
 export const MATRIX_WIDE_MAX_ROW = 24;
+export const MATRIX_WIDE_MIN_CELL = 34;
+export const MATRIX_WIDE_COMPACT_WIDTH = 360;
+export const MATRIX_COLUMN_NAMES_MIN_HEIGHT = 180;
 export const MATRIX_WIDE_MAX_CELL = 64;
 export const MATRIX_COLUMN_NAME_HEIGHT = 50;
 export const MATRIX_COLUMN_NAME_ANGLE = (40 * Math.PI) / 180;
@@ -72,7 +75,8 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
   const rowGroupWidth = rowGroups.length > 0 ? 4 : 0;
   const showFlags = input.rows.some(item => item.flag !== undefined || item.tag !== undefined)
     || input.columns.some(item => item.flag !== undefined || item.tag !== undefined);
-  const showNames = width >= MATRIX_COMPACT_WIDTH;
+  const wide = input.shape === 'wide';
+  const showNames = width >= (wide ? MATRIX_WIDE_COMPACT_WIDTH : MATRIX_COMPACT_WIDTH);
 
   const flagPart = showFlags ? FLAG_SLOT_WIDTH + 8 : 0;
   const rawNameWidth = input.widestRowName !== undefined
@@ -82,8 +86,7 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
     ? Math.min(MATRIX_NAME_MAX_WIDTH, Math.max(flagPart + 48, rowGroupWidth + MATRIX_PAD + flagPart + rawNameWidth + MATRIX_PAD))
     : rowGroupWidth + MATRIX_PAD + (showFlags ? FLAG_SLOT_WIDTH : 28) + MATRIX_PAD;
 
-  const wide = input.shape === 'wide';
-  const columnNames = wide && showNames;
+  const columnNames = wide && showNames && height >= MATRIX_COLUMN_NAMES_MIN_HEIGHT;
   const headerHeight = colGroupHeight + MATRIX_COL_HEADER_HEIGHT + (columnNames ? MATRIX_COLUMN_NAME_HEIGHT : 0);
   const gridLeft = gutterWidth;
   const gridTop = legendHeight + headerHeight;
@@ -94,7 +97,7 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
   const fitW = input.columns.length > 0 ? Math.floor(availW / input.columns.length) : MATRIX_MAX_CELL;
   const fitH = input.rows.length > 0 ? Math.floor(availH / input.rows.length) : MATRIX_MAX_CELL;
   const square = Math.max(MATRIX_MIN_CELL, Math.min(MATRIX_MAX_CELL, Math.min(fitW, fitH)));
-  const cellWidth = wide ? Math.max(MATRIX_MIN_CELL, Math.min(MATRIX_WIDE_MAX_CELL, fitW)) : square;
+  const cellWidth = wide ? Math.max(MATRIX_WIDE_MIN_CELL, Math.min(MATRIX_WIDE_MAX_CELL, fitW)) : square;
   const cellHeight = wide ? Math.max(MATRIX_WIDE_MIN_ROW, Math.min(MATRIX_WIDE_MAX_ROW, fitH)) : square;
   const cellSize = cellHeight;
 

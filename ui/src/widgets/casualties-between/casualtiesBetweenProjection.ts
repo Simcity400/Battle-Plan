@@ -45,7 +45,7 @@ function plan(ctx: FamilyPlanContext, subject: string | null): SourcePlan {
             ? { mode: 'population', form: 'top', limit: top }
             : tags.length ? { mode: 'keyed', keys: tags } : { mode: 'population', form: 'all' },
         product: 'casualty-matrix',
-        followQuery: { product: 'casualty-matrix', params },
+        followQuery: { panel: 'casualty-matrix', ...params },
         params,
       },
     }],
