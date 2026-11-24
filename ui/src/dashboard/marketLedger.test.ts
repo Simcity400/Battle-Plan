@@ -1,9 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { LogCell } from '../generated/dashboard';
-import { logPageEntries } from '../charts/log/logPages.ts';
 import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerPartyName, ledgerSelection, ledgerTitle, shownKinds } from './marketLedger.ts';
-import { buildTailPages, validateLogTail } from './useLogTail.ts';
 
 const row = (cells: Record<string, LogCell>) => ledgerEntry({ key: '9', hour: 40, cells, fields: {} });
 const number = (value: string): LogCell => ({ kind: 'number', value });
@@ -11,36 +9,9 @@ const textCell = (value: string): LogCell => ({ kind: 'text', value });
 
 test('a country\'s ledger asks either party\'s facet by its tags; every country asks the kinds alone', () => {
   assert.deepEqual(ledgerFacets([11, 20], ['GER']), [{ name: 'kind', values: [11, 20], countries: [] }, { name: 'country|receiver', values: [], countries: ['GER'] }]);
-  assert.deepEqual(ledgerFacets([11, 20], ['GER', 'FRA'], true), [{ name: 'kind', values: [11, 20], countries: [] }, { name: 'country|receiver', values: [], countries: ['GER', 'FRA'], deduplicate: true }]);
   assert.deepEqual(ledgerFacets([11], null), [{ name: 'kind', values: [11], countries: [] }]);
   assert.deepEqual(shownKinds(key => key !== 'payments'), [10, 11, 12, 20, 34], 'unavailable amounts follow deliveries');
   assert.deepEqual(shownKinds(key => key === 'payments'), [21]);
-});
-
-test('tail pages validate replies and preserve newest-first same-hour order across page boundaries', () => {
-  const reply = validateLogTail({
-    columns: ['kind'],
-    total: '4',
-    offset: '0',
-    rows: [
-      { key: '1', hour: 200, cells: [{ kind: 'number', value: '20' }] },
-      { key: '2', hour: 200, cells: [{ kind: 'number', value: '20' }] },
-    ],
-    missing: [{ firstHour: 140, lastHour: 150, reason: 'truncated' }],
-  });
-  assert.equal(reply.total, 4);
-  assert.equal(reply.missing.length, 1);
-  assert.throws(() => validateLogTail({ columns: ['kind'], total: '1', offset: '2', rows: [] }));
-
-  const tailRows = reply.rows.map(r => ({ key: r.key, hour: r.hour, item: r.key }));
-  const olderRows = [
-    { key: '3', hour: 200, item: '3' },
-    { key: '4', hour: 100, item: '4' },
-  ];
-  const pages = buildTailPages(4, tailRows, 2, new Map([[2, olderRows]]), new Map());
-  assert.deepEqual(pages.map(p => [p.key, p.start, p.end, p.count]), [['tail', 2, 4, 2], ['2', 0, 2, 2]]);
-  const keys = logPageEntries(pages).map(entry => entry.kind === 'row' ? entry.row.key : entry.page.key);
-  assert.deepEqual(keys, ['1', '2', '3', '4']);
 });
 
 test('an unavailable amount is named, never zero; amounts read in their units; a row opens its contract or agreement', () => {

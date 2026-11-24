@@ -47,16 +47,19 @@ function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (r
   };
 }
 
+const logTailStructure = (raw: unknown): string => {
+  const r = raw as { total?: string | number; firstOrdinal?: string; rows?: readonly { key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
+  const missing = (r.missing ?? []).map(span => `${span.firstHour ?? ''}-${span.lastHour ?? ''}:${span.reason ?? ''}`).join(',');
+  return `${r.total ?? ''}|${r.firstOrdinal ?? ''}|${r.rows?.[0]?.key ?? ''}|${r.rows?.length ?? 0}|${missing}`;
+};
+
 const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => string>> = {
   'special-project-effects': raw => effectsStructure(validateProjectEffects(raw)),
   'technology-effects': raw => technologyEffectsStructure(validateTechnologyEffects(raw)),
   'content-entity-stats': raw => entityStatsStructure(validateEntityStats(raw)),
   [HISTORY_PANEL]: (raw, hour) => historyStructure(validateSpecialProjectsReply(raw), hour),
-  'market-ledger-tail': raw => {
-    const r = raw as { total?: string | number; firstOrdinal?: string; rows?: readonly { key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
-    const missing = (r.missing ?? []).map(span => `${span.firstHour ?? ''}-${span.lastHour ?? ''}:${span.reason ?? ''}`).join(',');
-    return `${r.total ?? ''}|${r.firstOrdinal ?? ''}|${r.rows?.[0]?.key ?? ''}|${r.rows?.length ?? 0}|${missing}`;
-  },
+  'log-tail': logTailStructure,
+  'market-ledger-tail': logTailStructure,
 };
 
 export function panelStructure(product: string, raw: unknown, hour: number): string {
@@ -102,7 +105,7 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
         ...(p.pending?.options ?? []).map(o => JSON.stringify([p.owner, p.id, p.pending?.label.token, o.label.token])),
         ...(p.choices ?? []).map(c => JSON.stringify([p.owner, p.id, c.ordinal, c.reward.token, c.option.token]))])];
   }
-  if (product === 'market-ledger-tail') {
+  if (product === 'log-tail' || product === 'market-ledger-tail') {
     const r = raw as { total?: string | number; rows?: readonly { hour?: number; key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
     return [
       JSON.stringify(['total', String(r.total ?? '')]),

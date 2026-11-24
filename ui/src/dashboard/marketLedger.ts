@@ -1,13 +1,11 @@
 import { countryFromKey } from './countryKey.ts';
 import type { LogRow } from '../charts/log/logData';
-import type { LogReplyRow } from '../charts/log/logSource';
-import type { BoundFacetFilter } from './useLogPages';
+import type { BoundFacetFilter, LogReplyRow } from '../charts/log/logSource';
 import type { LogCell } from '../generated/dashboard';
 import { FUEL_QUANTITY, fixedText } from './market.ts';
 
 export const MARKET_LOG = 'market-events';
 export const MARKET_LEDGER = 'market-ledger';
-export const MARKET_LEDGER_TAIL = 'market-ledger-tail';
 
 export const KINDS = [
   { kind: 11, key: 'contracts', label: 'New contracts' },
@@ -70,9 +68,9 @@ export function ledgerEntry(row: LogReplyRow): LogRow<LedgerItem> {
   } };
 }
 
-export function ledgerFacets(kinds: readonly number[], tags: readonly string[] | null, deduplicate = false): BoundFacetFilter[] {
+export function ledgerFacets(kinds: readonly number[], tags: readonly string[] | null): BoundFacetFilter[] {
   const facets: BoundFacetFilter[] = [{ name: 'kind', values: [...kinds], countries: [] }];
-  if (tags) facets.push({ name: 'country|receiver', values: [], countries: tags.map(countryFromKey), ...(deduplicate ? { deduplicate: true } : {}) });
+  if (tags) facets.push({ name: 'country|receiver', values: [], countries: tags.map(countryFromKey) });
   return facets;
 }
 

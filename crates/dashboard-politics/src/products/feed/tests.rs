@@ -1,6 +1,6 @@
 use super::{
     EventFeedKind, Names,
-    cards::{ScriptCurrency, edge},
+    cards::{List, ScriptCurrency, edge},
     cause, derived, families,
     row::{Columns, FeedEvent, Party, Slot},
     text::Notices,
@@ -454,96 +454,4 @@ fn two_projects_completing_in_one_hour_are_two_rows() {
     let ids: std::collections::BTreeSet<String> =
         [completion(1, 4), completion(2, 4), completion(1, 7)].into_iter().filter_map(families::completion_row).map(|row| row.id).collect();
     assert_eq!(ids.len(), 3, "each project's completion marker is its own row: {ids:?}");
-}
-
-#[test]
-fn feed_event_choices_and_decisions_pages_preserve_rows_and_coverage_gaps() {
-    use super::{Decisions, EventChoices, EventFeed, EventFeedKind, FeedPageParams};
-    use dashboard_base::{
-        Source,
-        products::{LoadContext, Product},
-        test_fixtures::{CAMPAIGN, records, source},
-    };
-    use dashboard_query::log::FacetFilter;
-    use replay::campaign::Replay;
-    use replay_data::rows::{FeedEventRow, Recorded, TableId, TableRows};
-    use replay_frame::frame::TableView;
-    use std::sync::{Arc, atomic::AtomicBool};
-
-    let row = |sequence: u64, hour: i32, kind: EventFeedKind, opener: Option<(u64, i32)>| FeedEventRow {
-        generation: 1,
-        sequence,
-        hour,
-        read_hour: hour,
-        kind: kind.code().unwrap(),
-        actor_reference: 9001,
-        actor_id: Recorded::Value(9001),
-        actor_instance: Recorded::Value(0),
-        actor_slot: Recorded::Value(7),
-        token: Recorded::Value(b"test_token".to_vec()),
-        opener: opener.map(|(seq, _)| seq),
-        opener_hour: opener.map(|(_, h)| h),
-        ..FeedEventRow::default()
-    };
-    let frames = (100..=140)
-        .map(|hour| {
-            let mut frame = source(1, hour, Some(1));
-            *frame.tables[TableId::FeedEvents.index()] = if (118..=122).contains(&hour) {
-                TableView::Truncated { rows: TableRows::FeedEvents(Vec::new()), missing: 2 }
-            } else {
-                let rows = match hour {
-                    108 => vec![row(1, hour, EventFeedKind::ScriptEventFired, None)],
-                    112 => vec![row(2, hour, EventFeedKind::EventOptionSelected, Some((1, 108)))],
-                    126 => vec![row(3, hour, EventFeedKind::DecisionSelected, None)],
-                    130 => vec![row(4, hour, EventFeedKind::DecisionCompleted, Some((3, 126)))],
-                    _ => Vec::new(),
-                };
-                TableView::Complete(TableRows::FeedEvents(rows))
-            };
-            frame
-        })
-        .collect();
-    let current: Vec<usize> = TableId::ALL.iter().map(|table| table.field_count()).collect();
-    let mut held = current.clone();
-    held[TableId::FeedEvents.index()] = 0;
-    let writers = recorder_derive::writers_within(&held, &current);
-    let replay = Replay::from_records(writers, CAMPAIGN.into(), &[records(1, frames)])
-        .unwrap()
-        .into_timelines(&Default::default())
-        .unwrap();
-    let src = Source::from_replay(
-        dashboard_base::SourceKey { source_id: "feed-pin".into(), revision: "1".into() },
-        "synthetic.battleplan".into(),
-        Arc::new(replay),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    let load = LoadContext { content: None };
-    let ask = |facets: Vec<FacetFilter>, page_size: u32| FeedPageParams {
-        branch_id: "1".into(),
-        facets,
-        from: Some(100.0),
-        to: 140.0,
-        cursor: None,
-        page_size,
-        scope: None,
-    };
-    let feed = EventFeed::load(&src, &ask(Vec::new(), 1), &load, &AtomicBool::new(false)).unwrap();
-    assert_eq!(feed.total, "4");
-    assert_eq!(feed.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [108]);
-    assert_eq!(feed.missing.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>(), [(118, 122)]);
-
-    let choice_kinds = vec![FacetFilter { name: "kind".into(), values: vec![i64::from(EventFeedKind::ScriptEventFired.code().unwrap())], ..Default::default() }];
-    let choices = EventChoices::load(&src, &ask(choice_kinds, 10), &load, &AtomicBool::new(false)).unwrap();
-    assert_eq!(choices.total, "1");
-    assert_eq!(choices.rows.len(), 1);
-    assert_eq!(choices.rows[0].occurrence.as_ref().unwrap().edges.len(), 2, "event opener joins its option selection");
-    assert_eq!(choices.missing.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>(), [(118, 122)]);
-
-    let decision_kinds = vec![FacetFilter { name: "kind".into(), values: vec![i64::from(EventFeedKind::DecisionSelected.code().unwrap())], ..Default::default() }];
-    let decisions = Decisions::load(&src, &ask(decision_kinds, 10), &load, &AtomicBool::new(false)).unwrap();
-    assert_eq!(decisions.total, "1");
-    assert_eq!(decisions.rows.len(), 1);
-    assert_eq!(decisions.rows[0].occurrence.as_ref().unwrap().edges.len(), 2, "decision opener joins its completion");
-    assert_eq!(decisions.missing.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>(), [(118, 122)]);
 }

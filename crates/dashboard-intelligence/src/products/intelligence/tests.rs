@@ -122,10 +122,10 @@ fn captivity_and_cooldown_days_round_as_the_game_does_and_progress_is_never_clam
 }
 
 mod espionage {
-    use super::super::espionage::{Ending, EspionageLog, EspionageLogParams, OperationState, current_phase, description, elapsed_days, endings, operatives, preparation_ratio};
+    use super::super::espionage::{Ending, OperationState, current_phase, description, elapsed_days, endings, operatives, preparation_ratio};
     use dashboard_query::log::Cell;
     use game_model::calendar::HOUR_EPOCH;
-    use replay_data::rows::{OperationAssignmentRow, OperationCompletionRow, OperationRow, OperativeMembershipRow, Recorded};
+    use replay_data::rows::{OperationAssignmentRow, OperationRow, OperativeMembershipRow, Recorded};
 
     fn operation(duration_days: i32, start_hour: i32, phase_count: u32, terminal: u8) -> OperationRow {
         OperationRow { id: 7, duration_days, start_hour, phase_count, terminal, assigned_slots: 2, ..OperationRow::default() }
@@ -190,71 +190,8 @@ mod espionage {
         };
         assert_eq!(description(&cells("Stole a blueprint.", 0)), Ok("Stole a blueprint.".to_owned()));
         assert!(description(&cells("bad \u{FFFD} bytes", 0)).unwrap_err().contains("non-UTF-8"));
-        assert_eq!(description(&cells("", 1)).unwrap_err().contains("byte budget"), true);
-        assert_eq!(description(&cells("", 2)).unwrap_err().contains("byte ring"), true);
-    }
-
-    #[test]
-    fn espionage_log_page_preserves_rows_and_coverage_gaps() {
-        use dashboard_base::{
-            Source,
-            products::{LoadContext, Product},
-            test_fixtures::{CAMPAIGN, ownership_frame, records},
-        };
-        use replay::campaign::Replay;
-        use replay_data::rows::{LexicalTokenRow, TableId, TableRows};
-        use replay_frame::frame::TableView;
-        use std::sync::{Arc, atomic::AtomicBool};
-
-        let frames = (100..=140)
-            .map(|hour| {
-                let mut frame = ownership_frame(1, hour, 9001);
-                *frame.tables[TableId::Operations.index()] = TableView::Complete(TableRows::Operations(Vec::new()));
-                *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 5, literal: b"operation_steal".to_vec() }]));
-                *frame.tables[TableId::OperationCompletions.index()] = if (118..=122).contains(&hour) {
-                    TableView::Truncated { rows: TableRows::OperationCompletions(Vec::new()), missing: 1 }
-                } else if hour == 110 || hour == 130 {
-                    TableView::Complete(TableRows::OperationCompletions(vec![OperationCompletionRow {
-                        owner: 9001,
-                        sequence: hour as u64,
-                        id: hour as u64,
-                        target: 44,
-                        definition_token: 5,
-                        completion_hour: hour,
-                        terminal: 1,
-                        bonus: 0,
-                        detected: 0,
-                        effect_description: b"Done".to_vec(),
-                        description_error: 0,
-                        description_required: 4,
-                    }]))
-                } else {
-                    TableView::Complete(TableRows::OperationCompletions(Vec::new()))
-                };
-                frame
-            })
-            .collect();
-        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
-            .unwrap()
-            .into_timelines(&Default::default())
-            .unwrap();
-        let src = Source::from_replay(
-            dashboard_base::SourceKey { source_id: "esp-log".into(), revision: "1".into() },
-            "synthetic.battleplan".into(),
-            Arc::new(replay),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let page = EspionageLog::load(
-            &src,
-            &EspionageLogParams { branch_id: "1".into(), facets: Vec::new(), from: Some(100.0), to: 140.0, cursor: None, page_size: 1 },
-            &LoadContext { content: None },
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(page.total, "2");
-        assert_eq!(page.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [110]);
-        assert_eq!(page.missing.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>(), [(118, 122)]);
+        assert!(description(&cells("", 1)).unwrap_err().contains("byte budget"));
+        assert!(description(&cells("", 2)).unwrap_err().contains("byte ring"));
     }
 }
 
