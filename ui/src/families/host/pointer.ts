@@ -1,5 +1,5 @@
 import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.ts';
-import type { InstalledAction, InstalledPicture, InstalledViewport } from '../plan.ts';
+import type { InstalledPicture, InstalledViewport } from '../plan.ts';
 import type { FamilyPointerMode, ParsedFamilyHit } from './adapter.ts';
 import type { FamilyTooltipController, FamilyTooltipField } from './tooltips.ts';
 
@@ -30,24 +30,6 @@ export function clientPointToInstalled(
     return [localX, localY];
   }
   return [localX * (viewport.width / rect.width), localY * (viewport.height / rect.height)];
-}
-
-export function resolveInstalledAction(
-  installed: InstalledPicture | null | undefined,
-  key: string,
-  toggle: boolean,
-): InstalledAction | null {
-  if (!installed) return null;
-  const target = installed.actionKeys.get(key);
-  return {
-    installedId: installed.id,
-    owner: installed.owner,
-    subject: target?.subject ?? key,
-    hour: target?.hour ?? installed.hour,
-    ...(toggle || target?.toggle ? { toggle: true } : {}),
-    ...(target?.label !== undefined ? { label: target.label } : {}),
-    ...(target?.meta !== undefined ? { meta: target.meta } : {}),
-  };
 }
 
 export function parseDefaultRowHit(hitKey: string | null): ParsedFamilyHit | null {
@@ -86,7 +68,7 @@ export interface FamilyPointerBindingOptions {
   readonly onHoverChange?: (hit: ParsedFamilyHit | null) => void;
   readonly gestures?: FamilyPointerGestures;
   readonly rowDrag?: FamilyRowDrag;
-  readonly onActivate: (key: string, toggle: boolean, action?: InstalledAction, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => void;
+  readonly onActivate: (key: string, toggle: boolean, hit: ParsedFamilyHit | null, picture: InstalledPicture | null) => void;
   readonly onContextMenu?: (key: string | null, clientX: number, clientY: number, hit?: ParsedFamilyHit | null, picture?: InstalledPicture | null) => boolean;
 }
 
@@ -174,61 +156,22 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     return clientPointToInstalled(clientX, clientY, box, installedNow()?.viewport);
   };
 
-  const dispatchActivate = (key: string, toggle: boolean, down: PointerDownState) => {
-    if (getInstalled) {
-      const cur = installedNow();
-      const picture = down.picture;
-      if (!cur || !picture || cur.owner !== picture.owner) return;
-      const base = resolveInstalledAction(picture, key, toggle);
-      if (!base) return;
-      const hit = down.hit;
-      const action: InstalledAction = {
-        ...base,
-        subject: hit?.subject ?? base.subject,
-        hour: (hit?.hour ?? base.hour) as InstalledAction['hour'],
-        ...(hit?.label !== undefined ? { label: hit.label } : {}),
-        ...(hit?.meta !== undefined ? { meta: hit.meta } : {}),
-      };
-      onActivate(action.subject, toggle, action, hit, picture);
-      return;
-    }
-    onActivate(key, toggle, undefined, down.hit, null);
+  const sameOwner = (stamp: PictureStamp): boolean => {
+    if (!getInstalled) return true;
+    const cur = installedNow();
+    return cur !== null && cur.owner === stamp.owner;
   };
 
-  const onPointerMove = (event: PointerEvent) => {
-    if (!event.isTrusted) return;
-    if (pointerDown) {
-      const dx = event.clientX - pointerDown.x;
-      const dy = event.clientY - pointerDown.y;
-      if (!pointerDown.cancelled && Math.hypot(dx, dy) > CLICK_CANCEL_PX) {
-        pointerDown.cancelled = true;
-        if (pointerDown.button === 0 && !isBlocked() && pointerDown.hit && rowDrag?.starts(pointerDown.hit)) {
-          pointerDown.rowDrag = true;
-          try { bodyNode.setPointerCapture?.(pointerDown.pointerId); } catch {}
-        } else if (pointerDown.button === 0 && !isBlocked() && gestures?.onDragMove) {
-          pointerDown.dragging = true;
-          try { bodyNode.setPointerCapture?.(pointerDown.pointerId); } catch {}
-          gestures.onDragStart?.(pointerDown.startPoint);
-        }
-      }
-      if (pointerDown.rowDrag) {
-        rowDrag?.move(toPoint(event.clientX, event.clientY));
-        return;
-      }
-      if (pointerDown.dragging) {
-        gestures?.onDragMove?.(toPoint(event.clientX, event.clientY), [dx, dy]);
-        return;
-      }
-    }
-    if (isBlocked()) return;
-    const last = lastPointerRef.current;
-    if (last && last.x === event.clientX && last.y === event.clientY) return;
-    lastPointerRef.current = { x: event.clientX, y: event.clientY };
-    tooltips.cancelHoverLeave();
+  const hover = (clientX: number, clientY: number) => {
     const moved = installedNow();
     const stamp: PictureStamp = { installedId: moved?.id, owner: moved?.owner };
-    pipeline.pointer(pipe, 0, toPoint(event.clientX, event.clientY), (hitKey, hitMeta) => {
+    pipeline.pointer(pipe, 0, toPoint(clientX, clientY), (hitKey, hitMeta) => {
       if (isBlocked() || !acceptsReply(hitMeta, stamp)) return;
+      if (getInstalled && installedNow()?.id !== stamp.installedId) {
+        const last = lastPointerRef.current;
+        if (last) hover(last.x, last.y);
+        return;
+      }
       const parsed = parseHit(hitKey, moved);
       const nextKey = parsed?.key ?? null;
       const changed = nextKey !== inspectedKeyRef.current;
@@ -253,6 +196,45 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
         });
       }
     });
+  };
+
+  const onPointerMove = (event: PointerEvent) => {
+    if (!event.isTrusted) return;
+    if (pointerDown) {
+      const dx = event.clientX - pointerDown.x;
+      const dy = event.clientY - pointerDown.y;
+      if (!pointerDown.cancelled && Math.hypot(dx, dy) > CLICK_CANCEL_PX) {
+        pointerDown.cancelled = true;
+        if (pointerDown.button === 0 && !isBlocked() && pointerDown.hit && rowDrag?.starts(pointerDown.hit)) {
+          pointerDown.rowDrag = true;
+          try { bodyNode.setPointerCapture?.(pointerDown.pointerId); } catch {}
+        } else if (pointerDown.button === 0 && !isBlocked() && gestures?.onDragMove) {
+          pointerDown.dragging = true;
+          try { bodyNode.setPointerCapture?.(pointerDown.pointerId); } catch {}
+          gestures.onDragStart?.(pointerDown.startPoint);
+        }
+      }
+      if (pointerDown.rowDrag) {
+        if (!sameOwner(pointerDown)) {
+          const down = pointerDown;
+          pointerDown = null;
+          endDrag(down);
+          return;
+        }
+        rowDrag?.move(toPoint(event.clientX, event.clientY));
+        return;
+      }
+      if (pointerDown.dragging) {
+        gestures?.onDragMove?.(toPoint(event.clientX, event.clientY), [dx, dy]);
+        return;
+      }
+    }
+    if (isBlocked()) return;
+    const last = lastPointerRef.current;
+    if (last && last.x === event.clientX && last.y === event.clientY) return;
+    lastPointerRef.current = { x: event.clientX, y: event.clientY };
+    tooltips.cancelHoverLeave();
+    hover(event.clientX, event.clientY);
   };
 
   const onPointerLeave = () => {
@@ -340,7 +322,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     if (!down) return;
     if (down.dragging || down.rowDrag) {
       pointerDown = null;
-      endDrag(down, isBlocked() ? null : toPoint(event.clientX, event.clientY));
+      endDrag(down, isBlocked() || (down.rowDrag && !sameOwner(down)) ? null : toPoint(event.clientX, event.clientY));
       return;
     }
     if (down.cancelled || down.button !== 0 || isBlocked()) {
@@ -361,7 +343,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
       if (isBlocked() || !acceptsReply(hitMeta, stamp)) return;
       const released = parseHit(hitKey, picture);
       if (!released || !down.resolved || released.key !== down.key) return;
-      dispatchActivate(released.key, released.toggle === true, { ...down, picture, hit: released });
+      onActivate(released.key, released.toggle === true, released, picture);
     });
   };
 
