@@ -54,6 +54,7 @@ const decisionState = (row: Record<string, unknown>): boolean => {
     case 'active': case 'available': case 'completed': case 'aborted': case 'reEnableCooldown': return true;
     case 'failed': return int(value.observedHour);
     case 'unsupported': return int(value.raw);
+    case 'notApplicable':
     case 'notRecorded': return typeof value.reason === 'string' && value.reason.length > 0;
     default: return false;
   }

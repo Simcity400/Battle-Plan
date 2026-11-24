@@ -49,7 +49,7 @@ export function useSpriteArtResolutions(
   const icons = state.caches.icons(scope);
   const resolutions = state.caches.resolutions(scope);
   const errors = failedFor(state, scope);
-  const [, setLanded] = useState(0);
+  const [landed, setLanded] = useState(0);
 
   useEffect(() => {
     const release = state.caches.hold(scope);
@@ -103,7 +103,7 @@ export function useSpriteArtResolutions(
     const err = errors.get(id);
     if (err !== undefined) return failedArt(err, true);
     return resolutions.get(id) ?? PENDING_ART;
-  }, [resolutions, errors]);
+  }, [resolutions, errors, landed]);
 }
 
 export function useSpriteArtwork(

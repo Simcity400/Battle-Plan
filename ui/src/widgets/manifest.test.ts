@@ -48,7 +48,7 @@ test('manifest accounts for every widget kind once across family views and legac
     const pair = `${entry.kind}:${normalizeView(entry.view)}`;
     assert.equal(familyPairs.has(pair), false, `${pair} must not appear in both lists`);
   }
-  assert.equal(FAMILY_VIEWS.length, 6);
+  assert.equal(FAMILY_VIEWS.length, 7);
 });
 
 test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {
@@ -147,6 +147,16 @@ test('worker projection registry loads table and bars projections lazily on dema
   assert.equal(barsLoads, 1);
   assert.equal(barsWakes, 1);
   assert.equal(familyProjection('bars', 'synthetic-lazy-bars')?.kind, 'synthetic-lazy-bars');
+
+  let timeChartWakes = 0;
+  const pp = ensureFamilyProjection('time-chart', 'political-power', DEFAULT_VIEW, () => { timeChartWakes++; });
+  if (pp === 'loading') {
+    await new Promise<void>(resolve => {
+      ensureFamilyProjection('time-chart', 'political-power', DEFAULT_VIEW, resolve);
+    });
+    assert.ok(timeChartWakes >= 1);
+  }
+  assert.equal(familyProjection('time-chart', 'political-power')?.kind, 'political-power');
 });
 
 test('shared data-driven settings controls expose bars-behind, three row heights, columns, view switch, and ordered regions', () => {

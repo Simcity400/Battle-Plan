@@ -2,6 +2,7 @@ import { DEFAULT_VIEW, type FamilyViewEntry, type FamilyViewModule } from '../fa
 import { bindFamilyManifest } from '../families/registry.ts';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration.ts';
 import type { TableProjection } from '../families/table/model.ts';
+import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../families/time-chart/declaration.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from './game-score/definition.ts';
 
 function tableSpec<TModule>(
@@ -13,6 +14,18 @@ function tableSpec<TModule>(
   return () => load().then(mod => {
     const { projection, declaration } = pick(mod);
     return { family: 'table', kind, view, projection, declaration };
+  });
+}
+
+function timeChartSpec<TModule>(
+  kind: string,
+  view: string,
+  load: () => Promise<TModule>,
+  pick: (mod: TModule) => { readonly projection: TimeChartProjection<any>; readonly declaration: TimeChartWidgetDeclaration<any, any> },
+): () => Promise<FamilyViewModule> {
+  return () => load().then(mod => {
+    const { projection, declaration } = pick(mod);
+    return { family: 'time-chart', kind, view, projection, declaration };
   });
 }
 
@@ -87,6 +100,17 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
       'table',
       () => import('./game-score/gameScoreProjection.ts'),
       mod => ({ projection: mod.gameScoreProjection, declaration: mod.gameScoreDeclaration }),
+    ),
+  },
+  {
+    kind: 'political-power',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'political-power',
+      DEFAULT_VIEW,
+      () => import('./political-power/politicalPowerProjection.ts'),
+      mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
     ),
   },
 ];

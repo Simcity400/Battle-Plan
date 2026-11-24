@@ -9,6 +9,25 @@ const CATEGORICAL = {
 export const CATEGORY_LIMIT = CATEGORICAL.dark.length;
 export const MARK_CONTRAST = 3;
 
+export const CHART_MEASURE_COLOURS = {
+  politicalPower: '#e3a83b',
+  commandPower: '#c76a90',
+  stability: '#7fa6d6',
+  warSupport: '#c98a55',
+  armyExperience: '#6cc46e',
+  navyExperience: '#7d95c4',
+  airExperience: '#d0767a',
+  fuel: '#b5a48c',
+  supplyOk: '#3fae63',
+  supplyStrained: '#e3a83b',
+  supplyNone: '#e5484d',
+  bopLeft: '#c4705a',
+  bopRight: '#4f8fcf',
+  other: '#3e3e3e',
+  short: '#e5484d',
+  shortInk: '#ff6b6f',
+} as const;
+
 const GOLDEN_ANGLE = 137.50776405003785;
 const LIGHTNESS_STEP = 0.7548776662466927;
 const CHROMA_STEP = 0.5698402909980532;

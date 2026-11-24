@@ -13,7 +13,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'national-focus', load: () => import('./national-focus') },
   { kind: 'research', playsBackDated: true, load: () => import('./research') },
   { kind: 'active-research', playsBackDated: true, load: () => import('./active-research') },
-  { kind: 'political-power', slots: ['render', 'countryChip'], load: () => import('./political-power') },
   { kind: 'political-power-spending', load: () => import('./political-power-spending') },
   { kind: 'political-power-spending-breakdown', load: () => import('./political-power-spending-breakdown') },
   { kind: 'command-power', slots: ['render', 'countryChip'], load: () => import('./command-power') },

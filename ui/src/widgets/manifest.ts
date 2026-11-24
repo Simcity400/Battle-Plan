@@ -18,6 +18,7 @@ export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
 
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: WidgetRenderer }>;
+  readonly slots?: readonly ('render' | 'countryChip')[];
 }
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
@@ -25,6 +26,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'division-template': { load: () => import('./division-template') },
   'game-score': { load: () => import('./game-score') },
   'occupied-states': { load: () => import('./occupied-states') },
+  'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'scoreboard': { load: () => import('./scoreboard') },
 };
 
@@ -143,6 +145,8 @@ export function manifestKinds(): readonly string[] {
 }
 
 export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip')[] {
+  const ui = Object.hasOwn(FAMILY_VIEW_UI, kind) ? FAMILY_VIEW_UI[kind] : undefined;
+  if (ui?.slots?.length) return ui.slots;
   const legacy = legacyEntriesForKind(kind);
   for (const entry of legacy) {
     if (entry.slots?.length) return entry.slots;
