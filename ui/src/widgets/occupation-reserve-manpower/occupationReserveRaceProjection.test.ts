@@ -109,7 +109,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
 
   const aux: CountryIdentitiesReply = {
     branchId: '1',
-    known: true,
+    known: [],
     unknown: [],
     countries: [
       { tag: 'AAA', identities: [{ countryId: 2, slot: 7, firstHour: 100, lastHour: 450 }], unresolved: [] },
@@ -123,7 +123,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
     countries: { all: false, top: null, tags: ['AAA'], holders: null },
     aux,
   } as unknown as FamilyPlanContext<CountryIdentitiesReply>;
-  const plan = occupationReserveBreakdownDeclaration.sources(ctx, { width: 600, height: 260 });
+  const plan = occupationReserveBreakdownDeclaration.sources(ctx, { width: 600, height: 260, following: false, staticSpan: [100, 450] });
   const histRead = plan.entries.find(e => e.name === 'history')?.read as BranchToHourSourceRead;
   const hoverRead = plan.entries.find(e => e.name === 'hover')?.read as ExactHoverSourceRead;
   assert.deepEqual(
