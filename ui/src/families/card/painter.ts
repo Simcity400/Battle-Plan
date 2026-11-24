@@ -1,6 +1,7 @@
 import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
+  DATE_COLUMN_WIDTH,
   drawArtSlot,
   drawDateColumn,
   drawFlagSlot,
@@ -139,15 +140,18 @@ function drawItem(ctx: Canvas2D, model: CardModel, row: CardItemRow, top: number
   if (row.muted) ctx.globalAlpha = MUTED_ROW_ALPHA;
   if (columns.date && row.date) drawDateColumn(ctx, layout.dateX, top, height, row.date.hour, theme);
   if (columns.flag && row.flag) drawMedia(ctx, row.flag, layout.flagX + layout.flagInset, middleY, CARD_FLAG_WIDTH, CARD_FLAG_HEIGHT, theme, artCache);
-  if (columns.art && row.art) drawMedia(ctx, row.art, layout.artX, middleY, columns.art.width, columns.art.height, theme, artCache);
+  const shift = columns.date && !row.date ? -(DATE_COLUMN_WIDTH + 12) : 0;
+  const titleX = layout.titleX + shift;
+  const titleWidth = layout.titleWidth - shift;
+  if (columns.art && row.art) drawMedia(ctx, row.art, layout.artX + shift, middleY, columns.art.width, columns.art.height, theme, artCache);
   const subtitle = layout.compact && row.place ? (row.subtitle ? `${row.subtitle} · ${row.place}` : row.place) : row.subtitle;
   const titleFont = `${columns.titleWeight ?? 500} 13px ${theme.font}`;
   const titleColor = row.title.kind === 'notRecorded' ? theme.muted : theme.text;
   if (subtitle) {
-    line(ctx, cardTitleText(row.title), layout.titleX, middleY - 7, layout.titleWidth, titleFont, titleColor);
-    line(ctx, subtitle, layout.titleX, middleY + 9, layout.titleWidth, `400 11px ${theme.font}`, theme.muted);
+    line(ctx, cardTitleText(row.title), titleX, middleY - 7, titleWidth, titleFont, titleColor);
+    line(ctx, subtitle, titleX, middleY + 9, titleWidth, `400 11px ${theme.font}`, theme.muted);
   } else {
-    line(ctx, cardTitleText(row.title), layout.titleX, middleY, layout.titleWidth, titleFont, titleColor);
+    line(ctx, cardTitleText(row.title), titleX, middleY, titleWidth, titleFont, titleColor);
   }
   if (row.place && layout.placeWidth > 0) line(ctx, row.place, layout.placeX, middleY, layout.placeWidth, `400 12.5px ${theme.font}`, theme.muted);
   if (row.meter && layout.meterWidth > 0) {

@@ -32,7 +32,9 @@ import {
   countrySeriesIdentity,
   memberAt,
   missingSpansOf,
-  seriesHeadValue,
+  rankEntry,
+  rankedOrder,
+  seriesHeadAt,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { STABILITY_OPTIONS } from './definition.ts';
@@ -157,8 +159,6 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const single = tags.length === 1;
     const stabMap = options.showStability ? readView.series('stability') : undefined;
     const warMap = options.showWarSupport ? readView.series('warSupport') : undefined;
-    const stabAnswer = options.showStability ? readView.answer('stability') : undefined;
-    const warAnswer = options.showWarSupport ? readView.answer('warSupport') : undefined;
 
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
     const stabByTag = new Map<string, number | null>();
@@ -166,15 +166,13 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
       const member = memberAt(options.membership, tag, hour);
-      if (options.showStability) stabByTag.set(tag, member ? seriesHeadValue(stabMap?.get(tag), stabAnswer, i, 5, 100) : null);
-      if (options.showWarSupport) warByTag.set(tag, member ? seriesHeadValue(warMap?.get(tag), warAnswer, i, 5, 100) : null);
+      if (options.showStability) stabByTag.set(tag, member ? seriesHeadAt(readView, 'stability', tag, i, 5, 100) : null);
+      if (options.showWarSupport) warByTag.set(tag, member ? seriesHeadAt(readView, 'warSupport', tag, i, 5, 100) : null);
     }
 
-    const ordered = [...tags].sort((a, b) => {
-      const va = stabByTag.get(a) ?? warByTag.get(a) ?? -Infinity;
-      const vb = stabByTag.get(b) ?? warByTag.get(b) ?? -Infinity;
-      return vb - va;
-    });
+    const present = tags.filter(tag => memberAt(options.membership, tag, hour));
+    const presentSet = new Set(present);
+    const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
 
     const colourMap = single
       ? new Map<string, string>()
@@ -192,7 +190,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       const tag = ordered[rank]!;
       const isTail = !single && rank >= 8;
       const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const countryColor = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
+      const countryColor = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.stability);
 
       if (options.showStability) {
         const bounded = stabMap?.get(tag) ?? null;
@@ -381,8 +379,10 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
         },
       });
     }
+    const rank = rankEntry(ctx, { kind: 'country-stability', measure: showStab ? 'stability' : 'warSupport' }, tags);
+    if (rank && (showStab || showWar)) entries.push(rank);
     return {
-      owner: `stability:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showStab ? 1 : 0}:${showWar ? 1 : 0}`,
+      owner: `stability:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showStab ? 1 : 0}:${showWar ? 1 : 0}:${ctx.following ? 1 : 0}`,
       entries,
     };
   },

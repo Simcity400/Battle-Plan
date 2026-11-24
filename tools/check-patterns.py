@@ -38,8 +38,23 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal")
+RULE_HINTS = {
+    "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
+    "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
+    "family-colour-literal": "use ui/src/charts/palette.ts, ui/src/shell/appearance/color.ts, or resolveKitTokens in ui/src/draw/kit.ts",
+}
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
+FAMILY_TS = re.compile(r"^ui/src/families/.+\.tsx?$")
+PROJECTION_TS = re.compile(r"^ui/src/widgets/.+Projection\.ts$")
+TS_TOKEN = re.compile(r"""//|/\*|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""", re.DOTALL)
+LOCAL_CONTRAST_INK = re.compile(
+    r"\b(?:function\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*|(?:const|let)\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*\s*=|\breadableText\s*\()"
+)
+LOCAL_TICK_ENGINE = re.compile(
+    r"\b(?:function\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*|(?:const|let)\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*\s*=)"
+)
+FAMILY_COLOUR_LITERAL = re.compile(r"""['"`]#[0-9a-fA-F]{3,8}(?=['"`])|\b(?:rgba?|hsla?)\s*\(""")
 PS_TEST = re.compile(r"\.tests\.ps1$", re.IGNORECASE)
 JS_CLOCK = re.compile(r"\bset(?:Timeout|Interval)\s*\(")
 PS_CLOCK = re.compile(r"\bStart-Sleep\b|::Sleep\s*\(", re.IGNORECASE)
@@ -565,6 +580,49 @@ def rust_matches(name, revision):
     return found
 
 
+def is_family_or_projection(name):
+    if JS_TEST.search(name):
+        return False
+    return bool(FAMILY_TS.match(name) or PROJECTION_TS.match(name))
+
+
+def mask_ts_comments(text):
+    out, at, length = [], 0, len(text)
+    blank = lambda start, end: re.sub(r"[^\n]", " ", text[start:end])
+    while (found := TS_TOKEN.search(text, at)) is not None:
+        start, token = found.start(), found.group()
+        out.append(text[at:start])
+        if token == "//":
+            end = text.find("\n", start)
+            end = length if end < 0 else end
+            out.append(blank(start, end))
+        elif token == "/*":
+            close = text.find("*/", start + 2)
+            end = length if close < 0 else close + 2
+            out.append(blank(start, end))
+        else:
+            end = found.end()
+            out.append(token)
+        at = end
+    out.append(text[at:])
+    return "".join(out)
+
+
+def family_ts_matches(name, text):
+    code = mask_ts_comments(text)
+    found = {}
+    contrast_lines = [line_of(text, m.start()) for m in LOCAL_CONTRAST_INK.finditer(code)]
+    if contrast_lines:
+        found["local-contrast-ink"] = contrast_lines
+    tick_lines = [line_of(text, m.start()) for m in LOCAL_TICK_ENGINE.finditer(code)]
+    if tick_lines:
+        found["local-tick-engine"] = tick_lines
+    colour_lines = [line_of(text, m.start()) for m in FAMILY_COLOUR_LITERAL.finditer(code)]
+    if colour_lines:
+        found["family-colour-literal"] = colour_lines
+    return found
+
+
 def matches(name, revision):
     """{rule: [line, ...]} for a file at a revision; empty when no rule reads the file."""
     text = revision.text(name)
@@ -572,6 +630,8 @@ def matches(name, revision):
         return {}
     if name.endswith(".rs"):
         return rust_matches(name, revision)
+    if is_family_or_projection(name):
+        return family_ts_matches(name, text)
     pattern = JS_CLOCK if JS_TEST.search(name) else PS_CLOCK if PS_TEST.search(name) else None
     if pattern is None:
         return {}
@@ -586,10 +646,10 @@ def git(*args):
 
 
 def read(name):
-    """Whether a rule reads the file: first-party Rust, JS and TS tests, PowerShell tests."""
+    """Whether a rule reads the file: first-party Rust, family/projection TS, JS and TS tests, PowerShell tests."""
     if name.startswith(("vendor/", "fuzz/")):
         return False
-    return name.endswith(".rs") or bool(JS_TEST.search(name) or PS_TEST.search(name))
+    return name.endswith(".rs") or is_family_or_projection(name) or bool(JS_TEST.search(name) or PS_TEST.search(name))
 
 
 def changes(base, head):
@@ -650,7 +710,8 @@ def compare(base, now):
         for rule, lines in after.items():
             if len(lines) > len(before.get(rule, ())):
                 fresh = sorted(set(lines) & added_lines(base.text(old) if old else "", now.text(new))) or lines
-                failures.append(f"{new}: {rule}: {len(before.get(rule, ()))} at the base, {len(lines)} now; new at line {', '.join(map(str, fresh))}")
+                hint = f" ({RULE_HINTS[rule]})" if rule in RULE_HINTS else ""
+                failures.append(f"{new}: {rule}: {len(before.get(rule, ()))} at the base, {len(lines)} now; new at line {', '.join(map(str, fresh))}{hint}")
     return failures
 
 

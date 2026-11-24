@@ -6,7 +6,8 @@ import type { BoundedReadView } from '../../families/plan.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
-import type { CareerRow, CareerTemplate, DivisionCareersReply } from '../../generated/dashboard';
+import type { CareerMedal, CareerRow, CareerTemplate, DivisionCareersReply } from '../../generated/dashboard';
+import { artState } from '../../families/table/identityCell.ts';
 import { validateDivisionCareers } from '../division-service-record/careersData.ts';
 import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
@@ -57,8 +58,18 @@ function awards(row: CareerRow, reply: DivisionCareersReply): TooltipExtraRow[] 
   });
 }
 
-function medalStrip(row: CareerRow, reply: DivisionCareersReply): TableCellIconItem[] {
-  return row.facts.awards.map(award => ({ name: reply.medals[award.medal]?.name ?? 'Medal name unavailable', ...(award.count > 1 ? { count: award.count } : {}) }));
+function medalArt(medal: CareerMedal | undefined, readView: BoundedReadView): Pick<TableCellIconItem, 'url' | 'pending'> {
+  if (!medal?.icon) return {};
+  const art = artState(readView, { kind: 'sprite', key: medal.icon.key, frame: medal.icon.frame });
+  return { ...(art.icon ? { url: art.icon } : {}), ...(art.iconPending ? { pending: true } : {}) };
+}
+
+function medalStrip(row: CareerRow, reply: DivisionCareersReply, art: readonly Pick<TableCellIconItem, 'url' | 'pending'>[]): TableCellIconItem[] {
+  return row.facts.awards.map(award => ({
+    name: reply.medals[award.medal]?.name ?? 'Medal name unavailable',
+    ...art[award.medal],
+    ...(award.count > 1 ? { count: award.count } : {}),
+  }));
 }
 
 const [KIND, COUNTRY, DIVISION, MEDALS, EXPERIENCE, CASUALTIES] = COLUMNS;
@@ -69,7 +80,7 @@ const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedO
   { ...KIND!, priority: 5, sortable: false, cellKind: 'kind', extra: () => ({ artShape: 'counter' }), iconSlot: true, icon: item => item.kind.icon, iconPending: item => item.kind.pending,
     value: item => textValue(item.template?.name ?? null, 'Template name unavailable') },
   { ...COUNTRY!, priority: 1, iconSlot: true, icon: item => item.flag.icon, iconPending: item => item.flag.pending, country: item => item.row.tag, value: item => item.country },
-  { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['175 Guangxi Juntuán'],
+  { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['175 Guangxi Juntuán'],
     value: item => textValue(item.row.name, item.row.nameMissing ?? 'Division name unavailable') },
   { ...MEDALS!, priority: 2, numeric: true, cellKind: 'icons', format: 'integer', widest: ['■ ■ ■ ■'],
     extra: item => ({ iconStripKind: 'medals', icons: item.strip }),
@@ -93,6 +104,7 @@ export const mostDecoratedProjection: TableProjection<DecoratedOptions> = regist
       const unrecorded = options.filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
       if (passing && unrecorded !== null) return { rows: [], empty: unrecorded, emptyKind: 'unavailable', warnings: reply.warnings };
       const templates = new Map(reply.templates.map(template => [template.template, template]));
+      const medalPictures = reply.medals.map(medal => medalArt(medal, readView));
       const kinds = new Map<string, Media>();
       const rows: DecoratedRow[] = [];
       for (const row of reply.divisions) {
@@ -100,7 +112,7 @@ export const mostDecoratedProjection: TableProjection<DecoratedOptions> = regist
         const template = templates.get(row.template);
         let kind = kinds.get(row.template);
         if (!kind) kinds.set(row.template, kind = urlMedia(template?.icon, readView));
-        rows.push({ row, template, kind, ...countryOf(row.tag, readView), medals: awards(row, reply), strip: medalStrip(row, reply) });
+        rows.push({ row, template, kind, ...countryOf(row.tag, readView), medals: awards(row, reply), strip: medalStrip(row, reply, medalPictures) });
       }
       return { rows, ...(!rows.length ? { empty: 'No divisions at this date', emptyKind: 'empty' as const } : {}), warnings: reply.warnings };
     },

@@ -42,6 +42,8 @@ static PROJECT_REWARD_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static RAID_END_DATE_WITHHELD_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static RAID_END_DATE_MISMATCH_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static RAID_END_DATE_PRESENCE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static RAID_END_DATE_UNREADABLE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static RAID_COMPLETION_COUNTRY_UNREADABLE_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static RAID_COMPLETION_COUNTRY_NEGATIVE_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static RAID_COMPLETION_COUNTRY_UNLINKED_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static RAID_COMPLETION_COUNTRY_RANGE_REFUSALS: AtomicU64 = AtomicU64::new(0);
@@ -53,15 +55,19 @@ pub fn raid_completion_data() -> impl serde::Serialize {
     let country_neg = RAID_COMPLETION_COUNTRY_NEGATIVE_REFUSALS.load(Relaxed);
     let country_unlinked = RAID_COMPLETION_COUNTRY_UNLINKED_REFUSALS.load(Relaxed);
     let country_range = RAID_COMPLETION_COUNTRY_RANGE_REFUSALS.load(Relaxed);
+    let end_unreadable = RAID_END_DATE_UNREADABLE_REFUSALS.load(Relaxed);
+    let country_unreadable = RAID_COMPLETION_COUNTRY_UNREADABLE_REFUSALS.load(Relaxed);
     crate::status::status!({
-        "refused": end_withheld + end_mismatch + end_presence + country_neg + country_unlinked + country_range,
+        "refused": end_withheld + end_mismatch + end_presence + end_unreadable + country_neg + country_unlinked + country_range + country_unreadable,
         "refusals": crate::status::map([
             (craid_instance::END_DATE_VTABLE_WITHHELD, end_withheld),
             (craid_instance::END_DATE_VTABLE_MISMATCH, end_mismatch),
             (craid_instance::END_DATE_PRESENCE_INVALID, end_presence),
+            (craid_instance::END_DATE_UNREADABLE, end_unreadable),
             (craid_instance::COMPLETION_COUNTRY_NEGATIVE, country_neg),
             (craid_instance::COMPLETION_COUNTRY_UNLINKED, country_unlinked),
             (craid_instance::COMPLETION_COUNTRY_OUT_OF_RANGE, country_range),
+            (craid_instance::COMPLETION_COUNTRY_UNREADABLE, country_unreadable),
         ].into_iter().filter(|(_, count)| *count != 0)),
         "scope": "cumulative withheld raid completion date or completion country fields; other raid fields remain recorded",
     })
@@ -1112,6 +1118,9 @@ impl Captured {
                 Some(craid_instance::END_DATE_PRESENCE_INVALID) => {
                     RAID_END_DATE_PRESENCE_REFUSALS.fetch_add(1, Relaxed);
                 }
+                Some(craid_instance::END_DATE_UNREADABLE) => {
+                    RAID_END_DATE_UNREADABLE_REFUSALS.fetch_add(1, Relaxed);
+                }
                 _ => {}
             }
             match r.completion_country_refusal {
@@ -1123,6 +1132,9 @@ impl Captured {
                 }
                 Some(craid_instance::COMPLETION_COUNTRY_OUT_OF_RANGE) => {
                     RAID_COMPLETION_COUNTRY_RANGE_REFUSALS.fetch_add(1, Relaxed);
+                }
+                Some(craid_instance::COMPLETION_COUNTRY_UNREADABLE) => {
+                    RAID_COMPLETION_COUNTRY_UNREADABLE_REFUSALS.fetch_add(1, Relaxed);
                 }
                 _ => {}
             }

@@ -74,25 +74,6 @@ test('a fuel consumption drill told to follow playback, in a widget pinned at 10
   } finally { delete host.__stub; await close(); }
 });
 
-test('two humans recorded through 109, counted at this hour: at 110 Trade flows’ market is outside the recording, not short of members', async () => {
-  const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct'), '/dashboard/useCountryGroups.ts': wrapped('useCountryGroups'),
-    '/dashboard/follow/useFollowed.ts': wrapped('usePipeline'), '/charts/useChartTokens.ts': TOKENS });
-  try {
-    const shortTrack = track(100, 109);
-    const groups = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [],
-      humans: [{ tag: 'GER', firstHour: 100, lastHour: 109 }, { tag: 'ENG', firstHour: 100, lastHour: 109 }], unobserved: { humans: [], factions: [], wars: [] },
-      countryIdentities: ['GER', 'ENG'].map((tag, index) => ({ tag, identities: [{ slot: index + 1, countryId: index + 101, firstHour: 100, lastHour: 109 }] })) };
-    const runtime = { tracks: [shortTrack], client: {}, clock: clockAt({ firstHour: 100, lastHour: 200 }, 150), addWidgetBelow() {} };
-    host.__stub = { useHeadProduct: gated, usePipeline: () => null,
-      useCountryGroups: () => ({ data: groups, complete: true, retry() {} }) };
-    const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
-    const { default: Trade } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/trade-flows/TradeFlowsWidget.tsx');
-    const market = markup(createElement(Trade, { widget: { id: 'trade', kind: 'trade-flows', trackIds: ['main'], countries: humans,
-      time: { mode: 'range', firstOffset: 5, lastOffset: 10 }, options: { view: 'market' } }, runtime, active: true, onDiagnostics() {}, countrySlot: null, setOption() {} }));
-    assert.ok(market.includes(OUTSIDE) && !/no members/.test(market), `the market on 105–110 is read at 110: ${market}`);
-  } finally { delete host.__stub; await close(); }
-});
-
 test('a named leader growing with playback, at 99 before its branch 100–109: the career is kept, current details are outside the recording, and no cursor or later event is drawn', async () => {
   const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct'), '/dashboard/products.ts': wrapped('useProduct'),
     '/widgets/generals/portraits.ts': wrapped('useLeaderPortraits'), '/charts/useChartTokens.ts': TOKENS,

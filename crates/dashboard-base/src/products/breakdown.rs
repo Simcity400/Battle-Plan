@@ -1,5 +1,10 @@
+use crate::Source;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    io,
+    sync::{Arc, PoisonError},
+};
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -254,4 +259,33 @@ pub fn breakdown(decimals: u8, leaves: &[Leaf], unrecorded: &Unrecorded) -> Brea
         parts: parts(root.children, whole),
         unrecorded_hours: unrecorded.hours,
     }
+}
+
+const HELD: usize = 4;
+
+pub struct Held<K, V>(Vec<(K, Arc<V>)>);
+
+impl<K, V> Default for Held<K, V> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+pub fn held<K, V>(source: &Source, key: K, make: impl FnOnce() -> io::Result<V>) -> io::Result<Arc<V>>
+where
+    K: PartialEq + Send + 'static,
+    V: Send + Sync + 'static,
+{
+    let state = source.state::<Held<K, V>>();
+    if let Some((_, found)) = state.lock().unwrap_or_else(PoisonError::into_inner).0.iter().find(|(held, _)| *held == key) {
+        return Ok(Arc::clone(found));
+    }
+    let made = Arc::new(make()?);
+    let mut entries = state.lock().unwrap_or_else(PoisonError::into_inner);
+    entries.0.retain(|(held, _)| *held != key);
+    if entries.0.len() >= HELD {
+        entries.0.remove(0);
+    }
+    entries.0.push((key, Arc::clone(&made)));
+    Ok(made)
 }

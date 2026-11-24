@@ -436,14 +436,25 @@ missing: string | null,
 notApplicable?: boolean, };
 export type SeriesStateReply = { branchId: string, measure: string, decimals: number, states: Array<SeriesState>, };
 export type SeriesKeyReply = { hour: number | null, };
-export type SeriesEvent = { country: CountryRef, hour: number, ordinal: string, row: SeriesDrop, };
-export type SeriesEventPage = { firstOrdinal: string, total: string, rows: Array<SeriesEvent>, cursor: string | null, };
 export type TilePart = { firstHour: number, lastHour: number, slot: number, countryId: number,
 /**
  * The first hour of its holder's unbroken segment.
  */
 segmentFirstHour: number, };
 export type TileMarks = { before: string, bins: Array<[number, number]>, };
+export type TileRanking = {
+/**
+ * The hour the top was ranked at.
+ */
+hour: number,
+/**
+ * The hours over which the same countries are the top; ask again outside them.
+ */
+from: number, until: number,
+/**
+ * Why the top is not ranked at this hour; no lines then.
+ */
+refused: string | null, };
 export type TileLine = { country: CountryRef,
 /**
  * The part's key, for a sub-keyed series.
@@ -481,7 +492,11 @@ hourBytes: number, lines: Array<TileLine>,
 /**
  * The bins, base64.
  */
-bins: string, };
+bins: string,
+/**
+ * Asked for a top: who it is at the asked hour, and for how long.
+ */
+ranking?: TileRanking, };
 export type NavigationKey = "ArrowLeft" | "ArrowRight" | "Home" | "End";
 export type SeriesRead = { country: CountryRef, hour: number,
 /**
@@ -548,13 +563,6 @@ staticText?: Array<Artwork>,
  */
 continuousStaticText: Array<Artwork>, warnings: Array<string>, };
 export type FocusMissing = { firstHour: number, lastHour: number, reason: string, };
-export type FocusArtworkParams = { branchId: string, hour: number, country: CountryRef,
-/**
- * The database every token is looked up in.
- */
-database: FocusDatabase, tokens: Array<string>, textOnly?: boolean, includeDescriptions?: boolean, iconsOnly?: boolean, };
-export type DatedFocusArtwork = { artwork: Artwork, reason: string | null, };
-export type FocusArtworkReply = { branchId: string, hour: number, tag: string, database: FocusDatabase, items: Array<DatedFocusArtwork>, warnings: Array<string>, };
 export type TechnologyArtworkParams = { tokens: Array<string>,
 /**
  * Repeated definitions have separate recorded indices; null means an unindexed use.
@@ -980,6 +988,41 @@ countedFrom: number | null, available: boolean, observed: Array<HourSpan>,
  * Reads that may miss events: read only in part, or holding a caller whose membership in aircraft bombing is unknown.
  */
 incomplete: Array<HourSpan>, countries: Array<MilitaryAirCountry>, openings: Array<MilitaryAirOpening>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, notes: Array<MilitaryAirNote>, warnings: Array<string>, };
+export type MilitaryAirAtParams = { branchId: string, family: MilitaryAirFamily, regions: Array<number>, causes: Array<number>,
+/**
+ * A range starts at the events' own game hour; the timeline's first observed hour when absent.
+ */
+fromHour?: number, hour: number, metric: MilitaryAirMetric, top?: number,
+/**
+ * Only these countries' rows, a recorded zero included.
+ */
+countries?: Array<CountryRef>, };
+export type MilitaryAirAtRow = { tag: string, identity: string,
+/**
+ * The first hour of the holder's unbroken presence that holds the hour.
+ */
+segmentFirstHour: number, dealt: string, taken: string,
+/**
+ * False where events since the totals' start may be missing: the totals are at least these.
+ */
+complete: boolean, };
+export type MilitaryAirAtReply = { family: MilitaryAirFamily, hour: number, countedFrom: number | null,
+/**
+ * The last hour this answer holds for.
+ */
+validUntil: number,
+/**
+ * Why nothing is known at the hour.
+ */
+missing: string | null,
+/**
+ * Why the rows are not in rank order: the population is not fully read since the totals' start.
+ */
+rankMissing: string | null, rows: Array<MilitaryAirAtRow>,
+/**
+ * Totals whose country is not recorded: dealt, then taken.
+ */
+unattributed: [string, string], warnings: Array<string>, };
 export type PoliticsHistoryParams = { branchId: string, mode: PoliticsHistoryMode,
 /**
  * The country, for [`PoliticsHistoryMode::Country`].
@@ -1201,28 +1244,6 @@ export type NavyParams = { branchId: string, countries: Array<CountryRef>, top: 
 export type NavyMeasure = "ships" | "strength";
 export type NavyOwnership = "roster" | "logical";
 export type NavyGrouping = "class" | "type";
-export type VolunteersExpeditionariesParams = { branchId: string, kind: MilitaryAidKind,
-/**
- * Links touching these tags only; none for every link.
- */
-countries: Array<CountryRef> | null, };
-export type VolunteersExpeditionariesReply = { links: Array<MilitaryAidLink>,
-/**
- * The game's own tally of each sender's volunteer hosts (kind `land` only).
- */
-tallies: Array<MilitaryAidLink>,
-/**
- * Hours whose aid is not known for every sender: the timeline holds none, or a list's sender
- * resolves through no link.
- */
-unobserved: Array<HourSpan>, warnings: Array<string>, };
-export type MilitaryAidKind = "land" | "expeditionary";
-export type MilitaryAidRun = { firstHour: number, lastHour: number,
-/**
- * Null where not known; never zero for that.
- */
-divisions: number | null, startsSegment: boolean, };
-export type MilitaryAidLink = { key: string, sender: string, senderSlot: number | null, senderCountryId: number | null, host: string, hostSlot: number | null, hostCountryId: number | null, runs: Array<MilitaryAidRun>, };
 export type BranchParams = { branchId: string, };
 export type SubjectLevel = {
 /**
@@ -1298,92 +1319,6 @@ presentAtEnd: boolean,
  */
 endedBy: boolean, };
 export type DiplomacyPactsReply = { kinds: Array<DiplomacyKind>, pacts: Array<DiplomacyPact>, unobserved: Array<HourSpan>, warnings: Array<string>, };
-export type OperativesDepartedParams = { branchId: string, countries: Array<CountryRef>, hour: number, };
-export type DepartedOperative = {
-/**
- * The first and last hour the census held it on the list.
- */
-firstHour: number, lastHour: number,
-/**
- * The first read showing it gone or disbanded or killed: an upper bound of when it left.
- */
-departedHour: number, departedReason: string,
-/**
- * The full handle, as a decimal string.
- */
-id: string,
-/**
- * The asked country whose agency holds it.
- */
-roster: string,
-/**
- * The country it works for.
- */
-owner: Country, name: string | null,
-/**
- * The game saved its name empty.
- */
-unnamed: boolean, nameMissing: string | null,
-/**
- * Its portrait, an index into the reply's `artwork`.
- */
-portrait: number | null, portraitMissing: string | null, skill: number | null,
-/**
- * Fixed5, as recorded.
- */
-experienceRaw: string,
-/**
- * The game's skill line and its progress to the next level (1 a whole level, never clamped).
- */
-experienceText: string | null, experienceRatio: number | null, experienceMissing: string | null,
-/**
- * As the game numbers it: 0 captured, 1 cooling down, 3 on a mission, 4 in an operation.
- */
-assignment: number, assignmentName: string | null,
-/**
- * A captivity's or cooldown's remaining days, and its progress (never clamped).
- */
-assignmentDuration: string | null, assignmentProgress: number | null, assignmentMissing: string | null,
-/**
- * The assignment's icon, an index into the reply's `artwork`.
- */
-assignmentIcon: number | null, assignmentIconMissing: string | null,
-/**
- * Where it works, when the census records a target.
- */
-target: Country | null, captured: boolean,
-/**
- * Who holds it captive, and since when, while captured.
- */
-capturer: Country | null, capturedHour: number | null, };
-export type OperativesDepartedReply = {
-/**
- * Operatives the asked lists held in the hour's stretch that left them by the hour, newest
- * first.
- */
-departed: Array<DepartedOperative>,
-/**
- * Artwork URLs the rows name by index.
- */
-artwork: Array<string>, warnings: Array<string>, };
-export type Tenure = {
-/**
- * The full handle, as a decimal string.
- */
-id: string, roster: string,
-/**
- * The first and last hour the census held it on the list within the stretch.
- */
-firstHour: number, lastHour: number, };
-export type OperativeTenuresReply = {
-/**
- * The stretch of continuous history holding the hour asked: what the tenures cover.
- */
-firstHour: number, lastHour: number,
-/**
- * Every membership of the asked active lists the stretch held, by roster then handle.
- */
-tenures: Array<Tenure>, warnings: Array<string>, };
 export type EspionageLogParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
 export type EspionageOperationParams = { branchId: string,
 /**
@@ -1451,15 +1386,6 @@ types: Array<OperationType>,
  * Why there are none: the content is not configured or not read.
  */
 missing: string | null, warnings: Array<string>, };
-export type IntelDetailsParams = { viewer: number | null, branchId: string, hour: number, country: number | null, };
-export type IntelDetailsReply = { viewer: number | null, hour: number, country: number | null, countries: Array<IntelCountry>, entries: Array<IntelDetail>, warnings: Array<string>, };
-export type IntelCountry = { id: number, tag: string, };
-export type IntelDetail = { key: string, group: string, label: string, viewer: number, target: number | null,
-/**
- * All operands of this entry are evaluated at this supplying hour.
- */
-supplyingHour: number | null, values: Array<IntelValue>, explanations: Array<IntelValue>, unavailable: string | null, };
-export type IntelValue = { name: string, value: string, };
 export type RaidLogParams = { branchId: string,
 /**
  * The timeline's first and last hour when none.
@@ -1488,7 +1414,7 @@ id: string,
 /**
  * The first and last hour its row lived within the span.
  */
-firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, launchedRaider: string | null, endedRaider: string | null, victim: string | null,
+firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, raiderSlot: number | null, launchedRaider: string | null, endedRaider: string | null, victim: string | null,
 /**
  * Why the victim is not named, when it is not.
  */
@@ -1508,7 +1434,11 @@ phase: number | null, phaseName: string | null, outcome: number | null, outcomeN
 /**
  * Its phases over the span, in hour order.
  */
-runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean, endedHour: number | null, endedExact: boolean, endedSource: RaidEndedSource | null, disappearedHour: number | null, disappearedExact: boolean, succeeded: boolean, };
+runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean, endedHour: number | null, endedExact: boolean, endedSource: RaidEndedSource | null,
+/**
+ * The first read that saw it ended and successful: what a later read reveals is never counted before it.
+ */
+succeededHour: number | null, disappearedHour: number | null, disappearedExact: boolean, };
 export type RaidLogReply = {
 /**
  * False only when the content proves no raid type exists; true once a raid was recorded; none
@@ -1665,58 +1595,6 @@ lineHours: Array<HourSpan>,
  * The hours one `production-line-detail` window covers.
  */
 detailHours: number, warnings: Array<string>, };
-export type LineRun = { firstHour: number, lastHour: number, startsSegment: boolean, variant: string,
-/**
- * The organisation's reference; "0" for none.
- */
-mio: string, activeFactories: number, requestedFactories: number,
-/**
- * The most factories the line takes (the efficiency average's clamp).
- */
-maxFactories: number,
-/**
- * IC per unit, fixed5.
- */
-costRaw: string,
-/**
- * IC added at each production tick, fixed5.
- */
-speedRaw: string,
-/**
- * Units per week, fixed5; null without a positive cost.
- */
-weeklyRaw: string | null,
-/**
- * Efficiency, Q15: 100% is 3276800.
- */
-efficiencyRaw: string, priority: number,
-/**
- * Units still ordered; −1 for no limit.
- */
-amount: number, };
-export type LineDetail = {
-/**
- * The line's key in `production-lines`.
- */
-key: string, runs: Array<LineRun>,
-/**
- * Its output rows over the window, where recorded.
- */
-output: Array<OutputRun>, };
-export type ProductionDetailParams = { branchId: string, country: CountryRef, window: number,
-/**
- * The held identity's own runs: lines are read only while the country holds them.
- */
-within?: Array<HourSpan>, };
-export type ProductionLineDetailReply = { branchId: string, tag: string, decimals: number, window: number,
-/**
- * The window's hours, both included.
- */
-firstHour: number, lastHour: number,
-/**
- * Every line with an hour in the window, in the order first seen.
- */
-lines: Array<LineDetail>, warnings: Array<string>, };
 export type ProductionBreakdownParams = { branchId: string, country: CountryRef,
 /**
  * The line's key in `production-lines`.
@@ -1757,11 +1635,29 @@ export type StateNameRequest = { stateId: number, hour: number, };
 export type PlaceName = { provinceId: number, hour: number, name: string | null, missing: string | null, };
 export type PlaceStateName = { stateId: number, hour: number, name: string | null, missing: string | null, };
 export type PlaceNamesReply = { places: Array<PlaceName>, states: Array<PlaceStateName>, warnings: Array<string>, };
+export type PlaceNameRunsParams = { branchId: string,
+/**
+ * Land's ladder: a province in no state stays unnamed rather than taking its region's name.
+ */
+land: boolean, from: number, to: number, states: Array<number>, provinces: Array<number>, };
+export type NameRun = { firstHour: number, lastHour: number, name: string | null, missing: string | null,
+/**
+ * True when the subject is proven not to exist (for its owner) across the run.
+ */
+absent: boolean, };
+export type PlaceRuns = { id: number,
+/**
+ * One run per constant answer, in hour order; equal answers either side of an `unknown` span are
+ * one run, and that span's hours are still unknown.
+ */
+runs: Array<NameRun>, };
+export type PlaceNameRunsReply = { from: number, to: number,
+/**
+ * The hours inside `[from, to]` the recording does not hold, for every place alike.
+ */
+unknown: Array<RecordingGap>, states: Array<PlaceRuns>, provinces: Array<PlaceRuns>, warnings: Array<string>, };
 export type StrategicRegionEntry = { id: number, name: string | null, nameMissing: string | null, land: boolean, sea: boolean, };
 export type StrategicRegionsReply = { regions: Array<StrategicRegionEntry>, warnings: Array<string>, };
-export type MinefieldHistoryParams = { branchId: string, region: number, countries: Array<CountryRef>, firstHour: number, lastHour: number, };
-export type MineLine = { country: CountryRef, runs: Array<[number, number, string | null]>, };
-export type MinefieldHistoryReply = { region: number, lines: Array<MineLine>, scale: number, warnings: Array<string>, };
 export type NavalSupremacyParams = { branchId: string, country: CountryRef,
 /**
  * The window of days asked ([`super::windows`]).
@@ -1782,6 +1678,13 @@ firstDayHour: number, dayHours: number, days: number, unknown: Array<UnknownDays
 export type LeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type LeaderPortrait = { reference: string, image: string | null, missing: string | null, resolution: ArtResolution, };
 export type LeaderPortraitsReply = { portraits: Array<LeaderPortrait>, warnings: Array<string>, };
+export type LeaderNameRunsParams = { branchId: string, owner: CountryRef, references: Array<string>, from: number, to: number, };
+export type LeaderRuns = { reference: string, runs: Array<NameRun>, };
+export type LeaderNameRunsReply = { from: number, to: number,
+/**
+ * The hours inside `[from, to]` the recording does not hold, for every leader alike.
+ */
+unknown: Array<RecordingGap>, leaders: Array<LeaderRuns>, warnings: Array<string>, };
 export type LeaderCareerParams = { branchId: string, reference: string, };
 export type CareerRun = { firstHour: number, lastHour: number, role: LeaderRole, skill: number | null, components: [number, number, number, number], };
 export type CareerBattle = { start: number, read: number, unknown: boolean, kind: number, won: boolean | null, resultHour: number | null, resultRead: number | null, };
@@ -1874,20 +1777,6 @@ values?: Array<[string, string, string] | null>, };
 export type WeatherReadout = { "kind": "condition", id: string, name: string, since_hour: number | null, since_bounded: boolean, as_of_hour: number, } | { "kind": "value", value: string, as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
 export type WeatherLegendItem = { id: string, name: string, ordinal: number, };
 export type FocusHourParams = { branchId: string, country: CountryRef, hour: number, };
-export type FocusHourReply = { focus: FocusHour | null, missing: FocusMissing | null, warnings: Array<string>, };
-export type FocusHour = { slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number | null, current: string | null, continuous: string | null, paused: boolean, completed: FocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
-export type FocusPages = {
-/**
- * The order's place among the country's orders.
- */
-first: string, count: string, rows: string, };
-export type FocusOrderPageParams = { branchId: string, country: CountryRef, hour: number,
-/**
- * The pages `focus-hour` gave for the hour.
- */
-pages: FocusPages, page: string, };
-export type FocusOrderPage = { entries: Array<FocusEntry> | null, warnings: Array<string>, };
-export type FocusCompletions = { completions: Array<FocusEntry>, warnings: Array<string>, };
 export type FocusCardArt = { token: string, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null, };
 export type FocusCardCompleted = { art: FocusCardArt, completedByHour: number | null, dateMissing: string | null, };
 export type FocusCardCurrent = { art: FocusCardArt, continuous: boolean, paused: boolean, totalDays: number | null, elapsedDays: number | null, permyriad: number | null, daysLeft: number | null, progressMissing: string | null, };
@@ -2146,34 +2035,6 @@ export type IdeologyInfo = { token: string, name: string | null,
  * sRGB bytes; null when the content's colour is refused (the warnings name why).
  */
 color: [number, number, number] | null, };
-export type CasualtyPairsParams = { branchId: string, countries: Array<CountryRef>,
-/**
- * Otherwise each chosen country's casualties with every enemy.
- */
-between: boolean,
-/**
- * None asks for the window manifest.
- */
-window: number | null, };
-export type CasualtyPairRun = { firstHour: number, lastHour: number, readHour: number, hourly: boolean,
-/**
- * What the first country took from the second, over every lifetime of the pair.
- */
-firstTaken: string, secondTaken: string,
-/**
- * Either country's recorded history lost a lifetime's last hours in a gap.
- */
-incomplete: boolean, };
-export type CasualtyPairSeries = { identity: string, firstCountry: string, secondCountry: string, runs: Array<CasualtyPairRun>, };
-export type CasualtyPairsReply = { branchId: string, available: boolean, windows: Array<HourSpan>, window: number | null,
-/**
- * Hours of the window the casualty tables were written.
- */
-observed: Array<HourSpan>, pairs: Array<CasualtyPairSeries>,
-/**
- * The window has hours the casualty tables were not written.
- */
-hasGap: boolean, warnings: Array<string>, };
 export type CasualtyBreakdownParams = { branchId: string, country: CountryRef, window: number | null, };
 export type CasualtyBreakdownRun = { firstHour: number, lastHour: number, readHour: number, hourly: boolean, groupingHour: number, groupingHourly: boolean, enemyHour: number, enemyHourly: boolean,
 /**
@@ -2194,11 +2055,6 @@ export type CasualtyBreakdownReply = { branchId: string, tag: string, available:
  * The identities holding the tag within the observed hours.
  */
 countries: Array<CasualtyBreakdownCountryRun>, series: Array<CasualtyBreakdownSeries>, wars: Array<CasualtyBreakdownWar>, hasGap: boolean, warnings: Array<string>, };
-export type CasualtyLabelsReply = {
-/**
- * The game's name for losses no attacker dealt, in the recording's language.
- */
-unknownLabel: string, warnings: Array<string>, };
 export type PeaceDealsParams = { branchId: string, };
 export type PeaceDealsReply = { branchId: string, derived: boolean,
 /**
@@ -2413,76 +2269,6 @@ bad: Array<[number, number, number]>,
  */
 convoys: Array<Array<[number, number, number]>>, };
 export type ConvoyResource = { id: number, token: string, name: string | null, };
-export type TradeFlowParams = { branchId: string,
-/**
- * Every country's trade when none; else the flows any holder of these tags sold or bought.
- */
-countries: Array<CountryRef> | null,
-/**
- * The window of hours read ([`super::windows`]): never the whole timeline in one reply.
- */
-window: number,
-/**
- * The hours of the window read; all of it when not given.
- */
-from: number | null, to: number | null, };
-export type TradeFlowsReply = { branchId: string, firstHour: number, lastHour: number,
-/**
- * Fixed-point decimals of every amount.
- */
-decimals: number,
-/**
- * Every recorded resource, by native index.
- */
-resources: Array<ResourceInfo>,
-/**
- * Every tag a flow names, in byte order.
- */
-countries: Array<string>,
-/**
- * Each listed tag's holders over the span.
- */
-countryIdentities: Array<TradeCountryIdentity>,
-/**
- * Hours the deals were read: outside them nothing is known, not no trade.
- */
-known: Array<HourSpan>,
-/**
- * Hours some deals were left out of the flows.
- */
-partial: Array<PartialSpan>, flows: Array<TradeFlow>, warnings: Array<string>, };
-export type TradeFlow = {
-/**
- * Indexes into the reply's countries: the sides' tags at the flow's first run.
- */
-seller: number, buyer: number,
-/**
- * The sides' holders, `[slot,id]`.
- */
-sellerIdentity: string, buyerIdentity: string,
-/**
- * Each run's sides' tags.
- */
-sellerTags: Array<number>, buyerTags: Array<number>, resource: number, firstHours: Array<number>, lastHours: Array<number>,
-/**
- * Fixed-point daily amount delivered, exact.
- */
-deliveredRaw: Array<string>, factories: Array<number>, convoysAssigned: Array<number>, convoysRequired: Array<number>, deals: Array<number>, };
-export type TradeCountryIdentity = { tag: string, runs: Array<CountryIdentityRun>, };
-export type PartialSpan = { firstHour: number, lastHour: number, deals: number, };
-export type ResourceInfo = {
-/**
- * The native index (`ResourceDefinitions.id`).
- */
-id: number, token: string,
-/**
- * Which declaration of its token this is, from 1, in the game's order.
- */
-ordinal: number, name: string | null,
-/**
- * An artwork URL; null when content has no icon for it.
- */
-icon: string | null, };
 export type ProductionSpendingParams = { branchId: string, country: CountryRef,
 /**
  * Also read the producer's dockyard repair rates.
@@ -2765,48 +2551,24 @@ projects: Array<ConstructionProject>,
  * The names of the states its lines name.
  */
 states: Array<ConstructionStateName>, warnings: Array<string>, };
-export type ConstructionSpendingParams = { branchId: string, country: CountryRef, };
-export type SpentStep = { knownAt: number,
+export type ConstructionBreakdownParams = { branchId: string, country: CountryRef, hour: number, };
+export type ConstructionBreakdownReply = {
 /**
- * Fixed5; null where the total is not recorded (past what the recording holds).
+ * The branch's first hour: spending is counted from it.
  */
-totalRaw: string | null, };
-export type SpendingUnknown = { knownAt: number, reason: SpendingGap, project: string, until: number | null, };
-export type LeafProject = { project: string, firstRead: number, until: number | null, };
-export type SpendingLeaf = { repair: boolean, kind: ProjectKind,
+from: number, hour: number,
 /**
- * The building type's lexer id ([`ConstructionType::id`]).
+ * The breakdown stands unchanged from `hour` through this hour.
  */
-building: number | null, state: number | null, toState: number | null,
+through: number, breakdown: Breakdown,
 /**
- * In hour order.
+ * Projects whose output before observation began is not counted.
  */
-spent: Array<SpentStep>, unknown: Array<SpendingUnknown>,
+beforeFirstRead: number,
 /**
- * By first read.
+ * Projects whose output no country can be given, not counted.
  */
-projects: Array<LeafProject>, };
-export type ConstructionSpendingReply = { branchId: string, tag: string,
-/**
- * Units per factory output point of a total.
- */
-costScale: number,
-/**
- * Either construction queue was read in the branch.
- */
-recorded: boolean, types: Array<ConstructionType>, repairIcon: string | null, states: Array<ConstructionStateName>,
-/**
- * The tag's lines whose output before observation began is not counted.
- */
-beforeFirstRead: number, leaves: Array<SpendingLeaf>,
-/**
- * Output no country can be given: lines named by output alone with no recorded owner.
- */
-unattributed: Array<SpendingUnknown>,
-/**
- * Hours of the branch the recording does not hold: output then is not counted.
- */
-missing: Array<MissingSpan>, warnings: Array<string>, };
+unattributed: number, warnings: Array<string>, };
 export type DivisionLogParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
 export type DivisionLogTemplate = { id: string, name: string | null, };
 export type DivisionLogGap = { firstHour: number, lastHour: number, reason: string, };
@@ -2989,6 +2751,9 @@ window?: number, };
 export type NavalAttribution = "lost" | "sunkBy";
 export type NavalKind = "ships" | "convoys" | "both";
 export type NavalPeriod = "running" | "month";
+export type NavalLossesAtParams = { branchId: string, hour: number, countries: Array<CountryRef>, top?: number, attribution: NavalAttribution, kind: NavalKind, period: NavalPeriod, };
+export type NavalLossesAtReply = { firstHour: number, lastHour: number, parts: Array<ForcePart>, rows: Array<ForceAtRow>, missing: string | null, warnings: Array<string>, };
+export type ForceAtRow = { country: CountryRef, tag: string, total: number | null, referenceTotal?: number | null, missing: string | null, values: Array<number | null>, partsMissing: string | null, };
 export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, warnings: Array<string>, definitions?: Array<ResearchDefinitionText>, };
 export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
 export type ResearchSlotHistory = { index: number, availability: Array<ResearchCoverage>, entries: Array<ResearchEntry>, };
@@ -3130,6 +2895,8 @@ export type EventFeedPage = { branchId: string, log: string, columns: Array<stri
  * What the page's rows could not show, each reason once with its count.
  */
 unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
+export type FeedTailParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, hour?: number, offset?: string, limit: number, countFacets: Array<LogFacetCountAsk>, scope: Array<MembershipRun> | null, };
+export type EventFeedTailReply = { branchId: string, log: string, columns: Array<string>, baseOrdinal: string, firstOrdinal: string, offset: string, total: string, rows: Array<EventFeedPageRow>, facetTotals: Array<LogFacetTotal>, missing: Array<MissingSpan>, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
 export type ScriptCurrency = "politicalPower" | "commandPower";
 export type ScriptCost = { currency: ScriptCurrency,
 /**
@@ -3161,6 +2928,7 @@ export type ScriptOccurrence = { id: string,
 opened: boolean, edges: Array<ScriptEdge>, };
 export type ScriptPageRow = { hour: number, key: string, ordinal: string, country?: CountryRef, ownOrdinal?: string, cells: Array<LogCell>, occurrence: ScriptOccurrence | null, };
 export type ScriptOccurrencePage = { branchId: string, log: string, columns: Array<string>, firstOrdinal: string, total: string, cursor: string | null, rows: Array<ScriptPageRow>, missing: Array<MissingSpan>, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
+export type ScriptOccurrenceTailReply = { branchId: string, log: string, columns: Array<string>, baseOrdinal: string, firstOrdinal: string, offset: string, total: string, rows: Array<ScriptPageRow>, facetTotals: Array<LogFacetTotal>, missing: Array<MissingSpan>, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
 export type EventFeedSpanParams = { branchId: string,
 /**
  * The timeline's first and last hour when none.
@@ -3186,33 +2954,6 @@ rows: Array<EventFeedRow>,
  * read, refusals of their rows.
  */
 unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
-export type EndedLeaseTerms = { key: string,
-/**
- * The handle, hexadecimal.
- */
-id: string, giver: string | null, giverMissing?: string, receiver: string | null, receiverMissing?: string, revision: string | null, revisionMissing?: string, activeSince: number | null, activeSinceMissing?: string, lastDelivery: number | null, lastDeliveryMissing?: string, monthly: Array<MarketItem> | null, monthlyMissing?: string,
-/**
- * Production shares, /1000 percent.
- */
-percentage: Array<MarketItem> | null, percentageMissing?: string, once: Array<MarketItem> | null, onceMissing?: string, delivered: Array<MarketItem> | null, deliveredMissing?: string, sunk: Array<MarketItem> | null, sunkMissing?: string, fuelDailyRaw: string | null, fuelDailyRawMissing?: string, fuelPercentageRaw: string | null, fuelPercentageRawMissing?: string, lastFuelDeliveredRaw: string | null, lastFuelDeliveredRawMissing?: string, };
-export type EndedLease = { terms: EndedLeaseTerms, fuelSentRaw: string | null, fuelSentRawMissing?: string, fuelSunkRaw: string | null, fuelSunkRawMissing?: string,
-/**
- * The first hour it stood in its run, within the branch.
- */
-firstHour: number,
-/**
- * Its last read.
- */
-lastHour: number, };
-export type LendLeaseHistoryReply = { branchId: string,
-/**
- * By the hour each ended, then key.
- */
-agreements: Array<EndedLease>,
-/**
- * Equipment named at the end of each stretch of the branch.
- */
-variants: Array<VariantName>, icons: Array<EquipmentIcon>, warnings: Array<string>, };
 export type MarketLedgerParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
 export type MarketLedgerTailParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, hour?: number, offset?: string, limit: number, countFacets: Array<LogFacetCountAsk>, };
 export type FuelAwardsParams = { branchId: string, country: CountryRef,
@@ -3522,6 +3263,8 @@ owner: number, local: number,
  * The first usable Projects read of the project, published or not, and its state; for a project seen only in history, its first history read and an unknown state.
  */
 firstRead: number, firstState: ProjectState, statuses: Array<ProjectStatus>, entries: Array<ProjectEntry>, attempts: Array<ProjectAttempt>, };
+export type ShownCompleted = { project: number, date: number | null, };
+export type ProjectsShown = { through: number | null, running: Array<number>, completed: Array<ShownCompleted>, undated: number, };
 export type SpecialProjectsReply = { branchId: string, tag: string,
 /**
  * The tag's holders over the branch.
@@ -3550,7 +3293,7 @@ iterationTexts: { [key in number]?: string | null },
 /**
  * Why nothing is shown at any hour; the hours outside `available` say for themselves why they show nothing.
  */
-unavailable: string | null, warnings: Array<string>, };
+unavailable: string | null, shown: ProjectsShown, warnings: Array<string>, };
 export type AirChoice = { id: string, name: string, };
 export type AirChoicesReply = {
 /**
@@ -3919,8 +3662,6 @@ last: number | null,
  */
 children: Array<BreakdownPart>, };
 export type BreakdownState = "known" | "partial" | "atLeast" | "notRecorded";
-export type StabilityReadsParams = { branchId: string, from: number, to: number, };
-export type StabilityReadsReply = { reads: Array<HourSpan>, warnings: Array<string>, };
 export type AirTimelineParams = { branchId: string, firstHour: number, lastHour: number, mode?: AirMode,
 /**
  * A side's key, or a country (its slot or tag) with `viewpointCountry`.
@@ -3941,12 +3682,7 @@ theatres?: Array<string>,
 /**
  * How many of the most active regions are shown, without `regions`.
  */
-top?: number,
-/**
- * The tile of `TILE_DAYS` game days (on the absolute grid of days) whose cells are asked, of
- * the regions `regions` names, in their order; the whole view ranked when none.
- */
-tile?: number, };
+top?: number, };
 export type AirTimelineReply = {
 /**
  * The first hour of the view's first day.
@@ -3990,7 +3726,6 @@ filtered: boolean, };
 export type AirDayPart = { side: number, tag: string, friendly: string, };
 export type AirReadout = { "kind": "leading", side: number, share_bp: number, as_of_hour: number, } | { "kind": "contested", as_of_hour: number, } | { "kind": "viewpoint", side: number | null, share_bp: number, as_of_hour: number, } | { "kind": "noActivity", as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
 export type AirCountryStyle = { tag: string, hour: number, name: string | null, nameMissing: string | null, color: [number, number, number] | null, colorMissing: string | null, };
-export type AirRankingReply = { rows: Array<AirTimelineRow>, warnings: Array<string>, };
 export type OperationTypeTokens = {
 /**
  * The definition's token, as the content names it.
@@ -4103,16 +3838,6 @@ recorded: boolean, rows: Array<ElectionEntry>,
  */
 unknown: number, warnings: Array<string>, };
 export type NextElectionsParamsAtHour = NextElectionsParams & { hour: number };
-export type PeopleParams = { branchId: string, country: CountryRef, };
-export type PeopleReply = { branchId: string, tag: string,
-/**
- * The country the request named, which a reply is matched to: a slot follows its country through any tag.
- */
-asked: CountryRef, hour: number, readHour: number | null, manpower: Array<PeopleFact>, politics: Array<PeopleFact>, states: Array<PeopleState>, exiles: Array<PeopleExile>, warnings: Array<string>, };
-export type PeopleFact = { label: string, value: string | null, unit: string, };
-export type PeopleState = { state: number, available: number, locked: number | null, total: number | null, effective: string | null, recruitable: number | null, };
-export type PeopleExile = { tag: string, host: string | null, legitimacy: string | null, manpower: number | null, cap: number | null, leaders: number | null, deployedAir: number | null, readHour: number | null, };
-export type PeopleParamsAtHour = PeopleParams & { hour: number };
 export type TerritoryShareParams = { branchId: string,
 /**
  * A declared territory measure.
@@ -4196,7 +3921,7 @@ hints: { [key in string]?: string },
  */
 missing: string | null, top?: GameScoreTop, warnings: Array<string>, };
 export type GameScoreParamsAtHour = GameScoreParams & { hour: number };
-export type NuclearArsenalParams = { branchId: string, };
+export type NuclearArsenalParams = { branchId: string, top?: number, };
 export type NukeType = { ordinal: number,
 /**
  * Its lexical token's spelling; null when the game names no token for it.
@@ -4310,19 +4035,6 @@ unexplained: Array<string>,
  */
 missing: string | null, warnings: Array<string>, };
 export type FactoryPartsParamsAtHour = FactoryPartsParams & { hour: number };
-export type ExperienceParams = { branchId: string, country: CountryRef, };
-export type ExperienceReply = { tag: string,
-/**
- * Units per experience point for every value.
- */
-scale: number, dayHours: number,
-/**
- * The daily read the values are from; none where the recording does not tell it (the journal
- * door gives CountryExperience no sample hour).
- */
-readHour: number | null, banked: ExperienceValues | null, bankedMissing: string | null, change: ExperienceValues | null, changeMissing: string | null, gain: ExperienceValues | null, gainMissing: string | null, warnings: Array<string>, };
-export type ExperienceValues = { armyRaw: string, navyRaw: string, airRaw: string, };
-export type ExperienceParamsAtHour = ExperienceParams & { hour: number };
 export type TrainingQueueParams = { branchId: string, country: CountryRef, };
 export type TrainingQueueReply = { tag: string,
 /**
@@ -4423,6 +4135,99 @@ known: boolean,
 reason: string | null, readHour?: number, name?: string, nameMissing?: string, color?: [number, number, number], factionId?: string, factionName?: string, };
 export type DiplomaticRelationsReply = { owners: Array<OpinionOwner>, cells: Array<OpinionMatrixCell>, domain: [number, number], warnings: Array<string>, };
 export type DiplomaticRelationsParamsAtHour = DiplomaticRelationsParams & { hour: number };
+export type VolunteerFlowParams = { branchId: string,
+/**
+ * One country: the forces it hosts and sends by partner. Otherwise the links between `countries` (every country when empty).
+ */
+subject?: CountryRef, countries: Array<CountryRef>, between: boolean, limit?: number, };
+export type VolunteerFlowParamsAtHour = VolunteerFlowParams & { hour: number };
+export type TradeFlowParams = { branchId: string,
+/**
+ * One country: its imports and exports by partner. Otherwise the links between `countries` (every country when empty).
+ */
+subject?: CountryRef, countries: Array<CountryRef>, between: boolean,
+/**
+ * Partners shown per side before the rest are folded into one.
+ */
+limit?: number,
+/**
+ * One resource by its native index; every resource when absent.
+ */
+resource?: number,
+/**
+ * The partner by resource table of signed daily amounts.
+ */
+table: boolean, };
+export type FlowPart = { key: string, name: string | null, nameMissing: string | null,
+/**
+ * The part's place in the recording's own order, for its colour.
+ */
+ordinal: number, icon: string | null, };
+export type FlowAmount = {
+/**
+ * Index into `parts`.
+ */
+part: number,
+/**
+ * A fixed-point decimal string at the reply's `decimals`; null where not recorded.
+ */
+amount: string | null, };
+export type FlowLink = {
+/**
+ * Indexes into `countries`; null on the side folded into the others.
+ */
+from: number | null, to: number | null,
+/**
+ * How many partners the others hold, where this link folds them.
+ */
+others: number | null, amounts: Array<FlowAmount>, total: string | null,
+/**
+ * Why the total is not known, where an amount was not recorded.
+ */
+missing: string | null, };
+export type FlowTableRow = { country: number,
+/**
+ * One signed amount per part (in to the subject positive, out negative, zero where none); null where not recorded.
+ */
+cells: Array<string | null>, net: string | null, };
+export type CountryFlowReply = { countries: Array<string>,
+/**
+ * The centre country, when the subject is one country.
+ */
+subject: number | null, decimals: number, parts: Array<FlowPart>,
+/**
+ * Into the subject, largest first; ties by tag; the rest folded into one last link.
+ */
+incoming: Array<FlowLink>,
+/**
+ * Out of the subject, in the same order.
+ */
+outgoing: Array<FlowLink>, incomingTotal: string | null, outgoingTotal: string | null,
+/**
+ * A group subject: every link between its senders and receivers.
+ */
+links: Array<FlowLink>,
+/**
+ * A group subject: each sender's total (`from`) and each receiver's (`to`), largest first, the rest folded into one last entry.
+ */
+senders: Array<FlowLink>, receivers: Array<FlowLink>,
+/**
+ * Partners by part, signed, largest net first; only when asked.
+ */
+table: Array<FlowTableRow>,
+/**
+ * The largest side or node total, for the scale.
+ */
+largest: string,
+/**
+ * The largest single link, for a colour scale.
+ */
+largestLink: string, missing: string | null,
+/**
+ * Why some of the flows at the hour are left out.
+ */
+partial: string | null, warnings: Array<string>, };
+export type TradeFlowParamsAtHour = TradeFlowParams & { hour: number };
 export type CasualtyMatrixParams = { branchId: string,
 /**
  * Chosen countries. Empty means every country.
@@ -4519,6 +4324,8 @@ export type WargoalsParamsAtHour = WargoalsParams & { hour: number };
 export type DecryptionParams = { branchId: string, };
 export type Country = { id: number, tag: string | null, };
 export type Observation = { hour: number, upperBound: boolean, };
+export type CipherStatus = "broken" | "decrypting" | "paused" | "breakUnknown";
+export type CipherCounts = { broken: number, decrypting: number, paused: number, breakUnknown: number, };
 export type CipherPair = { owner: Country, target: Country,
 /**
  * Fixed5: the amount that breaks the cipher; none where it is not known.
@@ -4533,19 +4340,37 @@ thresholdUnknown: string | null, bonusActive: number, decrypting: number,
  */
 broken: boolean | null,
 /**
+ * Broken, decrypting, paused, or not known to be broken or not.
+ */
+status: CipherStatus,
+/**
  * When the attempt current at the hour started; none when none is, or it is not known.
  */
 started: Observation | null,
 /**
  * When that attempt broke the cipher; none when it has not.
  */
-brokenAt: Observation | null, };
+brokenAt: Observation | null,
+/**
+ * The change in progress over the last 7 days, in tenths of a percentage point of the threshold,
+ * from the reading 168 hours earlier in the same unbroken stretch; none where it is not known.
+ */
+weekChangeTenths: number | null,
+/**
+ * Why the change over the last 7 days is not known, where it is not.
+ */
+weekChangeUnknown: string | null, };
 export type DecryptionReply = {
 /**
- * The pairs with an attempt or a broken cipher, in the game's race order: broken first, then
- * by progress (unknown last), then by decryptor and target.
+ * The pairs with an attempt or a broken cipher, in the game's race order: broken first (the
+ * newest break first, an undated one last), then by progress (unknown last), then by decryptor
+ * and target.
  */
 pairs: Array<CipherPair>,
+/**
+ * How many of the pairs are in each status.
+ */
+counts: CipherCounts,
 /**
  * Why the hour's ciphers are not known, when they are not.
  */
@@ -4698,6 +4523,19 @@ agencies: Array<Agency>,
  */
 defenseLabel: string | null, upgradesMissing: string | null, missing: string | null, warnings: Array<string>, };
 export type AgencyComparisonParamsAtHour = AgencyComparisonParams & { hour: number };
+export type OperativeTrait = {
+/**
+ * The trait's script key; null where the recorded number names no trait in the content.
+ */
+token: string | null, name: string | null,
+/**
+ * Its icon, an index into the reply's `artwork`.
+ */
+icon: number | null,
+/**
+ * Why the name or icon is not shown, when one is not.
+ */
+missing: string | null, };
 export type OperativesRosterParams = { branchId: string,
 /**
  * The countries whose agencies are shown, each once.
@@ -4751,7 +4589,15 @@ target: Country | null, captured: boolean,
 /**
  * Who holds it captive, and since when, while captured.
  */
-capturer: Country | null, capturedHour: number | null, };
+capturer: Country | null, capturedHour: number | null,
+/**
+ * Its traits in the recorded order; empty where it has none or its character was not read.
+ */
+traits: Array<OperativeTrait>,
+/**
+ * Why its traits are not known, when they are not.
+ */
+traitsMissing: string | null, };
 export type OperativesRosterReply = {
 /**
  * The asked agencies' active lists, by asked country, each in roster order where recorded,
@@ -4924,6 +4770,19 @@ deals: Array<ResourceDeal>,
  * Why the deals are not known at the hour: unknown, which is not none.
  */
 dealsMissing: string | null, warnings: Array<string>, };
+export type ResourceInfo = {
+/**
+ * The native index (`ResourceDefinitions.id`).
+ */
+id: number, token: string,
+/**
+ * Which declaration of its token this is, from 1, in the game's order.
+ */
+ordinal: number, name: string | null,
+/**
+ * An artwork URL; null when content has no icon for it.
+ */
+icon: string | null, };
 export type ResourceOrder = "game" | "shortfall" | "volume";
 export type ResourceDeal = {
 /**
@@ -5010,31 +4869,11 @@ export type LineNow = { handle: string, kind: LineKind | null, variant: string, 
  */
 output: OutputNow | null, };
 export type ProductionLinesAtParamsAtHour = ProductionLinesAtParams & { hour: number };
-export type ProductionLicencesParams = { branchId: string, };
-export type ProductionLicencesReply = { branchId: string, licences: Array<LicenceNow>,
+export type ProductionLicencesParams = { branchId: string,
 /**
- * Why the licences are not known at the hour, when they are not: never shown as none.
+ * One country: the licences it holds and grants by partner. Otherwise the links between `countries` (every country when empty).
  */
-missing: string | null, warnings: Array<string>, };
-export type LicenceParty = { slot: number | null, tag: string | null, };
-export type LicenceDesign = { variant: string,
-/**
- * Null where the content does not name it or it has no definition at the hour.
- */
-name: string | null, };
-export type LicenceNow = {
-/**
- * Unique at the hour: the licensee's reference and the licence's place in its roster.
- */
-key: string, licensor: LicenceParty, licensee: LicenceParty,
-/**
- * Civilian factories the licensee lends.
- */
-lent: number, required: number,
-/**
- * The hour the licence started.
- */
-since: number, designs: Array<LicenceDesign>, };
+subject?: CountryRef, countries: Array<CountryRef>, between: boolean, limit?: number, };
 export type ProductionLicencesParamsAtHour = ProductionLicencesParams & { hour: number };
 export type IndustrialOrganisationsParams = { branchId: string, country: CountryRef, };
 export type IndustrialOrganisationsReply = { branchId: string, tag: string, organisations: Array<OrganisationNow>,
@@ -5088,7 +4927,12 @@ export type EquipmentDesignsParamsAtHour = EquipmentDesignsParams & { hour: numb
 export type DoctrineMasteryParams = { branchId: string, country: CountryRef, };
 export type MasteryChoice = { id: string, name: string | null, icon: string | null, };
 export type MasteryReward = { id: string, name: string | null, threshold: string | null, };
-export type MasteryTrack = { ordinal: number, name: string | null, sub: MasteryChoice | null, rewards: Array<MasteryReward>, unlocked: number, };
+export type MasteryTrack = { ordinal: number, name: string | null, sub: MasteryChoice | null, rewards: Array<MasteryReward>,
+/**
+ * Why the subdoctrine's rewards are not known, where they are not: the list is then empty and
+ * only the recorded unlock count is known.
+ */
+rewardsUnknown: string | null, unlocked: number, };
 export type MasteryFolder = { ordinal: number,
 /**
  * The folder token's spelling: stable across hours, for settings that choose folders.
@@ -5135,16 +4979,12 @@ export type MinefieldsReply = { regions: Array<MinedRegion>, unknown: Array<Unkn
  */
 choices: Array<SeaRegionChoice>, scale: number, warnings: Array<string>, };
 export type MinefieldsParamsAtHour = MinefieldsParams & { hour: number };
-export type MinefieldReportsParams = { branchId: string, region: number, };
-export type MineReport = { kind: number, ordinal: number, victim: string | null, mineOwner: string | null, ship: string | null, equipment: string | null, damage: string, sunk: boolean, };
-export type MinefieldReportsReply = { region: number,
-/**
- * The hour the reports were read, where recorded.
- */
-readHour: number | null, reports: Array<MineReport>, warnings: Array<string>, };
-export type MinefieldReportsParamsAtHour = MinefieldReportsParams & { hour: number };
 export type NavalYardsParams = { branchId: string, country: CountryRef, };
-export type YardShip = { handle: string, name: string | null, nameRebuilt: string | null, design: string | null, class: string | null, hull: string | null, maximum: string | null, taskForce: string | null, policy: string | null, };
+export type YardShip = { handle: string, name: string | null, nameRebuilt: string | null, design: string | null, class: string | null,
+/**
+ * The class's unit sprite as the recorded content names it; none with `class_icon_missing` saying why.
+ */
+classIcon: SpriteFrame | null, classIconMissing: string | null, hull: string | null, maximum: string | null, taskForce: string | null, policy: string | null, };
 export type RepairPort = { province: number, name: string | null, priority: number | null,
 /**
  * The game's name of the port's repair priority.
@@ -5282,26 +5122,6 @@ byHour: number | null, killerAce: string | null,
  */
 killerName: string | null, killerTag: string | null, };
 export type AirAcesParamsAtHour = AirAcesParams & { hour: number };
-export type RegionalWeatherProvincesParams = { branchId: string, region: string, };
-export type RegionalWeatherProvincesReply = { readHour: number | null, region: string, provinces: Array<RegionalWeatherProvince>, warnings: Array<string>, };
-export type RegionalWeatherProvince = { id: string, name: string | null,
-/**
- * The stored snow word, fixed5; permanent snow is not added.
- */
-snow: string | null,
-/**
- * Whether the game shows mud: the raw mud byte is nonzero.
- */
-mud: boolean | null,
-/**
- * The replayed temperature, fixed5 degrees Celsius.
- */
-temperature: string | null, };
-export type RegionalWeatherProvincesParamsAtHour = RegionalWeatherProvincesParams & { hour: number };
-export type FocusUnavailableParams = { branchId: string, };
-export type FocusUnavailable = { hour: number, reasons: Array<FocusTableRefusal>, warnings: Array<string>, };
-export type FocusTableRefusal = { table: string, reason: string | null, missingRows: string | null, };
-export type FocusUnavailableParamsAtHour = FocusUnavailableParams & { hour: number };
 export type StabilityBreakdownParams = { branchId: string, country: CountryRef, };
 export type StabilityBreakdownReply = { tag: string, hour: number,
 /**
@@ -5506,7 +5326,11 @@ export type CareerAward = {
  * Index into the reply's medals.
  */
 medal: number, count: number, };
-export type CareerMedal = { key: string, name: string | null, };
+export type CareerMedal = { key: string, name: string | null,
+/**
+ * The medal's sprite and frame as its definition names them; none with `icon_missing` saying why.
+ */
+icon: SpriteFrame | null, iconMissing: string | null, };
 export type CareerTemplate = { template: string, name: string | null, icon: string | null, };
 export type DivisionCareersParamsAtHour = DivisionCareersParams & { hour: number };
 export type DivisionRecordParams = { branchId: string,
@@ -5529,7 +5353,7 @@ hour: number, description: string | null, descriptionMissing: string | null, pro
  */
 medal: number | null, };
 export type DivisionRecordParamsAtHour = DivisionRecordParams & { hour: number };
-export type DivisionEquipmentParams = { branchId: string, country: CountryRef, countFor: ArmyAttribution, template: string | null, division: string | null, };
+export type DivisionEquipmentParams = { branchId: string, country: CountryRef, countFor: ArmyAttribution, };
 export type DivisionEquipmentReply = { tag: string, countFor: ArmyAttribution,
 /**
  * Why the country's division equipment is not known at this hour, when it is not.
@@ -5538,15 +5362,7 @@ missing: string | null, poolHour: number | null, divisions: number | null,
 /**
  * Divisions with a known shortfall of any type.
  */
-divisionsShort: number | null, unknownDivisions: number | null, types: Array<EquipmentType>, templates: Array<EquipmentTemplate>,
-/**
- * A template's divisions, when one is asked.
- */
-divisionRows: Array<EquipmentDivision> | null,
-/**
- * A division's pool, when one is asked.
- */
-pool: DivisionPool | null, warnings: Array<string>, };
+divisionsShort: number | null, unknownDivisions: number | null, types: Array<EquipmentType>, templates: Array<EquipmentTemplate>, warnings: Array<string>, };
 export type EquipmentVariant = { variant: string, name: string | null, heldRaw: string | null, };
 export type EquipmentType = {
 /**
@@ -5574,25 +5390,6 @@ neededRaw: string | null,
  * Needed archetypes only, each division capped at its own need.
  */
 heldRaw: string | null, typesShort: number | null, unknownDivisions: number | null, };
-export type EquipmentDivision = { division: string, name: string | null, nameMissing: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, neededRaw: string | null, heldRaw: string | null,
-/**
- * None when the comparison with the need is not known.
- */
-typesShort: number | null, poolKnown: boolean,
-/**
- * The previous template's name during conversion.
- */
-convertingFrom: string | null, };
-export type DivisionPoolType = { archetype: string | null, name: string | null,
-/**
- * None when the division's pool was not read.
- */
-heldRaw: string | null, neededRaw: string | null, missingRaw: string | null, variants: Array<EquipmentVariant>, };
-export type DivisionPool = { division: string, name: string | null, template: string, templateName: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, types: Array<DivisionPoolType>,
-/**
- * An unread pool lists template needs with unknown holdings, not an empty pool.
- */
-poolKnown: boolean, };
 export type DivisionEquipmentParamsAtHour = DivisionEquipmentParams & { hour: number };
 export type ResearchSlotsParams = { branchId: string, country: CountryRef, };
 export type ResearchSlotsReply = { tag: string,
@@ -5689,22 +5486,6 @@ missing: string | null,
  */
 missions: Array<string>, };
 export type AirMissionsParamsAtHour = AirMissionsParams & { hour: number };
-export type AirMissionWingsParams = { branchId: string, country: CountryRef, region: number, };
-export type AirMissionWingsReply = { readHour: number | null, region: number, wings: Array<AirMissionWing>,
-/**
- * Why the region's wings are not shown at the hour, when they are not.
- */
-missing: string | null, warnings: Array<string>, };
-export type AirMissionWing = { id: string, name: string | null, type: string | null, missions: Array<string>,
-/**
- * Raw fixed5 decimal text: 100,000 is one.
- */
-efficiency: string | null,
-/**
- * Why a field above is not shown.
- */
-refusals: Array<string>, };
-export type AirMissionWingsParamsAtHour = AirMissionWingsParams & { hour: number };
 export type OccupiedStatesParams = { branchId: string, };
 export type OccupiedStatesReply = {
 /**
@@ -6072,7 +5853,11 @@ export type WarContributionCountry = { tag: string, side: WarSide,
  * All quantities are exact signed fixed5 words.
  */
 equipmentDamage: string, occupation: string, airDamage: string, strategicBombing: string, shipDamage: string, convoyDamage: string, casualties: string, unknownCasualties: string, lendLeaseSent: string, lendLeaseReceived: string, score: string, participation: string, };
-export type WarContributionGroup = { viewpointSide: Array<string>, opposingSide: Array<string>, participants: Array<WarContributionCountry>, reason: string | null, };
+export type WarMeasureKey = "participation" | "equipmentDamage" | "occupation" | "airDamage" | "shipDamage" | "casualties" | "strategicBombing" | "convoyDamage" | "lendLeaseSent" | "lendLeaseReceived";
+export type WarMeasureMember = { tag: string, value: string, shareOfSide: number | null, shareOfWar: number | null, partial: boolean, };
+export type WarMeasureSide = { total: string, shareOfWar: number | null, partial: boolean, members: Array<WarMeasureMember>, };
+export type WarMeasure = { key: WarMeasureKey, viewpoint: WarMeasureSide, opposing: WarMeasureSide, };
+export type WarContributionGroup = { viewpointSide: Array<string>, opposingSide: Array<string>, participants: Array<WarContributionCountry>, measures: Array<WarMeasure>, reason: string | null, };
 export type WarContributionsReply = { branchId: string, hour: number,
 /**
  * An overview table was recorded at the hour, even in part.
@@ -6343,26 +6128,11 @@ export type ArmyLossDesign = { variant: string, name: string | null, archetype: 
 export type LossMonth = { army: string, ledger: number, month: number, date: number, reason: string | null, };
 export type ArmyLossesAvailability = { armies: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, };
 export type ArmyLossesParamsAtHour = ArmyLossesParams & { hour: number };
-export type FactionGoalRewardsParams = { branchId: string,
-/**
- * The recorded faction id, as a decimal string.
- */
-faction: string,
-/**
- * The goal's token, as `faction-details` names it.
- */
-goal: string, };
-export type FactionGoalRewardsReply = { goal: string,
-/**
- * The completion effect's description with the game's markup; none where the goal authors no
- * completion effect or `reason` says why it cannot be described.
- */
-text: string | null,
-/**
- * Why the completion effect cannot be described at the hour.
- */
-reason: string | null, warnings: Array<string>, };
-export type FactionGoalRewardsParamsAtHour = FactionGoalRewardsParams & { hour: number };
+export type AirForceAtParams = { branchId: string, countries: Array<CountryRef>, top?: number, measure: AirForceMeasure, ownership: AirForceOwnership, };
+export type ForceAtReply = { parts: Array<ForcePart>, rows: Array<ForceAtRow>, missing: string | null, warnings: Array<string>, };
+export type AirForceAtParamsAtHour = AirForceAtParams & { hour: number };
+export type NavyAtParams = { branchId: string, countries: Array<CountryRef>, top?: number, ownership: NavyOwnership, grouping: NavyGrouping, measure: NavyMeasure, };
+export type NavyAtParamsAtHour = NavyAtParams & { hour: number };
 /** The native command byte budget, including its envelope. */
 export const MAX_MESSAGE_BYTES = 33554432;
 /** Data requests outstanding at once; one past it is refused for want of room. */
@@ -6375,40 +6145,36 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "politics-state-history", "factory-groups", "air-force-size", "navy-size", "subjects", "diplomatic-pacts", "operatives-departed", "espionage-types", "intel-details", "raid-log", "production-lines", "production-line-breakdown", "place-names", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "casualty-breakdown", "casualty-labels", "peace-deals", "territory-transfers", "convoy-health", "trade-flows", "production-spending", "construction-log-manifest", "construction-log", "construction-spending", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed", "event-choices", "decisions", "event-feed-span", "lend-lease-history", "market-ledger", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "faction-state", "wars", "war-losses", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending-breakdown", "air-superiority-timeline", "air-superiority-ranking", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "country-people", "territory-breakdown", "game-score", "nuclear-arsenal", "training-queue", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "regional-weather-provinces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "faction-goal-rewards"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "technology-artwork", "country-flags", "doctrines", "aircraft-catalogue", "sprite-artwork", "army-size", "country-facts", "country-styles", "country-groups", "land-owners", "military-air-ledger", "military-air-at", "politics-state-history", "factory-groups", "air-force-size", "navy-size", "subjects", "diplomatic-pacts", "espionage-types", "raid-log", "production-lines", "production-line-breakdown", "place-names", "place-name-runs", "strategic-regions", "naval-supremacy", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "regional-weather", "focus-card", "idea-history", "party-history", "casualty-breakdown", "peace-deals", "territory-transfers", "convoy-health", "production-spending", "construction-log-manifest", "construction-log", "construction-breakdown", "division-log", "division-log-manifest", "land-battle-course", "land-battle-terrain", "naval-battle-details", "ships-sunk-manifest", "ships-sunk", "research", "research-breakdown", "event-feed", "event-feed-tail", "event-choices", "event-choices-tail", "decisions", "decisions-tail", "event-feed-span", "market-ledger", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "faction-state", "wars", "war-losses", "special-projects", "air-superiority-choices", "combat-log-history", "equipment-losses", "air-statistics-regions", "scoreboard-columns", "equipment-produced", "equipment-produced-types", "equipment-produced-country", "equipment-produced-at", "power-spending-breakdown", "air-superiority-timeline", "espionage-type-tokens", "template-roster", "air-statistics", "politics-state", "territory-breakdown", "game-score", "nuclear-arsenal", "training-queue", "trade-flow", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "fuel-branches", "resource-balance", "production-lines-at", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "occupied-states", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "army-losses", "air-force-at", "navy-at"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "focus-artwork", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "country-styles", "log-tail", "operatives-departed", "operative-tenures", "espionage-operation", "espionage-ended", "espionage-types", "intel-details", "production-line-breakdown", "place-names", "unit-leader-portraits", "unit-leader-career", "unit-leader-choices", "occupation-reserve-history", "land-battle-terrain", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "war-losses", "combat-log-history", "scoreboard", "equipment-produced-at", "template-roster", "air-statistics", "politics-state", "next-elections", "country-people", "territory-share", "territory-breakdown", "faction-rosters", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "country-experience", "training-queue", "diplomatic-relations", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "minefield-reports", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "regional-weather-provinces", "focus-unavailable", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "air-mission-wings", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "faction-goal-rewards"] as const;
+export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "technology-artwork", "country-flags", "doctrines", "sprite-artwork", "country-styles", "log-tail", "espionage-operation", "espionage-ended", "espionage-types", "production-line-breakdown", "place-names", "place-name-runs", "unit-leader-portraits", "leader-name-runs", "unit-leader-career", "unit-leader-choices", "occupation-reserve-history", "land-battle-terrain", "naval-losses-at", "market-ledger-tail", "country-fuel-awards", "country-fuel-demand", "war-losses", "combat-log-history", "scoreboard", "equipment-produced-at", "template-roster", "air-statistics", "politics-state", "next-elections", "territory-share", "territory-breakdown", "faction-rosters", "game-score", "nuclear-arsenal", "world-tension", "factory-parts", "training-queue", "diplomatic-relations", "volunteer-flow", "trade-flow", "casualty-matrix", "wargoals", "decryption", "operative-matrix", "agency-comparison", "operatives-roster", "espionage-operations", "occupation-reserve-manpower", "intel-network-coverage", "fuel-branches", "resource-balance", "lend-lease-balance", "production-lines-at", "production-licences", "industrial-organisations", "equipment-designs", "doctrine-mastery", "doctrine-rewards", "minefields", "naval-repairs", "naval-refits", "unit-leaders", "unit-leader-hour", "naval-management", "air-aces", "country-stability-breakdown", "stability-part-names", "division-templates", "division-careers", "division-record", "division-equipment", "research-slots", "air-missions", "occupied-states", "occupation-at", "market-lendlease", "country-fuel", "equipment-stockpile-at", "stockpile-artwork", "faction-details", "country-faction-goals", "war-contributions", "special-project-details", "special-project-effects", "special-project-iteration", "technology-effects", "content-entity-stats", "air-superiority", "equipment-loss-head", "army-losses", "air-force-at", "navy-at"] as const;
 /** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */
-export const REPLAY_PRODUCTS = ["event-feed", "event-choices", "decisions"] as const;
+export const REPLAY_PRODUCTS = ["event-feed", "event-feed-tail", "event-choices", "event-choices-tail", "decisions", "decisions-tail"] as const;
 export type HourRole = "read" | "start" | "end" | "bucket";
 export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, HourRole>>>> = {
   "agency-comparison": { "hour": "read" },
   "air-aces": { "hour": "read" },
+  "air-force-at": { "hour": "read" },
   "air-force-size": {},
-  "air-mission-wings": { "hour": "read" },
   "air-missions": { "hour": "read" },
   "air-statistics": { "hour": "read" },
   "air-statistics-regions": {},
   "air-superiority": { "hour": "read" },
   "air-superiority-choices": {},
-  "air-superiority-ranking": { "firstHour": "start", "lastHour": "end" },
   "air-superiority-timeline": { "firstHour": "start", "lastHour": "end" },
   "aircraft-catalogue": {},
   "army-losses": { "hour": "read" },
   "army-size": {},
   "campaign-clock": { "firstHour": "start", "lastHour": "end" },
   "casualty-breakdown": {},
-  "casualty-labels": {},
   "casualty-matrix": { "hour": "read" },
-  "casualty-pairs": {},
   "civil-wars": {},
   "combat-log-history": { "hour": "read", "countries.membership[].firstHour": "start", "countries.membership[].lastHour": "end", "countries.unobserved[].firstHour": "start", "countries.unobserved[].lastHour": "end" },
+  "construction-breakdown": { "hour": "end" },
   "construction-log": {},
   "construction-log-manifest": {},
-  "construction-spending": {},
   "content-entity-stats": { "hour": "read" },
   "convoy-health": { "from": "start", "to": "end" },
-  "country-experience": { "hour": "read" },
   "country-faction-goals": { "hour": "read" },
   "country-facts": {},
   "country-flags": {},
@@ -6419,10 +6185,10 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "country-fuel-demand-history": { "hour": "read" },
   "country-groups": {},
   "country-identities": {},
-  "country-people": { "hour": "read" },
   "country-stability-breakdown": { "hour": "read" },
   "country-styles": { "hour": "read" },
   "decisions": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
+  "decisions-tail": { "from": "start", "hour": "read", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end", "countFacets[].facets[].membership[].firstHour": "start", "countFacets[].facets[].membership[].lastHour": "end", "countFacets[].facets[].unobserved[].firstHour": "start", "countFacets[].facets[].unobserved[].lastHour": "end" },
   "decryption": { "hour": "read" },
   "diplomatic-pacts": {},
   "diplomatic-relations": { "hour": "read" },
@@ -6452,29 +6218,23 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "espionage-type-tokens": {},
   "espionage-types": {},
   "event-choices": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
+  "event-choices-tail": { "from": "start", "hour": "read", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end", "countFacets[].facets[].membership[].firstHour": "start", "countFacets[].facets[].membership[].lastHour": "end", "countFacets[].facets[].unobserved[].firstHour": "start", "countFacets[].facets[].unobserved[].lastHour": "end" },
   "event-feed": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
   "event-feed-span": { "from": "start", "to": "end" },
-  "events-page": { "reads[].hour": "read", "from": "start", "to": "end", "firstHour": "start", "lastHour": "end", "hour": "read", "within[].1[].firstHour": "start", "within[].1[].lastHour": "end", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
+  "event-feed-tail": { "from": "start", "hour": "read", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end", "countFacets[].facets[].membership[].firstHour": "start", "countFacets[].facets[].membership[].lastHour": "end", "countFacets[].facets[].unobserved[].firstHour": "start", "countFacets[].facets[].unobserved[].lastHour": "end" },
   "faction-details": { "hour": "read" },
-  "faction-goal-rewards": { "hour": "read" },
   "faction-lines": { "from": "start", "to": "end", "members[].spans[].0": "start", "members[].spans[].1": "end", "unread[].0": "start", "unread[].1": "end" },
   "faction-rosters": { "hour": "read" },
   "faction-state": {},
   "factory-groups": {},
   "factory-parts": { "hour": "read" },
-  "focus-artwork": { "hour": "read" },
   "focus-card": { "hour": "read" },
-  "focus-completions": {},
-  "focus-hour": { "hour": "read" },
-  "focus-order-page": { "hour": "read" },
-  "focus-unavailable": { "hour": "read" },
   "fuel-branches": { "hour": "read" },
   "game-score": { "hour": "read" },
   "head:campaign-clock": { "firstHour": "start", "lastHour": "end" },
   "head:player-apm": { "firstHour": "start", "lastHour": "end", "membership[].firstHour": "start", "membership[].lastHour": "end" },
   "idea-history": {},
   "industrial-organisations": { "hour": "read" },
-  "intel-details": { "hour": "read" },
   "intel-network-coverage": { "hour": "read" },
   "land-battle-course": {},
   "land-battle-terrain": {},
@@ -6482,17 +6242,16 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "land-battles-manifest": {},
   "land-battles-ranking": { "firstHour": "start", "lastHour": "end", "countries.membership[].firstHour": "start", "countries.membership[].lastHour": "end", "countries.unobserved[].firstHour": "start", "countries.unobserved[].lastHour": "end" },
   "land-owners": {},
+  "leader-name-runs": { "from": "start", "to": "end" },
   "lend-lease-balance": { "hour": "read" },
-  "lend-lease-history": {},
   "log-counts": { "from": "start", "to": "end", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
   "log-page": { "from": "start", "to": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
   "log-tail": { "from": "start", "hour": "read", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end", "countFacets[].facets[].membership[].firstHour": "start", "countFacets[].facets[].membership[].lastHour": "end", "countFacets[].facets[].unobserved[].firstHour": "start", "countFacets[].facets[].unobserved[].lastHour": "end" },
   "market-ledger": { "from": "start", "to": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end" },
   "market-ledger-tail": { "from": "start", "hour": "read", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end", "countFacets[].facets[].membership[].firstHour": "start", "countFacets[].facets[].membership[].lastHour": "end", "countFacets[].facets[].unobserved[].firstHour": "start", "countFacets[].facets[].unobserved[].lastHour": "end" },
   "market-lendlease": { "hour": "read" },
+  "military-air-at": { "fromHour": "start", "hour": "read" },
   "military-air-ledger": { "fromHour": "start" },
-  "minefield-history": { "firstHour": "start", "lastHour": "end" },
-  "minefield-reports": { "hour": "read" },
   "minefields": { "hour": "read" },
   "national-focus": {},
   "naval-battle-details": { "battles[].hour": "read" },
@@ -6500,10 +6259,12 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "naval-battles-manifest": {},
   "naval-battles-ranking": { "firstHour": "start", "lastHour": "end", "countries.membership[].firstHour": "start", "countries.membership[].lastHour": "end", "countries.unobserved[].firstHour": "start", "countries.unobserved[].lastHour": "end" },
   "naval-losses": {},
+  "naval-losses-at": { "hour": "read" },
   "naval-management": { "hour": "read" },
   "naval-refits": { "hour": "read" },
   "naval-repairs": { "hour": "read" },
   "naval-supremacy": { "firstHour": "start", "lastHour": "end" },
+  "navy-at": { "hour": "read" },
   "navy-size": {},
   "next-elections": { "hour": "read" },
   "nuclear-arsenal": { "hour": "read" },
@@ -6512,11 +6273,10 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "occupation-reserve-manpower": { "hour": "read" },
   "occupied-states": { "hour": "read" },
   "operative-matrix": { "hour": "read" },
-  "operative-tenures": { "hour": "read" },
-  "operatives-departed": { "hour": "read" },
   "operatives-roster": { "hour": "read" },
   "party-history": {},
   "peace-deals": {},
+  "place-name-runs": { "from": "start", "to": "end" },
   "place-names": { "places[].hour": "read", "states[].hour": "read" },
   "player-apm": { "firstHour": "start", "lastHour": "end", "membership[].firstHour": "start", "membership[].lastHour": "end" },
   "politics-state": { "hour": "read" },
@@ -6524,13 +6284,11 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "power-spending-breakdown": { "from": "start", "hour": "end" },
   "production-licences": { "hour": "read" },
   "production-line-breakdown": { "hour": "bucket", "within[].firstHour": "start", "within[].lastHour": "end" },
-  "production-line-detail": { "within[].firstHour": "start", "within[].lastHour": "end" },
   "production-lines": { "within[].firstHour": "start", "within[].lastHour": "end" },
   "production-lines-at": { "hour": "read" },
   "production-spending": {},
   "raid-log": { "from": "start", "to": "end" },
   "regional-weather": { "firstHour": "start", "lastHour": "end" },
-  "regional-weather-provinces": { "hour": "read" },
   "research": {},
   "research-breakdown": { "parts[].firstObservedHour": "read", "parts[].lastHour": "end" },
   "research-slots": { "hour": "read" },
@@ -6553,7 +6311,6 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "special-projects-history": { "hour": "read" },
   "sprite-artwork": {},
   "stability-part-names": { "hour": "read" },
-  "stability-reads": { "from": "start", "to": "end" },
   "stockpile-artwork": { "hour": "read" },
   "strategic-regions": {},
   "subjects": {},
@@ -6564,14 +6321,14 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "territory-share": { "hour": "read" },
   "territory-transfers": {},
   "threat-events": {},
-  "trade-flows": { "from": "start", "to": "end" },
+  "trade-flow": { "hour": "read" },
   "training-queue": { "hour": "read" },
   "unit-leader-career": {},
   "unit-leader-choices": {},
   "unit-leader-hour": { "hour": "read" },
   "unit-leader-portraits": { "hour": "read" },
   "unit-leaders": { "hour": "read" },
-  "volunteers-expeditionaries": {},
+  "volunteer-flow": { "hour": "read" },
   "war-contributions": { "hour": "read" },
   "war-losses": { "hour": "read" },
   "wargoals": { "hour": "read" },
@@ -6582,31 +6339,27 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
 export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "node" | "leaf" | "any">>>> = {
   "agency-comparison": { "branchId": "leaf", "hour": "leaf", "includeUncreated": "leaf", "top": "node", "top.by": "leaf", "top.count": "leaf" },
   "air-aces": { "branchId": "leaf", "hour": "leaf" },
+  "air-force-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
   "air-force-size": { "branchId": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "ownership": "leaf", "top": "leaf", "window": "leaf" },
-  "air-mission-wings": { "branchId": "leaf", "country": "any", "hour": "leaf", "region": "leaf" },
   "air-missions": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "air-statistics": { "branchId": "leaf", "channel": "leaf", "country": "any", "hour": "leaf" },
   "air-statistics-regions": { "branchId": "leaf", "country": "any" },
   "air-superiority": { "branchId": "leaf", "hour": "leaf", "mode": "leaf", "order": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-choices": { "branchId": "leaf" },
-  "air-superiority-ranking": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "tile": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
-  "air-superiority-timeline": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "tile": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
+  "air-superiority-timeline": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "aircraft-catalogue": { "count": "leaf", "first": "leaf", "origin": "node", "origin.mod": "leaf", "query": "leaf" },
   "army-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "view": "node", "view.kind": "leaf", "view.ledgers": "node", "view.ledgers[]": "leaf", "view.month": "leaf" },
   "army-size": { "branchId": "leaf", "byType": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "top": "leaf", "window": "leaf" },
   "campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },
   "casualty-breakdown": { "branchId": "leaf", "country": "any", "window": "leaf" },
-  "casualty-labels": { "branchId": "leaf" },
   "casualty-matrix": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "subject": "any", "top": "leaf" },
-  "casualty-pairs": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "window": "leaf" },
   "civil-wars": { "branchId": "leaf" },
   "combat-log-history": { "branchId": "leaf", "countries": "node", "countries.countries": "node", "countries.countries[]": "any", "countries.membership": "node", "countries.membership[]": "node", "countries.membership[].firstHour": "leaf", "countries.membership[].lastHour": "leaf", "countries.membership[].tag": "leaf", "countries.unobserved": "node", "countries.unobserved[]": "node", "countries.unobserved[].firstHour": "leaf", "countries.unobserved[].lastHour": "leaf", "hour": "leaf" },
+  "construction-breakdown": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "construction-log": { "branchId": "leaf", "window": "leaf" },
   "construction-log-manifest": { "branchId": "leaf" },
-  "construction-spending": { "branchId": "leaf", "country": "any" },
   "content-entity-stats": { "branchId": "leaf", "hour": "leaf", "kind": "leaf", "token": "leaf" },
   "convoy-health": { "branchId": "leaf", "country": "any", "from": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "to": "leaf", "top": "leaf", "view": "leaf" },
-  "country-experience": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "country-faction-goals": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "country-facts": { "branchId": "leaf" },
   "country-flags": { "flags": "node", "flags[]": "node", "flags[].keys": "node", "flags[].keys.0": "leaf", "flags[].keys.1": "leaf", "flags[].keys.2": "leaf", "flags[].reasons": "node", "flags[].reasons.0": "leaf", "flags[].reasons.1": "leaf", "flags[].reasons.2": "leaf", "size": "leaf" },
@@ -6617,15 +6370,15 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "country-fuel-demand-history": { "branchId": "leaf", "country": "any", "hour": "leaf", "keys": "node", "keys[]": "leaf", "window": "leaf" },
   "country-groups": { "branchId": "leaf" },
   "country-identities": { "branchId": "leaf" },
-  "country-people": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "country-stability-breakdown": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "country-styles": { "branchId": "leaf", "hour": "leaf", "tags": "node", "tags[]": "leaf" },
   "decisions": { "branchId": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "pageSize": "leaf", "scope": "node", "scope[]": "node", "scope[].firstHour": "leaf", "scope[].lastHour": "leaf", "scope[].tag": "leaf", "to": "leaf" },
+  "decisions-tail": { "branchId": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "scope": "node", "scope[]": "node", "scope[].firstHour": "leaf", "scope[].lastHour": "leaf", "scope[].tag": "leaf" },
   "decryption": { "branchId": "leaf", "hour": "leaf" },
   "diplomatic-pacts": { "branchId": "leaf", "country": "any" },
   "diplomatic-relations": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "order": "leaf", "top": "leaf" },
   "division-careers": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
-  "division-equipment": { "branchId": "leaf", "countFor": "leaf", "country": "any", "division": "leaf", "hour": "leaf", "template": "leaf" },
+  "division-equipment": { "branchId": "leaf", "countFor": "leaf", "country": "any", "hour": "leaf" },
   "division-log": { "branchId": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "pageSize": "leaf", "to": "leaf" },
   "division-log-manifest": { "branchId": "leaf" },
   "division-record": { "branchId": "leaf", "division": "leaf", "hour": "leaf" },
@@ -6650,29 +6403,23 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "espionage-type-tokens": { "branchId": "leaf" },
   "espionage-types": { "branchId": "leaf" },
   "event-choices": { "branchId": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "pageSize": "leaf", "scope": "node", "scope[]": "node", "scope[].firstHour": "leaf", "scope[].lastHour": "leaf", "scope[].tag": "leaf", "to": "leaf" },
+  "event-choices-tail": { "branchId": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "scope": "node", "scope[]": "node", "scope[].firstHour": "leaf", "scope[].lastHour": "leaf", "scope[].tag": "leaf" },
   "event-feed": { "branchId": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "pageSize": "leaf", "scope": "node", "scope[]": "node", "scope[].firstHour": "leaf", "scope[].lastHour": "leaf", "scope[].tag": "leaf", "to": "leaf" },
   "event-feed-span": { "branchId": "leaf", "categories": "node", "categories[]": "leaf", "from": "leaf", "kindsOnly": "leaf", "to": "leaf" },
-  "events-page": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "cursor": "leaf", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "pageSize": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
+  "event-feed-tail": { "branchId": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "scope": "node", "scope[]": "node", "scope[].firstHour": "leaf", "scope[].lastHour": "leaf", "scope[].tag": "leaf" },
   "faction-details": { "branchId": "leaf", "faction": "leaf", "hour": "leaf", "viewpoint": "any" },
-  "faction-goal-rewards": { "branchId": "leaf", "faction": "leaf", "goal": "leaf", "hour": "leaf" },
   "faction-lines": { "branchId": "leaf", "from": "leaf", "kind": "leaf", "measure": "leaf", "members": "node", "members[]": "node", "members[].spans": "node", "members[].spans[]": "node", "members[].spans[].0": "leaf", "members[].spans[].1": "leaf", "members[].tag": "leaf", "membership": "leaf", "to": "leaf", "unread": "node", "unread[]": "node", "unread[].0": "leaf", "unread[].1": "leaf", "width": "leaf" },
   "faction-rosters": { "branchId": "leaf", "hour": "leaf" },
   "faction-state": { "branchId": "leaf", "faction": "leaf", "view": "leaf", "viewpoint": "any" },
   "factory-groups": { "branchId": "leaf" },
   "factory-parts": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "focus-artwork": { "branchId": "leaf", "country": "any", "database": "leaf", "hour": "leaf", "iconsOnly": "leaf", "includeDescriptions": "leaf", "textOnly": "leaf", "tokens": "node", "tokens[]": "leaf" },
   "focus-card": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "focus-completions": { "branchId": "leaf", "country": "any" },
-  "focus-hour": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "focus-order-page": { "branchId": "leaf", "country": "any", "hour": "leaf", "page": "leaf", "pages": "node", "pages.count": "leaf", "pages.first": "leaf", "pages.rows": "leaf" },
-  "focus-unavailable": { "branchId": "leaf", "hour": "leaf" },
   "fuel-branches": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "game-score": { "branchId": "leaf", "hour": "leaf", "top": "node", "top.by": "leaf", "top.count": "leaf" },
   "head:campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },
   "head:player-apm": { "branchId": "leaf", "firstHour": "leaf", "group": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "tags": "node", "tags[]": "leaf", "windowHours": "leaf" },
   "idea-history": { "branchId": "leaf", "country": "any" },
   "industrial-organisations": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "intel-details": { "branchId": "leaf", "country": "leaf", "hour": "leaf", "viewer": "leaf" },
   "intel-network-coverage": { "basis": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "measure": "leaf", "top": "leaf", "touching": "leaf" },
   "land-battle-course": { "branchId": "leaf", "id": "leaf" },
   "land-battle-terrain": { "provinces": "node", "provinces[]": "leaf" },
@@ -6680,17 +6427,16 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "land-battles-manifest": { "branchId": "leaf" },
   "land-battles-ranking": { "branchId": "leaf", "countries": "node", "countries.countries": "node", "countries.countries[]": "any", "countries.membership": "node", "countries.membership[]": "node", "countries.membership[].firstHour": "leaf", "countries.membership[].lastHour": "leaf", "countries.membership[].tag": "leaf", "countries.unobserved": "node", "countries.unobserved[]": "node", "countries.unobserved[].firstHour": "leaf", "countries.unobserved[].lastHour": "leaf", "firstHour": "leaf", "lastHour": "leaf", "measure": "leaf", "topN": "leaf" },
   "land-owners": {  },
+  "leader-name-runs": { "branchId": "leaf", "from": "leaf", "owner": "any", "references": "node", "references[]": "leaf", "to": "leaf" },
   "lend-lease-balance": { "branchId": "leaf", "countries": "node", "countries[]": "any", "holder": "any", "hour": "leaf", "rank": "leaf", "top": "leaf" },
-  "lend-lease-history": { "branchId": "leaf" },
   "log-counts": { "binHours": "leaf", "branchId": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "log": "leaf", "scope": "node", "scope[]": "node", "scope[].firstHour": "leaf", "scope[].lastHour": "leaf", "scope[].tag": "leaf", "to": "leaf" },
   "log-page": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "log": "leaf", "pageSize": "leaf", "to": "leaf" },
   "log-tail": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "log": "leaf", "offset": "leaf" },
   "market-ledger": { "branchId": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "pageSize": "leaf", "to": "leaf" },
   "market-ledger-tail": { "branchId": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf" },
   "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "only": "leaf" },
+  "military-air-at": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "countries": "node", "countries[]": "any", "family": "leaf", "fromHour": "leaf", "hour": "leaf", "metric": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf" },
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },
-  "minefield-history": { "branchId": "leaf", "countries": "node", "countries[]": "any", "firstHour": "leaf", "lastHour": "leaf", "region": "leaf" },
-  "minefield-reports": { "branchId": "leaf", "hour": "leaf", "region": "leaf" },
   "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "order": "leaf", "regions": "node", "regions[]": "leaf" },
   "national-focus": { "branchId": "leaf", "country": "any" },
   "naval-battle-details": { "battles": "node", "battles[]": "node", "battles[].hour": "leaf", "battles[].id": "leaf", "branchId": "leaf" },
@@ -6698,37 +6444,36 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "naval-battles-manifest": { "branchId": "leaf" },
   "naval-battles-ranking": { "branchId": "leaf", "countries": "node", "countries.countries": "node", "countries.countries[]": "any", "countries.membership": "node", "countries.membership[]": "node", "countries.membership[].firstHour": "leaf", "countries.membership[].lastHour": "leaf", "countries.membership[].tag": "leaf", "countries.unobserved": "node", "countries.unobserved[]": "node", "countries.unobserved[].firstHour": "leaf", "countries.unobserved[].lastHour": "leaf", "firstHour": "leaf", "lastHour": "leaf", "measure": "leaf", "topN": "leaf" },
   "naval-losses": { "attribution": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "kind": "leaf", "period": "leaf", "top": "leaf", "window": "leaf" },
+  "naval-losses-at": { "attribution": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "kind": "leaf", "period": "leaf", "top": "leaf" },
   "naval-management": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-refits": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-repairs": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "naval-supremacy": { "branchId": "leaf", "country": "any", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf", "window": "leaf" },
+  "navy-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "grouping": "leaf", "hour": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf" },
   "navy-size": { "branchId": "leaf", "countries": "node", "countries[]": "any", "grouping": "leaf", "measure": "leaf", "ownership": "leaf", "top": "leaf", "window": "leaf" },
   "next-elections": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
-  "nuclear-arsenal": { "branchId": "leaf", "hour": "leaf" },
+  "nuclear-arsenal": { "branchId": "leaf", "hour": "leaf", "top": "leaf" },
   "occupation-at": { "branchId": "leaf", "collaboration": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "occupation-reserve-history": { "branchId": "leaf", "holder": "leaf" },
   "occupation-reserve-manpower": { "branchId": "leaf", "hour": "leaf" },
   "occupied-states": { "branchId": "leaf", "hour": "leaf" },
   "operative-matrix": { "branchId": "leaf", "countries": "node", "countries[]": "any", "form": "leaf", "hour": "leaf", "top": "leaf" },
-  "operative-tenures": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
-  "operatives-departed": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "operatives-roster": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "party-history": { "branchId": "leaf", "country": "any" },
   "peace-deals": { "branchId": "leaf" },
+  "place-name-runs": { "branchId": "leaf", "from": "leaf", "land": "leaf", "provinces": "node", "provinces[]": "leaf", "states": "node", "states[]": "leaf", "to": "leaf" },
   "place-names": { "branchId": "leaf", "land": "leaf", "places": "node", "places[]": "node", "places[].hour": "leaf", "places[].provinceId": "leaf", "states": "node", "states[]": "node", "states[].hour": "leaf", "states[].stateId": "leaf" },
   "player-apm": { "branchId": "leaf", "buckets": "leaf", "firstHour": "leaf", "group": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "registry": "leaf", "tags": "node", "tags[]": "leaf" },
   "politics-state": { "branchId": "leaf", "hour": "leaf", "view": "leaf" },
   "politics-state-history": { "branchId": "leaf", "country": "any", "mode": "leaf" },
   "power-spending-breakdown": { "branchId": "leaf", "country": "any", "currency": "leaf", "from": "leaf", "hour": "leaf" },
-  "production-licences": { "branchId": "leaf", "hour": "leaf" },
+  "production-licences": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "limit": "leaf", "subject": "any" },
   "production-line-breakdown": { "branchId": "leaf", "country": "any", "group": "leaf", "hour": "leaf", "key": "leaf", "within": "node", "within[]": "node", "within[].firstHour": "leaf", "within[].lastHour": "leaf" },
-  "production-line-detail": { "branchId": "leaf", "country": "any", "window": "leaf", "within": "node", "within[]": "node", "within[].firstHour": "leaf", "within[].lastHour": "leaf" },
   "production-lines": { "branchId": "leaf", "country": "any", "within": "node", "within[]": "node", "within[].firstHour": "leaf", "within[].lastHour": "leaf" },
   "production-lines-at": { "branchId": "leaf", "country": "any", "hour": "leaf", "order": "leaf" },
   "production-spending": { "branchId": "leaf", "country": "any", "repairs": "leaf", "window": "leaf" },
   "raid-log": { "branchId": "leaf", "catalogue": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "to": "leaf" },
   "regional-weather": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "modifier": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "show": "leaf", "top": "leaf", "width": "leaf" },
-  "regional-weather-provinces": { "branchId": "leaf", "hour": "leaf", "region": "leaf" },
   "research": { "branchId": "leaf", "country": "any" },
   "research-breakdown": { "branchId": "leaf", "country": "any", "parts": "node", "parts[]": "node", "parts[].firstObservedHour": "leaf", "parts[].lastHour": "leaf", "parts[].slot": "leaf", "parts[].started": "leaf" },
   "research-slots": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6736,11 +6481,11 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "resource-sizes": { "branchId": "leaf", "country": "any", "from": "leaf", "to": "leaf" },
   "scoreboard": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "top": "node", "top.count": "leaf", "top.descending": "leaf", "top.sort": "leaf" },
   "scoreboard-columns": { "branchId": "leaf" },
-  "series-next-change": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "cursor": "leaf", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "pageSize": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
-  "series-parts": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "cursor": "leaf", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "pageSize": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
-  "series-state": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "cursor": "leaf", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "pageSize": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
-  "series-summary": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "cursor": "leaf", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "pageSize": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
-  "series-tiles": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "cursor": "leaf", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "pageSize": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
+  "series-next-change": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
+  "series-parts": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
+  "series-state": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
+  "series-summary": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
+  "series-tiles": { "binHours": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "family": "node", "family.countFor": "leaf", "family.group": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "family.membership[].tag": "leaf", "family.players": "node", "family.players[]": "leaf", "family.tags": "node", "family.tags[]": "leaf", "family.top": "leaf", "family.value": "leaf", "firstHour": "leaf", "from": "leaf", "hour": "leaf", "index": "leaf", "key": "leaf", "lastHour": "leaf", "least": "leaf", "lines": "node", "lines[]": "node", "lines[].country": "any", "lines[].part": "leaf", "measures": "node", "measures[]": "leaf", "reads": "node", "reads[]": "node", "reads[].country": "any", "reads[].hour": "leaf", "reads[].part": "leaf", "tags": "node", "tags[]": "leaf", "to": "leaf", "top": "leaf", "width": "leaf", "withMarks": "leaf", "within": "node", "within[]": "node", "within[].0": "any", "within[].1": "node", "within[].1[]": "node", "within[].1[].firstHour": "leaf", "within[].1[].lastHour": "leaf" },
   "ships-sunk": { "branchId": "leaf", "window": "leaf" },
   "ships-sunk-manifest": { "branchId": "leaf" },
   "special-project-details": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6751,7 +6496,6 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "special-projects-history": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "sprite-artwork": { "sprites": "node", "sprites[]": "node", "sprites[].frame": "leaf", "sprites[].key": "leaf", "sprites[].recorded": "leaf", "sprites[].text": "leaf", "textures": "node", "textures[]": "node", "textures[].frame": "leaf", "textures[].frames": "leaf", "textures[].path": "leaf" },
   "stability-part-names": { "branchId": "leaf", "country": "any", "hour": "leaf", "parts": "node", "parts[]": "leaf" },
-  "stability-reads": { "branchId": "leaf", "from": "leaf", "to": "leaf" },
   "stockpile-artwork": { "branchId": "leaf", "country": "any", "hour": "leaf", "variants": "node", "variants[]": "leaf" },
   "strategic-regions": { "branchId": "leaf" },
   "subjects": { "branchId": "leaf" },
@@ -6762,14 +6506,14 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "territory-share": { "branchId": "leaf", "hour": "leaf", "measure": "leaf" },
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
   "threat-events": { "branchId": "leaf" },
-  "trade-flows": { "branchId": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "to": "leaf", "window": "leaf" },
+  "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf" },
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "unit-leader-career": { "branchId": "leaf", "reference": "leaf" },
   "unit-leader-choices": { "branchId": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
   "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf" },
   "unit-leader-portraits": { "branchId": "leaf", "edge": "leaf", "hour": "leaf", "references": "node", "references[]": "leaf" },
   "unit-leaders": { "branchId": "leaf", "hour": "leaf", "leaders": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
-  "volunteers-expeditionaries": { "branchId": "leaf", "countries": "node", "countries[]": "any", "kind": "leaf" },
+  "volunteer-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "limit": "leaf", "subject": "any" },
   "war-contributions": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
   "war-losses": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
   "wargoals": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6780,31 +6524,27 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
 export type RequestParams<E, B> = {
   "agency-comparison": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-aces": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "air-force-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-force-size": {};
-  "air-mission-wings": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-missions": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-statistics": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-statistics-regions": {};
   "air-superiority": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-superiority-choices": {};
-  "air-superiority-ranking": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "air-superiority-timeline": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "aircraft-catalogue": {};
   "army-losses": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "army-size": {};
   "campaign-clock": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "casualty-breakdown": {};
-  "casualty-labels": {};
   "casualty-matrix": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "casualty-pairs": {};
   "civil-wars": {};
   "combat-log-history": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };
+  "construction-breakdown": { readonly [key: string]: unknown; readonly "hour"?: B | null };
   "construction-log": {};
   "construction-log-manifest": {};
-  "construction-spending": {};
   "content-entity-stats": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "convoy-health": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
-  "country-experience": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-faction-goals": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-facts": {};
   "country-flags": {};
@@ -6815,10 +6555,10 @@ export type RequestParams<E, B> = {
   "country-fuel-demand-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-groups": {};
   "country-identities": {};
-  "country-people": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-stability-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "country-styles": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "decisions": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "decisions-tail": { readonly [key: string]: unknown; readonly "countFacets"?: readonly ({ readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null })[] | null; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "decryption": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "diplomatic-pacts": {};
   "diplomatic-relations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
@@ -6848,29 +6588,23 @@ export type RequestParams<E, B> = {
   "espionage-type-tokens": {};
   "espionage-types": {};
   "event-choices": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
+  "event-choices-tail": { readonly [key: string]: unknown; readonly "countFacets"?: readonly ({ readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null })[] | null; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "event-feed": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
   "event-feed-span": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
-  "events-page": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "reads"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "to"?: B | null; readonly "within"?: readonly ({ readonly "1"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null };
+  "event-feed-tail": { readonly [key: string]: unknown; readonly "countFacets"?: readonly ({ readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null })[] | null; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "faction-details": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "faction-goal-rewards": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "faction-lines": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "members"?: readonly ({ readonly [key: string]: unknown; readonly "spans"?: readonly ({ readonly "0"?: B | null; readonly "1"?: B | null })[] | null })[] | null; readonly "to"?: B | null; readonly "unread"?: readonly ({ readonly "0"?: B | null; readonly "1"?: B | null })[] | null };
   "faction-rosters": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "faction-state": {};
   "factory-groups": {};
   "factory-parts": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "focus-artwork": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "focus-card": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "focus-completions": {};
-  "focus-hour": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "focus-order-page": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "focus-unavailable": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "fuel-branches": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "game-score": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "head:campaign-clock": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "head:player-apm": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "idea-history": {};
   "industrial-organisations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "intel-details": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "intel-network-coverage": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "land-battle-course": {};
   "land-battle-terrain": {};
@@ -6878,17 +6612,16 @@ export type RequestParams<E, B> = {
   "land-battles-manifest": {};
   "land-battles-ranking": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "land-owners": {};
+  "leader-name-runs": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "lend-lease-balance": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "lend-lease-history": {};
   "log-counts": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "to"?: B | null };
   "log-page": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "to"?: B | null };
   "log-tail": { readonly [key: string]: unknown; readonly "countFacets"?: readonly ({ readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null })[] | null; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "hour"?: E | null };
   "market-ledger": { readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "to"?: B | null };
   "market-ledger-tail": { readonly [key: string]: unknown; readonly "countFacets"?: readonly ({ readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null })[] | null; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "hour"?: E | null };
   "market-lendlease": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "military-air-at": { readonly [key: string]: unknown; readonly "fromHour"?: B | null; readonly "hour"?: E | null };
   "military-air-ledger": { readonly [key: string]: unknown; readonly "fromHour"?: B | null };
-  "minefield-history": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
-  "minefield-reports": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "minefields": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "national-focus": {};
   "naval-battle-details": { readonly [key: string]: unknown; readonly "battles"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null };
@@ -6896,10 +6629,12 @@ export type RequestParams<E, B> = {
   "naval-battles-manifest": {};
   "naval-battles-ranking": { readonly [key: string]: unknown; readonly "countries"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "naval-losses": {};
+  "naval-losses-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "naval-management": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "naval-refits": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "naval-repairs": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "naval-supremacy": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "navy-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "navy-size": {};
   "next-elections": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "nuclear-arsenal": { readonly [key: string]: unknown; readonly "hour"?: E | null };
@@ -6908,11 +6643,10 @@ export type RequestParams<E, B> = {
   "occupation-reserve-manpower": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "occupied-states": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "operative-matrix": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "operative-tenures": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "operatives-departed": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "operatives-roster": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "party-history": {};
   "peace-deals": {};
+  "place-name-runs": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "place-names": { readonly [key: string]: unknown; readonly "places"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null; readonly "states"?: readonly ({ readonly [key: string]: unknown; readonly "hour"?: E | null })[] | null };
   "player-apm": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "politics-state": { readonly [key: string]: unknown; readonly "hour"?: E | null };
@@ -6920,13 +6654,11 @@ export type RequestParams<E, B> = {
   "power-spending-breakdown": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "hour"?: B | null };
   "production-licences": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "production-line-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
-  "production-line-detail": { readonly [key: string]: unknown; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "production-lines": { readonly [key: string]: unknown; readonly "within"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "production-lines-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "production-spending": {};
   "raid-log": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "regional-weather": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
-  "regional-weather-provinces": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "research": {};
   "research-breakdown": { readonly [key: string]: unknown; readonly "parts"?: readonly ({ readonly [key: string]: unknown; readonly "firstObservedHour"?: E | null; readonly "lastHour"?: B | null })[] | null };
   "research-slots": { readonly [key: string]: unknown; readonly "hour"?: E | null };
@@ -6949,7 +6681,6 @@ export type RequestParams<E, B> = {
   "special-projects-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "sprite-artwork": {};
   "stability-part-names": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "stability-reads": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "stockpile-artwork": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "strategic-regions": {};
   "subjects": {};
@@ -6960,14 +6691,14 @@ export type RequestParams<E, B> = {
   "territory-share": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "territory-transfers": {};
   "threat-events": {};
-  "trade-flows": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
+  "trade-flow": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "training-queue": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "unit-leader-career": {};
   "unit-leader-choices": {};
   "unit-leader-hour": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "unit-leader-portraits": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "unit-leaders": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "volunteers-expeditionaries": {};
+  "volunteer-flow": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "war-contributions": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "war-losses": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "wargoals": { readonly [key: string]: unknown; readonly "hour"?: E | null };

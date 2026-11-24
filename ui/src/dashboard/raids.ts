@@ -10,6 +10,7 @@ import { isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
 import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo, RaidVictimAt, RaidVictimSource } from '../generated/dashboard';
 import { productRequest } from './request.ts';
+import { countryKey } from './countryKey.ts';
 import { gatedRead, readData } from './gatedRead.ts';
 
 export const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
@@ -36,7 +37,7 @@ export function validateRaidLog(value: unknown): RaidLogReply {
     && Array.isArray(value.artwork) && value.artwork.every(art => object(art) && text(art.key) && maybe(art.image, text) && maybe(art.missing, text))
     && value.warnings.every(text) && value.missing.every(span => object(span) && integer(span.firstHour) && integer(span.lastHour) && text(span.reason))
     && value.episodes.every(item => object(item) && text(item.id) && integer(item.firstHour) && typeof item.firstHourExact === 'boolean' && integer(item.lastHour) && (item.firstHour as number) <= (item.lastHour as number)
-      && maybe(item.raider, text) && maybe(item.launchedRaider, text) && maybe(item.endedRaider, text)
+      && maybe(item.raider, text) && maybe(item.raiderSlot, integer) && maybe(item.launchedRaider, text) && maybe(item.endedRaider, text)
       && maybe(item.victim, text) && (item.victim === null) !== (item.victimMissing === null)
       && maybe(item.victimSource, victimSource) && (item.victim !== null || item.victimSource === null)
       && victimObservations(item.victims)
@@ -46,13 +47,12 @@ export function validateRaidLog(value: unknown): RaidLogReply {
       && isOrderedSpans(item.runs) && (item.runs as unknown[]).every(run => object(run) && typeof run.firstExact === 'boolean' && maybe(run.afterHour, integer) && maybe(run.raider, text) && integer(run.phase) && integer(run.outcome) && maybe(run.phaseName, text) && maybe(run.outcomeName, text))
       && preparationRuns(item.preparation)
       && maybe(item.launchedHour, integer) && typeof item.launchedExact === 'boolean' && typeof item.launched === 'boolean'
-      && maybe(item.endedHour, integer) && typeof item.endedExact === 'boolean' && maybe(item.endedSource, endedSource)
+      && maybe(item.endedHour, integer) && typeof item.endedExact === 'boolean' && maybe(item.endedSource, endedSource) && maybe(item.succeededHour, integer)
       && maybe(item.disappearedHour, integer) && typeof item.disappearedExact === 'boolean'
-      && typeof item.succeeded === 'boolean'
       && (item.launchedHour === null || item.launched) && (!item.launchedExact || item.launchedHour !== null)
       && (!item.endedExact || item.endedHour !== null) && (item.endedHour === null) === (item.endedSource === null)
       && (!item.disappearedExact || item.disappearedHour !== null)
-      && (!item.succeeded || item.endedHour !== null));
+      && (item.succeededHour === null || item.endedHour !== null));
   if (!ok) throw new Error('The raid log reply is malformed.');
   const reply = value as unknown as RaidLogReply;
   return { ...reply, artwork: reply.artwork.map(art => ({ ...art, image: drawableIcon(art.image) })) };
@@ -240,18 +240,20 @@ export function recordedSpans(span: Span, missing: readonly Span[]): Span[] {
 }
 
 export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing: readonly Span[], chosen: readonly string[],
-  top: { count: number; metric: RaidMetric } | null, keyOf: (raider: string, hour: number) => string = raider => raider): RaidTally {
+  top: { count: number; metric: RaidMetric } | null): RaidTally {
   const events = new Map<string, [number, 0 | 1][]>();
+  const chosenKeys = new Set(chosen);
   let unattributed = 0;
   for (const episode of episodes) {
     const marks: [number, 0 | 1, string | null][] = [];
     if (episode.launchedHour !== null) marks.push([episode.launchedHour, 0, episode.launchedRaider ?? episode.raider]);
-    if (episode.succeeded && episode.endedHour !== null) marks.push([episode.endedHour, 1, episode.endedRaider ?? episode.raider]);
+    if (episode.succeededHour !== null) marks.push([episode.succeededHour, 1, episode.endedRaider ?? episode.raider]);
     if (!marks.length) continue;
+    const slot = episode.raiderSlot === null ? null : countryKey(episode.raiderSlot);
     let missingRaider = false;
     for (const [hour, kind, raider] of marks) {
       if (raider === null) { missingRaider = true; continue; }
-      const key = keyOf(raider, hour);
+      const key = slot !== null && chosenKeys.has(slot) ? slot : raider;
       const list = events.get(key) ?? [];
       list.push([hour, kind]);
       events.set(key, list);

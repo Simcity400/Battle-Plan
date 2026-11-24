@@ -5,8 +5,14 @@ import type { CategoryInfo, IdeaHistoryReply, IdeaInfo } from '../../generated/d
 import { ideaTimelineProjection } from '../../widgets/idea-timeline/ideaTimelineProjection.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { timelineHostAdapter } from './hostAdapter.ts';
-import { nextDayStart } from './laneView.ts';
-import { layoutTimeline } from './layout.ts';
+import { frameTimeline, placeTimeline } from './layout.ts';
+import { resolutionFor } from './resolution.ts';
+import { untilItem } from './helpers.ts';
+import { familyTimelineLaneView, nextDayStart, type FamilyTimelineBinding } from './laneView.ts';
+import { registerTimelineProjection } from './registry.ts';
+import type { PaintInput } from '../../draw/lane.ts';
+import type { FamilyTheme } from '../contract.ts';
+import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { visibleLanes, type TimelineLane, type TimelineModel } from './model.ts';
 import { decodeTimelineHit, encodeTimelineHit, hitTimeline } from './painter.ts';
 
@@ -77,15 +83,16 @@ test('expanded state hides children of closed lanes, and hits encode lane, span 
   assert.equal(visibleLanes(lanes, {}).length, 2);
   assert.equal(visibleLanes(lanes, { g: false }).length, 1);
   const model: TimelineModel = { hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 200, warnings: [], nextChangeAt: Infinity };
-  const layout = layoutTimeline(model, 600, 200, {}, H(1941));
+  const layout = frameTimeline(placeTimeline(model, 600, 200, {}), H(1941));
   assert.equal(layout.endHour, H(1941), 'the axis runs to the painted hour, not the projection hour');
   const item = layout.lanes[1]!;
-  const hit = hitTimeline(layout, layout.plotRight - 4, item.y + item.height / 2, 0);
+  const resolution = resolutionFor(null, model, layout);
+  const hit = hitTimeline(layout, resolution, layout.plotRight - 4, item.y + item.height / 2, 0);
   assert.equal(hit?.kind, 'span');
   const token = encodeTimelineHit(hit);
   assert.deepEqual(decodeTimelineHit(token), hit);
   assert.deepEqual(timelineHostAdapter.parseHit(token), { key: 'm', subject: 'm', hour: hit!.hour, kind: 'span', toggle: false, inspectToken: token });
-  const toggle = hitTimeline(layout, 20, layout.lanes[0]!.y + 5, 0);
+  const toggle = hitTimeline(layout, resolution, 20, layout.lanes[0]!.y + 5, 0);
   assert.equal(timelineHostAdapter.parseHit(encodeTimelineHit(toggle))?.toggle, true);
 });
 
@@ -105,4 +112,118 @@ test('an item read on both sides of an unrecorded stretch is one bar, while a ch
   const model = ideaTimelineProjection.project(readView, OPTIONS);
   assert.deepEqual(lane(model, 'economy').spans.map(span => [span.firstHour, span.open]), [[FIRST, false], [H(1937, 6), true]]);
   assert.equal(lane(model, 'trade').spans.length, 2);
+});
+
+test('a pointer over a painted bar hits that bar, even when an earlier bar ends within the slack, and keeps its own hour', () => {
+  const lanes: TimelineLane[] = [{ key: 'l', kind: 'item', label: 'Lane', auditValue: 'Lane', spans: [
+    { id: 'a', firstHour: FIRST, lastHour: H(1938) - 1, color: '#fff', open: false },
+    { id: 'b', firstHour: H(1938), lastHour: H(1940), color: '#fff', open: true },
+  ] }];
+  const model: TimelineModel = { hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 200, warnings: [], nextChangeAt: Infinity };
+  const layout = frameTimeline(placeTimeline(model, 600, 200, {}), H(1940));
+  const resolution = resolutionFor(null, model, layout);
+  const y = layout.lanes[0]!.y + 10;
+  const x = layout.plotLeft + ((H(1938) - FIRST) / (H(1940) - FIRST)) * (layout.plotRight - layout.plotLeft) + 1;
+  const hit = hitTimeline(layout, resolution, x, y, 0)!;
+  assert.equal(hit.spanId, 'b');
+  assert.ok(hit.hour! >= H(1938), 'the hour is the pointer hour, not clamped to the earlier bar');
+});
+
+test('an item last seen before an unrecorded stretch is "last seen" during it and "ended by" once its absence is read', () => {
+  const span = { id: 's', firstHour: FIRST, lastHour: 99 + FIRST, color: '#fff', open: false, endUnseen: true } as const;
+  const words = { held: 'Held now', until: 'Until' };
+  assert.equal(untilItem(span, [{ firstHour: FIRST + 100, lastHour: FIRST + 150 }], FIRST + 150, words).label, 'Last seen');
+  assert.equal(untilItem(span, [{ firstHour: FIRST + 100, lastHour: FIRST + 199 }], FIRST + 250, words).label, 'Ended by');
+});
+
+test('consecutive holders with the same name and different recorded ids stay two bars', () => {
+  const advisors: CategoryInfo = { token: 'government', name: 'Laws', kind: null, hidden: false, politicsTab: true, slots: [
+    { token: 'advisor', name: 'Advisor', character: true, seats: 1, laws: [] },
+  ] };
+  const art = { token: 'adv', name: 'Same Name', description: null, baseDurationDays: null, icon: null };
+  const reply: IdeaHistoryReply = { ...REPLY, categories: [advisors], ideas: [idea('adv', 'advisor')], unobserved: [],
+    spans: [
+      { token: 'adv', firstHour: FIRST, lastHour: FIRST + 99, slot: 'advisor', character: { id: 1, token: 'A', name: 'Same Name' } },
+      { token: 'adv', firstHour: FIRST + 100, lastHour: FIRST + 200, slot: 'advisor', character: { id: 2, token: 'B', name: 'Same Name' } },
+    ],
+    holders: [{ token: 'adv', character: 1, characterToken: 'A', name: 'Same Name', artwork: art }, { token: 'adv', character: 2, characterToken: 'B', name: 'Same Name', artwork: art }] };
+  const model = ideaTimelineProjection.project(createBoundedReadView({ hour: FIRST + 200, panels: new Map([['main', reply]]) }), OPTIONS);
+  assert.equal(model.lanes[0]!.spans.length, 2);
+});
+
+test('a hover over an unchanged model neither re-projects nor re-places, and paint work follows the visible rows, not the lane count', () => {
+  let projections = 0;
+  const lanesOf = (count: number): TimelineLane[] => Array.from({ length: count }, (_, i) => ({
+    key: `l${i}`, kind: 'item', label: `Lane ${i}`, auditValue: `Lane ${i}`,
+    spans: Array.from({ length: 50 }, (_, j) => ({ id: `s${j}`, firstHour: FIRST + j * 100, lastHour: FIRST + j * 100 + 50, color: '#4f86f7', open: false })),
+  }));
+  for (const count of [100, 1500]) {
+    registerTimelineProjection<{ readonly n: number }>({
+      kind: `test-timeline-${count}`,
+      project(view, opt) {
+        projections++;
+        return { hour: view.hour, firstHour: FIRST, lanes: lanesOf(opt.n), unobserved: [], iconsOnBars: false, labelWidth: 200, warnings: [], nextChangeAt: Infinity };
+      },
+    });
+  }
+  const theme = { surface: '#161616', raised: '#1e1e1e', text: '#eeeeee', muted: '#999999', line: '#333333', lineSoft: '#222222', accent: '#4f86f7', blue: '#4f86f7', red: '#e5534b',
+    amber: '#d29922', green: '#3fb950', grey: '#999999', hatch: '#666666', hatchEdge: '#444444', font: 'sans-serif', fontSize: { small: 11, body: 12 }, lineWidth: 1, hatchSpacing: 6 } as unknown as FamilyTheme;
+  const original = globalThis.OffscreenCanvas;
+  let ops = 0;
+  const ctx = new Proxy({}, { get: (_target, prop) => {
+    if (prop === 'measureText') return (text: string) => ({ width: text.length * 6 });
+    if (prop === 'createLinearGradient') return () => ({ addColorStop() {} });
+    return () => { ops++; };
+  }, set: () => true });
+  class FakeCanvas { width: number; height: number; constructor(w: number, h: number) { this.width = w; this.height = h; } getContext() { return ctx; } }
+  (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeCanvas;
+  try {
+    const opsFor = (count: number) => {
+      const view = familyTimelineLaneView(() => {});
+      const state = new Map<string, unknown>();
+      const binding: FamilyTimelineBinding<{ readonly n: number }> = { family: 'timeline', kind: `test-timeline-${count}`, options: { n: count }, sources: {},
+        width: 600, height: 240, scrollTop: 0, theme, identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, pauseFlush: 0 };
+      const input = (inspect: string | null): PaintInput => ({ widget: 1, subs: [], pictures: [], hour: FIRST + 6000, speed: 0, now: 0, inspect,
+        binding: { surfaces: [{ width: 600, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'], model: binding });
+      let seq = 0;
+      const first = view.paint(input(null), state, () => `c${++seq}`);
+      const before = projections;
+      ops = 0;
+      const hovered = view.paint(input(encodeTimelineHit({ kind: 'lane', laneKey: 'l1' })), state, () => `c${++seq}`);
+      assert.equal(projections, before, 'a hover does not re-project');
+      assert.equal(hovered.fields.nav, first.fields.nav, 'navigation is published once per placement');
+      return ops;
+    };
+    assert.equal(opsFor(1500), opsFor(100), 'paint work does not grow with lanes that are not visible');
+  } finally {
+    (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = original;
+  }
+});
+
+test('a timeline lane equals a fresh paint after a seek back, a correction and an opened lane, and draws once per day while quiet', () => {
+  registerTimelineProjection<Record<string, never>>({
+    kind: 'test-timeline-lane',
+    project(view) {
+      const lanes = view.panel<{ lanes: TimelineLane[] }>('main')?.lanes ?? [];
+      return { hour: view.hour, firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 120, warnings: [], nextChangeAt: Infinity };
+    },
+  });
+  const lane = (label: string, open: boolean): TimelineLane => ({ key: 'war', kind: 'item', label, auditValue: label, expandable: true, spans: [{ id: 'a', firstHour: FIRST + 100, lastHour: FIRST + 900, color: '#4f86f7', open }] });
+  const child: TimelineLane = { key: 'front', kind: 'item', label: 'Front', auditValue: 'Front', parentKey: 'war', depth: 1, spans: [{ id: 'b', firstHour: FIRST + 200, lastHour: FIRST + 400, color: '#e5534b', open: false }] };
+  const binding = (lanes: TimelineLane[], expanded: Record<string, boolean> = {}): FamilyTimelineBinding<Record<string, never>> => ({
+    family: 'timeline', kind: 'test-timeline-lane', options: {}, sources: {}, staticPanels: { main: { lanes } }, width: 600, height: 240, scrollTop: 0,
+    theme: LANE_THEME, identitySnapshot: null, selectedKey: null, focusedKey: null, expanded, pauseFlush: 0,
+  });
+  const held = binding([lane('Winter War', true), child]);
+  const surface = { width: 600, height: 240, dpr: 1 };
+  const at = FIRST + 1000 + 5;
+  assert.equal(assertQuietFrames(() => familyTimelineLaneView(() => {}), { label: 'quiet', binding: held, hour: at }, 30, surface), nextDayStart(at));
+  assertFreshPaint(() => familyTimelineLaneView(() => {}), [
+    { label: 'held', binding: held, hour: at, check: true },
+    { label: 'a day later', binding: held, hour: at + 30, speed: 24 },
+    { label: 'seek back', binding: held, hour: at, check: true },
+    { label: 'later in the same day', binding: held, hour: at + 7, check: true },
+    { label: 'correction', binding: binding([lane('Continuation War', true), child]), hour: at, check: true },
+    { label: 'opened', binding: binding([lane('Continuation War', true), child], { war: true }), hour: at, check: true },
+  ], surface);
 });

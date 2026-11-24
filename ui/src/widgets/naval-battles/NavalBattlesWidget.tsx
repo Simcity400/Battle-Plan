@@ -22,7 +22,7 @@ const SIDES: BattleSideSummary = { label: 'Sides', countLabel: 'Ships', separato
   formatCount: (value, compact) => `${battleValueText(value)}${compact || value.value === null ? '' : value.value === 1 ? ' ship' : ' ships'}`,
   formatSide: navalSideText };
 const adapter: BattleViewAdapter<NavalBattleRow, NavalBattlesReply, NavalBattlesRankingReply> = {
-  definition, product: 'naval-battles', validateManifest: validateNavalBattlesManifest, validateWindow: validateNavalBattlesReply,
+  definition, product: 'naval-battles', manifestProduct: 'naval-battles-manifest', rankingProduct: 'naval-battles-ranking', validateManifest: validateNavalBattlesManifest, validateWindow: validateNavalBattlesReply,
   validateRanking: validateNavalBattlesRanking, rows: navalBattleRows, row: navalBattleRow, changes: navalBattleChanges, state: navalBattleState, windowPlaces: navalWindowPlaces,
   rankedRows: rankedNavalBattleRows,
   labels: { place: 'Battle', date: 'Date', start: 'Started', end: 'Ended', winner: 'Winner',

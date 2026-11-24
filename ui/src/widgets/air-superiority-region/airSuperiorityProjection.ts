@@ -1,4 +1,5 @@
 import { liveKey } from '../../charts/live.ts';
+import { authoredHex, CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { airMode, airParams, airPercent, airScore, regionLabel, validateAirSuperiority } from '../../dashboard/airSuperiority.ts';
 import { defaultCountryKey, selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
@@ -31,10 +32,6 @@ const AIR_REASONS: Readonly<Record<string, string>> = {
   'identity-not-recorded': 'Countries unavailable.',
   'theatres-not-recorded': 'Air groups unavailable.',
 };
-
-function rgbCss(rgb: readonly [number, number, number]): string {
-  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
-}
 
 function resolveSideName(
   side: AirSide,
@@ -85,7 +82,7 @@ function resolveSideColor(
     const factionIdentity = readView.who('faction', side.colourFaction);
     if (factionIdentity.colour?.status === 'ready') return factionIdentity.colour.value;
   }
-  if (side.color) return rgbCss(side.color);
+  if (side.color) return authoredHex(side.color);
   const tag = side.anchor?.tag ?? side.tag ?? side.leader;
   if (tag) {
     const countryIdentity = readView.who('country', tag);
@@ -158,7 +155,7 @@ function projectRegion(
     const vpColor = side
       ? resolveSideColor(side, readView, options)
       : reply.viewpointCountryStyle?.color
-        ? rgbCss(reply.viewpointCountryStyle.color)
+        ? authoredHex(reply.viewpointCountryStyle.color)
         : cell.leader
           ? (() => {
               const id = readView.who('country', cell.leader);
@@ -499,8 +496,8 @@ export const airSuperiorityRegionDeclaration: BarsWidgetDeclaration<AirSuperiori
       order,
       factionColours: ctx.aux?.factionColours ?? {},
       factionNames: ctx.aux?.factionNames ?? {},
-      enemyColor: ctx.aux?.enemyColor ?? '#e5484d',
-      mutedColor: ctx.aux?.mutedColor ?? '#8a8a8a',
+      enemyColor: ctx.aux?.enemyColor ?? CHART_MEASURE_COLOURS.short,
+      mutedColor: ctx.aux?.mutedColor ?? CHART_MEASURE_COLOURS.mutedFallback,
     };
   },
   jumpToDate: true,

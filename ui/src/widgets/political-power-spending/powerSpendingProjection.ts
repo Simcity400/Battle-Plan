@@ -20,7 +20,7 @@ export function powerSpendingColumns(currency: SpendCurrency): TableColumnSpec[]
   ];
 }
 
-export const POWER_SPENDING_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: { column: 'spent', direction: 'descending' } };
+export const POWER_SPENDING_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: { column: 'spent', direction: 'descending' } };
 
 export function powerSpendingOptions(currency: SpendCurrency): readonly OptionField[] {
   return tableFamilyOptions(powerSpendingColumns(currency), POWER_SPENDING_BASE);

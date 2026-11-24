@@ -1,11 +1,10 @@
 dashboard_base::register_products! {
     PRODUCTION_PRODUCTIONLINES => crate::products::production::ProductionLines,
-    PRODUCTION_PRODUCTIONLINEDETAIL => crate::products::production::ProductionLineDetail,
     PRODUCTION_PRODUCTIONLINEBREAKDOWN => crate::products::production::ProductionLineBreakdown,
     PRODUCTION_SPENDING_PRODUCTIONSPENDING => crate::products::production_spending::ProductionSpending,
     CONSTRUCTION_LOG_CONSTRUCTIONLOGMANIFEST => crate::products::construction::log::ConstructionLogManifest,
     CONSTRUCTION_LOG_CONSTRUCTIONLOG => crate::products::construction::log::ConstructionLog,
-    CONSTRUCTION_SPENDING_CONSTRUCTIONSPENDING => crate::products::construction::spending::ConstructionSpending,
+    CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN => crate::products::construction::breakdown::ConstructionBreakdown,
     STOCKPILE_EQUIPMENTSTOCKPILECATALOGUE => crate::products::stockpile::EquipmentStockpileCatalogue,
     STOCKPILE_EQUIPMENTSTOCKPILECHART => crate::products::stockpile::EquipmentStockpileChart,
     EQUIPMENT_LOSSES_EQUIPMENTLOSSES => crate::products::equipment_losses::EquipmentLosses,

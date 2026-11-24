@@ -1,5 +1,4 @@
 .stability { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.stability.is-pinned { gap: var(--space-2); overflow: auto; padding: var(--space-2) 0 var(--space-2); }
 .stability-drill { display: flex; flex: 1; flex-direction: column; gap: var(--space-3); min-height: 0; padding: 0 var(--space-3); }
 .stability-drill > .segmented { align-self: flex-end; }
 .stability-drill-chart { flex: 1; min-height: 120px; }

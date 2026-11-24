@@ -1,15 +1,13 @@
+import { contrastInkForFill } from '../../draw/kit.ts';
+import { shadeColour, tintColour } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BreakdownViewMode } from './options.ts';
 import {
   formatShare,
-  inkOnColour,
   partColour,
   resolveExpandedMap,
   resolveRingOpenKey,
-  shadeColour,
-  tintColour,
   type BreakdownComparison,
-  type BreakdownCrumb,
   type BreakdownPart,
   type BreakdownTotal,
   type ResolvedBreakdownLevel,
@@ -76,8 +74,6 @@ export interface PartsViewLayout {
   readonly height: number;
   readonly narrow: boolean;
   readonly padX: number;
-  readonly crumbRect: Rect | null;
-  readonly crumbs: readonly BreakdownCrumb[];
   readonly totalLine: TotalLineLayout;
   readonly bodyTop: number;
   readonly rows: readonly PartsRowLayout[];
@@ -138,8 +134,6 @@ export interface RingViewLayout {
   readonly height: number;
   readonly narrow: boolean;
   readonly padX: number;
-  readonly crumbRect: Rect | null;
-  readonly crumbs: readonly BreakdownCrumb[];
   readonly topLine: {
     readonly rect: Rect;
     readonly text: string;
@@ -198,8 +192,6 @@ export interface MosaicViewLayout {
   readonly height: number;
   readonly narrow: boolean;
   readonly padX: number;
-  readonly crumbRect: Rect | null;
-  readonly crumbs: readonly BreakdownCrumb[];
   readonly totalLine: TotalLineLayout;
   readonly area: Rect;
   readonly tiles: readonly MosaicTile[];
@@ -223,7 +215,6 @@ export interface BreakdownLayoutInput {
 }
 
 const NARROW_BREAKPOINT = 420;
-const CRUMB_HEIGHT = 24;
 const TOTAL_LINE_HEIGHT = 34;
 const PARTS_ROW_HEIGHT = 23;
 const PARTS_CHILD_HEIGHT = 18;
@@ -249,9 +240,6 @@ function layoutTotalLine(
   measure: MeasureTextFn,
 ): TotalLineLayout {
   let cursor = x;
-  if (total.atLeast) {
-    cursor += measure('At least ', `400 12px ${theme.font}`);
-  }
   cursor += measure(total.text, `600 22px ${theme.font}`);
   if (total.unit) {
     cursor += 4 + measure(total.unit, `400 12px ${theme.font}`);
@@ -280,9 +268,6 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
   const innerW = Math.max(80, width - padX * 2);
 
   let y = padTop;
-  const hasCrumbs = level.crumbs.length > 1;
-  const crumbRect: Rect | null = hasCrumbs ? { x: padX, y, width: innerW, height: CRUMB_HEIGHT } : null;
-  if (hasCrumbs) y += CRUMB_HEIGHT + 2;
 
   const totalLine = layoutTotalLine(padX, y, innerW, narrow, level.total, periodLabel, comparison, theme, measure);
   y += TOTAL_LINE_HEIGHT + 4;
@@ -340,7 +325,7 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
           const segW = (ch.value! / childSum) * usableW;
           if (segW < 0.5) continue;
           const segColor = i % 2 === 0 ? color : tintColour(color, 0.2);
-          const ink = inkOnColour(segColor);
+          const ink = contrastInkForFill(segColor, theme);
           const fullText = `${ch.name} ${ch.text}`;
           let inlineLabel: string | null = null;
           if (!narrow && segW >= 36) {
@@ -433,8 +418,6 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
     height,
     narrow,
     padX,
-    crumbRect,
-    crumbs: level.crumbs,
     totalLine,
     bodyTop,
     rows,
@@ -559,9 +542,6 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
   const innerW = Math.max(80, width - padX * 2);
 
   let y = padTop;
-  const hasCrumbs = level.crumbs.length > 1;
-  const crumbRect: Rect | null = hasCrumbs ? { x: padX, y, width: innerW, height: CRUMB_HEIGHT } : null;
-  if (hasCrumbs) y += CRUMB_HEIGHT + 2;
 
   let topLine: RingViewLayout['topLine'] = null;
   if (!narrow) {
@@ -615,7 +595,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     angle = a1 + gapRad;
 
     const color = partColour(part, theme);
-    const ink = inkOnColour(color);
+    const ink = contrastInkForFill(color, theme);
     const shareText = hatchedRing ? '' : formatShare(part.share);
 
     let label: RingInnerSlice['label'] = null;
@@ -661,7 +641,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
           const b1 = bAngle + bSpan;
           bAngle = b1 + childGap;
           const chColor = ci % 2 === 0 ? tintColour(color, 0.12) : tintColour(color, 0.30);
-          const chInk = inkOnColour(chColor);
+          const chInk = contrastInkForFill(chColor, theme);
           let arcLabel: RingOuterSlice['arcLabel'] = null;
           if (!hatchedRing && namesInRing && !narrow && w2 >= 15) {
             const rr = (r2i + r2o) / 2;
@@ -750,7 +730,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     };
   }
 
-  const centerVerb = narrow ? null : (level.total.atLeast ? 'At least' : level.total.verb);
+  const centerVerb = narrow ? null : level.total.verb;
   const centerValueSize = narrow || R < 90 ? 16 : 22;
   const centerUnitLine = narrow
     ? null
@@ -764,8 +744,6 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     height,
     narrow,
     padX,
-    crumbRect,
-    crumbs: level.crumbs,
     topLine,
     cx,
     cy,
@@ -889,9 +867,6 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
   const innerW = Math.max(80, width - padX * 2);
 
   let y = padTop;
-  const hasCrumbs = level.crumbs.length > 1;
-  const crumbRect: Rect | null = hasCrumbs ? { x: padX, y, width: innerW, height: CRUMB_HEIGHT } : null;
-  if (hasCrumbs) y += CRUMB_HEIGHT + 2;
 
   const totalLine = layoutTotalLine(padX, y, innerW, narrow, level.total, periodLabel, comparison, theme, measure);
   y += TOTAL_LINE_HEIGHT + 4;
@@ -925,7 +900,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
 
     if (showGroup) {
       const groupColor = shadeColour(baseColor, 0.45);
-      const groupInk = inkOnColour(groupColor);
+      const groupInk = contrastInkForFill(groupColor, theme);
       const childArea: Rect = {
         x: rect.x + 2,
         y: rect.y + MOSAIC_GROUP_HEADER,
@@ -956,7 +931,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
           width: cr.width,
           height: cr.height,
           color: chColor,
-          ink: inkOnColour(chColor),
+          ink: contrastInkForFill(chColor, theme),
           hatched: hatchedAll,
           isGroup: false,
           headerHeight: 0,
@@ -1005,7 +980,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
         width: rect.width,
         height: rect.height,
         color: baseColor,
-        ink: inkOnColour(baseColor),
+        ink: contrastInkForFill(baseColor, theme),
         hatched: hatchedAll,
         isGroup: false,
         headerHeight: 0,
@@ -1024,8 +999,6 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
     height,
     narrow,
     padX,
-    crumbRect,
-    crumbs: level.crumbs,
     totalLine,
     area,
     tiles,
@@ -1039,9 +1012,6 @@ function inRect(r: Rect | null | undefined, x: number, y: number): boolean {
 }
 
 export function hitTestBreakdown(layout: BreakdownLayout, x: number, y: number, scrollTop: number): string | null {
-  if (inRect(layout.crumbRect, x, y)) {
-    return 'back:__root__';
-  }
   if (layout.view === 'parts') {
     if (inRect(layout.totalLine.partialTabRect, x, y)) return 'row:__partial__';
     if (y < layout.bodyTop) return null;

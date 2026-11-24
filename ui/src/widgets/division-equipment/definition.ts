@@ -9,6 +9,7 @@ export const VIEWS = [{ value: 'equipment', label: 'By equipment' }, { value: 't
 export const VIEW_OPTION: OptionField = { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'equipment', choices: [...VIEWS] };
 
 export const TYPE_COLUMNS: readonly TableColumnDefaults[] = [
+  { key: 'picture', label: 'Picture', as: 'plain', offered: ['plain'] },
   { key: 'type', label: 'Equipment', as: 'plain', offered: OFFERED.text },
   { key: 'held', label: 'In divisions', as: 'faint', tone: 'grey', offered: OFFERED.number },
   { key: 'needed', label: 'Needed', as: 'faint', tone: 'grey', offered: OFFERED.number },
@@ -25,8 +26,8 @@ export const TEMPLATE_COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'fill', label: 'Equipment fill', as: 'meterBefore', tone: 'grey', offered: OFFERED.number },
   { key: 'short', label: 'Types short', as: 'faint', tone: 'grey', offered: OFFERED.number },
 ];
-export const TYPE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'missing', direction: 'descending' } };
-export const TEMPLATE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'fill', direction: 'ascending' } };
+export const TYPE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: { column: 'missing', direction: 'descending' } };
+export const TEMPLATE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: { column: 'fill', direction: 'ascending' } };
 export const TYPE_TABLE_KEY = 'equipmentTable';
 export const TEMPLATE_TABLE_KEY = 'templateTable';
 
@@ -36,7 +37,7 @@ export const TEMPLATE_TABLE_OPTION = tableField(TEMPLATE_COLUMNS, TEMPLATE_BASE,
 
 export const OPTIONS: readonly OptionField[] = [REACHED_COUNTRY_OPTION, VIEW_OPTION, COUNT_FOR_OPTION, TYPE_TABLE_OPTION, TEMPLATE_TABLE_OPTION];
 export const definition = {
-  kind: 'division-equipment', version: 1, title: 'Division equipment', icon: 'helmet', category: 'Army',
+  kind: 'division-equipment', version: 1, title: 'Division equipment', icon: 'cube', category: 'Army',
   description: 'What a country’s divisions hold, need and are missing, by equipment type or by template.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: 1 }, minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 }, options: OPTIONS, viewSwitch: { option: 'view' },

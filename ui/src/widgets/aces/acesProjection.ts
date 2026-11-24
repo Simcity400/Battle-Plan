@@ -126,7 +126,7 @@ export const acesDeclaration: TableWidgetDeclaration<AcesOptions> = {
   label: 'Aces',
   subject: 'aces',
   emptyCampaign: 'Load a campaign to see its aces.',
-  icon: 'star',
+  icon: 'person',
   optionFields: OPTIONS,
   countries: { mode: 'filter' },
   sources: ctx => ({

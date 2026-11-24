@@ -17,7 +17,9 @@ import {
   exactHoverReadings,
   memberAt,
   missingSpansOf,
-  seriesHeadValue,
+  rankEntry,
+  rankedOrder,
+  seriesHeadAt,
   spendMarkersOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 
@@ -45,7 +47,6 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
   project(readView: BoundedReadView, options: PoliticalPowerOptions) {
     const hour = readView.hour;
     const seriesMap = readView.series('main');
-    const answer = readView.answer('main');
     const tags = options.tags;
     const single = tags.length === 1;
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
@@ -53,11 +54,13 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
     const headByTag = new Map<string, number | null>();
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
-      headByTag.set(tag, memberAt(options.membership, tag, hour) ? seriesHeadValue(seriesMap?.get(tag), answer, i, 5) : null);
+      headByTag.set(tag, memberAt(options.membership, tag, hour) ? seriesHeadAt(readView, 'main', tag, i, 5) : null);
     }
     const exact = exactHoverReadings(readView, 'hover', seriesMap?.get(tags[0] ?? '')?.decimals ?? 5);
 
-    const ordered = [...tags].sort((a, b) => (headByTag.get(b) ?? -Infinity) - (headByTag.get(a) ?? -Infinity));
+    const present = tags.filter(tag => memberAt(options.membership, tag, hour));
+    const presentSet = new Set(present);
+    const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
     const colourMap = assignCountrySeriesColours(ordered, options.holders, readView, hour, options.surface,
       CHART_MEASURE_COLOURS.politicalPower, tag => rowOf.get(tag) ?? 0);
     const measureIcon: ChartArtSlot | undefined = single
@@ -68,7 +71,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       const isTail = !single && rank >= 8;
       const bounded = seriesMap?.get(tag) ?? null;
       const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const color = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.politicalPower);
+      const color = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.politicalPower);
       const headValue = headByTag.get(tag) ?? null;
       return {
         id: tag,
@@ -136,9 +139,11 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
     const within = withinEntries.length > 0 ? new Map(withinEntries) : undefined;
     const countries = tags.map(countryFromKey);
     const family = { kind: 'country-measure', measure: 'politicalPower' };
+    const rank = rankEntry(ctx, family, tags);
     return {
-      owner: `political-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}`,
+      owner: `political-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${ctx.following ? 1 : 0}`,
       entries: [
+        ...(rank ? [rank] : []),
         {
           name: 'main',
           source: ctx.track.source,

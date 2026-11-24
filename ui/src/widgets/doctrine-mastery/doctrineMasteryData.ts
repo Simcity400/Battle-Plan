@@ -1,6 +1,6 @@
 import { formatAmount, formatRate } from '../../charts/valueAxis.ts';
 import type { MeterMark } from '../../charts/meter/ProgressMeter';
-import type { SpriteFrame } from '../../dashboard/spriteArtwork';
+import type { SpriteFrame } from '../../generated/dashboard';
 import type { DescribedReward, DoctrineMasteryReply, DoctrineRewardsReply, MasteryChoice, MasteryFolder, MasteryReward, MasteryTrack } from '../../generated/dashboard';
 
 const text = (value: unknown): value is string => typeof value === 'string';
@@ -13,7 +13,8 @@ const reward = (value: unknown): value is MasteryReward => !!value && typeof val
 const track = (value: unknown): value is MasteryTrack => {
   const item = value as MasteryTrack;
   return !!item && typeof item === 'object' && Number.isSafeInteger(item.ordinal) && optional(item.name) && (item.sub === null || choice(item.sub))
-    && Array.isArray(item.rewards) && item.rewards.every(reward) && Number.isSafeInteger(item.unlocked);
+    && Array.isArray(item.rewards) && item.rewards.every(reward) && Number.isSafeInteger(item.unlocked)
+    && (item.rewardsUnknown === null || (typeof item.rewardsUnknown === 'string' && item.rewardsUnknown.length > 0 && item.rewards.length === 0));
 };
 
 export function validateDoctrineMastery(value: unknown): DoctrineMasteryReply {

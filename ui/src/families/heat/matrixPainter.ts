@@ -2,10 +2,10 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
+  contrastInkForFill,
   drawBar,
   drawFlagSlot,
-  drawGradientLegend,
-  drawLegendEntry,
+  drawLegendStrip,
   drawNameSlot,
   drawProgressRing,
   drawRowFocusRing,
@@ -15,7 +15,7 @@ import {
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { mix, parseColor, readableText } from '../../shell/appearance/color.ts';
+import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle } from '../art/provider.ts';
@@ -24,7 +24,7 @@ import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import type { HeatMatrixLayout } from './matrixLayout.ts';
 import { MATRIX_COLUMN_NAME_ANGLE, MATRIX_COLUMN_NAME_HEIGHT, MATRIX_PAD, MATRIX_TRAILING_GAP } from './matrixLayout.ts';
-import type { HeatMatrixModel, MatrixAxisEntity, MatrixRamp } from './matrixModel.ts';
+import { matrixCellAt, type HeatMatrixModel, type MatrixAxisEntity, type MatrixRamp } from './matrixModel.ts';
 
 const MARK_SQUARE_PX = 14;
 const MARK_RING_RADIUS_PX = 6.2;
@@ -71,76 +71,6 @@ export function collectVisibleMatrixArt(
     if (entity) add(entity);
   }
   return [...urls];
-}
-
-function drawLegendStrip(
-  ctx: Canvas2D,
-  model: HeatMatrixModel,
-  layout: HeatMatrixLayout,
-  theme: FamilyTheme,
-): void {
-  const legend = model.legend;
-  if (!legend || layout.legendHeight <= 0) return;
-  const middleY = Math.round(layout.legendHeight / 2);
-  let cursor = MATRIX_PAD;
-  if (legend.gradient) {
-    const stops = legend.gradient.stops.length ? legend.gradient.stops : [rampColour(theme, model.ramp, 0), rampColour(theme, model.ramp, 1)];
-    const drawn = drawGradientLegend(
-      ctx,
-      cursor,
-      middleY,
-      legend.gradient.lowLabel,
-      legend.gradient.highLabel,
-      stops,
-      theme,
-    );
-    cursor += drawn.width + 14;
-  }
-  if (legend.entries) {
-    for (const entry of legend.entries) {
-      if (cursor > layout.width - 40) break;
-      if (entry.hatched || entry.outlined) {
-        if (entry.hatched) {
-          drawHatchRect(ctx, cursor, Math.round(middleY - 4.5), 9, 9, 2, theme);
-        } else {
-          ctx.save();
-          ctx.strokeStyle = theme.muted;
-          ctx.lineWidth = 1;
-          ctx.setLineDash([2, 2]);
-          ctx.beginPath();
-          ctx.roundRect(cursor + 0.5, Math.round(middleY - 4.5) + 0.5, 8, 8, 2);
-          ctx.stroke();
-          ctx.restore();
-        }
-        ctx.save();
-        ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-        ctx.fillStyle = theme.muted;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(entry.label, cursor + 15, middleY);
-        cursor += 15 + textWidth(ctx, entry.label) + 12;
-        ctx.restore();
-      } else {
-        const drawn = drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color, theme, {
-          maxWidth: Math.max(40, layout.width - cursor - MATRIX_PAD),
-        });
-        cursor += drawn.width + 12;
-      }
-    }
-  }
-  if (legend.rightNote) {
-    ctx.save();
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    const maxW = Math.max(0, layout.width - cursor - MATRIX_PAD);
-    if (maxW >= 24) {
-      ctx.fillText(ellipsise(legend.rightNote, maxW, s => textWidth(ctx, s)), layout.width - MATRIX_PAD, middleY);
-    }
-    ctx.restore();
-  }
-  drawRowHairline(ctx, 0, layout.width, layout.legendHeight - 1, theme, 'normal');
 }
 
 function resolveEntityFlag(
@@ -282,7 +212,28 @@ export function drawHeatMatrix(
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, layout.width, layout.height);
 
-  drawLegendStrip(ctx, model, layout, theme);
+  if (model.legend && layout.legendHeight > 0) {
+    const gradient = model.legend.gradient
+      ? {
+          ...model.legend.gradient,
+          stops: model.legend.gradient.stops.length
+            ? model.legend.gradient.stops
+            : [rampColour(theme, model.ramp, 0), rampColour(theme, model.ramp, 1)],
+        }
+      : undefined;
+    drawLegendStrip(ctx, 0, 0, layout.width, layout.legendHeight, {
+      gradient,
+      entries: model.legend.entries?.map(entry => ({
+        label: entry.label,
+        color: entry.color,
+        ...(entry.hatched ? { hatch: true } : {}),
+        ...(entry.outlined ? { outlined: true } : {}),
+      })),
+      rightNote: model.legend.rightNote,
+      padX: MATRIX_PAD,
+      hairline: true,
+    }, theme);
+  }
 
   const cw = layout.cellWidth;
   const ch = layout.cellHeight;
@@ -311,7 +262,7 @@ export function drawHeatMatrix(
     const y = layout.gridTop + r * ch - scrollTop;
     for (let c = layout.firstCol; c < layout.endCol; c++) {
       const x = layout.gridLeft + c * cw - scrollLeft;
-      const item = model.cell(r, c);
+      const item = matrixCellAt(model, r, c);
       const cx = x + 1;
       const cy = y + 1;
       if (item.kind === 'diagonal') {
@@ -369,8 +320,7 @@ export function drawHeatMatrix(
         ctx.roundRect(cx, cy, innerW, innerH, radius);
         ctx.fill();
         if (item.text) {
-          const rgb = parseColor(fill);
-          drawCellText(ctx, item.text, cx, cy, innerW, innerH, rgb ? readableText(rgb) : theme.text, theme);
+          drawCellText(ctx, item.text, cx, cy, innerW, innerH, contrastInkForFill(fill, theme), theme);
         }
       }
 

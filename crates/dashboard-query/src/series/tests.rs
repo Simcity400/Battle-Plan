@@ -544,6 +544,20 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
         let got: Vec<(i64, &str)> = reply.states.iter().map(|state| (state.run.as_ref().unwrap().value_raw.parse().unwrap(), state.country.tag().unwrap())).collect();
         assert_eq!(got, wanted.into_iter().take(1).collect::<Vec<_>>(), "the top country at {hour}");
     }
+    for hour in HOURS[..6].iter().copied().chain([second + 17, last]) {
+        let reads = serde_json::json!([{ "country": "GER", "hour": hour }, { "country": "ITA", "hour": hour }]);
+        for least in [false, true] {
+            let reply: SeriesStateReply = serde_json::from_value(ask("series-state", serde_json::json!({ "reads": reads, "top": 2, "least": least }))).unwrap();
+            let mut wanted: Vec<(i64, &str)> = [9001, 9002]
+                .into_iter()
+                .filter(|&id| held(&query, tag_of(id), hour) && exists(id, hour))
+                .filter_map(|id| Some((power(id, hour)?, tag_of(id))))
+                .collect();
+            wanted.sort_by(|a, b| if least { a.0.cmp(&b.0) } else { b.0.cmp(&a.0) }.then_with(|| a.1.cmp(b.1)));
+            let got: Vec<(i64, &str)> = reply.states.iter().map(|state| (state.run.as_ref().unwrap().value_raw.parse().unwrap(), state.country.tag().unwrap())).collect();
+            assert_eq!(got, wanted, "the named countries ranked at {hour}, least {least}");
+        }
+    }
     let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1, "from": FIRST, "to": last, "width": 64 }))).unwrap();
     assert!(!chart.lines.is_empty());
     for line in &chart.lines {
@@ -621,7 +635,6 @@ fn a_request_naming_1500_countries_is_answered() {
     let outside: SeriesKeyReply =
         serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": ["GER"], "within": held, "key": "ArrowRight", "from": hour, "firstHour": first, "lastHour": last }))).unwrap();
     assert_eq!(outside.hour, None, "a step from outside the held runs, with nothing after it inside them, goes nowhere rather than back to its origin");
-    ask("events-page", serde_json::json!({ "countries": tags, "from": first, "to": last, "pageSize": 16 }));
 }
 
 fn line_of<'q, 'r>(query: &'q Query<'r>) -> Line<'q, 'r> {

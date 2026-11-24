@@ -259,6 +259,7 @@ test('M1: every value format avoids exponent notation for 1e21, 1e-7, and MAX_SA
   assert.equal(formatScalar(1e-7, { decimals: 2 }), '0');
   assert.equal(formatScalar(1e-7, 'decimal1'), '0');
   assert.deepEqual([47484000n, 40950000n, 140000n, -149999n].map(raw => formatScalar(raw, { decimals: 5, maxDecimals: 0 })), ['475', '410', '1', '\u22121'], 'a scaled amount shown to fewer places rounds half up, as the game does');
+  assert.deepEqual([420000000n, 248975000n, 400000n, 170000n].map(raw => formatScalar(raw, 'fixed5Amount')), ['4,200', '2,489.75', '4', '1.7'], 'fixed5 amounts group thousands and show decimals only where they exist');
   assert.equal(formatScalar(1e-7, 'percent2'), '0.00%');
   assert.equal(formatScalar(1e-7, { decimals: 0, maxDecimals: 2 }), '0');
   assert.equal(formatScalar(Number.MAX_SAFE_INTEGER + 2, 'integer'), '9,007,199,254,740,992');

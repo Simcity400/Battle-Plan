@@ -17,7 +17,9 @@ import {
   exactHoverReadings,
   memberAt,
   missingSpansOf,
-  seriesHeadValue,
+  rankEntry,
+  rankedOrder,
+  seriesHeadAt,
   spendMarkersOf,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
@@ -51,8 +53,6 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     const hour = readView.hour;
     const mainMap = readView.series('main');
     const ceilingMap = options.showCeiling ? readView.series('ceiling') : undefined;
-    const mainAnswer = readView.answer('main');
-    const ceilingAnswer = options.showCeiling ? readView.answer('ceiling') : undefined;
     const tags = options.tags;
     const single = tags.length === 1;
 
@@ -61,15 +61,17 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
       const member = memberAt(options.membership, tag, hour);
-      headByTag.set(tag, member ? seriesHeadValue(mainMap?.get(tag), mainAnswer, i, 5) : null);
+      headByTag.set(tag, member ? seriesHeadAt(readView, 'main', tag, i, 5) : null);
       if (options.showCeiling) {
-        ceilingByTag.set(tag, member ? seriesHeadValue(ceilingMap?.get(tag), ceilingAnswer, i, 5) : null);
+        ceilingByTag.set(tag, member ? seriesHeadAt(readView, 'ceiling', tag, i, 5) : null);
       }
     }
 
     const exact = exactHoverReadings(readView, 'hover', mainMap?.get(tags[0] ?? '')?.decimals ?? 5);
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
-    const ordered = [...tags].sort((a, b) => (headByTag.get(b) ?? -Infinity) - (headByTag.get(a) ?? -Infinity));
+    const present = tags.filter(tag => memberAt(options.membership, tag, hour));
+    const presentSet = new Set(present);
+    const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
     const colourMap = assignCountrySeriesColours(
       ordered,
       options.holders,
@@ -90,7 +92,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       const isTail = !single && rank >= 8;
       const bounded = mainMap?.get(tag) ?? null;
       const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const color = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.commandPower);
+      const color = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.commandPower);
       const headValue = headByTag.get(tag) ?? null;
       const ceilingBounded = options.showCeiling && !isTail ? (ceilingMap?.get(tag) ?? null) : null;
       const ceilingHead = options.showCeiling && !isTail ? (ceilingByTag.get(tag) ?? null) : null;
@@ -245,8 +247,10 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
         },
       });
     }
+    const rank = rankEntry(ctx, mainFamily, tags);
+    if (rank) entries.push(rank);
     return {
-      owner: `command-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showCeiling ? 1 : 0}`,
+      owner: `command-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showCeiling ? 1 : 0}:${ctx.following ? 1 : 0}`,
       entries,
     };
   },

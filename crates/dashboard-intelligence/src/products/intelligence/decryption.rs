@@ -25,6 +25,7 @@ const BONUS_DAYS: usize = 1;
 const BONUS_ACTIVE: usize = 2;
 const DECRYPTING: usize = 3;
 const STRENGTH: usize = 2;
+const WEEK_HOURS: i32 = 168;
 
 const fn pair_key(owner: u32, target: u32) -> u64 {
     ((owner as u64) << 32) | target as u64
@@ -37,6 +38,52 @@ pub struct Decryption;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DecryptionParams {
     pub branch_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum CipherStatus {
+    Broken,
+    Decrypting,
+    Paused,
+    BreakUnknown,
+}
+
+impl CipherStatus {
+    fn of(broken: Option<bool>, decrypting: u8) -> Self {
+        match (broken, decrypting) {
+            (Some(true), _) => Self::Broken,
+            (None, _) => Self::BreakUnknown,
+            (Some(false), 0) => Self::Paused,
+            (Some(false), _) => Self::Decrypting,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CipherCounts {
+    pub broken: u32,
+    pub decrypting: u32,
+    pub paused: u32,
+    pub break_unknown: u32,
+}
+
+impl CipherCounts {
+    fn of(pairs: &[CipherPair]) -> Self {
+        let mut out = Self::default();
+        for pair in pairs {
+            match pair.status {
+                CipherStatus::Broken => out.broken += 1,
+                CipherStatus::Decrypting => out.decrypting += 1,
+                CipherStatus::Paused => out.paused += 1,
+                CipherStatus::BreakUnknown => out.break_unknown += 1,
+            }
+        }
+        out
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -53,19 +100,29 @@ pub struct CipherPair {
     pub decrypting: u8,
     #[doc = " None where the threshold is not known and no bonus is active."]
     pub broken: Option<bool>,
+    #[doc = " Broken, decrypting, paused, or not known to be broken or not."]
+    pub status: CipherStatus,
     #[doc = " When the attempt current at the hour started; none when none is, or it is not known."]
     pub started: Option<Observation>,
     #[doc = " When that attempt broke the cipher; none when it has not."]
     pub broken_at: Option<Observation>,
+    #[doc = " The change in progress over the last 7 days, in tenths of a percentage point of the threshold,"]
+    #[doc = " from the reading 168 hours earlier in the same unbroken stretch; none where it is not known."]
+    pub week_change_tenths: Option<i32>,
+    #[doc = " Why the change over the last 7 days is not known, where it is not."]
+    pub week_change_unknown: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DecryptionReply {
-    #[doc = " The pairs with an attempt or a broken cipher, in the game's race order: broken first, then"]
-    #[doc = " by progress (unknown last), then by decryptor and target."]
+    #[doc = " The pairs with an attempt or a broken cipher, in the game's race order: broken first (the"]
+    #[doc = " newest break first, an undated one last), then by progress (unknown last), then by decryptor"]
+    #[doc = " and target."]
     pub pairs: Vec<CipherPair>,
+    #[doc = " How many of the pairs are in each status."]
+    pub counts: CipherCounts,
     #[doc = " Why the hour's ciphers are not known, when they are not."]
     pub missing: Option<String>,
     #[doc = " Why the attempts' starts and breaks are not known, when they are not: every pair at work"]
@@ -95,8 +152,10 @@ struct Ranked {
 fn race_order(a: &Ranked, b: &Ranked) -> Ordering {
     let broken = |item: &Ranked| item.pair.broken == Some(true);
     let tag = |country: &Country| (country.tag.is_none(), country.tag.clone(), country.id);
+    let broke = |item: &Ranked| item.pair.broken_at.filter(|_| broken(item)).map(|seen| seen.hour);
     broken(b)
         .cmp(&broken(a))
+        .then_with(|| broke(b).cmp(&broke(a)))
         .then_with(|| a.percent.is_none().cmp(&b.percent.is_none()))
         .then_with(|| b.percent.cmp(&a.percent))
         .then_with(|| match (a.required, b.required) {
@@ -108,10 +167,25 @@ fn race_order(a: &Ranked, b: &Ranked) -> Ordering {
         .then_with(|| tag(&a.pair.target).cmp(&tag(&b.pair.target)))
 }
 
+fn week_change(now: i64, then: Result<i64, String>, required: &Result<i64, String>) -> Result<i32, String> {
+    let required = match required {
+        Ok(required) if *required > 0 => *required,
+        Ok(_) => return Err("The cipher's threshold is zero, so its progress has no scale".into()),
+        Err(reason) => return Err(format!("Progress is not known: {reason}")),
+    };
+    let then = then?;
+    let scaled = (i128::from(now) - i128::from(then)) * 1_000;
+    let required = i128::from(required);
+    let half = required / 2;
+    let rounded = if scaled >= 0 { (scaled + half) / required } else { (scaled - half) / required };
+    i32::try_from(rounded).map_err(|_| "The change over the last 7 days is out of range".into())
+}
+
 fn pairs(
     frame: &DecodedFrame,
     defines: &Result<cryptology::Defines, String>,
     attempts: Option<&Attempts>,
+    history: Result<&CipherHistory, &str>,
     live: &dashboard_follow::live::Cells,
 ) -> io::Result<Vec<CipherPair>> {
     let tags = Tags::read(frame)?;
@@ -139,6 +213,11 @@ fn pairs(
             continue;
         }
         name_cells(live, row);
+        let earlier = match history {
+            Ok(history) => history.amount_at(key, frame.hour - WEEK_HOURS, frame.hour),
+            Err(reason) => Err(format!("Not recorded 7 days earlier: {reason}")),
+        };
+        let change = week_change(row.amount_raw, earlier, &threshold);
         out.push(Ranked {
             amount: row.amount_raw,
             required,
@@ -151,8 +230,11 @@ fn pairs(
                 bonus_active: row.bonus_active,
                 decrypting: row.decrypting,
                 broken,
+                status: CipherStatus::of(broken, row.decrypting),
                 started,
                 broken_at,
+                week_change_tenths: change.as_ref().ok().copied(),
+                week_change_unknown: change.err(),
             },
         });
     }
@@ -183,7 +265,7 @@ impl AtHour for Decryption {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![DecryptionParams::decl(), Country::decl(), Observation::decl(), CipherPair::decl(), DecryptionReply::decl()]
+        vec![DecryptionParams::decl(), Country::decl(), Observation::decl(), CipherStatus::decl(), CipherCounts::decl(), CipherPair::decl(), DecryptionReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -207,9 +289,12 @@ impl AtHour for Decryption {
         let branch: u64 = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let attempts = at.context.ciphers.attempts(branch, defines.as_ref().ok().copied());
         let attempts_unknown = attempts.as_ref().err().map(|error| format!("Attempt starts and breaks are not known: {error}"));
-        Ok(match pairs(frame, defines, attempts.as_deref().ok(), at.live) {
-            Ok(pairs) => DecryptionReply { pairs, missing: None, attempts_unknown, warnings },
-            Err(error) => DecryptionReply { pairs: Vec::new(), missing: Some(error.to_string()), attempts_unknown, warnings },
+        let history = at.context.ciphers.history(branch);
+        let history_error = history.as_ref().err().map(ToString::to_string).unwrap_or_default();
+        let history = history.as_deref().map_err(|_| history_error.as_str());
+        Ok(match pairs(frame, defines, attempts.as_deref().ok(), history, at.live) {
+            Ok(pairs) => DecryptionReply { counts: CipherCounts::of(&pairs), pairs, missing: None, attempts_unknown, warnings },
+            Err(error) => DecryptionReply { pairs: Vec::new(), counts: CipherCounts::default(), missing: Some(error.to_string()), attempts_unknown, warnings },
         })
     }
 }
@@ -339,6 +424,7 @@ fn number(cell: Read) -> Option<i64> {
 
 pub struct CipherHistory {
     last: i32,
+    stretches: Vec<(i32, i32)>,
     pairs: BTreeMap<u64, PairSteps>,
     strengths: HashMap<u32, Vec<(i32, Option<i64>)>>,
 }
@@ -346,8 +432,9 @@ pub struct CipherHistory {
 impl CipherHistory {
     fn read(query: &Query<'_>) -> io::Result<Self> {
         let recording = query.replay.recording();
-        let mut out = Self { last: query.timeline.last, pairs: BTreeMap::new(), strengths: HashMap::new() };
+        let mut out = Self { last: query.timeline.last, stretches: Vec::new(), pairs: BTreeMap::new(), strengths: HashMap::new() };
         for stretch in &query.timeline.stretches {
+            out.stretches.push((stretch.first, stretch.last));
             let fresh = if matches!(stretch.join, Join::Load { .. }) { 0 } else { FRESH };
             for steps in out.pairs.values_mut() {
                 steps.push(stretch.first, 0, fresh);
@@ -385,6 +472,22 @@ impl CipherHistory {
             }
         }
         Ok(out)
+    }
+
+    fn amount_at(&self, key: u64, hour: i32, now: i32) -> Result<i64, String> {
+        let stretch = self.stretches.iter().find(|(first, last)| *first <= now && now <= *last);
+        match stretch {
+            Some(&(first, _)) if first <= hour => {}
+            Some(_) => return Err("Not recorded 7 days earlier: the recording breaks within the last 7 days".into()),
+            None => return Err("Not recorded 7 days earlier: this hour is not in the cipher history".into()),
+        }
+        let none = || String::from("Not recorded 7 days earlier: the pair has no reading then");
+        let steps = self.pairs.get(&key).ok_or_else(none)?;
+        let at = steps.hours.partition_point(|&step| step <= hour).checked_sub(1).ok_or_else(none)?;
+        if steps.flags[at] & KNOWN == 0 {
+            return Err("Not recorded 7 days earlier: the pair's reading then is not recorded".into());
+        }
+        Ok(steps.amounts[at])
     }
 
     fn attempts(&self, defines: Option<cryptology::Defines>) -> Attempts {
@@ -514,7 +617,7 @@ mod tests {
     }
 
     fn history(pairs: Vec<(u64, PairSteps)>, strengths: Vec<(u32, Vec<(i32, Option<i64>)>)>, last: i32) -> CipherHistory {
-        CipherHistory { last, pairs: pairs.into_iter().collect(), strengths: strengths.into_iter().collect() }
+        CipherHistory { last, stretches: vec![(0, last)], pairs: pairs.into_iter().collect(), strengths: strengths.into_iter().collect() }
     }
 
     const fn seen(hour: i32, upper_bound: bool) -> Option<Observation> {
@@ -572,8 +675,11 @@ mod tests {
                 bonus_active: 0,
                 decrypting: 1,
                 broken,
+                status: CipherStatus::of(broken, 1),
                 started: None,
                 broken_at: None,
+                week_change_tenths: None,
+                week_change_unknown: None,
             },
         }
     }
@@ -590,6 +696,50 @@ mod tests {
         race.sort_by(race_order);
         let owners: Vec<&str> = race.iter().map(|item| item.pair.owner.tag.as_deref().unwrap()).collect();
         assert_eq!(owners, ["ITA", "SOV", "JAP", "GER", "ENG"]);
+        let dated = |tag: &str, hour: Option<i32>| {
+            let mut item = ranked(tag, "GER", 1_000, Some(1_000), Some(true));
+            item.pair.broken_at = hour.map(|hour| Observation { hour, upper_bound: false });
+            item
+        };
+        let mut breaks = [dated("AAA", Some(10)), dated("BBB", None), dated("CCC", Some(30))];
+        breaks.sort_by(race_order);
+        let order: Vec<&str> = breaks.iter().map(|item| item.pair.owner.tag.as_deref().unwrap()).collect();
+        assert_eq!(order, ["CCC", "AAA", "BBB"], "the newest break first, an undated one last");
+    }
+
+    #[test]
+    fn a_paused_attempt_and_an_unknown_break_are_counted_apart_from_decrypting_and_broken() {
+        assert_eq!(CipherStatus::of(Some(false), 0), CipherStatus::Paused);
+        assert_eq!(CipherStatus::of(None, 1), CipherStatus::BreakUnknown);
+        assert_eq!(CipherStatus::of(Some(true), 0), CipherStatus::Broken);
+        let pairs: Vec<CipherPair> = [
+            ranked("GER", "ENG", 400, Some(1_000), Some(false)),
+            ranked("ENG", "GER", 100, None, None),
+            ranked("ITA", "FRA", 1_000, Some(1_000), Some(true)),
+        ].into_iter().map(|item| item.pair).collect();
+        let mut paused = pairs[0].clone();
+        paused.decrypting = 0;
+        paused.status = CipherStatus::of(paused.broken, 0);
+        let counts = CipherCounts::of(&[pairs[0].clone(), pairs[1].clone(), pairs[2].clone(), paused]);
+        assert_eq!(counts, CipherCounts { broken: 1, decrypting: 1, paused: 1, break_unknown: 1 });
+    }
+
+    #[test]
+    fn the_week_change_is_witnessed_168_hours_earlier_in_the_same_stretch_or_named_unknown() {
+        let key = pair_key(1, 2);
+        let pair = steps(&[(0, 0, KNOWN | FRESH), (100, 0, KNOWN | WORKING), (150, 0, 0), (160, 2_000, KNOWN | WORKING), (400, 5_000, KNOWN | WORKING)]);
+        let mut held = history(vec![(key, pair)], vec![], 600);
+        held.stretches = vec![(0, 299), (300, 600)];
+        assert_eq!(held.amount_at(key, 120, 288), Ok(0));
+        assert_eq!(held.amount_at(key, 200, 368), Err("Not recorded 7 days earlier: the recording breaks within the last 7 days".into()));
+        assert!(held.amount_at(key, 155, 290).is_err(), "an unknown reading then is not replaced by the nearest one held");
+        assert!(held.amount_at(pair_key(9, 9), 120, 288).is_err());
+        assert!(held.amount_at(key, 500, 700).is_err(), "an hour outside the history has no reading");
+        assert_eq!(week_change(2_400, Ok(1_000), &Ok(10_000)), Ok(140));
+        assert_eq!(week_change(1_000, Ok(1_049), &Ok(10_000)), Ok(-5));
+        assert_eq!(week_change(1_000, Ok(1_055), &Ok(10_000)), Ok(-6));
+        assert!(week_change(1_000, Ok(0), &Err("no strength".into())).is_err());
+        assert!(week_change(1_000, Err("not then".into()), &Ok(10_000)).is_err());
     }
 
 }

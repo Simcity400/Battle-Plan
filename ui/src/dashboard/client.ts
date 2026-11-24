@@ -111,6 +111,7 @@ export interface GameWindowRegion {
   disabled: boolean;
   close: boolean;
   passthrough?: boolean;
+  view?: string | null;
   tooltip: GameWindowTooltip | null;
   alphaMask?: GameWindowAlphaMask | null;
 }

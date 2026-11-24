@@ -144,8 +144,10 @@ export function deriveMeterMirror(model: MeterModel): MirrorModel {
 
 export function deriveMeterAudit(model: MeterModel): readonly AuditRow[] {
   const rows: AuditRow[] = [];
+  if (model.summaryText) rows.push({ row: 'summary', key: 'summary', value: model.summaryText });
   if (model.sections) {
     for (const section of model.sections) {
+      rows.push({ row: `section:${section.key}`, key: `section:${section.key}`, value: [section.title, section.count ?? '', section.rightCaption ?? ''].join('|') });
       if (section.rows) {
         for (const row of section.rows) {
           rows.push({ row: row.key, key: row.key, value: row.audit });

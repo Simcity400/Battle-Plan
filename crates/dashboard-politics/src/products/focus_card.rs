@@ -1,5 +1,5 @@
 use crate::products::focus::{self, Fold, FocusHourParams, FocusMissing};
-use crate::products::focus_artwork::{DatedFocusArtwork, FocusArtwork, FocusArtworkParams};
+use crate::products::focus_artwork::{self, DatedFocusArtwork, FocusArtworkParams};
 use dashboard_base::Source;
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
 use dashboard_core::dto::FocusDatabase;
@@ -151,7 +151,7 @@ fn shown(source: &Source, context: &LoadContext, params: &FocusHourParams, at: i
         include_descriptions: Some(false),
         icons_only: None,
     };
-    match FocusArtwork::load(source, &asked, context, cancelled) {
+    match focus_artwork::load(source, &asked, context, cancelled) {
         Ok(reply) => (reply.items.into_iter().map(|item| (item.artwork.token.clone(), item)).collect(), reply.warnings),
         Err(error) => (Shown::new(), vec![format!("Focus names and icons refused: {error}")]),
     }
@@ -182,7 +182,7 @@ impl Product for FocusCard {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![FocusCardArt::decl(), FocusCardCompleted::decl(), FocusCardCurrent::decl(), FocusCardReply::decl()]
+        vec![FocusHourParams::decl(), FocusCardArt::decl(), FocusCardCompleted::decl(), FocusCardCurrent::decl(), FocusCardReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

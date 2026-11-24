@@ -1,6 +1,9 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { MeasureText } from '../../charts/textWidth.ts';
-import { engineHour, gameDate } from '../../dashboard/calendar.ts';
+import { linearTicks } from '../../charts/valueAxis.ts';
+import { monthNames } from '../../dashboard/calendar.ts';
+import { computeTimeAxisTicks } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
 import { formatCompactScalar, formatDateOnly } from '../valueFormat.ts';
 import type {
@@ -13,7 +16,9 @@ import type {
   TimeChartSeriesModel,
 } from './model.ts';
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+function shortMonth(month: number): string {
+  return monthNames[month - 1]!.slice(0, 3);
+}
 
 export function formatChartAxisValue(value: number, format: ChartValueFormat): string {
   if (!Number.isFinite(value)) return '';
@@ -35,51 +40,6 @@ export function formatChartAxisValue(value: number, format: ChartValueFormat): s
   }
   const sign = value < 0 ? '\u2212' : '';
   return `${sign}${Math.round(Math.abs(value)).toLocaleString('en-US')}`;
-}
-
-function ticksForStep(lo: number, hi: number, step: number): number[] {
-  const start = Math.floor(lo / step) * step;
-  const ticks: number[] = [];
-  for (let v = start; v <= hi + step * 1e-6; v += step) {
-    if (v >= lo - step * 1e-6) {
-      const clean = Math.abs(v) < step * 1e-9 ? 0 : Math.round(v * 1e6) / 1e6;
-      ticks.push(clean);
-    }
-    if (ticks.length > 20) break;
-  }
-  return ticks;
-}
-
-export function niceChartTicks(lo: number, hi: number, intervals: number): number[] {
-  const span = hi - lo;
-  if (!(span > 0) || !Number.isFinite(span)) return [lo];
-  const target = Math.max(2, intervals + 1);
-  const raw = span / Math.max(1, intervals);
-  const mag = 10 ** Math.floor(Math.log10(raw));
-  let best: number[] | null = null;
-  let bestScore = Infinity;
-  for (const mult of [0.5, 1, 2, 2.5, 5, 10]) {
-    const step = mult * mag;
-    if (!(step > 0)) continue;
-    const candidate = ticksForStep(lo, hi, step);
-    if (candidate.length < 2) continue;
-    const diff = Math.abs(candidate.length - target);
-    const penalty = candidate.length > target + 2 ? 4 : candidate.length < target - 1 ? 2 : 0;
-    const score = diff + penalty;
-    if (score < bestScore) {
-      bestScore = score;
-      best = candidate;
-    }
-  }
-  return best ?? [lo, hi];
-}
-
-function monthStartHour(year: number, month: number): number {
-  return engineHour({ year, month, day: 1, hour: 1 }) ?? 0;
-}
-
-function yearStartHour(year: number): number {
-  return engineHour({ year, month: 1, day: 1, hour: 1 }) ?? 0;
 }
 
 export interface PlacedEndLabel {
@@ -315,7 +275,7 @@ function buildColumnsLayout(
       const b = g.months[g.months.length - 1]!;
       const shortEnd = String(b.year).slice(-2);
       const foldLabel = a.year === b.year ? String(a.year) : `${a.year}\u2013${shortEnd}`;
-      const foldSpanText = `${MONTHS[a.month - 1]} ${a.year} \u2013 ${MONTHS[b.month - 1]} ${b.year}`;
+      const foldSpanText = `${shortMonth(a.month)} ${a.year} \u2013 ${shortMonth(b.month)} ${b.year}`;
       out.push({
         kind: 'fold',
         index: idx,
@@ -339,9 +299,9 @@ function buildColumnsLayout(
     const barX = x + (slotWidth - barW) / 2;
     let label: string | null = null;
     if (m.month === 1) label = String(m.year);
-    else if (prevFold) label = `${MONTHS[m.month - 1]} ${m.year}`;
+    else if (prevFold) label = `${shortMonth(m.month)} ${m.year}`;
     else if (m.month === 4 || m.month === 7 || m.month === 10 || m.status === 'recorded') {
-      label = MONTHS[m.month - 1]!;
+      label = shortMonth(m.month);
     }
     if (small && idx > 0 && idx < groups.length - 1 && m.month !== 1 && !prevFold) {
       label = null;
@@ -444,7 +404,7 @@ export function layoutTimeChart(
     ? [...model.yAxis.ticks]
     : model.yAxis.format === 'percent' && yLo === 0 && yHi === 100
       ? (small ? [0, 50, 100] : [0, 25, 50, 75, 100])
-      : niceChartTicks(yLo, yHi, small ? 2 : 4);
+      : linearTicks(yLo, yHi, small ? 3 : 5);
 
   let maxYLabelW = 0;
   for (const t of yTicks) {
@@ -500,24 +460,30 @@ export function layoutTimeChart(
         id: s.id,
         seriesId: s.id,
         anchorVal: end.value,
-        color: isNegative ? '#ff6b6f' : s.color,
+        color: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.color,
         faded: hoveredSeriesId != null && hoveredSeriesId !== s.id,
         flag: s.endLabel.flag,
         icon: s.endLabel.icon,
         name: nameText,
         fullName: s.endLabel.fullName ?? s.name,
         value: s.endLabel.value,
-        valueColor: isNegative ? '#ff6b6f' : s.endLabel.valueColor,
+        valueColor: isNegative ? CHART_MEASURE_COLOURS.shortInk : s.endLabel.valueColor,
         valueMuted: s.endLabel.valueMuted,
         estWidth,
       });
     }
-  } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
+  } else if (model.mode === 'stack' && playheadInView && model.stack && model.stack.hours.length > 0) {
     let lastIdx = -1;
     for (let i = model.stack.hours.length - 1; i >= 0; i--) {
       if (model.stack.hours[i]! <= model.hour) { lastIdx = i; break; }
     }
-    if (lastIdx >= 0) {
+    const lastValid = lastIdx >= 0
+      && Math.abs(model.hour - model.stack.hours[lastIdx]!) <= 48
+      && model.stack.bands.every(band => {
+        const v = band.values[lastIdx];
+        return v !== null && v !== undefined && Number.isFinite(v);
+      });
+    if (lastValid) {
       let acc = 0;
       for (const band of model.stack.bands) {
         const v = band.values[lastIdx] ?? 0;
@@ -554,7 +520,7 @@ export function layoutTimeChart(
           id: '__total__',
           seriesId: '__total__',
           anchorVal: tv,
-          color: model.stack.total.color ?? '#f5f5f5',
+          color: model.stack.total.color ?? CHART_MEASURE_COLOURS.lightInk,
           faded: false,
           icon: el.icon,
           name: null,
@@ -675,43 +641,12 @@ export function layoutTimeChart(
 
   const axisTicks: PlacedAxisTick[] = [];
   if (model.mode !== 'columns') {
-    const spanHours = xDomain[1] - xDomain[0];
-    const monthsMode = spanHours < 730 * 24;
-    const startCal = gameDate(Math.floor(xDomain[0]));
-    const endCal = gameDate(Math.floor(xDomain[1]));
-    const rawTicks: { hour: number; label: string | null; major: boolean }[] = [];
-    if (startCal && endCal && monthsMode) {
-      let y = startCal.year;
-      let m = startCal.month;
-      let anyLabel = false;
-      for (let guard = 0; guard < 36; guard++) {
-        const h = monthStartHour(y, m);
-        const clampedH = h < xDomain[0] && guard === 0 && startCal.day <= 15 ? xDomain[0] : h;
-        if (clampedH > xDomain[1]) break;
-        if (clampedH >= xDomain[0]) {
-          const major = m === 1;
-          let label: string | null = major ? String(y) : (m === 4 || m === 7 || m === 10 ? MONTHS[m - 1]! : null);
-          if (label && !anyLabel && !major) label = `${label} ${y}`;
-          if (label) anyLabel = true;
-          rawTicks.push({ hour: clampedH, label, major });
-        }
-        m++;
-        if (m > 12) { m = 1; y++; }
-      }
-    } else if (startCal && endCal) {
-      for (let y = startCal.year; y <= endCal.year + 1; y++) {
-        const h = yearStartHour(y);
-        const clampedH = h < xDomain[0] && y === startCal.year && startCal.month === 1 && startCal.day <= 15 ? xDomain[0] : h;
-        if (clampedH >= xDomain[0] && clampedH <= xDomain[1]) {
-          rawTicks.push({ hour: clampedH, label: String(y), major: true });
-        }
-      }
-    }
+    const rawTicks = computeTimeAxisTicks(xDomain[0], xDomain[1], plotWidth);
     let shownFirst = false;
     let lastLabelRight = -1e9;
     for (const tick of rawTicks) {
       const x = toX(tick.hour);
-      let label = tick.label;
+      let label: string | null = tick.label;
       if (label) {
         const lw = measure(label, smallFont);
         const hiddenByTab = keepOut.some(([kx, kr]) => Math.abs(x - kx) < kr);
@@ -724,7 +659,7 @@ export function layoutTimeChart(
           lastLabelRight = x + lw / 2;
         }
       }
-      axisTicks.push({ hour: tick.hour, x, label, major: tick.major });
+      axisTicks.push({ hour: tick.hour, x, label, major: tick.major ?? true });
     }
   }
 

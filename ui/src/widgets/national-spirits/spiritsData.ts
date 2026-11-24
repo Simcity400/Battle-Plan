@@ -1,13 +1,10 @@
 import { ideaName, ideaNameMissing } from '../../dashboard/ideaHistoryReply.ts';
 import { spanAt } from '../../charts/timeline/layout.ts';
-import type { TimelineLane } from '../../charts/timeline/layout';
-import { describeRun, runState, startUnseen } from '../../charts/timeline/runState.ts';
-import type { RunState, RunWords } from '../../charts/timeline/runState';
+import { runState, startUnseen } from '../../charts/timeline/runState.ts';
+import type { RunState } from '../../charts/timeline/runState';
 import type { Artwork, HourSpan, IdeaHistoryReply, IdeaInfo, IdeaSpan } from '../../generated/dashboard';
 
 export const NATIONAL_SPIRIT_TYPE = 'national_spirit';
-
-export type SpiritSort = 'gained' | 'ended' | 'name';
 
 export interface Spirit {
   token: string;
@@ -61,21 +58,6 @@ export function endedBy(spirit: Spirit, hour: number, unobserved: readonly HourS
 
 export { startUnseen };
 
-export function historyLanes(list: readonly Spirit[], hour: number, sort: SpiritSort, showEnded: boolean,
-  describe: RunWords, unobserved: readonly HourSpan[] = [], branchFirstHour = Number.NEGATIVE_INFINITY): TimelineLane[] {
-  const seen = list.filter(spirit => firstGained(spirit) <= hour && (showEnded || endedBy(spirit, hour, unobserved) == null));
-  const key = (spirit: Spirit) => endedBy(spirit, hour, unobserved) ?? Infinity;
-  seen.sort(sort === 'name' ? (a, b) => a.name.localeCompare(b.name)
-    : sort === 'ended' ? (a, b) => key(a) - key(b) || firstGained(a) - firstGained(b)
-      : (a, b) => firstGained(a) - firstGained(b) || a.name.localeCompare(b.name));
-  return seen.map(spirit => {
-    return {
-      id: spirit.token,
-      label: describeRun(spirit.spans, hour, describe, unobserved, branchFirstHour) ?? '',
-      identity: { label: spirit.name, icon: spirit.icon },
-      icons: false,
-      names: false,
-      spans: spirit.spans.map(span => ({ ...asTimeline(span), label: spirit.name, icon: spirit.icon, emphasis: span.firstHour <= hour && hour < span.lastHour + 1 })),
-    };
-  });
+export function spiritsShown(list: readonly Spirit[], hour: number, showEnded: boolean, unobserved: readonly HourSpan[] = []): Spirit[] {
+  return list.filter(spirit => firstGained(spirit) <= hour && (showEnded || endedBy(spirit, hour, unobserved) == null));
 }

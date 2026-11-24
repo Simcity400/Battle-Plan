@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType } from '../../generated/dashboard';
-import { divisionEquipmentProjection } from './divisionEquipmentProjection.ts';
+import { equipmentTemplateProjection, equipmentTypeProjection } from './divisionEquipmentProjection.ts';
 
 const type = (archetype: string | null, extra: Partial<EquipmentType> = {}): EquipmentType => ({
   archetype, name: archetype ? 'Infantry Equipment' : null, nameMissing: null, heldRaw: '26514100000', neededRaw: '26937000000',
@@ -18,11 +18,11 @@ const template = (extra: Partial<EquipmentTemplate> = {}): EquipmentTemplate => 
 const reply = (extra: Partial<DivisionEquipmentReply> = {}): DivisionEquipmentReply => ({
   tag: 'GER', countFor: 'owner', missing: null, poolHour: 40, divisions: 60, divisionsShort: 213, unknownDivisions: 0,
   types: [type('infantry_equipment'), type(null, { missingRaw: '0', divisionsShort: 0, filledRaw: null })], templates: [template()],
-  divisionRows: null, pool: null, warnings: [], ...extra,
-} as DivisionEquipmentReply);
+  warnings: [], ...extra,
+});
 
 const project = (view: 'equipment' | 'template', raw: unknown) =>
-  divisionEquipmentProjection.project(createBoundedReadView({ hour: 48, panels: new Map([['main', raw]]) }), { view });
+  (view === 'template' ? equipmentTemplateProjection : equipmentTypeProjection).project(createBoundedReadView({ hour: 48, panels: new Map([['main', raw]]) }), {});
 
 test('by equipment: whole items from the product, the shortfall as a red negative, fill missing when the product has none', () => {
   const model = project('equipment', reply());
@@ -40,4 +40,17 @@ test('by template: shares of the product’s own figures; a figure it does not h
   assert.deepEqual(row!.cells.strength!.value, notRecorded('Strength not recorded'));
   const missing = project('equipment', reply({ missing: 'Division equipment is not recorded at this hour', types: [], templates: [] }));
   assert.deepEqual([missing.emptyKind, missing.empty], ['unavailable', 'Division equipment is not recorded at this hour']);
+});
+
+test('a type’s picture is the one the stockpile artwork product answers for its archetype; no answer leaves the slot without art', () => {
+  const pictures = { tag: 'GER', entries: [{ key: 'type:Infantry_Equipment', variant: '9', name: null, icon: 'asset://infantry.png', reason: null }], warnings: [] };
+  const model = equipmentTypeProjection.project(
+    createBoundedReadView({ hour: 48, panels: new Map<string, unknown>([['main', reply()], ['pictures', pictures]]) }),
+    {},
+  );
+  const [infantry, unclassified] = model.rows;
+  const picture = infantry!.cells.picture!;
+  assert.ok(picture.icon === 'asset://infantry.png' || picture.iconPending === true, JSON.stringify(picture));
+  assert.equal(picture.artShape, 'equipment');
+  assert.deepEqual([unclassified!.cells.picture!.icon, unclassified!.cells.picture!.iconPending], [undefined, undefined]);
 });

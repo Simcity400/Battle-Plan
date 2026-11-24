@@ -1,3 +1,4 @@
+import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { AnyTableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { familyTableLaneView } from '../../families/table/laneView.ts';
@@ -5,6 +6,7 @@ import type { TableProjection } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import * as DIVISION_EQUIPMENT from '../division-equipment/definition.ts';
+import { MARKET_TABS, VIEWS, marketTableOptions } from '../international-market/definition.ts';
 
 function tableSpec<TModule>(
   kind: string,
@@ -150,6 +152,31 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   })),
   {
+    kind: 'production-lines',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'production-lines',
+      DEFAULT_VIEW,
+      () => import('../production-lines/productionLinesProjection.ts'),
+      mod => ({ projection: mod.productionLinesProjection, declaration: mod.productionLinesDeclaration }),
+    ),
+  },
+  ...MARKET_TABS.map((view): FamilyViewEntry => ({
+    kind: 'international-market',
+    view,
+    label: VIEWS.find(choice => choice.value === view)!.label,
+    family: 'table',
+    viewOption: 'view',
+    options: marketTableOptions(view),
+    loadSpec: tableSpec(
+      'international-market',
+      view,
+      () => import('../international-market/internationalMarketProjection.ts'),
+      mod => ({ projection: mod.internationalMarketProjection, declaration: mod.MARKET_DECLARATIONS[view] }),
+    ),
+  })),
+  {
     kind: 'industrial-organisations',
     view: DEFAULT_VIEW,
     family: 'table',
@@ -180,6 +207,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../equipment-designs/designsProjection.ts'),
       mod => ({ projection: mod.designsProjection, declaration: mod.designsDeclaration }),
+    ),
+  },
+  {
+    kind: 'next-elections',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'next-elections',
+      DEFAULT_VIEW,
+      () => import('../next-elections/electionsProjection.ts'),
+      mod => ({ projection: mod.electionsProjection, declaration: mod.electionsDeclaration }),
     ),
   },
   {
@@ -237,7 +275,7 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       'division-equipment',
       'equipment',
       () => import('../division-equipment/divisionEquipmentProjection.ts'),
-      mod => ({ projection: mod.divisionEquipmentProjection, declaration: mod.divisionEquipmentDeclaration }),
+      mod => ({ projection: mod.equipmentTypeProjection, declaration: mod.equipmentTypeDeclaration }),
     ),
   },
   {
@@ -251,7 +289,7 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       'division-equipment',
       'template',
       () => import('../division-equipment/divisionEquipmentProjection.ts'),
-      mod => ({ projection: mod.divisionEquipmentProjection, declaration: mod.divisionEquipmentDeclaration }),
+      mod => ({ projection: mod.equipmentTemplateProjection, declaration: mod.equipmentTemplateDeclaration }),
     ),
   },
   {
@@ -287,10 +325,22 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.mostDecoratedProjection, declaration: mod.mostDecoratedDeclaration }),
     ),
   },
+  {
+    kind: 'trade-flows',
+    view: 'table',
+    label: 'Table',
+    family: 'table',
+    viewOption: 'view',
+    loadSpec: () => import('../trade-flows/tradeFlowsProjection.ts').then(mod => ({
+      family: 'table', kind: 'trade-flows', view: 'table',
+      projection: mod.tradeTableProjection, declaration: mod.tradeTableDeclaration,
+    })),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {
   family: 'table',
   laneView: familyTableLaneView,
   views: TABLE_VIEWS,
+  hostAdapter: tableHostAdapter,
 };
