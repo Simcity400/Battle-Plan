@@ -107,6 +107,37 @@ test('a view asks only the tiles it lacks, one request per tile for every tag la
   assert.deepEqual(second.asked.slice(tiles).map(ask => [ask.index, ask.tags]), [[tiles, ['GER', 'ITA', 'POL']]]);
 });
 
+test('a top of tiles takes its countries from the ranked reply, keeps them while the hour stays inside their proof, and asks again only outside it', async () => {
+  const cache = new TileCache();
+  const ranks: { hour: number; index: number }[] = [];
+  const named = (hour: number) => hour < 5000 ? ['GER', 'ITA'] : ['SOV', 'GER'];
+  const base = lane([], LAST);
+  const top: TileLane = { ...base, top: { ask(binHours, index, hour) {
+    ranks.push({ hour, index });
+    const tags = named(hour);
+    return Promise.resolve({ ...reply(tags, binHours, index, LAST, value), ranking: { hour, from: hour < 5000 ? 0 : 5000, until: hour < 5000 ? 4999 : LAST, refused: null } });
+  } } };
+  let renders = 0;
+  const view = new TileView(cache, top, () => { renders++; });
+  view.setView({ from: 0, to: 8759, end: 8759, width: 600 });
+  await settle();
+  assert.equal(view.current, null, 'nothing is drawn before the top is named');
+  view.setHour(100);
+  await settle();
+  assert.deepEqual([...view.current!.keys()], ['GER', 'ITA']);
+  assert.deepEqual(view.top, { tags: ['GER', 'ITA'], hour: 100, from: 0, until: 4999, refused: null });
+  assert.ok(renders > 0);
+  view.setHour(4999);
+  await settle();
+  assert.equal(ranks.length, 1, 'an hour inside the proof asks nothing');
+  const before = base.asked.length;
+  view.setHour(6000);
+  await settle();
+  assert.equal(ranks.length, 2);
+  assert.deepEqual([...view.current!.keys()], ['SOV', 'GER']);
+  assert.ok(base.asked.slice(before).every(ask => ask.tags.every(tag => tag === 'SOV')), 'a country already held keeps its tiles; only the newcomer is asked');
+});
+
 test('an immutable tile is never asked twice, the last tile is asked again only when the history grows past it', async () => {
   const cache = new TileCache();
   const binHours = 12, span = TILE_BINS * binHours;

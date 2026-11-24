@@ -6,7 +6,7 @@ import {
   drawDateTab,
   drawFlagSlot,
   drawGapBand,
-  drawLegendEntry,
+  drawLegendStrip,
   drawPlayheadLine,
   drawSeriesMissingStrip,
   resolveKitTokens,
@@ -246,16 +246,17 @@ export function drawTimeChart(
   const textSecondary = tokens.dark ? '#d4d4d4' : theme.muted;
 
   if (layout.legendTop !== null && model.legend && model.legend.length > 0) {
-    let lx = layout.left;
-    const ly = layout.legendTop + 7;
-    for (const item of model.legend) {
-      const drawn = drawLegendEntry(ctx, lx, ly, item.label, item.color ?? '', theme, {
+    drawLegendStrip(ctx, layout.left, layout.legendTop, layout.width - layout.left, 14, {
+      entries: model.legend.map(item => ({
+        label: item.label,
+        color: item.color,
         dash: item.dash,
         hatch: item.hatch,
         flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
-      });
-      lx += drawn.width + 14;
-    }
+        muted: false,
+      })),
+      entryGap: 14,
+    }, theme);
   }
 
   for (const v of layout.yTicks) {

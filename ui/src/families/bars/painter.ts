@@ -9,7 +9,7 @@ import {
   drawArtSlot,
   drawBar,
   drawFlagSlot,
-  drawLegendEntry,
+  drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
   drawPartialTab,
@@ -262,21 +262,6 @@ function drawAxis(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: Fa
     ctx.fillText(text, tx, y);
   }
   ctx.restore();
-}
-
-function drawLegend(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: FamilyTheme): void {
-  if (layout.legendHeight <= 0 || !model.legend?.length) return;
-  const middleY = layout.legendTop + layout.legendHeight / 2;
-  let x = BARS_PAD_X;
-  const rightLimit = layout.width - BARS_PAD_X;
-  for (let i = 0; i < model.legend.length; i++) {
-    const entry = model.legend[i]!;
-    const room = rightLimit - x;
-    if (room < 32) break;
-    const text = entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label;
-    const drawn = drawLegendEntry(ctx, x, middleY, text, entry.color, theme, { maxWidth: room });
-    x += drawn.width + 14;
-  }
 }
 
 export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsPaintStats {
@@ -742,7 +727,16 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   }
   ctx.restore();
 
-  if (layout.legendHeight > 0) drawLegend(ctx, model, layout, theme);
+  if (layout.legendHeight > 0 && model.legend?.length) {
+    drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
+      entries: model.legend.map(entry => ({
+        label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
+        color: entry.color,
+      })),
+      padX: BARS_PAD_X,
+      entryGap: 14,
+    }, theme);
+  }
 
   return { paintedRows, truncatedKeys };
 }

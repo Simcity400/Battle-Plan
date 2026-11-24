@@ -15,7 +15,8 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
-  PlaceNamesReply,
+  NameRun,
+  PlaceNameRunsReply,
   StrategicRegionsReply,
   UnitLeadersReply,
 } from '../../generated/dashboard';
@@ -43,7 +44,7 @@ export interface IdentityTransport {
   loadStyles(scope: IdentityScope, hour: number, tags: readonly string[], signal: AbortSignal, recording?: DashboardSource): Promise<CountryStyleReply>;
   loadFlags(scope: IdentityScope, size: CountryFlagSize, choices: readonly CountryFlagChoice[], signal: AbortSignal, recording?: DashboardSource): Promise<CountryFlagReply>;
   loadRegions(scope: IdentityScope, signal: AbortSignal, recording?: DashboardSource): Promise<StrategicRegionsReply>;
-  loadPlaceNames(scope: IdentityScope, hour: number, states: readonly number[], provinces: readonly number[], signal: AbortSignal, recording?: DashboardSource): Promise<PlaceNamesReply>;
+  loadPlaceNameRuns(scope: IdentityScope, from: number, to: number, states: readonly number[], provinces: readonly number[], signal: AbortSignal, recording?: DashboardSource): Promise<PlaceNameRunsReply>;
   loadLeaders(scope: IdentityScope, owner: string, hour: number, signal: AbortSignal, recording?: DashboardSource): Promise<UnitLeadersReply>;
 }
 
@@ -90,13 +91,15 @@ export function clientIdentityTransport(client: DashboardClient): IdentityTransp
       undefined,
       recording,
     ),
-    loadPlaceNames: (scope, hour, states, provinces, signal, recording) => loadTransientProduct<PlaceNamesReply>(
+    loadPlaceNameRuns: (scope, from, to, states, provinces, signal, recording) => loadTransientProduct<PlaceNameRunsReply>(
       client,
-      productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'place-names', params: {
+      productRequest({ sourceId: scope.sourceId, revision: scope.revision, product: 'place-name-runs', params: {
         branchId: scope.branchId,
         land: false,
-        places: provinces.map(provinceId => ({ provinceId, hour: hour as GatedHour })),
-        states: states.map(stateId => ({ stateId, hour: hour as GatedHour })),
+        from: from as GatedHour,
+        to: to as GatedHour,
+        states: [...states],
+        provinces: [...provinces],
       } }),
       signal,
       recording,
@@ -132,7 +135,7 @@ const PLACE_NOT_ANSWERED = 'Place name not answered';
 
 type EntityRequest =
   | { readonly kind: 'regions'; readonly id: string }
-  | { readonly kind: 'places'; readonly id: string; readonly hour: number }
+  | { readonly kind: 'places'; readonly id: string; readonly from: number; readonly to: number }
   | { readonly kind: 'leaders'; readonly id: string; readonly owner: string; readonly hour: number };
 
 interface WantedEntities {
@@ -146,7 +149,9 @@ interface EntityTask {
   readonly controller: AbortController;
 }
 
-function entityRequestOf(key: EntityIdentityKey, at: number): EntityRequest | null {
+const PLACE_WINDOW_HOURS = 720;
+
+function entityRequestOf(key: EntityIdentityKey, at: number, bounds: HourInterval): EntityRequest | null {
   switch (key.kind) {
     case 'region':
       return { kind: 'regions', id: 'regions' };
@@ -154,7 +159,10 @@ function entityRequestOf(key: EntityIdentityKey, at: number): EntityRequest | nu
       return null;
     case 'state':
     case 'province':
-      return { kind: 'places', id: `places\u0000${at}`, hour: at };
+    {
+      const start = Math.floor(at / PLACE_WINDOW_HOURS) * PLACE_WINDOW_HOURS;
+      return { kind: 'places', id: `places\u0000${start}`, from: Math.max(start, bounds[0]), to: Math.min(start + PLACE_WINDOW_HOURS - 1, bounds[1]) };
+    }
     case 'leader':
       return { kind: 'leaders', id: `leaders\u0000${key.owner}\u0000${at}`, owner: key.owner, hour: at };
   }
@@ -581,8 +589,8 @@ export class IdentityBroker {
           }
           break;
         case 'places':
-          if (state.index.resolve(key, request.hour).kind === 'pending') {
-            state.index.addEntityRun(key, { firstHour: request.hour, lastHour: request.hour, name: null, nameReason: PLACE_NOT_ANSWERED });
+          if (state.index.resolve(key, request.from).kind === 'pending') {
+            state.index.replaceEntityRuns(key, request.from, request.to, [{ firstHour: request.from, lastHour: request.to, name: null, nameReason: PLACE_NOT_ANSWERED }]);
           }
           break;
         case 'leaders':
@@ -618,17 +626,13 @@ export class IdentityBroker {
           const id = numericId(key.id);
           if (id !== null) (key.kind === 'state' ? states : provinces).push(id);
         }
-        return this.transport.loadPlaceNames(state.scope, request.hour, states, provinces, signal, state.recording).then(reply => {
-          for (const place of reply.states) {
-            index.addEntityRun({ kind: 'state', id: place.stateId }, {
-              firstHour: place.hour, lastHour: place.hour, name: place.name, ...(place.missing ? { nameReason: place.missing } : {}), warnings: reply.warnings,
-            });
-          }
-          for (const place of reply.places) {
-            index.addEntityRun({ kind: 'province', id: place.provinceId }, {
-              firstHour: place.hour, lastHour: place.hour, name: place.name, ...(place.missing ? { nameReason: place.missing } : {}), warnings: reply.warnings,
-            });
-          }
+        return this.transport.loadPlaceNameRuns(state.scope, request.from, request.to, states, provinces, signal, state.recording).then(reply => {
+          const entry = (run: NameRun): EntityRunEntry => ({
+            firstHour: run.firstHour, lastHour: run.lastHour, name: run.name, ...(run.missing ? { nameReason: run.missing } : {}), warnings: reply.warnings,
+          });
+          index.replaceEntityUnknown(['state', 'province'], reply.from, reply.to, reply.unknown);
+          for (const place of reply.states) index.replaceEntityRuns({ kind: 'state', id: place.id }, reply.from, reply.to, place.runs.map(entry));
+          for (const place of reply.provinces) index.replaceEntityRuns({ kind: 'province', id: place.id }, reply.from, reply.to, place.runs.map(entry));
         });
       }
       case 'leaders':
@@ -704,7 +708,7 @@ export class IdentityBroker {
         groups = true;
         facts = true;
       } else if (state.index.resolve(ask.key, at).kind === 'pending') {
-        const request = entityRequestOf(ask.key, at);
+        const request = entityRequestOf(ask.key, at, state.index.bounds());
         if (request) entities.push([request, identityKeyString(ask.key), ask.key]);
       }
     }
