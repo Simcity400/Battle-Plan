@@ -1102,6 +1102,41 @@ fn rendered_frames_are_reused_by_fingerprint_bounded_and_dropped_with_their_sour
 }
 
 #[test]
+fn a_decoded_hour_is_reused_for_the_same_source_revision_branch_hour_and_tables_only() {
+    let key = |source: &str, revision: &str, branch: u64, hour: i32, tables: &[TableId]| DecodedFrameKey {
+        source_id: source.to_owned(),
+        revision: revision.to_owned(),
+        branch,
+        hour,
+        tables: tables.to_vec(),
+    };
+    let tables = [TableId::VariantDefinitions, TableId::VariantModules];
+    let at = key("a", "rev-1", 1, 100, &tables);
+    let mut frames = DecodedFrames::new(2);
+    frames.insert(at.clone(), Arc::new("hour 100"));
+    assert_eq!(frames.get(&at).as_deref(), Some(&"hour 100"), "a scroll or tab render at one hour reads the decoded hour again");
+    for other in [
+        key("b", "rev-1", 1, 100, &tables),
+        key("a", "rev-2", 1, 100, &tables),
+        key("a", "rev-1", 2, 100, &tables),
+        key("a", "rev-1", 1, 101, &tables),
+        key("a", "rev-1", 1, 100, &tables[..1]),
+    ] {
+        assert!(frames.get(&other).is_none(), "{other:?} is another decoded hour");
+    }
+    frames.insert(key("a", "rev-1", 1, 101, &tables), Arc::new("hour 101"));
+    assert!(frames.get(&at).is_some());
+    frames.insert(key("b", "rev-1", 1, 100, &tables), Arc::new("other source"));
+    assert!(frames.get(&key("a", "rev-1", 1, 101, &tables)).is_none(), "the least recently used hour is dropped");
+    assert!(frames.get(&at).is_some());
+    frames.evict_source("a");
+    assert!(frames.get(&at).is_none(), "a source's decoded hours go with the source");
+    assert!(frames.get(&key("b", "rev-1", 1, 100, &tables)).is_some());
+    frames.clear();
+    assert!(frames.get(&key("b", "rev-1", 1, 100, &tables)).is_none());
+}
+
+#[test]
 fn sub_window_regions_take_their_place_in_paint_order() {
     let region = |path: &str| GameWindowRegion {
         path: path.to_owned(),

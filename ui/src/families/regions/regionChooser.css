@@ -18,7 +18,7 @@
 .region-chooser-row[data-in-chart] .region-chooser-name { color: var(--muted); }
 .region-chooser-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .region-chooser-note { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--muted); font-size: 0.6875rem; }
-.region-chooser-swatch { width: 8px; height: 8px; border-radius: 2px; }
+.region-chooser-note-line { margin: 0; padding: 2px 8px 4px; color: var(--muted); font-size: 0.6875rem; }
 .region-chooser-empty { display: flex; align-items: center; gap: 8px; margin: 8px; color: var(--muted); font-size: 0.75rem; }
 .region-chooser-footer { display: flex; justify-content: flex-end; padding-top: 6px; border-top: 1px solid var(--line); }
 .regions-field-list { display: grid; gap: 2px; }
