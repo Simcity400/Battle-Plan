@@ -27,6 +27,20 @@ export const HEAT_MATRIX_VIEWS: readonly FamilyViewEntry[] = [
       projection: mod.casualtyMatrixProjection, declaration: mod.casualtyMatrixDeclaration,
     })),
   },
+  {
+    kind: 'decryption',
+    view: 'matrix',
+    label: 'Who reads whom',
+    family: 'heat-matrix',
+    viewOption: 'view',
+    loadSpec: () => import('../decryption/whoReadsWhomProjection.ts').then(mod => ({
+      family: 'heat-matrix',
+      kind: 'decryption',
+      view: 'matrix',
+      projection: mod.whoReadsWhomProjection,
+      declaration: mod.whoReadsWhomDeclaration,
+    })),
+  },
 ];
 
 export const heatMatrixFamilyManifest: FamilyManifestModule = {

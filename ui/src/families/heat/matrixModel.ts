@@ -18,14 +18,19 @@ export interface MatrixAxisEntity {
   readonly flagPending?: boolean;
   readonly group?: MatrixGroup | null;
   readonly color?: string;
+  readonly trailing?: string;
   readonly meta?: unknown;
 }
+
+export type MatrixValueMark = 'fill' | 'square' | 'ring';
 
 export type MatrixCell =
   | {
       readonly kind: 'value';
       readonly color?: string;
       readonly intensity?: number;
+      readonly mark?: MatrixValueMark;
+      readonly fraction?: number;
       readonly text?: string;
       readonly value?: number | bigint;
       readonly tooltip?: FamilyTooltipPayload;
@@ -34,6 +39,7 @@ export type MatrixCell =
     }
   | {
       readonly kind: 'empty';
+      readonly mark?: 'dot';
       readonly label?: string;
       readonly tooltip?: FamilyTooltipPayload;
       readonly audit?: string;
@@ -79,12 +85,13 @@ export interface MatrixMargin {
 
 export interface HeatMatrixModel {
   readonly hour: number;
+  readonly corner?: string;
+  readonly summaryText?: string;
   readonly rows: readonly MatrixAxisEntity[];
   readonly columns: readonly MatrixAxisEntity[];
   readonly cell: (rowIndex: number, columnIndex: number) => MatrixCell;
   readonly shape?: 'square' | 'wide';
   readonly ramp?: MatrixRamp;
-  readonly corner?: string;
   readonly margin?: MatrixMargin;
   readonly legend?: MatrixLegend;
   readonly tooltip?: (row: MatrixAxisEntity, column: MatrixAxisEntity, cell: MatrixCell, rowIndex: number, columnIndex: number) => FamilyTooltipPayload | null;

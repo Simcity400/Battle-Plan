@@ -40,7 +40,7 @@ test('a mod category is offered with its own name, and one the mod removed is go
   assert.equal(chosenCategory(modded, '')?.token, 'mod_council');
   assert.equal(chosenCategory(modded, 'government'), null);
   const reply = { ...REPLY, categories: modded, spans: [{ token: 'mod_open', firstHour: 0, lastHour: 10, slot: null, character: null }], ideas: [idea('mod_open', 'mod_seat', 'mod_council')] };
-  const lanes = lanesFor(reply, modded[0], { laws: 'both', holders: 'both' });
+  const lanes = lanesFor(reply, modded[0]);
   assert.deepEqual(lanes.map(lane => [lane.label, lane.spans.map(span => span.label)]), [['Seat', ['Idea name unavailable']]]);
 });
 
@@ -51,29 +51,26 @@ test('only political-screen categories with slots are offered, the first one by 
   assert.equal(chosenCategory(REPLY.categories, 'missing'), null);
 });
 
-test('law slots shade by escalation and advisor seats take the first free seat', () => {
-  const lanes = lanesFor(REPLY, GOVERNMENT, { laws: 'both', holders: 'both' });
+test('law slots keep one lane and advisor seats take the first free seat', () => {
+  const lanes = lanesFor(REPLY, GOVERNMENT);
   assert.deepEqual(lanes.map(lane => [lane.id, lane.label, lane.spans.length]), [
     ['economy', 'Economy Law', 2], ['political_advisor#0', 'Political Advisor', 2], ['political_advisor#1', 'Political Advisor', 1],
   ]);
-  assert.deepEqual(lanes[0].spans.map(span => [span.label, span.shade]), [['Idea name unavailable', 0], ['War Economy', 1]]);
+  assert.deepEqual(lanes[0].spans.map(span => span.label), ['Idea name unavailable', 'War Economy']);
   assert.deepEqual(lanes[1].spans.map(span => span.id), ['schacht:10', 'speer:320']);
   assert.deepEqual(lanes[2].spans.map(span => span.id), ['todt:50']);
-  const icons = lanesFor(REPLY, GOVERNMENT, { laws: 'icons', holders: 'name' });
-  assert.equal(icons[0].spans[1].shade, undefined);
-  assert.deepEqual([icons[0].icons, icons[1].icons, icons[1].names], [true, false, true]);
   assert.equal(lawLevel(GOVERNMENT, REPLY.ideas[1]), '3 of 3');
   assert.equal(lawLevel(GOVERNMENT, REPLY.ideas[2]), null);
 });
 
 test('holders beyond the seats get their own lane instead of overlapping', () => {
   const crowded = { ...REPLY, spans: [...REPLY.spans, { token: 'extra', firstHour: 60, lastHour: 70, slot: null, character: null }], ideas: [...REPLY.ideas, idea('extra', 'political_advisor')] };
-  assert.equal(lanesFor(crowded, GOVERNMENT, { laws: 'both', holders: 'both' }).length, 4);
+  assert.equal(lanesFor(crowded, GOVERNMENT).length, 4);
 });
 
 test('a recorded seat on a span places it, ahead of content', () => {
   const moved = { ...REPLY, spans: [...REPLY.spans, { token: 'schacht', firstHour: 700, lastHour: 800, slot: 'economy', character: null }] };
-  assert.equal(lanesFor(moved, GOVERNMENT, { laws: 'both', holders: 'both' })[0].spans.length, 3);
+  assert.equal(lanesFor(moved, GOVERNMENT)[0].spans.length, 3);
 });
 
 
@@ -98,7 +95,7 @@ test('an advisor span shows its own recorded holder, not the idea’s latest one
     ideas: [idea('schacht', 'political_advisor')],
     artwork: [art('Holder B')],
     holders: [{ token: 'schacht', character: 1, characterToken: 'A', name: 'A', artwork: art('Holder A') }, { token: 'schacht', character: 2, characterToken: 'B', name: 'B', artwork: art('Holder B') }] };
-  const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
+  const seat = lanesFor(reply, GOVERNMENT).find(lane => lane.id === 'political_advisor#0')!;
   assert.deepEqual(seat.spans.map(span => span.label), ['Holder A', 'Holder B']);
 });
 
@@ -112,7 +109,7 @@ test('a holder the recording could not identify stays unnamed, not the latest ho
     ideas: [idea('schacht', 'political_advisor')],
     artwork: [art('Holder B')],
     holders: [{ token: 'schacht', character: 2, characterToken: 'B', name: 'B', artwork: art('Holder B') }] };
-  const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
+  const seat = lanesFor(reply, GOVERNMENT).find(lane => lane.id === 'political_advisor#0')!;
   assert.deepEqual(seat.spans.map(span => span.label), [UNIDENTIFIED_HOLDER, 'Holder B']);
 });
 
@@ -126,7 +123,7 @@ test('a renamed holder shows each recorded name for its own span', () => {
     ideas: [idea('schacht', 'political_advisor')],
     artwork: [art('New Name')],
     holders: [{ token: 'schacht', character: 7, characterToken: 'X', name: 'Old Name', artwork: art('Old Name') }, { token: 'schacht', character: 7, characterToken: 'X', name: 'New Name', artwork: art('New Name') }] };
-  const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
+  const seat = lanesFor(reply, GOVERNMENT).find(lane => lane.id === 'political_advisor#0')!;
   assert.deepEqual(seat.spans.map(span => span.label), ['Old Name', 'New Name']);
 });
 
@@ -141,7 +138,7 @@ test('holders whose texts contain separators never share a key', () => {
     artwork: [art('Bob')],
     holders: [{ token: 'schacht', character: 1, characterToken: 'char', name: 'Alice#2#other#Bob', artwork: art('Alice') },
       { token: 'schacht', character: 2, characterToken: 'other', name: 'Bob', artwork: art('Bob') }] };
-  const seat = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).find(lane => lane.id === 'political_advisor#0')!;
+  const seat = lanesFor(reply, GOVERNMENT).find(lane => lane.id === 'political_advisor#0')!;
   assert.deepEqual(seat.spans.map(span => span.label), ['Alice', 'Bob']);
 });
 
@@ -155,7 +152,7 @@ test('an advisor whose details resolve later stays in its seat', () => {
     ],
     ideas: [idea('a', 'political_advisor'), idea('b', 'political_advisor')],
     artwork: [art('B')], holders: [] };
-  const lanes = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).filter(lane => lane.id.startsWith('political_advisor#'));
+  const lanes = lanesFor(reply, GOVERNMENT).filter(lane => lane.id.startsWith('political_advisor#'));
   assert.deepEqual(lanes.map(lane => lane.spans.map(span => span.firstHour)), [[10], [11, 31]]);
 });
 
@@ -168,6 +165,6 @@ test('a newcomer starting the same hour never takes the seat a continuing holder
       { token: 'b', firstHour: 21, lastHour: 40, slot: 'political_advisor', character: { id: 2, token: 'B', name: 'B' } },
     ],
     ideas: [idea('a', 'political_advisor'), idea('b', 'political_advisor'), idea('c', 'political_advisor')], artwork: [], holders: [] };
-  const lanes = lanesFor(reply, GOVERNMENT, { laws: 'both', holders: 'both' }).filter(lane => lane.id.startsWith('political_advisor#'));
+  const lanes = lanesFor(reply, GOVERNMENT).filter(lane => lane.id.startsWith('political_advisor#'));
   assert.deepEqual(lanes.map(lane => lane.spans.map(span => span.id)), [['b:10', 'b:21'], ['c:10', 'a:21']]);
 });

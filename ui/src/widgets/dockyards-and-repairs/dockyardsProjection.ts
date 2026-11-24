@@ -65,7 +65,7 @@ export const dockyardsProjection: TableProjection<Record<string, never>> = regis
             ? { empty: 'No repair ports at this date', emptyKind: 'empty' as const }
             : { empty: 'Repair ports were not fully recorded at this date', emptyKind: 'unavailable' as const }
           : {}),
-        summaryPill: summary(reply),
+        titleSummary: summary(reply),
         warnings: reply.warnings,
       };
     },

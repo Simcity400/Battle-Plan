@@ -1,4 +1,4 @@
-import type { ArtFrame, ArtOrigin, ArtProvenance, ArtResolution, ArtResult } from '../plan.ts';
+import type { ArtFrame, ArtHandle, ArtOrigin, ArtProvenance, ArtResolution, ArtResult } from '../plan.ts';
 
 export type { ArtFrame, ArtOrigin, ArtProvenance, ArtResolution, ArtResult };
 
@@ -29,8 +29,19 @@ export function defaultArtFrame(width = 0, height = 0, frameIndex = 0, frameCoun
   };
 }
 
-export function spriteArtKey(key: string, frame: number): string {
-  return `${key}#${frame}`;
+export function artHandleKey(handle: ArtHandle): string {
+  switch (handle.kind) {
+    case 'flag':
+      return JSON.stringify(['flag', handle.choice, handle.size]);
+    case 'sprite':
+      return JSON.stringify(['sprite', handle.key, handle.frame ?? 0, handle.recorded ?? null, handle.text === true]);
+    case 'portrait':
+      return JSON.stringify(['portrait', handle.key, handle.owner ?? null, handle.recorded ?? null]);
+    case 'path':
+      return JSON.stringify(['path', handle.path, handle.frame ?? 0, handle.frames ?? 1]);
+    case 'url':
+      return JSON.stringify(['url', handle.url, handle.frame ?? 0]);
+  }
 }
 
 export const NO_ART: ArtResolution = Object.freeze({ status: 'noArtExpected' });

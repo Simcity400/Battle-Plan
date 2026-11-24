@@ -39,6 +39,7 @@ export interface HeatMatrixLayout {
   readonly marginWidth: number;
   readonly gridLeft: number;
   readonly gridTop: number;
+  readonly trailingWidth: number;
   readonly totalWidth: number;
   readonly totalHeight: number;
   readonly firstRow: number;
@@ -60,7 +61,10 @@ export interface LayoutHeatMatrixInput {
   readonly widestRowName?: number;
   readonly shape?: 'square' | 'wide';
   readonly margin?: boolean;
+  readonly widestTrailing?: number;
 }
+
+export const MATRIX_TRAILING_GAP = 16;
 
 export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout {
   const width = Math.max(1, Math.floor(input.width));
@@ -92,7 +96,8 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
   const gridTop = legendHeight + headerHeight;
   const marginWidth = input.margin && width >= MATRIX_MARGIN_MIN_WIDTH ? MATRIX_MARGIN_WIDTH : 0;
 
-  const availW = Math.max(MATRIX_MIN_CELL, width - gridLeft - marginWidth);
+  const trailingWidth = input.widestTrailing ? Math.ceil(input.widestTrailing) + MATRIX_TRAILING_GAP + MATRIX_PAD : 0;
+  const availW = Math.max(MATRIX_MIN_CELL, width - gridLeft - marginWidth - trailingWidth);
   const availH = Math.max(MATRIX_MIN_CELL, height - gridTop);
   const fitW = input.columns.length > 0 ? Math.floor(availW / input.columns.length) : MATRIX_MAX_CELL;
   const fitH = input.rows.length > 0 ? Math.floor(availH / input.rows.length) : MATRIX_MAX_CELL;
@@ -101,7 +106,7 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
   const cellHeight = wide ? Math.max(MATRIX_WIDE_MIN_ROW, Math.min(MATRIX_WIDE_MAX_ROW, fitH)) : square;
   const cellSize = cellHeight;
 
-  const totalWidth = Math.max(width, gridLeft + input.columns.length * cellWidth + marginWidth);
+  const totalWidth = Math.max(width, gridLeft + input.columns.length * cellWidth + trailingWidth + marginWidth);
   const totalHeight = Math.max(height, gridTop + input.rows.length * cellHeight);
 
   const scrollLeft = Math.max(0, input.scrollLeft);
@@ -132,6 +137,7 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
     marginWidth,
     gridLeft,
     gridTop,
+    trailingWidth,
     totalWidth,
     totalHeight,
     firstRow,

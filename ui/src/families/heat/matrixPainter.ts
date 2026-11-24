@@ -7,6 +7,7 @@ import {
   drawGradientLegend,
   drawLegendEntry,
   drawNameSlot,
+  drawProgressRing,
   drawRowFocusRing,
   drawRowHairline,
   drawRowHover,
@@ -22,8 +23,12 @@ import type { ArtProvider, FamilyTheme } from '../contract.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import type { HeatMatrixLayout } from './matrixLayout.ts';
-import { MATRIX_COLUMN_NAME_ANGLE, MATRIX_COLUMN_NAME_HEIGHT, MATRIX_PAD } from './matrixLayout.ts';
+import { MATRIX_COLUMN_NAME_ANGLE, MATRIX_COLUMN_NAME_HEIGHT, MATRIX_PAD, MATRIX_TRAILING_GAP } from './matrixLayout.ts';
 import type { HeatMatrixModel, MatrixAxisEntity, MatrixRamp } from './matrixModel.ts';
+
+const MARK_SQUARE_PX = 14;
+const MARK_RING_RADIUS_PX = 6.2;
+const MARK_DOT_RADIUS_PX = 1.2;
 
 export interface HeatMatrixPicture {
   signature: string;
@@ -338,10 +343,25 @@ export function drawHeatMatrix(
       } else if (item.kind === 'missing') {
         drawHatchRect(ctx, cx, cy, innerW, innerH, radius, theme);
       } else if (item.kind === 'empty') {
-        ctx.fillStyle = tokens.barTrack;
+        if (item.mark === 'dot') {
+          ctx.fillStyle = theme.muted;
+          ctx.beginPath();
+          ctx.arc(x + cw / 2, y + ch / 2, MARK_DOT_RADIUS_PX, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.fillStyle = tokens.barTrack;
+          ctx.beginPath();
+          ctx.roundRect(cx, cy, innerW, innerH, radius);
+          ctx.fill();
+        }
+      } else if (item.mark === 'square') {
+        const side = Math.min(MARK_SQUARE_PX, innerW, innerH);
+        ctx.fillStyle = item.color ?? rampColour(theme, model.ramp, item.intensity ?? 1);
         ctx.beginPath();
-        ctx.roundRect(cx, cy, innerW, innerH, radius);
+        ctx.roundRect(x + (cw - side) / 2, y + (ch - side) / 2, side, side, radius);
         ctx.fill();
+      } else if (item.mark === 'ring') {
+        drawProgressRing(ctx, x + cw / 2, y + ch / 2, MARK_RING_RADIUS_PX, item.fraction ?? 0, item.color ?? rampColour(theme, model.ramp, item.intensity ?? 1), theme);
       } else {
         const fill = item.color ?? rampColour(theme, model.ramp, item.intensity ?? 1);
         ctx.fillStyle = fill;
@@ -364,6 +384,15 @@ export function drawHeatMatrix(
       if (focusedCell && focusedCell.row === r && focusedCell.column === c) {
         drawRowFocusRing(ctx, x, y, cw, ch, theme, 0);
       }
+    }
+    const trailing = model.rows[r]!.trailing;
+    if (trailing && layout.trailingWidth > 0) {
+      const tx = layout.gridLeft + model.columns.length * cw - scrollLeft + MATRIX_TRAILING_GAP;
+      ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(trailing, tx, y + ch / 2 + 0.5);
     }
   }
 
@@ -519,13 +548,14 @@ export function drawHeatMatrix(
 
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, layout.legendHeight, layout.gridLeft, layout.headerHeight);
-  if (model.corner && layout.showNames) {
+  if (model.corner) {
     ctx.save();
     ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'left';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(ellipsise(model.corner, layout.gridLeft - MATRIX_PAD * 2, s => textWidth(ctx, s)), MATRIX_PAD, layout.gridTop - 4);
+    ctx.textBaseline = 'middle';
+    const cornerW = Math.max(0, layout.gridLeft - MATRIX_PAD * 2);
+    ctx.fillText(ellipsise(model.corner, cornerW, s => textWidth(ctx, s)), layout.rowGroupWidth + MATRIX_PAD, flagBandTop + flagBandH / 2);
     ctx.restore();
   }
   drawMarginColumn(ctx, model, layout, theme, scrollTop, hoveredCell?.row ?? null);
