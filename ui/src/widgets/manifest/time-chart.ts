@@ -5,10 +5,12 @@ import { timeChartLaneView } from '../../families/time-chart/laneView.ts';
 import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
 import { TIME_OPTIONS as STOCKPILE_TIME_OPTIONS } from '../equipment-stockpile/definition.ts';
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
+import { OPTIONS as OCCUPATION_RESERVE_OPTIONS } from '../occupation-reserve-manpower/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../world-tension/definition.ts';
 
 const DOCKYARD_MONTHS_OPTIONS = DOCKYARD_OPTIONS.filter(field => field.key === 'view' || field.key === 'icDecimals');
 const FACTORY_MONTHS_OPTIONS = FACTORY_OPTIONS.filter(field => field.key === 'equipment' || field.key === 'view' || field.key === 'icDecimals');
+const OCCUPATION_RESERVE_BREAKDOWN_OPTIONS = OCCUPATION_RESERVE_OPTIONS.filter(field => ['show', 'holder', 'yMin', 'yMax'].includes(field.key));
 const WORLD_TENSION_VIEW_FIELD = WORLD_TENSION_OPTIONS.filter(field => field.key === 'view');
 const WORLD_TENSION_TENSION_OPTIONS = [...WORLD_TENSION_VIEW_FIELD, ...TENSION_CHART_OPTIONS];
 
@@ -172,6 +174,20 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       'lines',
       () => import('../navy-size/navyLinesProjection.ts'),
       mod => ({ projection: mod.navyLinesProjection, declaration: mod.navyLinesDeclaration }),
+    ),
+  },
+  {
+    kind: 'occupation-reserve-manpower',
+    view: 'breakdown',
+    label: 'Holder breakdown',
+    family: 'time-chart',
+    viewOption: 'show',
+    options: OCCUPATION_RESERVE_BREAKDOWN_OPTIONS,
+    loadSpec: timeChartSpec(
+      'occupation-reserve-manpower',
+      'breakdown',
+      () => import('../occupation-reserve-manpower/occupationReserveBreakdownProjection.ts'),
+      mod => ({ projection: mod.occupationReserveBreakdownProjection, declaration: mod.occupationReserveBreakdownDeclaration }),
     ),
   },
   {

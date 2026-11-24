@@ -3,11 +3,11 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { countryLook, nextBoundaryAfter, timelineModel, clipSpansToHour, wholeBranchProof } from '../../families/timeline/helpers.ts';
+import { countryLook, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
-import { aboutElsewhere, agreementKinds, agreementLanes, agreementsOf, changeHours, validatePacts, type AgreementLaneMeta } from './pactsData.ts';
+import { aboutElsewhere, agreementKinds, agreementLanes, agreementsOf, pactsProof, validatePacts, type AgreementLaneMeta } from './pactsData.ts';
 
 export interface DiplomaticPactsOptions {
   readonly countryTag: string | null;
@@ -22,8 +22,7 @@ export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOption
   kind: 'diplomatic-pacts',
 
   nextChange(readView) {
-    const reply = readView.panel<DiplomacyPactsReply>('main');
-    return reply ? nextBoundaryAfter(changeHours(reply), readView.hour) : Infinity;
+    return readView.panel<DiplomacyPactsReply>('main')?.nextChange ?? Infinity;
   },
 
   project(readView, opt) {
@@ -31,12 +30,12 @@ export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOption
     const reply = readView.panel<DiplomacyPactsReply>('main');
     const base = { hour, firstHour: opt.firstHour, labelWidth: 220 };
     if (!reply || !opt.countryTag) return timelineModel(base);
-    const nextChangeAt = nextBoundaryAfter(changeHours(reply), hour);
+    const nextChangeAt = reply.nextChange ?? Infinity;
     const warnings = reply.warnings.filter(warning => !aboutElsewhere(warning));
     const own = countryLook(readView, opt.countryTag, hour);
     const kindOrder = new Map(agreementKinds(reply.kinds).map((item, index) => [item.kind, index]));
     const kindNames = new Map(agreementKinds(reply.kinds).map(item => [item.kind, item.name]));
-    const agreements = agreementsOf(reply.pacts, opt.countryTag, hour, opt.kinds ? new Set(opt.kinds) : null);
+    const agreements = agreementsOf(reply.pacts, opt.countryTag, opt.kinds ? new Set(opt.kinds) : null);
     const lanes = agreementLanes(agreements, opt.showEnded, hour, {
       name: own.name,
       country: (tag, at) => countryLook(readView, tag, at),
@@ -46,7 +45,7 @@ export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOption
     if (!lanes.length) {
       return timelineModel({ ...base, empty: agreements.length ? 'No agreements in force' : 'No agreements recorded yet', warnings, nextChangeAt });
     }
-    return timelineModel({ ...base, lanes, unobserved: clipSpansToHour(reply.unobserved, hour), warnings, nextChangeAt });
+    return timelineModel({ ...base, lanes, unobserved: reply.unobserved, warnings, nextChangeAt });
   },
 
   tooltip(model, hit) {
@@ -96,8 +95,9 @@ export const diplomaticPactsDeclaration: TimelineWidgetDeclaration<DiplomaticPac
             product: 'diplomatic-pacts',
             followQuery: null,
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            buildSpanParams: params => params,
-            provenInterval: wholeBranchProof,
+            buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
+            provenInterval: pactsProof,
+            dynamicKeys: ['hour'],
             validate: validatePacts,
           },
         }]

@@ -161,7 +161,6 @@ function buildMarkers(
 
 function buildHoverDetail(
   readView: BoundedReadView,
-  reply: WorldTensionStackReply,
   hour: number,
 ): TimeChartModel['hoverDetail'] {
   const hover = readView.hover<WorldTensionReply>('hover');
@@ -224,11 +223,11 @@ function buildHoverDetail(
   if (detail.contributions.length > topContribs.length) {
     items.push({ label: `${detail.contributions.length - topContribs.length} more countries`, tone: 'muted' });
   }
-  const sameHourEvents = reply.events.filter(ev => ev.hour === hover.hour && ev.firstRead <= hour);
-  sameHourEvents.forEach((ev, idx) => {
-    const evText = formatRawPct(ev.addedRaw, reply.contributionScale);
+  const sameHourSources = detail.sources.filter(src => src.date === hover.hour);
+  sameHourSources.forEach((src, idx) => {
+    const evText = formatRawPct(src.finalRaw, detail.contributionScale);
     items.push({
-      label: ev.reason,
+      label: src.reason,
       ...(evText !== null ? { value: evText } : { missingReason: 'Tension amount not recorded', tone: 'muted' as const }),
       strong: true,
       ...(idx === 0 ? { divider: true } : {}),
@@ -359,7 +358,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
     }
     const worldIcon = { art: readView.art(measureArtHandle('worldTension')), label: 'World tension' };
     const markers = options.showMarkers ? buildMarkers(readView, reply, hour) : undefined;
-    const hoverDetail = buildHoverDetail(readView, reply, hour);
+    const hoverDetail = buildHoverDetail(readView, hour);
     const auditRows = endHour === null
       ? []
       : [

@@ -1,5 +1,5 @@
 
-use super::{Amount, ApmBucket, ApmGroup, ApmMembership, ApmParams, ApmValue, Coverage, index, merge_intervals, player_id, player_name, query, tag};
+use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
 use dashboard_base::Source;
 use crate::products::campaign_clock;
 use dashboard_follow::head::{Head, HeadRows, HeadValue};
@@ -415,6 +415,27 @@ pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) ->
     tile_from_index(&held, branch, timeline_last, &family, &ask, first, last)
 }
 
+const GAP_REASON: &str = "Part of this period was not recorded; its orders and minutes are both left out.";
+
+fn merge_missing_spans(mut spans: Vec<MissingSpan>) -> Vec<MissingSpan> {
+    spans.sort_by_key(|s| (s.first_hour, s.last_hour));
+    let mut merged: Vec<MissingSpan> = Vec::with_capacity(spans.len());
+    for span in spans {
+        if span.first_hour > span.last_hour {
+            continue;
+        }
+        if let Some(prev) = merged.last_mut()
+            && i64::from(span.first_hour) <= i64::from(prev.last_hour) + 1
+            && prev.reason == span.reason
+        {
+            prev.last_hour = prev.last_hour.max(span.last_hour);
+        } else {
+            merged.push(span);
+        }
+    }
+    merged
+}
+
 fn tile_from_index(
     held: &Index,
     branch: u64,
@@ -442,40 +463,107 @@ fn tile_from_index(
         return Ok(SeriesTileReply { branch_id: branch.to_string(), measure: family.value.clone(), decimals: 0, bin_hours: ask.bin_hours, index: ask.index, first_hour: first,
             immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins), ranking: None });
     }
-    let reply = query(held, &ApmParams {
-        branch_id: branch.to_string(),
-        group: family.group,
-        registry: false,
-        first_hour: Some(first),
-        last_hour: Some(last),
-        tags: family.tags.clone(),
-        membership: family.membership.clone(),
-        players: family.players.clone(),
-        buckets: tile::BINS as u32,
-    }, &AtomicBool::new(false))?;
+    let clipped_end = last.min(timeline_last);
+    let wanted_ids: BTreeSet<&str> = ask.countries.iter().map(String::as_str).collect();
+    let per_series = if first <= clipped_end {
+        hourly_amounts(
+            held,
+            family.group,
+            first,
+            clipped_end,
+            family.tags.as_deref(),
+            family.membership.as_deref(),
+            &family.players,
+            &wanted_ids,
+        )?
+    } else {
+        BTreeMap::new()
+    };
+    let coverage = Coverage::new(held, first, clipped_end.max(first))?;
     let mut buckets: Vec<Option<ChartBucket>> = vec![None; ask.countries.len() * tile::BINS];
     let mut lines = Vec::with_capacity(ask.countries.len());
     for (at, id) in ask.countries.iter().enumerate() {
         let mut missing = Vec::new();
-        if let Some(series) = reply.series.iter().find(|series| &series.id == id) {
+        if let Some(hours_map) = per_series.get(id) {
             let mut before = false;
-            for ApmBucket { first_hour, last_hour, value } in &series.points {
-                let bin = ((i64::from(*first_hour) - i64::from(first)) / ask.bin_hours) as usize;
-                if bin >= tile::BINS {
-                    continue;
+            for bin in 0..tile::BINS {
+                let bin_first = (i64::from(first) + bin as i64 * ask.bin_hours) as i32;
+                if bin_first > clipped_end {
+                    break;
                 }
-                let shown = if family.value == "apm" { value.apm } else { value.paused_orders.as_deref().and_then(|orders| orders.parse::<f64>().ok()) };
-                let Some(shown) = shown else {
-                    missing.push(MissingSpan { first_hour: *first_hour, last_hour: *last_hour, reason: unknown_rate(value) });
+                let bin_last = (i64::from(first) + (bin as i64 + 1) * ask.bin_hours - 1).min(i64::from(clipped_end)) as i32;
+                let mut agg: Option<(i32, f64, i32, f64, i32, f64, i32, f64)> = None;
+                let mut paused_span: Option<(i32, i32)> = None;
+                let mut any_error_missing = false;
+                let mut has_break = false;
+                let mut prev_hour: Option<i32> = None;
+                for (&h, amount) in hours_map.range(bin_first..=bin_last) {
+                    if prev_hour.is_some_and(|p| i64::from(h) > i64::from(p) + 1 && !coverage.observed(p + 1, h - 1)) {
+                        has_break = true;
+                    }
+                    prev_hour = Some(h);
+                    let val = amount.value();
+                    let shown = if family.value == "apm" {
+                        val.apm
+                    } else {
+                        val.paused_orders.as_deref().and_then(|orders| orders.parse::<f64>().ok())
+                    };
+                    if let Some(rate) = shown {
+                        agg = Some(match agg {
+                            None => (h, rate, h, rate, h, rate, h, rate),
+                            Some((fh, fv, _, _, minh, minv, maxh, maxv)) => {
+                                let (minh, minv) = if rate < minv { (h, rate) } else { (minh, minv) };
+                                let (maxh, maxv) = if rate > maxv { (h, rate) } else { (maxh, maxv) };
+                                (fh, fv, h, rate, minh, minv, maxh, maxv)
+                            }
+                        });
+                    } else if val.complete && val.unpaused_minutes == Some(0.0) {
+                        paused_span = Some(match paused_span {
+                            None => (h, h),
+                            Some((lo, hi)) => (lo.min(h), hi.max(h)),
+                        });
+                    } else {
+                        any_error_missing = true;
+                        has_break = true;
+                        missing.push(MissingSpan { first_hour: h, last_hour: h, reason: unknown_rate(&val) });
+                    }
+                }
+                let gap_spans = coverage.missing_spans(bin_first, bin_last);
+                if let Some((fh, fv, lh, lv, minh, minv, maxh, maxv)) = agg {
+                    if !gap_spans.is_empty() {
+                        has_break = true;
+                        for (g_lo, g_hi) in gap_spans {
+                            missing.push(MissingSpan { first_hour: g_lo, last_hour: g_hi, reason: GAP_REASON.into() });
+                        }
+                    }
+                    buckets[at * tile::BINS + bin] = Some(ChartBucket {
+                        absolute_total: 0,
+                        first_hour: fh,
+                        last_hour: lh,
+                        first_value: fv,
+                        last_value: lv,
+                        last_value_hour: lh,
+                        min_hour: minh,
+                        min_value: minv,
+                        max_hour: maxh,
+                        max_value: maxv,
+                        first_break: !before,
+                        has_break,
+                    });
+                    before = true;
+                } else {
+                    if !any_error_missing && let Some((p_lo, p_hi)) = paused_span {
+                        missing.push(MissingSpan {
+                            first_hour: p_lo,
+                            last_hour: p_hi,
+                            reason: "No unpaused time was observed in this period.".into(),
+                        });
+                    }
                     before = false;
-                    continue;
-                };
-                buckets[at * tile::BINS + bin] = Some(ChartBucket { absolute_total: 0, first_hour: *first_hour, last_hour: *last_hour, first_value: shown, last_value: shown,
-                    last_value_hour: *last_hour, min_hour: *first_hour, min_value: shown, max_hour: *first_hour, max_value: shown, first_break: !before, has_break: false });
-                before = true;
+                }
             }
         }
-        lines.push(TileLine { country: id.clone().into(), part: None, missing, parts: Vec::new(), marks: None });
+        lines.push(TileLine { country: id.clone().into(), part: None, missing: merge_missing_spans(missing), parts: Vec::new(), marks: None });
     }
     let (immutable, filled) = tile::closure(first, last, timeline_last);
     let (bins, raw_values, hour_bytes) = tile::encode(&buckets, first, ask.bin_hours, 1.0);

@@ -3,7 +3,7 @@ import { nextChangeAfter } from '../../families/holders.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableCellIconItem, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView, FamilyViewportRequest } from '../../families/plan.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { CELL_INSET, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from '../../families/table/settings.ts';
 import { ICON_STRIP_GAP, MEDAL_ICON_SIZE } from '../../draw/kit.ts';
 import { knownValue, textValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
@@ -128,7 +128,7 @@ const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedO
     value: item => count(item.row.facts.casualtiesTaken, 'Casualties taken not recorded'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
 ];
 
-export const mostDecoratedProjection: TableProjection<DecoratedOptions> = registerTableProjection(
+export const mostDecoratedProjection: TableProjection<DecoratedOptions> = registerFamilyProjection(
   declareTableProjection<DecoratedDivisionsReply, DecoratedRow, DecoratedOptions>({
     kind: 'most-decorated-divisions',
     validate: validateDecoratedDivisions,

@@ -99,30 +99,28 @@ function markerPriority(m: StabilityMarker): number {
   return 0;
 }
 
-interface MarkerDay {
-  readonly key: number;
+interface MarkerHour {
   readonly hour: number;
   readonly markers: readonly StabilityMarker[];
 }
 
-const markerDayCache = new WeakMap<readonly StabilityMarker[], readonly MarkerDay[]>();
+const markerHourCache = new WeakMap<readonly StabilityMarker[], readonly MarkerHour[]>();
 
-function markerDays(raw: readonly StabilityMarker[]): readonly MarkerDay[] {
-  const held = markerDayCache.get(raw);
+function markerHours(raw: readonly StabilityMarker[]): readonly MarkerHour[] {
+  const held = markerHourCache.get(raw);
   if (held) return held;
-  const byDay = new Map<number, StabilityMarker[]>();
+  const byHour = new Map<number, StabilityMarker[]>();
   for (const m of raw) {
-    const key = Math.floor(m.hour / 24);
-    let list = byDay.get(key);
-    if (!list) byDay.set(key, list = []);
-    list.push(m);
+    const list = byHour.get(m.hour);
+    if (list) list.push(m);
+    else byHour.set(m.hour, [m]);
   }
-  const days = [...byDay.entries()].map(([key, list]) => {
-    list.sort((a, b) => markerPriority(b) - markerPriority(a) || a.hour - b.hour || a.title.localeCompare(b.title));
-    return { key, hour: list[0]!.hour, markers: list };
+  const hours = [...byHour].map(([hour, list]) => {
+    list.sort((a, b) => markerPriority(b) - markerPriority(a));
+    return { hour, markers: list };
   }).sort((a, b) => a.hour - b.hour);
-  markerDayCache.set(raw, days);
-  return days;
+  markerHourCache.set(raw, hours);
+  return hours;
 }
 
 export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerFamilyProjection({
@@ -235,8 +233,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const markers: ChartMarker[] = [];
     const recorded = single ? readView.panel<StabilityMarkersReply>('markers')?.markers ?? [] : [];
     if (recorded.length > 0) {
-      const days = markerDays(recorded);
-      for (const day of days) {
+      for (const day of markerHours(recorded)) {
         if (day.hour > hour) break;
         if (day.hour < options.extent[0]) continue;
         const iconSlot = (m: StabilityMarker): ChartArtSlot | undefined => {
@@ -249,7 +246,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           icon: iconSlot(m),
         }));
         markers.push({
-          id: `stab-m:${day.key}:${day.markers[0]!.id}`,
+          id: `stab-m:${day.hour}:${day.markers[0]!.id}`,
           hour: day.hour,
           title: items[0]!.title,
           icon: items[0]!.icon,

@@ -304,8 +304,8 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
     });
 
     const legend: LegendStripEntry[] = [
-      { label: 'Completed', color: mix(CHART_MEASURE_COLOURS.intelCoverage, opt.surface, 0.5) },
-      { label: 'In progress', color: CHART_MEASURE_COLOURS.intelCoverage },
+      { label: 'Completed', color: mix(CHART_MEASURE_COLOURS.intelCoverage, opt.surface, 0.5), swatch: 'square' },
+      { label: 'In progress', color: CHART_MEASURE_COLOURS.intelCoverage, swatch: 'square' },
       { label: 'Idle', outlined: true },
       ...(unobserved.length ? [{ label: 'Not recorded', hatch: true } satisfies LegendStripEntry] : []),
     ];

@@ -202,7 +202,16 @@ export function formatShare(share: number): string {
   const pct = share * 100;
   if (pct < 0.1) return '<0.1%';
   if (pct >= 10) return `${Math.min(99, Math.round(pct))}%`;
-  return `${pct.toFixed(1).replace(/\.0$/, '')}%`;
+  const { units, scale } = exactDecimal(pct);
+  let tenths: bigint;
+  if (scale > 1) {
+    const divisor = 10n ** BigInt(scale - 1);
+    tenths = (units + divisor / 2n) / divisor;
+  } else {
+    tenths = units * (10n ** BigInt(1 - scale));
+  }
+  const clamped = tenths > 99n ? 99n : tenths < 1n ? 1n : tenths;
+  return `${clamped / 10n}.${clamped % 10n}%`;
 }
 
 export function formatProgress(fraction: number): string {

@@ -19,6 +19,7 @@ use ts_rs::TS;
 mod tests;
 
 const SCALE: i32 = 100_000;
+const UNREAD: &str = "Some countries' minefields were not read at this hour";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -53,6 +54,7 @@ struct Fold {
     mined: Vec<MinedRegion>,
     unknown: Vec<UnknownRegion>,
     cells: Vec<(u32, String, u128)>,
+    proven: BTreeSet<u32>,
 }
 
 struct Vector<'a> {
@@ -72,7 +74,7 @@ fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>
             }
         }
     }
-    let unnamed = vectors.values().filter(|vector| vector.tag.is_none()).count() as u32 + u32::from(lost);
+    let unnamed = vectors.values().filter(|vector| vector.tag.is_none()).count() as u32;
     let shown: Vec<(u32, &Vector)> = vectors.iter().filter(|(_, vector)| vector.tag.is_some_and(&wanted)).map(|(&raw, vector)| (raw, vector)).collect();
     let unknown_at = |region: u32| -> u32 {
         unnamed + shown.iter().filter(|(_, vector)| !vector.amounts.contains_key(&region) && vector.extent.is_none_or(|extent| extent <= region)).count() as u32
@@ -83,27 +85,34 @@ fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>
             amounts.entry(region).or_default().push((amount, vector.tag.unwrap_or_default(), *raw));
         }
     }
-    let mut regions: Vec<(i128, u32, Vec<(i64, &str, u32)>)> = amounts
+    let proven: BTreeSet<u32> = amounts.keys().copied().filter(|&region| unknown_at(region) == 0).collect();
+    let mut regions: Vec<(Option<i128>, u32, Vec<(i64, &str, u32)>)> = amounts
         .into_iter()
         .map(|(region, mut owners)| {
             owners.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
-            (owners.iter().map(|owner| i128::from(owner.0.max(0))).sum(), region, owners)
+            ((!lost && proven.contains(&region)).then(|| owners.iter().map(|owner| i128::from(owner.0.max(0))).sum()), region, owners)
         })
         .collect();
-    regions.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    regions.sort_by(|a, b| match (a.0, b.0) {
+        (Some(x), Some(y)) => y.cmp(&x).then(a.1.cmp(&b.1)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.1.cmp(&b.1),
+    });
     let mut cells = Vec::new();
     let mut mined = Vec::with_capacity(regions.len());
     for (_, region, owners) in regions {
         cells.extend(owners.iter().map(|&(_, tag, raw)| (region, tag.to_owned(), u128::from(raw) << 33 | 1 << 32 | u128::from(region))));
-        mined.push(MinedRegion { region, owners: owners.into_iter().map(|(_, tag, _)| MineOwner { tag: tag.to_owned() }).collect(), unknown_owners: unknown_at(region), pinned: false, missing: None });
+        let missing = lost.then(|| UNREAD.to_owned());
+        mined.push(MinedRegion { region, owners: owners.into_iter().map(|(_, tag, _)| MineOwner { tag: tag.to_owned() }).collect(), unknown_owners: unknown_at(region), pinned: false, missing });
     }
     let unknown = sea
         .iter()
         .copied()
         .filter(|region| !mined.iter().any(|mined| mined.region == *region))
-        .filter_map(|region| Some(UnknownRegion { region, unknown_owners: Some(unknown_at(region)).filter(|&count| count > 0)? }))
+        .filter_map(|region| Some(UnknownRegion { region, unknown_owners: Some(unknown_at(region)).filter(|&count| count > 0 || lost)? }))
         .collect();
-    Fold { mined, unknown, cells }
+    Fold { mined, unknown, cells, proven }
 }
 
 fn register_live(fold: &Fold, live: &dashboard_follow::live::Cells) -> io::Result<()> {
@@ -114,7 +123,7 @@ fn register_live(fold: &Fold, live: &dashboard_follow::live::Cells) -> io::Resul
         live.value(&region.to_string(), tag, source, 1.0);
         totals.entry(*region).or_default().push(source);
     }
-    for (region, sources) in &totals {
+    for (region, sources) in totals.iter().filter(|(region, _)| fold.proven.contains(region)) {
         live.sum(&region.to_string(), "total", sources, 1.0);
     }
     Ok(())
@@ -201,13 +210,13 @@ fn choose(fold: &mut Fold, pinned: &[u32], hidden: &[u32], lost: bool) -> HashMa
     }
     for unknown in &fold.unknown {
         if rank.contains_key(&unknown.region) && !fold.mined.iter().any(|region| region.region == unknown.region) {
-            fold.mined.push(MinedRegion { region: unknown.region, owners: Vec::new(), unknown_owners: unknown.unknown_owners, pinned: true, missing: None });
+            fold.mined.push(MinedRegion { region: unknown.region, owners: Vec::new(), unknown_owners: unknown.unknown_owners, pinned: true, missing: lost.then(|| UNREAD.to_owned()) });
         }
     }
     fold.unknown.retain(|region| !rank.contains_key(&region.region));
     for &id in pinned {
         if !fold.mined.iter().any(|region| region.region == id) {
-            let missing = lost.then(|| "Some countries' minefields were not read at this hour".to_owned());
+            let missing = lost.then(|| UNREAD.to_owned());
             fold.mined.push(MinedRegion { region: id, owners: Vec::new(), unknown_owners: 0, pinned: true, missing });
         }
     }
@@ -273,7 +282,7 @@ impl AtHour for Minefields {
         warnings.extend(at.context.sea.notes.iter().cloned());
         warnings.extend(notes.lines("sea region names"));
         if lost {
-            warnings.push("Some countries' minefields were not read at this hour".into());
+            warnings.push(UNREAD.into());
         }
         let reply = MinefieldsReply { regions: fold.mined, unknown: fold.unknown, scale: SCALE, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
