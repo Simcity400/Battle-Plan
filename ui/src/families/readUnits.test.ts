@@ -578,10 +578,13 @@ test('Class N: a hundred hours at 24 hours a frame cost what the answers changed
 
 type Proven = { readonly lo: number; readonly hi: number; readonly tag: string };
 
-function pairRig() {
+function pairRig(faults: { readonly paint?: (tag: string) => boolean; readonly install?: () => void } = {}) {
+  let paints = 0;
   const drawn: LaneView = {
     paint: input => {
       const main = (input.model as { staticPanels?: { main?: Proven } }).staticPanels?.main;
+      paints++;
+      if (main && faults.paint?.(main.tag)) throw new Error(`a fault painting ${main.tag}`);
       return { surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: main?.tag ?? 'none' })), fields: { main: { value: main ?? null, content: main?.tag ?? 'none' } }, motion: false };
     },
   };
@@ -589,7 +592,7 @@ function pairRig() {
   lane.clock.setPlaying(false);
   const id = lane.pipeline.acquire('widget|0', { offset: 0, pin: null, owner: 'X' });
   lane.pipeline.present(id, 'drawn');
-  lane.pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] }, {}, { family: 'test', kind: 'test', options: {} });
+  lane.pipeline.bind(id, [faults.install ? { install: faults.install, clear() {} } : surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] }, {}, { family: 'test', kind: 'test', options: {} });
   const sent = new StaticSupply(change => lane.pipeline.supply(id, change));
   const sources = (bundle: { readonly panels: ReadonlyMap<string, unknown>; readonly proof: readonly [number, number] | null; readonly hour: number }): FamilyStaticSources =>
     ({ stamp: bundle, proof: bundle.proof, panels: Object.fromEntries(bundle.panels), hour: bundle.hour, follows: true });
@@ -610,7 +613,8 @@ function pairRig() {
     const view = lane.pipeline.view(id);
     return view && view.mode === 'picture' && !view.dim ? (view.fields?.main as Proven | null)?.tag ?? null : null;
   };
-  return { lane, id, sent, sources, dated, wake, outsideOwnStamp, current, close: () => lane.close() };
+  const failed = () => lane.pipeline.view(id)?.mode === 'failed';
+  return { lane, id, sent, sources, dated, wake, outsideOwnStamp, current, failed, paints: () => paints, close: () => lane.close() };
 }
 
 function proven(tag: string, lo: number, hi: number) {
@@ -740,6 +744,46 @@ test('class PAIR, re-pin at the target: a configure for new inputs never holds t
   await settled();
   assert.deepEqual([target.view().inputs, target.view().bundle?.hour], ['pin 100', 100]);
   target.dispose();
+});
+
+test('R5-S2, R5-S5: a widget whose paint or installation failed recovers on its newer bundle, whichever reaches the main thread first; the same bundle failing again stays failed', async () => {
+  for (const where of ['paint', 'install'] as const) {
+    for (const order of ['failure first', 'bundle first'] as const) {
+      let installFaults = 0;
+      const rig = pairRig(where === 'paint'
+        ? { paint: tag => tag === 'A' }
+        : { install: () => { if (installFaults > 0) { installFaults--; throw new Error('an installation fault'); } } });
+      try {
+        if (order === 'bundle first') rig.lane.holdBack(message => message.type === (where === 'paint' ? 'widget-failed' : 'presentation'));
+        if (where === 'install') installFaults = 1;
+        const a = rig.sources(proven('A', 100, 200));
+        rig.sent.statics(a, rig.dated(a, null));
+        await rig.wake(100);
+        if (order === 'failure first') assert.equal(rig.failed(), true, `${where}, ${order}: A failed before B is supplied`);
+        const b = rig.sources(proven('B', 100, 200));
+        rig.sent.statics(b, rig.dated(b, null));
+        await rig.wake(100);
+        rig.lane.release();
+        await rig.wake(100);
+        assert.ok(await rig.lane.settle(() => rig.current() === 'B'), `${where}, ${order}: paused on B, the widget draws B (${rig.lane.pipeline.view(rig.id)?.mode})`);
+      } finally { rig.close(); }
+    }
+  }
+  const rig = pairRig({ paint: () => true });
+  try {
+    rig.lane.holdBack(message => message.type === 'widget-failed');
+    const a = rig.sources(proven('A', 100, 200));
+    rig.sent.statics(a, rig.dated(a, null));
+    await rig.wake(100);
+    const b = rig.sources(proven('B', 100, 200));
+    rig.sent.statics(b, rig.dated(b, null));
+    await rig.wake(100);
+    rig.lane.release();
+    await rig.wake(100);
+    await rig.lane.settle(() => false, 20);
+    assert.equal(rig.failed(), true, 'B failing too keeps the failure');
+    assert.ok(rig.paints() <= 2, `B is retried once, not in a loop (${rig.paints()} paints)`);
+  } finally { rig.close(); }
 });
 
 test('sweep-2 P0: a seek back never hands the worker a panel dated after the hour it draws, and a widget that failed recovers on its next bundle', async () => {
