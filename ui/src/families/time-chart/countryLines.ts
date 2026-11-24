@@ -4,7 +4,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
 import type { AuxProductSpec, BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
-import { formatScalar } from '../valueFormat.ts';
+import { formatScalar, formatShare } from '../valueFormat.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { formatChartAxisValue } from './layout.ts';
@@ -88,7 +88,7 @@ export function formatCountryValue(value: number, format: CountryLinesSpec['form
   if (format === 'compact') return formatChartAxisValue(value, 'compact');
   if (format === 'percent') {
     return digits === null
-      ? formatScalar(value, { decimals: 0, maxDecimals: 1, fixedDecimals: true, percent: true })
+      ? formatShare(value / 100)
       : formatScalar(value, { decimals: digits, maxDecimals: digits, fixedDecimals: true, percent: true });
   }
   return formatScalar(value, { decimals: 0, maxDecimals: digits ?? 2 });

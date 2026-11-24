@@ -21,7 +21,7 @@ import type {
   ChartMarkerItem,
   TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
-import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatRecordedPercent, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { StabilityBreakdownReply } from '../../generated/dashboard';
 import {
   assignCountrySeriesColours,
@@ -64,10 +64,6 @@ export interface StabilityOptions {
   readonly rawMarkers: readonly StabilityRawMarker[];
 }
 
-
-function formatPct(value: number): string {
-  return formatScalar(value, { decimals: 0, maxDecimals: 1, percent: true });
-}
 
 function resolveMarkerTitle(m: StabilityRawMarker, readView: BoundedReadView, limitHour: number): string {
   const at = displayedHour(Math.min(m.hour, limitHour));
@@ -213,7 +209,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
                 ...(single ? { icon: stabIcon } : { flag }),
                 name: single ? 'Stability' : `${name} · Stability`,
                 fullName: single ? 'Stability' : `${name} Stability`,
-                value: formatPct(headValue),
+                value: formatRecordedPercent(headValue),
               },
         });
       }
@@ -244,7 +240,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
                 ...(single ? { icon: warIcon } : { flag }),
                 name: single ? 'War support' : `${name} · War support`,
                 fullName: single ? 'War support' : `${name} War support`,
-                value: formatPct(headValue),
+                value: formatRecordedPercent(headValue),
               },
         });
       }

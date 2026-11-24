@@ -9,6 +9,7 @@ import { frameTimeline, placeTimeline } from './layout.ts';
 import { resolutionFor } from './resolution.ts';
 import { familyTimelineLaneView, nextDayStart, type FamilyTimelineBinding } from './laneView.ts';
 import { registerFamilyProjection } from '../registry.ts';
+import { timelineModel } from './helpers.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
@@ -176,7 +177,7 @@ test('a hover over an unchanged model neither re-projects nor re-places, and pai
       const state = new Map<string, unknown>();
       const binding: FamilyTimelineBinding<{ readonly n: number }> = { family: 'timeline', kind: `test-timeline-${count}`, options: { n: count }, sources: {},
         width: 600, height: 240, scrollTop: 0, theme, identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, pauseFlush: 0 };
-      const input = (inspect: string | null): PaintInput => ({ widget: 1, subs: [], pictures: [], hour: FIRST + 6000, speed: 0, now: 0, inspect,
+      const input = (inspect: string | null): PaintInput => ({ widget: 1, subs: [], pictures: [], hour: FIRST + 6000, seek: 0, speed: 0, now: 0, inspect,
         binding: { surfaces: [{ width: 600, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'], model: binding });
       let seq = 0;
       const first = view.paint(input(null), state, () => `c${++seq}`);
@@ -220,4 +221,16 @@ test('a timeline lane equals a fresh paint after a seek back, a correction and a
     { label: 'correction', binding: binding([lane('Continuation War', true), child]), hour: at, check: true },
     { label: 'opened', binding: binding([lane('Continuation War', true), child], { war: true }), hour: at, check: true },
   ], surface);
+});
+
+test('timelineModel forwards footer notes through to lane meta', () => {
+  const model = timelineModel({
+    hour: H(1940) as TimelineModel['hour'],
+    firstHour: FIRST,
+    labelWidth: 96,
+    summaryText: '4 completed',
+    notes: ['Head: 2 in progress · Radio 50%, 10 days left'],
+  });
+  assert.deepEqual(model.notes, ['Head: 2 in progress · Radio 50%, 10 days left']);
+  assert.equal(model.summaryText, '4 completed');
 });

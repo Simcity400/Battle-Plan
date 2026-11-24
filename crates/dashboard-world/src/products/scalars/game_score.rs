@@ -374,7 +374,7 @@ impl AtHour for GameScore {
         if let Some(ask) = &params.top { reply.top = Some(top(&scored, &unplaced, ask)); }
         reply.rows.sort_unstable_by(|a, b| a.tag.cmp(&b.tag));
         if unheld > 0 {
-            reply.warnings.push(format!("{unheld} scored countries are held by no tag at this hour and are not shown"));
+            reply.warnings.push(format!("{unheld} scored countries have no resolved tag at this hour and are not shown"));
         }
         Ok(reply)
     }

@@ -5,7 +5,7 @@ import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { assertValue, hasMeasuredValue, type Value } from '../value.ts';
-import { formatValueState, notRecordedLabel, type ValueFormat } from '../valueFormat.ts';
+import { formatShare, formatValueState, notRecordedLabel, type ValueFormat } from '../valueFormat.ts';
 
 export type BarsForm = 'ordered' | 'two-sided' | 'share' | 'net' | 'stacked';
 
@@ -32,8 +32,9 @@ export function countryRowPresentation(
   tag: string,
   fallbackColor?: string,
   dimmed?: boolean,
+  atHour?: number,
 ): CountryRowPresentation {
-  const identity = readView.who('country', tag);
+  const identity = readView.who('country', tag, atHour);
   const labelMissing = identity.name.status === 'absent' || identity.name.status === 'failed';
   const label = identity.name.status === 'ready' ? identity.name.value : tag;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
@@ -163,8 +164,35 @@ export interface BarsLegendItem {
   readonly hatched?: boolean;
 }
 
+export interface BarsPickSide {
+  readonly fraction: number | null;
+  readonly color?: string;
+}
+
+export interface BarsPickRow {
+  readonly key: string;
+  readonly label: string;
+  readonly left: BarsPickSide;
+  readonly right: BarsPickSide;
+  readonly divided?: boolean;
+  readonly tooltip?: FamilyTooltipPayload;
+}
+
+export interface BarsPickList {
+  readonly rows: readonly BarsPickRow[];
+  readonly selectedKey: string | null;
+}
+
+export interface BarsCaptionSide {
+  readonly media: BarsRowMedia;
+  readonly label: string;
+  readonly value: string;
+}
+
 export interface BarsModel {
   readonly form: BarsForm;
+  readonly pickList?: BarsPickList;
+  readonly captionSides?: readonly BarsCaptionSide[];
   readonly hour: number;
   readonly rows: readonly BarsRow[];
   readonly scaleMax?: number | null;
@@ -381,7 +409,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
       const segFmt = formatValueState(seg.value, seg.format);
       items.push(segFmt.kind === 'notRecorded' || segFmt.kind === 'notApplicable'
         ? { label: seg.label, swatch: seg.color, missingReason: segFmt.reason }
-        : { label: seg.label, swatch: seg.color, value: `${segFmt.text} (${Math.round(seg.share * 100)}%)` });
+        : { label: seg.label, swatch: seg.color, value: `${segFmt.text} (${formatShare(seg.share)})` });
     }
   }
   if (row.readout?.primary && !items.length && !missingReason) {
@@ -432,7 +460,7 @@ export function deriveBarsMirror(
     if (item.segments?.length) {
       cells.push({
         column: 'segments',
-        spoken: item.segments.map(seg => `${seg.label} ${Math.round(seg.share * 100)}%`).join(', '),
+        spoken: item.segments.map(seg => `${seg.label} ${formatShare(seg.share)}`).join(', '),
       });
     }
     if (item.readout?.primary) {
