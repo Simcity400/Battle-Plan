@@ -1,12 +1,8 @@
 import { readTokens } from '../charts/tokens.ts';
 import { resolveKitTokens } from '../draw/kit.ts';
 import type { FamilyTheme } from './contract.ts';
-import type { CountryLooksMap } from './looks.ts';
 
-export function readFamilyTheme(
-  countryColours?: ReadonlyMap<string, string>,
-  countryLooks?: CountryLooksMap,
-): FamilyTheme | undefined {
+export function readFamilyTheme(): FamilyTheme | undefined {
   if (typeof document === 'undefined') return undefined;
   const tokens = readTokens();
   const rootStyle = getComputedStyle(document.documentElement);
@@ -38,7 +34,5 @@ export function readFamilyTheme(
     fontSize: { small: tokens.fontSize.small, body: tokens.fontSize.body },
     lineWidth: tokens.lineWidth.grid,
     hatchSpacing: tokens.hatchSpacing,
-    country: countryColours ? Object.fromEntries(countryColours) : undefined,
-    countryLooks,
   };
 }

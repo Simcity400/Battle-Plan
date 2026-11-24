@@ -89,7 +89,7 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
     const count = (fields.table as TableInfoField | undefined)?.count ?? Number.POSITIVE_INFINITY;
     return tableRowWindow(count, null, (media ? MEDIA_ROW_HEIGHT : ROW_HEIGHT)[settings.density], viewport.scrollTop, viewport.height);
   },
-  deriveAuditRows: (model, _hour, { settings, expanded, viewport, theme, fields }) => {
+  deriveAuditRows: (model, _hour, { settings, expanded, viewport, fields }) => {
     if (!settings) return [];
     const measured = (fields.widths as TableWidthsField | undefined)?.widths ?? {};
     const mode = model.rowHeightMode ?? 'standard';
@@ -107,7 +107,6 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
       visibleColumns: layout.columns,
       rankShown,
       ...(fields.range ? { window: fields.range as FamilyRowWindow } : {}),
-      countryColors: theme ? { countryLooks: theme.countryLooks, country: theme.country } : undefined,
     });
   },
   buildBinding: ctx => (ctx.settings

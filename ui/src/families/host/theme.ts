@@ -1,25 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { subscribeTokens } from '../../charts/tokens.ts';
 import type { FamilyTheme } from '../contract.ts';
-import type { CountryLooksMap } from '../looks.ts';
 import { readFamilyTheme } from '../theme.ts';
 
 export function reducedMotionEnabled(): boolean {
   if (typeof document !== 'undefined' && document.documentElement.dataset.motion === 'reduced') return true;
   return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
-function sameRecord(a: Readonly<Record<string, string>> | undefined, b: Readonly<Record<string, string>> | undefined): boolean {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  const keysA = Object.keys(a);
-  const keysB = Object.keys(b);
-  if (keysA.length !== keysB.length) return false;
-  for (let i = 0; i < keysA.length; i++) {
-    const k = keysA[i]!;
-    if (a[k] !== b[k]) return false;
-  }
-  return true;
 }
 
 export function sameFamilyTheme(a: FamilyTheme | undefined, b: FamilyTheme | undefined): boolean {
@@ -63,9 +49,7 @@ export function sameFamilyTheme(a: FamilyTheme | undefined, b: FamilyTheme | und
     && a.fontSize.small === b.fontSize.small
     && a.fontSize.body === b.fontSize.body
     && a.lineWidth === b.lineWidth
-    && a.hatchSpacing === b.hatchSpacing
-    && a.countryLooks === b.countryLooks
-    && sameRecord(a.country, b.country);
+    && a.hatchSpacing === b.hatchSpacing;
 }
 
 interface ThemeSnapshot {
@@ -73,10 +57,7 @@ interface ThemeSnapshot {
   readonly reducedMotion: boolean;
 }
 
-export function useFamilyTheme(
-  countryColours?: ReadonlyMap<string, string>,
-  countryLooks?: CountryLooksMap,
-): { readonly theme: FamilyTheme | undefined; readonly reducedMotion: boolean } {
+export function useFamilyTheme(): { readonly theme: FamilyTheme | undefined; readonly reducedMotion: boolean } {
   const [snap, setSnap] = useState<ThemeSnapshot>(() => ({
     baseTheme: readFamilyTheme(),
     reducedMotion: reducedMotionEnabled(),
@@ -116,23 +97,5 @@ export function useFamilyTheme(
     };
   }, []);
 
-  const prevComposedRef = useRef<FamilyTheme | undefined>(undefined);
-  const theme = useMemo(() => {
-    if (!snap.baseTheme) {
-      prevComposedRef.current = undefined;
-      return undefined;
-    }
-    const next: FamilyTheme = countryColours === undefined && countryLooks === undefined
-      ? snap.baseTheme
-      : {
-          ...snap.baseTheme,
-          country: countryColours ? Object.fromEntries(countryColours) : undefined,
-          countryLooks,
-        };
-    if (sameFamilyTheme(prevComposedRef.current, next)) return prevComposedRef.current;
-    prevComposedRef.current = next;
-    return next;
-  }, [snap.baseTheme, countryColours, countryLooks]);
-
-  return { theme, reducedMotion: snap.reducedMotion };
+  return { theme: snap.baseTheme, reducedMotion: snap.reducedMotion };
 }

@@ -27,7 +27,7 @@ export const licencesDeclaration: FlowWidgetDeclaration = {
   subject: 'production licences',
   emptyCampaign: 'Load a campaign to see its production licences.',
   icon: 'factory',
-  countries: { mode: 'multi', labels: false, colours: false },
+  countries: { mode: 'multi' },
   sources: (ctx, view) => countryFlowPlan(ctx, 'production-licences', { limit: flowPerSide(view) }),
   projection: licencesProjection,
   projectionOptions: () => EMPTY_OPTIONS,

@@ -28,7 +28,7 @@ export const volunteersDeclaration: FlowWidgetDeclaration = {
   subject: 'volunteers and expeditionary forces',
   emptyCampaign: 'Load a campaign to see its volunteers and expeditionary forces.',
   icon: 'flows',
-  countries: { mode: 'multi', labels: false, colours: false },
+  countries: { mode: 'multi' },
   sources: (ctx, view) => countryFlowPlan(ctx, 'volunteer-flow', { limit: flowPerSide(view) }),
   projection: volunteersProjection,
   projectionOptions: () => EMPTY_OPTIONS,

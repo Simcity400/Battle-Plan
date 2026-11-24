@@ -95,8 +95,6 @@ export const airForceSizeRaceDeclaration: BarsWidgetDeclaration<AirForceSizeRace
   icon: 'layers',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',

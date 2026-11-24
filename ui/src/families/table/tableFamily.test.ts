@@ -10,7 +10,7 @@ import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDat
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
-import { nextLookChange } from '../looks.ts';
+import { datedIdentity } from '../identity/dated.fixture.ts';
 import { resolveHeadSpan } from '../broker.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
 import { tableLane } from './laneView.ts';
@@ -214,12 +214,12 @@ test('scoreboard projection matches followed and exact audits with missing, part
     { key: 'factories', label: 'Factories', unit: 'factories', decimals: 0, available: true, reason: null, family: { kind: 'f', measure: 'm' }, partial: null, noneAtZero: false },
     { key: 'casualties', label: 'Casualties', unit: 'people', decimals: 0, available: true, reason: null, family: { kind: 'c', measure: 't' }, partial: { kind: 'c', measure: 'p' }, noneAtZero: true },
   ];
-  const looks = {
+  const identity = datedIdentity({
     GER: [{ from: 0, name: 'Germany' }],
     FRA: [{ from: 0, name: 'France' }],
     ITA: [{ from: 0, name: 'Italy' }],
     ENG: [{ from: 0, name: 'United Kingdom' }],
-  };
+  });
   const rankAns = answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [10n, 10n, 0n, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.value] });
   const facAns = answer({
     keys: [1n, 2n, 3n, 4n],
@@ -256,7 +256,7 @@ test('scoreboard projection matches followed and exact audits with missing, part
     ],
   };
 
-  const options = { shown: columns, candidates: ['GER', 'FRA', 'ITA', 'ENG'], top: 4, rankMarkers: false, looks };
+  const options = { shown: columns, candidates: ['GER', 'FRA', 'ITA', 'ENG'], top: 4, rankMarkers: false };
   const specs = scoreboardColumnsSpec(columns, 4);
 
   for (const direction of ['descending', 'ascending'] as const) {
@@ -264,10 +264,12 @@ test('scoreboard projection matches followed and exact audits with missing, part
     const followedModel = scoreboardProjection.project(createBoundedReadView({
       hour: 40,
       answers: new Map([[RANK_SOURCE, rankAns], ['factories', facAns], ['casualties', casAns], ['casualties:partial', partAns]]),
+      identity,
     }), options);
     const exactModel = scoreboardProjection.project(createBoundedReadView({
       hour: 40,
       panels: new Map([['main', exactReply]]),
+      identity,
     }), options);
 
     const followedFlat = resolveTableRows(followedModel, settings);
@@ -284,9 +286,10 @@ test('scoreboard projection matches followed and exact audits with missing, part
     assert.ok(followedAudit.find(r => r.key === 'ITA:casualties')?.value?.includes(canonicalAuditValue(partialValue(500n, 'Some inputs were not recorded at this hour'))));
   }
 
-  const hourly = { shown: columns, candidates: ['GER', 'FRA', 'ITA', 'ENG'], top: null, rankMarkers: false, looks };
+  const hourly = { shown: columns, candidates: ['GER', 'FRA', 'ITA', 'ENG'], top: null, rankMarkers: false };
   const at = (hour: number, gerFactories: bigint) => scoreboardProjection.project(createBoundedReadView({
     hour,
+    identity,
     answers: new Map([
       ['factories', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [10n, 10n, gerFactories, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.missing], reasons: [null, null, null, 'Factories not recorded'] })],
       ['casualties', answer({ keys: [1n, 2n, 3n, 4n], columns: 1, names: ['ITA', 'FRA', 'GER', 'ENG'], values: [500n, 0n, 200n, 0n], states: [CELL.value, CELL.value, CELL.value, CELL.value] })],
@@ -297,10 +300,10 @@ test('scoreboard projection matches followed and exact audits with missing, part
   const style = (name: string, valid: [number, number]) => ({ tag: 'GER', name, color: [102, 102, 102] as [number, number, number], valid, flagChoice: { keys: ['GER', null, null] as [string, null, null], reasons: [null, null, null] as [null, null, null] } });
   index.ingestStylesReply({ branchId: '1', hour: 0, styles: [style('Germany', [0, 49])], warnings: [] });
   index.ingestStylesReply({ branchId: '1', hour: 50, styles: [style('German Reich', [50, 100])], warnings: [] });
-  const identity = createSnapshotIdentityProvider(index);
+  const renamed = createSnapshotIdentityProvider(index);
   const factoriesOnly = new Map([['factories', answer({ keys: [1n], columns: 1, names: ['GER'], values: [1n], states: [CELL.value] })]]);
-  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 40, identity, answers: factoriesOnly }), hourly).rows.find(row => row.key === 'GER')?.name, 'Germany');
-  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 50, identity, answers: factoriesOnly }), hourly).rows.find(row => row.key === 'GER')?.name, 'German Reich', 'a dated rename reaches the country cell through identity');
+  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 40, identity: renamed, answers: factoriesOnly }), hourly).rows.find(row => row.key === 'GER')?.name, 'Germany');
+  assert.equal(scoreboardProjection.project(createBoundedReadView({ hour: 50, identity: renamed, answers: factoriesOnly }), hourly).rows.find(row => row.key === 'GER')?.name, 'German Reich', 'a dated rename reaches the country cell through identity');
 
   const first = at(40, 0n);
   const quiet = at(41, 0n);
@@ -328,7 +331,6 @@ test('apm-table projection matches followed wire answers and exact replies, incl
     showPaused: true,
    
     rankMarkers: false,
-    labels: { GER: [{ from: 0, name: 'Germany' }], ITA: [{ from: 0, name: 'Italy' }] },
   };
   const cols = apmTableColumns(false, true);
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'apm', direction: 'descending' } });
@@ -356,12 +358,12 @@ test('occupied-states, game-score (with faction groups), and division-template (
   };
   const occModel = occupiedStatesProjection.project(createBoundedReadView({
     hour: 50,
+    identity: datedIdentity({ GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }),
     panels: new Map([['main', occReply]]),
     live: new Map([['main', { get: k => (k.endsWith('resistance') ? 2_500_000 : k.endsWith('compliance') ? 1_000_000 : k.endsWith('garrison') ? 500_000 : 100_000), missing: () => 'Not recorded' }]]),
   }), {
     filter: { passing: null, unrecorded: [], bounds: [] },
     role: 'occupier',
-    labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] },
     lawAs: 'dot',
     filterAll: true,
   });
@@ -383,6 +385,7 @@ test('occupied-states, game-score (with faction groups), and division-template (
   };
   const gsModel = gameScoreProjection.project(createBoundedReadView({
     hour: 50,
+    identity: datedIdentity({ GER: [{ from: 0, name: 'Germany' }], ENG: [{ from: 0, name: 'United Kingdom' }] }),
     panels: new Map([['main', gsReply]]),
     live: new Map([['main', { get: k => (k.startsWith('GER') ? 300 : 200), missing: () => 'Not recorded' }]]),
   }), {
@@ -398,18 +401,42 @@ test('occupied-states, game-score (with faction groups), and division-template (
     ],
     rankMarkers: false,
    
-    labels: { GER: [{ from: 0, name: 'Germany' }], ENG: [{ from: 0, name: 'United Kingdom' }] },
   });
   const gsCols = gameScoreColumns(undefined);
   const gsFlat = resolveTableRows(gsModel, tableSettingsOf(undefined, gsCols, { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }));
   assert.deepEqual(gsFlat.filter(r => r.kind === 'group-header').map(r => r.label), ['Allies', 'Axis']);
 
-  const gsRenamed = { all: true, holders: null, membership: null, top: null, by: 'total' as const, factions: false, factionRuns: null, rankMarkers: false,
-    labels: { GER: [{ from: 0, name: 'Germany' }, { from: 70, name: 'German Reich' }], ENG: [{ from: 0, name: 'United Kingdom' }] } };
-  assert.equal(gameScoreProjection.nextChange!(createBoundedReadView({ hour: 50, panels: new Map([['main', gsReply]]) }), gsRenamed), 70,
-    'a declarative table names its dated name changes as its next change');
+  const gsIncOptions = { all: true, holders: null, membership: null, top: null, by: 'total' as const, factions: false, factionRuns: null, rankMarkers: false };
+  const gsLive = new Map([['main', { get: (key: string) => (key.startsWith('GER') ? 300 : 200), missing: () => 'Not recorded' }]]);
+  const gsAt = (hour: number, identity?: ReturnType<typeof datedIdentity>) => gameScoreProjection.project(createBoundedReadView({
+    hour,
+    panels: new Map([['main', gsReply]]),
+    live: gsLive,
+    ...(identity ? { identity } : {}),
+  }), gsIncOptions);
+  const waiting = gsAt(60, datedIdentity({ GER: [{ from: 0, name: 'Germany' }] }));
+  const loadingEng = waiting.rows.find(row => row.key === 'ENG')!;
+  assert.notEqual(loadingEng.name, 'ENG', 'a name still loading is never the tag as if it were the name');
+  assert.deepEqual(loadingEng.cells.country!.value, notRecorded('Name is loading'), 'a name still loading is a missing state that says it is loading');
+  assert.equal(loadingEng.cells.country!.loading, true);
+  const waitingFlat = resolveTableRows(waiting, tableSettingsOf(undefined, gameScoreColumns(undefined), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }));
+  const waitingCol = buildColumnLayouts(gameScoreColumns(undefined), tableSettingsOf(undefined, gameScoreColumns(undefined), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } })).find(col => col.key === 'country')!;
+  const waitingPaint = resolveCellPaintModel(loadingEng.cells.country, waitingCol, new Map());
+  assert.equal(waitingPaint.loading, true, 'the painted cell knows the name is loading');
+  assert.match(deriveTableMirror(waitingFlat, waiting.columns, false).rows.find(row => row.key === 'ENG')!.cells.find(cell => cell.column === 'country')!.spoken, /^Loading/, 'the mirror says loading, never not recorded');
+  assert.deepEqual(waiting.rows.find(row => row.key === 'GER')!.cells.country!.value, knownValue('Germany'));
+  const named = gsAt(61, datedIdentity({ GER: [{ from: 0, name: 'Germany' }], ENG: [{ from: 0, name: 'United Kingdom' }] }));
+  assert.deepEqual(named.rows.map(row => row.name), ['Germany', 'United Kingdom'], 'names that arrive with no live change rebuild the rows');
 
-  const gsTopOptions = { all: false, holders: null, membership: null, top: 1, by: 'army' as const, factions: false, factionRuns: null, rankMarkers: false, labels: {} };
+  const renamed = gameScoreProjection.project(createBoundedReadView({
+    hour: 50,
+    panels: new Map([['main', gsReply]]),
+    live: gsLive,
+    identity: datedIdentity({ GER: [{ from: 0, name: 'Germany' }, { from: 70, name: 'German Reich' }], ENG: [{ from: 0, name: 'United Kingdom' }] }),
+  }), gsIncOptions);
+  assert.equal(renamed.nextChangeAt, 70, 'a declarative table names its dated name changes as its next change');
+
+  const gsTopOptions = { all: false, holders: null, membership: null, top: 1, by: 'army' as const, factions: false, factionRuns: null, rankMarkers: false };
   const gsTopAt = (top: unknown, live: (key: string) => number) => gameScoreProjection.project(createBoundedReadView({
     hour: 50,
     panels: new Map([['main', { ...gsReply, ...(top === undefined ? {} : { top }) }]]),
@@ -500,7 +527,7 @@ test('dirty cell painter repaints only changed cells and bounds text measurement
 test('1,500 countries project, sort, audit identically, and paint only visible rows with bounded measurements', () => {
   const count = 1500;
   const tags = Array.from({ length: count }, (_, i) => `C${String(i).padStart(4, '0')}`);
-  const looks = Object.fromEntries(tags.map(tag => [tag, [{ from: 0, name: `Country ${tag}` }]]));
+  const identity = datedIdentity(Object.fromEntries(tags.map(tag => [tag, [{ from: 0, name: `Country ${tag}` }]])));
   const columns: ScoreboardColumn[] = [
     { key: 'factories', label: 'Factories', unit: 'factories', decimals: 0, available: true, reason: null, family: { kind: 'f', measure: 'm' }, partial: null, noneAtZero: false },
   ];
@@ -524,11 +551,11 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
     })),
   };
 
-  const options = { shown: columns, candidates: tags, top: null, rankMarkers: false, looks };
+  const options = { shown: columns, candidates: tags, top: null, rankMarkers: false };
   const specs = scoreboardColumnsSpec(columns, null);
   const settings: TableSettings = { ...tableSettingsOf(undefined, specs, SCOREBOARD_BASE), order: specs.map(s => s.key), sort: { column: 'factories', direction: 'descending' } };
-  const followedModel = scoreboardProjection.project(createBoundedReadView({ hour: 200, answers: new Map([['factories', wire]]) }), options);
-  const exactModel = scoreboardProjection.project(createBoundedReadView({ hour: 200, panels: new Map([['main', reply]]) }), options);
+  const followedModel = scoreboardProjection.project(createBoundedReadView({ hour: 200, answers: new Map([['factories', wire]]), identity }), options);
+  const exactModel = scoreboardProjection.project(createBoundedReadView({ hour: 200, panels: new Map([['main', reply]]), identity }), options);
   const followedRows = resolveTableRows(followedModel, settings);
   const exactRows = resolveTableRows(exactModel, settings);
   assert.equal(followedRows.length, count);
@@ -549,7 +576,7 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
   assert.ok(counts().measureCalls <= 50, `bounded text measurements for 1,500-country table: ${counts().measureCalls}`);
 });
 
-test('occupied-states projection carries country looks at hour, filter ranges, unrecorded membership, and live tooltip details', () => {
+test('occupied-states projection names countries at the hour, filter ranges, unrecorded membership, and live tooltip details', () => {
   const mkState = (id: number, occupier: string | null, occupied: string | null, extra: Record<string, unknown> = {}) => ({
     state: id, name: `State ${id}`, nameMissing: null, owner: occupied, occupier, occupied, garrisonRequiredSign: 1 as const,
     garrisonAlert: false, assignedKnown: true, garrisonMissing: null, law: 'mod_law', lawMissing: null, ...extra,
@@ -560,12 +587,6 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
     laws: [{ token: 'mod_law', name: 'Moderate', icon: null, missing: null }],
     strengthMissing: 'Strength needs inputs', garrisonRedRaw: '30000', warnings: [],
   };
-  const labels = {
-    GER: [{ from: 0, name: 'Germany', flag: 'old.png' }, { from: 20, name: 'German Reich', flag: 'new.png' }],
-    POL: [{ from: 0, name: 'Poland' }],
-  };
-  assert.deepEqual([nextLookChange(labels, 5), nextLookChange(labels, 19), nextLookChange(labels, 20)], [20, 20, Infinity]);
-
   const filter = { passing: { GER: [[10, 20]] as const }, unrecorded: [[30, 40, 'Membership not recorded']] as const, bounds: [10, 21, 30, 41] };
   const live = valuesOf(new Map([
     [liveKey('1', 'resistance'), 2_500_000],
@@ -581,10 +602,11 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
   const identity = createSnapshotIdentityProvider(index);
   const run = (hour: number) => occupiedStatesProjection.project(
     createBoundedReadView({ hour, identity, panels: new Map([['main', reply]]), live: new Map([['main', live]]) }),
-    { filter, role: 'occupier', labels, lawAs: 'dot', filterAll: false },
+    { filter, role: 'occupier', lawAs: 'dot', filterAll: false },
   );
   const at15 = run(15);
   assert.deepEqual(at15.rows.map(r => r.key), ['1']);
+  assert.equal(at15.nextChangeAt, 20, 'the occupier is renamed at 20, so the model holds until then');
   const settings = tableSettingsOf(undefined, OCCUPIED_DEFAULTS, OCCUPIED_BASE);
   const flat15 = resolveTableRows(at15, settings);
   const tip = deriveTableTooltip(flat15, '1', at15.columns);
@@ -593,6 +615,16 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
   assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '0', 'known assigned with no live cell reads 0');
   assert.equal(tip.rows.find(r => r.label === 'Garrison strength')?.valueState?.text, '87.5%');
   assert.equal(tip.rows.find(r => r.label === 'Occupied country')?.valueState?.text, 'Poland');
+  const waitingNames = (names: Parameters<typeof datedIdentity>[0]) => occupiedStatesProjection.project(
+    createBoundedReadView({ hour: 15, identity: datedIdentity(names), panels: new Map([['main', reply]]), live: new Map([['main', live]]) }),
+    { filter, role: 'occupier', lawAs: 'dot', filterAll: false },
+  );
+  const beforeNames = waitingNames({ GER: [{ from: 0, name: 'Germany' }] });
+  const beforeTip = deriveTableTooltip(resolveTableRows(beforeNames, settings), '1', beforeNames.columns)!;
+  assert.deepEqual(beforeTip.rows.find(r => r.label === 'Occupied country')?.valueState, { kind: 'missing', reason: 'Name is loading' }, 'the occupied country still loading says so, never the tag');
+  const afterNames = waitingNames({ GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] });
+  const afterTip = deriveTableTooltip(resolveTableRows(afterNames, settings), '1', afterNames.columns)!;
+  assert.equal(afterTip.rows.find(r => r.label === 'Occupied country')?.valueState?.text, 'Poland', 'once names arrive the tooltip names the occupied country');
 
   assert.equal(run(25).empty, 'Occupied states unavailable for these countries.');
   assert.equal(run(35).empty, 'Membership not recorded');
@@ -916,7 +948,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
       warnings: [],
     }]]),
     live: new Map([['main', { get: () => 0, missing: () => 'Not recorded' }]]),
-  }), { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true });
+  }), { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', lawAs: 'dot', filterAll: true });
   assert.deepEqual(occMissingLaw.rows[0]!.cells.law!.value, { kind: 'notRecorded', reason: 'Law localization absent' });
 
   const manyRows = Array.from({ length: 15 }, (_, i) => ({
@@ -936,10 +968,6 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
 
   const { ctx } = instrumentedContext();
   const pic = createTablePicture();
-  const datedTheme: TableTheme = {
-    ...TEST_THEME,
-    countryLooks: { GER: [{ from: 0, name: 'Germany', color: 'rgb(10, 20, 30)' }, { from: 20, name: 'Germany', color: 'rgb(200, 10, 10)' }] },
-  };
   const fills: string[] = [];
   const origFillRect = ctx.fillRect.bind(ctx);
   const origFill = ctx.fill.bind(ctx);
@@ -951,13 +979,13 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     fills.push(String(ctx.fillStyle));
     (origFill as (...b: unknown[]) => void)(...a);
   };
-  const shortFlat = resolveTableRows({ columns: cols, hour: 10, rows: manyRows.slice(0, 2) }, settings);
-  drawFamilyTable(ctx, { layout, rows: shortFlat, settings, hour: 10, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: datedTheme, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 }, pic);
-  assert.ok(fills.includes('rgb(10, 20, 30)'), 'paints dated country colour at hour 10');
+  const tinted = (hour: number, colour: string) => resolveTableRows({ columns: cols, hour, rows: manyRows.slice(0, 2).map(row => ({ ...row, cells: { ...row.cells, rate: { ...row.cells.rate, countryColor: colour } } })) }, settings);
+  drawFamilyTable(ctx, { layout, rows: tinted(10, 'rgb(10, 20, 30)'), settings, hour: 10, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 }, pic);
+  assert.ok(fills.includes('rgb(10, 20, 30)'), 'paints the country colour its cell carries at hour 10');
   const compactSettings = { ...settings, density: 'compact' as const };
-  const afterDensity = drawFamilyTable(ctx, { layout, rows: shortFlat, settings: compactSettings, hour: 25, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: datedTheme, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 }, pic);
+  const afterDensity = drawFamilyTable(ctx, { layout, rows: tinted(25, 'rgb(200, 10, 10)'), settings: compactSettings, hour: 25, width: 320, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 2, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), dpr: 1 }, pic);
   assert.equal(afterDensity.drew, true, 'density change invalidates frameKey and repaints');
-  assert.ok(fills.includes('rgb(200, 10, 10)'), 'paints updated dated country colour at hour 25');
+  assert.ok(fills.includes('rgb(200, 10, 10)'), 'paints the colour a later projection gives the cell at hour 25');
 
   const metaProj = declareTableProjection<{ designer: string; priority: number }, { id: string; designer: string }, Record<string, never>>({
     kind: 'test-meta-priority-inv',
@@ -1019,7 +1047,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   }
 });
 
-test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert/flag/missingName/pill/tooltip), N6 native slot holder tie-break, M4 ever-gap refusal, S1 frozen static snapshot, M5 dateless game-score empty, and N18 frozen change caches', () => {
+test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert/flag/missing name/pill/tooltip), N6 native slot holder tie-break, M4 ever-gap refusal, S1 frozen static snapshot, M5 dateless game-score empty, and N18 frozen change caches', () => {
   assert.notEqual(canonicalAuditValue(knownValue('1000')), canonicalAuditValue(knownValue(1000)), 'M1: string "1000" and number 1000 do not collide');
   assert.equal(canonicalAuditValue(knownValue(1e21)), canonicalAuditValue(knownValue(10n ** 21n)), 'M1: 1e21 and 10n**21n serialize identically');
   assert.equal(canonicalAuditValue(knownValue(-0)), canonicalAuditValue(knownValue(0)));
@@ -1065,7 +1093,7 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
   assert.notEqual(diff(mkOcc({ fraction: 0.4, alert: false, flag: 'ger.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches garrison bar fraction change');
   assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: true, flag: 'ger.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches garrison alert flag change');
   assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'pol.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches flag identity change');
-  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: true, pill: '1 state', extra: '80%' })), null, 'N1: catches missingName hatch change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: true, pill: '1 state', extra: '80%' })), null, 'N1: catches a missing name');
   assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '2 states', extra: '80%' })), null, 'N1: catches titleSummary change');
   assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '1 state', extra: '40%' })), null, 'N1: catches tooltipExtra change');
 
@@ -1110,12 +1138,12 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
     hour: 10,
     panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
     live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
-  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} });
+  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false });
   const emptyGsB = gameScoreProjection.project(createBoundedReadView({
     hour: 250,
     panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
     live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
-  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} });
+  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false });
   assert.equal(emptyGsA.empty, 'No country’s scores recorded at this time.', 'M5: dateless empty message');
   assert.equal(emptyGsA.empty, emptyGsB.empty, 'M5: empty message does not depend on advancing hour');
 
@@ -1140,7 +1168,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
   ];
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'score', direction: 'descending' } });
   const layouts = buildColumnLayouts(cols, settings);
-  const mkModel = (hour: number) => ({
+  const mkModel = (hour: number, colour = 'rgb(10, 20, 30)') => ({
     columns: cols,
     hour,
     rank: true,
@@ -1149,7 +1177,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       name: 'Germany',
       cells: {
         country: { value: knownValue('Germany'), iconSlot: true, country: 'GER' },
-        score: { value: knownValue(100), format: 'integer' as const, country: 'GER' },
+        score: { value: knownValue(100), format: 'integer' as const, country: 'GER', countryColor: colour },
       },
     }],
   });
@@ -1157,10 +1185,8 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
   const m12 = mkModel(12);
   const flat10 = resolveTableRows(m10, settings);
   const flat12 = resolveTableRows(m12, settings);
-  const colorsA = { countryLooks: { GER: [{ from: 0, name: 'Germany', color: 'rgb(10, 20, 30)' }] }, country: {} };
-  const colorsB = { countryLooks: { GER: [{ from: 0, name: 'Germany', color: 'rgb(200, 10, 10)' }] }, country: {} };
-  const audit10 = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true, countryColors: colorsA });
-  const audit12 = deriveTableAudit({ model: m12, flatRows: flat12, visibleColumns: layouts, rankShown: true, countryColors: colorsA });
+  const audit10 = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true });
+  const audit12 = deriveTableAudit({ model: m12, flatRows: flat12, visibleColumns: layouts, rankShown: true });
   assert.equal(
     pictureError('table', audit10, { values: new Map(audit12.map(r => [r.key, r.value!])), ordered: true }),
     null,
@@ -1168,13 +1194,14 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
   );
   const tip10 = deriveTableTooltip(flat10, 'GER', cols)!;
   assert.equal(tip10.subtitle, undefined, 'P1: deriveRowTooltip carries no hour-derived subtitle');
-  const auditColorDiff = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true, countryColors: colorsB });
+  const recoloured = mkModel(10, 'rgb(200, 10, 10)');
+  const auditColorDiff = deriveTableAudit({ model: recoloured, flatRows: resolveTableRows(recoloured, settings), visibleColumns: layouts, rankShown: true });
   assert.notEqual(
     pictureError('table', audit10, { values: new Map(auditColorDiff.map(r => [r.key, r.value!])), ordered: true }),
     null,
     'N1/P1: resolved country colour change is caught by CellPaintModel audit',
   );
-  const paintModel = resolveCellPaintModel(m10.rows[0]!.cells.score, layouts[1]!, 10, new Map([['score', 100]]), colorsA);
+  const paintModel = resolveCellPaintModel(m10.rows[0]!.cells.score, layouts[1]!, new Map([['score', 100]]));
   assert.equal(paintModel.countryColor, 'rgb(10, 20, 30)', 'P1: CellPaintModel carries resolved countryColor for painter');
 
   const prevOffscreen = globalThis.OffscreenCanvas;
@@ -1198,7 +1225,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
-        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: { main: 7 },
         width: 320,
@@ -1224,7 +1251,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
-        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: NO_SOURCES,
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
@@ -1265,7 +1292,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
-        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
         sources: NO_SOURCES,
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
@@ -1379,6 +1406,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
         columns: cols,
         hour: readView.hour,
         unsorted: true,
+        ...(readView.hour < 200 ? { nextChangeAt: readView.hour < 100 ? 100 : 200 } : {}),
         rows: Array.from({ length: 1500 }, (_, i) => {
           const tag = `C${String(i).padStart(4, '0')}`;
           return {
@@ -2093,7 +2121,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   assert.equal(computeColumnMaxima(signedRows, grown.columns).get('net'), 30, 'a two-way column scales by the largest magnitude');
   const netColumn = grown.columns.find(col => col.key === 'net')!;
   const loss = signedRows.find(item => item.kind === 'data' && item.key === 'A');
-  assert.equal(loss?.kind === 'data' ? resolveCellPaintModel(loss.row.cells.net, netColumn, 1, new Map([['net', 30]])).bar.fraction : null, 1, 'a loss draws its bar at its magnitude');
+  assert.equal(loss?.kind === 'data' ? resolveCellPaintModel(loss.row.cells.net, netColumn, new Map([['net', 30]])).bar.fraction : null, 1, 'a loss draws its bar at its magnitude');
   const measuredNet = measureFixedColumnWidths(buildColumnLayouts([kinds[2]!], kindSettings), kindSettings, TEST_THEME, text => text.length * 7).net!;
   assert.ok(measuredNet - 2 * 10 >= 72 + 8 + 7 * 3, `a two-way column leaves room for its 72 px slot beside the figure (${measuredNet})`);
 

@@ -4,12 +4,12 @@ import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { FamilyPlanContext } from '../../families/contract.ts';
 import { overlapsHourRanges } from '../../families/holders.ts';
 import { nextWindowRangesChange, type HourRanges, type TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
   type DeclarativeColumnSpec,
   type TableColumnSpec,
   type TableProjection,
+  type TableWho,
 } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
@@ -23,7 +23,6 @@ export interface ApmTableProjectionOptions {
   readonly players: boolean;
   readonly showPaused: boolean;
   readonly rankMarkers: boolean;
-  readonly labels: CountryLooksMap;
   readonly unobserved?: HourRanges;
   readonly branchFirst?: number;
   readonly windowHours?: number;
@@ -86,6 +85,12 @@ function rateSortValue(summary: ApmValue): Value {
 
 const observationHour = (row: ApmSeries, fallback: number): number =>
   (Number.isFinite(row.hour) ? row.hour : fallback);
+
+function apmRowName(row: DisplayApmRow, hour: number, opt: ApmTableProjectionOptions, who: TableWho): string {
+  if (opt.players) return row.displayName ?? 'Name not recorded';
+  const country = row.tag ? who(row.tag, observationHour(row, hour)) : null;
+  return country && (country.value.kind === 'known' || country.loading) ? country.name : 'Name not recorded';
+}
 
 function parseAnswer(answer: FollowedAnswer): ParsedApm {
   if (answer.kind === 'notRecorded') return { rows: [], refusal: answer.reason, warnings: [] };
@@ -188,7 +193,7 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
     validate: parseReply,
     fromAnswer: parseAnswer,
     nextChange: (readView, opt) => (
-      Math.min(nextLookChange(opt.labels, readView.hour), opt.staticSpan ? Infinity : nextWindowRangesChange(opt.unobserved, opt.windowHours ?? TRAILING_HOURS, readView.hour))
+      opt.staticSpan ? Infinity : nextWindowRangesChange(opt.unobserved, opt.windowHours ?? TRAILING_HOURS, readView.hour)
     ),
     rank: true,
     rankMarkers: opt => opt.rankMarkers,
@@ -267,12 +272,8 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
       return { rows: parsed.rows, warnings: parsed.warnings };
     },
     rowKey: row => row.id,
-    rowName: (row, hour, opt) => opt.players
-      ? (row.displayName ?? 'Name not recorded')
-      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, observationHour(row, hour))?.name ?? 'Name not recorded'),
-    tooltipTitle: (row, hour, opt) => opt.players
-      ? (row.displayName ?? 'Name not recorded')
-      : (lookAt(row.tag ? opt.labels[row.tag] : undefined, observationHour(row, hour))?.name ?? 'Name not recorded'),
+    rowName: (row, hour, opt, who) => apmRowName(row, hour, opt, who),
+    tooltipTitle: (row, hour, opt, who) => apmRowName(row, hour, opt, who),
     tooltipExtra: row => {
       const minsText = formatUnpausedMinutesText(row.summary);
       if (minsText === null) return undefined;
@@ -311,10 +312,7 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
   icon: 'chart-bars',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSingleSlot: true,
-    allTagsForLabels: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group',
   },
   sources: ctx => {
@@ -346,7 +344,6 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
     players: ctx.options.group === 'player',
     showPaused: ctx.options.showPausedActions === true,
     rankMarkers: ctx.options.rankMarkers === true,
-    labels: ctx.countries.labels,
     unobserved: ctx.countries.unobserved,
     branchFirst: ctx.branch.firstHour,
     windowHours: TRAILING_HOURS,

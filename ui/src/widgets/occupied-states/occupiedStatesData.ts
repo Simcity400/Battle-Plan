@@ -1,4 +1,5 @@
 import { artworkUrlValue } from '../../dashboard/payload.ts';
+import type { Value } from '../../families/value.ts';
 import type { OccupiedState as RepliedState, OccupiedStatesReply as Replied } from '../../generated/dashboard';
 
 export type OccupiedState = Omit<RepliedState, 'garrisonStrengthRaw' | 'garrisonRed'>;
@@ -29,7 +30,7 @@ export function validateOccupiedStates(data: unknown): OccupiedStatesReply {
   return data as unknown as OccupiedStatesReply;
 }
 
-export interface OccupiedRow { key: string; state: number; value: OccupiedState }
+export interface OccupiedRow { key: string; state: number; value: OccupiedState; occupiedName?: Value<string> }
 export type CountryRole = 'occupier' | 'occupied';
 
 export function occupiedRows(reply: OccupiedStatesReply, matches: ((tag: string) => boolean) | null, role: CountryRole, unrecorded: string | null = null):

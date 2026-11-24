@@ -1,6 +1,5 @@
 import type { FamilyPlanContext } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
-import type { CountryLooksMap } from '../../families/looks.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import {
   declareTableProjection,
@@ -18,7 +17,6 @@ import { validateWorldTensionStack } from './worldTensionProjection.ts';
 
 export interface WorldTensionEventsOptions {
   readonly branchFirst: number;
-  readonly labels?: CountryLooksMap;
 }
 
 interface ParsedEvents {
@@ -124,7 +122,7 @@ export const worldTensionEventsDeclaration: TableWidgetDeclaration<WorldTensionE
   subject: 'threat events',
   emptyCampaign: 'Load a campaign to see threat events.',
   icon: 'alert',
-  countries: { mode: 'multi', labels: true, colours: true, allTagsForLabels: true },
+  countries: { mode: 'multi' },
   sources: (ctx: FamilyPlanContext) => {
     const top = ctx.countries.top ?? null;
     const keyed = !ctx.countries.all && top == null;
@@ -166,6 +164,6 @@ export const worldTensionEventsDeclaration: TableWidgetDeclaration<WorldTensionE
   projection: worldTensionEventsProjection,
   columns: () => [...worldTensionEventsColumns()],
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: EVENTS_TABLE_BASE },
-  projectionOptions: ctx => ({ branchFirst: ctx.branch.firstHour, labels: ctx.countries.labels }),
+  projectionOptions: ctx => ({ branchFirst: ctx.branch.firstHour }),
   keyByBranch: true,
 };

@@ -472,7 +472,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     const visibleSpecs = shape.columns.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
     return deriveTableMirror(shape.flatRows, visibleSpecs, shape.rankShown, layout.rowWindow, binding.focusedKey ?? null, layout.focusedIndex);
   },
-  audit({ model, layout, theme }) {
+  audit({ model, layout }) {
     const shape = layout.shape;
     return deriveTableAudit({
       model,
@@ -481,7 +481,6 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       rankShown: shape.rankShown,
       maxima: shape.maxima,
       window: layout.rowWindow,
-      countryColors: theme,
       rowAuditCache: shape.rowAuditCache,
     });
   },

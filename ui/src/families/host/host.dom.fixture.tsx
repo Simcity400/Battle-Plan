@@ -141,12 +141,6 @@ const host: PipelineHost = {
 };
 const pipeline = pipelineFor(clock, client, () => host);
 
-const LOOKS = {
-  GER: [{ from: 0, name: 'Germany' }],
-  FRA: [{ from: 0, name: 'France' }],
-  ITA: [{ from: 0, name: 'Italy' }],
-  ENG: [{ from: 0, name: 'United Kingdom' }],
-};
 const SPECS = scoreboardColumnsSpec(SCOREBOARD_FIXTURE_COLUMNS, null);
 const SETTINGS = {
   ...tableSettingsOf(undefined, SPECS, { density: 'comfortable', sort: { column: 'factories', direction: 'descending' } }),
@@ -158,7 +152,6 @@ const OPTIONS = {
   candidates: ['GER', 'FRA', 'ITA', 'ENG'],
   top: null,
   rankMarkers: false,
-  looks: LOOKS,
 };
 
 function makeRuntime(src: DashboardSource): WidgetRuntime {
@@ -666,7 +659,7 @@ window.hostDom = {
     await until(() => pipeline.view(pipeG)?.mode === 'picture' && !pipeline.view(pipeG)?.dim
       && container!.querySelectorAll('[data-slot="generic"] table tbody tr').length === 4);
     container!.querySelector<HTMLElement>('[data-slot="generic"] table tbody tr[data-row-key="ENG"]')!.focus();
-    const shown = await until(() => tooltipStore.get()?.content.title === 'United Kingdom', 2000);
+    const shown = await until(() => tooltipStore.get()?.content.title === 'ENG', 2000);
     await frames(4);
 
     let storeUpdates = 0;

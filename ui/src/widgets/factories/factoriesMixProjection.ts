@@ -298,8 +298,6 @@ export const factoriesMixDeclaration: BarsWidgetDeclaration<FactoriesMixOptions>
   icon: 'factory',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
     everyOnTop: true,
   },

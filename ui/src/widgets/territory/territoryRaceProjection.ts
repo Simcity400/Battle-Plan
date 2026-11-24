@@ -194,8 +194,6 @@ export const territoryRaceDeclaration: BarsWidgetDeclaration<TerritoryRaceOption
   icon: 'map',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
     everyOnTop: true,
     factions: true,

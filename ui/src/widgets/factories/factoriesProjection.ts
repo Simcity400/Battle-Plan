@@ -311,8 +311,6 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
   icon: 'factory',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
   },
   aux: {

@@ -262,7 +262,7 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
   subject: 'event choices',
   emptyCampaign: 'Load a campaign to see event choices.',
   icon: 'ballot',
-  countries: { mode: 'filter', labels: true },
+  countries: { mode: 'filter' },
   columns: EVENT_CHOICES_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {

@@ -178,6 +178,7 @@ export interface FormatValueOptions {
   readonly figure?: string;
   readonly gameWindow?: boolean;
   readonly compact?: boolean;
+  readonly loading?: boolean;
 }
 
 export type FormattedValue =
@@ -190,6 +191,7 @@ export type FormattedValue =
 export const NOT_RECORDED_LABEL = 'Not recorded';
 export const NOT_APPLICABLE_LABEL = '\u2014';
 export const GAME_WINDOW_MISSING_LABEL = 'n/a';
+export const LOADING_LABEL = 'Loading…';
 export const PARTIAL_LABEL = 'partial';
 
 export function notRecordedLabel(figure?: string): string {
@@ -400,8 +402,8 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
       return { kind: 'zero', text, exact: text, spoken: text, audit: text };
     }
     case 'notRecorded': {
-      const label = options?.gameWindow ? GAME_WINDOW_MISSING_LABEL : notRecordedLabel(options?.figure);
-      const lead = options?.figure?.trim() ? `${options.figure.trim()} not recorded` : NOT_RECORDED_LABEL;
+      const label = options?.loading ? LOADING_LABEL : options?.gameWindow ? GAME_WINDOW_MISSING_LABEL : notRecordedLabel(options?.figure);
+      const lead = options?.loading ? 'Loading' : options?.figure?.trim() ? `${options.figure.trim()} not recorded` : NOT_RECORDED_LABEL;
       const spoken = `${lead}: ${value.reason}`;
       return {
         kind: 'notRecorded',

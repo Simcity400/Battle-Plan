@@ -157,7 +157,7 @@ test('followed scoreboard filters selected countries by holder existence at hour
   assert.equal(scoreboardProjection.nextChange?.(emptyReadView(100), opts), 105, 'nextChange reports slot tag switch boundary');
 });
 
-test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, matches Rust missing reasons without TS rewriting, enables country colours, and keeps rows when all columns are unavailable', () => {
+test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, matches Rust missing reasons without TS rewriting, colours score cells with the dated country colour, and keeps rows when all columns are unavailable', () => {
   const bin525 = readFileSync(new URL('../../../../crates/dashboard-follow/fixtures/series_slot_tag_525.bin', import.meta.url));
   const bin800 = readFileSync(new URL('../../../../crates/dashboard-follow/fixtures/series_slot_tag_800.bin', import.meta.url));
   const ans525 = parseAnswer(new Uint8Array(bin525));
@@ -212,7 +212,9 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
   );
 
   assert.equal(scoreboardDeclaration.countries.mode, 'multi');
-  assert.equal(scoreboardDeclaration.countries.colours, true, 'M6: scoreboard requests country colours for country-tone column bars');
+  const ger800 = f800.rows.find(row => row.cells.country!.country === 'GER')!;
+  assert.equal(ger800.cells.politicalPower!.countryColor, ger800.cells.country!.countryColor, 'M6: a score cell carries the dated colour of its country for country-tone bars');
+  assert.ok(ger800.cells.country!.countryColor, 'M6: the dated colour is from identity');
 
   assert.deepEqual(
     scoreboardParams('1', gatedHour(50), [power], [], null, factories),

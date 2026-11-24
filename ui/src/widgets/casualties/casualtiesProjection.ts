@@ -127,8 +127,6 @@ const options = (ctx: FamilyPlanContext, view: 'butterfly' | 'race'): Casualties
 
 const countries = {
   mode: 'multi' as const,
-  labels: true,
-  colours: true,
   allowSlots: true,
 };
 

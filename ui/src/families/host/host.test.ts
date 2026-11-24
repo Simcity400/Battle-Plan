@@ -224,12 +224,10 @@ test('F3: sameFamilyTheme compares drawn tokens by value and rejects changed tok
     fontSize: { small: 11, body: 13 },
     lineWidth: 1,
     hatchSpacing: 6,
-    country: { GER: '#444' },
   };
-  assert.equal(sameFamilyTheme(base, { ...base, fontSize: { small: 11, body: 13 }, country: { GER: '#444' } }), true);
+  assert.equal(sameFamilyTheme(base, { ...base, fontSize: { small: 11, body: 13 } }), true);
   assert.equal(sameFamilyTheme(base, { ...base, surface: '#000' }), false);
   assert.equal(sameFamilyTheme(base, { ...base, fontSize: { small: 12, body: 13 } }), false);
-  assert.equal(sameFamilyTheme(base, { ...base, country: { GER: '#555' } }), false);
 });
 
 test('F4: reducedMotionEnabled honors app dataset.motion and OS matchMedia independently', () => {

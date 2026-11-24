@@ -2,11 +2,8 @@ import type { BoundTrack, CountrySelection, WidgetSpec } from '../dashboard/mode
 import { selectedCountryKeys } from '../dashboard/countrySelection.ts';
 import type { Gate } from '../dashboard/regionGate';
 import { coverageSpan, recordedHour, type BoundWindow, type GatedHour } from '../dashboard/regionTime.ts';
-import { authoredHex } from '../charts/palette.ts';
-import type { CountryFlagChoice, CountryGroupReply, HourSpan } from '../generated/dashboard';
-import { type FamilyFactionRun, type HourRanges } from './holders.ts';
-import { countryTagKey, type DrawnFlagEntry, type IdentityIndex } from './identity/index.ts';
-import type { CountryLook, CountryLooksMap } from './looks.ts';
+import type { CountryGroupReply, HourSpan } from '../generated/dashboard';
+import type { FamilyFactionRun, HourRanges } from './holders.ts';
 
 export interface FrozenGate {
   readonly recorded: Gate['recorded'];
@@ -113,65 +110,4 @@ export function extractFactionData(groups: CountryGroupReply | undefined, enable
   }
   const incomplete = mergeHourSpans(allIncomplete);
   return { runs, unobserved, incomplete };
-}
-
-export function buildCountryLooksFromIdentity(
-  index: IdentityIndex | null,
-  tags: readonly string[],
-  firstHour: number,
-  lastHour: number,
-  flagFor: (choice: CountryFlagChoice) => DrawnFlagEntry | undefined,
-  includeColours: boolean,
-): CountryLooksMap {
-  if (!index || firstHour > lastHour) return {};
-  const out: Record<string, CountryLook[]> = {};
-  for (const tag of tags) {
-    const key = countryTagKey(tag);
-    const runs: CountryLook[] = [];
-    let cursor = Math.floor(firstHour);
-    const limit = Math.floor(lastHour);
-    while (cursor <= limit) {
-      const res = index.resolve(key, cursor);
-      if (res.kind === 'known') {
-        const name = res.name.kind === 'known' ? res.name.value : null;
-        const status = res.name.kind === 'missing'
-          ? res.name.reason
-          : res.name.kind === 'failed'
-            ? res.name.failure.message
-            : res.name.kind === 'pending'
-              ? 'Loading…'
-              : undefined;
-        const color = includeColours && res.color.kind === 'known' ? authoredHex(res.color.value) : undefined;
-        let flag: string | undefined;
-        let flagPending = false;
-        if (res.flagChoice.kind === 'known') {
-          const drawn = flagFor(res.flagChoice.value);
-          if (!drawn) flagPending = true;
-          else if (drawn.url) flag = drawn.url;
-        } else if (res.flagChoice.kind === 'pending') {
-          flagPending = true;
-        }
-        runs.push({
-          from: cursor,
-          name,
-          ...(flag ? { flag } : {}),
-          ...(flagPending ? { flagPending: true } : {}),
-          ...(color ? { color } : {}),
-          ...(status ? { status } : {}),
-        });
-        cursor = Number.isFinite(res.nextBoundary) && res.nextBoundary > cursor ? res.nextBoundary : limit + 1;
-      } else if (res.kind === 'absent') {
-        runs.push({ from: cursor, name: null, status: res.reason });
-        cursor = Number.isFinite(res.nextBoundary) && res.nextBoundary > cursor ? res.nextBoundary : limit + 1;
-      } else if (res.kind === 'failed') {
-        runs.push({ from: cursor, name: null, status: res.failure.message });
-        break;
-      } else {
-        runs.push({ from: cursor, name: null, flagPending: true, status: 'Loading…' });
-        break;
-      }
-    }
-    if (runs.length) out[tag] = runs;
-  }
-  return out;
 }

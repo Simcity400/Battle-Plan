@@ -100,8 +100,6 @@ export const navySizeRaceDeclaration: BarsWidgetDeclaration<NavySizeRaceOptions>
   icon: 'flows',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',

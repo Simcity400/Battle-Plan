@@ -165,7 +165,7 @@ export const stockpileTimeDeclaration: TimeChartWidgetDeclaration<StockpileTimeO
   subject: 'equipment stockpile',
   emptyCampaign: 'Load a campaign and choose a country to see its equipment stockpile.',
   icon: 'chart-line',
-  countries: { mode: 'multi', labels: true, colours: false, allowSlots: true },
+  countries: { mode: 'multi', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tag = ctx.countries.tags[0];
     const chosen = chosenTypes(ctx.options);

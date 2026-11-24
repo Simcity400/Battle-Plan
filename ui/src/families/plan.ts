@@ -22,7 +22,6 @@ import type {
   MissingSpan,
 } from '../generated/dashboard';
 import type { FamilyFactionRun, HolderRun, HourRanges } from './holders.ts';
-import type { CountryLooksMap } from './looks.ts';
 import type { DatedLogRow, LogTailQuery, RowWindow, TableRowSource, TailReply } from './table/rowSource.ts';
 import type { Value } from './value.ts';
 
@@ -373,7 +372,6 @@ export interface DeclaredCountryState {
   readonly membershipRuns: readonly { readonly tag: string; readonly firstHour: number; readonly lastHour: number }[] | null;
   readonly unobserved: HourRanges;
   readonly filter: DeclaredCountryFilter;
-  readonly labels: CountryLooksMap;
   readonly factions: readonly FamilyFactionRun[] | null;
   readonly factionUnobserved: HourRanges;
   readonly factionIncomplete: HourRanges;
@@ -386,16 +384,13 @@ export interface DeclaredCountryState {
 export type CountryPolicy =
   | { readonly mode: 'none' }
   | { readonly mode: 'single'; readonly choose?: string }
-  | { readonly mode: 'filter'; readonly labels?: boolean; readonly colours?: boolean }
+  | { readonly mode: 'filter' }
   | {
       readonly mode: 'multi';
-      readonly labels?: boolean;
-      readonly colours?: boolean;
       readonly factions?: boolean;
       readonly allowSlots?: boolean;
       readonly allowSingleSlot?: boolean;
       readonly everyOnTop?: boolean;
-      readonly allTagsForLabels?: boolean;
       readonly requireGroupsWhen?: (widget: WidgetSpec, options: Readonly<Record<string, OptionValue>>) => boolean;
     };
 

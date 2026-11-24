@@ -199,7 +199,7 @@ export const factionsDeclaration: TimelineWidgetDeclaration<FactionsOptions> = {
   subject: 'factions',
   emptyCampaign: 'Load a campaign to see its factions.',
   icon: 'shield',
-  countries: { mode: 'multi', labels: true, allTagsForLabels: true },
+  countries: { mode: 'multi' },
   jumpToDate: true,
   keyByBranch: true,
   sources: ctx => ({

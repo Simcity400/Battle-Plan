@@ -292,8 +292,6 @@ export const raidTallyRaceDeclaration: BarsWidgetDeclaration<RaidTallyRaceOption
   icon: 'target',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
     everyOnTop: true,
   },

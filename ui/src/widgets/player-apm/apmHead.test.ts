@@ -135,16 +135,11 @@ test('apm-table resolves country at row observation hour including hour 0, gives
       },
     ],
   };
-  const labels = {
-    GER: [{ from: 0, name: 'Weimar', flag: 'old.png' }, { from: 50, name: 'Reich', flag: 'new.png' }],
-    CUSTOM_MOD_TAG_12345: [{ from: 0, name: 'Custom Realm', flag: 'mod.png' }],
-  };
   const opts = {
     players: true,
     showPaused: true,
    
     rankMarkers: false,
-    labels,
     unobserved: [[10, 20]] as readonly (readonly [number, number])[],
     branchFirst: 0,
     windowHours: 168,
@@ -188,7 +183,7 @@ test('apm-table resolves country at row observation hour including hour 0, gives
 
   const followOpts = { ...opts, staticSpan: null };
   assert.equal(apmTableProjection.nextChange?.(emptyReadView(5), followOpts), 10, 'trailing window enters gap at 10');
-  assert.equal(apmTableProjection.nextChange?.(emptyReadView(15), followOpts), 50, 'a country name that changes at 50 bounds the model first');
+  assert.equal(apmTableProjection.nextChange?.(emptyReadView(15), followOpts), 188, 'a rename at 50 never bounds the model: a country cell reads its name at the observation hour');
   assert.equal(apmTableProjection.nextChange?.(emptyReadView(55), followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 180, panels: new Map([['main', reply]]) }), followOpts).emptyKind, 'unavailable', 'trailing [13,180] overlaps [10,20]');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 188, panels: new Map([['main', reply]]) }), followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');
@@ -243,15 +238,10 @@ test('apm-table formats derived eAPM and played duration from exact recorded ope
       },
     ],
   } as unknown as ApmReply;
-  const labels = {
-    GER: [{ from: 0, name: 'Germany', flag: 'ger.png' }],
-    ITA: [{ from: 0, name: 'Italy', flag: 'ita.png' }],
-  };
   const opts = {
     players: true,
     showPaused: false,
     rankMarkers: false,
-    labels,
     branchFirst: 0,
     windowHours: 168,
     staticSpan: [0, 100] as readonly [number, number],

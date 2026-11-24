@@ -341,8 +341,6 @@ export const equipmentProducedRaceDeclaration: BarsWidgetDeclaration<EquipmentPr
   icon: 'layers',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
     everyOnTop: true,
   },

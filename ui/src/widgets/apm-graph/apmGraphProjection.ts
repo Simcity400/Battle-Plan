@@ -374,10 +374,7 @@ export const apmGraphDeclaration: TimeChartWidgetDeclaration<ApmGraphOptions, Ap
   icon: 'chart-line',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSingleSlot: true,
-    allTagsForLabels: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group',
   },
   aux: {

@@ -15,7 +15,7 @@ import {
   type HourRanges,
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
-import { identityCell, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { identityCell, LOADING_NAME, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
@@ -108,7 +108,9 @@ interface ScoreboardIncCache {
 
 const scoreboardIncCache = new WeakMap<ScoreboardProjectionOptions, ScoreboardIncCache>();
 
-const nameOf = (cell: TableCell, tag: string): string => (cell.value.kind === 'known' ? String(cell.value.value) : tag);
+const countryColourOf = (cell: TableCell): { readonly countryColor?: string } => (cell.countryColor ? { countryColor: cell.countryColor } : {});
+
+const nameOf = (cell: TableCell, tag: string): string => (cell.value.kind === 'known' ? String(cell.value.value) : cell.loading ? LOADING_NAME : tag);
 
 function identityStamp(readView: BoundedReadView, entries: readonly { readonly displayTag: string }[], hour: number): string {
   return entries.map(entry => {
@@ -128,12 +130,13 @@ function buildScoreboardRow(
   const cells: Record<string, TableCell> = {
     country: identityCell(readView, 'country', displayTag, { atHour: hour, boundary }),
   };
+  const colour = countryColourOf(cells.country!);
   let hasPartial = false;
   for (let i = 0; i < options.shown.length; i++) {
     const column = options.shown[i]!;
     const format = columnFormat(column);
     if (!column.available || !column.family) {
-      cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: displayTag };
+      cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: displayTag, ...colour };
       continue;
     }
     const answer = readView.answer(column.key);
@@ -149,7 +152,7 @@ function buildScoreboardRow(
       value = partialValue(base.value, 'Some inputs were not recorded at this hour');
       hasPartial = true;
     }
-    cells[column.key] = { value, format, country: displayTag };
+    cells[column.key] = { value, format, country: displayTag, ...colour };
   }
   return {
     key,
@@ -218,6 +221,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         const cells: Record<string, TableCell> = {
           country: identityCell(readView, 'country', row.tag, { atHour: reply.hour }),
         };
+        const colour = countryColourOf(cells.country!);
         let hasPartial = false;
         options.shown.forEach((column, at) => {
           const rawCell = row.cells[at]!;
@@ -230,7 +234,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
               { partial: rawCell.partial ? 'Some inputs were not recorded at this hour' : null },
             );
           if (value.kind === 'partial') hasPartial = true;
-          cells[column.key] = { value, format, country: row.tag };
+          cells[column.key] = { value, format, country: row.tag, ...colour };
         });
         return {
           key,
@@ -563,8 +567,6 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
   className: 'scoreboard',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',

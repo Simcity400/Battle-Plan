@@ -153,7 +153,7 @@ export const decryptionDeclaration: MeterWidgetDeclaration<DecryptionFilterOptio
   subject: 'decryption',
   emptyCampaign: 'Load a campaign to see its decryption races.',
   icon: 'lock',
-  countries: { mode: 'filter', labels: true, colours: true },
+  countries: { mode: 'filter' },
   sources: decryptionSources,
   projection: decryptionProjection,
   projectionOptions: decryptionFilterOptions,

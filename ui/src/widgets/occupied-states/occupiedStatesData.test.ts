@@ -94,7 +94,7 @@ test('missing garrison and unresolved manpower report notRecorded with source re
   };
   const model = occupiedStatesProjection.project(
     createBoundedReadView({ hour: 50, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }),
-    { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true },
+    { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', lawAs: 'dot', filterAll: true },
   );
   const s1 = model.rows.find(r => r.key === '1')!;
   assert.deepEqual(s1.cells.garrison!.value, { kind: 'notRecorded', reason: 'No state garrisons row at this hour' });

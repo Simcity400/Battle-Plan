@@ -1,4 +1,3 @@
-import type { CountryLooksMap } from './looks.ts';
 import type {
   BoundedReadView,
   CompiledFollowSubscription,
@@ -76,8 +75,6 @@ export interface FamilyTheme {
   fontSize: { small: number; body: number };
   lineWidth: number;
   hatchSpacing: number;
-  country?: Readonly<Record<string, string>>;
-  countryLooks?: CountryLooksMap;
 }
 
 export interface FamilyProjection<TModel, TOptions> {

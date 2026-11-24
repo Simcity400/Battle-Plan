@@ -54,7 +54,6 @@ test('game-score projection resolves slot tag runs at the projected hour and hon
     ],
     rankMarkers: false,
     cellBars: false,
-    labels: { GER: [{ from: 0, name: 'Germany' }], GDR: [{ from: 105, name: 'East Germany' }] },
   };
   const at40 = gameScoreProjection.project(createBoundedReadView({ hour: 40, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }), opts);
   assert.deepEqual(at40.rows.map(r => r.key), ['GER'], 'slot 7 resolves to GER before tag switch at 105');

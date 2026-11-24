@@ -383,7 +383,7 @@ export const raidLogDeclaration: TableWidgetDeclaration<RaidLogProjectionOptions
   subject: 'raids',
   emptyCampaign: 'Load a campaign to see its raid log.',
   icon: 'target',
-  countries: { mode: 'filter', labels: true },
+  countries: { mode: 'filter' },
   columns: RAID_LOG_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {
