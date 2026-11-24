@@ -29,37 +29,10 @@ import { CHART_MEASURE_COLOURS } from '../charts/palette.ts';
 import { niceStep } from '../charts/valueAxis.ts';
 import { contrast, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
-import type { KitRaster, PathBuilder, PathPaint } from './path';
 
 export type Align = 'left' | 'right' | 'center';
 type Baseline = 'top' | 'middle' | 'bottom' | 'alphabetic';
 export interface LabelStyle { font: string; fill: string; align: Align; baseline: Baseline; squeeze?: boolean }
-
-export interface Kit {
-  begin(width: number, height: number, background?: string): void;
-  rect(x: number, y: number, width: number, height: number, fill: string, radius?: number): void;
-  rule(x0: number, y0: number, x1: number, y1: number, stroke: string, width?: number): void;
-  area(xs: ArrayLike<number>, highs: ArrayLike<number>, lows: ArrayLike<number>, count: number, fill: string, outline?: string): void;
-  line(xs: ArrayLike<number>, ys: ArrayLike<number>, count: number, stroke: string, width: number): void;
-  label(text: string, x: number, y: number, style: LabelStyle, maxWidth?: number): number;
-  measure(text: string, font: string): number;
-  icon(key: string, x: number, y: number, width: number, height: number): boolean;
-  fade(alpha: number): void;
-  dashed(pattern: readonly number[]): void;
-  desaturate(): void;
-  clip(x: number, y: number, width: number, height: number): void;
-  newPath(): PathBuilder;
-  clipPath(path: PathBuilder): void;
-  path(path: PathBuilder, paint: PathPaint): void;
-  erase(x: number, y: number, width: number, height: number): void;
-  raster(raster: KitRaster, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
-  readonly pixelRatio: number;
-  save(): void;
-  restore(): void;
-  place?(axes: Placement): void;
-  when?(span: readonly [number, number] | null): void;
-  pulse?(x: number, y: number, size: number, fill: string): void;
-}
 
 export type Placement = 'pixel' | 'x' | 'y' | 'xy';
 
@@ -829,12 +802,13 @@ export function drawLegendEntry(
     readonly dash?: readonly number[];
     readonly hatch?: boolean;
     readonly outlined?: boolean;
+    readonly swatch?: 'line' | 'square';
     readonly flag?: FlagSlotState;
     readonly maxWidth?: number;
     readonly muted?: boolean;
   },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const isLine = Boolean(options?.line || options?.dash?.length);
+  const isLine = Boolean(options?.line || options?.swatch === 'line' || options?.dash?.length);
   const swatchW = isLine ? 14 : options?.hatch ? 10 : 9;
   const gap = 6;
   let cursor = x;
@@ -1934,6 +1908,7 @@ export interface LegendStripEntry {
   readonly dash?: readonly number[];
   readonly hatch?: boolean;
   readonly outlined?: boolean;
+  readonly swatch?: 'line' | 'square';
   readonly flag?: FlagSlotState;
   readonly muted?: boolean;
 }
@@ -1954,7 +1929,7 @@ export interface LegendStripSpec {
 }
 
 function measureLegendEntryWidth(ctx: Canvas2D, entry: LegendStripEntry): number {
-  const isLine = Boolean(entry.line || entry.dash?.length);
+  const isLine = Boolean(entry.line || entry.swatch === 'line' || entry.dash?.length);
   const gap = 6;
   let width = 0;
   if (entry.hatch) width += 10 + gap;
@@ -1975,6 +1950,7 @@ function drawEntryItem(
 ): number {
   return drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color ?? '', theme, {
     ...(entry.line ? { line: true } : {}),
+    ...(entry.swatch ? { swatch: entry.swatch } : {}),
     ...(entry.dash?.length ? { dash: entry.dash } : {}),
     ...(entry.hatch ? { hatch: true } : {}),
     ...(entry.outlined ? { outlined: true } : {}),

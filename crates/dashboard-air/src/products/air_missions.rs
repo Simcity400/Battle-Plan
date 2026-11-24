@@ -100,10 +100,6 @@ pub struct AirMissionsReply {
     #[doc = " The missions any region records, in bit order."]
     pub missions: Vec<AirMissionChoice>,
     pub regions: Vec<AirMissionRegion>,
-    #[doc = " The owner's theatres, in the game's order; none where membership is not known."]
-    pub theatres: Option<Vec<AirMissionTheatre>>,
-    #[doc = " Why the theatres are not known at the hour."]
-    pub theatres_missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -194,7 +190,6 @@ pub(crate) fn reply(
     counts: io::Result<&[AirMissionCountRow]>,
     slot: u32,
     read_hour: Option<i32>,
-    theatres: Result<Vec<AirMissionTheatre>, String>,
     names: &Names,
     live: &Cells,
 ) -> io::Result<AirMissionsReply> {
@@ -247,11 +242,7 @@ pub(crate) fn reply(
     if let Err(why) = &names.regions {
         warnings.push(why.clone());
     }
-    let (theatres, theatres_missing) = match theatres {
-        Ok(theatres) => (Some(theatres), None),
-        Err(why) => (None, Some(why)),
-    };
-    Ok(AirMissionsReply { read_hour, missing, missions, regions, theatres, theatres_missing, warnings })
+    Ok(AirMissionsReply { read_hour, missing, missions, regions, warnings })
 }
 
 fn slots_of(rows: &[CountryLinkRow]) -> BTreeMap<u32, u32> {
@@ -369,7 +360,7 @@ impl AtHour for AirMissionsAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![AirMissionsParams::decl(), AirMissionsReply::decl(), AirMissionChoice::decl(), AirMissionRegion::decl(), AirMissionTheatre::decl()]
+        vec![AirMissionsParams::decl(), AirMissionsReply::decl(), AirMissionChoice::decl(), AirMissionRegion::decl()]
     }
 
     fn owner(params: &Self::Params) -> Option<&Country> {
@@ -377,32 +368,16 @@ impl AtHour for AirMissionsAt {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        vec![
-            TableId::AirMissionCounts,
-            TableId::AirRegionalMissions,
-            TableId::AirTheatres,
-            TableId::AirTheatreGroups,
-            TableId::AirTheatreMembers,
-            TableId::CountryLinks,
-            TableId::AirWings,
-        ]
+        vec![TableId::AirMissionCounts, TableId::AirRegionalMissions]
     }
 
-    fn reads(_params: &Self::Params, owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
-        let Some(owner) = owner else { return Vec::new() };
-        match step {
-            0 => {
-                let low = u128::from(owner.slot) << 32;
-                let mut reads = vec![
-                    Read { table: TableId::AirMissionCounts, keys: Keys::Range(low, low | u128::from(u32::MAX)) },
-                    Read { table: TableId::AirRegionalMissions, keys: Keys::These(Vec::new()) },
-                ];
-                reads.extend(THEATRE_TABLES.into_iter().map(Read::all));
-                reads
-            }
-            1 => theatre_wings(held, owner.slot).into_iter().collect(),
-            _ => Vec::new(),
-        }
+    fn reads(_params: &Self::Params, owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
+        let (Some(owner), 0) = (owner, step) else { return Vec::new() };
+        let low = u128::from(owner.slot) << 32;
+        vec![
+            Read { table: TableId::AirMissionCounts, keys: Keys::Range(low, low | u128::from(u32::MAX)) },
+            Read { table: TableId::AirRegionalMissions, keys: Keys::These(Vec::new()) },
+        ]
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -412,7 +387,6 @@ impl AtHour for AirMissionsAt {
     fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Air missions country is unavailable at this hour"))?;
         let read_hour = frame.tables[TableId::AirRegionalMissions.index()].sampled_at();
-        let theatres = theatres_at(frame, owner.slot, &at.context.catalogue);
-        reply(frame.complete::<tables::AirMissionCounts>(), owner.slot, read_hour, theatres, at.context, at.live)
+        reply(frame.complete::<tables::AirMissionCounts>(), owner.slot, read_hour, at.context, at.live)
     }
 }
