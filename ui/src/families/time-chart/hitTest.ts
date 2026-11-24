@@ -3,7 +3,7 @@ import type { FamilyTooltipEntry, TooltipListItem } from '../host/tooltips.ts';
 import type { BoundedSeries } from '../plan.ts';
 import { formatDateOnly, formatRational, formatRecordedPercent, formatScalar, formatShare, formatShareRatio, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
-import { seriesLookAt, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
+import { seriesLookAt, type ChartValueFormat, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 
 export type ParsedChartInspect =
   | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
@@ -229,34 +229,29 @@ export function hitTestTimeChart(
   return `plot:${clampedHour}`;
 }
 
-function formatExactFigure(value: number, model: TimeChartModel, raw?: bigint, denominator?: bigint, isTotal = false): string {
+function formatExactFigure(value: number, model: TimeChartModel, format: ChartValueFormat, raw?: bigint, denominator?: bigint): string {
   if (raw !== undefined && denominator !== undefined) {
-    if (model.yAxis.format === 'percent') {
-      if (!isTotal && model.mode === 'stack' && model.stack?.valueKind !== 'recorded') {
-        return raw < 0n
-          ? formatRational(raw, denominator, { maxDecimals: 1, percent: true })
-          : formatShareRatio(raw, denominator * 100n);
-      }
-      return formatRational(raw, denominator, { maxDecimals: 5, percent: true });
+    if (format === 'share') return formatShareRatio(raw, denominator * 100n);
+    if (format === 'percent' || format === 'signedPercent') {
+      return formatRational(raw, denominator, { maxDecimals: 5, percent: true, signed: format === 'signedPercent' });
     }
-    if (model.yAxis.format === 'signed1') {
+    if (format === 'signed1') {
       if (raw === 0n) return '0';
       return formatRational(raw, denominator, { maxDecimals: 2, signed: true });
     }
     const decimals = model.yAxis.decimals ?? 0;
     const absWhole = (raw < 0n ? -raw : raw) / denominator;
-    if (decimals > 0 && (model.yAxis.format === 'number' || absWhole < 1000n)) {
+    if (decimals > 0 && (format === 'number' || absWhole < 1000n)) {
       return formatRational(raw, denominator, { maxDecimals: decimals });
     }
     return formatRational(raw, denominator, { maxDecimals: 0 });
   }
-  if (model.yAxis.format === 'percent') {
-    return !isTotal && model.mode === 'stack' && model.stack?.valueKind !== 'recorded'
-      ? formatShare(value / 100)
-      : formatRecordedPercent(value);
+  if (format === 'share') return formatShare(value / 100);
+  if (format === 'percent' || format === 'signedPercent') {
+    return formatRecordedPercent(value, { signed: format === 'signedPercent' });
   }
-  if (model.yAxis.format === 'signed1') {
-    if (Math.abs(value) < 1e-9) return '0';
+  if (format === 'signed1') {
+    if (value === 0) return '0';
     return formatScalar(value, { decimals: 0, maxDecimals: 2, signed: true });
   }
   const decimals = model.yAxis.decimals ?? 0;
@@ -282,7 +277,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
       const totalVal = model.stack.total?.values[at];
       const totalExact = model.stack.total?.exact?.[at];
       const totalItem: TooltipListItem | null = totalVal !== null && totalVal !== undefined && Number.isFinite(totalVal)
-        ? { label: model.measureTitle, value: formatExactFigure(totalVal, model, totalExact?.raw, totalExact?.denominator, true), strong: true }
+        ? { label: model.measureTitle, value: formatExactFigure(totalVal, model, model.yAxis.format, totalExact?.raw, totalExact?.denominator), strong: true }
         : null;
       for (const band of model.stack.bands) {
         if (only !== undefined && band.id !== only) continue;
@@ -294,7 +289,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
           sortVal: v,
           item: {
             label: band.name,
-            value: formatExactFigure(v, model, bandExact?.raw, bandExact?.denominator),
+            value: formatExactFigure(v, model, model.stack.bandFormat ?? model.yAxis.format, bandExact?.raw, bandExact?.denominator),
             swatch: band.color,
             ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           },
@@ -332,7 +327,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
             sortVal: s.exact.value,
             item: {
               label: look.name,
-              value: formatExactFigure(s.exact.value, model, s.exact.raw, s.exact.denominator),
+              value: formatExactFigure(s.exact.value, model, model.yAxis.format, s.exact.raw, s.exact.denominator),
               swatch: negative ? CHART_MEASURE_COLOURS.shortInk : look.color,
               tone: negative ? 'negative' : undefined,
               ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
@@ -373,7 +368,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
         continue;
       }
       const text = sampled.exact || sampled.min === sampled.max
-        ? formatExactFigure(sampled.value, model, sampled.raw, sampled.denominator)
+        ? formatExactFigure(sampled.value, model, model.yAxis.format, sampled.raw, sampled.denominator)
         : `${formatChartAxisValue(sampled.min, model.yAxis.format)}\u2013${formatChartAxisValue(sampled.max, model.yAxis.format)}`;
       entries.push({
         sortVal: sampled.value,

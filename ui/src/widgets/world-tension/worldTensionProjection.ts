@@ -83,14 +83,12 @@ function exactBandRational(
 
 function formatEndPct(value: number, mode: 'share' | 'recorded', exact: ChartExactRational | null): string {
   if (exact) {
-    if (mode === 'share') {
-      return exact.raw < 0n
-        ? formatRational(exact.raw, exact.denominator, { maxDecimals: 5, percent: true })
-        : formatShareRatio(exact.raw, exact.denominator * 100n);
+    if (mode === 'share' && exact.raw >= 0n && exact.raw <= exact.denominator * 100n) {
+      return formatShareRatio(exact.raw, exact.denominator * 100n);
     }
     return formatRational(exact.raw, exact.denominator, { maxDecimals: 5, percent: true });
   }
-  return mode === 'share' ? formatShare(value / 100) : formatRecordedPercent(value);
+  return mode === 'share' && value >= 0 && value <= 100 ? formatShare(value / 100) : formatRecordedPercent(value);
 }
 
 function formatTotalPct(value: number, exact: ChartExactRational | null): string {
@@ -464,8 +462,8 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       stack: {
         hours: reply.hours,
         bands: orderedBands,
+        bandFormat: 'signedPercent',
         step: true,
-        valueKind: options.values,
         total: {
           color: CHART_MEASURE_COLOURS.lightInk,
           values: reply.total,

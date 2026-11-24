@@ -280,6 +280,40 @@ describe('world-tension projections', () => {
     assert.ok(gapLines.series.every(s => s.endLabel === null), 'lines omit end labels during a gap');
   });
 
+  it('R2-K1: hovering a stack prints each figure by its kind: a recorded -2% contribution and an uncapped 125% total, in both value modes', () => {
+    const at = H1936 + 5000;
+    const reply: WorldTensionStackReply = {
+      ...sampleStack(),
+      endHour: at,
+      cappedEndTension: 100,
+      hours: [H1936, at],
+      total: [0, 125],
+      bands: [
+        { slot: 1, tag: 'GER', remembered: false, values: [0, 127], minValues: [], maxValues: [], endValue: 127, endRaw: '12700000' },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, -2], minValues: [], maxValues: [], endValue: -2, endRaw: '-200000' },
+      ],
+      other: null,
+      events: [],
+      nextChangeHour: null,
+    };
+    for (const values of ['recorded', 'share'] as const) {
+      const model = worldTensionProjection.project(
+        createBoundedReadView({ hour: at, panels: new Map([['main', reply]]), identity: makeIdentity() }),
+        { extent: [H1936, at], surface: '#111111', layers: 5, values, showMarkers: false, gaps: [] },
+      );
+      const layout = layoutTimeChart(model, 960, 280, 'Segoe UI', measure);
+      const ger = layout.endLabels.find(l => l.seriesId === 'slot:1')!;
+      const labelTip = deriveTimeChartTooltip(model, layout, hitTestTimeChart(model, layout, [ger.x + 10, ger.y]));
+      assert.deepEqual((labelTip?.payload?.items ?? []).map(item => [item.label, item.value]), [['German Reich', '+127%']], values);
+      const plotTip = deriveTimeChartTooltip(model, layout, `plot:${at}`);
+      assert.deepEqual((plotTip?.payload?.items ?? []).map(item => [item.label, item.value]), [
+        ['World tension', '125%'],
+        ['German Reich', '+127%'],
+        ['Japan', '−2%'],
+      ], values);
+    }
+  });
+
   it('S10: stack hover reads same-hour events from the hovered-hour world-tension reply, not later playhead revisions', () => {
     const hoverHour = H1936 + 5000;
     const reply: WorldTensionStackReply = {
@@ -410,7 +444,7 @@ describe('world-tension projections', () => {
     const exactLayout = layoutTimeChart(exactModel, 720, 260, 'Segoe UI', measure);
     const exactTip = deriveTimeChartTooltip(exactModel, exactLayout, `plot:${hoverHour}`);
     const exactItem = exactTip?.payload?.items?.find(i => i.label === 'German Reich');
-    assert.equal(exactItem?.value, '35%', 'exact hover overrides downsampled range with slot exact contribution');
+    assert.equal(exactItem?.value, '+35%', 'exact hover overrides downsampled range with the signed slot contribution');
 
     const plan = worldTensionLinesDeclaration.sources({
       track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
@@ -547,39 +581,36 @@ describe('world-tension projections', () => {
   });
 
   it('formats total, band shares, Other, lines, tooltips, and audit from raw integers without float drift', () => {
+    const driftFloat = (145 / 700) * 70;
     const shareReply = {
       ...sampleStack(),
-      cappedEndTension: 100,
-      cappedEndTensionRaw: '100000',
-      endTotalRaw: '100000',
-      endSumRaw: '10000000',
+      cappedEndTension: 70,
+      cappedEndTensionRaw: '70000',
+      endTotalRaw: '70000',
+      endSumRaw: '700',
       hours: [H1936, H1941],
-      total: [0, 100],
-      totalRaw: ['0', '100000'],
-      sumRaw: ['0', '10000000'],
+      total: [0, 70],
+      totalRaw: ['0', '70000'],
+      sumRaw: ['0', '700'],
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, 14.5], valuesRaw: ['0', '1450000'], minValues: [], maxValues: [], endValue: 14.5, endRaw: '1450000' },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, 2.85], valuesRaw: ['0', '285000'], minValues: [], maxValues: [], endValue: 2.85, endRaw: '285000' },
-        { slot: 3, tag: 'ITA', remembered: false, values: [0, 68.15], valuesRaw: ['0', '6815000'], minValues: [], maxValues: [], endValue: 68.15, endRaw: '6815000' },
+        { slot: 1, tag: 'GER', remembered: false, values: [0, driftFloat], valuesRaw: ['0', '145'], minValues: [], maxValues: [], endValue: driftFloat, endRaw: '145' },
+        { slot: 2, tag: 'JAP', remembered: false, values: [0, 41], valuesRaw: ['0', '410'], minValues: [], maxValues: [], endValue: 41, endRaw: '410' },
       ],
-      other: { count: 4, values: [0, 14.5], valuesRaw: ['0', '1450000'], endValue: 14.5, endRaw: '1450000' },
+      other: { count: 4, values: [0, driftFloat], valuesRaw: ['0', '145'], endValue: driftFloat, endRaw: '145' },
       events: [],
     } as unknown as WorldTensionStackReply;
     const shareModel = worldTensionProjection.project(
       createBoundedReadView({ hour: H1941, panels: new Map([['main', shareReply]]), identity: makeIdentity() }),
       { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'share', showMarkers: false, gaps: [] },
     );
-    assert.equal(shareModel.stack?.bands[0]?.endLabel?.value, '15%', '14.5% band share prints 15%, not float 14%');
-    assert.equal(shareModel.stack?.bands[1]?.endLabel?.value, '2.9%', '2.85% band share prints 2.9%, not float 2.8%');
-    assert.equal(shareModel.stack?.bands.at(-1)?.endLabel?.value, '15%', '14.5% Other share prints 15%, not float 14%');
+    assert.equal(shareModel.stack?.bands[0]?.endLabel?.value, '15%', '145/700 of 70% is exact 14.5% -> 15%, not float 14.499999999999998 -> 14%');
+    assert.equal(shareModel.stack?.bands.at(-1)?.endLabel?.value, '15%', 'Other 145/700 of 70% prints 15%, not float 14%');
     assert.equal(shareModel.auditRows?.find(r => r.row === 'slot:1')?.value, '15%');
-    assert.equal(shareModel.auditRows?.find(r => r.row === 'slot:2')?.value, '2.9%');
     assert.equal(shareModel.auditRows?.find(r => r.row === 'other')?.value, '15%');
     const shareLayout = layoutTimeChart(shareModel, 960, 280, 'Segoe UI', measure);
     const shareTip = deriveTimeChartTooltip(shareModel, shareLayout, 'label:__total__');
-    assert.equal(shareTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '15%');
-    assert.equal(shareTip?.payload?.items?.find(i => i.label === 'Japan')?.value, '2.9%');
-    assert.equal(shareTip?.payload?.items?.find(i => i.label === 'Other (4)')?.value, '15%');
+    assert.equal(shareTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '+14.5%');
+    assert.equal(shareTip?.payload?.items?.find(i => i.label === 'Other (4)')?.value, '+14.5%');
 
     const bigRaw = '999999999999999999';
     const bigFloat = Number(bigRaw) / 100_000;
@@ -611,7 +642,7 @@ describe('world-tension projections', () => {
     const recLayout = layoutTimeChart(recModel, 960, 280, 'Segoe UI', measure);
     const recTip = deriveTimeChartTooltip(recModel, recLayout, 'label:__total__');
     assert.equal(recTip?.payload?.items?.[0]?.value, '9,999,999,999,999.99999%');
-    assert.equal(recTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '9,999,999,999,999.99999%');
+    assert.equal(recTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '+9,999,999,999,999.99999%');
 
     const linesModel = worldTensionLinesProjection.project(
       createBoundedReadView({ hour: H1941, panels: new Map([['main', recReply]]), identity: makeIdentity() }),
@@ -619,5 +650,8 @@ describe('world-tension projections', () => {
     );
     assert.equal(linesModel.series[0]?.endLabel?.value, '9,999,999,999,999.99999%');
     assert.equal(linesModel.auditRows?.find(r => r.row === 'slot:1')?.value, '9,999,999,999,999.99999%');
+    const linesLayout = layoutTimeChart(linesModel, 960, 280, 'Segoe UI', measure);
+    const linesTip = deriveTimeChartTooltip(linesModel, linesLayout, `plot:${H1941}`);
+    assert.equal(linesTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '+9,999,999,999,999.99999%');
   });
 });
