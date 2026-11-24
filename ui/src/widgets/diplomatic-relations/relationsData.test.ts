@@ -6,7 +6,7 @@ import { opinionDomain, opinionIndex, opinionText, orderCountries, pairHolders, 
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { NO_ROW, NOT_READ } from '../../dashboard/follow/liveCells.ts';
 
-const reply: DiplomaticRelationsReply = { warnings: [], owners: [
+const reply: DiplomaticRelationsReply = { warnings: [], cells: [], domain: [0, 0], owners: [
   { tag: 'A', countryId: 1, known: true, reason: null },
   { tag: 'B', countryId: 2, known: false, reason: 'Not read' },
   { tag: 'C', countryId: 3, known: true, reason: null },

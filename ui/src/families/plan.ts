@@ -20,8 +20,7 @@ import type { CountryLooksMap } from './looks.ts';
 import type { DatedLogRow, LogTailQuery, TableRowSource } from './table/rowSource.ts';
 import type { Value } from './value.ts';
 
-export type KnownFamilyId = 'table' | 'race' | 'series' | 'log' | 'timeline' | 'parts' | 'pairs' | 'meters' | 'bars' | 'heat' | 'graph' | 'map';
-export type FamilyId = KnownFamilyId | (string & {});
+export type FamilyId = string;
 
 declare const DISPLAYED_HOUR: unique symbol;
 export type DisplayedHour = number & { readonly [DISPLAYED_HOUR]: 'displayed' };
@@ -174,6 +173,7 @@ export interface BoundedSeries {
   readonly straddling: 'none' | 'cut' | 'loading';
   readonly headValue?: Value;
   readonly missing: BoundedSlice<MissingSpan>;
+  readonly approximate?: BoundedSlice<{ readonly firstHour: number; readonly lastHour: number }>;
   readonly marks: BoundedSlice<MarkCluster>;
   readonly validInterval: readonly [lo: number, hi: number];
 }

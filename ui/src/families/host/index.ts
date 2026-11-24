@@ -28,7 +28,9 @@ export {
 export {
   bindFamilyPointer,
   CLICK_CANCEL_PX,
+  clientPointToInstalled,
   parseDefaultRowHit,
+  resolveInstalledAction,
   type FamilyPointerBindingOptions,
   type FamilyPointerHit,
 } from './pointer.ts';
@@ -43,6 +45,7 @@ export {
 export {
   attachAuditWatch,
   createBoundAuditReader,
+  createPlanAuditVerifier,
   mountFamilyCanvas,
   reportFamilyShownHour,
   useFamilyAnnouncer,
@@ -60,6 +63,7 @@ export {
   type FamilyPlacementHandle,
   type FamilyPlacementOptions,
   type MountedFamilyCanvas,
+  type PlanAuditSnapshot,
 } from './surface.ts';
 export { reducedMotionEnabled, sameFamilyTheme, useFamilyTheme } from './theme.ts';
 export {

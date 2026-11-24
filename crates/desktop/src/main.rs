@@ -2,6 +2,7 @@
 
 mod dashboard_service;
 mod follow_push;
+mod game_windows;
 mod leaving;
 mod pull;
 mod native;
@@ -80,10 +81,18 @@ fn select_native_view(host: State<'_, NativeHost>, dashboard: bool) -> Result<()
 fn map_action(
     host: State<'_, NativeHost>,
     popouts: State<'_, popout::PopOuts>,
+    game_windows: State<'_, game_windows::GameWindows>,
     action: dashboard_core::protocol::MapAction,
 ) -> Result<(), String> {
     if matches!(action, dashboard_core::protocol::MapAction::Folders { .. }) {
         return Err("Set the content folders in Settings".into());
+    }
+    if matches!(
+        action,
+        dashboard_core::protocol::MapAction::RefreshVisualMods
+            | dashboard_core::protocol::MapAction::MapSettingsSaved
+    ) {
+        game_windows.clear_cache();
     }
     host.map_action(action.clone())?;
     popouts.mirror(&action);
@@ -631,6 +640,7 @@ fn main() {
         .manage(NativeHost::default())
         .manage(popout::PopOuts::default())
         .manage(DashboardService::default())
+        .manage(game_windows::GameWindows::default())
         .manage(follow_push::FollowPush::default())
         .manage(Leaving::default())
         .invoke_handler({
@@ -687,6 +697,8 @@ fn main() {
             dashboard_service::dashboard_map_settings,
             dashboard_service::dashboard_cancel,
             dashboard_service::dashboard_release_source,
+            game_windows::render_game_window,
+            game_windows::cancel_game_window,
             perf::perf_enabled,
             perf::perf_write,
             perf::perf_finished,

@@ -1,4 +1,5 @@
 import '../../widgets/familyManifest.ts';
+import { familyBarsLaneView } from '../../families/bars/laneView.ts';
 import type { LaneView, Painted, PaintInput, Scene } from '../lane.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';
 import { ArsenalPicture, arsenalNext, type ArsenalModel } from '../arsenal.ts';
@@ -86,6 +87,7 @@ function race(wake: (widget: number) => void): LaneView {
 export function drawnViews(kind: string, wake: (widget: number) => void): LaneView | undefined {
   if (kind === 'panel') return panelTexts();
   if (kind === 'table') return tableView(readingStructure, wake);
+  if (kind === 'bars') return familyBarsLaneView(wake);
   if (kind === 'race') return race(wake);
   return undefined;
 }
