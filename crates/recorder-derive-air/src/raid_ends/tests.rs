@@ -28,7 +28,19 @@ fn feed(store: &mut Store, hour: i32, raids: &[Raid], status: Status, controller
     store.begin_hour(hour, if hour == 0 { &[b"x"] } else { &[] }).unwrap();
     let rows: Vec<RaidRow> = raids
         .iter()
-        .map(|raid| RaidRow { id: raid.id, reference_type: REFERENCE, parent_slot: raid.raider, phase: raid.phase, outcome: raid.outcome, travelled: raid.travelled, preparation_hours: 3, ..Default::default() })
+        .map(|raid| RaidRow {
+            id: raid.id,
+            reference_type: REFERENCE,
+            parent_slot: raid.raider,
+            phase: raid.phase,
+            outcome: raid.outcome,
+            travelled: raid.travelled,
+            preparation_hours: 3,
+            end_hour: (raid.phase == ENDED).then_some(hour),
+            completion_country: (raid.phase == ENDED).then_some(100),
+            completion_recorded: RaidRow::END_HOUR_RECORDED | RaidRow::COMPLETION_COUNTRY_RECORDED,
+            ..Default::default()
+        })
         .collect();
     let targets: Vec<RaidTargetRow> = raids
         .iter()
@@ -136,6 +148,7 @@ fn an_end_row_carries_the_raids_last_state_and_its_target() {
     let slot = view.slot(RaidEndRow::key_of(2, u128::from(1_u32) << 32 | u128::from(REFERENCE))).unwrap();
     let number = |column: usize| view.number(column, slot);
     assert_eq!([5, 7, 8, 9, 10, 11, 19].map(number), [Some(9), Some(i64::from(OUTCOME_SUCCESS)), Some(800), Some(3), Some(10), Some(0), Some(41)]);
+    assert_eq!([24, 25, 26].map(number), [Some(2), Some(100), Some(1)]);
 }
 
 #[test]

@@ -9,7 +9,7 @@ use replay_columnar::{
     manifest::Status,
     store::{Kept, TableView, Value as Held},
 };
-use replay_data::rows::{CountryLinkRow, ProvinceRow, RaidEndRow, RaidScope, StateRow, TableId, TagHolderRow};
+use replay_data::rows::{CountryLinkRow, ProvinceRow, RaidEndRow, RaidRow, RaidScope, StateRow, TableId, TagHolderRow};
 use std::{collections::HashMap, io};
 
 const PARENT_SLOT: usize = 0;
@@ -17,6 +17,9 @@ const PHASE: usize = 2;
 const OUTCOME: usize = 3;
 const TRAVELLED: usize = 16;
 const PREPARATION: usize = 17;
+const END_HOUR: usize = 18;
+const COMPLETION_COUNTRY: usize = 19;
+const COMPLETION_RECORDED: usize = 20;
 const COURSE: [usize; 2] = [PHASE, TRAVELLED];
 const TARGET: [(usize, Kind); 10] = [
     (0, Kind::U32),
@@ -177,6 +180,39 @@ impl<'a> Places<'a> {
         }
         cells.extend(target);
         cells.extend(victim);
+        let completion = match raid {
+            Some(raid) => {
+                let recorded = match raid.value(COMPLETION_RECORDED) {
+                    Held::Number(bits) => bits as u8,
+                    _ => 0,
+                };
+                let end_hour = if recorded & RaidRow::END_HOUR_RECORDED != 0 {
+                    match raid.value(END_HOUR) {
+                        Held::Number(bits) => Value::OptionalI32(Some(bits as i32)),
+                        Held::Missing => Value::OptionalI32(None),
+                        _ => Value::Unrecorded,
+                    }
+                } else {
+                    Value::Unrecorded
+                };
+                let (completion_country, completion_slot) = if recorded & RaidRow::COMPLETION_COUNTRY_RECORDED != 0 {
+                    match raid.value(COMPLETION_COUNTRY) {
+                        Held::Number(bits) => {
+                            let raw = bits as u32;
+                            let slot = Self::cell(&self.links, raw, LINK[0]).unwrap_or(TagHolderRow::NONE);
+                            (Value::OptionalU32(Some(raw)), Value::U32(slot))
+                        }
+                        Held::Missing => (Value::OptionalU32(None), Value::U32(TagHolderRow::NONE)),
+                        _ => (Value::Unrecorded, Value::Unrecorded),
+                    }
+                } else {
+                    (Value::Unrecorded, Value::Unrecorded)
+                };
+                [end_hour, completion_country, completion_slot]
+            }
+            None => [Value::Unrecorded; 3],
+        };
+        cells.extend(completion);
         out.set(TableId::RaidEnds, RaidEndRow::key_of(self.at, key), cells);
         Ok(())
     }
@@ -221,7 +257,7 @@ impl Writer for RaidEnds {
     }
 
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     fn tables(&self) -> &'static [Output] {
