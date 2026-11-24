@@ -263,6 +263,7 @@ impl TypeAtlas {
                             resources::NoTexture::Missing(_) => "texture is missing",
                             resources::NoTexture::TooLarge { .. } => "texture is too large",
                             resources::NoTexture::Undecodable { .. } => "texture is undecodable",
+                            resources::NoTexture::Unsupported { .. } => "texture format is unsupported",
                             resources::NoTexture::Undefined { .. } => "texture result is undefined",
                             resources::NoTexture::Device { .. } => "texture needs device state",
                             resources::NoTexture::OverBudget { .. } => "texture exceeds budget",
