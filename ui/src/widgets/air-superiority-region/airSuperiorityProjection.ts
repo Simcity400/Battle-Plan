@@ -1,7 +1,7 @@
 import { liveKey } from '../../charts/live.ts';
 import { authoredHex, CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { airMode, airParams, airPercent, airScore, validateAirSuperiority } from '../../dashboard/airSuperiority.ts';
-import { ADD_REGION_LABEL, mostActiveHeading, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
+import { ADD_REGION_LABEL, mostActiveHeading, noRegionsBody, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
 import { defaultCountryKey, selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
@@ -31,7 +31,10 @@ const AIR_REASONS: Readonly<Record<string, string>> = {
   'sides-not-recorded': 'Side membership was not recorded.',
   'identity-not-recorded': 'Countries unavailable.',
   'theatres-not-recorded': 'Air groups unavailable.',
+  'outside-theatres': 'Outside selected air theatres',
 };
+
+const NOT_APPLICABLE = new Set(['no-air-object', 'outside-theatres']);
 
 function resolveSideName(side: AirSide, readView: BoundedReadView): string {
   if (side.factions.length) {
@@ -102,7 +105,7 @@ function projectRegion(
   reply: AirSuperiorityReply,
   readView: BoundedReadView,
   options: AirSuperiorityProjectionOptions,
-): ShareRowEntry | null {
+): ShareRowEntry {
   const live = readView.live('main');
   const named = regionLabel(readView, region.id, region.name);
   const name = named.label;
@@ -112,9 +115,8 @@ function projectRegion(
   const baseTooltip: TooltipListItem[] = [];
 
   if (cell.kind === 'reason') {
-    if (cell.reason === 'outside-theatres') return null;
-    const reasonText = AIR_REASONS[cell.reason] ?? cell.reason;
-    const missing = cell.reason === 'no-air-object' ? notApplicable('No air data') : notRecorded(reasonText);
+    const reasonText = cell.reason === 'no-air-object' ? 'No air data' : AIR_REASONS[cell.reason] ?? cell.reason;
+    const missing = NOT_APPLICABLE.has(cell.reason) ? notApplicable(reasonText) : notRecorded(reasonText);
     return {
       key: String(region.id),
       subject: String(region.id),
@@ -405,29 +407,32 @@ export const airSuperiorityRegionProjection: BarsProjection<AirSuperiorityProjec
     const picked: ShareRowEntry[] = [];
     const automatic: ShareRowEntry[] = [];
     for (const region of reply.regions) {
-      const entry = projectRegion(region, reply, readView, options);
-      if (entry) (region.pinned ? picked : automatic).push({ ...entry, region: region.id });
+      (region.pinned ? picked : automatic).push({ ...projectRegion(region, reply, readView, options), region: region.id });
     }
 
-    const knownEmpty = reply.fallback.kind !== 'reason' && reply.regions.every(region => region.wings !== 'unknown');
-    const rows = [...picked, ...automatic];
+    const subject = options.mode === 'viewpoint' ? reply.viewpointCountryStyle?.name ?? null : null;
+    const empty = reply.empty
+      ? noRegionsBody(reply.empty, { one: 'active region', many: 'active regions', none: `No air activity${subject ? ` for ${subject}` : ''} at this date.` })
+      : null;
     return buildShareRowsModel({
       hour,
       picked,
       automatic,
       pickedHeading: PICKED_REGIONS_HEADING,
-      automaticHeading: mostActiveHeading(options.mode === 'viewpoint' ? reply.viewpointCountryStyle?.name ?? null : null),
+      automaticHeading: airAutomaticHeading(subject, options.order),
       addRegionLabel: ADD_REGION_LABEL,
-      ...(!rows.length
-        ? {
-            empty: knownEmpty ? 'No regions have a score or assigned wings at this time.' : 'Air activity is unknown at this time.',
-            emptyKind: knownEmpty ? 'empty' : 'unavailable',
-          }
-        : {}),
+      ...(empty ?? {}),
+      active: reply.activeUnlisted,
       warnings: reply.warnings,
     });
   },
 });
+
+function airAutomaticHeading(subject: string | null, order: AirRegionOrderOption): string {
+  if (order === 'active') return mostActiveHeading(subject);
+  const lead = order === 'contested' ? 'Most contested' : 'Active';
+  return subject ? `${lead} for ${subject}` : order === 'contested' ? lead : 'Active regions';
+}
 
 export interface AirSuperiorityAux {
   readonly enemyColor: string;

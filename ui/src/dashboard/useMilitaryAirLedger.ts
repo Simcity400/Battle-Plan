@@ -6,8 +6,7 @@ import { useGate } from './regionGate.ts';
 import { SPEC } from './regionTime.ts';
 import { windowOf, windowsOf } from './heldWindows.ts';
 import { useFrameWindows } from '../widgets/army-size/frameWindows.ts';
-import { airCauseName } from '../widgets/air-kills-losses/lossCauses.ts';
-import { validateMilitaryAirWindow } from './militaryAirLedger';
+import { ledgerCauseName, validateMilitaryAirWindow } from './militaryAirLedger';
 import { LedgerJoin, ledgerWindows } from './militaryAirJoin.ts';
 import type { LedgerReach } from './militaryAirJoin.ts';
 import type { MilitaryAirFamily, MilitaryAirMetric, MilitaryAirReply } from '../generated/dashboard';
@@ -55,6 +54,6 @@ export function useAirLossChoices(widget: WidgetSpec, runtime: WidgetRuntime): O
   return {
     regions: (data?.regions ?? []).map(region => ({ value: region.id, label: region.name ?? `Region ${region.id} (name not recorded)` })),
     causes: [...new Set(data?.parts.flatMap(part => part.cause === null ? [] : [part.cause]) ?? [])].sort((a, b) => a - b)
-      .map(cause => ({ value: String(cause), label: airCauseName(cause) })),
+      .map(cause => ({ value: String(cause), label: ledgerCauseName(data, cause) })),
   };
 }

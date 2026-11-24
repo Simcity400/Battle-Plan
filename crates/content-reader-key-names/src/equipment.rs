@@ -4,7 +4,7 @@ use content_reader_script::equipment_stats::{category_mask, STAT_COUNT, stat_ind
 mod design;
 mod families;
 mod validity;
-pub use families::{CategoryFamilies, ModularDesigner, category_families};
+pub use families::{CategoryFamilies, ModularDesigner, category_families, modular_categories};
 pub use validity::{Assignment, CountKey, ModuleCountLimit, ModuleValidity};
 mod groups;
 pub use design::{
@@ -1526,39 +1526,6 @@ impl Database {
 
     pub fn category(&self, equipment: &Equipment) -> u64 {
         normalize_category(self.primary_category(equipment) | equipment.module_category)
-    }
-
-    pub fn designer_families(&self, equipment: &Equipment) -> Result<[bool; 3], String> {
-        let groups = category_families()?;
-        let mut families = [false; 3];
-        let mut seen: Vec<usize> = Vec::new();
-        let mut current = equipment;
-        loop {
-            let mask = self.category(current);
-            for (family, bits) in families
-                .iter_mut()
-                .zip([groups.land, groups.air, groups.naval])
-            {
-                *family |= mask & bits != 0;
-            }
-            let Some(at) = current.archetype else {
-                break;
-            };
-            let next = &self.equipment[at];
-            if std::ptr::eq(current, next) {
-                break;
-            }
-            if seen.contains(&at) {
-                return Err(format!(
-                    "equipment {} reaches archetype {} again through its archetypes, so its designer families never finish",
-                    String::from_utf8_lossy(&equipment.name),
-                    String::from_utf8_lossy(&next.name)
-                ));
-            }
-            seen.push(at);
-            current = next;
-        }
-        Ok(families)
     }
 
     pub fn primary_category(&self, equipment: &Equipment) -> u64 {

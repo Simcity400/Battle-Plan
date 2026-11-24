@@ -396,7 +396,7 @@ impl<'a> ScriptedText<'a> {
         date_property_at(self.frame.hour(), name, |key| self.localise(key))
     }
 
-    pub(super) fn date_text(&self, hour: i32) -> Result<String, String> {
+    pub fn date_text(&self, hour: i32) -> Result<String, String> {
         date_text_at(hour, |key| self.localise(key))
     }
 }

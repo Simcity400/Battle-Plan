@@ -1,12 +1,11 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { projectForceAtMix, type ForceAtMixOptions } from '../../families/bars/forceAtMix.ts';
-import { validateForceAtReply } from '../../families/bars/forceAtRace.ts';
+import { forceAtSources, validateForceAtReply } from '../../families/bars/forceAtRace.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel } from '../../families/bars/shareRows.ts';
-import { nextSeriesRaceChange, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
-import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
+import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
+import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { AirForceMeasureOption, AirForceOwnershipOption } from './airForceSizeRaceProjection.ts';
 
 export interface AirForceSizeMixOptions extends ForceAtMixOptions {
@@ -20,15 +19,9 @@ const airOwnership = (value: unknown): AirForceOwnershipOption => (value === 'ef
 export const airForceSizeMixProjection: BarsProjection<AirForceSizeMixOptions> = registerFamilyProjection({
   kind: 'air-force-size',
   family: 'bars',
-  nextChange(readView, options) {
-    return nextSeriesRaceChange(readView.hour, { ...options, candidates: [] });
-  },
+  nextChange: () => Infinity,
   project(readView: BoundedReadView, options: AirForceSizeMixOptions): BarsModel {
     const hour = readView.hour;
-    const ranked = options.top != null || options.all === true;
-    if (!ranked && options.unobserved?.some(([first, last]) => first <= hour && hour <= last)) {
-      return buildShareRowsModel({ hour, rows: [], empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable' });
-    }
     const refused = readView.refused('main');
     if (refused) {
       return buildShareRowsModel({ hour, rows: [], empty: refused, emptyKind: 'unavailable' });
@@ -55,40 +48,10 @@ export const airForceSizeMixProjection: BarsProjection<AirForceSizeMixOptions> =
 function airForceSizeMixSources(ctx: FamilyPlanContext): SourcePlan {
   const measure = airMeasure(ctx.options.measure);
   const ownership = airOwnership(ctx.options.ownership);
-  const top = ctx.countries.top;
-  const all = ctx.countries.all;
-  const countries = top == null && !all ? ctx.countries.tags.map(countryFromKey) : [];
-  const coverage: SourceCoverage = top != null
-    ? { mode: 'population', form: 'top', limit: top }
-    : all
-      ? { mode: 'population', form: 'all' }
-      : { mode: 'keyed', keys: ctx.countries.tags };
-  const params = {
-    branchId: ctx.branch.id,
-    countries,
-    ...(top != null ? { top } : {}),
+  return forceAtSources(ctx, `air-force-size:mix:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${measure}:${ownership}`, 'air-force-at', {
     measure,
     ownership,
-  };
-  return {
-    owner: `air-force-size:mix:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${measure}:${ownership}`,
-    entries: top == null && !all && !countries.length ? [] : [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage,
-        product: 'air-force-at',
-        followQuery: { panel: 'air-force-at', ...params },
-        params,
-        validate: validateForceAtReply,
-      },
-    }],
-    allowEmptyFollow: top == null && !all && !countries.length,
-  };
+  });
 }
 
 export const airForceSizeMixDeclaration: BarsWidgetDeclaration<AirForceSizeMixOptions> = {
@@ -109,15 +72,10 @@ export const airForceSizeMixDeclaration: BarsWidgetDeclaration<AirForceSizeMixOp
   sources: airForceSizeMixSources,
   projection: airForceSizeMixProjection,
   projectionOptions: ctx => {
-    const ranked = ctx.countries.top != null || ctx.countries.all;
     return {
+      ...seriesRaceSelection(ctx),
       measure: airMeasure(ctx.options.measure),
       ownership: airOwnership(ctx.options.ownership),
-      holders: ranked ? null : ctx.countries.holders,
-      membership: ranked ? null : ctx.countries.membership,
-      unobserved: ranked ? [] : ctx.countries.unobserved,
-      top: ctx.countries.top,
-      all: ctx.countries.all,
     };
   },
   unavailable: seriesRaceUnavailable,

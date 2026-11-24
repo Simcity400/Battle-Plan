@@ -6,7 +6,8 @@ import type { AirSide, AirTimelineReply } from '../../generated/dashboard';
 import { askUnits } from '../../families/readUnits.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { FrozenGate } from '../../families/sources.ts';
-import { AIR_TILE_HOURS, airTimelineDeclaration, projectAirTimeline } from './airTimelineProjection.ts';
+import { DAY_PIECE_HOURS, DAY_TILE_HOURS } from '../../families/heat/dayTiles.ts';
+import { airTimelineDeclaration, projectAirTimeline } from './airTimelineProjection.ts';
 
 const SURFACE = '#161616';
 
@@ -45,6 +46,9 @@ function reply(lastHour: number, extra: Partial<AirTimelineReply> = {}): AirTime
     badBelow: 0,
     goodAbove: 0,
     warnings: [],
+    rankMissing: null,
+    empty: null,
+    activeUnlisted: { ids: [], missing: null },
     ...extra,
   };
 }
@@ -136,17 +140,18 @@ test('a hundred played hours ask each completed tile once, the current tile once
       if (unit.key !== null && unit.key !== keys.get(unit.name)) {
         if (unit.name === 'now') {
           nowAsks++;
-          const asked = (unit.spec!.request as unknown as { params: { firstHour: number; lastHour: number } }).params;
+          const asked = (unit.spec!.request as unknown as { params: { firstHour: number; lastHour: number; rankFrom?: unknown } }).params;
           widest = Math.max(widest, asked.lastHour - asked.firstHour + 1);
+          assert.equal(asked.rankFrom, undefined, 'the automatic regions are ranked at the displayed hour, never over the branch');
         } else tileAsks++;
       }
       keys.set(unit.name, unit.key);
     }
   }
-  const completedTiles = Math.ceil(24 * 1000 / AIR_TILE_HOURS);
-  assert.equal(tileAsks, completedTiles + 4, 'every tile up to today once, then the current tile at each of the four midnights');
+  const completedTiles = Math.ceil(24 * 1000 / DAY_TILE_HOURS);
+  assert.equal(tileAsks, Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8), 'every complete tile and every complete eight-day piece of the current tile once');
   assert.equal(nowAsks, 100);
-  assert.ok(widest <= 24, 'the hourly ask covers today only');
+  assert.ok(widest <= DAY_PIECE_HOURS, 'the hourly ask covers the current eight-day piece only');
 
   const visits = { cells: 0 };
   const counted = <T>(items: T[]): T[] => new Proxy(items, {
@@ -157,12 +162,12 @@ test('a hundred played hours ask each completed tile once, the current tile once
   });
   const sides = reply(0).sides;
   const cell = (friendly: string) => ({ kind: 'sides' as const, parts: [{ side: 0, tag: 'GER', friendly }, { side: 1, tag: 'ENG', friendly: '10' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, lead: { kind: 'leading' as const, side: 0, share_bp: 8000 } });
-  const tileDays = AIR_TILE_HOURS / 24;
+  const tileDays = DAY_TILE_HOURS / 24;
   const tiles = Array.from({ length: completedTiles - 1 }, (_, k): AirTimelineReply => ({
     ...reply(0),
-    firstHour: k * AIR_TILE_HOURS,
-    lastHour: (k + 1) * AIR_TILE_HOURS - 1,
-    days: Array.from({ length: tileDays }, (_, day) => k * AIR_TILE_HOURS + day * 24 + 23),
+    firstHour: k * DAY_TILE_HOURS,
+    lastHour: (k + 1) * DAY_TILE_HOURS - 1,
+    days: Array.from({ length: tileDays }, (_, day) => k * DAY_TILE_HOURS + day * 24 + 23),
     sides,
     rows: Array.from({ length: 7 }, (_, region) => ({
       region, name: `Region ${region}`, nameMissing: null, pinned: false,
@@ -186,4 +191,59 @@ test('a hundred played hours ask each completed tile once, the current tile once
     assert.equal(model.firstHour, 0);
   }
   assert.equal(visits.cells, tiles.length * 7 * tileDays, 'each history cell is read once over a hundred hours, not once an hour');
+});
+
+test('a thousand cells of five values ask for five colours, once across frames', () => {
+  let asked = 0;
+  const counted = (item: AirSide): AirSide => new Proxy(item, { get: (target, key, receiver) => { if (key === 'color') asked++; return Reflect.get(target, key, receiver); } });
+  const palette: [number, number, number][] = [[200, 40, 40], [40, 80, 220], [40, 160, 60], [200, 160, 40], [140, 60, 200]];
+  const sides = palette.map((color, index) => counted(side(`f:${index}`, { name: `Side ${index}`, color })));
+  const cell = (lead: number) => ({ kind: 'sides' as const, parts: [{ side: lead, tag: 'GER', friendly: '70' }, { side: (lead + 1) % 5, tag: 'ENG', friendly: '30' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, lead: { kind: 'leading' as const, side: lead, share_bp: 7000 } });
+  const days = 1000;
+  const tile: AirTimelineReply = {
+    ...reply(0), firstHour: 0, lastHour: days * 24 - 1, sides,
+    days: Array.from({ length: days }, (_, day) => day * 24 + 23),
+    rows: [{ region: 5, name: 'Southern England', nameMissing: null, pinned: false, cells: Array.from({ length: days }, (_, day): [number, AirTimelineReply['rows'][number]['cells'][number][1]] => [1, cell(day % 5)]) }],
+    absent: [[days, null]],
+  };
+  for (let hour = days * 24; hour < days * 24 + 3; hour++) {
+    const now = { ...reply(hour), firstHour: days * 24, lastHour: hour, days: [hour], sides: [] };
+    projectAirTimeline(createBoundedReadView({ hour, panels: new Map<string, unknown>([['now', now], ['tile:0', tile]]) }), { ...OPTIONS, tiles: 1 });
+  }
+  assert.equal(asked, 5, 'each side colour is solved once, for every cell, row and frame');
+});
+
+test('a correction that moves a viewer colour change by a day redraws the tile at the new boundary', () => {
+  const colourAt = (change: number) => ({
+    resolve: (kind: string, key: string, atHour: number) => ({
+      kind, key, atHour,
+      holder: { status: 'ready', value: key },
+      name: { status: 'ready', value: 'German Reich' },
+      colour: { status: 'ready', value: atHour < change ? '#3060c0' : '#c03030' },
+      validInterval: atHour < change ? [0, change - 1] : [change, Infinity],
+      nextChangeAt: atHour < change ? change : Infinity,
+    }),
+  });
+  const view = (share: number) => ({ kind: 'view' as const, side: null, leader: null, friendly: '80', enemy: '20', share_bp: share });
+  const tile: AirTimelineReply = { ...reply(0), firstHour: 0, lastHour: 95, days: [23, 47, 71, 95], viewpoint: null,
+    rows: [{ region: 5, name: 'Southern England', nameMissing: null, pinned: false, cells: [[4, view(8000)]] }], absent: [[4, null]] };
+  const project = (change: number) => {
+    const now = { ...reply(100), firstHour: 96, lastHour: 100, days: [100], rows: [{ ...reply(100).rows[0]!, cells: [[1, view(8000)]] as AirTimelineReply['rows'][number]['cells'] }] };
+    const readView = createBoundedReadView({ hour: 100, panels: new Map<string, unknown>([['now', now], ['tile:0', tile]]), identity: colourAt(change) as never });
+    return projectAirTimeline(readView, { viewpointCountry: 'GER', tiles: 1, surface: SURFACE }).rows[0]!.runs.map(run => run.firstHour);
+  };
+  assert.deepEqual(project(48), [0, 48, 96]);
+  assert.deepEqual(project(72), [0, 72, 96], 'the old boundary is not kept');
+});
+
+test('an empty timeline says why: the chart left its active regions out, the hour was read in part, or nothing was active', () => {
+  const body = (empty: AirTimelineReply['empty'], rankMissing: string | null = null) => {
+    const model = projectAirTimeline(view(50, reply(50, { rows: [], empty, rankMissing })), OPTIONS);
+    return [model.empty, model.emptyKind ?? 'empty'];
+  };
+  assert.deepEqual(body({ kind: 'filtered', hidden: 1, outside: 0 }), ['The only active region at this date is removed from this chart.', 'empty']);
+  assert.deepEqual(body({ kind: 'unread', reason: 'Air scores were read only in part at this hour, so the most active regions are not known' }), ['Air scores were read only in part at this hour, so the most active regions are not known.', 'unavailable']);
+  assert.deepEqual(body({ kind: 'none' }), ['No air activity at this date.', 'empty']);
+  const pinnedOnly = projectAirTimeline(view(50, reply(50, { rankMissing: 'Air scores were read only in part at this hour, so the most active regions are not known' })), OPTIONS);
+  assert.ok(pinnedOnly.warnings?.includes('Air scores were read only in part at this hour, so the most active regions are not known'), 'beside the picks, an unranked hour is said, not hidden');
 });

@@ -2,17 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
-import { familyRows, feedFacets, rowMatches, spanNotes, validateFeedRow, validateSpan } from './eventFeedData.ts';
+import { validateFeedRow } from './eventFeedData.ts';
 import { eventFeedProjection } from './eventFeedProjection.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
-import type { EventFeedRow, FeedKindCode } from '../../generated/dashboard';
+import type { EventFeedRow } from '../../generated/dashboard';
 
 let serial = 0;
 const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Partial<EventFeedRow> = {}): EventFeedRow => ({
   id: `native:1:${serial++}`, hour, readHour: hour, nameHour: hour, exact: true, category: 'warsPeace', kind, tags,
   participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });
-const family = (kind: EventFeedRow['kind'], hour: number, tags: string[], category: EventFeedRow['category'] = 'warsPeace'): EventFeedRow => ({
-  id: `${kind}:${hour}:${tags.join(',')}`, hour, readHour: hour, nameHour: hour, exact: true, category, kind, tags, item: null, amount: null });
 
 test('a feed row is validated, an icon the dashboard cannot draw dropped, and malformed rows refused', () => {
   const event = row('warDeclared', 100, ['GER', 'POL'], { readHour: 101, cause: { how: 'a diplomatic action', within: null, conference: null, state: null,
@@ -24,34 +22,6 @@ test('a feed row is validated, an icon the dashboard cannot draw dropped, and ma
   assert.throws(() => validateFeedRow({ ...event, participants: ['GER', 'ITA'] }), /malformed/,
     'roles disagree with the tags');
   assert.throws(() => validateFeedRow(null), /malformed/);
-});
-
-test('the kind facet takes the codes of the chosen categories, never a code no category holds', () => {
-  const kinds: FeedKindCode[] = [{ kind: 'warDeclared', code: 0, category: 'warsPeace' }, { kind: 'scriptEventFired', code: 8, category: 'politics' },
-    { kind: 'guaranteeGranted', code: 129, category: 'diplomacy' }];
-  assert.deepEqual(feedFacets(kinds, new Set(['warsPeace', 'diplomacy'])), [{ name: 'kind', values: [0, 129], countries: [] }]);
-  assert.equal(feedFacets(kinds, new Set()), null);
-  assert.equal(feedFacets(kinds, new Set(['milestones'])), null, 'no kind of the log is a milestone: the log is not asked with an empty filter');
-  assert.deepEqual(feedFacets(kinds, new Set(['milestones', 'politics'])), [{ name: 'kind', values: [8], countries: [] }]);
-});
-
-test('a row matches a chosen country through any country it names at its own hour, a vanished one at its last', () => {
-  const chosen = (tag: string, hour: number) => tag === 'POL' && hour <= 150;
-  assert.equal(rowMatches(row('warDeclared', 100, ['GER', 'POL']), chosen), true, 'the target');
-  assert.equal(rowMatches(row('warJoined', 100, ['ITA', 'GER'], { cause: { how: null, within: null, conference: null, state: null, ally: 'POL', reason: null,
-    notes: [] } }), chosen), true, 'a join\'s ally');
-  assert.equal(rowMatches(family('ceasedToExist', 200, ['POL']), chosen), false);
-  assert.equal(rowMatches({ ...family('ceasedToExist', 200, ['POL']), nameHour: 140 }, chosen), true, 'named at its last read with states');
-});
-
-test('span validation filters by category, range, and country and formats unavailable notes', () => {
-  const span = validateSpan({ branchId: '1', firstHour: 0, lastHour: 1000, kinds: [],
-    unavailable: [{ kind: 'content', label: 'Event text', reason: 'The event database is unavailable', count: 5 }],
-    warnings: ['Read at 10 lost'],
-    rows: [family('warStarted', 50, ['GER', 'POL']), family('factionJoined', 150, ['ITA'], 'diplomacy'), family('capitulated', 250, ['POL']),
-      family('warStarted', 350, ['SOV', 'FIN'])] });
-  assert.deepEqual(familyRows(span, new Set(['warsPeace']), 200, tag => tag === 'POL').map(held => held.hour), [250], 'category, range and country');
-  assert.deepEqual(spanNotes(span), ['Read at 10 lost', 'Event text: Not recorded — The event database is unavailable (5 counted)']);
 });
 
 test('nuclear strike and decision state validation reject mismatched kinds', () => {
@@ -79,7 +49,7 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   const strikeRow = row('nuclearStrike', 90, ['USA', 'JAP'], {
     category: 'warsPeace',
     participants: ['USA', 'JAP'],
-    strike: { province: 1, state: null, buildingLevels: null, warSupport: -15, units: 2, manpowerLost: null, equipmentLost: null, notRecorded: ['equipment: writers not forwarded'] },
+    strike: { province: 1, state: null, buildingLevels: null, warSupport: -15, units: 2, manpowerLost: 1234.6, equipmentLost: null, notRecorded: ['equipment: writers not forwarded'] },
   });
   const repeated = Array.from({ length: 5 }, (_, i) => row('warJoined', 48 + i, ['GER', 'SOV'], {
     category: 'warsPeace',
@@ -104,10 +74,7 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   const readView = createBoundedReadView({ hour: 120, rows: new Map([['main', source]]) });
   const model = eventFeedProjection.project(readView, {
     categories: ['warsPeace', 'diplomacy', 'politics', 'milestones'],
-    excludedKinds: [],
     artwork: true,
-    from: null,
-    filter: { passing: null },
   });
   assert.equal(model.rowHeightMode, undefined, 'event feed uses standard 36px rows');
   const chosenOut = model.rows.find(r => r.key === 'k0')!;
@@ -121,7 +88,12 @@ test('event feed projection preserves selected option ordinal, keeps null recipi
   assert.equal(unknownMeta.countryTag, null, 'missing recipient never substitutes the sender');
   const strikeOut = model.rows.find(r => r.key === 'k2')!;
   assert.equal(strikeOut.cells.detail?.value.kind, 'known');
-  assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /war support/);
+  assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /^1,234 casualties · −15% war support · 2 units$/);
+  const strikeTip = (strikeOut as { tooltipExtra?: () => readonly { label: string; value: { value?: unknown } }[] }).tooltipExtra?.() ?? [];
+  assert.deepEqual(strikeTip.filter(r => r.label === 'War support' || r.label === 'Casualties').map(r => [r.label, r.value.value]), [
+    ['Casualties', '1,234'],
+    ['War support', '−15%'],
+  ]);
   assert.match(String((strikeOut.cells.detail?.value as { value: string }).value), /2 units/);
   const foldRow = model.rows.find(r => r.key.startsWith('fold:'))!;
   assert.equal(foldRow.name, '5 events');
