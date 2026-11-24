@@ -3,7 +3,8 @@ import test from 'node:test';
 import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, type WidgetOptions } from '../../dashboard/options.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
-import { viewOwnedFields } from '../../families/manifest.ts';
+import { familyViewOptionFields } from '../manifest.ts';
+import '../definitions.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
 import type { AnyTableWidgetDeclaration, DeclaredTableContext } from '../../families/table/declaration.ts';
 import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
@@ -39,7 +40,7 @@ async function hosted(kind: string): Promise<Hosted> {
   assert.ok(entry, `${kind} has a table manifest entry`);
   const spec = await entry.loadSpec();
   const declaration = spec.declaration as AnyTableWidgetDeclaration;
-  const fields = viewOwnedFields(declaration.optionFields ?? [], entry.view);
+  const fields = familyViewOptionFields(kind, entry.view);
   const options = (stored: WidgetOptions) => resolveOptions(fields, stored);
   return {
     declaration,
