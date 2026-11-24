@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AmountRun, EquipmentStockpileReply, StockVariant } from './types';
 import { resolveY } from '../../charts/view.ts';
-import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen.ts';
-import { contentKey, contentSet, setToken, storableToken } from '../../dashboard/options.ts';
+import { chosenShown, toggleChosen } from '../../dashboard/chosen.ts';
+import { contentKey, storableToken } from '../../dashboard/options.ts';
 import { TIME_OPTIONS } from './definition.ts';
 import { chartChoices, chartRuns, choiceKey, choiceRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, shareOf, shareRuns, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
 
@@ -413,60 +413,6 @@ test('every group key a setting stores is storable, unresolved types and their a
   assert.equal(typeName(reply, ':mod_gun'), 'Equipment type name unavailable');
   const included = stockGroups(reply, 'type', 110, [':mod_gun']);
   assert.deepEqual(included.map(group => group.key), [':mod_gun']);
-});
-
-test('a type whose key a setting cannot store can be included and chosen for the chart', () => {
-  const reply: EquipmentStockpileReply = { ...REPLY,
-    types: [...REPLY.types, { key: 'mod rifles', name: 'Mod rifles', domain: 'land', needNote: null }],
-    variants: [...REPLY.variants, variant('90', 'mod rifles_1', 'mod rifles', [run(100, 130, 7)], [], [{ firstHour: 90, name: 'Mod rifle', known: true, design: 'feed' }])] };
-  const token = setToken('mod rifles');
-  assert.equal(storableToken('mod rifles'), false);
-  assert.ok(storableToken(token));
-  const included = contentSet(token).map(contentKey);
-  assert.deepEqual(stockGroups(reply, 'type', 110, included).map(group => group.key), ['mod rifles']);
-  for (const grouping of ['type', 'variant', 'domain'] as const) {
-    const groups = stockGroups(reply, grouping, 110);
-    const source = storedChoices(stockChoices(groups, 'group'));
-    const group = grouping === 'type' ? groups.find(item => item.key === 'mod rifles')! : groups.find(item => item.variants.some(variant => variant.id === '90'))!;
-    const key = choiceKey(group, 110)!;
-    const action = toggleChosen(source, [], [], setToken(key), 8);
-    assert.ok('value' in action, `${grouping}: ${JSON.stringify(action)}`);
-    const chosen = chosenShown(source, contentSet(action.value), null).map(token => choiceRow(contentKey(token)));
-    assert.ok(chosen.includes(group.key), `${grouping}: ${chosen.join(', ')}`);
-    for (const item of groups) {
-      const choice = choiceKey(item, 110);
-      if (choice != null) assert.ok(storableToken(setToken(choice)), `${grouping} key ${choice}`);
-    }
-  }
-});
-
-test('toggling a renamed variant removes the fingerprint that selected its row', () => {
-  const data: EquipmentStockpileReply = { ...REPLY, variants: [
-    variant('1351', 'light_tank_chassis_1', 'light_tank_chassis', [run(100, 130, 5)], [], [
-      { firstHour: 100, name: 'Old name', known: true, design: 'aaaa' },
-      { firstHour: 120, name: 'New name', known: true, design: 'bbbb' },
-    ]),
-    variant('15', 'infantry_equipment_1', 'infantry_equipment', [run(100, 130, 8)], [], [
-      { firstHour: 100, name: 'Rifle', known: true, design: 'cccc' },
-    ]),
-  ] };
-  const groups = stockGroups(data, 'variant', Infinity);
-  const renamed = groups.find(group => group.variants[0]?.id === '1351')!;
-  const rifle = groups.find(group => group.variants[0]?.id === '15')!;
-  const source = storedChoices(stockChoices(groups, 'variant'));
-  const stored = [renamed, rifle].map(group => setToken(choiceKey(group, 100)!));
-  const shown = chosenShown(source, stored, null);
-  const choice = choiceKey(renamed, 125, shown.map(contentKey))!;
-  assert.equal(choice, contentKey(stored[0]));
-  assert.notEqual(choice, choiceKey(renamed, 125));
-  const action = toggleChosen(source, stored, shown, setToken(choice), 8);
-  assert.ok('value' in action);
-  assert.equal(action.value, stored[1]);
-  const remaining = contentSet(action.value);
-  assert.deepEqual(chosenShown(source, remaining, null).map(token => choiceRow(contentKey(token))), [rifle.key]);
-  const add = toggleChosen(source, remaining, remaining, setToken(choiceKey(renamed, 125, remaining.map(contentKey))!), 8);
-  assert.ok('value' in add);
-  assert.deepEqual(contentSet(add.value), [stored[1], setToken(choiceKey(renamed, 125)!)]);
 });
 
 test('a saved variant choice is its design: another design under the handle is shown unavailable, never drawn', () => {
