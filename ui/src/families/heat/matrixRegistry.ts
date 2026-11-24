@@ -1,15 +1,31 @@
-import type { HeatMatrixProjection } from './matrixModel.ts';
+import {
+  DEFAULT_VIEW,
+  ensureFamilyProjection,
+  familyProjection,
+  registerFamilyProjection,
+  registeredFamilyProjections,
+} from '../registry.ts';
+import type { HeatMatrixModel, HeatMatrixProjection } from './matrixModel.ts';
 
-const registry = new Map<string, HeatMatrixProjection<unknown>>();
-
-export function registerHeatMatrixProjection<TOptions>(projection: HeatMatrixProjection<TOptions>): void {
-  registry.set(projection.kind, projection as HeatMatrixProjection<unknown>);
+export function registerHeatMatrixProjection<TOptions>(
+  projection: HeatMatrixProjection<TOptions>,
+  view = DEFAULT_VIEW,
+): HeatMatrixProjection<TOptions> {
+  return registerFamilyProjection(projection, view) as HeatMatrixProjection<TOptions>;
 }
 
-export function heatMatrixProjection(kind: string): HeatMatrixProjection<unknown> | undefined {
-  return registry.get(kind);
+export function heatMatrixProjection(kind: string, view?: string): HeatMatrixProjection<unknown> | undefined {
+  return familyProjection<HeatMatrixModel, unknown>('heat-matrix', kind, view) as HeatMatrixProjection<unknown> | undefined;
+}
+
+export function ensureHeatMatrixProjection(
+  kind: string,
+  view: string | undefined,
+  onReady: () => void,
+): HeatMatrixProjection<unknown> | 'loading' | 'unknown' {
+  return ensureFamilyProjection<HeatMatrixModel, unknown>('heat-matrix', kind, view, onReady) as HeatMatrixProjection<unknown> | 'loading' | 'unknown';
 }
 
 export function registeredHeatMatrixKinds(): readonly string[] {
-  return [...registry.keys()];
+  return [...new Set(registeredFamilyProjections('heat-matrix').map(entry => entry.kind))];
 }

@@ -86,6 +86,7 @@ interface MatrixExtentState {
   totalWidth: number;
   totalHeight: number;
   cellSize: number;
+  cellWidth?: number;
   gridLeft: number;
   gridTop: number;
   rows: readonly MatrixAxisEntity[];
@@ -555,7 +556,7 @@ export default function FamilyHeatMatrixHost<TOptions>({
     focusedKeyRef.current = key;
     const node = bodyRef.current;
     if (node) {
-      const nextLeft = revealMatrixOffset(next.column, ext.cellSize, node.scrollLeft, Math.max(1, viewportRef.current.width - ext.gridLeft));
+      const nextLeft = revealMatrixOffset(next.column, ext.cellWidth ?? ext.cellSize, node.scrollLeft, Math.max(1, viewportRef.current.width - ext.gridLeft));
       const nextTop = revealMatrixOffset(next.row, ext.cellSize, node.scrollTop, Math.max(1, viewportRef.current.height - ext.gridTop));
       if (nextLeft !== node.scrollLeft) {
         node.scrollLeft = nextLeft;

@@ -14,8 +14,6 @@ import Sunburst from './sunburst/Sunburst';
 import type { SunburstItem, SunburstValues } from './sunburst/Sunburst';
 import DrillParts from './drill/DrillParts';
 import type { DrillPart, LiveDrillParts } from './drill/DrillParts';
-import ChordChart from './chord/ChordChart';
-import type { ChordFrame } from './chord/ChordChart';
 import FlowDiagram from './flow/FlowDiagram';
 import type { FlowValues } from './flow/FlowDiagram';
 import { canvasElement } from './surface';
@@ -107,9 +105,6 @@ const drillParts = (a: number | null, b: number | null): DrillPart[] => [
 ];
 const drillLive = new LiveCell<ReturnType<LiveDrillParts['read']>>({ parts: drillParts(30, 10) });
 
-const chordFrame = (forward: number, back: number): ChordFrame => ({ data: { nodes: [{ id: 'x', label: 'Ex', color: '#aa3333' }, { id: 'y', label: 'Why', color: '#3333aa' }],
-  flows: [{ id: 'xy', source: 'x', target: 'y', value: forward }, { id: 'yx', source: 'y', target: 'x', value: back }] }, segment: 'one' });
-const chordLive = new LiveCell<ChordFrame>(chordFrame(10, 10));
 const flowValues = (value: number | null): FlowValues => value === null ? { nodes: [], links: [], message: 'Not recorded at this hour' } : {
   nodes: [{ id: 's', side: 'source', label: 'Source', color: '#aa3333', order: 's' }, { id: 't', side: 'target', label: 'Target', color: '#3333aa', order: 't' },
     { id: 'u', side: 'target', label: 'Other', color: '#33aa33', order: 'u' }],
@@ -188,14 +183,6 @@ export const fixture = {
   },
   async pushDrill(a: number | null, b: number | null) { drillLive.set({ parts: drillParts(a, b) }); await settle(); },
   drill: () => [...roots.get('drill')!.host.querySelectorAll('.drill-parts > li')].map(row => [row.querySelector('.drill-part-label')?.textContent, row.querySelector('b')?.textContent]),
-
-  async mountChord(live: boolean) {
-    const { root } = host('chord', 400, 400);
-    root.render(counted('chord', <ChordChart key={String(live)} label="Synthetic chord" caption="Flows" frame={chordFrame(10, 10)} active tooltip={() => null} onError={() => {}}
-      live={live ? chordLive : undefined} />));
-    await settle();
-  },
-  async pushChord(forward: number | null, back = 10) { chordLive.set(forward === null ? { data: null, segment: 'one' } : chordFrame(forward, back)); await settle(); },
 
   async mountFlow(live: boolean) {
     const { root } = host('flow', 500, 300);

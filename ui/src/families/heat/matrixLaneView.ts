@@ -18,7 +18,7 @@ import {
   type HeatMatrixModel,
 } from './matrixModel.ts';
 import { collectVisibleMatrixArt, createMatrixPicture, drawHeatMatrix, type HeatMatrixPicture } from './matrixPainter.ts';
-import { heatMatrixProjection } from './matrixRegistry.ts';
+import { ensureHeatMatrixProjection, heatMatrixProjection } from './matrixRegistry.ts';
 import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from './sceneReadView.ts';
 
 export interface FamilyHeatMatrixBinding<TOptions = unknown> {
@@ -136,8 +136,9 @@ export function familyHeatMatrixLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyHeatMatrixBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = heatMatrixProjection(bound.kind);
-      if (!projection) {
+      const projection = ensureHeatMatrixProjection(bound.kind, undefined, () => wake(input.widget));
+      if (projection === 'loading') return { surfaces: [], fields: {}, motion: false };
+      if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown matrix declaration: ${bound.kind}` };
       }
 
@@ -288,6 +289,8 @@ export function familyHeatMatrixLaneView(
         columns: model.columns,
         legend: model.legend,
         widestRowName: widestRowName > 0 ? widestRowName : undefined,
+        shape: model.shape,
+        margin: model.margin !== undefined,
       });
       held.cachedLayout = layout;
 
@@ -346,6 +349,7 @@ export function familyHeatMatrixLaneView(
         layout.totalWidth,
         layout.totalHeight,
         layout.cellSize,
+        layout.cellWidth,
         layout.gridLeft,
         layout.gridTop,
         model.rows.length,
@@ -358,6 +362,7 @@ export function familyHeatMatrixLaneView(
             totalWidth: layout.totalWidth,
             totalHeight: layout.totalHeight,
             cellSize: layout.cellSize,
+            cellWidth: layout.cellWidth,
             gridLeft: layout.gridLeft,
             gridTop: layout.gridTop,
             rows: model.rows,
@@ -442,6 +447,7 @@ export function familyHeatMatrixLaneView(
           const h = hitHeatMatrix(point[0], point[1], scrollLeft, scrollTop, layout, rowCount, colCount);
           if (!h) return null;
           if (h.kind === 'cell') return `cell:${h.row}:${h.column}`;
+          if (h.kind === 'margin') return `cell:${h.row}:${colCount}`;
           return null;
         },
       };

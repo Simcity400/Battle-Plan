@@ -1,8 +1,13 @@
 import { DEFAULT_VIEW, type FamilyViewEntry, type FamilyViewModule } from '../families/manifest.ts';
 import { bindFamilyManifest } from '../families/registry.ts';
+import type { AnyBarsWidgetDeclaration } from '../families/bars/declaration.ts';
+import type { BarsProjection } from '../families/bars/model.ts';
+import type { AnyHeatMatrixWidgetDeclaration } from '../families/heat/matrixDeclaration.ts';
+import type { HeatMatrixProjection } from '../families/heat/matrixModel.ts';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration.ts';
 import type { TableProjection } from '../families/table/model.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../families/time-chart/declaration.ts';
+import { OPTIONS as CASUALTIES_BETWEEN_OPTIONS } from './casualties-between/definition.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from './game-score/definition.ts';
 
 function tableSpec<TModule>(
@@ -26,6 +31,30 @@ function timeChartSpec<TModule>(
   return () => load().then(mod => {
     const { projection, declaration } = pick(mod);
     return { family: 'time-chart', kind, view, projection, declaration };
+  });
+}
+
+function heatMatrixSpec<TModule>(
+  kind: string,
+  view: string,
+  load: () => Promise<TModule>,
+  pick: (mod: TModule) => { readonly projection: HeatMatrixProjection<any>; readonly declaration: AnyHeatMatrixWidgetDeclaration },
+): () => Promise<FamilyViewModule> {
+  return () => load().then(mod => {
+    const { projection, declaration } = pick(mod);
+    return { family: 'heat-matrix', kind, view, projection, declaration };
+  });
+}
+
+function barsSpec<TModule>(
+  kind: string,
+  view: string,
+  load: () => Promise<TModule>,
+  pick: (mod: TModule) => { readonly projection: BarsProjection<any>; readonly declaration: AnyBarsWidgetDeclaration },
+): () => Promise<FamilyViewModule> {
+  return () => load().then(mod => {
+    const { projection, declaration } = pick(mod);
+    return { family: 'bars', kind, view, projection, declaration };
   });
 }
 
@@ -111,6 +140,55 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('./political-power/politicalPowerProjection.ts'),
       mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
+    ),
+  },
+  {
+    kind: 'who-spies-on-whom',
+    view: 'matrix',
+    label: 'Matrix',
+    family: 'heat-matrix',
+    loadSpec: heatMatrixSpec(
+      'who-spies-on-whom',
+      'matrix',
+      () => import('./who-spies-on-whom/whoSpiesProjection.ts'),
+      mod => ({ projection: mod.operativeMatrixProjection, declaration: mod.operativeMatrixDeclaration }),
+    ),
+  },
+  {
+    kind: 'who-spies-on-whom',
+    view: 'pairs',
+    label: 'Top pairs',
+    family: 'bars',
+    loadSpec: barsSpec(
+      'who-spies-on-whom',
+      'pairs',
+      () => import('./who-spies-on-whom/whoSpiesProjection.ts'),
+      mod => ({ projection: mod.operativePairsProjection, declaration: mod.operativePairsDeclaration }),
+    ),
+  },
+  {
+    kind: 'casualties-between',
+    view: 'matrix',
+    label: 'Matrix',
+    family: 'heat-matrix',
+    options: CASUALTIES_BETWEEN_OPTIONS,
+    loadSpec: heatMatrixSpec(
+      'casualties-between',
+      'matrix',
+      () => import('./casualties-between/casualtiesBetweenProjection.ts'),
+      mod => ({ projection: mod.casualtyMatrixProjection, declaration: mod.casualtyMatrixDeclaration }),
+    ),
+  },
+  {
+    kind: 'casualties-between',
+    view: 'opponents',
+    label: 'By opponent',
+    family: 'bars',
+    loadSpec: barsSpec(
+      'casualties-between',
+      'opponents',
+      () => import('./casualties-between/casualtiesBetweenProjection.ts'),
+      mod => ({ projection: mod.casualtyOpponentsProjection, declaration: mod.casualtyOpponentsDeclaration }),
     ),
   },
 ];

@@ -137,6 +137,7 @@ checkWorkerSafe([
   'ui/src/families/registry.ts',
   'ui/src/families/table/registry.ts',
   'ui/src/families/bars/registry.ts',
+  'ui/src/families/heat/matrixRegistry.ts',
   'ui/src/families/time-chart/declaration.ts',
 ]);
 

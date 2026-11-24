@@ -303,6 +303,7 @@ impl AtHour for OperativeMatrix {
         vec![
             OperativeMatrixParams::decl(),
             OperativeMatrixForm::decl(),
+            Operative::decl(),
             OperativeMatrixCountry::decl(),
             AgencyCapacity::decl(),
             OperativeMatrixRow::decl(),
