@@ -4913,6 +4913,7 @@ dependencies = [
  "dashboard-intelligence",
  "dashboard-query",
  "dashboard-text",
+ "dashboard-world",
  "engine-heap",
  "engine-intelligence",
  "engine-native-air",
