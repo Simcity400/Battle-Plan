@@ -524,18 +524,25 @@ async function playHundredHours(entries: readonly SourceEntry[]) {
     const posted = lane.posted.slice(setup);
     const statics = posted.filter(item => item.type === 'supply' && 'statics' in item.message);
     const dated = posted.filter(item => item.type === 'supply' && 'dated' in item.message && !('statics' in item.message));
+    const named = new Set<number>();
+    const collect = (revision: unknown): void => {
+      if (typeof revision === 'number') named.add(revision);
+      else if (revision && typeof revision === 'object') for (const inner of Object.values(revision)) collect(inner);
+    };
+    for (const item of statics) collect((item.message as { statics?: { revisions?: unknown } }).statics?.revisions);
+    const payloads = posted.filter(item => item.type === 'payloads' && ((item.message as { put?: readonly (readonly [number, unknown])[] }).put ?? []).some(([id]) => named.has(id)));
     return {
       replies,
       requests: server.calls.length,
       notifications: counts.views,
       bundles: counts.bundles.size,
-      identities: posted.filter(item => item.type === 'identity').length,
-      staticBytes: statics.reduce((sum, item) => sum + item.bytes, 0),
+      identities: posted.filter(item => item.type === 'supply' && typeof (item.message as { identity?: unknown }).identity === 'number').length,
+      staticBytes: payloads.reduce((sum, item) => sum + item.bytes, 0),
       staticMessages: statics.length,
       datedMessages: dated.length,
       datedBytes: Math.max(0, ...dated.map(item => item.bytes)),
       generationKept: lane.pipeline.binding(id) === generation,
-      replyBytes: Math.max(...statics.map(item => item.bytes)),
+      replyBytes: Math.max(...payloads.map(item => item.bytes)),
     };
   } finally {
     target.dispose();
