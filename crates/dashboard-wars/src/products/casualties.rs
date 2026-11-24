@@ -128,7 +128,6 @@ fn push_run<T>(runs: &mut Vec<T>, run: T, joins: impl Fn(&mut T, &T) -> bool) {
     runs.push(run);
 }
 
-
 dashboard_base::reply_warnings!(CasualtyBreakdownReply, CasualtyLabelsReply);
 
 struct Window {
@@ -274,6 +273,7 @@ fn manifest(query: &Query<'_>) -> io::Result<Vec<HourSpan>> {
 fn branch(text: &str) -> Result<u64, &'static str> {
     text.parse::<u64>().map_err(|_| "Invalid branch")
 }
+
 
 pub struct CasualtyBreakdown;
 

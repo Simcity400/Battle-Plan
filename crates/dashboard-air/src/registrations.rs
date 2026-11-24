@@ -6,13 +6,11 @@ dashboard_base::register_products! {
     AIR_SUPERIORITY_AIRSUPERIORITYCHOICES => crate::products::air_superiority::AirSuperiorityChoices,
     AIR_STATISTICS_AIRSTATISTICSREGIONS => crate::products::air_statistics::AirStatisticsRegions,
     AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE => crate::products::air_superiority::timeline::AirSuperiorityTimeline,
-    AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYRANKING => crate::products::air_superiority::timeline::AirSuperiorityRanking,
 }
 
 dashboard_base::register_hourly_products! {
     AIR_STATISTICS_AIRSTATISTICSAT => crate::products::air_statistics::AirStatisticsAt,
     AIR_ACES_AIRACESAT => crate::products::air_aces::AirAcesAt,
-    REGIONAL_WEATHER_WEATHERPROVINCES => crate::products::regional_weather::WeatherProvinces,
     AIR_MISSIONS_AIRMISSIONSAT => crate::products::air_missions::AirMissionsAt,
     AIR_SUPERIORITY_AIRSUPERIORITYAT => crate::products::air_superiority::AirSuperiorityAt,
 }

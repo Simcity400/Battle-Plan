@@ -38,9 +38,10 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
+    "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 FAMILY_TS = re.compile(r"^ui/src/families/.+\.tsx?$")
@@ -48,6 +49,9 @@ PROJECTION_TS = re.compile(r"^ui/src/widgets/.+Projection\.ts$")
 TS_TOKEN = re.compile(r"""//|/\*|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""", re.DOTALL)
 LOCAL_CONTRAST_INK = re.compile(
     r"\b(?:function\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*|(?:const|let)\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*\s*=|\breadableText\s*\()"
+)
+LOCAL_TICK_ENGINE = re.compile(
+    r"\b(?:function\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*|(?:const|let)\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*\s*=)"
 )
 PS_TEST = re.compile(r"\.tests\.ps1$", re.IGNORECASE)
 JS_CLOCK = re.compile(r"\bset(?:Timeout|Interval)\s*\(")
@@ -608,6 +612,9 @@ def family_ts_matches(name, text):
     contrast_lines = [line_of(text, m.start()) for m in LOCAL_CONTRAST_INK.finditer(code)]
     if contrast_lines:
         found["local-contrast-ink"] = contrast_lines
+    tick_lines = [line_of(text, m.start()) for m in LOCAL_TICK_ENGINE.finditer(code)]
+    if tick_lines:
+        found["local-tick-engine"] = tick_lines
     return found
 
 

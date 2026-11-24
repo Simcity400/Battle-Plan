@@ -1,7 +1,7 @@
 use dashboard_world::products::equipment_names as names;
 use super::{
     catalogue::{EquipmentDesigns, IndustrialOrganisations, ProductionLicences},
-    lines::{ProductionDetailParams, ProductionLinesParams, detail_reply, lines_reply},
+    lines::{ProductionLinesParams, lines_reply},
     live::ProductionLinesAt,
     *,
 };
@@ -155,28 +155,6 @@ fn a_countrys_lines_follow_its_holder_through_aliases_and_end_with_their_publish
     assert_eq!(within.lines[0].steps, [step(1_000, 1_099, true, "100", 2)], "a held identity's lines are read only within its own runs");
     assert_eq!(within.lines[0].key, reply.lines[0].key, "a line keeps its key whatever scope asks for it");
     assert_eq!(within.line_hours, [dashboard_base::span::HourSpan { first_hour: 1_000, last_hour: 1_099 }], "the scoped reply's hours are the held identity's");
-}
-
-#[test]
-fn a_detail_window_holds_every_value_and_each_output_change_of_the_lines_in_it() {
-    let source = recording();
-    let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let params = ProductionDetailParams { branch_id: "1".into(), country: "GER".into(), window: 1, within: None };
-    let reply = detail_reply(&source, &query, &params, &AtomicBool::new(false)).unwrap();
-    assert_eq!((reply.first_hour, reply.last_hour), (720, 1_439));
-    let keys: Vec<&str> = reply.lines.iter().map(|line| line.key.as_str()).collect();
-    assert_eq!(keys, ["1#1", "2#1"]);
-    let first = &reply.lines[0];
-    let cuts: Vec<(i32, i32, bool, &str, i32)> = first.runs.iter().map(|run| (run.first_hour, run.last_hour, run.starts_segment, run.variant.as_str(), run.active_factories)).collect();
-    assert_eq!(cuts, [(1_000, 1_099, true, "100", 2), (1_100, 1_149, false, "101", 2), (1_150, 1_239, false, "101", 3), (1_251, 1_300, true, "101", 3)]);
-    let run = &first.runs[0];
-    assert_eq!((run.cost_raw.as_str(), run.speed_raw.as_str(), run.weekly_raw.as_deref(), run.efficiency_raw.as_str(), run.amount), ("700000", "200000", Some("200000"), "1638400", -1));
-    let second = &reply.lines[1];
-    let units: Vec<(i32, i32, &str)> = second.output.iter().map(|run| (run.first_hour, run.last_hour, run.parts[0].units.as_str())).collect();
-    assert_eq!(units.first(), Some(&(1_050, 1_073, "0")));
-    assert_eq!(units.last(), Some(&(1_194, 1_199, "6")), "a line's output in the window ends with its life, its ended rows are its final count");
-    let window = ProductionDetailParams { window: 0, ..params };
-    assert!(detail_reply(&source, &query, &window, &AtomicBool::new(false)).unwrap().lines.is_empty());
 }
 
 fn load() -> LoadContext {

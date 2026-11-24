@@ -1,4 +1,4 @@
-use super::super::{PowerSpendingReply, SpendCategory, SpendCoverage, SpendCurrency, SpendDay, SpendGain, SpendItem, SpendPayment, SpendReconciliation};
+use super::super::{PowerSpendingReply, SpendCategory, SpendCoverage, SpendCurrency, SpendDay, SpendGain, SpendItem, SpendKind, SpendPayment, SpendReconciliation};
 use super::at_hour;
 use dashboard_base::products::breakdown::BreakdownState;
 
@@ -19,6 +19,7 @@ fn item(group: &str, category: &str, name: Option<&str>) -> SpendItem {
         target_name: None,
         unknown: None,
         tooltip_token: None,
+        kind: None,
     }
 }
 
@@ -85,4 +86,17 @@ fn a_payment_whose_cost_was_not_recorded_makes_the_total_a_lower_bound() {
     let decisions = at.breakdown.parts.iter().find(|part| part.key == "decisions").expect("decisions");
     assert_eq!(decisions.state, BreakdownState::AtLeast);
     assert_eq!(decisions.reason.as_deref(), Some("The cost of 1 payment was not recorded."));
+}
+
+#[test]
+fn decisions_group_by_their_category_with_each_decision_beneath() {
+    let mut held = reply();
+    let kind = |id: Option<&str>, name: Option<&str>| Some(SpendKind { id: id.map(Into::into), name: name.map(Into::into), unknown: id.is_none().then(|| "Decision x is not defined in the installed content".into()) });
+    held.items[0].kind = kind(Some("decision:war_measures"), Some("War measures"));
+    held.items[2].kind = kind(None, None);
+    let at = at_hour(&held, 20);
+    let decisions = at.breakdown.parts.iter().find(|part| part.key == "decisions").expect("decisions");
+    assert_eq!(decisions.children.iter().map(|part| part.name.as_str()).collect::<Vec<_>>(), ["War measures", "Category not recorded"]);
+    assert_eq!(decisions.children[0].children.iter().map(|part| part.name.as_str()).collect::<Vec<_>>(), ["War measures"], "each decision is the third level");
+    assert!(decisions.children[1].other, "an unknown category is the reserved grey, never a guess");
 }
