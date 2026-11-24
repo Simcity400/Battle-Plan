@@ -281,9 +281,8 @@ export function familyHeatMatrixLaneView(
         held.ctx.font = `500 ${bound.theme.fontSize.small}px ${bound.theme.font}`;
         const sampleLimit = Math.min(model.rows.length, 60);
         for (let i = 0; i < sampleLimit; i++) {
-          widestRowName = Math.max(widestRowName, held.ctx.measureText(model.rows[i]!.label).width);
-        }
-        for (const row of model.rows) {
+          const row = model.rows[i]!;
+          widestRowName = Math.max(widestRowName, held.ctx.measureText(row.label).width);
           if (row.trailing) widestTrailing = Math.max(widestTrailing, held.ctx.measureText(row.trailing).width);
         }
       }

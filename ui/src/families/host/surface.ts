@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { canonical } from '../../dashboard/follow/canonical.ts';
 import { restartPipeline, type Pipeline } from '../../dashboard/follow/pipeline.ts';
@@ -7,7 +7,7 @@ import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { useWidgetFrame } from '../../dashboard/widgetFrame.tsx';
 import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
-import { AuditSnapshotStore, auditRowsOf, subscribeFamilyAuditing, useFamilyAuditing } from '../audit.ts';
+import { AuditSnapshotStore, auditRowsOf, isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import type { FamilySourceSubscription } from '../contract.ts';
 import { createBoundAuditReader, type BoundAuditEntry, type FamilyAuditVerifier } from './auditBinding.ts';
 import { FamilyTooltipController } from './tooltips.ts';
@@ -18,6 +18,8 @@ export {
   type FamilyAuditVerifier,
   type PlanAuditSnapshot,
 } from './auditBinding.ts';
+
+const subscribeAuditing = (listener: () => void) => subscribeFamilyAuditing(() => { listener(); });
 export { reportFamilyShownHour } from './shownHour.ts';
 
 const STATIC_HOLD = {};
@@ -223,7 +225,7 @@ export interface FamilyAuditHandle<TSnapshot> {
 
 export function useFamilyAudit<TSnapshot>(options: FamilyAuditOptions): FamilyAuditHandle<TSnapshot> {
   const { pipeline, pipe, ownerId, auditable, maxEntries = 512 } = options;
-  const captureActive = useFamilyAuditing();
+  const captureActive = useSyncExternalStore(subscribeAuditing, isFamilyAuditing, isFamilyAuditing);
   const storeRef = useRef<AuditSnapshotStore<BoundAuditEntry<TSnapshot>> | null>(null);
   if (!storeRef.current) storeRef.current = new AuditSnapshotStore<BoundAuditEntry<TSnapshot>>(maxEntries);
 

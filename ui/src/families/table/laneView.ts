@@ -38,7 +38,7 @@ import {
   rankHoldForSpeed,
   type FamilyTablePicture,
 } from './painter.ts';
-import { ensureTableProjection, tableProjection } from './registry.ts';
+import { ensureTableProjection } from './registry.ts';
 import { ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings, type TableTheme } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> {
@@ -402,8 +402,9 @@ export function familyTableLaneView(
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyTableBinding(bound)) return Infinity;
-      const projection = tableProjection(bound.kind, bound.view);
-      if (!projection) return Infinity;
+      const projection = ensureTableProjection(bound.kind, bound.view, () => wake(scene.widget));
+      if (projection === 'loading') return hour + 1;
+      if (projection === 'unknown') return Infinity;
       let soonest = Math.min(
         nextLookChange(optionsLooks(bound.options), hour),
         nextLookChange(bound.theme?.countryLooks, hour),
@@ -445,7 +446,7 @@ export function familyTableLaneView(
       if (!isFamilyTableBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
       const projection = ensureTableProjection(bound.kind, bound.view, () => wake(input.widget));
       if (projection === 'loading') {
-        return { surfaces: [], fields: {}, motion: false };
+        return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       }
       if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown table declaration: ${bound.kind}` };
