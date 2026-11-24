@@ -36,7 +36,7 @@ export const meterHostAdapter: FamilyHostAdapter<MeterModel, unknown, FamilyMete
       sources: ctx.sources,
       ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
       ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-      ...(ctx.spriteResolutions ? { spriteResolutions: ctx.spriteResolutions } : {}),
+      ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
       width: ctx.viewport.width,
       height: ctx.viewport.height,
       scrollTop: ctx.viewport.scrollTop,
