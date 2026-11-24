@@ -5,7 +5,6 @@ import { columnsControl } from '../../families/settingsControls.ts';
 import type { TableColumnSpec } from '../../families/table/model.ts';
 import { OFFERED, type TableBase } from '../../families/table/settings.ts';
 import type { MarketTab } from './marketData.ts';
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const DETAILS = { id: 'details', label: 'Market details' };
 export const VIEWS = [{ value: 'contracts', label: 'Contracts' }, { value: 'requests', label: 'Requests' }, { value: 'inventory', label: 'Inventory' }] as const;
@@ -225,7 +224,6 @@ export function marketTableOptions(view: MarketTab): readonly OptionField[] {
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'contracts', choices: [...VIEWS] },
-  DRILL_OPTION,
 ];
 
 export const definition = {
