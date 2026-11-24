@@ -3982,12 +3982,7 @@ theatres?: Array<string>,
 /**
  * How many of the most active regions are shown, without `regions`.
  */
-top?: number,
-/**
- * The tile of `TILE_DAYS` game days (on the absolute grid of days) whose cells are asked, of
- * the regions `regions` names, in their order; the whole view ranked when none.
- */
-tile?: number, };
+top?: number, };
 export type AirTimelineReply = {
 /**
  * The first hour of the view's first day.
@@ -6643,7 +6638,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-statistics-regions": { "branchId": "leaf", "country": "any" },
   "air-superiority": { "branchId": "leaf", "hour": "leaf", "mode": "leaf", "order": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-choices": { "branchId": "leaf" },
-  "air-superiority-timeline": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "tile": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
+  "air-superiority-timeline": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "aircraft-catalogue": { "count": "leaf", "first": "leaf", "origin": "node", "origin.mod": "leaf", "query": "leaf" },
   "army-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "view": "node", "view.kind": "leaf", "view.ledgers": "node", "view.ledgers[]": "leaf", "view.month": "leaf" },
   "army-size": { "branchId": "leaf", "byType": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "top": "leaf", "window": "leaf" },
