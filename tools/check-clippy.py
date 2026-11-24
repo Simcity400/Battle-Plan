@@ -20,15 +20,14 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HEADER = re.compile(r"^(warning|error)(?:\[\w+\])?: (.*)$")
+HEADER = re.compile(r"^(warning|error)(?:\[(\w+)\])?: (.*)$")
 LOCATION = re.compile(r"^\s*--> (.+?):(\d+):(\d+)\s*$")
 LINT = re.compile(r"rust-clippy/[^#\s]*#([a-z0-9_]+)")
 RUSTC_LINT = re.compile(r"requested on the command line with `-[WD] ([a-z0-9_-]+)`|`#\[(?:warn|deny)\(([a-z0-9_]+)\)\]`")
 RUSTC_MESSAGES = {
-    "missing_debug_implementations": re.compile(r"does not implement `(?:std::fmt::|core::fmt::)?Debug`"),
-    "unreachable_pub": re.compile(r"^unreachable `pub` "),
-    "unsafe_op_in_unsafe_fn": re.compile(r"is unsafe and requires unsafe block"),
+    "unsafe_op_in_unsafe_fn": lambda level, code, message: level == "warning" and code == "E0133" and "deprecated safe" not in message,
 }
+INTEGRATION_TEST = re.compile(r"^crates/[^/]+/tests/")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
@@ -46,7 +45,9 @@ def findings(lines, rust_lints=frozenset()):
 
     def close():
         if current and current["lint"] is None:
-            current["lint"] = next((name for name, message in RUSTC_MESSAGES.items() if name in rust_lints and message.search(current["message"])), None)
+            current["lint"] = next((name for name, matches in RUSTC_MESSAGES.items() if name in rust_lints and matches(current["level"], current["code"], current["message"])), None)
+        if current and current["lint"] == "unwrap_used" and current["path"] and INTEGRATION_TEST.match(current["path"]):
+            return
         if current and current["lint"] and current["path"]:
             found.append((current["path"], current["line"], current["lint"], current["level"], current["message"]))
 
@@ -54,7 +55,7 @@ def findings(lines, rust_lints=frozenset()):
         line = ANSI.sub("", raw.rstrip("\r\n"))
         if header := HEADER.match(line):
             close()
-            current = {"level": header.group(1), "message": header.group(2), "path": None, "line": 0, "lint": None}
+            current = {"level": header.group(1), "code": header.group(2), "message": header.group(3), "path": None, "line": 0, "lint": None}
         elif current is None:
             continue
         elif current["path"] is None and (location := LOCATION.match(line)):

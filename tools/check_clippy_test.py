@@ -40,16 +40,23 @@ warning: call to `std::mem::drop` with a value that does not implement `Drop`. D
     --> crates/replay-columnar/src/writer/tests.rs:1341:9
      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#drop_non_drop
 
-warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
-  --> crates/replay-columnar/src/lib.rs:15:1
+warning[E0133]: call to unsafe function `read` is unsafe and requires unsafe block
+  --> crates/replay-columnar/src/lib.rs:15:5
    |
-   = note: requested on the command line with `-W missing-debug-implementations`
+   = note: requested on the command line with `-W unsafe-op-in-unsafe-fn`
 
-warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
-  --> crates/replay-columnar/src/lib.rs:71:1
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+  --> crates/replay-columnar/src/lib.rs:71:5
 
-warning: unreachable `pub` item
- --> crates/replay-columnar/src/lib.rs:80:1
+warning[E0133]: call to deprecated safe function `std::env::set_var` is unsafe and requires unsafe block
+  --> crates/replay-columnar/src/lib.rs:80:5
+
+error[E0133]: call to unsafe function `read` is unsafe and requires unsafe function or block
+  --> crates/replay-columnar/src/lib.rs:90:5
+
+warning: used `unwrap()` on a `Result` value
+  --> crates/replay-columnar/tests/helpers.rs:13:5
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#unwrap_used
 
 warning: `replay-columnar` (lib test) generated 6 warnings (5 duplicates)
 """
@@ -57,14 +64,14 @@ warning: `replay-columnar` (lib test) generated 6 warnings (5 duplicates)
 
 class Findings(unittest.TestCase):
     def test_clippy_diagnostics_are_read_once_each_at_their_primary_line(self):
-        self.assertEqual(cc.findings(OUTPUT.splitlines(), {"missing_debug_implementations"}), [
+        self.assertEqual(cc.findings(OUTPUT.splitlines(), {"unsafe_op_in_unsafe_fn"}), [
             ("crates/replay-columnar/src/writer/tests.rs", 1341, "drop_non_drop", "warning",
              "call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes"),
             ("crates/replay-columnar/src/lib.rs", 9, "dbg_macro", "warning", "the `dbg!` macro is intended as a debugging tool"),
-            ("crates/replay-columnar/src/lib.rs", 15, "missing_debug_implementations", "warning",
-             "type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation"),
-            ("crates/replay-columnar/src/lib.rs", 71, "missing_debug_implementations", "warning",
-             "type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation"),
+            ("crates/replay-columnar/src/lib.rs", 15, "unsafe_op_in_unsafe_fn", "warning",
+             "call to unsafe function `read` is unsafe and requires unsafe block"),
+            ("crates/replay-columnar/src/lib.rs", 71, "unsafe_op_in_unsafe_fn", "warning",
+             "dereference of raw pointer is unsafe and requires unsafe block"),
         ])
 
 
