@@ -13,7 +13,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_world::registrations::SCALARS_NUCLEARARSENAL,
     dashboard_world::registrations::SCALARS_WORLDTENSION,
     dashboard_world::registrations::SCALARS_FACTORYPARTS,
-    dashboard_land::registrations::EXPERIENCE_COUNTRYEXPERIENCE,
     dashboard_land::registrations::TRAINING_QUEUE_TRAININGQUEUE,
     dashboard_wars::registrations::DIPLOMACY_DIPLOMATICRELATIONS,
     dashboard_wars::registrations::CASUALTY_MATRIX_CASUALTYMATRIX,
@@ -41,7 +40,6 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_land::registrations::LEADERS_CAREER_LEADERHOUR,
     dashboard_naval::registrations::NAVAL_MANAGEMENT_NAVALMANAGEMENT,
     dashboard_air::registrations::AIR_ACES_AIRACESAT,
-    dashboard_air::registrations::REGIONAL_WEATHER_WEATHERPROVINCES,
     dashboard_politics::registrations::FOCUS_FOCUSUNAVAILABLEAT,
     dashboard_politics::registrations::STABILITY_COUNTRYSTABILITYBREAKDOWN,
     dashboard_politics::registrations::STABILITY_STABILITYPARTNAMES,
@@ -110,7 +108,6 @@ const OWN: &[Registered] = &[
     dashboard_intelligence::registrations::RAIDS_RAIDLOG,
     dashboard_economy::registrations::ECONOMY_RESOURCES_RESOURCESIZES,
     dashboard_production::registrations::PRODUCTION_PRODUCTIONLINES,
-    dashboard_production::registrations::PRODUCTION_PRODUCTIONLINEDETAIL,
     dashboard_production::registrations::PRODUCTION_PRODUCTIONLINEBREAKDOWN,
     dashboard_world::registrations::PLACE_NAMES_PLACENAMES,
     dashboard_world::registrations::SEA_REGIONS_STRATEGICREGIONS,
@@ -125,7 +122,6 @@ const OWN: &[Registered] = &[
     dashboard_politics::registrations::FOCUS_CARD_FOCUSCARD,
     dashboard_politics::registrations::IDEAS_IDEAHISTORY,
     dashboard_politics::registrations::PARTY_HISTORY_PARTYHISTORY,
-    dashboard_wars::registrations::CASUALTIES_CASUALTYPAIRS,
     dashboard_wars::registrations::CASUALTIES_CASUALTYBREAKDOWN,
     dashboard_wars::registrations::CASUALTIES_CASUALTYLABELS,
     dashboard_wars::registrations::PEACE_PEACEDEALS,
@@ -186,7 +182,6 @@ const OWN: &[Registered] = &[
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN,
     dashboard_politics::registrations::STABILITY_READS_STABILITYREADS,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE,
-    dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYRANKING,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS,
 ];
 
@@ -222,7 +217,6 @@ const MOVED_OWN: &[&str] = &[
     dashboard_intelligence::registrations::RAIDS_RAIDLOG.key,
     dashboard_economy::registrations::ECONOMY_RESOURCES_RESOURCESIZES.key,
     dashboard_production::registrations::PRODUCTION_PRODUCTIONLINES.key,
-    dashboard_production::registrations::PRODUCTION_PRODUCTIONLINEDETAIL.key,
     dashboard_production::registrations::PRODUCTION_PRODUCTIONLINEBREAKDOWN.key,
     dashboard_world::registrations::PLACE_NAMES_PLACENAMES.key,
     dashboard_world::registrations::SEA_REGIONS_STRATEGICREGIONS.key,
@@ -238,7 +232,6 @@ const MOVED_OWN: &[&str] = &[
     dashboard_politics::registrations::FOCUS_CARD_FOCUSCARD.key,
     dashboard_politics::registrations::IDEAS_IDEAHISTORY.key,
     dashboard_politics::registrations::PARTY_HISTORY_PARTYHISTORY.key,
-    dashboard_wars::registrations::CASUALTIES_CASUALTYPAIRS.key,
     dashboard_wars::registrations::CASUALTIES_CASUALTYBREAKDOWN.key,
     dashboard_wars::registrations::CASUALTIES_CASUALTYLABELS.key,
     dashboard_wars::registrations::PEACE_PEACEDEALS.key,
@@ -299,7 +292,6 @@ const MOVED_OWN: &[&str] = &[
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN.key,
     dashboard_politics::registrations::STABILITY_READS_STABILITYREADS.key,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE.key,
-    dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYRANKING.key,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS.key,
 ];
 

@@ -10,7 +10,7 @@ import { object } from '../../dashboard/validation.ts';
 import { drawableIcon } from '../../dashboard/artwork.ts';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
-import type { EquipmentIcon, LineHistory, LineNow, LineStep, OrganisationName, OutputNow, OutputPart, ProductionLineBreakdownReply, ProductionLineDetailReply, ProductionLinesAtReply, ProductionLinesReply, ProductionModifierRun, VariantName } from '../../generated/dashboard';
+import type { EquipmentIcon, LineHistory, LineNow, LineStep, OrganisationName, OutputNow, OutputPart, ProductionLineBreakdownReply, ProductionLinesAtReply, ProductionLinesReply, ProductionModifierRun, VariantName } from '../../generated/dashboard';
 
 const RAW = /^-?\d{1,20}$/;
 const PART = /^-?\d+$/;
@@ -58,14 +58,6 @@ export function validateAtReply(data: unknown): ProductionLinesAtReply {
     || !TEXT(reply.missing) || !TEXT(reply.outputMissing) || !Array.isArray(reply.variants) || !reply.variants.every(isVariant)
     || !Array.isArray(reply.organisations) || !reply.organisations.every(isOrganisation) || !Array.isArray(reply.icons) || !reply.icons.every(isIcon)
     || !Array.isArray(reply.warnings)) invalid('production lines at an hour');
-  return reply;
-}
-
-export function validateDetailReply(data: unknown): ProductionLineDetailReply {
-  const reply = data as ProductionLineDetailReply;
-  if (!object(reply) || !HOUR(reply.firstHour) || !HOUR(reply.lastHour) || !Number.isInteger(reply.window) || !Array.isArray(reply.lines)
-    || !reply.lines.every(line => object(line) && typeof line.key === 'string' && Array.isArray(line.runs) && ordered(line.runs)
-      && Array.isArray(line.output) && ordered(line.output) && line.output.every(isOutput))) invalid('production line detail');
   return reply;
 }
 

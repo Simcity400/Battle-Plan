@@ -6,24 +6,13 @@ use replay_data::{rows::{RowChanges, TableRows}, scope::CaptureMode};
 use replay_frame::frame::{SharedView, TableView, Unsayable, cells_rows_of};
 use std::collections::hash_map::Entry;
 
-impl Keys {
-    fn contains(&self, key: u128) -> bool {
-        match self {
-            Self::All => true,
-            Self::These(keys) => keys.binary_search(&key).is_ok(),
-            Self::Range(lo, hi) => (*lo..=*hi).contains(&key),
-            Self::Ranges(ranges) => ranges.get(ranges.partition_point(|&(_, hi)| hi < key)).is_some_and(|&(lo, _)| lo <= key),
-        }
-    }
-}
-
 pub(super) struct Projection {
     run: usize,
     columns: Vec<usize>,
     format: u16,
     fields: u64,
     validity: u64,
-    selection: Option<Keys>,
+    selection: Option<Arc<Keys>>,
     at: Option<i32>,
 }
 
@@ -89,8 +78,9 @@ impl Projection {
     }
 
     fn read(&mut self, input: &mut Input<'_>, read: &Read, sample: bool, view: &mut SharedView, edits: &mut Edits) -> io::Result<()> {
-        if self.selection.as_ref() != Some(&read.keys) {
+        if self.selection.as_deref() != Some(&read.keys) {
             self.at = None;
+            self.selection = Some(Arc::new(read.keys.clone()));
         }
         let Input { pool, hour, count, step, placed, mode, .. } = input;
         let (run, table) = (self.run, read.table.index());
@@ -113,7 +103,7 @@ impl Projection {
                 }
             }
         }
-        self.selection = Some(read.keys.clone());
+        *view = view.clone().with_keys(self.selection.clone());
         self.at = Some(*hour);
         Ok(())
     }
