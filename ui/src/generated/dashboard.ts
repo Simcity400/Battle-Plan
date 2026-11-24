@@ -4355,7 +4355,9 @@ export type FactionRostersReply = { factions: Array<FactionRoster>,
  */
 missing: string | null, warnings: Array<string>, };
 export type FactionRostersParamsAtHour = FactionRostersParams & { hour: number };
-export type GameScoreParams = { branchId: string, };
+export type GameScoreParams = { branchId: string, top?: GameScoreTopParams, };
+export type GameScoreTopParams = { count: number, by: string, };
+export type GameScoreTop = { tags: Array<string>, missing: string | null, };
 export type GameScoreCell = { missing: string | null, };
 export type GameScoreRow = { tag: string, countryId: number, total: GameScoreCell, army: GameScoreCell, navy: GameScoreCell, air: GameScoreCell, industry: GameScoreCell, land: GameScoreCell, };
 export type GameScoreMultiplier = { part: string, raw: string | null, missing: string | null, };
@@ -4373,7 +4375,7 @@ hints: { [key in string]?: string },
 /**
  * Why no country's scores are known at the hour.
  */
-missing: string | null, warnings: Array<string>, };
+missing: string | null, top?: GameScoreTop, warnings: Array<string>, };
 export type GameScoreParamsAtHour = GameScoreParams & { hour: number };
 export type NuclearArsenalParams = { branchId: string, };
 export type NukeType = { ordinal: number,
@@ -6753,7 +6755,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "focus-order-page": { "branchId": "leaf", "country": "any", "hour": "leaf", "page": "leaf", "pages": "node", "pages.count": "leaf", "pages.first": "leaf", "pages.rows": "leaf" },
   "focus-unavailable": { "branchId": "leaf", "hour": "leaf" },
   "fuel-branches": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "game-score": { "branchId": "leaf", "hour": "leaf" },
+  "game-score": { "branchId": "leaf", "hour": "leaf", "top": "node", "top.by": "leaf", "top.count": "leaf" },
   "head:campaign-clock": { "branchId": "leaf", "firstHour": "leaf", "lastHour": "leaf" },
   "head:player-apm": { "branchId": "leaf", "firstHour": "leaf", "group": "leaf", "lastHour": "leaf", "membership": "node", "membership[]": "node", "membership[].firstHour": "leaf", "membership[].lastHour": "leaf", "membership[].tag": "leaf", "players": "node", "players[]": "leaf", "tags": "node", "tags[]": "leaf", "windowHours": "leaf" },
   "idea-history": { "branchId": "leaf", "country": "any" },

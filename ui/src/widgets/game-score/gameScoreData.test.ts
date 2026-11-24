@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { factionGroup, formatScore, scoreCountries, scoreHint, scoreParts, scoreRows, scoreTooltip, validateGameScore } from './gameScoreData.ts';
+import { factionGroup, formatScore, scoreCountries, scoreHint, scoreParts, scoreTooltip, validateGameScore } from './gameScoreData.ts';
 import type { ScoreOf } from './gameScoreData';
 import type { CountryGroupReply, GameScoreRow } from '../../generated/dashboard';
 import type { GameScoreReply } from './gameScoreData';
@@ -14,19 +14,9 @@ const REPLY: GameScoreReply = { missing: null, warnings: [], hints: { total: 'So
 const VALUES = new Map([['ENG|total', 3], ['ENG|army', 9], ['GER|total', 7], ['GER|army', 1], ['ITA|army', 1]]);
 const score: ScoreOf = (tag, part) => VALUES.get(`${tag}|${part}`);
 
-test('a top N ranks only countries whose score is known, by the chosen score as the live cells hold it', () => {
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: [], top: 5, hour: 9 }, null, 'total', score).map(item => item.tag), ['GER', 'ENG']);
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: [], top: 1, hour: 9 }, null, 'army', score).map(item => item.tag), ['ENG']);
-  assert.deepEqual(scoreRows(REPLY, { all: true, tags: [], top: null, hour: 9 }, null, 'total', score).length, 3);
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: ['ITA'], top: null, hour: 9 }, null, 'total', score).map(item => item.tag), ['ITA']);
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: [], top: null, hour: 9 }, tag => tag !== 'ITA', 'total', score).map(item => item.tag), ['ENG', 'GER']);
-  assert.deepEqual(scoreRows(REPLY, { all: false, tags: [], top: 5, hour: 9 }, null, 'total', () => undefined), [], 'scores not read yet rank no country');
-});
-
 test('all countries is a choice made: every row of the reply, with no reason to choose a country', () => {
   const all = scoreCountries({ kind: 'all' }, [], undefined, 9);
   assert.equal(all.reason, null);
-  assert.equal(scoreRows(REPLY, { all: true, tags: all.tags, top: all.top ?? null, hour: 9 }, null, 'total', score).length, 3);
   assert.equal(scoreCountries({ kind: 'tags', tags: [] }, [], undefined, 9).reason, 'Choose a country in the widget settings.');
 });
 
