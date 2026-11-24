@@ -300,8 +300,7 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
       const compact = options?.compact ? formatCompactScalar(value.value, format) : null;
       const text = compact ? compact.text : formatScalar(value.value, format);
       const exact = compact ? compact.exact : text;
-      const lead = value.atLeast ? `at least ${exact}` : exact;
-      const spoken = `${lead}, partial: ${value.reason}`;
+      const spoken = `${exact}, partial: ${value.reason}`;
       return {
         kind: 'partial',
         text,
