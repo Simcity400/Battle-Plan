@@ -98,3 +98,19 @@ fn truncated_minefields_keep_witnessed_owners_live_and_refuse_region_total_with_
     assert!(kinds.contains(&"GER"), "witnessed owner cell remains registered");
     assert!(kinds.contains(&"total"), "region total remains registered under Table scope so UI shows the truncation reason");
 }
+
+#[test]
+fn chosen_regions_lead_in_order_with_unknown_and_empty_picks_and_hidden_regions_leave() {
+    let sea = BTreeSet::from([3, 5, 12, 15]);
+    let mut chosen = fold(&rows(), name, |_| true, false, &sea);
+    let rank = choose(&mut chosen, &[7, 5, 12], &[3, 12], false);
+    chosen.mined.sort_by_key(|region| rank.get(&region.region).copied().unwrap_or(usize::MAX));
+    let shown: Vec<(u32, bool, u32)> = chosen.mined.iter().map(|region| (region.region, region.pinned, region.unknown_owners)).collect();
+    assert_eq!(shown, [(7, true, 0), (5, true, 2), (12, true, 2)], "hiding a pick keeps it; the hidden mined region leaves");
+    assert_eq!(chosen.unknown, [UnknownRegion { region: 15, unknown_owners: 3 }], "a pick is not also listed unknown");
+    assert!(chosen.cells.iter().all(|(region, ..)| *region != 3));
+
+    let mut lost = fold(&rows(), name, |_| true, true, &BTreeSet::new());
+    choose(&mut lost, &[40], &[], true);
+    assert!(lost.mined.iter().find(|region| region.region == 40).is_some_and(|region| region.missing.is_some()), "an unread pick is not shown as no mines");
+}
