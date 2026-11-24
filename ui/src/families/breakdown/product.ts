@@ -7,13 +7,17 @@ export interface BreakdownWords {
   readonly format: (raw: bigint, decimals: number) => string;
 }
 
+function sentence(text: string | null): string | undefined {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : undefined;
+}
+
 function scaled(raw: bigint, decimals: number): number {
   return Number(raw) / 10 ** decimals;
 }
 
 function part(wire: WirePart, decimals: number, words: BreakdownWords): BreakdownPart {
   const raw = wire.raw === null ? null : BigInt(wire.raw);
-  const reason = wire.reason ?? undefined;
+  const reason = sentence(wire.reason);
   return {
     key: wire.key,
     name: wire.name,
@@ -43,7 +47,7 @@ function hours(count: number): string {
 export function breakdownTotal(breakdown: Breakdown, words: BreakdownWords): BreakdownTotal {
   const { total, decimals } = breakdown;
   const raw = total.raw === null ? null : BigInt(total.raw);
-  const reason = total.reason ?? undefined;
+  const reason = sentence(total.reason);
   return {
     known: total.state === 'known',
     ...(total.state === 'atLeast' ? { atLeast: true } : {}),
