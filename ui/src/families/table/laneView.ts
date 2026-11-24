@@ -416,7 +416,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     const rowKey = focus ? key : inspectedRow(key);
     if (!rowKey) return null;
     const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns, frame.model.hour);
-    return content ? { hour: frame.model.hour, rowKey, content } : null;
+    return content ? { rowKey, content } : null;
   },
   structure({ model, layout, binding }) {
     const shape = layout.shape;

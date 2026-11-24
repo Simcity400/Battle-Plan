@@ -88,7 +88,7 @@ function tileOf(product: unknown, params: unknown): { key: string; bins: unknown
 }
 
 export interface ExactRead { values: ReadonlyMap<string, string>; ranked?: boolean; ordered?: boolean }
-export type ExactPicture = (hour: number, auditId?: number) => Promise<ExactRead | null>;
+export type ExactPicture = (hour: number, auditId?: number, fields?: Readonly<Record<string, unknown>>) => Promise<ExactRead | null>;
 export type AuditSnapshotPin = (auditId: number) => (() => void) | undefined;
 interface ReaderRegistration { readonly exact: ExactPicture; readonly pin?: AuditSnapshotPin }
 type ShownRow = NonNullable<PictureSample['rows']>[number];
@@ -268,6 +268,7 @@ export class PerfRecorder {
       for (const record of first.records) {
         const logged: PerfRecord = { ...record };
         delete logged.rows;
+        delete logged.fields;
         this.push(logged);
         if (shouldAuditPicture(record, readers)) pictures.push(record as AuditedPicture);
       }
@@ -286,6 +287,7 @@ export class PerfRecorder {
       for (const record of next.records) {
         const logged: PerfRecord = { ...record };
         delete logged.rows;
+        delete logged.fields;
         this.push(logged);
         if (shouldAuditPicture(record, work.readers)) work.pictures.push(record as AuditedPicture);
       }
@@ -301,7 +303,7 @@ export class PerfRecorder {
       let error: string | null;
       try {
         error = rows
-          ? pictureError(surface, rows, await work.readers?.get(readerKey(record.generation, placement, owner))?.exact(hour, record.auditId))
+          ? pictureError(surface, rows, await work.readers?.get(readerKey(record.generation, placement, owner))?.exact(hour, record.auditId, record.fields))
           : 'Painted picture emitted without audit rows';
       }
       catch (cause) { error = String(cause); }
