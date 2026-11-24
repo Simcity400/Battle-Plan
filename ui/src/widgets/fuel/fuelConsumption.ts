@@ -1,7 +1,5 @@
-import { contentKey, setToken } from '../../dashboard/options.ts';
 import { object } from '../../dashboard/validation.ts';
 import { isRaw } from './fuelData.ts';
-import { isBasis } from './fuelDrill.ts';
 import type { FuelBasis } from './fuelDrill';
 import type { FuelDemandHistoryReply, FuelDemandPart, FuelDemandReply } from '../../generated/dashboard';
 
@@ -83,29 +81,7 @@ export function levelComplete(reply: FuelDemandReply, level: string, shown: read
 }
 
 export interface FuelConsumptionLevel { campaign: string; branch: string; basis: FuelBasis; level: string }
-export const fuelConsumptionLevelToken = (level: FuelConsumptionLevel) => setToken(JSON.stringify(level));
-export function readFuelConsumptionLevel(token: unknown, campaign: string, branch: string): FuelConsumptionLevel | null {
-  if (typeof token !== 'string' || !token) return null;
-  try {
-    const value = JSON.parse(contentKey(token));
-    if (!object(value) || value.campaign !== campaign || value.branch !== branch || !isBasis(value.basis, branch) || typeof value.level !== 'string'
-      || !/^(all|family:[012]|command:\d+|fleet:\d+|site:.+)$/.test(value.level)) return null;
-    return value as unknown as FuelConsumptionLevel;
-  } catch { return null; }
-}
-
 export interface FuelConsumptionSelection { campaign: string; branch: string; basis: FuelBasis; key: string; name: string | null }
-export const fuelConsumptionToken = (selection: FuelConsumptionSelection) => setToken(JSON.stringify(selection));
-export function readFuelConsumption(token: unknown, campaign: string, branch: string): FuelConsumptionSelection | null {
-  if (typeof token !== 'string' || !token) return null;
-  try {
-    const value = JSON.parse(contentKey(token));
-    if (!object(value) || value.campaign !== campaign || value.branch !== branch || typeof value.key !== 'string' || !value.key
-      || !isBasis(value.basis, branch) || !(value.name === null || typeof value.name === 'string')) return null;
-    return value as unknown as FuelConsumptionSelection;
-  } catch { return null; }
-}
-
 export function demandBasis(branchId: string, reply: FuelDemandReply): FuelBasis | null {
   return reply.countryInstance === null ? null : { branchId, tag: reply.tag, hour: reply.readHour, country: reply.country, countryInstance: reply.countryInstance };
 }

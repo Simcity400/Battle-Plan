@@ -14,6 +14,7 @@ import { deriveMeterAudit, deriveMeterMirror, deriveMeterNav, findMeterTooltip }
 import { hitMeterModel, layoutMeterModel } from './painter.ts';
 import type { DecryptionReply, DoctrineMasteryReply, ResearchSlotsReply } from '../../generated/dashboard';
 import type { ResearchData } from '../../widgets/research/types';
+import { matrixCellAt } from '../heat/matrixModel.ts';
 
 const THEME: FamilyTheme = {
   surface: '#14171d',
@@ -477,12 +478,12 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
     ['German Reich', 'Broken 0 · Decrypting 1'],
   ]);
   assert.deepEqual(matrix.columns.map(c => c.label), ['German Reich', 'Soviet Union']);
-  const engGer = matrix.cell(0, 0);
+  const engGer = matrixCellAt(matrix, 0, 0);
   assert.equal(engGer.kind === 'value' && engGer.mark, 'square');
   assert.ok(engGer.kind === 'value' && engGer.audit?.includes('|broken|By '), 'the matrix audit keeps the upper bound');
-  assert.equal(matrix.cell(0, 1).kind, 'missing');
-  assert.equal(matrix.cell(1, 0).kind, 'diagonal');
-  const gerSov = matrix.cell(1, 1);
+  assert.equal(matrixCellAt(matrix, 0, 1).kind, 'missing');
+  assert.equal(matrixCellAt(matrix, 1, 0).kind, 'diagonal');
+  const gerSov = matrixCellAt(matrix, 1, 1);
   assert.ok(gerSov.kind === 'value' && gerSov.mark === 'ring' && gerSov.fraction === 0.62);
 
   const ctx = makeFakeCtx();

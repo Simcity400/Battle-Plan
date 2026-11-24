@@ -1339,7 +1339,7 @@ pub fn gui_texture_frame_png(
     image_frame_png(&gui_texture(layers, name, decode)?, frames, frame, max_edge)
 }
 
-fn image_frame_png(
+pub fn image_frame_png(
     image: &Rgba8Image,
     frames: u32,
     frame: u32,

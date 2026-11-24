@@ -2,7 +2,7 @@ import { CHART_MEASURE_COLOURS, authoredHex, readableColour } from '../../charts
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
-import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell } from '../../families/heat/matrixModel.ts';
+import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView, signedRampColour } from '../../families/heat/scale.ts';
 import type { DiplomaticRelationsReply, OpinionOrder } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
@@ -20,7 +20,7 @@ export function formatOpinion(value: number): string {
 }
 
 function emptyModel(hour: number, extra: Partial<HeatMatrixModel>): HeatMatrixModel {
-  return { hour, rows: [], columns: [], cell: () => ({ kind: 'diagonal' }), ...extra };
+  return { hour, rows: [], columns: [], cells: NO_CELLS, ...extra };
 }
 
 export function projectDiplomaticRelations(readView: BoundedReadView, options: DiplomaticRelationsProjectionOptions): HeatMatrixModel {
@@ -57,19 +57,18 @@ export function projectDiplomaticRelations(readView: BoundedReadView, options: D
   const n = owners.length;
   const cells = reply.cells;
   const hasMissing = cells.some(cell => cell.kind === 'missing');
-  const cell = (rowIndex: number, columnIndex: number): MatrixCell => {
-    if (rowIndex === columnIndex) return { kind: 'diagonal' };
-    const raw = cells[rowIndex * n + columnIndex];
-    if (!raw) return { kind: 'missing', reason: 'Opinion not recorded' };
-    if (raw.kind === 'diagonal') return { kind: 'diagonal' };
-    if (raw.kind === 'missing') return { kind: 'missing', reason: raw.reason };
-    return { kind: 'value', color: signedRampColour(raw.opinion, low, high, grey, negative, positive), text: formatOpinion(raw.opinion), value: raw.opinion };
-  };
+  const present = new Map<number, MatrixCell>();
+  cells.forEach((raw, at) => {
+    if (raw.kind === 'diagonal' || Math.floor(at / n) === at % n) return;
+    present.set(at, raw.kind === 'missing'
+      ? { kind: 'missing', reason: raw.reason }
+      : { kind: 'value', color: signedRampColour(raw.opinion, low, high, grey, negative, positive), text: formatOpinion(raw.opinion), value: raw.opinion });
+  });
   return {
     hour,
     rows: entities,
     columns: entities,
-    cell,
+    cells: { present, absent: { kind: 'missing', reason: 'Opinion not recorded' } },
     legend: {
       gradient: { lowLabel: formatOpinion(low), highLabel: formatOpinion(high), stops: [negative, grey, positive] },
       ...(hasMissing ? { entries: [{ id: 'missing', label: 'Not recorded', color: grey, hatched: true }] } : {}),

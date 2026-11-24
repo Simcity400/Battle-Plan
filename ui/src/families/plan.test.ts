@@ -749,6 +749,20 @@ test('held reply during a resize maps stationary client clicks through installed
     pipeline.page.frame();
     assert.equal(pipeline.view(wid)?.installedOwner, 'country:GER');
 
+    const posted: unknown[] = [];
+    worker.postMessage = message => { posted.push(message); };
+    const clicked: (string | null)[] = [];
+    pipeline.pointer(wid, 0, [50, 50], key => { clicked.push(key); });
+    assert.equal((posted.at(-1) as { installed?: number }).installed, 1, 'the pointer names the picture the page shows');
+    pipeline.page.offer({
+      lane: 0,
+      serial: 2,
+      entries: [makeEntry({ widget: wid, id: 2, owner: 'country:GER', h: 0, c: 100, lo: 0, hi: 100, surfaces: [] }) as unknown as Entry<ImageBitmap>],
+    });
+    pipeline.page.frame();
+    worker.onmessage?.({ data: { type: 'hit', widget: wid, key: 'row:SOV', installedId: 1, owner: 'country:GER' } } as MessageEvent<FromLane>);
+    assert.deepEqual(clicked, ['row:SOV'], 'a click answered for the picture shown when it was made stands though a repaint installed since');
+
     pipeline.retime(wid, { owner: 'country:SOV' });
     assert.equal(pipeline.view(wid)?.mode, 'reading', 'owner change clears installed picture immediately');
 
@@ -1192,6 +1206,12 @@ test('advancing through an open bucket and a growing mark cluster costs what cha
   assert.ok(worst <= 48, `one more hour inside an open bucket visits a constant number of items, not the bucket: ${worst}`);
   const fresh = boundTiledSeries(line, displayedHour(900));
   assert.deepEqual(fresh.buckets.at(0), cursor.advance(line, 900).buckets.at(0));
+
+  const brokenRuns: Run[] = [{ firstHour: 0, lastHour: 9, value: 1, breakBefore: true }, { firstHour: 10, lastHour: 19, value: 2 }];
+  const brokenLine: TiledLine = { ...line, summary: { ...line.summary, runs: brokenRuns } };
+  const brokenCursor = new BoundedSeriesCursor();
+  brokenCursor.advance(brokenLine, 3);
+  assert.deepEqual(brokenCursor.advance(brokenLine, 4).buckets.at(0), boundTiledSeries(brokenLine, displayedHour(4)).buckets.at(0), 'a resumed cut observes a run’s break once, as a fresh cut does');
 
   const pointLine: TiledLine = { ...line, summary: { ...line.summary, runs: undefined } };
   const pointCursor = new BoundedSeriesCursor();

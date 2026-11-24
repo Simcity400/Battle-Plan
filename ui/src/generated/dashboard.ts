@@ -1413,7 +1413,11 @@ phase: number | null, phaseName: string | null, outcome: number | null, outcomeN
 /**
  * Its phases over the span, in hour order.
  */
-runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean, endedHour: number | null, endedExact: boolean, endedSource: RaidEndedSource | null, disappearedHour: number | null, disappearedExact: boolean, succeeded: boolean, };
+runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean, endedHour: number | null, endedExact: boolean, endedSource: RaidEndedSource | null,
+/**
+ * The first read that saw it ended: what a later read reveals is never counted before it.
+ */
+endedSeenHour: number | null, disappearedHour: number | null, disappearedExact: boolean, succeeded: boolean, };
 export type RaidLogReply = {
 /**
  * False only when the content proves no raid type exists; true once a raid was recorded; none

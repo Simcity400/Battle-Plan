@@ -31,7 +31,6 @@ function inSpans(spans: readonly HourSpan[], hour: number): boolean {
 export default function StabilityWidget(props: WidgetProps) {
   const { widget, runtime, active } = props;
   const options = resolveOptions(STABILITY_OPTIONS, widget.options);
-  const pinnedBreakdown = options.show === 'stability' || options.show === 'warSupport';
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const lastHour = track?.branch.lastHour ?? 0;
@@ -42,13 +41,13 @@ export default function StabilityWidget(props: WidgetProps) {
   const wantGov = options.markGovernment !== false;
   const wantFocus = options.markFocus !== false;
 
-  const groupsActive = active && !pinnedBreakdown && (widget.countries.kind === 'group' || wantWars || wantFactions);
+  const groupsActive = active && (widget.countries.kind === 'group' || wantWars || wantFactions);
   const groups = useCountryGroups(runtime, track, groupsActive);
   const resolved = useMemo(
     () => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, lastHour],
   );
-  const singleTag = !pinnedBreakdown && resolved.tags.length === 1 ? resolved.tags[0]! : null;
+  const singleTag = resolved.tags.length === 1 ? resolved.tags[0]! : null;
 
   const ideasReq = useMemo(
     () => (track && singleTag && wantGov
@@ -69,9 +68,9 @@ export default function StabilityWidget(props: WidgetProps) {
     [track, singleTag, wantFocus],
   );
 
-  const ideas = useProduct<IdeaHistoryReply>(runtime.client, ideasReq, active && !pinnedBreakdown && wantGov, validateIdeaHistoryReply, track?.source);
-  const parties = useProduct<PartyHistoryReply>(runtime.client, partiesReq, active && !pinnedBreakdown && wantGov, validatePartyHistoryReply, track?.source);
-  const focus = useProduct<FocusReply>(runtime.client, focusReq, active && !pinnedBreakdown && wantFocus, validateFocusReply, track?.source);
+  const ideas = useProduct<IdeaHistoryReply>(runtime.client, ideasReq, active && wantGov, validateIdeaHistoryReply, track?.source);
+  const parties = useProduct<PartyHistoryReply>(runtime.client, partiesReq, active && wantGov, validatePartyHistoryReply, track?.source);
+  const focus = useProduct<FocusReply>(runtime.client, focusReq, active && wantFocus, validateFocusReply, track?.source);
 
   const completedFocuses = useMemo(() => {
     if (!focus.data) return [];
@@ -90,7 +89,7 @@ export default function StabilityWidget(props: WidgetProps) {
   }, [focus.data]);
 
   const rawMarkers = useMemo<readonly StabilityRawMarker[]>(() => {
-    if (!track || !singleTag || pinnedBreakdown) return [];
+    if (!track || !singleTag) return [];
     const branchFirst = track.branch.firstHour;
     const branchLast = track.branch.lastHour;
     const tag = singleTag;
@@ -248,13 +247,10 @@ export default function StabilityWidget(props: WidgetProps) {
     }
 
     return out;
-  }, [track, singleTag, pinnedBreakdown, wantFocus, wantGov, wantWars, wantFactions, completedFocuses, focus.data, ideas.data, parties.data, groups.data]);
+  }, [track, singleTag, wantFocus, wantGov, wantWars, wantFactions, completedFocuses, focus.data, ideas.data, parties.data, groups.data]);
 
   const declaration = useMemo(() => stabilityDeclarationWith(rawMarkers), [rawMarkers]);
 
-  if (pinnedBreakdown) {
-    return <StabilityDetail {...props} />;
-  }
 
   return (
     <StabilityDetail
