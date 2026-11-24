@@ -77,6 +77,12 @@ fn the_roster_names_and_dates_each_ace_from_its_row_and_history() {
     assert_eq!((death.last_alive, death.by_hour, death.killer_ace.as_deref(), death.killer_tag.as_deref()), (Some(280), Some(300), Some("11"), Some("JAP")));
     assert!(warnings.iter().any(|warning| warning.contains("ACE_FULL_NAME content unavailable")));
 
+    let mut renamed = history();
+    renamed.slots.insert(1, vec![("JAP".to_owned(), 0, 304), ("MAN".to_owned(), 305, 1_000)]);
+    let (_, aces) = roster(&frame, &renamed, None, &mut Vec::new());
+    let death = aces[1].death.as_ref().expect("still dead");
+    assert_eq!((aces[0].tag.as_deref(), death.seen_dead, death.killer_tag.as_deref()), (Some("MAN"), Some(300), Some("JAP")), "a later tag change does not rewrite who killed it");
+
     *frame.tables[TableId::WingEquipment.index()] = TableView::Unavailable { reason: "wing equipment was not read".into() }.into();
     let (_, aces) = roster(&frame, &history(), None, &mut Vec::new());
     assert_eq!(aces[0].aircraft, None, "a wing's equipment not recorded is not an empty wing");

@@ -6,11 +6,13 @@ use dashboard_base::products::{
     validate_country,
 };
 use dashboard_base::Source;
+use dashboard_query::series::ranked::GroupSelection;
+use dashboard_world::products::group_members::GroupsAt;
 use replay_data::rows::{Recorded, TableId, TagHolderRow, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -36,6 +38,10 @@ pub struct TradeFlowParams {
     pub countries: Vec<Country>,
     #[serde(default)]
     pub between: bool,
+    #[doc = " A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries`."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     #[doc = " Partners shown per side before the rest are folded into one."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -53,6 +59,7 @@ pub struct TradeContext {
     parts: Arc<Vec<FlowPart>>,
     index: Arc<HashMap<u32, u32>>,
     warnings: Vec<String>,
+    groups: GroupsAt,
 }
 
 pub fn parts_of(resources: &[dashboard_base::products::resources::ResourceInfo]) -> (Vec<FlowPart>, HashMap<u32, u32>) {
@@ -98,9 +105,9 @@ impl AtHour for TradeFlow {
     const KEY: &'static str = "trade-flow";
     const TITLE: &'static str = "Trade flows";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = TradeFlowParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, limit, resource, table];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, subject, countries, "countries[]", between, group, limit, resource, table];
     type Reply = CountryFlowReply;
     type Context = TradeContext;
 
@@ -121,7 +128,7 @@ impl AtHour for TradeFlow {
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(TradeContext { parts: Arc::new(Vec::new()), index: Arc::new(HashMap::new()), warnings: Vec::new() })
+        Ok(TradeContext { parts: Arc::new(Vec::new()), index: Arc::new(HashMap::new()), warnings: Vec::new(), groups: GroupsAt::default() })
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
@@ -132,7 +139,12 @@ impl AtHour for TradeFlow {
         let (resources, notes) = ResourceNaming::stored(source, load).infos(&tokens, &AtomicBool::new(false))?;
         warnings.extend(notes);
         let (parts, index) = parts_of(&resources);
-        Ok(TradeContext { parts: Arc::new(parts), index: Arc::new(index), warnings })
+        let groups = GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())?;
+        Ok(TradeContext { parts: Arc::new(parts), index: Arc::new(index), warnings, groups })
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        if params.subject.is_some() { i32::MAX } else { at.context.groups.valid_through(params.group.as_ref(), at.hour) }
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -152,7 +164,10 @@ impl AtHour for TradeFlow {
         if let Some(None) = subject {
             return Ok(CountryFlowReply::not_recorded("The chosen country holds no tag at this hour".to_owned(), RESOURCE_DECIMALS, warnings));
         }
-        let chosen: Option<HashSet<u32>> = (!params.countries.is_empty()).then(|| params.countries.iter().filter_map(resolve).collect());
+        let chosen = match at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
+            Ok(chosen) => chosen,
+            Err(refused) => return Ok(CountryFlowReply::not_recorded(refused, RESOURCE_DECIMALS, warnings)),
+        };
         let shape = FlowShape {
             subject: subject.flatten(),
             chosen: chosen.as_ref(),

@@ -167,9 +167,19 @@ export function buildLineSubpaths(
       }
       const x = layout.toX(pt.hour);
       const y = layout.toY(pt.value);
-      if (!cur.length) cur.push([x, y]);
-      else if (step) cur.push([x, cur[cur.length - 1]![1]], [x, y]);
-      else cur.push([x, y]);
+      const hasRange = pt.min != null && pt.max != null && Number.isFinite(pt.min) && Number.isFinite(pt.max) && pt.min !== pt.max;
+      if (!cur.length) {
+        if (hasRange) cur.push([x, layout.toY(pt.min!)], [x, layout.toY(pt.max!)], [x, y]);
+        else cur.push([x, y]);
+      } else if (step) {
+        cur.push([x, cur[cur.length - 1]![1]]);
+        if (hasRange) cur.push([x, layout.toY(pt.min!)], [x, layout.toY(pt.max!)], [x, y]);
+        else cur.push([x, y]);
+      } else if (hasRange) {
+        cur.push([x, layout.toY(pt.min!)], [x, layout.toY(pt.max!)], [x, y]);
+      } else {
+        cur.push([x, y]);
+      }
       end = [x, y];
     }
     if (cur.length) subpaths.push(cur);
@@ -216,15 +226,35 @@ export function drawTimeChart(
   const textSecondary = tokens.textSecondary;
 
   if (layout.legendTop !== null && model.legend && model.legend.length > 0) {
+    const legend = model.legend;
+    const isLineLegend = model.mode === 'lines';
+    let ordinaryLen = legend.length;
+    while (ordinaryLen > 0 && legend[ordinaryLen - 1]!.hatch) ordinaryLen--;
+    const trailing = ordinaryLen < legend.length
+      ? legend.slice(ordinaryLen).map(item => ({
+          label: item.label,
+          color: item.color,
+          hatch: true,
+          muted: false,
+        }))
+      : undefined;
     drawLegendStrip(ctx, layout.left, layout.legendTop, layout.width - layout.left, 14, {
-      entries: model.legend.map(item => ({
-        label: item.label,
-        color: item.color,
-        dash: item.dash,
-        hatch: item.hatch,
-        flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
-        muted: false,
-      })),
+      entries: {
+        length: ordinaryLen,
+        at: i => {
+          const item = legend[i]!;
+          return {
+            label: item.label,
+            color: item.color,
+            ...(isLineLegend && !item.hatch ? { line: true } : {}),
+            dash: item.dash,
+            hatch: item.hatch,
+            flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
+            muted: false,
+          };
+        },
+        ...(trailing ? { trailing } : {}),
+      },
       entryGap: 14,
     }, theme);
   }
