@@ -1,3 +1,4 @@
+import { auditRow } from './auditRow.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChartBucket } from '../charts/chartSummary';
@@ -872,7 +873,7 @@ test('quiet ticks inside validInterval perform zero projections and zero paints,
       projection,
       options: {},
       exactReadView: async (hour: number) => createBoundedReadView({ hour, panels: new Map([['main', { score: 42 }]]) }),
-      deriveRows: (m: { hour: number; score: number }) => [{ row: 'score', key: 'score', value: JSON.stringify(knownValue(m.score)) }],
+      deriveRows: (m: { hour: number; score: number }) => [auditRow('score', JSON.stringify(knownValue(m.score)))],
     },
     verify: createPlanAuditVerifier(),
   });

@@ -13,7 +13,6 @@ import type { Failure } from '../dashboard/queryError';
 import type { CountryHolder } from '../dashboard/reachedCountry';
 import type { BoundWindow, GatedHour, Outside } from '../dashboard/regionTime';
 import type { DeclaredProduct } from '../dashboard/request';
-import type { AuditRow } from '../draw/notifications';
 import type {
   ArtFrame as GeneratedArtFrame,
   ArtOrigin as GeneratedArtOrigin,
@@ -345,7 +344,6 @@ export interface InstalledPicture {
   readonly actionKeys: ReadonlyMap<string, InstalledActionTarget>;
   readonly accessibleDescription: string | null;
   readonly auditId?: number;
-  readonly auditRows?: readonly AuditRow[];
 }
 
 export interface FamilyViewportRequest {

@@ -1,7 +1,7 @@
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
-import type { AuditRow } from '../../draw/notifications';
+import type { FamilyAuditRow } from '../auditRow.ts';
 import type { ArtResolution } from '../art/types.ts';
 import type {
   ArtHandle,
@@ -300,7 +300,7 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly getGridMetrics?: (fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null;
   readonly parseGridKey?: (key: string | null) => { readonly row: number; readonly column: number } | null;
   readonly formatGridKey?: (row: number, column: number) => string;
-  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly AuditRow[];
+  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly FamilyAuditRow[];
   readonly auditOrdered?: boolean;
   readonly gestures?: FamilyGestureHandlers;
   readonly exclusiveExpansion?: (fields: Readonly<Record<string, unknown>>) => boolean;

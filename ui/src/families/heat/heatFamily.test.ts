@@ -165,10 +165,10 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
 
   const audit = deriveMatrixAudit(model);
   assert.deepEqual(audit, [
-    { key: 'ENG->FRA', row: 'United Kingdom → France', value: '+50' },
-    { key: 'ENG->GER', row: 'United Kingdom → German Reich', value: '-80' },
-    { key: 'GER->ENG', row: 'German Reich → United Kingdom', value: 'No network' },
-    { key: 'GER->FRA', row: 'German Reich → France', value: 'Not recorded (Opinions not recorded)' },
+    { row: 'ENG', key: 'ENG:FRA', value: '+50' },
+    { row: 'ENG', key: 'ENG:GER', value: '-80' },
+    { row: 'GER', key: 'GER:ENG', value: 'No network' },
+    { row: 'GER', key: 'GER:FRA', value: 'Not recorded (Opinions not recorded)' },
   ]);
 
   const mirror = deriveMatrixMirror(model, 0, 2, 0, 3);
@@ -379,8 +379,8 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
 
   const audit = deriveLanesAudit(model);
   assert.deepEqual(audit, [
-    { key: '10', row: 'English Channel', value: '70% (Since 4 Jan)' },
-    { key: '11', row: 'Northern France', value: 'Air not recorded' },
+    { row: '10', key: '10', value: '70% (Since 4 Jan)' },
+    { row: '11', key: '11', value: 'Air not recorded' },
   ]);
 
   const mirror = deriveLanesMirror(model, 0, 2);

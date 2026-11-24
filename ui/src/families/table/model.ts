@@ -4,7 +4,6 @@ import { formatDateRange, formatHourSpan } from '../../dashboard/calendar.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { ClockSummaryData, StatusMarkKind } from '../../draw/kit.ts';
 import { changedLiveRows } from '../../draw/views/fields.ts';
-import type { AuditRow } from '../../draw/notifications';
 import type { MissingSpan } from '../../generated/dashboard';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import {
@@ -24,6 +23,7 @@ import {
   type Value,
 } from '../value.ts';
 import { canonicalAuditData } from '../audit.ts';
+import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import { formatDateHover, spokenValue, valueStateProps, type DateBoundKind, type ValueFormat } from '../valueFormat.ts';
 import type { FamilyColumnLayout } from './layout.ts';
 import { lookAt, nextLookChange, type CountryLook, type CountryLooksMap } from '../looks.ts';
@@ -1030,10 +1030,10 @@ export interface TableAuditInput {
   readonly maxima?: ReadonlyMap<string, number>;
   readonly window?: { readonly first: number; readonly count: number };
   readonly countryColors?: CountryColorSource;
-  readonly rowAuditCache?: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly AuditRow[] }>;
+  readonly rowAuditCache?: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly FamilyAuditRow[] }>;
 }
 
-export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
+export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
   const { model, flatRows, visibleColumns, window, countryColors, rowAuditCache } = input;
   const hour = model.hour;
   const rankShown = input.rankShown === true;
@@ -1042,11 +1042,8 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
   const colsSig = rowAuditCache
     ? `${visibleColumns.map(c => `${c.key}:${c.display}:${c.tone ?? ''}:${maxima.get(c.key) ?? ''}`).join('|')}`
     : '';
-  const out: AuditRow[] = [
-    {
-      row: '__table__',
-      key: '__table__:columns',
-      value: canonicalAuditData(
+  const out: FamilyAuditRow[] = [
+    auditCell('__table__', 'columns', canonicalAuditData(
         visibleColumns.map(col => ({
           key: col.key,
           label: col.label,
@@ -1055,12 +1052,8 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
           numeric: col.numeric,
           valueFormat: col.valueFormat ?? null,
         })),
-      ),
-    },
-    {
-      row: '__table__',
-      key: '__table__:meta',
-      value: canonicalAuditData({
+      )),
+    auditCell('__table__', 'meta', canonicalAuditData({
         titleSummary: model.titleSummary ?? null,
         titleSummaryPartial: model.titleSummaryPartial ?? null,
         notes: model.notes ?? [],
@@ -1071,8 +1064,7 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
         empty: hasData ? null : (model.empty ?? null),
         emptyKind: hasData ? null : (model.emptyKind ?? 'empty'),
         emptyDetail: hasData ? null : (model.emptyDetail ?? null),
-      }),
-    },
+      })),
   ];
   if (!hasData) return out;
   const first = window ? Math.max(0, Math.min(window.first, flatRows.length)) : 0;
@@ -1080,35 +1072,19 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
   for (let i = first; i < end; i++) {
     const item = flatRows[i]!;
     if (item.kind === 'group-header') {
-      out.push({
-        row: item.key,
-        key: `${item.key}:group`,
-        value: canonicalAuditData({ kind: 'group-header', label: item.label, count: item.count }),
-      });
+      out.push(auditCell(item.key, 'group', canonicalAuditData({ kind: 'group-header', label: item.label, count: item.count })));
       continue;
     }
     if (item.kind === 'gap') {
-      out.push({
-        row: item.key,
-        key: `${item.key}:gap`,
-        value: canonicalAuditData({ kind: 'gap', firstHour: item.firstHour, lastHour: item.lastHour, reason: item.reason }),
-      });
+      out.push(auditCell(item.key, 'gap', canonicalAuditData({ kind: 'gap', firstHour: item.firstHour, lastHour: item.lastHour, reason: item.reason })));
       continue;
     }
     if (item.kind === 'refused') {
-      out.push({
-        row: item.key,
-        key: `${item.key}:refused`,
-        value: canonicalAuditData({ kind: 'refused', reason: item.reason }),
-      });
+      out.push(auditCell(item.key, 'refused', canonicalAuditData({ kind: 'refused', reason: item.reason })));
       continue;
     }
     if (item.kind === 'loading') {
-      out.push({
-        row: item.key,
-        key: `${item.key}:loading`,
-        value: canonicalAuditData({ kind: 'loading' }),
-      });
+      out.push(auditCell(item.key, 'loading', canonicalAuditData({ kind: 'loading' })));
       continue;
     }
     const rowSig = rowAuditCache
@@ -1119,11 +1095,8 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
       for (let k = 0; k < cached.rows.length; k++) out.push(cached.rows[k]!);
       continue;
     }
-    const rowOut: AuditRow[] = [
-      {
-        row: item.key,
-        key: `${item.key}:_row`,
-        value: canonicalAuditData({
+    const rowOut: FamilyAuditRow[] = [
+      auditCell(item.key, '_row', canonicalAuditData({
           kind: 'data',
           rank: rankShown ? item.rank : null,
           level: item.level,
@@ -1131,21 +1104,12 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
           open: item.isTreeGroup ? item.isOpen : null,
           muted: item.row.muted === true,
           ...(model.dateGrouped ? { showDate: item.showDate !== false, isDayEnd: item.isDayEnd === true, isLiveEnd: item.isLiveEnd === true } : {}),
-        }),
-      },
+        })),
     ];
     for (const col of visibleColumns) {
-      rowOut.push({
-        row: item.key,
-        key: `${item.key}:${col.key}`,
-        value: canonicalAuditData(resolveCellPaintModel(item.row.cells[col.key], col, hour, maxima, countryColors)),
-      });
+      rowOut.push(auditCell(item.key, col.key, canonicalAuditData(resolveCellPaintModel(item.row.cells[col.key], col, hour, maxima, countryColors))));
     }
-    rowOut.push({
-      row: item.key,
-      key: `${item.key}:_tooltip`,
-      value: canonicalAuditData(deriveRowTooltip(item, model.columns, hour)),
-    });
+    rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData(deriveRowTooltip(item, model.columns, hour))));
     if (rowAuditCache && model.rowTimeBoundaries === false) {
       rowAuditCache.set(item.row, { sig: rowSig, rows: rowOut });
     }

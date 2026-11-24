@@ -1,7 +1,6 @@
 import type { WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
 import { scopedOptionKey, type OptionField, type WidgetOptions } from '../dashboard/options.ts';
 import type { LaneView } from '../draw/lane.ts';
-import type { AuditRow } from '../draw/notifications';
 import type { FamilyProjection } from './contract.ts';
 import type { FamilyHostAdapter } from './host/adapter.ts';
 import type { FamilyId, FamilyViewSpec } from './plan.ts';
@@ -25,11 +24,6 @@ export function viewOwnedFields(fields: readonly OptionField[], view: string | u
     : { ...field, storeAs: scopedOptionKey(field.key, active) }));
 }
 
-export type FamilyAuditProjection<TModel = unknown, TOptions = unknown> = (
-  model: TModel,
-  options: TOptions,
-) => readonly AuditRow[];
-
 export interface FamilyViewModule<TModel = any, TOptions = any, TDeclaration = any> {
   readonly family: FamilyId;
   readonly kind: string;
@@ -37,7 +31,6 @@ export interface FamilyViewModule<TModel = any, TOptions = any, TDeclaration = a
   readonly projection: FamilyProjection<TModel, TOptions>;
   readonly declaration?: TDeclaration;
   readonly spec?: FamilyViewSpec<TModel, TOptions>;
-  readonly audit?: FamilyAuditProjection<TModel, TOptions>;
 }
 
 export interface FamilyViewEntry {

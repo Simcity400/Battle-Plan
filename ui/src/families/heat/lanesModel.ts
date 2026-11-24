@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications';
+import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import { formatDateOnly } from '../valueFormat.ts';
@@ -227,17 +227,13 @@ export function deriveLanesTooltip(
 export function deriveLanesAudit(
   model: HeatLanesModel,
   window?: { readonly firstRow: number; readonly endRow: number },
-): readonly AuditRow[] {
+): readonly FamilyAuditRow[] {
   const first = window ? Math.max(0, window.firstRow) : 0;
   const end = window ? Math.min(model.rows.length, window.endRow) : model.rows.length;
-  const out: AuditRow[] = [];
+  const out: FamilyAuditRow[] = [];
   for (let i = first; i < end; i++) {
     const row = model.rows[i]!;
-    out.push({
-      key: row.id,
-      row: row.label,
-      value: row.audit ?? readoutAuditText(row.readout),
-    });
+    out.push(auditRow(row.id, row.audit ?? readoutAuditText(row.readout)));
   }
   return out;
 }

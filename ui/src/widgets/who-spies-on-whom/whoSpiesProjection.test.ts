@@ -52,8 +52,8 @@ test('spy matrix: counter-intelligence on the diagonal, unknown pairs hatched ne
   assert.equal(tip?.hour, HOUR - 12, 'dated by the census read hour');
   assert.deepEqual(deriveMatrixTooltip(model, 0, model.columns.length)?.items, [{ label: 'Active / maximum', value: '7 / 7' }]);
   const audit = deriveMatrixAudit(model);
-  assert.ok(audit.some(row => row.key === 'ENG->ENG' && row.value === '2'));
-  assert.ok(audit.some(row => row.key === 'ITA->rest' && String(row.value).startsWith('Not recorded')));
+  assert.ok(audit.some(row => row.key === 'ENG:ENG' && row.value === '2'));
+  assert.ok(audit.some(row => row.key === 'ITA:~rest' && String(row.value).startsWith('Not recorded')));
 });
 
 test('spy matrix: a census not recorded is the not-recorded state, not an empty matrix', () => {

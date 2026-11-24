@@ -1,7 +1,7 @@
-import type { AuditRow } from '../../draw/notifications.ts';
 import { flagArtHandle } from '../art/provider.ts';
 import { failedArt, missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
+import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { assertValue, hasMeasuredValue, type Value } from '../value.ts';
@@ -465,10 +465,10 @@ export function deriveBarsMirror(
 export function deriveBarsAudit(
   model: BarsModel,
   options?: { readonly window?: { readonly first: number; readonly count: number } },
-): AuditRow[] {
-  const rows: AuditRow[] = [];
+): FamilyAuditRow[] {
+  const rows: FamilyAuditRow[] = [];
   if (model.empty !== undefined && model.rows.length === 0) {
-    rows.push({ row: 'empty', key: model.emptyKind ?? 'empty', value: model.empty });
+    rows.push(auditCell('empty', model.emptyKind ?? 'empty', model.empty));
     return rows;
   }
   const first = options?.window ? Math.max(0, options.window.first) : 0;
@@ -477,7 +477,7 @@ export function deriveBarsAudit(
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
     const label = item.labelMissing ? notRecordedLabel('Name') : item.label;
-    const cell = (row: string, name: string, value: string) => rows.push({ row, key: `${row}\u0000${name}`, value });
+    const cell = (row: string, name: string, value: string) => rows.push(auditCell(row, name, value));
     cell(item.key, 'label', label);
     if (item.value) cell(item.key, 'value', canonicalAuditValue(item.value.value));
     if (item.left) cell(item.key, 'left', canonicalAuditValue(item.left.value.value));
