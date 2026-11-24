@@ -106,7 +106,7 @@ fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>
     Fold { mined, unknown, cells }
 }
 
-fn register_live(fold: &Fold, lost: bool, live: &dashboard_follow::live::Cells) -> io::Result<()> {
+fn register_live(fold: &Fold, live: &dashboard_follow::live::Cells) -> io::Result<()> {
     let amount = dashboard_declare::field(TableId::NavalRegionalMines, "amount")?;
     let mut totals: BTreeMap<u32, Vec<LiveSource>> = BTreeMap::new();
     for (region, tag, key) in &fold.cells {
@@ -114,10 +114,8 @@ fn register_live(fold: &Fold, lost: bool, live: &dashboard_follow::live::Cells) 
         live.value(&region.to_string(), tag, source, 1.0);
         totals.entry(*region).or_default().push(source);
     }
-    if !lost {
-        for (region, sources) in &totals {
-            live.sum(&region.to_string(), "total", sources, 1.0);
-        }
+    for (region, sources) in &totals {
+        live.table_sum(&region.to_string(), "total", sources, 1.0);
     }
     Ok(())
 }
@@ -210,7 +208,7 @@ impl AtHour for Minefields {
         let wanted: Option<BTreeSet<&str>> = params.countries.as_ref().map(|countries| countries.iter().filter_map(|country| at.holders.tag_at(country, frame.hour)).collect());
         let sea = at.context.sea.sea.clone().unwrap_or_default();
         let fold = fold(rows, |raw| tag_of(&links, &names, raw, frame.hour), |tag| wanted.as_ref().is_none_or(|wanted| wanted.contains(tag)), lost, &sea);
-        register_live(&fold, lost, at.live)?;
+        register_live(&fold, at.live)?;
         let mut notes = Refusals::default();
         let choices = sea_regions::choices(&at.context.places, &at.context.sea, fold.mined.iter().map(|region| region.region), &mut notes);
         let mut warnings = at.context.places.warnings();

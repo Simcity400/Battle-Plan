@@ -122,6 +122,19 @@ export const casualtyBarStretch = (row: CountryCasualties) => JSON.stringify([ro
 
 export const SUBTOTAL_NOTE = '† Incomplete total; ratio unavailable.';
 
+export function casualtyUnknownNote(rows: readonly Pick<CountryCasualties, 'tag' | 'hour' | 'taken' | 'reason'>[], name: (tag: string, hour: number) => string): string | null {
+  const missing = rows.filter(row => row.taken === null);
+  if (!missing.length) return null;
+  const reasons = [...new Set(missing.map(row => row.reason).filter((reason): reason is string => !!reason))];
+  if (reasons.length === 1 && missing.every(row => row.reason === reasons[0])) {
+    return `Losses taken are unknown for ${missing.map(row => name(row.tag, row.hour)).join(', ')}: ${reasons[0]}.`;
+  }
+  return `Losses taken are unknown for ${missing.map(row => {
+    const label = name(row.tag, row.hour);
+    return row.reason ? `${label} (${row.reason})` : label;
+  }).join(', ')}.`;
+}
+
 export function casualtyTooltip(row: CountryCasualties, name: string, unknownLabel: string): TooltipContent {
   return { title: name, subtitle: dayLabel(row.hour), rows: [
     { label: 'Dealt', value: formatCasualties(row.dealt, row.atLeast) },

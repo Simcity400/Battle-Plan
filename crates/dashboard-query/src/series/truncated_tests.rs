@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    coverage::CoverageScope,
     identity::{Country, Holders},
     series::board,
     tile::{self, BINS, HAS_BREAK, PRESENT},
@@ -29,9 +30,17 @@ const FRA_MID_FIRST: i32 = 146;
 const FRA_MID_LAST: i32 = 147;
 
 const EXP_TRUNC: &str = "Country experience read only in part at this hour (1 rows not read)";
+const EXP_TRUNC_TABLE: &str = "Country experience read only in part at this hour (1 rows not read), and which rows were read is not held at the head";
+const EXP_TRUNC_STATUS: &str = "country experience: read only in part at this hour (1 rows not read)";
 const EXP_UNAVAIL: &str = "Country experience not available at this hour: reader fault";
+const EXP_UNAVAIL_STATUS: &str = "country experience: not available at this hour";
 const EXP_NOTREC: &str = "Country experience not recorded at this hour";
+const EXP_NOTREC_STATUS: &str = "country experience: not recorded at this hour";
 const RES_TRUNC: &str = "Country resources read only in part at this hour (1 rows not read)";
+const RES_TRUNC_STATUS: &str = "country resources: read only in part at this hour (1 rows not read)";
+const FAC_TRUNC_STATUS: &str = "country factories: read only in part at this hour (1 rows not read)";
+const REL_TRUNC: &str = "Relation opinions read only in part at this hour (1 rows not read)";
+const REL_TRUNC_STATUS: &str = "relation opinions: read only in part at this hour (1 rows not read)";
 
 const ARMY_COL: usize = 0;
 const NAVY_COL: usize = 3;
@@ -253,7 +262,18 @@ fn exact_states_apply_witness_rule_for_scalar_computed_parts_and_ranked() {
     assert_eq!(part_states[1].run, None);
     assert_eq!(part_states[1].missing.as_deref(), Some(RES_TRUNC));
     assert_eq!(part_states[2].run, None);
-    assert_eq!(part_states[2].missing.as_deref(), Some(RES_TRUNC));
+    assert_eq!(part_states[2].missing.as_deref(), Some(RES_TRUNC_STATUS));
+
+    let ita_parts = res.part_lives(&["ITA"], BASE, LAST_HOUR).unwrap();
+    assert_eq!(ita_parts.len(), 1);
+    assert!(
+        ita_parts[0]
+            .missing
+            .iter()
+            .any(|span| span.first_hour <= T2 && T2 <= span.last_hour && span.reason == RES_TRUNC_STATUS),
+        "owner part_lives uses Table coverage even when ITA's only known part is witnessed at T2: {:?}",
+        ita_parts[0].missing
+    );
 
     let ranked_reply = answer(
         &query,
@@ -273,51 +293,49 @@ fn summaries_and_tiles_apply_witness_rule_and_preserve_complete_mid_bin_buckets(
     let exp_series = dashboard_declare::series("country-experience").unwrap();
     let exp = Line::new(&query, exp_series, exp_series.measure("army").unwrap()).unwrap();
 
+    let table_missing = vec![
+        MissingSpan { first_hour: T1, last_hour: T2, reason: EXP_TRUNC_STATUS.into() },
+        MissingSpan { first_hour: T3, last_hour: T3, reason: EXP_TRUNC_STATUS.into() },
+        MissingSpan { first_hour: UNAVAIL_FIRST, last_hour: UNAVAIL_LAST, reason: EXP_UNAVAIL_STATUS.into() },
+        MissingSpan { first_hour: NOTREC_FIRST, last_hour: NOTREC_LAST, reason: EXP_NOTREC_STATUS.into() },
+    ];
     let hourly = exp.summaries(&["GER", "ITA", "FRA"], BASE, LAST_HOUR, 30).unwrap();
-    assert_eq!(
-        hourly[0].1,
-        vec![
-            MissingSpan { first_hour: T2, last_hour: T2, reason: EXP_TRUNC.into() },
-            MissingSpan { first_hour: UNAVAIL_FIRST, last_hour: UNAVAIL_LAST, reason: EXP_UNAVAIL.into() },
-            MissingSpan { first_hour: NOTREC_FIRST, last_hour: NOTREC_LAST, reason: EXP_NOTREC.into() },
-        ],
-        "GER is witnessed at T1 and T3 so only T2, unavailable, and not-recorded are missing"
-    );
-    assert_eq!(
-        hourly[1].1,
-        vec![
-            MissingSpan { first_hour: T1, last_hour: T1, reason: EXP_TRUNC.into() },
-            MissingSpan { first_hour: UNAVAIL_FIRST, last_hour: UNAVAIL_LAST, reason: EXP_UNAVAIL.into() },
-            MissingSpan { first_hour: NOTREC_FIRST, last_hour: NOTREC_LAST, reason: EXP_NOTREC.into() },
-        ],
-        "ITA is witnessed at T2 and T3 so only T1, unavailable, and not-recorded are missing"
-    );
+    assert_eq!(hourly[0].1, table_missing, "Line::summaries defaults to Table coverage matching main");
+    assert_eq!(hourly[1].1, table_missing, "Line::summaries defaults to Table coverage matching main");
 
     let binned = exp.summaries(&["GER", "ITA", "FRA"], BASE, LAST_HOUR, 5).unwrap();
-    assert_eq!(binned[0].1, hourly[0].1);
-    assert_eq!(binned[1].1, hourly[1].1);
+    assert_eq!(binned[0].1, table_missing);
+    assert_eq!(binned[1].1, table_missing);
     assert_eq!(binned[0].0.buckets.len(), 5);
-    assert!(!binned[0].0.buckets[0].unwrap().has_break, "complete bin 0 has no break");
-    assert!(binned[0].0.buckets[1].unwrap().has_break, "GER unwitnessed at T2 breaks bin 1");
-    assert!(!binned[0].0.buckets[2].unwrap().has_break, "GER witnessed at T3 keeps bin 2 unbroken");
-    assert!(binned[1].0.buckets[1].unwrap().has_break, "ITA unwitnessed at T1 breaks bin 1");
-    assert!(!binned[1].0.buckets[2].unwrap().has_break, "ITA witnessed at T3 keeps bin 2 unbroken");
     let fra_bin4 = binned[2].0.buckets[4].expect("FRA enters and leaves mid-bin 4 on complete hours");
     assert!(!fra_bin4.has_break, "mid-bin start and end on complete hours must match main with has_break == false");
     assert_eq!((fra_bin4.first_value, fra_bin4.last_value, fra_bin4.min_value, fra_bin4.max_value), (50.0, 50.0, 50.0, 50.0));
 
     let tile_reply = tile::tile(&exp, "1", &[Ask::whole("GER"), Ask::whole("ITA"), Ask::whole("FRA")], None, 6, 0, false).unwrap();
     let bytes = crate::fixture::unbase64(&tile_reply.bins);
-    let bin1_slot = ((BASE - tile_reply.first_hour) / 6) as usize + 1;
+    let bin0_slot = ((BASE - tile_reply.first_hour) / 6) as usize;
+    let bin1_slot = bin0_slot + 1;
     let bin2_slot = bin1_slot + 1;
     let bin4_slot = bin1_slot + 3;
-    assert_ne!(bytes[bin1_slot] & (PRESENT | HAS_BREAK), PRESENT, "GER tile bin 1 carries HAS_BREAK");
-    assert_eq!(bytes[bin2_slot] & (PRESENT | HAS_BREAK), PRESENT, "GER tile bin 2 is present without HAS_BREAK");
+    assert_eq!(bytes[bin0_slot] & (PRESENT | HAS_BREAK), PRESENT, "GER complete bin 0 has no HAS_BREAK");
+    assert_eq!(bytes[bin1_slot] & (PRESENT | HAS_BREAK), PRESENT | HAS_BREAK, "GER unwitnessed at T2 sets HAS_BREAK on bin 1");
+    assert_eq!(bytes[bin2_slot] & (PRESENT | HAS_BREAK), PRESENT, "GER witnessed at T3 keeps bin 2 unbroken");
+    assert_eq!(bytes[BINS + bin1_slot] & (PRESENT | HAS_BREAK), PRESENT | HAS_BREAK, "ITA unwitnessed at T1 sets HAS_BREAK on bin 1");
+    assert_eq!(bytes[BINS + bin2_slot] & (PRESENT | HAS_BREAK), PRESENT, "ITA witnessed at T3 keeps bin 2 unbroken");
     assert_eq!(bytes[2 * BINS + bin4_slot] & (PRESENT | HAS_BREAK), PRESENT, "FRA complete mid-bin tile has no HAS_BREAK");
     assert!(
         tile_reply.lines[0].missing.iter().any(|span| span.first_hour == T2 && span.last_hour == T2 && span.reason == EXP_TRUNC)
-            && !tile_reply.lines[0].missing.iter().any(|span| span.first_hour <= T1 && T1 <= span.last_hour),
-        "GER tile missing matches Line::missing"
+            && !tile_reply.lines[0].missing.iter().any(|span| span.first_hour <= T1 && T1 <= span.last_hour)
+            && !tile_reply.lines[0].missing.iter().any(|span| span.first_hour <= T3 && T3 <= span.last_hour),
+        "GER tile missing omits witnessed T1 and T3 and reports unwitnessed T2: {:?}",
+        tile_reply.lines[0].missing
+    );
+    assert!(
+        tile_reply.lines[1].missing.iter().any(|span| span.first_hour == T1 && span.last_hour == T1 && span.reason == EXP_TRUNC)
+            && !tile_reply.lines[1].missing.iter().any(|span| span.first_hour <= T2 && T2 <= span.last_hour)
+            && !tile_reply.lines[1].missing.iter().any(|span| span.first_hour <= T3 && T3 <= span.last_hour),
+        "ITA tile missing omits witnessed T2 and T3 and reports unwitnessed T1: {:?}",
+        tile_reply.lines[1].missing
     );
 }
 
@@ -372,10 +390,22 @@ fn six_hour_ranked_request_and_complete_absent_none_summary_pin_main_behaviour()
 
     let fac_series = dashboard_declare::series("country-factories").unwrap();
     let fac = Line::new(&query, fac_series, fac_series.measure("built1").unwrap()).unwrap();
+    let expected_missing = vec![MissingSpan { first_hour: 122, last_hour: 122, reason: FAC_TRUNC_STATUS.into() }];
     let six_hour = fac.ranked(120, 125, 6, 1).unwrap();
     assert_eq!(six_hour.len(), 1, "six-hour ranked request keeps GER's complete-hour points as on main");
     assert_eq!(six_hour[0].tag, "GER");
-    assert!(six_hour[0].summary.buckets.iter().filter(|b| b.is_some()).count() >= 5);
+    assert_eq!(six_hour[0].membership, vec![(120, 125)]);
+    assert_eq!(six_hour[0].missing, expected_missing, "ranked summary keeps Table-wide truncation missing even when GER was witnessed");
+    assert_eq!(six_hour[0].summary.buckets.len(), 6);
+    assert!(six_hour[0].summary.buckets.iter().all(|b| b.is_some()));
+
+    let one_bin = fac.ranked(120, 125, 1, 1).unwrap();
+    assert_eq!(one_bin.len(), 1);
+    assert_eq!(one_bin[0].tag, "GER");
+    assert_eq!(one_bin[0].membership, vec![(120, 125)]);
+    assert_eq!(one_bin[0].missing, expected_missing, "wider-bin ranked summary keeps Table-wide truncation missing");
+    assert_eq!(one_bin[0].summary.buckets.len(), 1);
+    assert!(one_bin[0].summary.buckets[0].is_some());
 
     let zero_line = Line::new(&query, &ABSENT_ZERO_EXP, &ABSENT_ZERO_EXP.measures[0]).unwrap();
     let one_hour = zero_line.ranked(120, 120, 1, 2).unwrap();
@@ -405,6 +435,24 @@ fn complete_tile_and_unvalued_scalar_state_match_main_storage_read_counts() {
     let second_calls = crate::cost::take_calls();
     assert_eq!(second_calls, 2, "subsequent complete tile reuses cached lifetimes and performs exactly chart + statuses");
 
+    let filtered_line = Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap();
+    let tile1_first = (first_index * 6 * tile::BINS as i64) as i32;
+    let within1 = [(Country::from("GER"), vec![Span { first_hour: tile1_first, last_hour: tile1_first + 5 }])];
+    let _ = crate::cost::take_calls();
+    let first_filtered = tile::tile(&filtered_line, "1", &ask, Some(&within1), 6, first_index, false).unwrap();
+    assert!(first_filtered.lines[0].missing.is_empty());
+    assert_eq!(
+        crate::cost::take_calls(),
+        3,
+        "within-filtered complete tile reads statuses once for the tile span and shares the cache with missing_scoped"
+    );
+
+    let tile2_first = ((first_index + 1) * 6 * tile::BINS as i64) as i32;
+    let within2 = [(Country::from("GER"), vec![Span { first_hour: tile2_first, last_hour: tile2_first + 5 }])];
+    let second_filtered = tile::tile(&filtered_line, "1", &ask, Some(&within2), 6, first_index + 1, false).unwrap();
+    assert!(second_filtered.lines[0].missing.is_empty());
+    assert_eq!(crate::cost::take_calls(), 2, "subsequent within-filtered complete tile performs exactly chart + statuses");
+
     let unvalued_hour = (FIRST..FIRST + 200).find(|&hour| power(9001, hour).is_none()).unwrap();
     let _ = crate::cost::take_calls();
     let states = line.states(&[read("GER", unvalued_hour, None)], None).unwrap();
@@ -412,6 +460,17 @@ fn complete_tile_and_unvalued_scalar_state_match_main_storage_read_counts() {
     assert_eq!(states[0].run, None);
     assert_eq!(states[0].missing.as_deref(), Some("GER's politicalPower was not recorded at this hour"));
     assert_eq!(state_calls, 1, "unvalued scalar on a complete hour uses key_runs_covered alone with zero at_each_with_status re-read");
+
+    let trunc_fixture = TruncatedFixture::new();
+    let trunc_query = trunc_fixture.query();
+    let exp_series = dashboard_declare::series("country-experience").unwrap();
+    let exp = Line::new(&trunc_query, exp_series, exp_series.measure("army").unwrap()).unwrap();
+    let _ = crate::cost::take_calls();
+    let absent = exp.states(&[read("FRA", BASE, None)], None).unwrap();
+    let absent_calls = crate::cost::take_calls();
+    assert_eq!(absent[0].run, None);
+    assert_eq!(absent[0].missing.as_deref(), Some("FRA's army was not recorded at this hour"));
+    assert_eq!(absent_calls, 1, "absent scalar holder on a complete hour uses key_runs_covered alone with zero at_each_with_status re-read");
 }
 
 #[test]
@@ -465,9 +524,10 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
                 sample: Sample::FromReadBit,
             },
         )?;
+        let rows: &[RelationOpinionRow] = if hour == 125 { &[] } else { std::slice::from_ref(&opinion) };
         frame.table(
             TableId::RelationOpinions,
-            Input::Snapshot { rows: std::slice::from_ref(&opinion), partial: (hour == 128).then_some(1), read: true, sample: Sample::FromReadBit },
+            Input::Snapshot { rows, partial: (hour == 125 || hour == 128).then_some(1), read: true, sample: Sample::FromReadBit },
         )?;
         Ok(())
     })
@@ -478,14 +538,44 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
 
     let rel_series = dashboard_declare::series("relation-opinions").unwrap();
     let rel = Line::new(&query, rel_series, rel_series.measure("opinion").unwrap()).unwrap();
-    let state = rel.states(&[read("GER", 128, Some("2"))], None).unwrap();
-    assert_eq!(state[0].run.as_ref().map(|r| r.value_raw.as_str()), Some("42"));
-    assert_eq!(state[0].missing, None);
+    let states = rel.states(&[read("GER", 128, Some("2")), read("GER", 125, Some("2"))], None).unwrap();
+    assert_eq!(states[0].run.as_ref().map(|r| r.value_raw.as_str()), Some("42"));
+    assert_eq!(states[0].missing, None);
+    assert_eq!(states[1].run, None);
+    assert_eq!(states[1].missing.as_deref(), Some(REL_TRUNC));
 
     let ask = Ask { country: Country::from("GER"), part: 2 };
     let parts = rel.held(&ask, 120, 131);
-    let missing = rel.missing("GER", 120, 131, &parts).unwrap();
-    assert!(missing.is_empty(), "aliased witness at truncated hour 128 must not be reported missing: {missing:?}");
+    let table_missing = rel.missing("GER", 120, 131, &parts).unwrap();
+    assert_eq!(
+        table_missing,
+        vec![
+            MissingSpan { first_hour: 125, last_hour: 125, reason: REL_TRUNC_STATUS.into() },
+            MissingSpan { first_hour: 128, last_hour: 128, reason: REL_TRUNC_STATUS.into() },
+        ],
+        "default Table-scoped Line::missing reports both truncated hours"
+    );
+    let row_missing = rel.missing_scoped("GER", 120, 131, &parts, CoverageScope::Row).unwrap();
+    assert_eq!(
+        row_missing,
+        vec![MissingSpan { first_hour: 125, last_hour: 125, reason: REL_TRUNC.into() }],
+        "Row-scoped missing omits aliased witness at 128 and keeps unwitnessed trailing hour 125"
+    );
+
+    let tile_reply = tile::tile(&rel, "1", &[ask], None, 6, 0, false).unwrap();
+    assert_eq!(tile_reply.lines[0].missing, row_missing);
+    let bytes = crate::fixture::unbase64(&tile_reply.bins);
+    let slot0 = ((120 - tile_reply.first_hour) / 6) as usize;
+    assert_eq!(
+        bytes[slot0] & (PRESENT | HAS_BREAK),
+        PRESENT | HAS_BREAK,
+        "binned_from_runs marks HAS_BREAK for trailing unwitnessed truncated hour 125"
+    );
+    assert_eq!(
+        bytes[slot0 + 1] & (PRESENT | HAS_BREAK),
+        PRESENT,
+        "aliased witness at truncated hour 128 keeps bin 126..=131 unbroken"
+    );
 }
 
 #[test]
@@ -521,9 +611,9 @@ fn scoreboard_applies_witness_rule_for_countries_and_top_ranking() {
 
     let top_t1 = board::at(&columns, board::Rows::Top { by: 0, n: 2, least: false }, T1).unwrap();
     assert!(top_t1.rows.is_empty());
-    assert_eq!(top_t1.missing.as_deref(), Some(EXP_TRUNC));
+    assert_eq!(top_t1.missing.as_deref(), Some(EXP_TRUNC_TABLE));
 
     let top_t3 = board::at(&columns, board::Rows::Top { by: 0, n: 2, least: false }, T3).unwrap();
     assert!(top_t3.rows.is_empty());
-    assert_eq!(top_t3.missing.as_deref(), Some(EXP_TRUNC));
+    assert_eq!(top_t3.missing.as_deref(), Some(EXP_TRUNC_TABLE));
 }

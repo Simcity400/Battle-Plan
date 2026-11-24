@@ -102,9 +102,9 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const shown = useShownHour();
   const headTags = following && active && track && !saved ? tags : null;
   const branchId = track?.branch.id;
-  const fuelQuery = useMemo(() => headTags?.length ? gate.follow({ product: 'series-state', params: { branchId,
+  const fuelQuery = useMemo(() => headTags?.length ? gate.follow({ product: 'series-state', coverage: 'row', params: { branchId,
     family: { kind: COUNTRY_FUEL, measure: 'fuel' }, reads: headTags.map(tag => ({ country: countryFromKey(tag) })) } }) : null, [headTags, branchId, gate.follow]);
-  const capacityQuery = useMemo(() => headTags?.length && showCapacity ? gate.follow({ product: 'series-state', params: { branchId,
+  const capacityQuery = useMemo(() => headTags?.length && showCapacity ? gate.follow({ product: 'series-state', coverage: 'row', params: { branchId,
     family: { kind: COUNTRY_FUEL, measure: 'capacity' }, reads: headTags.map(tag => ({ country: countryFromKey(tag) })) } }) : null, [headTags, branchId, showCapacity, gate.follow]);
   const fuelFollowed = useFollow(store, fuelQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const capacityFollowed = useFollow(store, capacityQuery, root, NO_PAINT);

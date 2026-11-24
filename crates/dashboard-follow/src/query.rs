@@ -2,6 +2,7 @@
 use crate::{invalid, table_name};
 use dashboard_declare::{Measure, Series};
 use dashboard_query::{
+    coverage::CoverageScope,
     identity::{Country, Holder, Holders, NOT_IN_HISTORY},
     timeline::Timeline,
 };
@@ -13,6 +14,7 @@ use std::{collections::HashMap, io, sync::Arc};
 pub enum Rows {
     Keys(Vec<u128>),
     Live(Vec<u128>),
+    LiveTable(Vec<u128>),
     All,
     Top { column: usize, n: usize },
     Appended,
@@ -28,7 +30,7 @@ pub struct Identity {
 #[derive(Clone)]
 pub enum Query {
     Cells { table: usize, columns: Vec<usize>, rows: Rows },
-    Series { series: &'static Series, measure: &'static Measure, countries: Vec<Country>, top: Option<usize>, least: bool, parts: bool, identity: Identity },
+    Series { series: &'static Series, measure: &'static Measure, countries: Vec<Country>, top: Option<usize>, least: bool, parts: bool, scope: CoverageScope, identity: Identity },
     Head(crate::head::Head),
 }
 
@@ -40,7 +42,7 @@ impl Query {
                 if columns.is_empty() {
                     return Err(invalid(format!("A query of {} reads no column", table_name(*table))));
                 }
-                if let Rows::Live(keys) = rows
+                if let Rows::Live(keys) | Rows::LiveTable(keys) = rows
                     && keys.windows(2).any(|pair| pair[0] >= pair[1])
                 {
                     return Err(invalid(format!("A live query of {} names its keys ascending, each once", table_name(*table))));
@@ -62,9 +64,12 @@ impl Query {
                 }
                 Ok(())
             }
-            Self::Series { series, measure, top, parts, .. } => {
+            Self::Series { series, measure, top, parts, scope, .. } => {
                 if *top == Some(0) {
                     return Err(invalid("A top of no rows"));
+                }
+                if *scope == CoverageScope::Row && (top.is_some() || *parts) {
+                    return Err(invalid("Row coverage is only for keyed non-ranked series reads"));
                 }
                 if !series.measures.iter().any(|held| std::ptr::eq(held, *measure)) {
                     return Err(invalid(format!("{} has no measure {}", series.kind, measure.name)));
@@ -118,7 +123,7 @@ impl Query {
     }
 
     pub(crate) fn live(&self) -> bool {
-        matches!(self, Self::Cells { rows: Rows::Live(_), .. })
+        matches!(self, Self::Cells { rows: Rows::Live(_) | Rows::LiveTable(_), .. })
     }
 
     pub(crate) fn appended(&self) -> bool {
@@ -131,12 +136,12 @@ impl Query {
 
     pub fn series_top(series: &'static Series, measure: &'static Measure, n: usize, identity: Identity) -> Self {
         let countries = identity.holders.tags.keys().map(Country::from).collect();
-        Self::Series { series, measure, countries, top: Some(n), least: false, parts: false, identity }
+        Self::Series { series, measure, countries, top: Some(n), least: false, parts: false, scope: CoverageScope::Table, identity }
     }
 
     pub fn least(self) -> Self {
         match self {
-            Self::Series { series, measure, countries, top, parts, identity, .. } => Self::Series { series, measure, countries, top, least: true, parts, identity },
+            Self::Series { series, measure, countries, top, parts, scope, identity, .. } => Self::Series { series, measure, countries, top, least: true, parts, scope, identity },
             other => other,
         }
     }

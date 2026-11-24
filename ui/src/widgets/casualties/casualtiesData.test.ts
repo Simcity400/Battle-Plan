@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesStateReply } from '../../generated/dashboard';
-import { answerHeld, answerReasons, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, formatCasualties, rankCasualties, stateHeld, heldCasualties, retainedLive } from './casualtiesData.ts';
+import { answerHeld, answerReasons, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, casualtyUnknownNote, formatCasualties, rankCasualties, stateHeld, heldCasualties, retainedLive } from './casualtiesData.ts';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { HeldMeasures } from './casualtiesData';
@@ -95,4 +95,9 @@ test('explicitly requested unread keyed rows keep their row and truncation reaso
     ['ITA', null, null, trunc],
   ]);
   assert.equal(casualtyTooltip(rows[1]!, 'Italy', 'Unknown attacker').note, trunc);
+  assert.deepEqual(casualtyRaceEntries(rows).map(entry => [entry.tag, entry.value]), [['GER', 20]]);
+  assert.equal(
+    casualtyUnknownNote(rows, tag => tag === 'ITA' ? 'Italy' : tag),
+    `Losses taken are unknown for Italy: ${trunc}.`,
+  );
 });

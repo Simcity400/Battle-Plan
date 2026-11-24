@@ -1,6 +1,7 @@
 use crate::{Answer, Follow, Identity, Message, Query, Rows, Sink, State, StepStats, answer_at, decode};
 use dashboard_declare::{Carry, Column, Key, Measure, Parts, Series};
 use dashboard_query::{
+    coverage::CoverageScope,
     identity::{Holder, HolderRun, Holders},
     timeline::{Join, Stretch, Timeline as Stretches},
 };
@@ -525,6 +526,7 @@ fn a_series_reads_its_tags_holder_at_the_head() {
         top: None,
         least: false,
         parts: false,
+        scope: CoverageScope::Table,
         identity: Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) },
     };
     harness.follow.follow(5, series.clone()).unwrap();
@@ -620,8 +622,8 @@ fn a_followed_owners_parts_are_its_rows_in_key_order_or_its_top_parts() {
     holders.tags.insert("BBB".into(), held(26));
     let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
     let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
-    let top = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["AAA".into(), "BBB".into()], top: Some(2), least: false, parts: true, identity: identity.clone() };
-    let all = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["BBB".into()], top: None, least: false, parts: true, identity };
+    let top = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["AAA".into(), "BBB".into()], top: Some(2), least: false, parts: true, scope: CoverageScope::Table, identity: identity.clone() };
+    let all = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["BBB".into()], top: None, least: false, parts: true, scope: CoverageScope::Table, identity };
     harness.follow.follow(1, top.clone()).unwrap();
     harness.follow.follow(2, all.clone()).unwrap();
     harness.seek(0);
@@ -644,7 +646,7 @@ fn a_followed_owners_parts_are_its_rows_in_key_order_or_its_top_parts() {
         answered += 1;
     }
     assert!(answered > 10, "{answered} answers compared");
-    let one = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["AAA".into()], top: None, least: false, parts: false, identity: nobody() };
+    let one = Query::Series { series: &PARTS, measure: &PARTS.measures[0], countries: vec!["AAA".into()], top: None, least: false, parts: false, scope: CoverageScope::Table, identity: nobody() };
     assert!(harness.follow.follow(3, one).is_err(), "a sub-keyed series is followed by its owners' parts");
 }
 

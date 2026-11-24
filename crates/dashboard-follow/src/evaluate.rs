@@ -5,7 +5,7 @@ use crate::{
     query::{Query, Rows, TagRow, Tags, tags_at},
     table_name, table_words,
 };
-use dashboard_query::{coverage::{Coverage, row_coverage}, series::board::measure_unrecorded};
+use dashboard_query::{coverage::{Coverage, CoverageScope, row_coverage}, series::board::{measure_unrecorded, table_unrecorded}};
 use playhead::lane::Lane;
 use replay_columnar::{
     manifest::Status,
@@ -61,6 +61,22 @@ pub(crate) fn coverage_of(table: usize, status: Status, reason: Option<&str>, wi
     }
 }
 
+pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
+    if let Some(&id) = TableId::ALL.get(table) {
+        return table_unrecorded(id, status, reason);
+    }
+    let name = table_words(table);
+    match status {
+        Status::Complete => None,
+        Status::NotRecorded => Some(format!("{name} not recorded at this hour")),
+        Status::Truncated { missing } => Some(format!("{name} read only in part at this hour ({missing} rows not read), and which rows were read is not held at the head")),
+        Status::Unavailable { .. } => Some(match reason.filter(|reason| !reason.is_empty()) {
+            Some(reason) => format!("{name} not available at this hour: {reason}"),
+            None => format!("{name} not available at this hour"),
+        }),
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Reasons(HashMap<(usize, u32), Box<str>>);
 
@@ -87,7 +103,15 @@ impl Reasons {
     }
 
     pub(crate) fn unrecorded(&self, lane: &Lane) -> Option<String> {
-        self.row_coverage(lane, false).into_missing()
+        if let Some(reason) = lane.withheld() {
+            return Some(reason.to_owned());
+        }
+        let status = lane.status().0;
+        let text = match status {
+            Status::Unavailable { reason } => self.0.get(&(lane.run(), reason)).map(|text| &**text),
+            _ => None,
+        };
+        unrecorded(lane.table(), status, text)
     }
 }
 
@@ -251,13 +275,18 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
     out.clear();
     let keyed = matches!(
         query,
-        Query::Cells { rows: Rows::Keys(_) | Rows::Live(_), .. } | Query::Series { top: None, parts: false, .. }
+        Query::Cells { rows: Rows::Keys(_) | Rows::Live(_), .. } | Query::Series { top: None, parts: false, scope: CoverageScope::Row, .. }
     );
-    if let Coverage::NotRecorded(reason) = reasons.row_coverage(lane, keyed) {
+    if keyed {
+        if let Coverage::NotRecorded(reason) = reasons.row_coverage(lane, true) {
+            answer::not_recorded(&reason, out);
+            return;
+        }
+    } else if let Some(reason) = reasons.unrecorded(lane) {
         answer::not_recorded(&reason, out);
         return;
     }
-    let read_rows = lane.read_rows();
+    let read_rows = keyed.then(|| lane.read_rows()).flatten();
     let slot_of = |key: u128| find.slot(key).filter(|slot| read_rows.is_none_or(|read| read.binary_search(slot).is_ok()));
     let cells = lane.cells();
     let Scratch { table, ranked } = scratch;
@@ -291,6 +320,17 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                                     table.absent(crate::live::NO_ROW);
                                 }
                             },
+                        }
+                    }
+                }
+                Rows::LiveTable(keys) => {
+                    for &key in keys {
+                        match find.slot(key) {
+                            Some(slot) => row(table, key, slot),
+                            None => {
+                                table.row(key);
+                                table.absent(crate::live::NO_ROW);
+                            }
                         }
                     }
                 }
@@ -397,7 +437,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 table.name(&names[at as usize].key());
             }
         }
-        Query::Series { series, measure, countries: names, top: None, identity, .. } => {
+        Query::Series { series, measure, countries: names, top: None, scope, identity, .. } => {
             let source = query.source().expect("a checked series");
             let hour = head(lane);
             table.clear(1, false);
@@ -415,7 +455,11 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 table.row(key);
                 table.name(&names[at].key());
                 let slot = slot_of(key);
-                match reasons.row_coverage(lane, slot.is_some()) {
+                let covered = match scope {
+                    CoverageScope::Table => Coverage::Recorded,
+                    CoverageScope::Row => reasons.row_coverage(lane, slot.is_some()),
+                };
+                match covered {
                     Coverage::NotRecorded(reason) => table.absent(&reason),
                     Coverage::Recorded => match slot {
                         None if series.absent_none => table.cell(0, State::Value),

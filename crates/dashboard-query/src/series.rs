@@ -478,7 +478,8 @@ pub struct Line<'q, 'a> {
     unread: Mutex<Unread>,
 }
 
-type StatusCache = (i32, i32, Arc<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)>);
+type StatusCache = (i32, i32, Arc<Vec<replay_lanes::lanes::StatusRun>>);
+type ReasonCache = (i32, i32, Arc<HashMap<u32, String>>);
 type SpanCache = (i32, i32, Arc<Vec<(i32, i32)>>);
 
 struct AliasPlan {
@@ -490,6 +491,7 @@ struct AliasPlan {
 #[derive(Default)]
 struct Unread {
     statuses: HashMap<u32, Vec<StatusCache>>,
+    status_reasons: HashMap<u32, Vec<ReasonCache>>,
     unwitnessed: HashMap<(u32, u128), Vec<SpanCache>>,
     lives: HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
 }
@@ -912,11 +914,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let recording = self.query.replay.recording();
         let columns = read::columns_of(&self.source);
         let snapshot = crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, self.series.table, hour, Some(&columns), read::Keys::Range(lo, hi)))?;
-        let unavailable_reason = match snapshot.status {
-            Status::Unavailable { reason } => snapshot.strings.get(reason).and_then(|text| std::str::from_utf8(text).ok()),
-            _ => None,
-        };
-        if let Some(reason) = crate::coverage::row_coverage(self.series.table, snapshot.status, unavailable_reason, false).into_missing() {
+        if let Some(reason) = status_reason(self.series.table, &snapshot.status) {
             return Ok(Err(reason));
         }
         let Some(n) = top else {
@@ -1020,24 +1018,40 @@ impl<'q, 'a> Line<'q, 'a> {
             let mut keys: Vec<u128> = wanted.iter().map(|(_, part, _)| part.key).collect();
             keys.sort_unstable();
             keys.dedup();
-            let runs = self.key_runs_covered(run, &keys, from, block_last)?;
+            let (runs, complete) = self.key_runs_covered(run, &keys, from, block_last)?;
             let is_computed = matches!(self.source, Source::Computed { .. });
+            let complete_at = |hour: i32| {
+                let at = complete.partition_point(|&(_, last)| last < hour);
+                complete.get(at).is_some_and(|&(first, _)| first <= hour)
+            };
             for (at, part, (whole_first, whole_last)) in wanted {
                 let hour = out[at].hour;
                 let lo = from.max(part.first);
                 let hi = block_last.min(part.last);
                 let Some(runs) = runs.get(&part.key) else {
-                    unresolved.entry(run).or_default().push((at, hour, part.key));
+                    if !is_computed && complete_at(hour) {
+                        out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
+                    } else {
+                        unresolved.entry(run).or_default().push((at, hour, part.key));
+                    }
                     continue;
                 };
                 let Some(found) = runs.iter().position(|run| run.0 <= hour && hour <= run.1) else {
-                    unresolved.entry(run).or_default().push((at, hour, part.key));
+                    if !is_computed && complete_at(hour) {
+                        out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
+                    } else {
+                        unresolved.entry(run).or_default().push((at, hour, part.key));
+                    }
                     continue;
                 };
                 let (first, last, value) = runs[found];
                 let value = match value {
                     read::CoveredValue::Value(value) => value,
                     read::CoveredValue::Unvalued if !is_computed => {
+                        out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
+                        continue;
+                    }
+                    read::CoveredValue::Uncovered if !is_computed && complete_at(hour) => {
                         out[at].missing = Some(board::measure_unrecorded(&self.query.holders.name(&out[at].country, hour), self.measure.name));
                         continue;
                     }
@@ -1191,9 +1205,8 @@ impl<'q, 'a> Line<'q, 'a> {
         };
         let complete: Vec<(i32, i32)> = self
             .statuses(run, from, to)?
-            .0
             .iter()
-            .filter(|held| held.last >= from && held.first <= to && matches!(crate::coverage::row_coverage(self.series.table, held.status, None, false), crate::coverage::Coverage::Recorded))
+            .filter(|held| held.last >= from && held.first <= to && matches!(held.status, Status::Complete))
             .map(|held| (held.first.max(from), held.last.min(to)))
             .collect();
         let table = u128::from(self.series.table.index() as u32) << 32;
@@ -1218,20 +1231,19 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    fn key_runs_covered(&self, run: u32, keys: &[u128], from: i32, to: i32) -> io::Result<HashMap<u128, read::CoveredRuns>> {
+    fn key_runs_covered(&self, run: u32, keys: &[u128], from: i32, to: i32) -> io::Result<(HashMap<u128, read::CoveredRuns>, Vec<(i32, i32)>)> {
         let recording = self.query.replay.recording();
         let Some(plan) = self.alias_plan(run, keys, from, to)? else {
             return read::covered_runs(recording, run, self.series.table, self.source, Some(keys), from, to);
         };
         let complete: Vec<(i32, i32)> = self
             .statuses(run, from, to)?
-            .0
             .iter()
-            .filter(|held| held.last >= from && held.first <= to && matches!(crate::coverage::row_coverage(self.series.table, held.status, None, false), crate::coverage::Coverage::Recorded))
+            .filter(|held| held.last >= from && held.first <= to && matches!(held.status, Status::Complete))
             .map(|held| (held.first.max(from), held.last.min(to)))
             .collect();
         let table = u128::from(self.series.table.index() as u32) << 32;
-        let held = read::covered_runs(recording, run, self.series.table, self.source, Some(&plan.rows), from, to)?;
+        let (held, _) = read::covered_runs(recording, run, self.series.table, self.source, Some(&plan.rows), from, to)?;
         let sample = dashboard_declare::field(TableId::SliceReads, "sample_hour")?;
         let reads = read::runs(recording, run, TableId::SliceReads, Source::Cell(sample), Some(&plan.owners), from, to)?;
         let mut out = HashMap::with_capacity(plan.wanted.len());
@@ -1249,7 +1261,7 @@ impl<'q, 'a> Line<'q, 'a> {
                 listed.iter().map(|(row, spans)| (held.get(row).map_or(&[][..], Vec::as_slice), spans.as_slice())).collect();
             out.insert(key, zero_absent_covered(&pair_covered_rows(&rows), &meet(&read, &complete), from, to));
         }
-        Ok(out)
+        Ok((out, complete))
     }
 
     pub(crate) fn hourly_runs(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32) -> io::Result<Vec<(Vec<ChartRun>, Vec<Part>)>> {
@@ -1316,6 +1328,18 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub(crate) fn binned(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, level: u8, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
+        self.binned_scoped(drawn, from, to, level, bin_hours, crate::coverage::CoverageScope::Table)
+    }
+
+    pub(crate) fn binned_scoped(
+        &self,
+        drawn: &[(Ask, Vec<(i32, i32)>)],
+        from: i32,
+        to: i32,
+        level: u8,
+        bin_hours: i64,
+        scope: crate::coverage::CoverageScope,
+    ) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
         if self.query.replay.recording().withheld_reason(self.series.table.index()).is_some() {
             let (held, _) = self.drawn_parts(drawn, from, to);
             let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
@@ -1323,7 +1347,7 @@ impl<'q, 'a> Line<'q, 'a> {
             return Ok(held.into_iter().map(|parts| (vec![None; bins], parts)).collect());
         }
         if dashboard_declare::read_by_key(self.series.table) {
-            return self.binned_from_runs(drawn, from, to, bin_hours);
+            return self.binned_from_runs(drawn, from, to, bin_hours, scope);
         }
         let (held, raw_parts) = self.drawn_parts(drawn, from, to);
         let parts: Vec<Vec<Part>> = raw_parts.into_iter().map(|group| group.into_iter().filter_map(|part| self.valid_part(&part)).collect()).collect();
@@ -1362,12 +1386,25 @@ impl<'q, 'a> Line<'q, 'a> {
             let (run, first, last) = extent;
             read.insert(extent, self.charts_within(run, &keys, (first, last), level, bin_hours)?);
         }
-        let mut run_incomplete: HashSet<(u32, i32, i32)> = HashSet::new();
-        for (&run, spans) in &covered {
-            for &(a, b) in spans {
+        let mut run_incomplete: HashSet<u32> = HashSet::new();
+        if scope == crate::coverage::CoverageScope::Row && !covered.is_empty() {
+            let mut held_spans: HashMap<u32, (i32, i32)> = HashMap::new();
+            for part in held.iter().flatten().filter_map(|part| self.valid_part(part)) {
+                if !covered.contains_key(&part.run) {
+                    continue;
+                }
+                held_spans
+                    .entry(part.run)
+                    .and_modify(|span| {
+                        span.0 = span.0.min(part.first);
+                        span.1 = span.1.max(part.last);
+                    })
+                    .or_insert((part.first, part.last));
+            }
+            for (run, (a, b)) in held_spans {
                 let statuses = self.statuses(run, a, b)?;
-                if statuses.0.iter().any(|s| crate::coverage::row_coverage(self.series.table, s.status, None, false).into_missing().is_some()) {
-                    run_incomplete.insert((run, a, b));
+                if statuses.iter().any(|s| !matches!(s.status, Status::Complete)) {
+                    run_incomplete.insert(run);
                 }
             }
         }
@@ -1380,9 +1417,9 @@ impl<'q, 'a> Line<'q, 'a> {
                 let own = read.get(&(part.run, part.first, part.last)).filter(|reads| reads.iter().any(|read| read.index.contains_key(&part.key)));
                 let span = span_of(part);
                 let Some(reads) = own.or_else(|| read.get(&(part.run, span.0, span.1))) else { continue };
-                let part_gaps: Vec<(i32, i32)> = if run_incomplete.contains(&(part.run, span.0, span.1)) {
+                let part_gaps: Vec<(i32, i32)> = if scope == crate::coverage::CoverageScope::Row && run_incomplete.contains(&part.run) {
                     let mut missing = Vec::new();
-                    self.part_coverage(part, part.first, part.last, &mut missing)?;
+                    self.part_coverage(part, part.first, part.last, crate::coverage::CoverageScope::Row, &mut missing)?;
                     missing.into_iter().map(|gap| (gap.first_hour, gap.last_hour)).collect()
                 } else {
                     Vec::new()
@@ -1616,7 +1653,14 @@ impl<'q, 'a> Line<'q, 'a> {
         meets(before) || meets(after)
     }
 
-    fn binned_from_runs(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, bin_hours: i64) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
+    fn binned_from_runs(
+        &self,
+        drawn: &[(Ask, Vec<(i32, i32)>)],
+        from: i32,
+        to: i32,
+        bin_hours: i64,
+        scope: crate::coverage::CoverageScope,
+    ) -> io::Result<Vec<(Vec<Option<ChartBucket>>, Vec<Part>)>> {
         let first_bin = i64::from(from).div_euclid(bin_hours) * bin_hours;
         let bins = ((i64::from(to) - first_bin) / bin_hours + 1) as usize;
         let scale = self.scale();
@@ -1652,6 +1696,27 @@ impl<'q, 'a> Line<'q, 'a> {
                     at = end + 1;
                 }
             }
+            if scope == crate::coverage::CoverageScope::Row {
+                let mut part_gaps: Vec<(i32, i32)> = Vec::new();
+                for part in &held {
+                    let mut missing = Vec::new();
+                    self.part_coverage(part, from, to, crate::coverage::CoverageScope::Row, &mut missing)?;
+                    part_gaps.extend(missing.into_iter().map(|gap| (gap.first_hour, gap.last_hour)));
+                }
+                if !part_gaps.is_empty() {
+                    for (slot, bucket) in buckets.iter_mut().enumerate() {
+                        let Some(bucket) = bucket else { continue };
+                        let lo = (first_bin + slot as i64 * bin_hours).max(i64::from(from)) as i32;
+                        let hi = (first_bin + (slot as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
+                        if part_gaps.iter().any(|&(ga, gb)| ga <= hi && lo <= gb) {
+                            bucket.has_break = true;
+                        }
+                        if lo > from && part_gaps.iter().any(|&(ga, gb)| ga <= lo - 1 && lo - 1 <= gb) {
+                            bucket.first_break = true;
+                        }
+                    }
+                }
+            }
             for (slot, bucket) in buckets.iter_mut().enumerate() {
                 if bucket.is_none() {
                     continue;
@@ -1668,11 +1733,15 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub fn missing(&self, country: impl Into<Country>, from: i32, to: i32, parts: &[Part]) -> io::Result<Vec<MissingSpan>> {
+        self.missing_scoped(country, from, to, parts, crate::coverage::CoverageScope::Table)
+    }
+
+    pub(crate) fn missing_scoped(&self, country: impl Into<Country>, from: i32, to: i32, parts: &[Part], scope: crate::coverage::CoverageScope) -> io::Result<Vec<MissingSpan>> {
         let country = &country.into();
         let mut out = self.unheld(country, from, to, parts);
         let rowless = format!("{}'s {} was not recorded here", self.query.holders.name(country, to), self.measure.name);
         for part in parts {
-            let complete = self.part_coverage(part, from, to, &mut out)?;
+            let complete = self.part_coverage(part, from, to, scope, &mut out)?;
             if complete.is_empty() {
                 continue;
             }
@@ -1805,7 +1874,7 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(gaps)
     }
 
-    fn part_coverage(&self, part: &Part, from: i32, to: i32, out: &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>> {
+    fn part_coverage(&self, part: &Part, from: i32, to: i32, scope: crate::coverage::CoverageScope, out: &mut Vec<MissingSpan>) -> io::Result<Vec<(i64, i64)>> {
         let (mut first, last) = (part.first.max(from), part.last.min(to));
         let mut complete = Vec::new();
         if first > last {
@@ -1819,10 +1888,26 @@ impl<'q, 'a> Line<'q, 'a> {
             }
         }
         let statuses = self.statuses(part.run, first, last)?;
-        for held in statuses.0.iter().filter(|held| held.last >= first && held.first <= last) {
+        if scope == crate::coverage::CoverageScope::Table {
+            for held in statuses.iter().filter(|held| held.last >= first && held.first <= last) {
+                let (a, b) = (held.first.max(first), held.last.min(last));
+                match status_reason(self.series.table, &held.status) {
+                    None => complete.push((i64::from(a), i64::from(b))),
+                    Some(reason) => out.push(MissingSpan { first_hour: a, last_hour: b, reason }),
+                }
+            }
+            return Ok(complete);
+        }
+        let mut reasons: Option<Arc<HashMap<u32, String>>> = None;
+        for held in statuses.iter().filter(|held| held.last >= first && held.first <= last) {
             let (a, b) = (held.first.max(first), held.last.min(last));
             let unavailable_reason = match held.status {
-                Status::Unavailable { reason } => statuses.1.get(&reason).map(String::as_str),
+                Status::Unavailable { reason } => {
+                    if reasons.is_none() {
+                        reasons = Some(self.status_reasons(part.run, first, last, &statuses)?);
+                    }
+                    reasons.as_ref().and_then(|map| map.get(&reason).map(String::as_str))
+                }
                 _ => None,
             };
             match crate::coverage::row_coverage(self.series.table, held.status, unavailable_reason, false) {
@@ -1844,7 +1929,7 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(complete)
     }
 
-    fn statuses(&self, run: u32, from: i32, to: i32) -> io::Result<Arc<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)>> {
+    fn statuses(&self, run: u32, from: i32, to: i32) -> io::Result<Arc<Vec<replay_lanes::lanes::StatusRun>>> {
         if let Some(held) = self
             .unread
             .lock()
@@ -1855,16 +1940,25 @@ impl<'q, 'a> Line<'q, 'a> {
         {
             return Ok(held);
         }
-        let recording = self.query.replay.recording();
-        let runs = read::statuses(recording, run, self.series.table, from, to)?;
-        let reasons = if runs.iter().any(|held| matches!(held.status, Status::Unavailable { .. })) {
-            read::status_reasons(recording, run, self.series.table, &runs)?
-        } else {
-            HashMap::new()
-        };
-        let read = Arc::new((runs, reasons));
-        self.unread.lock().unwrap_or_else(PoisonError::into_inner).statuses.entry(run).or_default().push((from, to, read.clone()));
-        Ok(read)
+        let runs = Arc::new(read::statuses(self.query.replay.recording(), run, self.series.table, from, to)?);
+        self.unread.lock().unwrap_or_else(PoisonError::into_inner).statuses.entry(run).or_default().push((from, to, runs.clone()));
+        Ok(runs)
+    }
+
+    fn status_reasons(&self, run: u32, from: i32, to: i32, runs: &[replay_lanes::lanes::StatusRun]) -> io::Result<Arc<HashMap<u32, String>>> {
+        if let Some(held) = self
+            .unread
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .status_reasons
+            .get(&run)
+            .and_then(|held| held.iter().find(|&&(a, b, _)| a <= from && to <= b).map(|(_, _, entry)| entry.clone()))
+        {
+            return Ok(held);
+        }
+        let reasons = Arc::new(read::status_reasons(self.query.replay.recording(), run, self.series.table, runs)?);
+        self.unread.lock().unwrap_or_else(PoisonError::into_inner).status_reasons.entry(run).or_default().push((from, to, reasons.clone()));
+        Ok(reasons)
     }
 
     fn lives(&self, run: u32) -> io::Result<Option<Arc<Vec<(u128, i64, i64)>>>> {
@@ -2156,7 +2250,7 @@ impl<'q, 'a> Line<'q, 'a> {
             }
             let mut missing = self.unheld(&country, from, to, &held);
             for part in &held {
-                self.part_coverage(part, from, to, &mut missing)?;
+                self.part_coverage(part, from, to, crate::coverage::CoverageScope::Table, &mut missing)?;
             }
             out.push(SeriesOwnerParts {
                 country,
@@ -2179,6 +2273,16 @@ impl<'q, 'a> Line<'q, 'a> {
             });
         }
         Ok(out)
+    }
+}
+
+fn status_reason(table: replay_data::rows::TableId, status: &Status) -> Option<String> {
+    let what = table.words();
+    match status {
+        Status::Complete => None,
+        Status::NotRecorded => Some(format!("{what}: not recorded at this hour")),
+        Status::Truncated { missing } => Some(format!("{what}: read only in part at this hour ({missing} rows not read)")),
+        Status::Unavailable { .. } => Some(format!("{what}: not available at this hour")),
     }
 }
 

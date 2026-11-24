@@ -204,9 +204,9 @@ pub fn keyed_covered_runs(
     keys: Option<&[u128]>,
     from: i32,
     to: i32,
-) -> io::Result<HashMap<u128, CoveredRuns, foldhash::fast::RandomState>> {
+) -> io::Result<(HashMap<u128, CoveredRuns, foldhash::fast::RandomState>, Vec<(i32, i32)>)> {
     let mut held: HashMap<u128, CoveredRuns, foldhash::fast::RandomState> = HashMap::default();
-    crate::points::points(recording, run, table, &inputs(source), Some(source), keys.map_or(Keys::All, Keys::These), from, to, &mut |point| {
+    let complete = crate::points::points_with_complete(recording, run, table, &inputs(source), Some(source), keys.map_or(Keys::All, Keys::These), from, to, &mut |point| {
         let runs = held.entry(point.key).or_default();
         let value = match (point.covered, point.value) {
             (true, Some(value)) => CoveredValue::Value(value),
@@ -228,7 +228,7 @@ pub fn keyed_covered_runs(
             *last = to;
         }
     }
-    Ok(held)
+    Ok((held, complete))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

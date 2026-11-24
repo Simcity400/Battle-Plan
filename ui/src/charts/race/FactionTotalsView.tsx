@@ -35,7 +35,7 @@ import { validateFactionLines, validateFactionRosters } from '../../dashboard/te
 import type { SeriesStateReply } from '../../generated/dashboard';
 import { liveRace, rowsOf } from './measureRaceData.ts';
 import type { GroupTotal } from './factionTotalsData';
-import { answerShape, answerTableRefusal, answerValues, factionEntries, factionNote, factionSummaries, fixedRosters, membersPushed, rosterRows, rosterTags, stateValues } from './factionTotalsData.ts';
+import { answerShape, answerValues, factionEntries, factionNote, factionSummaries, fixedRosters, membersPushed, rosterRows, rosterTags, stateValues } from './factionTotalsData.ts';
 import './countryRace.css';
 import type { FactionLines } from '../../dashboard/territoryReplies';
 import { useRegion } from '../../dashboard/widgetTime.ts';
@@ -114,27 +114,18 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const valuesEntry = followed.entry && membersPushed(followed.status, followed.entry.answer) ? followed.entry
     : answered.current?.store === store ? answered.current?.entry ?? null : null;
   const pushed = valuesEntry !== null;
-  const memberSet = useMemo(() => new Set(members), [members]);
-  const refused = pushed ? answerTableRefusal(valuesEntry?.answer, named, group || only ? memberSet : undefined) : null;
+  const refused = pushed && valuesEntry?.answer?.kind === 'notRecorded' ? valuesEntry.answer.reason : null;
   const asked = useProduct<SeriesStateReply>(runtime.client, track && view === 'race' && !pushed && !followWaiting && !followErr && members.length && askAt !== null ? productRequest({
     sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family, reads: members.map(tag => ({ country: countryFromKey(tag), hour: askAt })) } }) : null, active, validateStates, track?.source);
   const live = useMemo(() => valuesEntry ? liveRace(runtime.clock, axisOffset,
-    hour => {
-      shown(hour);
-      const roster = rosterOf(hour);
-      const scoped = group || only ? new Set(rosterTags(roster)) : undefined;
-      if (answerTableRefusal(valuesEntry.answer, named, scoped) !== null) return [];
-      return factionEntries(roster, answerValues(valuesEntry.answer, named, DECIMALS), slots, hour, format).entries;
-    },
+    hour => { shown(hour); return factionEntries(rosterOf(hour), answerValues(valuesEntry.answer, named, DECIMALS), slots, hour, format).entries; },
     () => valuesEntry.version, !!group) : null,
-  [valuesEntry, runtime.clock, axisOffset, rosterOf, named, slots, format, shown, group, only]);
+  [valuesEntry, runtime.clock, axisOffset, rosterOf, named, slots, format, shown, group]);
   liveRef.current = live;
   useHeadHour(runtime.clock, !!live, () => liveRef.current ? rowsOf(liveRef.current.entries()) : '', memberWakes);
-  const race = useMemo(() => live
-    ? refused ? { entries: [], unknown: 0 } : factionEntries(rosterOf(moment), answerValues(valuesEntry?.answer, named, DECIMALS), slots, moment, format)
-    : factionEntries(rosterData, stateValues(asked.data, moment), slots, moment, format),
-  [live, refused, rosterOf, valuesEntry, named, rosterData, asked.data, slots, moment, format]);
+  const race = useMemo(() => live ? { entries: live.entries(), unknown: 0 } : factionEntries(rosterData, stateValues(asked.data, moment), slots, moment, format),
+    [live, rosterData, asked.data, slots, moment, format]);
   const [chartView, setChartView] = useState<{ from: number; to: number; width: number } | null>(null);
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {
     if (next.to < next.from) return;

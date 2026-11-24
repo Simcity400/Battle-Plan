@@ -1,6 +1,13 @@
 use replay_columnar::manifest::Status;
 use replay_data::rows::TableId;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CoverageScope {
+    #[default]
+    Table,
+    Row,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Coverage {
     Recorded,

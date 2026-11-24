@@ -83,9 +83,9 @@ pub fn covered_runs(
     keys: Option<&[u128]>,
     from: i32,
     to: i32,
-) -> io::Result<HashMap<u128, CoveredRuns>> {
-    let held = crate::cost::storage(|| replay_lanes::lanes::keyed_covered_runs(recording, run, table, source, keys, from, to))?;
-    Ok(held.into_iter().collect())
+) -> io::Result<(HashMap<u128, CoveredRuns>, Vec<(i32, i32)>)> {
+    let (held, complete) = crate::cost::storage(|| replay_lanes::lanes::keyed_covered_runs(recording, run, table, source, keys, from, to))?;
+    Ok((held.into_iter().collect(), complete))
 }
 
 pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<replay_lanes::lanes::StatusRun>> {

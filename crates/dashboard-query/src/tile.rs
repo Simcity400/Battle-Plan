@@ -197,7 +197,7 @@ pub fn tile(
         }
         _ => {
             let mut buckets: Vec<Option<ChartBucket>> = Vec::with_capacity(asks.len() * BINS);
-            for (bins, _) in line.binned(&drawn, read_from, last, level, bin_hours)? {
+            for (bins, _) in line.binned_scoped(&drawn, read_from, last, level, bin_hours, crate::coverage::CoverageScope::Row)? {
                 debug_assert_eq!(bins.len(), BINS + 1);
                 buckets.extend(bins.into_iter().skip(1));
             }
@@ -210,7 +210,7 @@ pub fn tile(
         lines.push(TileLine {
             country: ask.country.clone(),
             part: line.part_text(ask),
-            missing: line.missing(&ask.country, first, last, &parts)?,
+            missing: line.missing_scoped(&ask.country, first, last, &parts, crate::coverage::CoverageScope::Row)?,
             parts: parts
                 .iter()
                 .map(|part| TilePart { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id, segment_first_hour: part.segment_first })

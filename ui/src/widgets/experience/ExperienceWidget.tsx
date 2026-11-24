@@ -74,7 +74,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = (branch: ExperienceBranch) => following && active && track && resolved.tags.length && branches.includes(branch)
-    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
+    ? gate.follow({ product: 'series-state', coverage: 'row', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
   const followed = {
     army: useFollow(store, useMemo(() => headQuery('army'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags, gate.follow]), root, NO_PAINT),
     navy: useFollow(store, useMemo(() => headQuery('navy'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags, gate.follow]), root, NO_PAINT),

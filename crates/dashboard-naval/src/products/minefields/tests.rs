@@ -65,38 +65,48 @@ fn a_history_of_every_owner_of_a_region_is_asked_whatever_their_count() {
 }
 
 #[test]
-fn truncated_minefields_never_publish_a_partial_owner_region_total() {
+fn truncated_minefields_keep_witnessed_owners_live_and_refuse_region_total_with_truncation_reason() {
     use dashboard_follow::live::{CellValue, Cells as LiveCells, GroupState};
     use replay_data::rows::TableRows;
     use replay_frame::frame::Metrics;
 
+    let row_trunc = "Naval regional mines read only in part at this hour (1 rows not read)";
+    let table_trunc = "Naval regional mines read only in part at this hour (1 rows not read), and which rows were read is not held at the head";
+
     let sea = BTreeSet::from([3]);
     let fold10 = fold(&[amount(1, 3, 40), amount(2, 3, 60)], name, |_| true, false, &sea);
     let cells10 = LiveCells::default();
-    register_live(&fold10, false, &cells10).unwrap();
+    register_live(&fold10, &cells10).unwrap();
     let live10 = cells10.finish();
 
     let mut frame11 = DecodedFrame { branch: 1, hour: 11, tables: std::array::from_fn(|_| replay_frame::frame::not_selected()), metrics: Metrics::default() };
     frame11.tables[TableId::NavalRegionalMines.index()] = TableView::Truncated { rows: TableRows::NavalRegionalMines(vec![amount(1, 3, 40)]), missing: 1 }.into();
 
     let vals11 = live10.values(&frame11);
+    assert_eq!(vals11.len(), 2, "owner cells in Row group and region total in Table group");
     assert_eq!(
         vals11[0],
-        vec![
-            CellValue::Number(40),
-            CellValue::Missing("Naval regional mines read only in part at this hour (1 rows not read)".into()),
-        ],
-        "hour-10 live sum operands see GER witnessed and ENG refused at truncated hour 11"
+        vec![CellValue::Number(40), CellValue::Missing(row_trunc.into())],
+        "Row group keeps witnessed GER live and refuses unwitnessed ENG"
+    );
+    assert_eq!(
+        vals11[1],
+        vec![CellValue::Missing(table_trunc.into()), CellValue::Missing(table_trunc.into())],
+        "Table group refuses region total operands with main's truncation reason"
     );
 
     let fold11 = fold(&[amount(1, 3, 40)], name, |_| true, true, &sea);
     assert_eq!(fold11.mined.len(), 1);
     assert_eq!(fold11.mined[0].owners, vec![MineOwner { tag: "GER".into() }]);
     let cells11 = LiveCells::default();
-    register_live(&fold11, true, &cells11).unwrap();
+    register_live(&fold11, &cells11).unwrap();
     let live11 = cells11.finish();
-    let json11 = live11.json(&[GroupState::Values(live11.values(&frame11)[0].clone())]);
+    let live11_vals = live11.values(&frame11);
+    assert_eq!(live11_vals[0], vec![CellValue::Number(40)], "cold truncated hour keeps witnessed owner cell live");
+    assert_eq!(live11_vals[1], vec![CellValue::Missing(table_trunc.into())], "cold truncated hour refuses region total with truncation reason");
+    let states11: Vec<GroupState> = live11_vals.into_iter().map(GroupState::Values).collect();
+    let json11 = live11.json(&states11);
     let kinds: Vec<&str> = json11["kinds"].as_array().unwrap().iter().map(|k| k["id"].as_str().unwrap()).collect();
-    assert!(kinds.contains(&"GER"), "witnessed owner cell remains live");
-    assert!(!kinds.contains(&"total"), "partial-owner region total must not be published on a truncated hour");
+    assert!(kinds.contains(&"GER"), "witnessed owner cell remains registered");
+    assert!(kinds.contains(&"total"), "region total remains registered under Table scope so UI shows the truncation reason");
 }

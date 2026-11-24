@@ -327,7 +327,7 @@ impl Followed {
         let log = self.log.keys.capacity() * 16 + self.log.values.capacity() * 8 + self.log.states.capacity() + (self.log.reasons.capacity() + self.log.names.capacity()) * 4 + self.log.hours.capacity() * 4;
         let standing = self.standing.len() * (size_of::<Ordinal>() + size_of::<Option<Listed>>() + 16) + self.standing.values().flatten().map(|(_, cells)| cells.len() * size_of::<(i64, State)>()).sum::<usize>();
         let query = match &self.query {
-            Query::Cells { columns, rows, .. } => columns.capacity() * 8 + if let Rows::Keys(keys) | Rows::Live(keys) = rows { keys.capacity() * 16 } else { 0 },
+            Query::Cells { columns, rows, .. } => columns.capacity() * 8 + if let Rows::Keys(keys) | Rows::Live(keys) | Rows::LiveTable(keys) = rows { keys.capacity() * 16 } else { 0 },
             Query::Series { countries, .. } => countries.iter().map(|country| country.tag().map_or(0, str::len) + size_of::<dashboard_query::identity::Country>()).sum(),
             Query::Head(_) => 0,
         };
@@ -784,7 +784,7 @@ impl Engine {
             let index = self.tables.entry(followed.table).or_insert_with(|| Index { until: Hour::MAX, status: Some(lane.status().0), withheld: lane.withheld().is_some(), ..Index::default() });
             index.queries.push(query);
             let keyed = match &followed.query {
-                Query::Cells { rows: Rows::Keys(keys) | Rows::Live(keys), .. } => {
+                Query::Cells { rows: Rows::Keys(keys) | Rows::Live(keys) | Rows::LiveTable(keys), .. } => {
                     followed.keys = keys.clone();
                     true
                 }
@@ -1100,8 +1100,14 @@ impl Engine {
                 index.ordered(lane);
             }
             stats.evaluated += 1;
-            if let Query::Cells { columns, rows: Rows::Live(keys), .. } = &followed.query {
-                if let dashboard_query::coverage::Coverage::NotRecorded(reason) = self.reasons.row_coverage(lane, true) {
+            if let Query::Cells { columns, rows: Rows::Live(keys) | Rows::LiveTable(keys), .. } = &followed.query {
+                let row_scoped = matches!(followed.query, Query::Cells { rows: Rows::Live(_), .. });
+                let table_refusal = if row_scoped {
+                    self.reasons.row_coverage(lane, true).into_missing()
+                } else {
+                    self.reasons.unrecorded(lane)
+                };
+                if let Some(reason) = table_refusal {
                     followed.live.unrecorded();
                     self.body.clear();
                     answer::not_recorded(&reason, &mut self.body);
@@ -1109,13 +1115,20 @@ impl Engine {
                     continue;
                 }
                 let reasons = &self.reasons;
+                let read_rows = row_scoped.then(|| lane.read_rows()).flatten();
                 let (answer, read) = followed.live.evaluate(
                     keys,
                     columns,
                     lane.cells(),
                     &*index,
-                    lane.read_rows(),
-                    |witnessed| reasons.row_coverage(lane, witnessed),
+                    read_rows,
+                    |witnessed| {
+                        if row_scoped {
+                            reasons.row_coverage(lane, witnessed)
+                        } else {
+                            dashboard_query::coverage::Coverage::Recorded
+                        }
+                    },
                     &mut self.delta,
                     &mut self.body,
                 );

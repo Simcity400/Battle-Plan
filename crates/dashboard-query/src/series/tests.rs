@@ -166,7 +166,7 @@ fn a_chart_names_the_hours_its_line_holds_no_row_in_and_its_table_was_not_availa
 
     let experience = dashboard_declare::series("country-experience").unwrap();
     let line = Line::new(&query, experience, experience.measure("army").unwrap()).unwrap();
-    let unavailable = |first: i32, last: i32| MissingSpan { first_hour: first, last_hour: last, reason: "Country experience not available at this hour: outside the fixture".into() };
+    let unavailable = |first: i32, last: i32| MissingSpan { first_hour: first, last_hour: last, reason: format!("{}: not available at this hour", TableId::CountryExperience.words()) };
     let (summary, missing) = line.summary("GER", FIRST, LAST, 64).unwrap();
     assert!(summary.buckets.iter().all(Option::is_none));
     assert_eq!(missing, [unavailable(FIRST, FIRST + FIRST_HOURS - 1), gap, unavailable(SECOND, LAST)], "a table the recording never held");

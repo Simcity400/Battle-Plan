@@ -505,4 +505,86 @@ mod tests {
             "a member outside the view adds nothing; overlapping spans count once"
         );
     }
+
+    #[test]
+    fn truncated_default_faction_lines_leave_both_factions_missing_on_unstored_measure() {
+        use dashboard_base::test_fixtures::{CAMPAIGN, snapshot_records};
+        use replay::campaign::Replay;
+        use replay_data::rows::{CampaignRow, CountryFactoriesRow, CountryLinkRow, CountryRow, FactionMemberRow, FactionRow, TableRows};
+        use replay_frame::frame::{Metrics, TableView};
+        use std::sync::Arc;
+
+        let countries = vec![
+            CountryRow { id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() },
+            CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..CountryRow::default() },
+        ];
+        let links = vec![
+            CountryLinkRow { id: 9001, canonical_slot: 7 },
+            CountryLinkRow { id: 9002, canonical_slot: 8 },
+        ];
+        let factions = vec![
+            FactionRow { id: 100, name: b"Axis".to_vec(), ..FactionRow::default() },
+            FactionRow { id: 200, name: b"Allies".to_vec(), ..FactionRow::default() },
+        ];
+        let members = vec![
+            FactionMemberRow { country: 9001, faction: 100, ordinal: 0 },
+            FactionMemberRow { country: 9002, faction: 200, ordinal: 0 },
+        ];
+        let fac_ger = CountryFactoriesRow { country: 9001, military_damaged_raw: 1_000_000, ..CountryFactoriesRow::default() };
+        let fac_ita = CountryFactoriesRow { country: 9002, military_damaged_raw: 2_000_000, ..CountryFactoriesRow::default() };
+        let frames: Vec<DecodedFrame> = (120..=130)
+            .map(|hour| {
+                let mut tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside fixture".into() });
+                tables[TableId::Campaign.index()] = TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: CAMPAIGN.into() }]));
+                tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries.clone()));
+                tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links.clone()));
+                tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(factions.clone()));
+                tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members.clone()));
+                tables[TableId::CountryFactories.index()] = if hour == 128 {
+                    TableView::Truncated { rows: TableRows::CountryFactories(vec![fac_ger.clone()]), missing: 1 }
+                } else {
+                    TableView::Complete(TableRows::CountryFactories(vec![fac_ger.clone(), fac_ita.clone()]))
+                };
+                DecodedFrame { branch: 1, hour, tables: tables.map(Into::into), metrics: Metrics::default() }
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let source = Source::from_replay(
+            dashboard_base::SourceKey { source_id: "factions-trunc".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let reply = FactionLines::load(
+            &source,
+            &FactionLinesParams {
+                branch_id: "1".into(),
+                kind: "country-factories".into(),
+                measure: "damaged7".into(),
+                from: 120,
+                to: 130,
+                width: 11,
+                membership: None,
+                members: None,
+                unread: None,
+            },
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(reply.lines.len(), 2, "both factions present");
+        let expected_gap = MissingSpan {
+            first_hour: 128,
+            last_hour: 128,
+            reason: "country factories: read only in part at this hour (1 rows not read)".into(),
+        };
+        for line in &reply.lines {
+            assert_eq!(line.missing, vec![expected_gap.clone()], "faction {} keeps table-wide truncation gap", line.id);
+            assert_eq!(line.summary.buckets[8], None, "faction {} leaves truncated hour 128 empty rather than one-sided", line.id);
+        }
+    }
 }

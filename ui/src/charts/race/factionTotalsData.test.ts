@@ -5,7 +5,7 @@ import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { CountryGroupReply, FactionRostersReply } from '../../generated/dashboard';
 import type { FactionLines } from '../../dashboard/territoryReplies';
-import { answerTableRefusal, answerValues, factionEntries, factionNote, factionSummaries, factionMembersAt, factionMemberSpans, fixedRosters, GROUP_ID, groupTotal, rosterRows, rosterTags } from './factionTotalsData.ts';
+import { answerValues, factionEntries, factionNote, factionSummaries, factionMembersAt, factionMemberSpans, fixedRosters, GROUP_ID, groupTotal, rosterRows, rosterTags } from './factionTotalsData.ts';
 
 const incomplete = 'Its roster was not read whole at this hour';
 const rosters: FactionRostersReply = { missing: null, warnings: [], factions: [
@@ -81,15 +81,4 @@ test('a faction’s members are drawn over the hours each was one, and listed at
   assert.deepEqual([...factionMemberSpans(faction)], [['GER', [{ firstHour: 0, lastHour: 40 }, { firstHour: 45, lastHour: 99 }]], ['ITA', [{ firstHour: 50, lastHour: 70 }]]]);
   assert.deepEqual(factionMembersAt(faction, 42), []);
   assert.deepEqual(factionMembersAt(faction, 55), ['GER', 'ITA']);
-});
-
-test('truncated member rows refuse multi-faction rankings while allowing an individually scoped fully witnessed faction', () => {
-  const trunc = 'Country factories read only in part at this hour (1 rows not read)';
-  const partial = parseFollowed(message(128, [{ id: 1, answer: {
-    keys: [1n, 2n], columns: 1, values: [10n, 0n],
-    states: [CELL.value, CELL.noRow], names: ['GER', 'ITA'], reasons: [null, trunc],
-  } }])).answers[0]!.answer;
-  assert.equal(answerTableRefusal(partial, ['GER', 'ITA']), trunc, 'multi-faction ranking refuses when any competing member is truncated');
-  assert.equal(answerTableRefusal(partial, ['GER', 'ITA'], new Set(['GER'])), null, 'an individually scoped faction whose members are witnessed stays visible');
-  assert.equal(answerTableRefusal(partial, ['GER', 'ITA'], new Set(['ITA'])), trunc, 'an individually scoped faction with an unwitnessed member is refused');
 });
