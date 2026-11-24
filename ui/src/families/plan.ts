@@ -25,7 +25,7 @@ import type {
 } from '../generated/dashboard';
 import type { FamilyFactionRun, HolderRun, HourRanges } from './holders.ts';
 import type { CountryLooksMap } from './looks.ts';
-import type { DatedLogRow, LogTailQuery, TableRowSource } from './table/rowSource.ts';
+import type { DatedLogRow, LogTailQuery, RowWindow, TableRowSource, TailReply } from './table/rowSource.ts';
 import type { Value } from './value.ts';
 
 export type FamilyId = string;
@@ -130,6 +130,7 @@ export interface PagedRowsSourceRead {
   readonly tailQuery: LogTailQuery;
   readonly pageSize?: number;
   readonly followQuery: Readonly<Record<string, unknown>> | null;
+  readonly validate?: (raw: unknown, readAt?: number) => TailReply<DatedLogRow>;
 }
 
 export type SourceTimeShape =
@@ -285,6 +286,7 @@ export interface BoundedReadView {
   readonly hour: DisplayedHour;
   readonly validInterval: readonly [lo: number, hi: number];
   readonly revisions: Readonly<Record<string, number>>;
+  readonly rowWindow?: RowWindow;
   panel<T = unknown>(name: string): T | undefined;
   answer(name: string): FollowedAnswer | undefined;
   live(name: string): LiveValues<number | bigint | string> | null | undefined;

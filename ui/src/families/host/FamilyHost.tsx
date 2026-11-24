@@ -27,6 +27,7 @@ import type {
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { CountryLooksMap } from '../looks.ts';
+import type { PagedRowsSnapshot } from '../table/rowSource.ts';
 import {
   familyBinding,
   familyInspectToken,
@@ -190,6 +191,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
   readonly staticSources?: FamilyStaticSources | null;
+  readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision?: number;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
@@ -238,6 +240,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   allowEmptyFollow = false,
   owner,
   staticSources = null,
+  pagedRows,
   tiledSeries,
   tiledRevision = 0,
   hovers,
@@ -408,6 +411,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     theme,
     reducedMotion,
     staticSources,
+    pagedRows,
     tiledSeries,
     hovers,
     artResolutions,
@@ -534,6 +538,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       sources: sourceIdsRef.current,
       ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
       ...(staticAnswers && Object.keys(staticAnswers).length ? { staticAnswers } : {}),
+      ...(cur.pagedRows && Object.keys(cur.pagedRows).length ? { pagedRows: cur.pagedRows } : {}),
       ...(cur.tiledSeries ? { tiledSeries: cur.tiledSeries } : {}),
       ...(cur.hovers ? { hovers: cur.hovers } : {}),
       ...(cur.artResolutions ? { artResolutions: cur.artResolutions } : {}),
@@ -1068,6 +1073,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     theme,
     reducedMotion,
     staticSources,
+    pagedRows,
     tiledSeries,
     tiledRevision,
     hovers,

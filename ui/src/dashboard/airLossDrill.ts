@@ -1,11 +1,7 @@
-import type { GatedTime } from './regionTime';
-import type { HeldCountry } from './regionGate';
-import type { PinnedSpec } from '../charts/drill/drillState';
 import { clipToSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
-import { pinPartsRace } from '../charts/race/partsRaceDrill.ts';
-import type { BoundTrack, WidgetSpec } from './model';
-import { airCauseName, ledgerRuns, ledgerScale, ledgerTotals } from './militaryAirLedger.ts';
+import { airCauseName } from '../widgets/air-kills-losses/lossCauses.ts';
+import { ledgerRuns, ledgerScale, ledgerTotals } from './militaryAirLedger.ts';
 import type { LedgerIndex } from './militaryAirLedger';
 import type { MilitaryAirPart } from '../generated/dashboard';
 
@@ -40,12 +36,4 @@ export function airLossDrillHistory(index: LedgerIndex, identity: string, from: 
   }
   return [...causes].sort(([a], [b]) => a - b).map(([cause, parts]) => ({ id: String(cause), cause, label: airCauseName(cause), parts,
     runs: ledgerRuns({ country, parts, points: ledgerTotals(parts), openings: [] }, from, end, dealt, ledgerScale('airLosses')) }));
-}
-
-export const heldIdentity = (held: HeldCountry) => `${held.slot}:${held.countryId}`;
-
-export function pinAirLossDrill(source: WidgetSpec, track: BoundTrack, held: HeldCountry, time: GatedTime): PinnedSpec {
-  const pinned = pinPartsRace(source, track, held.tag, time, 'Loss causes');
-  return { ...pinned,
-    options: { ...pinned.options, holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, held.tag, heldIdentity(held)]) } };
 }

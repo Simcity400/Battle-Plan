@@ -3,7 +3,7 @@ import type { BarsProjection } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FamilyPlanContext } from '../../families/contract.ts';
 import { contentKey, contentSet, type OptionValue } from '../../dashboard/options.ts';
-import { militaryAirModel, militaryAirParams, militaryAirSources, type MilitaryAirAtOptions } from '../bombing-damage/militaryAirAt.ts';
+import { lossCausesModel, militaryAirModel, militaryAirParams, militaryAirSources, type MilitaryAirAtOptions } from '../bombing-damage/militaryAirAt.ts';
 
 export const airKillsLossesProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
   kind: 'air-kills-losses',
@@ -18,6 +18,13 @@ export const airKillsLossesPairedProjection: BarsProjection<MilitaryAirAtOptions
   nextChange: () => Infinity,
   project: (readView, options) => militaryAirModel(readView, options),
 }, 'paired');
+
+export const airLossCausesProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
+  kind: 'air-kills-losses',
+  family: 'bars',
+  nextChange: () => Infinity,
+  project: (readView, options) => lossCausesModel(readView, options),
+}, 'breakdown');
 
 const numbers = (value: OptionValue | undefined) => contentSet(value ?? '').map(contentKey).map(Number).filter(Number.isInteger);
 
@@ -65,4 +72,11 @@ export const airKillsLossesPairedDeclaration: BarsWidgetDeclaration<MilitaryAirA
     rightHeader: 'Destroyed',
     paired: { solid: 'Destroyed (solid)', outline: 'Own losses (outline)' },
   }),
+};
+
+export const airLossCausesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptions> = {
+  ...airKillsLossesDeclaration,
+  label: 'Own aircraft lost by cause',
+  sources: ctx => militaryAirSources('air-loss-causes', ctx, militaryAirParams(ctx, 'airLosses', 'taken', { regions: numbers(ctx.options.regions), causes: numbers(ctx.options.causes) })),
+  projection: airLossCausesProjection,
 };

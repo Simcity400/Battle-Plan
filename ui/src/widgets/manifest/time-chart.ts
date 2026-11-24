@@ -163,6 +163,17 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'balance-of-power',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'balance-of-power',
+      DEFAULT_VIEW,
+      () => import('../balance-of-power/balanceOfPowerProjection.ts'),
+      mod => ({ projection: mod.balanceOfPowerProjection, declaration: mod.balanceOfPowerDeclaration }),
+    ),
+  },
+  {
     kind: 'stability',
     view: DEFAULT_VIEW,
     family: 'time-chart',
