@@ -411,9 +411,19 @@ struct BatchContext(UnsafeCell<collector_memory::terminal::Context>);
 // Both the native body and its detached continuation end before active retires.
 unsafe impl Sync for BatchContext {}
 
+#[repr(align(64))]
+struct CachePadded<T>(T);
+
+impl<T> std::ops::Deref for CachePadded<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 struct Shared<J, R, O: Observer> {
     id: u64,
-    state: Mutex<State>,
+    state: CachePadded<Mutex<State>>,
     started_ready: Condvar,
     work_ready: Condvar,
     reserve_ready: Condvar,
@@ -422,8 +432,9 @@ struct Shared<J, R, O: Observer> {
     priority: AtomicI32,
     away: AtomicU32,
     hurried: AtomicU64,
-    burst_peers: AtomicUsize,
-    ready_count: AtomicUsize,
+    away_cleared: AtomicU64,
+    burst_peers: CachePadded<AtomicUsize>,
+    ready_count: CachePadded<AtomicUsize>,
     stopping: AtomicBool,
     spin_ticks: u64,
     run: Box<Runner<J, R>>,
@@ -432,14 +443,14 @@ struct Shared<J, R, O: Observer> {
     thread_ids: Vec<AtomicU32>,
     cells: Box<[Cell<J, R>]>,
     words: Box<[AtomicU64]>,
-    active: AtomicUsize,
+    active: CachePadded<AtomicUsize>,
     uncollected: AtomicUsize,
-    awaited: AtomicU64,
+    awaited: CachePadded<AtomicU64>,
     worker_waiters: AtomicUsize,
     ready_waiting: AtomicBool,
     ready_wake: AtomicU64,
     settling: AtomicUsize,
-    counters: Counters,
+    counters: CachePadded<Counters>,
     observer: O,
     #[cfg(feature = "executor_join_help")]
     classify: Option<fn(&J) -> usize>,
@@ -1003,7 +1014,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
         };
         let shared = Arc::new(Shared {
             id,
-            state: Mutex::new(state),
+            state: CachePadded(Mutex::new(state)),
             started_ready: Condvar::new(),
             work_ready: Condvar::new(),
             reserve_ready: Condvar::new(),
@@ -1012,8 +1023,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
             priority: AtomicI32::new(THREAD_PRIORITY_ABOVE_NORMAL),
             away: AtomicU32::new(0),
             hurried: AtomicU64::new(0),
-            burst_peers: AtomicUsize::new(0),
-            ready_count: AtomicUsize::new(0),
+            away_cleared: AtomicU64::new(0),
+            burst_peers: CachePadded(AtomicUsize::new(0)),
+            ready_count: CachePadded(AtomicUsize::new(0)),
             stopping: AtomicBool::new(false),
             spin_ticks,
             run: Box::new(run),
@@ -1022,14 +1034,14 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
             thread_ids,
             cells: cells.into_boxed_slice(),
             words: words.into_boxed_slice(),
-            active: AtomicUsize::new(0),
+            active: CachePadded(AtomicUsize::new(0)),
             uncollected: AtomicUsize::new(0),
-            awaited: AtomicU64::new(0),
+            awaited: CachePadded(AtomicU64::new(0)),
             worker_waiters: AtomicUsize::new(0),
             ready_waiting: AtomicBool::new(false),
             ready_wake: AtomicU64::new(0),
             settling: AtomicUsize::new(0),
-            counters: Counters::default(),
+            counters: CachePadded(Counters::default()),
             observer,
             #[cfg(feature = "executor_join_help")]
             classify,
@@ -1255,23 +1267,32 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
 
     pub fn hold_pace_with(&self, target: usize) {
         let target = target.max(1);
+        let current_away = self.shared.away.load(Ordering::Acquire).checked_sub(1);
+        let next_away = crate::cpu_sets::away_covers(current_away, target.saturating_add(1))
+            .then_some(current_away)
+            .flatten();
+        let next_away_encoded = next_away.map_or(0, |processor| processor.saturating_add(1));
         if self.shared.called_up.load(Ordering::Acquire)
             && self.shared.regulars.load(Ordering::Acquire) == target
             && self.shared.priority.load(Ordering::Acquire) == THREAD_PRIORITY_ABOVE_NORMAL
-            && self.shared.away.load(Ordering::Acquire) == 0
+            && self.shared.away.load(Ordering::Acquire) == next_away_encoded
         {
             return;
         }
         let (prev_regulars, clear_away) = {
             let state = self.shared.lock();
-            let clear_away = self.shared.away.load(Ordering::Acquire) != 0;
+            let current_away = self.shared.away.load(Ordering::Acquire).checked_sub(1);
+            let next_away = crate::cpu_sets::away_covers(current_away, target.saturating_add(1))
+                .then_some(current_away)
+                .flatten();
+            let clear_away = current_away.is_some() && next_away.is_none();
             let prev_regulars = self.shared.regulars.load(Ordering::Acquire);
             self.pace(
                 state,
                 target,
                 THREAD_PRIORITY_ABOVE_NORMAL,
                 true,
-                None,
+                next_away,
             );
             (prev_regulars, clear_away)
         };
@@ -1290,6 +1311,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
                     // SAFETY: `thread` is a live collector worker handle owned by `threads`.
                     unsafe { crate::cpu_sets::select_away(thread.as_handle(), None) };
                 }
+            }
+            if clear_away {
+                self.shared.away_cleared.fetch_add(1, Ordering::Release);
             }
             self.shared.hurried.fetch_add(1, Ordering::Release);
         }
@@ -1321,12 +1345,12 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
             away.map_or(0, |processor| processor.saturating_add(1)),
             Ordering::Release,
         );
-        let rested = !self.shared.called_up.swap(called_up, Ordering::AcqRel);
+        self.shared.called_up.store(called_up, Ordering::Release);
         drop(state);
-        if regulars > previous_regulars || (called_up && rested) {
+        if regulars > previous_regulars {
             self.shared.reserve_ready.notify_all();
         }
-        if regulars < previous_regulars || (!called_up && !rested) {
+        if regulars < previous_regulars {
             self.shared.work_ready.notify_all();
         }
     }
@@ -1881,6 +1905,7 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static, O: Observer>(
     let mut priority = i32::MIN;
     let mut away = crate::cpu_sets::AwayFromGame::default();
     let mut hurried = 0;
+    let mut away_cleared = 0;
     shared.thread_ids[index].store(unsafe { GetCurrentThreadId() }, Ordering::Release);
     crate::hour_stages::enter_worker(index);
     let mut state = shared.lock();
@@ -1901,6 +1926,10 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static, O: Observer>(
         if hurry != hurried {
             hurried = hurry;
             priority = THREAD_PRIORITY_ABOVE_NORMAL;
+        }
+        let cleared = shared.away_cleared.load(Ordering::Acquire);
+        if cleared != away_cleared {
+            away_cleared = cleared;
             away = crate::cpu_sets::AwayFromGame::default();
         }
         let wanted = shared.priority.load(Ordering::Acquire);

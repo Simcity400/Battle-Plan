@@ -164,6 +164,10 @@ pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     away_sets(cores(), Some(processor))
 }
 
+pub fn away_covers(processor: Option<u32>, threads: usize) -> bool {
+    away_from_game(processor).is_some_and(|sets| sets.len() >= threads)
+}
+
 pub(crate) fn background_away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     let processor = processor?;
     background_sets(cores(), Some(processor))

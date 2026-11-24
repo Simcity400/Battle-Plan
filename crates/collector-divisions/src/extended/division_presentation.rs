@@ -2416,8 +2416,8 @@ impl Captured {
                 if naming_held_stamp == 0 {
                     record.bytes(r.naming.and_then(|n| name_span(n.custom)));
                     record.bytes(cached_name(r, index));
+                    record.bytes(r.naming.and_then(|n| name_span(n.group)));
                 }
-                record.bytes(r.naming.and_then(|n| name_span(n.group)));
                 let supply_sample = self.daily_status.sample(index).filter(|s| s.id() != 0);
                 let supply_sample_id = match supply_sample {
                     Some(sample) => sample.id(),

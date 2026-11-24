@@ -46,7 +46,7 @@ const _: () = assert!(SUBPAGE_START % HEAP_ALIGNMENT == 0);
 const _: () = assert!(COLD_OFFSET + ((GRANULARITY - PAGE) / PAGE) * COLD_STRIDE <= SUBPAGE_START);
 const _: () = assert!(SUBPAGE_START + 2048 <= PAGE);
 const RESERVATIONS: usize = (usize::BITS - GRANULARITY.trailing_zeros()) as usize;
-const KEPT_BYTES: usize = 16 * 1024 * 1024;
+const KEPT_BYTES: usize = 28 * 1024 * 1024;
 const SMALL_LARGE_LISTS: usize = 5;
 const TRIM_SLACK: usize = 256 * 1024;
 const _: () = assert!(slab_bytes(CLASSES - 1) == GRANULARITY);

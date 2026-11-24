@@ -65,6 +65,8 @@ struct Keep {
     division: u64,
     member: usize,
     span: [u8; INPUT_SPAN],
+    inputs: Option<cname_group_member::Inputs>,
+    group_null: bool,
     text: Span,
     stamp: u64,
 }
@@ -248,27 +250,119 @@ impl NamingPart {
                 Some(held) => (pointer, Ok(held.span)),
                 None => (pointer, batch.member(memory, local % 64, pointer)),
             });
-            let result = member.and_then(|(pointer, span)| {
-                cname_group_member::inputs_growing(
+            let mut group_unchanged = false;
+            let mut group_null = false;
+            let mut fast_hit = false;
+            if let (Some(held), Some(store), Ok((_, Ok(_)))) = (held, store, member)
+                && let Some(cached_inputs) = held.inputs
+                && cached_inputs.kind != 2
+            {
+                if cached_inputs.kind != 0
+                    || (cached_inputs.programmatic == 0 && cached_inputs.custom.1 != 0)
+                {
+                    let custom_bytes = store.held_name_custom(held);
+                    if custom_bytes.is_empty() {
+                        row.inputs = Some(cname_group_member::Inputs {
+                            custom: (0, 0),
+                            group: (0, 0),
+                            ..cached_inputs
+                        });
+                        group_unchanged = true;
+                        fast_hit = true;
+                    } else if let Ok(Some(span)) = cname_group_member::held_cached_name(
+                        custom_bytes,
+                        &mut self.names.first,
+                        self.names.len,
+                        &mut self.names.required,
+                    ) {
+                        self.names.len += span.1;
+                        row.inputs = Some(cname_group_member::Inputs {
+                            custom: span,
+                            group: (0, 0),
+                            ..cached_inputs
+                        });
+                        group_unchanged = true;
+                        fast_hit = true;
+                    }
+                } else if let Ok(Some(resolved)) = cname_group_member::template_group_growing(
                     memory,
                     base,
-                    pointer,
-                    &span?,
+                    cached_inputs.template,
                     &mut self.groups,
                     &mut self.names.first,
                     &mut self.names.len,
                     &mut self.names.required,
-                )
-            });
-            match result {
-                Ok(cname_group_member::Naming::Row(inputs)) => {
-                    self.names.len += inputs.custom.1;
-                    row.inputs = Some(inputs);
+                ) {
+                    match resolved {
+                        Some(span)
+                            if !held.group_null
+                                && cached_inputs.custom.1 == 0
+                                && &self.names.first[span.0..span.0 + span.1]
+                                    == store.held_name_group(held) =>
+                        {
+                            row.inputs = Some(cname_group_member::Inputs {
+                                custom: (0, 0),
+                                group: span,
+                                ..cached_inputs
+                            });
+                            group_unchanged = true;
+                            fast_hit = true;
+                        }
+                        None if held.group_null
+                            && cached_inputs.custom.1 == 0
+                            && u64::from_le_bytes(
+                                held.span[cname_group_member::OVERRIDE_NAME_LENGTH
+                                    ..cname_group_member::OVERRIDE_NAME_LENGTH + 8]
+                                    .try_into()
+                                    .unwrap(),
+                            ) == 0 =>
+                        {
+                            row.inputs = Some(cname_group_member::Inputs {
+                                custom: (0, 0),
+                                group: (0, 0),
+                                ..cached_inputs
+                            });
+                            group_unchanged = true;
+                            group_null = true;
+                            fast_hit = true;
+                        }
+                        _ => {}
+                    }
                 }
-                Ok(cname_group_member::Naming::DoesNotFit) => {
-                    row.failure = Some("division naming bytes do not fit arena");
+            }
+            if !fast_hit {
+                let result = member.and_then(|(pointer, span)| {
+                    let span = span?;
+                    let res = cname_group_member::inputs_growing(
+                        memory,
+                        base,
+                        pointer,
+                        &span,
+                        &mut self.groups,
+                        &mut self.names.first,
+                        &mut self.names.len,
+                        &mut self.names.required,
+                    );
+                    Ok((res, span))
+                });
+                match result {
+                    Ok((Ok(cname_group_member::Naming::Row(inputs)), span)) => {
+                        self.names.len += inputs.custom.1;
+                        group_null = inputs.kind == 0
+                            && inputs.group.1 == 0
+                            && u64::from_le_bytes(
+                                span[cname_group_member::OVERRIDE_NAME_LENGTH
+                                    ..cname_group_member::OVERRIDE_NAME_LENGTH + 8]
+                                    .try_into()
+                                    .unwrap(),
+                            ) == 0;
+                        row.inputs = Some(inputs);
+                    }
+                    Ok((Ok(cname_group_member::Naming::DoesNotFit), _)) => {
+                        row.failure = Some("division naming bytes do not fit arena");
+                    }
+                    Ok((Err(reason), _)) | Err(reason) => row.failure = Some(reason),
                 }
-                Err(reason) => row.failure = Some(reason),
             }
             let cached = match (member, held, store) {
                 (_, Some(held), Some(store)) => cname_group_member::held_cached_name(
@@ -310,9 +404,13 @@ impl NamingPart {
                 Err(reason) => row.cached_failure = Some(reason),
             }
             row.held = held.is_some();
-            let stamp = held.map_or(0, |held| held.stamp);
-            row.held_stamp = match (held, row.inputs, row.cached_name) {
-                (Some(held), Some(_), Some(_)) => held.stamp,
+            let stamp = if group_unchanged {
+                held.map_or(0, |held| held.stamp)
+            } else {
+                0
+            };
+            row.held_stamp = match (group_unchanged, held, row.inputs, row.cached_name) {
+                (true, Some(held), Some(_), Some(_)) => held.stamp,
                 _ => 0,
             };
             if let (true, true, Ok((pointer, Ok(span))), Some(text)) =
@@ -323,6 +421,8 @@ impl NamingPart {
                     division: seed.division,
                     member: pointer,
                     span,
+                    inputs: row.inputs,
+                    group_null,
                     text,
                     stamp,
                 });
@@ -511,12 +611,44 @@ impl Captured {
         if let Some(store) = store {
             for keep in first.keeps.iter().take_while(|keep| keep.index < len) {
                 let text = &self.cached_names.first[keep.text.0..keep.text.0 + keep.text.1];
-                store.keep_name(keep.division, keep.member, &keep.span, text, keep.stamp);
+                let (custom, group) = keep.inputs.map_or((&[][..], &[][..]), |inputs| {
+                    (
+                        &self.names.first[inputs.custom.0..inputs.custom.0 + inputs.custom.1],
+                        &self.names.first[inputs.group.0..inputs.group.0 + inputs.group.1],
+                    )
+                });
+                store.keep_name_with_inputs(collector_division_parts::attack_stats::KeptName {
+                    division: keep.division,
+                    member: keep.member,
+                    span: &keep.span,
+                    inputs: keep.inputs,
+                    group_null: keep.group_null,
+                    custom,
+                    group,
+                    text,
+                    stamp: keep.stamp,
+                });
             }
             for part in rest.iter() {
                 for keep in part.keeps.iter().take_while(|keep| keep.index < len) {
                     let text = &part.cached.first[keep.text.0..keep.text.0 + keep.text.1];
-                    store.keep_name(keep.division, keep.member, &keep.span, text, keep.stamp);
+                    let (custom, group) = keep.inputs.map_or((&[][..], &[][..]), |inputs| {
+                        (
+                            &part.names.first[inputs.custom.0..inputs.custom.0 + inputs.custom.1],
+                            &part.names.first[inputs.group.0..inputs.group.0 + inputs.group.1],
+                        )
+                    });
+                    store.keep_name_with_inputs(collector_division_parts::attack_stats::KeptName {
+                        division: keep.division,
+                        member: keep.member,
+                        span: &keep.span,
+                        inputs: keep.inputs,
+                        group_null: keep.group_null,
+                        custom,
+                        group,
+                        text,
+                        stamp: keep.stamp,
+                    });
                 }
             }
         }

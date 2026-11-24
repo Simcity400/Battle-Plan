@@ -5584,7 +5584,7 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         let reclaim_interval = if followup_reclaims > 0 {
             Duration::from_millis(750)
         } else {
-            Duration::from_secs(3)
+            Duration::from_secs(8)
         };
         if reclaim_now || last_reclaim.elapsed() >= reclaim_interval {
             last_reclaim = Instant::now();

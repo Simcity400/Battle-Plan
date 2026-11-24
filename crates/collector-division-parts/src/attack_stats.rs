@@ -142,7 +142,23 @@ pub struct HeldName {
     division: u64,
     pub member: usize,
     pub span: [u8; engine_native::cname_group_member::INPUT_SPAN],
+    pub inputs: Option<engine_native::cname_group_member::Inputs>,
+    pub group_null: bool,
+    custom: (usize, usize),
+    group: (usize, usize),
     text: (usize, usize),
+    pub stamp: u64,
+}
+
+pub struct KeptName<'a> {
+    pub division: u64,
+    pub member: usize,
+    pub span: &'a [u8; engine_native::cname_group_member::INPUT_SPAN],
+    pub inputs: Option<engine_native::cname_group_member::Inputs>,
+    pub group_null: bool,
+    pub custom: &'a [u8],
+    pub group: &'a [u8],
+    pub text: &'a [u8],
     pub stamp: u64,
 }
 
@@ -410,6 +426,14 @@ impl ArmyStatStore {
         &self.name_bytes[held.text.0..held.text.0 + held.text.1]
     }
 
+    pub fn held_name_custom(&self, held: &HeldName) -> &[u8] {
+        &self.name_bytes[held.custom.0..held.custom.0 + held.custom.1]
+    }
+
+    pub fn held_name_group(&self, held: &HeldName) -> &[u8] {
+        &self.name_bytes[held.group.0..held.group.0 + held.group.1]
+    }
+
     pub fn begin_names(&mut self) {
         self.next_names.clear();
         self.next_name_bytes.clear();
@@ -423,14 +447,40 @@ impl ArmyStatStore {
         text: &[u8],
         stamp: u64,
     ) {
-        let start = self.next_name_bytes.len();
-        self.next_name_bytes.extend_from_slice(text);
-        self.next_names.push(HeldName {
+        self.keep_name_with_inputs(KeptName {
             division,
             member,
-            span: *span,
-            text: (start, text.len()),
-            stamp: if stamp != 0 { stamp } else { next_name_stamp() },
+            span,
+            inputs: None,
+            group_null: false,
+            custom: &[],
+            group: &[],
+            text,
+            stamp,
+        });
+    }
+
+    pub fn keep_name_with_inputs(&mut self, kept: KeptName<'_>) {
+        let custom_start = self.next_name_bytes.len();
+        self.next_name_bytes.extend_from_slice(kept.custom);
+        let group_start = self.next_name_bytes.len();
+        self.next_name_bytes.extend_from_slice(kept.group);
+        let text_start = self.next_name_bytes.len();
+        self.next_name_bytes.extend_from_slice(kept.text);
+        self.next_names.push(HeldName {
+            division: kept.division,
+            member: kept.member,
+            span: *kept.span,
+            inputs: kept.inputs,
+            group_null: kept.group_null,
+            custom: (custom_start, kept.custom.len()),
+            group: (group_start, kept.group.len()),
+            text: (text_start, kept.text.len()),
+            stamp: if kept.stamp != 0 {
+                kept.stamp
+            } else {
+                next_name_stamp()
+            },
         });
     }
 

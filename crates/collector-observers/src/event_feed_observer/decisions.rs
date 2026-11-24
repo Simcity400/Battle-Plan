@@ -103,23 +103,34 @@ fn prefetch_status_world<'a, M: Memory>(
         let override_addr = if need_rebuild {
             engine_sites::at(base, engine_decisions::decision_runtime::ADMISSION_OVERRIDE_RVA)
         } else {
-            Some(singleton_addr)
+            Some(0)
         };
         if let Some(override_addr) = override_addr {
             let mut state_bytes = [0_u8; 8];
             let mut status_vtable = [0_u8; 8];
             let mut country_bytes = [0_u8; 8];
             let mut override_byte = [0_u8; 1];
-            let copied = memory.copy_scattered(
-                [singleton_addr, status, country_addr, override_addr],
-                &mut [
-                    &mut state_bytes[..],
-                    &mut status_vtable[..],
-                    &mut country_bytes[..],
-                    &mut override_byte[..],
-                ],
-            );
-            if copied == 4 {
+            let copied_ok = if need_rebuild {
+                memory.copy_scattered(
+                    [singleton_addr, status, country_addr, override_addr],
+                    &mut [
+                        &mut state_bytes[..],
+                        &mut status_vtable[..],
+                        &mut country_bytes[..],
+                        &mut override_byte[..],
+                    ],
+                ) == 4
+            } else {
+                memory.copy_scattered(
+                    [singleton_addr, status, country_addr],
+                    &mut [
+                        &mut state_bytes[..],
+                        &mut status_vtable[..],
+                        &mut country_bytes[..],
+                    ],
+                ) == 3
+            };
+            if copied_ok {
                 let state = usize::try_from(u64::from_le_bytes(state_bytes))
                     .map_err(|_| "event feed pointer overflow")?;
                 if state == 0 {
@@ -148,7 +159,7 @@ fn prefetch_status_world<'a, M: Memory>(
                     if need_rebuild {
                         state.checked_add(engine_native::cgame_state::CAMPAIGN_SEED)
                     } else {
-                        state.checked_add(engine_native::cgame_state::CURRENT_HOUR)
+                        Some(0)
                     },
                 ) {
                     let mut hour_bytes = [0_u8; 4];
@@ -158,27 +169,48 @@ fn prefetch_status_world<'a, M: Memory>(
                     let mut id_bytes = [0_u8; 4];
                     let mut target_bytes = [0_u8; 4];
                     let mut seed_bytes = [0_u8; 4];
-                    let copied2 = memory.copy_scattered(
-                        [
-                            hour_addr,
-                            countries_addr,
-                            links_addr,
-                            country_ptr,
-                            id_addr,
-                            target_addr,
-                            seed_addr,
-                        ],
-                        &mut [
-                            &mut hour_bytes[..],
-                            &mut countries_bytes[..],
-                            &mut links_bytes[..],
-                            &mut country_vtable[..],
-                            &mut id_bytes[..],
-                            &mut target_bytes[..],
-                            &mut seed_bytes[..],
-                        ],
-                    );
-                    if copied2 == 7 {
+                    let copied2_ok = if need_rebuild {
+                        memory.copy_scattered(
+                            [
+                                hour_addr,
+                                countries_addr,
+                                links_addr,
+                                country_ptr,
+                                id_addr,
+                                target_addr,
+                                seed_addr,
+                            ],
+                            &mut [
+                                &mut hour_bytes[..],
+                                &mut countries_bytes[..],
+                                &mut links_bytes[..],
+                                &mut country_vtable[..],
+                                &mut id_bytes[..],
+                                &mut target_bytes[..],
+                                &mut seed_bytes[..],
+                            ],
+                        ) == 7
+                    } else {
+                        memory.copy_scattered(
+                            [
+                                hour_addr,
+                                countries_addr,
+                                links_addr,
+                                country_ptr,
+                                id_addr,
+                                target_addr,
+                            ],
+                            &mut [
+                                &mut hour_bytes[..],
+                                &mut countries_bytes[..],
+                                &mut links_bytes[..],
+                                &mut country_vtable[..],
+                                &mut id_bytes[..],
+                                &mut target_bytes[..],
+                            ],
+                        ) == 6
+                    };
+                    if copied2_ok {
                         if u64::from_le_bytes(country_vtable) != country_vtable_expected as u64 {
                             return Err("event feed object identity mismatch");
                         }

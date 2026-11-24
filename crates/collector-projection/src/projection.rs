@@ -910,7 +910,6 @@ impl Projection<'_> {
                     return unavailable("collector allocation failed").into();
                 }
                 let row_key = key(row);
-                let mut materialize = false;
                 if held.keys.get(at) == Some(&row_key) {
                     if fixed.is_some()
                         && fixed == held.fixed[at]
@@ -933,13 +932,11 @@ impl Projection<'_> {
                         fixed_patches.push((at, fixed));
                         continue;
                     }
-                    materialize = true;
                 } else {
                     aligned = false;
                     first_unaligned = at;
-                    materialize = true;
                 }
-                if materialize {
+                {
                     let prefix_bytes = at.checked_sub(1).map_or(0, |before| held.ends[before]);
                     let bytes_need = held.bytes.len().max(prefix_bytes + row_bytes.len());
                     next.clear();
