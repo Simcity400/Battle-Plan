@@ -1,7 +1,8 @@
 import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
-  { kind: 'air-force-size', load: () => import('./air-force-size') },
+  { kind: 'air-force-size', view: 'lines', label: 'Lines', load: () => import('./air-force-size') },
+  { kind: 'air-force-size', view: 'mix', label: 'Mix', load: () => import('./air-force-size') },
   { kind: 'air-kills-losses', view: 'breakdown', label: 'Loss causes', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-kills-losses', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-statistics', load: () => import('./air-statistics') },
@@ -39,9 +40,12 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'market-ledger', load: () => import('./market-ledger') },
   { kind: 'military-factory-spending', load: () => import('./military-factory-spending') },
   { kind: 'naval-battles', load: () => import('./naval-battles') },
-  { kind: 'naval-losses', load: () => import('./naval-losses') },
-  { kind: 'navy-size', load: () => import('./navy-size') },
-  { kind: 'nuclear-arsenal', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
+  { kind: 'naval-losses', view: 'lines', label: 'Lines', load: () => import('./naval-losses') },
+  { kind: 'naval-losses', view: 'mix', label: 'Mix', load: () => import('./naval-losses') },
+  { kind: 'navy-size', view: 'lines', label: 'Lines', load: () => import('./navy-size') },
+  { kind: 'navy-size', view: 'mix', label: 'Mix', load: () => import('./navy-size') },
+  { kind: 'nuclear-arsenal', view: 'lines', label: 'Lines', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
+  { kind: 'nuclear-arsenal', view: 'mix', label: 'Mix', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
   { kind: 'occupation-reserve-manpower', load: () => import('./occupation-reserve-manpower') },
   { kind: 'occupation-trend', view: 'lines', label: 'Lines', load: () => import('./occupation-trend') },
   { kind: 'occupation-trend', view: 'mix', label: 'Mix', load: () => import('./occupation-trend') },

@@ -13,6 +13,6 @@ export const definition = {
   description: 'Nuclear stockpiles by country and weapon type, as the top bar shows them.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
-  countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS, playsBackDated: true,
+  countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,
   variants: [...raceViewVariants('Nuclear arsenal', OPTIONS), ...breakdownVariants('Nuclear arsenal', OPTIONS)],
 } as const satisfies WidgetMeta;
