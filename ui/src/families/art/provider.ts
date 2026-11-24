@@ -20,6 +20,46 @@ export function flagArtHandle(flagChoice: string, size: ArtFlagSize = 'panel'): 
   return { kind: 'flag', choice: flagChoice, size };
 }
 
+export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
+  return url ? { kind: 'url', url } : null;
+}
+
+export type ArtUrlInput =
+  | string
+  | ArtHandle
+  | ArtResult
+  | { readonly iconUrl?: string | null; readonly art?: ArtResult }
+  | null
+  | undefined;
+
+export function artUrlOf(
+  input: ArtUrlInput,
+  index?: IdentityIndex | null,
+  resolutions?: ArtResolutions,
+): string | null {
+  if (!input) return null;
+  if (typeof input === 'string') return input || null;
+  if ('status' in input) return input.status === 'ready' && input.url ? input.url : null;
+  if ('iconUrl' in input || 'art' in input) {
+    if (input.iconUrl) return input.iconUrl;
+    return input.art?.status === 'ready' && input.art.url ? input.art.url : null;
+  }
+  return artUrlForHandle(input, index, resolutions);
+}
+
+export function collectArtUrls(
+  items: Iterable<ArtUrlInput>,
+  index?: IdentityIndex | null,
+  resolutions?: ArtResolutions,
+): string[] {
+  const urls = new Set<string>();
+  for (const item of items) {
+    const url = artUrlOf(item, index, resolutions);
+    if (url) urls.add(url);
+  }
+  return [...urls];
+}
+
 export function mergeArtDemands(held: readonly ArtHandle[], asked: readonly ArtHandle[]): readonly ArtHandle[] {
   const seen = new Set(held.map(artHandleKey));
   let merged: ArtHandle[] | null = null;

@@ -1,6 +1,9 @@
-import type { ArtSlotState, FlagSlotState } from '../../draw/kit.ts';
+import type { Canvas2D } from '../../charts/textWidth.ts';
+import { drawArtSlot, drawFlagSlot, type ArtSlotState, type FlagSlotState } from '../../draw/kit.ts';
 import type { CountryFlagImage, SpriteImage } from '../../generated/dashboard';
+import type { FamilyTheme } from '../contract.ts';
 import type { DrawnFlagEntry } from '../identity/types.ts';
+import type { LaneArtCache } from './laneCache.ts';
 import {
   CURRENT_INSTALL_PROVENANCE,
   DEFAULT_ART_ORIGIN,
@@ -138,4 +141,64 @@ export function toFlagSlotState<TBitmap extends CanvasImageSource>(
     case 'confirmedMissing':
       return { kind: 'missing', ...(tag ? { tag } : {}) };
   }
+}
+
+export interface MediaSlotSpec {
+  readonly kind: 'flag' | 'art' | 'none';
+  readonly art: ArtResult;
+  readonly iconUrl?: string | null;
+  readonly tag?: string;
+  readonly name?: string;
+  readonly resolvedName?: string;
+  readonly dimmed?: boolean;
+}
+
+export interface MediaSlotDrawOptions {
+  readonly artCache?: LaneArtCache;
+  readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
+  readonly radius?: number;
+}
+
+export function resolveCachedArt(
+  art: ArtResult,
+  options?: { readonly artCache?: LaneArtCache; readonly icons?: ReadonlyMap<string, ImageBitmap | null>; readonly iconUrl?: string | null },
+): ArtResult {
+  if (art.status === 'ready' && !art.bitmap) {
+    const cached = options?.artCache?.resolve(art);
+    if (cached) return cached;
+    const url = options?.iconUrl ?? art.url;
+    const bmp = options?.icons?.get(url);
+    if (bmp) return { ...art, bitmap: bmp };
+  }
+  return art;
+}
+
+export function drawMediaSlot(
+  ctx: Canvas2D,
+  x: number,
+  middleY: number,
+  width: number,
+  height: number,
+  media: MediaSlotSpec | undefined,
+  theme: FamilyTheme,
+  options: MediaSlotDrawOptions = {},
+): void {
+  if (!media || media.kind === 'none' || width <= 0 || height <= 0) return;
+  const y = Math.round(middleY - height / 2);
+  const resolved = resolveCachedArt(media.art, {
+    artCache: options.artCache,
+    icons: options.icons,
+    iconUrl: media.iconUrl,
+  });
+  if (media.kind === 'flag') {
+    drawFlagSlot(ctx, x, y, toFlagSlotState(resolved, media.tag), theme, {
+      width,
+      height,
+      ...(media.dimmed ? { dimmed: true } : {}),
+    });
+    return;
+  }
+  drawArtSlot(ctx, x, y, width, height, toArtSlotState(resolved, media.resolvedName ?? media.name), theme, {
+    radius: options.radius ?? 2,
+  });
 }

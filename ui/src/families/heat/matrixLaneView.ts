@@ -1,3 +1,5 @@
+import { fitLabelWidth } from '../../charts/labels.ts';
+import { measureCanvasText } from '../../charts/textWidth.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
@@ -117,15 +119,10 @@ export function widestNames(
   font: string,
   rows: readonly { readonly label: string; readonly trailing?: string }[],
 ): { readonly name: number; readonly trailing: number } {
-  ctx.font = font;
-  let name = 0;
-  let trailing = 0;
-  const sampleLimit = Math.min(rows.length, 60);
-  for (let i = 0; i < sampleLimit; i++) {
-    const row = rows[i]!;
-    name = Math.max(name, ctx.measureText(row.label).width);
-    if (row.trailing) trailing = Math.max(trailing, ctx.measureText(row.trailing).width);
-  }
+  const sample = rows.slice(0, 60);
+  const measure = (text: string) => measureCanvasText(ctx as Parameters<typeof measureCanvasText>[0], text, font);
+  const name = fitLabelWidth(sample, row => measure(row.label), 0, Number.MAX_SAFE_INTEGER);
+  const trailing = fitLabelWidth(sample, row => (row.trailing ? measure(row.trailing) : 0), 0, Number.MAX_SAFE_INTEGER);
   return { name, trailing };
 }
 

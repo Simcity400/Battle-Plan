@@ -18,7 +18,7 @@ import {
 import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
-import { artUrlForHandle } from '../art/provider.ts';
+import { collectArtUrls } from '../art/provider.ts';
 import type { ArtProvider, FamilyTheme } from '../contract.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
@@ -56,21 +56,16 @@ export function collectVisibleMatrixArt(
   layout: HeatMatrixLayout,
   identityIndex?: IdentityIndex | null,
 ): readonly string[] {
-  const urls = new Set<string>();
-  const add = (entity: MatrixAxisEntity) => {
-    if (!entity.flag) return;
-    const url = artUrlForHandle(entity.flag, identityIndex);
-    if (url) urls.add(url);
-  };
+  const handles = [];
   for (let r = layout.firstRow; r < layout.endRow; r++) {
     const entity = model.rows[r];
-    if (entity) add(entity);
+    if (entity?.flag) handles.push(entity.flag);
   }
   for (let c = layout.firstCol; c < layout.endCol; c++) {
     const entity = model.columns[c];
-    if (entity) add(entity);
+    if (entity?.flag) handles.push(entity.flag);
   }
-  return [...urls];
+  return collectArtUrls(handles, identityIndex);
 }
 
 function resolveEntityFlag(
