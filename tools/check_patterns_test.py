@@ -419,7 +419,7 @@ class FamilyKitPatterns(unittest.TestCase):
 
     def test_family_locale_string_is_refused_in_families_and_projections(self):
         code, out = check({}, {
-            "ui/src/families/table/cellPainters.ts": "const s = count.toLocaleString('en-US');\n",
+            "ui/src/families/table/cellPainters.ts": "const s = count.toLocaleString('en-US');\nconst d = x.toFixed(1);\n",
             "ui/src/widgets/foo/fooProjection.ts": "import { usNumber } from '../../charts/numberFormat.ts';\nconst f = new Intl.NumberFormat('en-US');\n",
         })
         self.assertEqual(code, 1)
@@ -458,6 +458,24 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/families/valueFormat.ts": "const pct = `${Math.round(share * 100)}%`;\n",
             "ui/src/families/heat/matrixModel.ts": "if (Math.floor(at / width) === at % width) continue;\n",
             "ui/src/families/bars/barsFamily.test.ts": "const pct = `${Math.round(share * 100)}%`;\n",
+        })[0], 0)
+
+    def test_family_at_least_wording_is_refused_in_families_and_widgets(self):
+        code, out = check({}, {
+            "ui/src/families/valueFormat.ts": "const lead = value.atLeast ? `at least ${exact}` : exact;\n",
+            "ui/src/widgets/foo/fooData.ts": "const note = '+ means this many';\nconst pre = '\\u2265';\n",
+            "ui/src/widgets/foo/FooWidget.tsx": "export const x = () => <span>≥{count}</span>;\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-at-least-wording", out)
+        self.assertIn("ui/src/families/valueFormat.ts", out)
+        self.assertIn("ui/src/widgets/foo/fooData.ts", out)
+        self.assertIn("ui/src/widgets/foo/FooWidget.tsx", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/value.ts": "export const p = (atLeast: boolean) => ({ atLeast });\n",
+            "ui/src/widgets/foo/foo.test.ts": "const s = 'at least 1';\n",
+            "ui/src/recorder/status.ts": "const s = 'At least one frame';\n",
+            "ui/src/shell/AnalyticsNav.tsx": "const s = 'Choose at least one page';\n",
         })[0], 0)
 
 

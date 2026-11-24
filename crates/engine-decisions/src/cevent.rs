@@ -1,4 +1,3 @@
-
 use engine_sites::Rva;
 pub const REFERENCE: usize = 0x08;
 pub const VTABLE_RVA: Rva = Rva(0x02a1_6008);
@@ -6,5 +5,10 @@ pub const TOKEN: usize = 0x20;
 pub const OPTIONS: usize = 0x368;
 pub const OPTION_COUNT: usize = 0x374;
 pub const OPERATIVE_CHROME: usize = 0x41d;
+pub const LEADER_CHROME: usize = 0x41e;
+pub const MAJOR: usize = 0x420;
+pub const HIDDEN: usize = 0x423;
 pub const NEWS_CHROME: usize = 0x424;
+pub const FIRE_FOR_SENDER: usize = 0x425;
+pub const OPTION_TRIGGER_COUNT: usize = 0x134;
 pub const DISPATCH_DEBUG_ASSERTS_FLAG_RVA: Rva = Rva(0x0368_f611);

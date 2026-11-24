@@ -38,7 +38,7 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
     "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
@@ -46,12 +46,16 @@ RULE_HINTS = {
     "family-locale-string": "use formatScalar, formatCompactScalar, or formatValueState from ui/src/families/valueFormat.ts",
     "family-measure-text-loop": "use textWidth or measureCanvasText from ui/src/charts/textWidth.ts, or fitLabelWidth / fitLabel from ui/src/charts/labels.ts",
     "family-hand-percent": "use formatShare, formatProgress, or formatRecordedPercent from ui/src/families/valueFormat.ts",
+    "family-at-least-wording": "show the figure with the partial mark and a plain missing reason; never print 'at least', '≥', or '+ means'",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 TS_FIXTURE = re.compile(r"\.fixture\.tsx?$")
 FAMILY_TS = re.compile(r"^ui/src/families/.+\.tsx?$")
 PROJECTION_TS = re.compile(r"^ui/src/widgets/.+Projection\.ts$")
+WIDGET_TS = re.compile(r"^ui/src/widgets/.+\.tsx?$")
 TS_TOKEN = re.compile(r"""//|/\*|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""", re.DOTALL)
+AT_LEAST_STRING = re.compile(r"\bat\s+least\b|\u2265|\\u2265|\+\s*means\b", re.IGNORECASE)
+AT_LEAST_JSX = re.compile(r"\u2265|\+\s*means\b", re.IGNORECASE)
 LOCAL_CONTRAST_INK = re.compile(
     r"\b(?:function\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*|(?:const|let)\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*\s*=|\breadableText\s*\()"
 )
@@ -60,7 +64,7 @@ LOCAL_TICK_ENGINE = re.compile(
 )
 FAMILY_COLOUR_LITERAL = re.compile(r"""['"`]#[0-9a-fA-F]{3,8}(?=['"`])|\b(?:rgba?|hsla?)\s*\(""")
 FAMILY_LOCALE_STRING = re.compile(
-    r"""\.toLocaleString\s*\(|from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]|\bnew\s+Intl\.NumberFormat\s*\("""
+    r"""\.toLocaleString\s*\(|\.toFixed\s*\(|from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]|\bnew\s+Intl\.NumberFormat\s*\("""
 )
 FAMILY_HAND_PERCENT = re.compile(
     r"""\$\{[^}\n]*(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^}\n]*\}\s*%|(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^;\n]*\+\s*['"`]%"""
@@ -598,6 +602,58 @@ def is_family_or_projection(name):
     return bool(FAMILY_TS.match(name) or PROJECTION_TS.match(name))
 
 
+def is_family_or_widget(name):
+    if JS_TEST.search(name) or TS_FIXTURE.search(name):
+        return False
+    return bool(FAMILY_TS.match(name) or WIDGET_TS.match(name))
+
+
+def at_least_wording_lines(text):
+    lines = []
+
+    def scan_template(body, base_offset):
+        at, length = 0, len(body)
+        while at < length:
+            interp = body.find("${", at)
+            chunk = body[at:] if interp < 0 else body[at:interp]
+            for hit in AT_LEAST_STRING.finditer(chunk):
+                lines.append(line_of(text, base_offset + at + hit.start()))
+            if interp < 0:
+                break
+            end = closing(body, interp + 1, "{", "}")
+            lines.extend(at_least_wording_lines_in_segment(text, body[interp + 2:end - 1], base_offset + interp + 2))
+            at = end
+
+    def at_least_wording_lines_in_segment(full_text, segment, base_offset):
+        found_lines = []
+        at, length = 0, len(segment)
+        while (tok := TS_TOKEN.search(segment, at)) is not None:
+            start, token = tok.start(), tok.group()
+            plain = segment[at:start]
+            for hit in AT_LEAST_JSX.finditer(plain):
+                found_lines.append(line_of(full_text, base_offset + at + hit.start()))
+            if token == "//":
+                end = segment.find("\n", start)
+                end = length if end < 0 else end
+            elif token == "/*":
+                close = segment.find("*/", start + 2)
+                end = length if close < 0 else close + 2
+            elif token.startswith("`"):
+                end = tok.end()
+                scan_template(token[1:-1], base_offset + start + 1)
+            else:
+                end = tok.end()
+                for hit in AT_LEAST_STRING.finditer(token[1:-1]):
+                    found_lines.append(line_of(full_text, base_offset + start + 1 + hit.start()))
+            at = end
+        for hit in AT_LEAST_JSX.finditer(segment[at:]):
+            found_lines.append(line_of(full_text, base_offset + at + hit.start()))
+        return found_lines
+
+    lines.extend(at_least_wording_lines_in_segment(text, text, 0))
+    return sorted(lines)
+
+
 def mask_ts_comments(text):
     out, at, length = [], 0, len(text)
     blank = lambda start, end: re.sub(r"[^\n]", " ", text[start:end])
@@ -666,6 +722,9 @@ def family_ts_matches(name, text):
         measure_lines = [line_of(text, m.start()) for m in TS_MEASURE_TEXT.finditer(code) if within(loops, m.start())]
         if measure_lines:
             found["family-measure-text-loop"] = measure_lines
+    at_least_lines = at_least_wording_lines(text)
+    if at_least_lines:
+        found["family-at-least-wording"] = at_least_lines
     return found
 
 
@@ -678,6 +737,9 @@ def matches(name, revision):
         return rust_matches(name, revision)
     if is_family_or_projection(name):
         return family_ts_matches(name, text)
+    if is_family_or_widget(name):
+        at_least_lines = at_least_wording_lines(text)
+        return {"family-at-least-wording": at_least_lines} if at_least_lines else {}
     pattern = JS_CLOCK if JS_TEST.search(name) else PS_CLOCK if PS_TEST.search(name) else None
     if pattern is None:
         return {}
@@ -692,10 +754,10 @@ def git(*args):
 
 
 def read(name):
-    """Whether a rule reads the file: first-party Rust, family/projection TS, JS and TS tests, PowerShell tests."""
+    """Whether a rule reads the file: first-party Rust, family/widget TS, JS and TS tests, PowerShell tests."""
     if name.startswith(("vendor/", "fuzz/")):
         return False
-    return name.endswith(".rs") or is_family_or_projection(name) or bool(JS_TEST.search(name) or PS_TEST.search(name))
+    return name.endswith(".rs") or is_family_or_widget(name) or bool(JS_TEST.search(name) or PS_TEST.search(name))
 
 
 def changes(base, head):

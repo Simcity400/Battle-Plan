@@ -167,9 +167,20 @@ pub fn compare(
     frame: &DecodedFrame,
     document: &SaveDocument,
     state: &ScriptEventState,
+    windows: &super::windows::Witness,
     report: &mut Report,
 ) -> io::Result<()> {
     let saved = saved::parse(document.items(), &country_items(document, frame)?)?;
+    let player = document
+        .items()
+        .iter()
+        .find(|item| item.key.as_deref() == Some(&b"player"[..]))
+        .and_then(|item| item.value.scalar());
+    match saved.pending.as_ref() {
+        Ok(Some(pending)) => super::windows::compare(windows, pending, player, report),
+        Ok(None) => report.incomplete("EventFeedHistory window decisions", "pending_events block absent"),
+        Err(reason) => report.incomplete("EventFeedHistory window decisions", format!("saved pending_events unreadable: {reason}")),
+    }
     let context = country_context(frame)?;
     let identities = frame
         .complete::<tables::CountryExperienceGains>()?

@@ -258,7 +258,7 @@ export function layoutBreakdown(input: BreakdownLayoutInput): BreakdownLayout {
 }
 
 function shareOf(part: BreakdownPart, total: BreakdownTotal): string {
-  return total.atLeast || part.notRecorded ? '' : formatShare(part.share);
+  return total.atLeast || part.notRecorded || part.share == null ? '' : formatShare(part.share);
 }
 
 function positive(part: BreakdownPart): boolean {
@@ -587,7 +587,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
 
     const color = partColour(part, theme);
     const ink = contrastInkForFill(color, theme);
-    const shareText = hatchedRing ? '' : formatShare(part.share);
+    const shareText = hatchedRing || part.share == null ? '' : formatShare(part.share);
 
     let label: RingInnerSlice['label'] = null;
     if (!hatchedRing) {
@@ -837,7 +837,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
   for (const rect of squarify(recordedItems, area, 3)) {
     const part = rect.item.part;
     const baseColor = partColour(part, theme);
-    const shareText = hatchedAll ? '' : formatShare(part.share);
+    const shareText = hatchedAll || part.share == null ? '' : formatShare(part.share);
     const children = drawnChildren(part).filter(positive);
     const showGroup = children.length > 0 && rect.width > 70 && rect.height > 60;
     items.push({ key: part.key, parentKey: null, depth: 0, part, open: -1, shareText });
@@ -880,7 +880,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
       if (cr.item.part === part) continue;
       const child = cr.item.part;
       const chColor = childTint(baseColor, child, theme, TILE_TINTS);
-      const chShare = hatchedAll ? '' : formatShare(child.share);
+      const chShare = hatchedAll || child.share == null ? '' : formatShare(child.share);
       childTiles.push({
         key: child.key,
         parentKey: part.key,

@@ -8,7 +8,7 @@ import { LaneArtCache } from './laneCache.ts';
 import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt, toArtSlotState, toFlagSlotState } from './adapters.ts';
 import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
 import { DEFAULT_FAMILY_THEME } from '../../draw/kit.ts';
-import { SpriteCaches, artCacheScope, fetchArtHandles, spriteResolutions } from './transport.ts';
+import { MAX_ART_CALLS, SpriteCaches, artCacheScope, fetchArtHandles, spriteResolutions } from './transport.ts';
 import type { ArtHandle } from '../plan.ts';
 import {
   artHandleKey,
@@ -189,14 +189,14 @@ test('at 1,500 assets the lane decodes a bounded few at a time and holds no more
     },
   });
   const urls = Array.from({ length: 1500 }, (_, i) => readyArt(`art://flag-${i}`));
-  lane.requestVisible(urls);
+  lane.requestVisible([], urls);
   assert.ok(lane.pendingCount <= 6, 'decodes start a bounded few at a time');
   for (let i = 0; i < 2000; i++) await Promise.resolve();
   assert.ok(mostInFlight <= 6, 'never more than the concurrent bound in flight');
   assert.equal(started, 128, 'no decode starts that the cache could not keep');
   assert.equal(lane.cachedCount, 128);
   assert.equal(open, 128, 'every bitmap decoded is held or closed');
-  assert.equal(lane.resolve(urls[1499]!).status, 'pending', 'art beyond the limit waits, never borrowed or dropped');
+  assert.equal(lane.resolve(urls[1499]!).status, 'pending', 'offscreen art beyond the limit waits, never borrowed or dropped');
 
   lane.requestVisible(urls.slice(1400));
   for (let i = 0; i < 2000; i++) await Promise.resolve();
@@ -496,9 +496,82 @@ test('a portrait is cached per branch: two branches with the same leader referen
       return { portraits: [{ reference: '12', image: `art://branch-${params.branchId}`, missing: null, resolution: readyArt(`art://branch-${params.branchId}`) }], warnings: [] };
     }, track as never, batch, signal));
   }
-  for (let i = 0; i < 6; i++) await Promise.resolve();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
   assert.deepEqual(asked.sort(), ['1', '2'], 'each branch asks its own portrait');
   const shown = tracks.map(track => caches.resolutions(artCacheScope(track, 4)).get(artHandleKey(portrait)));
   assert.deepEqual(shown.map(art => art?.status === 'ready' ? art.url : null), ['art://branch-1', 'art://branch-2']);
   assert.notEqual(artCacheScope(tracks[0]!, 4), artCacheScope(tracks[0]!, 5), 'a content revision (mod stack or presentation) is its own scope');
+});
+
+test('portrait calls are bounded and settle one by one; a retryable failure is retried per handle after its backoff and a refusal stays', async () => {
+  const portraits: ArtHandle[] = Array.from({ length: 64 }, (_, hour) => ({ kind: 'portrait', leader: '12', hour: 100 + hour }));
+  let open = 0;
+  let most = 0;
+  const calls: number[] = [];
+  const answered = await fetchArtHandles(async request => {
+    const hour = (request.params as { hour: number }).hour;
+    calls.push(hour);
+    open++;
+    most = Math.max(most, open);
+    await Promise.resolve();
+    open--;
+    if (hour === 103) throw new Error('Request timed out');
+    return { portraits: [{ reference: '12', image: `art://${hour}`, missing: null, resolution: readyArt(`art://${hour}`) }], warnings: [] };
+  }, { source: { id: 's', revision: 'r' }, branch: { id: '1' } } as never, portraits, new AbortController().signal);
+  assert.equal(calls.length, 64);
+  assert.ok(most <= MAX_ART_CALLS, `at most ${MAX_ART_CALLS} product calls at once, saw ${most}`);
+  assert.equal([...answered.values()].filter(art => art.status === 'ready').length, 63, 'one rejected call discards none of its siblings');
+  assert.equal(answered.get(artHandleKey(portraits[3]!))?.status, 'failed');
+
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  const caches = new SpriteCaches({ now: () => now, after: (ms, run) => { const timer = { at: now + ms, run }; timers.push(timer); return () => { timers.splice(timers.indexOf(timer), 1); }; } });
+  const flaky: ArtHandle = { kind: 'sprite', key: 'GFX_flaky', frame: 0 };
+  const refused: ArtHandle = { kind: 'sprite', key: 'GFX_refused', frame: 0 };
+  let attempts = 0;
+  const fetch = async (batch: readonly ArtHandle[]) => new Map(batch.map(handle => [artHandleKey(handle), handle === refused || (handle.kind === 'sprite' && handle.key === 'GFX_refused')
+    ? refusedArt('unsupported sprite', 'sprite-render')
+    : ++attempts === 1 ? failedArt('transport dropped', true) : readyArt('art://flaky')]));
+  caches.hold('scope');
+  caches.request('scope', [flaky, refused], fetch);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(caches.failures('scope').get(artHandleKey(flaky))?.retryable, true);
+  assert.equal(caches.resolutions('scope').get(artHandleKey(refused))?.status, 'refused', 'a refusal is settled, never retried');
+  caches.request('scope', [flaky], fetch);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(attempts, 1, 'no new request inside the backoff');
+  now = timers[0]!.at;
+  timers.shift()!.run();
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(attempts, 2, 'the failed handle is asked again once its backoff ends');
+  assert.equal(caches.resolutions('scope').get(artHandleKey(flaky))?.status, 'ready');
+  assert.equal(caches.failures('scope').size, 0);
+});
+
+test('the lane pins and fetches every visible bitmap past its budget; offscreen demand stays inside the budget; a paused lane fetches and wakes nothing', async () => {
+  const fetched: string[] = [];
+  let settled = 0;
+  const cache = new LaneArtCache({
+    maxEntries: 128,
+    maxConcurrent: 6,
+    onSettle: () => { settled++; },
+    fetchBitmap: async url => { fetched.push(url); await Promise.resolve(); return fakeBitmap(); },
+  });
+  const flush = async () => { for (let i = 0; i < 400; i++) await Promise.resolve(); };
+  const visible = Array.from({ length: 200 }, (_, at) => `art://flag-${at}`);
+  for (let round = 0; round < 3; round++) { cache.requestVisible(visible); await flush(); }
+  assert.equal(visible.filter(url => cache.stateOfUrl(url) === 'ready').length, 200, 'the 129th and later visible images load without a scroll');
+  const afterVisible = { fetched: fetched.length, settled };
+  for (let paint = 0; paint < 30; paint++) { cache.requestVisible(visible); await flush(); }
+  assert.deepEqual({ fetched: fetched.length, settled }, afterVisible, 'once the visible set is resident a paused lane asks and wakes nothing');
+
+  const offscreen = Array.from({ length: 1_500 }, (_, at) => `art://row-${at}`);
+  const few = visible.slice(0, 10);
+  for (let paint = 0; paint < 20; paint++) { cache.requestVisible(few, offscreen); await flush(); }
+  const offscreenFetches = fetched.filter(url => url.startsWith('art://row-')).length;
+  assert.ok(offscreenFetches <= 128, `offscreen demand never exceeds the budget (${offscreenFetches})`);
+  const before = fetched.length;
+  for (let paint = 0; paint < 20; paint++) { cache.requestVisible(few, offscreen); await flush(); }
+  assert.equal(fetched.length, before, 'a demanded bitmap is never evicted to admit another, so repeated paints fetch nothing');
+  assert.ok(cache.cachedCount <= 138);
 });

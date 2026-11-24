@@ -1,7 +1,9 @@
 import type { ProductRequest } from '../../dashboard/client';
 import { artworkEntry, drawableIcon } from '../../dashboard/artwork.ts';
 import type { BoundTrack } from '../../dashboard/model';
+import { retryDelay, transientError } from '../../dashboard/countryFacts.ts';
 import { asFailure } from '../../dashboard/queryError.ts';
+import { busyWait } from '../../shell/busy.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import type { LeaderPortraitsReply, SpriteFrame, SpriteImage, TechnologyArtworkReply } from '../../generated/dashboard';
@@ -91,6 +93,32 @@ export function technologyResolutions(reply: TechnologyArtworkReply, handles: re
   return out;
 }
 
+export const MAX_ART_CALLS = 4;
+
+interface ArtCall {
+  readonly handles: readonly ArtHandle[];
+  readonly run: () => Promise<ReadonlyMap<string, ArtResolution>>;
+}
+
+async function settleCalls(calls: readonly ArtCall[], signal: AbortSignal): Promise<ReadonlyMap<string, ArtResolution>> {
+  const merged = new Map<string, ArtResolution>();
+  let next = 0;
+  const work = async () => {
+    while (next < calls.length) {
+      const call = calls[next++]!;
+      try {
+        for (const [id, resolution] of await call.run()) merged.set(id, resolution);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const failed = failedArt(asFailure(error).message, transientError(error));
+        for (const handle of call.handles) merged.set(artHandleKey(handle), failed);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(MAX_ART_CALLS, calls.length) }, work));
+  return merged;
+}
+
 export async function fetchArtHandles(
   load: (request: ProductRequest, signal: AbortSignal) => Promise<unknown>,
   track: Pick<BoundTrack, 'source' | 'branch'>,
@@ -99,47 +127,52 @@ export async function fetchArtHandles(
 ): Promise<ReadonlyMap<string, ArtResolution>> {
   const sprites: SpriteFrame[] = [];
   const textures: { path: string; frame: number; frames: number }[] = [];
-  const portraits = new Map<number, string[]>();
+  const spriteHandles: ArtHandle[] = [];
+  const portraits = new Map<number, { references: string[]; handles: ArtHandle[] }>();
   const technologies = new Map<string, Set<number>>();
+  const technologyHandles: ArtHandle[] = [];
   for (const handle of handles) {
     if (handle.kind === 'sprite') {
       sprites.push({ key: handle.key, frame: handle.frame ?? 0, ...(handle.recorded !== undefined ? { recorded: handle.recorded } : {}), ...(handle.text ? { text: true } : {}) });
+      spriteHandles.push(handle);
     } else if (handle.kind === 'path') {
       textures.push({ path: handle.path, frame: handle.frame ?? 0, frames: handle.frames ?? 1 });
+      spriteHandles.push(handle);
     } else if (handle.kind === 'portrait') {
-      const list = portraits.get(handle.hour);
-      if (list) list.push(handle.leader);
-      else portraits.set(handle.hour, [handle.leader]);
+      const held = portraits.get(handle.hour);
+      if (held) {
+        held.references.push(handle.leader);
+        held.handles.push(handle);
+      } else portraits.set(handle.hour, { references: [handle.leader], handles: [handle] });
     } else if (handle.kind === 'technology') {
       const indices = technologies.get(handle.token) ?? new Set<number>();
       if (handle.databaseIndex !== null && handle.databaseIndex > 0) indices.add(handle.databaseIndex);
       technologies.set(handle.token, indices);
+      technologyHandles.push(handle);
     }
   }
-  const replies: Promise<ReadonlyMap<string, ArtResolution>>[] = [];
+  const calls: ArtCall[] = [];
   if (sprites.length || textures.length) {
-    replies.push(load(
+    calls.push({ handles: spriteHandles, run: () => load(
       productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'sprite-artwork', params: { sprites, ...(textures.length ? { textures } : {}) } }),
       signal,
-    ).then(reply => new Map([...(sprites.length ? spriteResolutions(reply, sprites) : []), ...textureResolutions(reply, handles)])));
+    ).then(reply => new Map([...(sprites.length ? spriteResolutions(reply, sprites) : []), ...textureResolutions(reply, handles)])) });
   }
-  for (const [hour, references] of portraits) {
-    replies.push(load(
+  for (const [hour, { references, handles: asked }] of portraits) {
+    calls.push({ handles: asked, run: () => load(
       productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'unit-leader-portraits', params: { branchId: track.branch.id, hour: hour as GatedHour, references, edge: PORTRAIT_EDGE } }),
       signal,
-    ).then(reply => portraitResolutions(reply as LeaderPortraitsReply, hour)));
+    ).then(reply => portraitResolutions(reply as LeaderPortraitsReply, hour)) });
   }
   if (technologies.size) {
     const tokens = [...technologies.keys()].sort();
     const recorded = Object.fromEntries(tokens.filter(token => technologies.get(token)!.size).map(token => [token, [...technologies.get(token)!].sort((a, b) => a - b)]));
-    replies.push(load(
+    calls.push({ handles: technologyHandles, run: () => load(
       productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'technology-artwork', params: Object.keys(recorded).length ? { tokens, recorded } : { tokens } }),
       signal,
-    ).then(reply => technologyResolutions(reply as TechnologyArtworkReply, handles)));
+    ).then(reply => technologyResolutions(reply as TechnologyArtworkReply, handles)) });
   }
-  const merged = new Map<string, ArtResolution>();
-  for (const reply of await Promise.all(replies)) for (const [id, resolution] of reply) merged.set(id, resolution);
-  return merged;
+  return settleCalls(calls, signal);
 }
 
 export function artCacheScope(track: Pick<BoundTrack, 'source' | 'branch'>, contentRevision: number): string {
@@ -151,28 +184,55 @@ const MAX_SPRITE_CONCURRENCY = 2;
 
 type ArtFetcher = (handles: readonly ArtHandle[], signal: AbortSignal) => Promise<ReadonlyMap<string, ArtResolution>>;
 
-type ArtWatcher = (resolutions: ReadonlyMap<string, ArtResolution>, errors: ReadonlyMap<string, string>) => void;
+export interface ArtFailure {
+  readonly reason: string;
+  readonly retryable: boolean;
+  readonly count: number;
+  readonly at: number;
+}
+
+type ArtWatcher = (resolutions: ReadonlyMap<string, ArtResolution>, failures: ReadonlyMap<string, ArtFailure>) => void;
+
+export interface ArtClock {
+  now(): number;
+  after(ms: number, run: () => void): () => void;
+}
+
+const ART_CLOCK: ArtClock = {
+  now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+  after: (ms, run) => busyWait(run, ms),
+};
 
 interface ArtScope {
   users: number;
   resolutions: Map<string, ArtResolution>;
-  errors: Map<string, string>;
+  failures: Map<string, ArtFailure>;
+  failedHandles: Map<string, ArtHandle>;
   inFlight: Set<string>;
   queued: Map<string, ArtHandle>;
   watchers: Set<ArtWatcher>;
   controllers: Set<AbortController>;
   scheduled: boolean;
   running: number;
+  fetch: ArtFetcher | null;
+  retryTimer: (() => void) | null;
+  version: number;
 }
 
 export class SpriteCaches {
   private scopes = new Map<string, ArtScope>();
 
+  private readonly clock: ArtClock;
+
+  constructor(clock: ArtClock = ART_CLOCK) {
+    this.clock = clock;
+  }
+
   private held(scope: string): ArtScope {
     let held = this.scopes.get(scope);
     if (!held) {
-      held = { users: 0, resolutions: new Map(), errors: new Map(), inFlight: new Set(), queued: new Map(), watchers: new Set(),
-        controllers: new Set(), scheduled: false, running: 0 };
+      held = { users: 0, resolutions: new Map(), failures: new Map(), failedHandles: new Map(), inFlight: new Set(), queued: new Map(), watchers: new Set(),
+        controllers: new Set(), scheduled: false, running: 0, fetch: null, retryTimer: null, version: 0 };
       this.scopes.set(scope, held);
     }
     return held;
@@ -180,7 +240,9 @@ export class SpriteCaches {
 
   resolutions(scope: string): Map<string, ArtResolution> { return this.held(scope).resolutions; }
 
-  errors(scope: string): Map<string, string> { return this.held(scope).errors; }
+  failures(scope: string): Map<string, ArtFailure> { return this.held(scope).failures; }
+
+  version(scope: string): number { return this.held(scope).version; }
 
   watch(scope: string, watcher: ArtWatcher): () => void {
     const held = this.held(scope);
@@ -190,20 +252,55 @@ export class SpriteCaches {
 
   request(scope: string, handles: readonly ArtHandle[], fetch: ArtFetcher): void {
     const held = this.held(scope);
+    held.fetch = fetch;
+    const now = this.clock.now();
     let added = false;
     for (const handle of handles) {
       const id = artHandleKey(handle);
-      if (held.resolutions.has(id) || held.errors.has(id) || held.inFlight.has(id)) continue;
+      if (held.resolutions.has(id) || held.inFlight.has(id)) continue;
+      const failed = held.failures.get(id);
+      if (failed && failed.at > now) continue;
       held.inFlight.add(id);
       held.queued.set(id, handle);
       added = true;
     }
-    if (!added || held.scheduled) return;
+    if (added) this.schedule(scope, held);
+  }
+
+  private schedule(scope: string, held: ArtScope): void {
+    if (held.scheduled) return;
     held.scheduled = true;
     queueMicrotask(() => {
       held.scheduled = false;
+      if (this.scopes.get(scope) !== held || !held.fetch) return;
+      this.pump(scope, held, held.fetch);
+    });
+  }
+
+  private fail(held: ArtScope, id: string, handle: ArtHandle, reason: string, retryable: boolean): void {
+    const count = (held.failures.get(id)?.count ?? 0) + 1;
+    held.failures.set(id, { reason, retryable, count, at: retryable ? this.clock.now() + retryDelay(count) : Infinity });
+    if (retryable) held.failedHandles.set(id, handle);
+    else held.failedHandles.delete(id);
+  }
+
+  private armRetry(scope: string, held: ArtScope): void {
+    if (held.retryTimer) return;
+    let soonest = Infinity;
+    for (const id of held.failedHandles.keys()) soonest = Math.min(soonest, held.failures.get(id)?.at ?? Infinity);
+    if (soonest === Infinity) return;
+    held.retryTimer = this.clock.after(Math.max(0, soonest - this.clock.now()), () => {
+      held.retryTimer = null;
       if (this.scopes.get(scope) !== held) return;
-      this.pump(scope, held, fetch);
+      const now = this.clock.now();
+      for (const [id, handle] of [...held.failedHandles]) {
+        if ((held.failures.get(id)?.at ?? Infinity) > now || held.inFlight.has(id)) continue;
+        held.failedHandles.delete(id);
+        held.inFlight.add(id);
+        held.queued.set(id, handle);
+      }
+      this.schedule(scope, held);
+      this.armRetry(scope, held);
     });
   }
 
@@ -217,25 +314,35 @@ export class SpriteCaches {
       held.running++;
       void fetch(batch, controller.signal).then(parsed => {
         if (controller.signal.aborted || this.scopes.get(scope) !== held) return;
-        for (const [id] of entries) {
+        for (const [id, handle] of entries) {
           held.inFlight.delete(id);
           const resolution = parsed.get(id);
-          if (!resolution) {
-            held.errors.set(id, 'The artwork reply left this handle out.');
-            continue;
+          if (!resolution) this.fail(held, id, handle, 'The artwork reply left this handle out.', true);
+          else if (resolution.status === 'failed') this.fail(held, id, handle, resolution.reason, resolution.retryable);
+          else {
+            held.failures.delete(id);
+            held.failedHandles.delete(id);
+            held.resolutions.set(id, resolution);
           }
-          held.errors.delete(id);
-          held.resolutions.set(id, resolution);
         }
-        for (const watcher of [...held.watchers]) watcher(held.resolutions, held.errors);
+        this.armRetry(scope, held);
+        held.version++;
+        for (const watcher of [...held.watchers]) watcher(held.resolutions, held.failures);
       }).catch(error => {
         if (this.scopes.get(scope) !== held) return;
-        const reason = controller.signal.aborted ? null : asFailure(error).message;
-        for (const [id] of entries) {
-          held.inFlight.delete(id);
-          if (reason !== null && !held.resolutions.has(id)) held.errors.set(id, reason);
+        if (controller.signal.aborted) {
+          for (const [id] of entries) held.inFlight.delete(id);
+          return;
         }
-        if (reason !== null) for (const watcher of [...held.watchers]) watcher(held.resolutions, held.errors);
+        const reason = asFailure(error).message;
+        const retryable = transientError(error);
+        for (const [id, handle] of entries) {
+          held.inFlight.delete(id);
+          if (!held.resolutions.has(id)) this.fail(held, id, handle, reason, retryable);
+        }
+        this.armRetry(scope, held);
+        held.version++;
+        for (const watcher of [...held.watchers]) watcher(held.resolutions, held.failures);
       }).finally(() => {
         held.controllers.delete(controller);
         held.running--;
@@ -253,7 +360,10 @@ export class SpriteCaches {
         held.controllers.clear();
         held.queued.clear();
         held.inFlight.clear();
-        held.errors.clear();
+        held.failures.clear();
+        held.failedHandles.clear();
+        held.retryTimer?.();
+        held.retryTimer = null;
         this.scopes.delete(scope);
       }
     };

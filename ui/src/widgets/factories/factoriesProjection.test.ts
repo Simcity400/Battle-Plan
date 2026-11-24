@@ -54,6 +54,7 @@ const BASE_OPTS: FactoriesProjectionOptions = {
     { id: 'civilian', label: 'Civilian factories', source: 'free4', color: '#199e70' },
   ],
   top: 10,
+  group: false,
 };
 
 const SPLIT = ['free7', 'free1', 'free2', 'free4'];
@@ -120,6 +121,7 @@ test('a pinned view with split on asks every part with the total in one rank of 
     branch: { id: '1' },
     options: { split: true, count: 'free' },
     countries: { top: null, all: false, every: ['GER', 'ENG'], tags: ['ENG', 'GER'], membership: null },
+    widget: { countries: { kind: 'tags', tags: ['ENG', 'GER'] } },
   } as unknown as Parameters<typeof factoriesDeclaration.sources>[0];
   const plan = factoriesDeclaration.sources(ctx, { following: false, staticSpan: null });
   assert.deepEqual(plan.entries.map(entry => entry.name), ['main']);
@@ -170,25 +172,26 @@ test('a factory type keeps its colour when a type before it is deselected', () =
     branch: { id: '1' },
     options: { split: true, count: 'free', types },
     countries: { top: 5, all: false, every: [], tags: [], membership: null, holders: null, unobserved: [] },
+    widget: { countries: { kind: 'group', group: { type: 'top', count: 5 }, membership: 'hour', aggregate: false } },
   }) as unknown as Parameters<typeof factoriesDeclaration.projectionOptions>[0];
   const colourOf = (types: string, id: string) => factoriesDeclaration.projectionOptions(ctx(types)).parts.find(part => part.id === id)!.color;
   assert.equal(colourOf('naval civilian', 'civilian'), colourOf('', 'civilian'));
   assert.equal(colourOf('civilian', 'civilian'), colourOf('', 'civilian'));
 });
 
-test('a group with no member at the displayed hour asks nothing and says so', () => {
+test('a faction is sent as the group, and a known empty group says so', () => {
   const ctx = {
     track: { source: { id: 's', revision: 1 }, axisOffset: 0 },
     branch: { id: '1' },
     options: { count: 'free' },
-    countries: { top: null, all: false, every: [], tags: ['ITA'], membership: { ITA: [[600, 900]] } },
+    countries: { top: null, all: false, every: [], tags: ['ITA'], membership: null },
+    widget: { countries: { kind: 'group', group: { type: 'war', tag: 'GER' }, membership: 'ever', aggregate: false } },
   } as unknown as Parameters<typeof factoriesDeclaration.sources>[0];
   const main = factoriesDeclaration.sources(ctx, { following: false, staticSpan: null }).entries[0]!.read;
   assert.equal(main.shape, 'point');
   if (main.shape !== 'point') return;
-  assert.equal(main.buildExactParams?.(main.params!, 500 as never, 'static'), null);
-  assert.deepEqual((main.buildExactParams?.(main.params!, 700 as never, 'static') as { countries: unknown }).countries, ['ITA']);
-  const model = factoriesProjection.project(partsView(500, undefined), { ...BASE_OPTS, top: null, membership: { ITA: [[600, 900]] } });
-  assert.equal(model.emptyKind, 'empty');
-  assert.equal(model.empty, 'No country of this group at this date.');
+  const asked = main.buildExactParams?.(main.params!, 500 as never, 'static') as { group?: unknown; countries?: unknown };
+  assert.deepEqual([asked.group, asked.countries], [{ type: 'war', tag: 'GER', membership: 'ever' }, undefined]);
+  const model = factoriesProjection.project(partsView(500, panelOf(500, [])), { ...BASE_OPTS, top: null, group: true });
+  assert.deepEqual([model.emptyKind, model.empty], ['empty', 'No country of this group at this date.']);
 });

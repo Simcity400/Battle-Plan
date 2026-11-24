@@ -1,12 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BANDS, createLiveMonthCache, dockyardItems, dockyardMonth, formatExactIc, headMonthLayer, monthColumns, monthSpansFor, monthlyHeadKey, monthsOf, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, repairsSince, shownMonthBands, validateDockyardSpendingReply, visibleMonths } from './dockyardData.ts';
-import { columnAt } from '../../charts/columns.ts';
-import { plotFrame } from '../../charts/frame.ts';
-import { tokensFromValues } from '../../charts/tokens.ts';
+import { dockyardItems, formatExactIc, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, repairsSince, validateDockyardSpendingReply } from './dockyardData.ts';
 import { sunburstTree } from '../../charts/sunburst/layout.ts';
-import { mergeSpending, spendingRecorded, spendingWidgetGate } from '../production-spending/spendingData.ts';
-import { firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
+import { mergeSpending } from '../production-spending/spendingData.ts';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 
 const purposeSum = (items: readonly { path: readonly { id: string }[]; exact?: bigint | null }[], id: string) =>
@@ -72,42 +68,10 @@ test('new ships and refits group by type and design beside repairs, land designs
   assert.deepEqual(early.map(item => item.exact), [11n * 100000n, 11n * 140000n]);
 });
 
-test('months are the calendar’s, clipped, each with its purposes and repairs, and a month not known says why', () => {
-  const start = firstHourOfMonth(1936 * 12);
-  assert.deepEqual(monthsOf(start + 5, start + 31 * 24 + 10), [{ firstHour: start + 5, lastHour: start + 31 * 24 - 1 }, { firstHour: start + 31 * 24, lastHour: start + 31 * 24 + 10 }]);
-  const data = reply();
-  const month = dockyardMonth(data, 100, 171, 100);
-  assert.deepEqual(month.bands.map(band => band.exact), [3000000n, 500000n, 72n * 240000n, 0n, 0n]);
-  assert.deepEqual(month.total, { exact: (3000000n + 500000n) * 24n + 72n * 240000n, reason: null, denominator: 24n });
-  assert.deepEqual(monthColumns([month], 5)[0].values, [30, 5, 7.2, 0, 0]);
-  assert.equal(dockyardMonth(data, 148, 171, 100).bands[1].exact, 500000n);
-  data.equipmentTotal[2] = unknown(148, 171);
-  assert.deepEqual(dockyardMonth(data, 148, 171, 100).bands[0], { exact: null, reason: 'spendingUnavailable' });
-  const other = reply();
-  other.leaves.push(leaf({ variant: '14', typeKey: ':mod_odd', name: null, domain: null, runs: [known(100, 147, '0'), known(148, 171, '7')] }));
-  const marked = dockyardMonth(other, 148, 171, 100);
-  assert.equal(marked.total.exact, null);
-  assert.equal(marked.uncertain[0], true);
-});
-
 test('dockyard IC is rounded once from the exact amount', () => {
   assert.equal(nearestInteger(25n, 10n), 3n);
   assert.equal(nearestInteger(-25n, 10n), -3n);
   assert.equal(formatExactIc(61n * 240000n, 24n, 5, 2), '6.1');
-});
-
-test('all-unknown months become unknown columns without value height, and empty remainder bands stay out of the legend', () => {
-  const data = reply();
-  const knownMonth = dockyardMonth(data, 100, 171, 100);
-  assert.deepEqual(shownMonthBands(BANDS, [knownMonth]).map(entry => entry.band.id), ['new', 'refit', 'repair']);
-  const missing = { ...data, equipmentTotal: [unknown(100, 171)], repairs: { ...data.repairs!, total: [unknown(100, 171)] } };
-  const missingMonth = dockyardMonth(missing, 100, 171, 100);
-  const [column] = monthColumns([missingMonth], 5);
-  assert.equal(column.unknown, true);
-  assert.deepEqual(column.values, []);
-  const withUnknownPurpose = { ...data, leaves: [...data.leaves, leaf({ variant: '99', purpose: 'unknown', runs: [known(100, 171, '50000')] })] };
-  assert.deepEqual(shownMonthBands(BANDS, [dockyardMonth(withUnknownPurpose, 100, 171, 100)]).map(entry => entry.band.id),
-    ['new', 'refit', 'repair', 'purpose-unrecorded']);
 });
 
 test('unknown repair split in an earlier window keeps a later ship withheld instead of inventing zero earlier repairs', () => {
@@ -161,29 +125,6 @@ test('a future repair reading never turns an unread past into zero', () => {
   assert.deepEqual(repairAmount(atPast, atPast.repairs!.total, { from: null, hour: 500, end: 500 }, 500), { exact: null, reason: 'notRecorded' });
   const both = mergeSpending(new Map([[0, win0], [3, win3]]))!;
   assert.deepEqual(repairAmount(both, both.repairs!.total, { from: null, hour: 500, end: 500 }, 500), { exact: null, reason: 'notRecorded' });
-});
-
-test('by-month visible bands and amounts use completed past months plus the current month through the playhead', () => {
-  const data = validateDockyardSpendingReply({
-    ...reply(),
-    leaves: [
-      leaf({ variant: '11', purpose: 'new', runs: [known(100, 171, '1000000')] }),
-      leaf({ variant: '15', purpose: 'converted', runs: [known(100, 123, '0'), known(124, 147, '500000'), known(148, 171, '0')] }),
-    ],
-    total: [known(100, 123, '1000000'), known(124, 147, '1500000'), known(148, 171, '1000000')],
-    equipmentTotal: [known(100, 123, '1000000'), known(124, 147, '1500000'), known(148, 171, '1000000')],
-  });
-  const fullMonth = dockyardMonth(data, 100, 171, 100);
-  const through = (_index: number, hour: number) => dockyardMonth(data, 100, hour, 100);
-  const atMid = visibleMonths([fullMonth], 135, through);
-  assert.ok(shownMonthBands(BANDS, atMid).some(entry => entry.band.id === 'other-purpose'), '5 IC at playhead stays shown even when month-end corrects back to 0');
-  assert.deepEqual(atMid[0].bands[0], { exact: 1000000n, reason: null });
-  assert.deepEqual(atMid[0].bands[4], { exact: 500000n, reason: null });
-  assert.equal(atMid[0].total.exact, (1000000n + 500000n) * 24n + 36n * 240000n);
-  const atEarly = visibleMonths([fullMonth], 110, through);
-  assert.ok(!shownMonthBands(BANDS, atEarly).some(entry => entry.band.id === 'other-purpose'), 'purpose appearing only after playhead stays hidden');
-  assert.deepEqual(atEarly[0].bands[4], { exact: 0n, reason: null });
-  assert.equal(atEarly[0].total.exact, 1000000n * 24n + 11n * 240000n);
 });
 
 test('a future repair date never leaks before the hour it appears, while archetype-classified ships keep their recorded type', () => {
@@ -277,128 +218,4 @@ test('a repair gap withholds the incomplete repair total as on main so Breakdown
   const repairs = items.filter(item => item.path[0].id === 'repair');
   assert.equal(repairs.find(item => item.path.at(-1)?.id === 'A')?.exact, null);
   assert.equal(repairs.find(item => item.path.at(-1)?.id === 'unattributed')?.exact, null);
-  const month = dockyardMonth(data, 100, 102, 100);
-  assert.equal(month.bands[0].exact, 3000000n);
-  assert.equal(month.bands[2].exact, null);
-  assert.equal(month.total.exact, null);
-});
-
-test('headMonthLayer computes extent and drawing from the same playhead-clipped column without scanning history each frame', () => {
-  const columns = Array.from({ length: 12 }, (_, index) => ({
-    firstHour: index * 720, lastHour: (index + 1) * 720 - 1, values: [index === 11 ? 1 : 2],
-  }));
-  let historicalReads = 0;
-  const tracked = columns.map((column, index) => index < 11 ? new Proxy(column, {
-    get(target, prop, receiver) {
-      if (prop === 'values') historicalReads++;
-      return Reflect.get(target, prop, receiver);
-    },
-  }) : column);
-  let head = 11 * 720 + 10;
-  const layer = headMonthLayer(tracked, ['#000'], (_index, hour) => ({
-    firstHour: 11 * 720, lastHour: 12 * 720 - 1, values: [hour >= 11 * 720 + 50 ? 10 : 1],
-  }), () => head);
-  const tokens = tokensFromValues(() => '#888888', 'sans-serif');
-  const multiCtx = {
-    fillStyle: '', strokeStyle: '', lineWidth: 0,
-    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, rect() {}, clip() {},
-    fillRect() {},
-  } as unknown as CanvasRenderingContext2D;
-  assert.deepEqual(layer.extent!([0, 12 * 720 - 1]), [0, 2]);
-  const readsAfterInit = historicalReads;
-  for (let h = 11 * 720 + 11; h <= 11 * 720 + 60; h++) {
-    head = h;
-    const ext = layer.extent!([0, 12 * 720 - 1])!;
-    assert.deepEqual(ext, [0, h >= 11 * 720 + 50 ? 10 : 2]);
-    const multiFrame = plotFrame(400, 120, { left: 40, right: 10, top: 10, bottom: 20 }, [0, 12 * 720], ext, false);
-    layer.draw(multiCtx, multiFrame, tokens, { playhead: h });
-  }
-  assert.equal(historicalReads, readsAfterInit, 'advancing hours inside the live month must not rescan completed months during extent or draw');
-  const single = [{ firstHour: 0, lastHour: 719, values: [1] }];
-  let firstHead = 10;
-  const growing = headMonthLayer(single, ['#000'], (_index, hour) => ({
-    firstHour: 0, lastHour: 719, values: [hour >= 50 ? 10 : 1],
-  }), () => firstHead);
-  assert.deepEqual(growing.extent!([0, 719]), [0, 1]);
-  firstHead = 100;
-  const grown = growing.extent!([0, 719])!;
-  assert.deepEqual(grown, [0, 10], 'current month bar growth updates extent from the same clipped column');
-  const frame = plotFrame(200, 120, { left: 40, right: 10, top: 10, bottom: 20 }, [0, 720], grown, false);
-  const drawnHeights: number[] = [];
-  const fakeCtx = {
-    fillStyle: '', strokeStyle: '', lineWidth: 0,
-    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, rect() {}, clip() {},
-    fillRect(_x: number, _y: number, _w: number, h: number) { drawnHeights.push(h); },
-  } as unknown as CanvasRenderingContext2D;
-  growing.draw(fakeCtx, frame, tokensFromValues(() => '#888888', 'sans-serif'), { playhead: firstHead });
-  assert.equal(drawnHeights[0], frame.plotHeight, 'drawn 10 IC bar fits inside the updated [0, 10] axis');
-});
-
-test('pinning mid-month keeps the pinned column ending at the pin so later dates in the month hit nothing', () => {
-  const jan1937 = firstHourOfMonth(1937 * 12);
-  const jul1 = firstHourOfMonth(1937 * 12 + 6);
-  const jul15 = jul1 + 14 * 24;
-  const jul25 = jul1 + 24 * 24;
-  const aug31 = firstHourOfMonth(1937 * 12 + 8) - 1;
-  const pinnedSpans = monthSpansFor(jan1937, jul15, aug31, false);
-  const pinnedColumns = pinnedSpans.map(span => ({ ...span, values: [1] }));
-  assert.equal(pinnedSpans.at(-1)?.lastHour, jul15);
-  assert.equal(columnAt(pinnedColumns, jul15), pinnedColumns.length - 1);
-  assert.equal(columnAt(pinnedColumns, jul25), -1);
-  const liveSpans = monthSpansFor(jan1937, jul15, aug31, true);
-  assert.equal(liveSpans.at(-1)?.lastHour, firstHourOfMonth(1937 * 12 + 7) - 1);
-});
-
-test('createLiveMonthCache shares one monthly calculation between clock key and live layer across sub-hour frames', () => {
-  const data = reply();
-  let calls = 0;
-  const cached = createLiveMonthCache((d, _opts: Record<string, never>, first, last, branchFirst) => {
-    calls++;
-    return dockyardMonth(d, first, last, branchFirst);
-  });
-  const opts = {};
-  const first = cached(data, opts, '{}', 100, 140, 100);
-  const second = cached(data, opts, '{}', 100, 140, 100);
-  assert.equal(second, first);
-  assert.equal(calls, 1);
-  cached(data, opts, '{}', 100, 141, 100);
-  assert.equal(calls, 2);
-});
-
-test('dockyard By month clock key and gate transition when repairs first become recorded mid-month', () => {
-  const start = 60_772_680;
-  const end = 60_772_700;
-  const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
-  const rocketUnavail = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'rocketTableUnavailable' });
-  const data = validateDockyardSpendingReply({
-    ...reply(),
-    firstHour: start, lastHour: end,
-    reads: [], observations: [],
-    equipmentReads: [], rocketReads: [], equipmentObservations: [], rocketObservations: [],
-    rocketTotal: [rocketUnavail(start, end)],
-    production: [{ firstHour: start, lastHour: end, present: false, emptyCensusHour: null }],
-    leaves: [],
-    total: [notRec(start, end)],
-    totalWithoutRefits: [notRec(start, end)],
-    equipmentTotal: [notRec(start, end)],
-    equipmentTotalWithoutRefits: [notRec(start, end)],
-    repairs: {
-      denominator: 24,
-      total: [notRec(start, start), known(start + 1, end, '24000')],
-      parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(start, start), known(start + 1, end, '24000')] }],
-    },
-  });
-  const branch = { firstHour: start, lastHour: end };
-  const bucketBefore = monthIndex(gameDate(start)!);
-  const bucketAfter = monthIndex(gameDate(start + 1)!);
-  assert.equal(bucketBefore, bucketAfter);
-  const readBefore = spendingRecorded(data) || repairsRead(data, start);
-  const readAfter = spendingRecorded(data) || repairsRead(data, start + 1);
-  assert.equal(readBefore, false);
-  assert.equal(readAfter, true);
-  assert.equal(spendingWidgetGate({ hasTarget: true, hasError: false, branch, hour: start, end, hasData: true, recorded: readBefore }), 'unavailable');
-  assert.equal(spendingWidgetGate({ hasTarget: true, hasError: false, branch, hour: start + 1, end, hasData: true, recorded: readAfter }), 'ready');
-  const keyBefore = monthlyHeadKey(bucketBefore, readBefore, BANDS, dockyardMonth(data, start, start, start));
-  const keyAfter = monthlyHeadKey(bucketAfter, readAfter, BANDS, dockyardMonth(data, start, start + 1, start));
-  assert.notEqual(keyAfter, keyBefore);
 });

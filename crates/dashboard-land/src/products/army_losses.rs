@@ -94,7 +94,7 @@ pub enum LossView {
     #[default]
     Manpower,
     Equipment { ledgers: Vec<u8> },
-    Month { month: i32 },
+    Month { month: i32, #[serde(default)] ledgers: Option<Vec<u8>> },
 }
 
 #[derive(Deserialize)]
@@ -120,7 +120,7 @@ impl TryFrom<LossViewAsked> for LossView {
         match (asked.kind, asked.ledgers, asked.month) {
             (LossKind::Manpower, _, _) => Ok(Self::Manpower),
             (LossKind::Equipment, Some(ledgers), _) => Ok(Self::Equipment { ledgers }),
-            (LossKind::Month, _, Some(month)) => Ok(Self::Month { month }),
+            (LossKind::Month, ledgers, Some(month)) => Ok(Self::Month { month, ledgers }),
             (LossKind::Equipment, None, _) => Err("An equipment loss view names its ledgers"),
             (LossKind::Month, _, None) => Err("A month loss view names its month"),
         }
@@ -202,6 +202,9 @@ pub struct ArmyLossMonthArmy {
     pub army: LossArmy,
     pub manpower: Option<[i32; 3]>,
     pub manpower_live_row: Option<String>,
+    pub selected_total_raw: Option<String>,
+    pub selected_live_row: Option<String>,
+    pub selected_missing: Option<String>,
     pub ledgers: Vec<ArmyLossMonthLedger>,
 }
 
@@ -212,6 +215,7 @@ pub struct ArmyLossMonthDetail {
     pub month: i32,
     pub first_hour: i32,
     pub last_hour: i32,
+    pub missing: Option<String>,
     pub armies: Vec<ArmyLossMonthArmy>,
 }
 
@@ -525,12 +529,69 @@ impl RollupBuilder {
 }
 
 #[derive(Default)]
-struct MonthLedgerAcc {
-    kept: bool,
-    missing: Option<String>,
-    total: i128,
-    cells: Vec<Cell>,
-    designs: Vec<ArmyLossMonthDesign>,
+pub(super) struct MonthLedgerAcc {
+    pub kept: bool,
+    pub missing: Option<String>,
+    pub total: i128,
+    pub cells: Vec<Cell>,
+    pub designs: Vec<ArmyLossMonthDesign>,
+}
+
+pub(super) fn summarize_selected_ledgers(
+    army_ref: &str,
+    wanted: Option<&[u8]>,
+    detail_missing: Option<&str>,
+    ledgers: &BTreeMap<u8, MonthLedgerAcc>,
+    live: &dashboard_follow::live::Cells,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let Some(wanted) = wanted else {
+        return (None, None, None);
+    };
+    if let Some(reason) = detail_missing {
+        return (None, None, Some(reason.to_owned()));
+    }
+    let matched: Vec<&MonthLedgerAcc> = wanted.iter().filter_map(|l| ledgers.get(l)).collect();
+    if matched.is_empty() {
+        return (None, None, Some("No equipment ledger row kept for this army in this month.".into()));
+    }
+    let mut total: i128 = 0;
+    let mut cells: Vec<Cell> = Vec::new();
+    for la in matched {
+        if !la.kept || la.missing.is_some() {
+            return (None, None, Some(la.missing.clone().unwrap_or_else(|| NOT_READ.into())));
+        }
+        total += la.total;
+        cells.extend_from_slice(&la.cells);
+    }
+    let live_row = (!cells.is_empty()).then(|| {
+        let row_name = format!("sel:{army_ref}");
+        live.sum(&row_name, "amount", &cells, 1.0);
+        row_name
+    });
+    (Some(total.to_string()), live_row, None)
+}
+
+pub(super) fn month_detail_missing(availability: &ArmyLossesAvailability, wanted: Option<&[u8]>) -> Option<String> {
+    if let Some(reason) = &availability.armies {
+        return Some(reason.clone());
+    }
+    match wanted {
+        None => availability.manpower.clone(),
+        Some(ledgers) => {
+            if let Some(reason) = &availability.months {
+                return Some(reason.clone());
+            }
+            let needs_own = ledgers.iter().any(|&l| l != ENEMY_LEDGER);
+            let needs_enemy = ledgers.iter().any(|&l| l == ENEMY_LEDGER);
+            if needs_own && let Some(reason) = &availability.own_equipment {
+                return Some(reason.clone());
+            }
+            if needs_enemy && let Some(reason) = &availability.enemy_equipment {
+                return Some(reason.clone());
+            }
+            None
+        }
+    }
 }
 
 struct MonthArmyAcc {
@@ -710,7 +771,7 @@ impl AtHour for ArmyLosses {
             }
             LossView::Equipment { ledgers } => {
                 let needs_own = ledgers.iter().any(|&l| l != ENEMY_LEDGER);
-                let needs_enemy = ledgers.iter().any(|&l| l == ENEMY_LEDGER);
+                let needs_enemy = ledgers.contains(&ENEMY_LEDGER);
                 let available = reply.availability.armies.is_none()
                     && reply.availability.months.is_none()
                     && (!needs_own || reply.availability.own_equipment.is_none())
@@ -821,8 +882,9 @@ impl AtHour for ArmyLosses {
                     reply.rollup = Some(rollup.finish(limit, at.live));
                 }
             }
-            LossView::Month { month: asked_month } => {
+            LossView::Month { month: asked_month, ledgers: wanted_ledgers } => {
                 let asked = *asked_month;
+                let detail_missing = month_detail_missing(&reply.availability, wanted_ledgers.as_deref());
                 let mut accs = BTreeMap::<String, MonthArmyAcc>::new();
                 fn entry_of<'a>(accs: &'a mut BTreeMap<String, MonthArmyAcc>, army: &LossArmy) -> &'a mut MonthArmyAcc {
                     accs.entry(army.reference.clone()).or_insert_with(|| MonthArmyAcc {
@@ -974,6 +1036,13 @@ impl AtHour for ArmyLosses {
                 let mut detail_armies: Vec<ArmyLossMonthArmy> = accs
                     .into_values()
                     .map(|acc| {
+                        let (selected_total_raw, selected_live_row, selected_missing) = summarize_selected_ledgers(
+                            &acc.army.reference,
+                            wanted_ledgers.as_deref(),
+                            detail_missing.as_deref(),
+                            &acc.ledgers,
+                            at.live,
+                        );
                         let ledgers = acc
                             .ledgers
                             .into_iter()
@@ -994,12 +1063,26 @@ impl AtHour for ArmyLosses {
                                 }
                             })
                             .collect();
-                        ArmyLossMonthArmy { army: acc.army, manpower: acc.manpower, manpower_live_row: acc.manpower_live_row, ledgers }
+                        ArmyLossMonthArmy {
+                            army: acc.army,
+                            manpower: acc.manpower,
+                            manpower_live_row: acc.manpower_live_row,
+                            selected_total_raw,
+                            selected_live_row,
+                            selected_missing,
+                            ledgers,
+                        }
                     })
                     .collect();
                 detail_armies.sort_by_key(|entry| entry.army.ordinal);
                 let (first_hour, last_hour) = month_hours(asked);
-                reply.month_detail = Some(ArmyLossMonthDetail { month: asked, first_hour, last_hour, armies: detail_armies });
+                reply.month_detail = Some(ArmyLossMonthDetail {
+                    month: asked,
+                    first_hour,
+                    last_hour,
+                    missing: detail_missing,
+                    armies: detail_armies,
+                });
             }
         }
         if unbound.get() != 0 {
