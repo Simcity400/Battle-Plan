@@ -17,7 +17,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'espionage-log', load: () => import('./espionage-log') },
   { kind: 'faction-pooled-strength', load: () => import('./faction-pooled-strength') },
   { kind: 'faction-strength', load: () => import('./faction-strength') },
-  { kind: 'faction-upgrades', load: () => import('./faction-upgrades') },
   { kind: 'factories', view: 'mix', label: 'Mix', slots: ['render', 'countryChip'], load: () => import('./factories') },
   { kind: 'fuel-branches', load: () => import('./fuel-branches') },
   { kind: 'game-score', view: 'lines', label: 'Lines over time', playsBackDated: true, load: () => import('./game-score') },

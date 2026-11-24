@@ -12,6 +12,7 @@ import type { FamilyPlanContext, InstalledPicture } from '../plan.ts';
 import { displayedHour } from '../boundedView.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import { formatDateOnly } from '../valueFormat.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { cardHostAdapter } from './hostAdapter.ts';
@@ -232,4 +233,41 @@ test('the card audit lists what is drawn: printed meter text, subtitle, hero det
   assert.equal(audit.get('hero/caption'), 'Due 3 Mar 1937');
   assert.equal(audit.get('hero/state'), 'running:In progress');
   assert.equal(audit.get('item/subtitle'), 'Invented science');
+});
+
+test('a card with lists lays each section out side by side, rows restart per list, and a point hits the row of its own list', async () => {
+  const { cardRowAt } = await import('./layout.ts');
+  const item = (key: string): CardItemRow => ({ kind: 'item', key, title: { kind: 'known', value: key } });
+  const model: CardModel = { hour: 10, columns: { lists: true, figure: 100 }, rowHeight: 28, rows: [
+    { kind: 'section', key: 's1', label: 'Rules', count: 2 }, item('a'), item('b'),
+    { kind: 'section', key: 's2', label: 'Upgrades', count: 1 }, item('c'),
+  ] };
+  const wide = layoutCards(model, 800, 300);
+  assert.equal(wide.rowLefts[0], 0);
+  assert.ok(wide.rowLefts[3]! > 300, 'the second section starts a second list');
+  assert.equal(wide.rowTops[3], wide.rowTops[0], 'each list starts at the top');
+  assert.equal(cardRowAt(wide, wide.rowLefts[4]! + 20, wide.rowTops[4]! + 5, 0), 4);
+  assert.equal(cardRowAt(wide, 20, wide.rowTops[1]! + 5, 0), 1);
+  const narrow = layoutCards(model, 400, 300);
+  assert.ok(narrow.rowLefts.every(left => left === 0) && narrow.rowTops[3]! > narrow.rowTops[2]!, 'too narrow for two lists: one list');
+});
+
+test('faction upgrades list the rules and upgrades in force, each since its own date, and a start inside an unrecorded stretch is not recorded', async () => {
+  const { factionUpgradesProjection } = await import('../../widgets/faction-upgrades/factionUpgradesProjection.ts');
+  const groups = { factions: [{ id: '5', members: [{ tag: 'AAA', firstHour: 0, lastHour: 500 }], incomplete: [] }], unobserved: { factions: [] }, countryIdentities: [] } as unknown as import('../../generated/dashboard').CountryGroupReply;
+  const run = (firstHour: number, name: string | null, startsSegment = false) => ({ firstHour, lastHour: 400, token: null, name, reason: name ? null : 'Name refused', startsSegment });
+  const reply = {
+    rules: [{ slot: 0, runs: [run(100, 'Invented rule A')] }, { slot: 1, runs: [run(0, 'Invented rule B')] }, { slot: 2, runs: [run(120, null)] }],
+    programmes: [{ slot: 0, runs: [run(60, 'Invented programme')] }], minimums: [], members: [], doctrines: [], groups: [],
+    unobserved: [{ firstHour: 110, lastHour: 119 }], warnings: [],
+  };
+  const model = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', reply]]) }), { groups, subject: 'AAA', branchFirst: 0 });
+  assert.deepEqual(model.rows.map(row => (row.kind === 'section' ? `${row.label} ${row.count}` : row.key)), ['Rules 3', 'rule:0', 'rule:1', 'rule:2', 'Upgrades 1', 'programme:0']);
+  const figure = (key: string) => (model.rows.find(row => row.key === key) as CardItemRow).figure?.value;
+  assert.deepEqual(figure('rule:0'), { kind: 'known', value: `since ${formatDateOnly(100)}` });
+  assert.equal(figure('rule:1')?.kind, 'notRecorded', 'held when the recording began');
+  assert.equal(figure('rule:2')?.kind, 'notRecorded', 'began right after an unrecorded stretch');
+  assert.equal((model.rows.find(row => row.key === 'rule:2') as CardItemRow).title.kind, 'notRecorded', 'a name the content refuses is named as missing');
+  assert.equal(model.columns.lists, true);
+  assert.equal(model.nextChangeAt, 401);
 });
