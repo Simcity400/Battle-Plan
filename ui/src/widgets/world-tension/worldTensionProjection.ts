@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
@@ -320,12 +321,12 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
     const markers = options.showMarkers ? buildMarkers(readView, reply, hour) : undefined;
     const hoverDetail = buildHoverDetail(readView, reply, hour);
     const auditRows = [
-      ...(lastTotal !== null ? [{ row: 'World tension', key: '__total__', value: formatPct(lastTotal) }] : []),
-      ...reply.bands.flatMap((band, idx) => (band.endValue != null && band.endValue >= 0.05
-        ? [{ row: bandInfos[idx]!.fullName, key: band.tag ?? `slot:${band.slot}`, value: formatPct(band.endValue) }]
+      ...(lastTotal !== null ? [auditRow('__total__', formatPct(lastTotal))] : []),
+      ...reply.bands.flatMap(band => (band.endValue != null && band.endValue >= 0.05
+        ? [auditRow(band.tag ?? `slot:${band.slot}`, formatPct(band.endValue))]
         : [])),
       ...(reply.other && reply.other.endValue != null && reply.other.endValue >= 0.05
-        ? [{ row: reply.other.count > 0 ? `Other (${reply.other.count})` : 'Other', key: 'other', value: formatPct(reply.other.endValue) }]
+        ? [auditRow('other', formatPct(reply.other.endValue))]
         : []),
     ];
     return {

@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications.ts';
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import type { ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
@@ -455,11 +455,11 @@ export function deriveBarsMirror(
 export function deriveBarsAudit(
   model: BarsModel,
   options?: { readonly window?: { readonly first: number; readonly count: number } },
-): AuditRow[] {
-  const rows: AuditRow[] = [];
+): FamilyAuditRow[] {
+  const rows: FamilyAuditRow[] = [];
   if (model.empty !== undefined && model.rows.length === 0) {
     const key = model.emptyKind ?? 'empty';
-    rows.push({ row: key, key, value: model.empty });
+    rows.push(auditRow(key, model.empty));
     return rows;
   }
   const first = options?.window ? Math.max(0, options.window.first) : 0;
@@ -468,7 +468,7 @@ export function deriveBarsAudit(
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
     const label = item.labelMissing ? notRecordedLabel('Name') : item.label;
-    const cell = (row: string, name: string, value: string) => rows.push({ row, key: `${row}:${name}`, value });
+    const cell = (row: string, name: string, value: string) => rows.push(auditCell(row, name, value));
     cell(item.key, 'label', label);
     if (item.value) cell(item.key, 'value', canonicalAuditValue(item.value.value));
     if (item.left) cell(item.key, 'left', canonicalAuditValue(item.left.value.value));
