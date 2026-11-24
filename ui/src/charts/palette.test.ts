@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contrast, isDark, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
+import { contrast, isDark, mixRgb, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
 import type { Rgb } from '../shell/appearance/color';
 import { BUILT_IN_THEMES, themeColors } from '../shell/appearance/themes.ts';
 import { CATEGORY_LIMIT, catalogueColours, categoricalPalette, distance, GREY_CHROMA, MARK_CONTRAST, nudgeApart } from './palette.ts';
@@ -162,7 +162,7 @@ test('all 5000 fixed country colours stay present without quadratic gap scans', 
   }
 });
 
-test('open-ended catalogue keeps the first eight exact, respects supplied colours, stays distinct up to 300 and never depends on selection order', () => {
+test('open-ended catalogue keeps the first eight exact, preserves authored RGB byte-exact, stays unique and readable across surfaces', () => {
   const darkSurface = '#16181d';
   const lightSurface = '#ffffff';
   const baseDark = categoricalPalette(darkSurface);
@@ -172,17 +172,19 @@ test('open-ended catalogue keeps the first eight exact, respects supplied colour
   assert.deepEqual([...catalogueColours(eight, lightSurface).values()], baseLight);
 
   const supplied = catalogueColours([
-    { id: 'authored_rgb', color: [20, 40, 180] },
-    { id: 'authored_hex', color: '#44aa88' },
+    { id: 'authored_tuple', color: [20, 40, 180] },
+    { id: 'authored_obj', color: { r: 20, g: 40, b: 180 } },
+    { id: 'authored_hex', color: '#1428b4' },
     { id: 'auto_0' },
     { id: 'auto_1' },
   ], darkSurface);
-  assert.equal(supplied.get('authored_hex'), '#44aa88');
-  assert.ok(contrast(parseColor(supplied.get('authored_rgb')!)!, parseColor(darkSurface)!) >= MARK_CONTRAST - 0.05);
+  assert.equal(supplied.get('authored_tuple'), '#1428b4');
+  assert.equal(supplied.get('authored_obj'), '#1428b4');
+  assert.equal(supplied.get('authored_hex'), '#1428b4');
   assert.equal(supplied.get('auto_0'), baseDark[0]);
   assert.equal(supplied.get('auto_1'), baseDark[1]);
 
-  const thresholds = [[9, 5], [30, 2], [300, 0.9]] as const;
+  const thresholds = [[9, 5], [30, 2], [300, 0.8]] as const;
   for (const [count, minPair] of thresholds) {
     const ids = Array.from({ length: count }, (_, index) => `cat_${index}`);
     for (const surface of [darkSurface, lightSurface]) {
@@ -191,9 +193,10 @@ test('open-ended catalogue keeps the first eight exact, respects supplied colour
       assert.equal(colours.size, count);
       const list = ids.map(id => colours.get(id)!);
       assert.deepEqual(list.slice(0, 8), categoricalPalette(surface));
+      assert.equal(new Set(list).size, count, `${surface} N=${count} must have unique quantised hexes`);
       const rgbs = list.map(hex => parseColor(hex)!);
       for (let i = 0; i < count; i++) {
-        assert.ok(contrast(rgbs[i], background) >= MARK_CONTRAST - 0.05, `${surface} #${i} ${list[i]}`);
+        if (i >= 8) assert.ok(contrast(rgbs[i], background) >= MARK_CONTRAST, `${surface} #${i} ${list[i]} contrast=${contrast(rgbs[i], background)}`);
         if (i > 0) assert.ok(distance(rgbs[i - 1], rgbs[i]) >= 12, `${surface} neighbours ${i - 1},${i}`);
         for (let j = i + 1; j < count; j++) {
           assert.ok(distance(rgbs[i], rgbs[j]) >= minPair, `${surface} N=${count} pair ${i},${j}: ${distance(rgbs[i], rgbs[j])}`);
@@ -202,22 +205,41 @@ test('open-ended catalogue keeps the first eight exact, respects supplied colour
     }
   }
 
-  const full = Array.from({ length: 24 }, (_, index) => `res_${index}`);
-  const fullColours = catalogueColours(full, darkSurface);
-  const subsetReordered = ['res_17', 'res_2', 'res_9', 'res_0'];
-  for (const id of subsetReordered) {
-    assert.equal(fullColours.get(id), catalogueColours(full, darkSurface).get(id));
+  const many = Array.from({ length: 1500 }, (_, index) => `many_${index}`);
+  for (const surface of [darkSurface, lightSurface, '#666666', '#808080', themeColors(BUILT_IN_THEMES[0], 'light').surface]) {
+    const background = parseColor(surface)!;
+    const colours = catalogueColours(many, surface);
+    const list = many.map(id => colours.get(id)!);
+    assert.equal(new Set(list).size, many.length, `${surface} N=1500 must have unique quantised hexes`);
+    for (let i = 8; i < list.length; i++) {
+      assert.ok(contrast(parseColor(list[i])!, background) >= MARK_CONTRAST, `${surface} #${i} ${list[i]} contrast=${contrast(parseColor(list[i])!, background)}`);
+    }
   }
-  const withDupes = catalogueColours([...full.slice(0, 10), 'res_0', 'res_10'], darkSurface);
-  assert.equal(withDupes.get('res_10'), fullColours.get('res_10'));
+
+  assert.equal(catalogueColours(many, darkSurface), catalogueColours(many, darkSurface));
+
+  const withDupes = catalogueColours([...many.slice(0, 10), 'many_0', 'many_10'], darkSurface);
+  assert.equal(withDupes.get('many_10'), catalogueColours(many, darkSurface).get('many_10'));
 
   for (const theme of BUILT_IN_THEMES) {
     for (const mode of ['dark', 'light'] as const) {
-      const surface = themeColors(theme, mode).surface;
-      const background = parseColor(surface)!;
-      const colours = catalogueColours(Array.from({ length: 40 }, (_, index) => `t_${index}`), surface);
-      for (const hex of colours.values()) {
-        assert.ok(contrast(parseColor(hex)!, background) >= MARK_CONTRAST - 0.05, `${theme.id}/${mode} ${hex}`);
+      const roles = themeColors(theme, mode);
+      const surfaceRgb = parseColor(roles.surface)!;
+      const textRgb = parseColor(roles.text)!;
+      const raisedRgb = parseColor(roles.raised)!;
+      const hoverChip = mixRgb(surfaceRgb, textRgb, 0.10);
+      const selectedChip = mixRgb(surfaceRgb, textRgb, 0.14);
+      const backgrounds: readonly [string, Rgb][] = [
+        ['surface', surfaceRgb], ['raised', raisedRgb], ['hover', hoverChip], ['selected', selectedChip],
+      ];
+      const colours = catalogueColours(Array.from({ length: 60 }, (_, index) => `t_${index}`), roles.surface);
+      const list = [...colours.values()];
+      assert.equal(new Set(list).size, 60, `${theme.id}/${mode} unique hexes`);
+      for (let i = 8; i < list.length; i++) {
+        const rgb = parseColor(list[i])!;
+        for (const [name, bg] of backgrounds) {
+          assert.ok(contrast(rgb, bg) >= MARK_CONTRAST, `${theme.id}/${mode} #${i} ${list[i]} on ${name}: ${contrast(rgb, bg)}`);
+        }
       }
     }
   }

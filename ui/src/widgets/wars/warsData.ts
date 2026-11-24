@@ -423,6 +423,20 @@ function spanOf(piece: WarBarInfo, label: string, color: string | undefined, hei
     ...(piece.capitulations?.length ? { glyphShape: 'cross' as const, glyphHours: piece.capitulations } : {}) };
 }
 
+const warColourCache = new WeakMap<PreparedWars, Map<string, Map<string, string>>>();
+
+function cachedWarColours(data: PreparedWars, surface: string | undefined, palette: readonly string[]): Map<string, string> {
+  const key = `${surface ?? ''}\0${palette.join(',')}`;
+  let bySurface = warColourCache.get(data);
+  let colours = bySurface?.get(key);
+  if (!colours) {
+    if (!bySurface) { bySurface = new Map(); warColourCache.set(data, bySurface); }
+    colours = catalogueColours(data.wars.map(view => view.war.id), surface, palette);
+    bySurface.set(key, colours);
+  }
+  return colours;
+}
+
 export function warsLanes(data: PreparedWars, at: number, options: WarsLaneOptions): { lanes: TimelineLane[]; info: Map<string, WarsLaneInfo> } {
   const lanes: TimelineLane[] = [];
   const info = new Map<string, WarsLaneInfo>();
@@ -435,9 +449,7 @@ export function warsLanes(data: PreparedWars, at: number, options: WarsLaneOptio
   };
   const names = warNamesAt(data.wars.map(view => view.war), at);
   if (options.view === 'countries') {
-    const warColours = options.colour === 'war'
-      ? catalogueColours(data.wars.map(view => view.war.id), options.surface, options.palette)
-      : null;
+    const warColours = options.colour === 'war' ? cachedWarColours(data, options.surface, options.palette) : null;
     for (const view of data.countries) {
       if (view.firstHour > at) continue;
       const tag = countryTagAt(view, at);

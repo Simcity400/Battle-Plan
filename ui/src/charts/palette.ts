@@ -14,25 +14,116 @@ const GOLDEN_ANGLE = 137.50776405003785;
 const LIGHTNESS_STEP = 0.7548776662466927;
 const CHROMA_STEP = 0.5698402909980532;
 const DEFAULT_SURFACE = '#16181d';
+const GENERATED_CONTRAST = 3.85;
+const MAX_POOLS = 64;
 
 export interface CatalogueColourItem<K> {
   readonly id: K;
   readonly color?: readonly [number, number, number] | Rgb | string | null;
 }
 
-function generatedColour(index: number, background: Rgb, darkSurface: boolean): string {
-  const h = (195 + index * GOLDEN_ANGLE) % 360;
-  const u = (0.35 + index * LIGHTNESS_STEP) % 1;
-  const v = (0.55 + index * CHROMA_STEP) % 1;
-  const l = darkSurface ? 0.56 + u * 0.33 : 0.24 + u * 0.33;
-  const c = 0.08 + v * 0.14;
-  return toHex(readable(oklchToRgb({ l, c, h }), background, darkSurface));
+interface GeneratedPool {
+  readonly background: Rgb;
+  readonly darkSurface: boolean;
+  readonly target: number;
+  readonly baseRgbs: readonly Rgb[];
+  readonly colors: string[];
+  readonly rgbs: Rgb[];
+  readonly used: Set<string>;
+  cursor: number;
 }
 
-function suppliedColour(color: readonly [number, number, number] | Rgb | string, background: Rgb, darkSurface: boolean): string {
+const pools = new Map<string, GeneratedPool>();
+const catalogueCache = new WeakMap<readonly unknown[], Map<string, Map<unknown, string>>>();
+
+function roundRgb({ r, g, b }: Rgb): Rgb {
+  return {
+    r: Math.round(Math.min(255, Math.max(0, r))),
+    g: Math.round(Math.min(255, Math.max(0, g))),
+    b: Math.round(Math.min(255, Math.max(0, b))),
+  };
+}
+
+function solveQuantised(color: Oklch, background: Rgb, darkSurface: boolean, minContrast: number): Rgb {
+  const initial = roundRgb(oklchToRgb(color));
+  if (contrast(initial, background) >= minContrast) return initial;
+  let lo = color.l;
+  let hi = darkSurface ? 1 : 0;
+  let best = roundRgb(oklchToRgb({ ...color, l: hi }));
+  for (let step = 0; step < 11; step++) {
+    const mid = (lo + hi) / 2;
+    const candidate = roundRgb(oklchToRgb({ ...color, l: mid }));
+    if (contrast(candidate, background) >= minContrast) {
+      best = candidate;
+      hi = mid;
+    } else {
+      lo = mid;
+    }
+  }
+  return best;
+}
+
+function poolFor(surface: string, base: readonly string[]): GeneratedPool {
+  const key = `${surface}\0${base.join(',')}`;
+  let pool = pools.get(key);
+  if (pool) return pool;
+  if (pools.size >= MAX_POOLS) pools.clear();
+  const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
+  const darkSurface = isDark(background);
+  const maxContrast = contrast(darkSurface ? { r: 255, g: 255, b: 255 } : { r: 0, g: 0, b: 0 }, background);
+  const target = maxContrast >= 8 ? GENERATED_CONTRAST : MARK_CONTRAST;
+  const used = new Set<string>();
+  const baseRgbs: Rgb[] = [];
+  for (const hex of base) {
+    const parsed = parseColor(hex);
+    if (parsed) baseRgbs.push(parsed);
+    used.add(parsed ? toHex(parsed) : hex.toLowerCase());
+  }
+  pool = { background, darkSurface, target, baseRgbs, colors: [], rgbs: [], used, cursor: 0 };
+  pools.set(key, pool);
+  return pool;
+}
+
+function generatedAt(pool: GeneratedPool, index: number): string {
+  const minBaseGap = pool.target > MARK_CONTRAST ? 3 : 0;
+  const minNeighbourGap = pool.target > MARK_CONTRAST ? 12 : 0;
+  while (pool.colors.length <= index) {
+    const prev = pool.rgbs[pool.rgbs.length - 1];
+    let accepted: { hex: string; rgb: Rgb } | null = null;
+    for (let tries = 0; tries < 64; tries++) {
+      const step = pool.cursor++;
+      const h = (195 + step * GOLDEN_ANGLE) % 360;
+      const u = (0.35 + step * LIGHTNESS_STEP) % 1;
+      const v = (0.55 + step * CHROMA_STEP) % 1;
+      const l = pool.darkSurface ? 0.62 + u * 0.27 : 0.22 + u * 0.30;
+      const c = 0.08 + v * 0.14;
+      const rgb = solveQuantised({ l, c, h }, pool.background, pool.darkSurface, pool.target);
+      const hex = toHex(rgb);
+      if (pool.used.has(hex)) continue;
+      if (minBaseGap > 0 && !pool.baseRgbs.every(other => colourDistance(rgb, other) >= minBaseGap)) continue;
+      if (prev && minNeighbourGap > 0 && colourDistance(rgb, prev) < minNeighbourGap) continue;
+      accepted = { hex, rgb };
+      break;
+    }
+    if (accepted === null) {
+      const step = pool.cursor++;
+      const h = (195 + step * GOLDEN_ANGLE) % 360;
+      const u = (0.35 + step * LIGHTNESS_STEP) % 1;
+      const v = (0.55 + step * CHROMA_STEP) % 1;
+      const l = pool.darkSurface ? 0.62 + u * 0.27 : 0.22 + u * 0.30;
+      const rgb = solveQuantised({ l, c: 0.08 + v * 0.14, h }, pool.background, pool.darkSurface, MARK_CONTRAST);
+      accepted = { hex: toHex(rgb), rgb };
+    }
+    pool.used.add(accepted.hex);
+    pool.colors.push(accepted.hex);
+    pool.rgbs.push(accepted.rgb);
+  }
+  return pool.colors[index];
+}
+
+function suppliedColour(color: readonly [number, number, number] | Rgb | string): string {
   if (typeof color === 'string') return color;
-  const rgb: Rgb = 'r' in color ? color : { r: color[0], g: color[1], b: color[2] };
-  return toHex(readable(rgb, background, darkSurface));
+  return toHex('r' in color ? color : { r: color[0], g: color[1], b: color[2] });
 }
 
 export function catalogueColours<K extends string | number>(
@@ -40,9 +131,12 @@ export function catalogueColours<K extends string | number>(
   surface = DEFAULT_SURFACE,
   palette?: readonly string[],
 ): Map<K, string> {
-  const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
-  const darkSurface = isDark(background);
   const base = palette ?? categoricalPalette(surface);
+  const cacheKey = `${surface}\0${base.join(',')}`;
+  let bySurface = catalogueCache.get(items);
+  const cached = bySurface?.get(cacheKey);
+  if (cached) return cached as Map<K, string>;
+  const pool = poolFor(surface, base);
   const result = new Map<K, string>();
   let generated = 0;
   for (const item of items) {
@@ -51,12 +145,15 @@ export function catalogueColours<K extends string | number>(
     if (result.has(id)) continue;
     const color = isEntry ? item.color : undefined;
     if (color != null) {
-      result.set(id, suppliedColour(color, background, darkSurface));
+      result.set(id, suppliedColour(color));
     } else {
       const slot = generated++;
-      result.set(id, slot < base.length ? base[slot] : generatedColour(slot - base.length, background, darkSurface));
+      result.set(id, slot < base.length ? base[slot] : generatedAt(pool, slot - base.length));
     }
   }
+  if (!bySurface) { bySurface = new Map(); catalogueCache.set(items, bySurface); }
+  if (bySurface.size >= MAX_POOLS) bySurface.clear();
+  bySurface.set(cacheKey, result as Map<unknown, string>);
   return result;
 }
 

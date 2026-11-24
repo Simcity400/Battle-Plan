@@ -7,7 +7,6 @@ import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { catalogueColours } from '../../charts/palette';
 import { fixedNumber, formatAmount } from '../../charts/valueAxis';
 import { modifierTooltip } from './productionData.ts';
 import type { ProductionLineBreakdownReply } from '../../generated/dashboard';
@@ -22,9 +21,9 @@ export default function ProductionDrill({ data, selected, onFactor, hour, active
   const groups = useMemo(() => data.groups.map(group => ({ value: group.id, label: group.label })), [data]);
   const pickOwner = useMemo(() => ({ data, selected }), [data, selected]);
   const colorOf = useMemo(() => {
-    const ids = [...new Set(data.runs.flatMap(run => run.groups.find(group => group.id === selected)?.parts.map(part => part.id) ?? []))];
-    return catalogueColours(ids.map(id => id === 'other' ? { id, color: tokens.muted } : { id }), tokens.surface);
-  }, [data, selected, tokens.surface, tokens.muted]);
+    const ids = new Set(data.runs.flatMap(run => run.groups.find(group => group.id === selected)?.parts.map(part => part.id) ?? []));
+    return new Map([...ids].map((id, index) => [id, id === 'other' ? tokens.muted : tokens.categories[index % tokens.categories.length]]));
+  }, [data, selected, tokens.categories, tokens.muted]);
   const segments = useMemo(() => data.runs.flatMap(run => {
     const group = run.groups.find(group => group.id === selected);
     if (!group || group.totalRaw == null) return [];

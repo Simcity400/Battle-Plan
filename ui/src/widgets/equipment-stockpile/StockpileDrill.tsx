@@ -10,7 +10,6 @@ import { exactPartShare } from '../../charts/race/countryPartsDrillData';
 import { runAt } from '../../charts/series';
 import { fixedNumber, formatAmount, formatRate, formatSigned } from '../../charts/valueAxis';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { catalogueColours } from '../../charts/palette';
 import type { EquipmentStockpileReply, StockpileCatalogueReply } from './types';
 import type { StockGroup } from './stockpileData';
 import { balanceMode, balanceOperandsAt, dailyAt, dailyIcAt, stockAt, variantName } from './stockpileData';
@@ -32,7 +31,7 @@ export default function StockpileDrill({ data, catalogue, holders, included, gro
   const total = stockAt(data, group, hour);
   const models = useMemo(() => group.variants.map((variant, index) => ({ variant, index,
     label: variantName(variant, hour), stock: stockAt(data, { variants: [variant] }, hour) })), [data, group, hour]);
-  const colours = useMemo(() => catalogueColours(group.variants.map(variant => variant.id), tokens.surface), [group.variants, tokens.surface]);
+  const colours = useMemo(() => new Map(models.map(model => [model.variant.id, tokens.categories[model.index % tokens.categories.length]])), [models, tokens.categories]);
   const parts = models.filter(model => model.stock !== 0n).map(model => ({ id: model.variant.id, label: model.label,
     value: model.stock == null ? null : fixedNumber(model.stock, data.decimals), raw: model.stock,
     text: model.stock == null ? 'Not recorded' : amount(model.stock), shareText: exactPartShare(model.stock, total == null ? null : Number(total)),

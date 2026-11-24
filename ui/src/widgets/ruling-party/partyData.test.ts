@@ -30,6 +30,9 @@ test('bands follow content order and colours; unknown ideologies use the palette
   const subset = bands({ ...REPLY, ideologies: uncoloured, parties: [{ token: 'mod_9', parts: [9] }, { token: 'mod_1', parts: [1] }] }, 'GER', ['#111111', '#222222'], '#16181d');
   assert.equal(subset.find(band => band.token === 'mod_9')!.color, open[9].color);
   assert.equal(subset.find(band => band.token === 'mod_1')!.color, open[1].color);
+  const shared = bands({ ...REPLY, ideologies: [{ token: 'left', name: 'Left', color: [20, 40, 180] }, { token: 'right', name: 'Right', color: [20, 40, 180] }],
+    parties: [{ token: 'left', parts: [0] }, { token: 'right', parts: [1] }] }, 'GER', ['#111111', '#222222'], '#16181d');
+  assert.equal(shared[0].color, shared[1].color);
 });
 
 

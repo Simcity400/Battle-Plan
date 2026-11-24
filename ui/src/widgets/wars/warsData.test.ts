@@ -457,4 +457,8 @@ test('country view coloured by war gives more than eight wars distinct colours w
   const spanColours = shown.lanes[0].spans.map(span => span.color);
   assert.deepEqual(spanColours.slice(0, 3), ['c0', 'c1', 'c2']);
   assert.equal(new Set(spanColours).size, 12);
+  const earlier = warsLanes(prepared, 15, { ...options, view: 'countries', colour: 'war', palette: ['c0', 'c1', 'c2'], surface: '#16181d' });
+  assert.deepEqual(earlier.lanes[0].spans.map(span => span.color), spanColours.slice(0, 6));
+  const gantt = warsLanes(prepared, 40, { ...options, view: 'gantt', colour: 'war', expanded: new Set(['w09']), palette: ['c0', 'c1', 'c2'], surface: '#16181d' });
+  assert.equal(gantt.lanes.find(lane => { const info = gantt.info.get(lane.id); return info?.kind === 'war' && info.war.id === 'w09'; })?.spans[0].color, 'neutral');
 });

@@ -16,7 +16,7 @@ import { drawGapSummary, drawLineSummary, pickSummaryLines } from '../../charts/
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import type { Live, LiveValues } from '../../charts/live';
-import { catalogueColours, SECONDARY_DASH } from '../../charts/palette';
+import { SECONDARY_DASH } from '../../charts/palette';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { tooltipText } from '../../charts/tooltip';
@@ -372,9 +372,8 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const head = following ? null : gate.hour;
   const supply = useKeyedSeries(runtime.client, runtime.clock, gate, spec(SUPPLY), head, hoverAt, following, active, root);
   const demand = useKeyedSeries(runtime.client, runtime.clock, gate, spec(DEMAND), head, hoverAt, following, active, root);
-  const resourceColours = useMemo(() => catalogueColours(resources.map(resource => resource.id), tokens.surface), [resources, tokens.surface]);
-  const lines = useMemo(() => chosenInfo.map((resource, index) => ({ resource, key: keys[index], color: resourceColours.get(resource.id)! })),
-    [chosenInfo, keys, resourceColours]);
+  const lines = useMemo(() => chosenInfo.map((resource, index) => ({ resource, key: keys[index], color: tokens.categories[index % tokens.categories.length] })),
+    [chosenInfo, keys, tokens.categories]);
   const partners = useMemo(() => hoverHour === null ? [] : [...new Set(hovered.data?.deals.map(deal => deal.partner) ?? [])].map(partner => ({ tag: partner, hour: Math.floor(hoverHour) })),
     [hovered.data, hoverHour]);
   const labels = useCountryLabelsAt(runtime.client, track, partners, active);
