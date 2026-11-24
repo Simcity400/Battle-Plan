@@ -48,6 +48,7 @@ export function countryFlowPlan(
     ...chosen,
     between: ctx.options.between === 'between',
     ...extra,
+    ...(subject === null && top !== null ? { limit: top } : {}),
   };
   return {
     owner: `${product}:${ctx.branch.id}:${JSON.stringify(params)}`,
