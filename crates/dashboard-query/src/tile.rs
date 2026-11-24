@@ -39,6 +39,25 @@ struct Params {
     within: Option<Vec<(Country, Vec<Span>)>>,
     #[serde(default)]
     with_marks: bool,
+    top: Option<u32>,
+    #[serde(default)]
+    least: bool,
+    hour: Option<f64>,
+}
+
+#[doc = " How far the membership of a top is proven on each side of its hour, in hours."]
+pub const RANK_PROOF_HOURS: i32 = 48;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TileRanking {
+    #[doc = " The hour the top was ranked at."]
+    pub hour: i32,
+    #[doc = " The hours over which the same countries are the top; ask again outside them."]
+    pub from: i32,
+    pub until: i32,
+    #[doc = " Why the top is not ranked at this hour; no lines then."]
+    pub refused: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -100,6 +119,10 @@ pub struct SeriesTileReply {
     pub lines: Vec<TileLine>,
     #[doc = " The bins, base64."]
     pub bins: String,
+    #[doc = " Asked for a top: who it is at the asked hour, and for how long."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ranking: Option<TileRanking>,
 }
 
 pub fn level_of(bin_hours: i64) -> io::Result<u8> {
@@ -135,8 +158,46 @@ pub fn closure(first: i32, last: i32, timeline_last: i32) -> (bool, Option<i32>)
 
 pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -> io::Result<SeriesTileReply> {
     let params: Params = crate::named::named(params).map_err(|error| invalid(format!("Invalid tile request: {error}")))?;
-    let asks = line.asks(&params.countries, &params.lines)?;
-    tile(line, branch_id, &asks, params.within.as_deref(), params.bin_hours, params.index, params.with_marks)
+    let Some(top) = params.top else {
+        let asks = line.asks(&params.countries, &params.lines)?;
+        return tile(line, branch_id, &asks, params.within.as_deref(), params.bin_hours, params.index, params.with_marks);
+    };
+    if !params.countries.is_empty() || !params.lines.is_empty() {
+        return Err(invalid("A top of tiles names no country: the ranking names them"));
+    }
+    let n = usize::try_from(top).ok().filter(|n| *n >= 1).ok_or_else(|| invalid("A top names one country or more"))?;
+    let hour = crate::series::hour_of(params.hour, "hour")?;
+    let (tags, ranking) = match line.rank_at_by_checked(hour, n, params.least)? {
+        Err(reason) => (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) }),
+        Ok(tags) => {
+            let (from, until) = same_top(line, hour, n, params.least, &tags)?;
+            (tags, TileRanking { hour, from, until, refused: None })
+        }
+    };
+    let asks: Vec<Ask> = tags.iter().map(|tag| Ask::whole(tag.as_str())).collect();
+    let mut reply = tile(line, branch_id, &asks, None, params.bin_hours, params.index, params.with_marks)?;
+    reply.ranking = Some(ranking);
+    Ok(reply)
+}
+
+fn same_top(line: &Line<'_, '_>, hour: i32, n: usize, least: bool, tags: &[String]) -> io::Result<(i32, i32)> {
+    let held: std::collections::BTreeSet<&str> = tags.iter().map(String::as_str).collect();
+    let same = |at: i32| -> io::Result<bool> {
+        Ok(match line.rank_at_by_checked(at, n, least)? {
+            Ok(ranked) => ranked.len() == held.len() && ranked.iter().all(|tag| held.contains(tag.as_str())),
+            Err(_) => false,
+        })
+    };
+    let timeline = &line.query().timeline;
+    let mut from = hour;
+    while from > timeline.first && hour - from < RANK_PROOF_HOURS && same(from - 1)? {
+        from -= 1;
+    }
+    let mut until = hour;
+    while until < timeline.last && until - hour < RANK_PROOF_HOURS && same(until + 1)? {
+        until += 1;
+    }
+    Ok((from, until))
 }
 
 pub fn tile(
@@ -233,6 +294,7 @@ pub fn tile(
         hour_bytes,
         lines,
         bins: base64(&bins),
+        ranking: None,
     })
 }
 

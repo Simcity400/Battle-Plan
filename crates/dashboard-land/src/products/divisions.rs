@@ -293,7 +293,7 @@ fn icon_key(priority_unit: u32, custom: i32, unit: &[u8], exists: impl Fn(&str) 
     if unit.is_empty() {
         return Err("Division priority unit name is empty".into());
     }
-    let key = format!("GFX_unit_{unit}_icon_medium");
+    let key = dashboard_base::products::artwork::sprites::unit_icon_key(unit);
     if exists(&key)? { Ok(key) } else { Err(format!("Division sprite {key} is unavailable")) }
 }
 

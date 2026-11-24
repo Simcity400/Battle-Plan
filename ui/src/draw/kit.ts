@@ -798,17 +798,27 @@ export function drawLegendEntry(
   options?: {
     readonly dash?: readonly number[];
     readonly hatch?: boolean;
+    readonly outlined?: boolean;
     readonly flag?: FlagSlotState;
     readonly maxWidth?: number;
     readonly muted?: boolean;
   },
 ): { readonly width: number; readonly label: FittedLabel } {
-  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : 12;
+  const swatchW = options?.dash?.length ? 14 : options?.hatch ? 10 : options?.outlined ? 9 : 12;
   const gap = 6;
   let cursor = x;
   ctx.save();
   if (options?.hatch) {
     drawHatchRect(ctx, cursor, Math.round(middleY - 5), swatchW, 10, 1.5, theme);
+    cursor += swatchW + gap;
+  } else if (options?.outlined) {
+    ctx.strokeStyle = theme.muted;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath();
+    ctx.roundRect(cursor + 0.5, Math.round(middleY - 4.5) + 0.5, 8, 8, 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
     cursor += swatchW + gap;
   } else if (options?.dash?.length) {
     ctx.strokeStyle = color;
@@ -1849,4 +1859,88 @@ export function drawGradientLegend(
   }
   ctx.restore();
   return { width: cursor - x };
+}
+
+export interface LegendStripGradient {
+  readonly lowLabel: string;
+  readonly highLabel: string;
+  readonly stops: readonly string[];
+}
+
+export interface LegendStripEntry {
+  readonly label: string;
+  readonly color?: string;
+  readonly dash?: readonly number[];
+  readonly hatch?: boolean;
+  readonly outlined?: boolean;
+  readonly flag?: FlagSlotState;
+  readonly muted?: boolean;
+}
+
+export interface LegendStripSpec {
+  readonly gradient?: LegendStripGradient;
+  readonly entries?: readonly LegendStripEntry[];
+  readonly rightNote?: string;
+  readonly padX?: number;
+  readonly entryGap?: number;
+  readonly hairline?: boolean;
+}
+
+export function drawLegendStrip(
+  ctx: Canvas2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  spec: LegendStripSpec,
+  theme: FamilyTheme,
+): void {
+  if (width <= 0 || height <= 0) return;
+  const padX = spec.padX ?? 0;
+  const entryGap = spec.entryGap ?? 12;
+  const middleY = Math.round(y + height / 2);
+  let cursor = x + padX;
+  const rightLimit = x + width - padX;
+  if (spec.gradient) {
+    const drawn = drawGradientLegend(
+      ctx,
+      cursor,
+      middleY,
+      spec.gradient.lowLabel,
+      spec.gradient.highLabel,
+      spec.gradient.stops,
+      theme,
+    );
+    cursor += drawn.width + 14;
+  }
+  if (spec.entries) {
+    for (const entry of spec.entries) {
+      const room = rightLimit - cursor;
+      if (room < 32) break;
+      const drawn = drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color ?? '', theme, {
+        ...(entry.dash?.length ? { dash: entry.dash } : {}),
+        ...(entry.hatch ? { hatch: true } : {}),
+        ...(entry.outlined ? { outlined: true } : {}),
+        ...(entry.flag ? { flag: entry.flag } : {}),
+        ...(entry.muted ?? (entry.hatch || entry.outlined) ? { muted: true } : {}),
+        maxWidth: room,
+      });
+      cursor += drawn.width + entryGap;
+    }
+  }
+  if (spec.rightNote) {
+    const maxW = Math.max(0, rightLimit - cursor);
+    if (maxW >= 24) {
+      ctx.save();
+      ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(ellipsise(spec.rightNote, maxW, s => textWidth(ctx, s)), rightLimit, middleY);
+      ctx.restore();
+    }
+  }
+  if (spec.hairline) {
+    drawRowHairline(ctx, x, x + width, y + height - 1, theme, 'normal');
+  }
 }

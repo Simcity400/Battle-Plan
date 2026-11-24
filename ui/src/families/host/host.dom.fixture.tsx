@@ -82,6 +82,16 @@ const client = {
 
 const clock = new PlaybackController();
 const paintsByWidget = new Map<number, number>();
+let payloadTips = false;
+
+type PaintedField = { readonly value: unknown; readonly content: string };
+function asPayloadTip(field: unknown): unknown {
+  const tip = field as PaintedField | undefined;
+  const value = tip?.value as { key: string; text: { hour: number; rowKey: string; content: { title: string } } | null } | undefined;
+  if (!tip || !value?.text) return field;
+  const { hour, rowKey, content } = value.text;
+  return { value: { key: value.key, text: { hour, rowKey, payload: { title: content.title } } }, content: tip.content };
+}
 clock.setBounds({ firstHour: 0, lastHour: 2000 });
 
 function createLane(): LaneWorker {
@@ -102,9 +112,10 @@ function createLane(): LaneWorker {
         view.paint = (input, state, content) => {
           paintsByWidget.set(input.widget, (paintsByWidget.get(input.widget) ?? 0) + 1);
           const painted = paint(input, state, content);
-          return painted.mode === undefined || painted.mode === 'picture'
-            ? { ...painted, fields: { ...painted.fields, accessibleDescription: { value: 'Four countries ranked by factories', content: 'description' } } }
-            : painted;
+          if (painted.mode !== undefined && painted.mode !== 'picture') return painted;
+          const fields = { ...painted.fields, accessibleDescription: { value: 'Four countries ranked by factories', content: 'description' } };
+          if (payloadTips && 'focusTooltip' in fields) fields.focusTooltip = asPayloadTip(fields.focusTooltip) as typeof fields.focusTooltip;
+          return { ...painted, fields };
         };
         return view;
       },
@@ -329,7 +340,9 @@ function renderApp() {
               </div>
             </Profiler>
           )}
-          <TooltipLayer />
+          <Profiler id="tooltip-layer" onRender={() => { genericCommits++; }}>
+            <TooltipLayer />
+          </Profiler>
         </Profiler>
       </WidgetFrameContext.Provider>
     </FollowedWidgetKey.Provider>,
@@ -552,6 +565,50 @@ window.hostDom = {
       activatedSubject: activated?.subject ?? null,
       activatedMatchesInstalled: !!activated && activated.installedId === installed?.id,
     };
+  },
+
+  async testGenericStationaryTooltip() {
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    payloadTips = true;
+    currentState = { ...currentState, genericMounted: true };
+    renderApp();
+    let pipeG = -1;
+    await until(() => {
+      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="generic"] canvas.fh-canvas');
+      if (!canvas?.dataset.placement) return false;
+      pipeG = Number(canvas.dataset.placement);
+      return pipeG > 0;
+    });
+    const subsG = subsForPipe(pipeG);
+    await until(() => subsG.length === 2 && subsG.every(id => pipeline.status(id).status === 'followed'));
+    clock.seek(150);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subsG, 150, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeG)?.mode === 'picture' && !pipeline.view(pipeG)?.dim
+      && container!.querySelectorAll('[data-slot="generic"] table tbody tr').length === 4);
+    container!.querySelector<HTMLElement>('[data-slot="generic"] table tbody tr[data-row-key="ENG"]')!.focus();
+    const shown = await until(() => tooltipStore.get()?.content.title === 'United Kingdom', 2000);
+    await frames(4);
+
+    let storeUpdates = 0;
+    const unsubscribe = tooltipStore.subscribe(() => { storeUpdates++; });
+    genericCommits = 0;
+    const installsBefore = installCalls.get(pipeG) ?? 0;
+    for (let i = 0; i < 20; i++) {
+      sendHour(subsG, 150, [90n, 70n, 50n, 30n]);
+      await frames(2);
+    }
+    const installs = (installCalls.get(pipeG) ?? 0) - installsBefore;
+    const commitsDuring = genericCommits;
+    unsubscribe();
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    payloadTips = false;
+    currentState = { ...currentState, genericMounted: false };
+    renderApp();
+    return { shown, installs, storeUpdates, commits: commitsDuring };
   },
 
   async testGenericInstalledTuple() {

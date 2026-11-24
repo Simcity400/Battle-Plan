@@ -20,6 +20,7 @@ import {
   deriveTableAudit,
   deriveTableMirror,
   deriveTableTooltip,
+  keepsProductOrder,
   nextTableChange,
   resolveTableRows,
   resolveTableRowsIncremental,
@@ -414,7 +415,7 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
     model.notes ?? [],
     model.warnings ?? [],
     hasTree,
-    model.unsorted === true,
+    keepsProductOrder(model),
     rankShown,
     rankWidth,
     model.columns.map(c => [c.key, c.label, c.unit ?? '', c.priority, c.as, c.offered, c.text ? 1 : 0, c.hideable === false ? 0 : 1, c.sortable === false ? 0 : 1, c.numeric ? 1 : 0, c.hint ?? '', c.notRecordedReason ?? '', c.cellKind ?? '', c.pinned ? 1 : 0]),
@@ -426,7 +427,6 @@ export interface FamilyTableLaneOptions {
   readonly clock?: () => number;
   readonly fetchBitmap?: LaneArtFetcher;
   readonly artMaxEntries?: number;
-  readonly artMaxConcurrent?: number;
 }
 
 export function familyTableLaneView(
@@ -502,7 +502,6 @@ export function familyTableLaneView(
         const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const art = new LaneArtCache({
           maxEntries: laneOptions?.artMaxEntries,
-          maxConcurrent: laneOptions?.artMaxConcurrent,
           fetchBitmap: laneOptions?.fetchBitmap,
         });
         state.set('familyTable', held = {
@@ -730,7 +729,7 @@ export function familyTableLaneView(
       }
 
       if (modelChanged) held.sampleSig = textSampleSignature(model.columns, flatRows);
-      const rankShown = model.rank === true && (bound.settings.showRank === true || model.defaultRankShown === true);
+      const rankShown = model.rank === true && model.populationPartial === undefined && (bound.settings.showRank === true || model.defaultRankShown === true);
       const rankMarkersOn = rankShown && model.rankMarkers === true;
       const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
       const layoutSame = held.cachedLayout !== null
@@ -994,7 +993,7 @@ export function familyTableLaneView(
               notes: model.notes ?? [],
               warnings: model.warnings ?? [],
               hasTree,
-              unsorted: model.unsorted === true,
+              unsorted: keepsProductOrder(model),
               rankShown,
               rankWidth,
               columns: model.columns,

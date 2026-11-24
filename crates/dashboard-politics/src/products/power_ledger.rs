@@ -81,6 +81,18 @@ pub struct SpendItem {
     pub unknown: Option<String>,
     #[doc = " The idea in `ideaTooltips` its tooltip shows."]
     pub tooltip_token: Option<String>,
+    #[doc = " A decision's category or an advisor's role, from the installed content; none for other spending."]
+    pub kind: Option<SpendKind>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct SpendKind {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    #[doc = " Why the category or role is not known."]
+    pub unknown: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -260,6 +272,7 @@ impl Product for PowerSpending {
             PowerSpendingReply::decl(),
             SpendCurrency::decl(),
             SpendItem::decl(),
+            SpendKind::decl(),
             SpendCategory::decl(),
             SpendPayment::decl(),
             SpendDay::decl(),
@@ -1334,6 +1347,7 @@ fn unrecorded_item(item: &UnrecordedItem) -> SpendItem {
         target_name: None,
         unknown: Some(item.reason.clone()),
         tooltip_token: None,
+        kind: None,
     }
 }
 

@@ -158,5 +158,5 @@ export const organisationsDeclaration: TableWidgetDeclaration<OrganisationsProje
   projection: organisationsProjection,
   columns: ORGANISATION_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
-  projectionOptions: () => ({ canOpen: gameWindow('mioPolicyChooser') !== null }),
+  projectionOptions: () => ({ canOpen: gameWindow('industrialOrganisation') !== null }),
 };

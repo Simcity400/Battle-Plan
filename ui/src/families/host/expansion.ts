@@ -14,9 +14,11 @@ export function toggleExpansion(
   expansion: FamilyExpansion,
   nav: readonly FamilyNavTuple[],
   key: string,
+  exclusive = false,
 ): ExpansionToggle | null {
   const entry = nav.find(item => item[0] === key);
   if (!entry || entry[3] < 0) return null;
   const open = entry[3] === 0;
-  return { next: { ...expansion, [key]: open }, open, label: entry[1] };
+  const closed = open && exclusive ? Object.fromEntries(nav.filter(item => item[3] === 1).map(item => [item[0], false])) : {};
+  return { next: { ...expansion, ...closed, [key]: open }, open, label: entry[1] };
 }

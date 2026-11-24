@@ -7,8 +7,7 @@ import {
   drawCrosshairLine,
   drawFlagSlot,
   drawGapBand,
-  drawGradientLegend,
-  drawLegendEntry,
+  drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
   drawPlayheadLine,
@@ -74,66 +73,6 @@ export function collectVisibleLaneArt(
     if (url) urls.add(url);
   }
   return [...urls];
-}
-
-function drawLanesLegend(
-  ctx: Canvas2D,
-  model: HeatLanesModel,
-  layout: HeatLanesLayout,
-  theme: FamilyTheme,
-): void {
-  const legend = model.legend;
-  if (!legend || layout.legendHeight <= 0) return;
-  const middleY = Math.round(layout.legendHeight / 2);
-  let cursor = LANE_PAD;
-  if (legend.gradient) {
-    const drawn = drawGradientLegend(
-      ctx,
-      cursor,
-      middleY,
-      legend.gradient.lowLabel,
-      legend.gradient.highLabel,
-      legend.gradient.stops,
-      theme,
-    );
-    cursor += drawn.width + 14;
-  }
-  if (legend.entries) {
-    for (const entry of legend.entries) {
-      if (cursor > layout.width - 40) break;
-      if (entry.hatched) {
-        drawHatchRect(ctx, cursor, Math.round(middleY - 4.5), 9, 9, 2, theme);
-        ctx.save();
-        ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-        ctx.fillStyle = theme.muted;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(entry.label, cursor + 15, middleY);
-        cursor += 15 + textWidth(ctx, entry.label) + 12;
-        ctx.restore();
-      } else {
-        const drawn = drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color, theme, {
-          ...(entry.dashed ? { dash: [4, 2] } : {}),
-          ...(entry.muted ? { muted: true } : {}),
-          maxWidth: Math.max(40, layout.width - cursor - LANE_PAD),
-        });
-        cursor += drawn.width + 12;
-      }
-    }
-  }
-  if (legend.rightNote) {
-    ctx.save();
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    const maxW = Math.max(0, layout.width - cursor - LANE_PAD);
-    if (maxW >= 24) {
-      ctx.fillText(ellipsise(legend.rightNote, maxW, s => textWidth(ctx, s)), layout.width - LANE_PAD, middleY);
-    }
-    ctx.restore();
-  }
-  drawRowHairline(ctx, 0, layout.width, layout.legendHeight - 1, theme, 'normal');
 }
 
 function drawRowFlag(
@@ -314,7 +253,21 @@ export function drawHeatLanes(
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, layout.width, layout.height);
 
-  drawLanesLegend(ctx, model, layout, theme);
+  if (model.legend && layout.legendHeight > 0) {
+    drawLegendStrip(ctx, 0, 0, layout.width, layout.legendHeight, {
+      gradient: model.legend.gradient,
+      entries: model.legend.entries?.map(entry => ({
+        label: entry.label,
+        color: entry.color,
+        ...(entry.hatched ? { hatch: true } : {}),
+        ...(entry.dashed ? { dash: [4, 2] } : {}),
+        ...(entry.muted ? { muted: true } : {}),
+      })),
+      rightNote: model.legend.rightNote,
+      padX: LANE_PAD,
+      hairline: true,
+    }, theme);
+  }
 
   const bodyBottom = layout.height - layout.axisHeight;
   ctx.save();
