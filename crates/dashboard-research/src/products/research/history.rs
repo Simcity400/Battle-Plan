@@ -229,11 +229,10 @@ impl Index {
     }
 
     fn unread_through(&self, hour: i32, coverage: &[ResearchCoverage]) -> bool {
-        let Some(read_from) = coverage.first().map(|span| span.first_hour) else { return false };
         let held: i64 = self
             .runs
             .iter()
-            .map(|&(first, last)| (first.max(read_from), last.min(hour)))
+            .map(|&(first, last)| (first, last.min(hour)))
             .filter(|(first, last)| first <= last)
             .map(|(first, last)| i64::from(last) - i64::from(first) + 1)
             .sum();
