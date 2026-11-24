@@ -120,11 +120,8 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
     return { cell: { kind: 'missing', reason }, tip: { missingReason: reason } };
   }
   if (cell.kind === 'view') {
-    const friendly = Math.max(0, Number(cell.friendly));
-    const enemy = Math.max(0, Number(cell.enemy));
-    const total = friendly + enemy;
-    if (total <= 0) return { cell: { kind: 'clear' }, tip: { items: [{ label: 'No activity' }] } };
-    const share = friendly / total;
+    if (cell.share_bp === null) return { cell: { kind: 'clear' }, tip: { items: [{ label: 'No activity' }] } };
+    const share = cell.share_bp / 10_000;
     const color = share > 0.5 ? depth(look.track, viewer, share)
       : share < 0.5 ? depth(look.track, look.enemy, 1 - share)
         : look.contested;
@@ -133,28 +130,23 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
       tip: { items: [{ label: 'Air superiority', value: `${Math.round(share * 100)}%`, swatch: color }] },
     };
   }
-  if (cell.unknown.length) {
+  const lead = cell.lead;
+  if (lead.kind === 'unknown') {
     const reason = 'A side’s air score was not recorded';
     return { cell: { kind: 'missing', reason }, tip: { missingReason: reason } };
   }
+  if (lead.kind === 'noActivity') return { cell: { kind: 'clear' }, tip: { items: [{ label: 'No activity' }] } };
   let total = 0;
-  let best: { side: number; score: number } | null = null;
+  for (const part of cell.parts) total += Math.max(0, Number(part.friendly));
   const items = [];
-  for (const part of cell.parts) {
-    const score = Math.max(0, Number(part.friendly));
-    total += score;
-    if (!best || score > best.score) best = { side: part.side, score };
-  }
-  if (total <= 0) return { cell: { kind: 'clear' }, tip: { items: [{ label: 'No activity' }] } };
   for (const part of cell.parts) {
     const score = Math.max(0, Number(part.friendly));
     if (score <= 0) continue;
     const side = reply.sides[part.side];
     items.push({ label: sideName(side), value: `${Math.round((score / total) * 100)}%`, swatch: sideColour(side, surface, look.unknownSide) });
   }
-  const share = best!.score / total;
-  if (share <= 0.5) return { cell: { kind: 'solid', color: look.contested }, tip: { items: [{ label: 'Contested' }, ...items] } };
-  const color = depth(look.track, sideColour(reply.sides[best!.side], surface, look.unknownSide), share);
+  if (lead.kind === 'contested') return { cell: { kind: 'solid', color: look.contested }, tip: { items: [{ label: 'Contested' }, ...items] } };
+  const color = depth(look.track, sideColour(reply.sides[lead.side], surface, look.unknownSide), lead.share_bp / 10_000);
   return { cell: { kind: 'solid', color }, tip: { items } };
 }
 

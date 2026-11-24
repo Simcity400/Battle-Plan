@@ -1,9 +1,9 @@
 import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import {
-  registerTimeChart,
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
@@ -45,7 +45,7 @@ function resolveLineColors(rawColors: readonly (string | null)[], surface: strin
   return out;
 }
 
-export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesOptions> = registerTimeChart({
+export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesOptions> = registerFamilyProjection({
   kind: 'world-tension',
   family: 'time-chart',
   variant: 'line',
