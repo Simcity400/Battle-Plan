@@ -191,7 +191,7 @@ test('activeResearchProjection renders researching, idle, missing, stale caption
   };
 
   const art: ArtProvider = {
-    resolve: handle => handle.choice === 'basic_machine_tools'
+    resolve: handle => handle.kind === 'sprite' && handle.key === 'technology:basic_machine_tools'
       ? readyArt('asset://tech/basic_machine_tools.png')
       : missingArt('Art missing from the current installation'),
   };
@@ -380,9 +380,9 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
     SOV: { name: 'Soviet Union', colour: '#b83232', flag: 'SOV:communism' },
   });
   const art: ArtProvider = {
-    resolve: handle => handle.choice === 'ENG:democratic'
+    resolve: handle => handle.kind === 'flag' && handle.choice === 'ENG:democratic'
       ? readyArt('asset://flags/ENG.png')
-      : handle.choice === 'GER:fascism'
+      : handle.kind === 'flag' && handle.choice === 'GER:fascism'
         ? PENDING_ART
         : missingArt('Flag missing'),
   };

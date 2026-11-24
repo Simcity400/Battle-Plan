@@ -156,9 +156,16 @@ export function resolveMeterArtHandle(
   resolutions: MeterArtResolutions | undefined,
 ): ArtResolution {
   if (!resolutions) return PENDING_ART;
-  const scoped = `${handle.scope}:${handle.choice}`;
-  if (Object.hasOwn(resolutions, scoped)) return resolutions[scoped]!;
-  if (Object.hasOwn(resolutions, handle.choice)) return resolutions[handle.choice]!;
+  const key = handle.kind === 'sprite'
+    ? handle.key
+    : handle.kind === 'flag'
+      ? `flag:${handle.choice}`
+      : handle.kind === 'portrait'
+        ? `portrait:${handle.key}`
+        : handle.kind === 'path'
+          ? handle.path
+          : handle.url;
+  if (Object.hasOwn(resolutions, key)) return resolutions[key]!;
   return PENDING_ART;
 }
 

@@ -327,14 +327,20 @@ fn resource_content_noted(
                 icons.frames.of(token, *ordinal),
                 decode.filter(|_| !refused),
             ) {
-                (Ok(Some(frame)), Some(decode)) => match catalogue::sprite_frame_png(
+                (Ok(Some(frame)), Some(decode)) => match super::artwork::resolve_sprite_type_on_layers(
                     view.layers,
+                    view.layers.recorded_language().unwrap_or("english"),
                     &icons.sprite,
-                    decode,
                     frame - 1,
-                    ICON_EDGE,
-                ) {
-                    Ok(icon) => Some(icon),
+                    super::artwork::ArtRenderVariant {
+                        max_edge: ICON_EDGE,
+                        decode,
+                    },
+                )
+                .into_result()
+                {
+                    Ok(Some(icon)) => Some(icon),
+                    Ok(None) => None,
                     Err(error) => {
                         refused = true;
                         let message = format!("Resource icons are unavailable: {error}");
@@ -409,7 +415,7 @@ pub fn resource_infos(
     Ok((infos, warnings))
 }
 
-const ARTWORK_NOTE: &str = "Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.";
+const ARTWORK_NOTE: &str = "Artwork from current installation; visual assets are outside content hash coverage.";
 
 pub fn stored_resource_infos(
     source: &Source,
@@ -504,9 +510,9 @@ fn resource_icon(
         .of(token, ordinal)?
         .and_then(|frame| frame.checked_sub(1))
         .ok_or_else(|| format!("{token}: the recorded content gives no usable icon frame."))?;
-    let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
-    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, frame, ICON_EDGE)
-        .map_err(|error| error.to_string())
+    super::artwork::resolve_sprite_type(catalogue, sprite, frame, ICON_EDGE)
+        .into_result()?
+        .ok_or_else(|| format!("{token}: resource icon unavailable"))
 }
 
 pub fn present_stored_json(

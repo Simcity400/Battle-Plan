@@ -66,7 +66,12 @@ export interface FamilyMeterHostProps<TOptions> {
   readonly subscriptions: readonly FamilySourceSubscription[];
   readonly allowEmptyFollow?: boolean;
   readonly owner?: string;
-  readonly staticSources?: { readonly panels?: Readonly<Record<string, unknown>>; readonly answers?: Readonly<Record<string, FollowedAnswer>>; readonly hour: number } | null;
+  readonly staticSources?: {
+    readonly panels?: Readonly<Record<string, unknown>>;
+    readonly answers?: Readonly<Record<string, FollowedAnswer>>;
+    readonly hour: number;
+    readonly provenInterval?: readonly [number, number] | null;
+  } | null;
   readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
   readonly offset: number;
   readonly pin: number | null;
@@ -75,6 +80,7 @@ export interface FamilyMeterHostProps<TOptions> {
   readonly countryLooks?: CountryLooksMap;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
+  readonly onViewportSize?: (width: number, height: number) => void;
   readonly artResolutions?: MeterArtResolutions;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
@@ -126,6 +132,7 @@ export default function FamilyMeterHost<TOptions>({
   countryLooks,
   identitySnapshot = null,
   onIdentityDemands,
+  onViewportSize,
   artResolutions,
   selectedKey = null,
   onActivate,
@@ -236,6 +243,7 @@ export default function FamilyMeterHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     artResolutions,
     selectedKey,
     onActivate,
@@ -253,6 +261,7 @@ export default function FamilyMeterHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    onViewportSize,
     artResolutions,
     selectedKey,
     onActivate,
@@ -318,7 +327,9 @@ export default function FamilyMeterHost<TOptions>({
     pipeline.present(pipe, 'meters');
     const dated = Object.keys(sourceIdsRef.current).length === 0
       ? (cur.staticSources
-        ? { h: cur.staticSources.hour, c: cur.staticSources.hour }
+        ? (cur.staticSources.provenInterval
+          ? { h: cur.staticSources.provenInterval[0], c: cur.staticSources.provenInterval[1] }
+          : { h: cur.staticSources.hour, c: cur.staticSources.hour })
         : cur.allowEmptyFollow && cur.bounds
           ? { h: cur.bounds[0], c: cur.bounds[1] }
           : undefined)
@@ -553,8 +564,11 @@ export default function FamilyMeterHost<TOptions>({
 
     const resizeObserver = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
-      const w = Math.round(rect ? rect.width : node.clientWidth);
-      const h = Math.round(rect ? rect.height : node.clientHeight);
+      const rawW = rect ? rect.width : node.clientWidth;
+      const rawH = rect ? rect.height : node.clientHeight;
+      latestRef.current.onViewportSize?.(rawW, rawH);
+      const w = Math.round(rawW);
+      const h = Math.round(rawH);
       refreshFocusAnchorRef.current();
       if (w === viewportRef.current.width && h === viewportRef.current.height) return;
       viewportRef.current.width = w;
@@ -564,6 +578,7 @@ export default function FamilyMeterHost<TOptions>({
     resizeObserver.observe(node);
     viewportRef.current.width = node.clientWidth;
     viewportRef.current.height = node.clientHeight;
+    latestRef.current.onViewportSize?.(node.clientWidth, node.clientHeight);
     refreshFocusAnchorRef.current();
 
     node.addEventListener('scroll', onScroll, { passive: true });

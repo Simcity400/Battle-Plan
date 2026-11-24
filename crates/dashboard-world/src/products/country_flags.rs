@@ -94,6 +94,9 @@ pub struct CountryFlagImage {
     pub height: u32,
     #[doc = " The flag as its artwork URL, at most 128 pixels on the longer side."]
     pub png: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub resolution: Option<dashboard_base::products::artwork::ArtResolution>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -158,9 +161,12 @@ impl Product for CountryFlags {
         let content = context.content()?;
         let presentation = content.presentation.identity().clone();
         let presented = source.presented_for(content)?;
+        let stack_key = presented.content.layers.art_stack_key();
         let shared = source.state::<FlagState>();
         let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
-        let held = state.held().find(|cached| cached.matches(&content.options, &presentation));
+        let held = state
+            .held()
+            .find(|cached| cached.matches(&content.options, &presentation, stack_key));
         let context = match held {
             Some(held) => {
                 state.make_current(&held);
@@ -436,6 +442,7 @@ pub enum FlagSearch {
     Found {
         asset: String,
         image: Arc<Rgba8Image>,
+        origin: dashboard_base::products::artwork::ArtOrigin,
     },
     Unresolvable,
     Absent,
@@ -456,8 +463,12 @@ pub fn flag_cells(layers: &content_reader_layers::ResolvedLayers) -> io::Result<
 #[derive(Clone)]
 enum FlagFile {
     Missing,
+    Unmounted(String),
     Refused(content_reader_gui::flags::DecodeFailure),
-    Image(Arc<Rgba8Image>),
+    Image {
+        image: Arc<Rgba8Image>,
+        origin: dashboard_base::products::artwork::ArtOrigin,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -559,14 +570,35 @@ fn flag_file(
         return Ok(file.clone());
     }
     let (file, noted) = content_reader_layers::content::diagnostics::observe(|| {
-        io::Result::Ok(match layers.read_uncovered(asset) {
-            Ok(bytes) => match content_reader_gui::flags::decode_checked(&bytes, cell) {
-                Ok(_) if files.probing => FlagFile::Image(probed()),
-                Ok(image) => FlagFile::Image(Arc::new(image)),
-                Err(reason) => FlagFile::Refused(reason),
-            },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => FlagFile::Missing,
-            Err(error) => return Err(error),
+        io::Result::Ok(match layers.art_file_source(asset.as_bytes())? {
+            content_reader_layers::content::ArtFileSource::Unmounted { layer, reason } => {
+                let origin =
+                    dashboard_base::products::artwork::ArtOrigin::from_layer(&layers.layers[layer]);
+                FlagFile::Unmounted(format!(
+                    "{} is not mounted ({reason}); flag {asset} cannot be resolved without risking a substitute",
+                    origin.display_name()
+                ))
+            }
+            content_reader_layers::content::ArtFileSource::Missing => FlagFile::Missing,
+            content_reader_layers::content::ArtFileSource::Mounted { layer, path } => {
+                let origin =
+                    dashboard_base::products::artwork::ArtOrigin::from_layer(&layers.layers[layer]);
+                match layers.read_uncovered_path(&path) {
+                    Ok(bytes) => match content_reader_gui::flags::decode_checked(&bytes, cell) {
+                        Ok(_) if files.probing => FlagFile::Image {
+                            image: probed(),
+                            origin,
+                        },
+                        Ok(image) => FlagFile::Image {
+                            image: Arc::new(image),
+                            origin,
+                        },
+                        Err(reason) => FlagFile::Refused(reason),
+                    },
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => FlagFile::Missing,
+                    Err(error) => return Err(error),
+                }
+            }
         })
     });
     let file = file?;
@@ -697,7 +729,7 @@ fn ladder(
             let asset = format!("{}{key}.tga", set.directory());
             let read = flag_file(files, stack, layers, set_index, &asset, cell);
             if let Some((recorded, recorded_cells)) = recorded
-                && !matches!(read, Ok(FlagFile::Image(_)))
+                && !matches!(read, Ok(FlagFile::Image { .. }))
             {
                 let breaks = match &read {
                     Ok(FlagFile::Refused(_)) if layers.supplied_by_visual_mod(&asset) => true,
@@ -711,7 +743,7 @@ fn ladder(
                             &asset,
                             recorded_cells[set_index],
                         ),
-                        Ok(FlagFile::Image(_))
+                        Ok(FlagFile::Image { .. })
                     ),
                 };
                 if breaks {
@@ -725,6 +757,12 @@ fn ladder(
             }
             match read.map_err(|error| unreadable(&asset, error))? {
                 FlagFile::Missing => {}
+                FlagFile::Unmounted(why) => {
+                    let mut finding = Finding::new(Kind::Refused, key, why);
+                    finding.file = Some(asset);
+                    findings.push(finding);
+                    return Ok(Ok((FlagSearch::Unresolvable, findings)));
+                }
                 FlagFile::Refused(reason) => {
                     if !reported.refused.insert((stack, set_index, asset.clone())) {
                         continue;
@@ -749,7 +787,7 @@ fn ladder(
                     finding.file = Some(asset.clone());
                     findings.push(finding);
                 }
-                FlagFile::Image(image) => {
+                FlagFile::Image { image, origin } => {
                     if sets.first() == Some(&FlagSet::Medium)
                         && set == FlagSet::Normal
                         && reported.substitutions.insert(asset.clone())
@@ -764,7 +802,7 @@ fn ladder(
                         finding.file = Some(asset.clone());
                         findings.push(finding);
                     }
-                    return Ok(Ok((FlagSearch::Found { asset, image }, findings)));
+                    return Ok(Ok((FlagSearch::Found { asset, image, origin }, findings)));
                 }
             }
         }
@@ -961,6 +999,8 @@ impl FlagFolders {
 pub struct FlagContext {
     options: ResolveOptions,
     presentation: dashboard_base::presentation::Presentation,
+    stack_key: [u8; 32],
+    language: String,
     content: Arc<ResolvedContent>,
     cells: [[u32; 2]; 3],
     cell_fallbacks: content_reader_layers::content::diagnostics::Diagnostics,
@@ -973,8 +1013,10 @@ impl FlagContext {
         &self,
         options: &ResolveOptions,
         presentation: &dashboard_base::presentation::Presentation,
+        stack_key: [u8; 32],
     ) -> bool {
-        self.presentation == *presentation
+        self.stack_key == stack_key
+            && self.presentation == *presentation
             && self.options.game_dir == options.game_dir
             && self.options.user_dir == options.user_dir
             && self.options.cache_dir == options.cache_dir
@@ -987,11 +1029,18 @@ impl FlagContext {
         options: ResolveOptions,
         allow_unverified: bool,
     ) -> io::Result<Self> {
-        let mut warnings = vec!["Flag artwork is resolved from the recording's game content; visual assets are outside the content hash coverage.".into()];
+        let mut warnings = vec![format!(
+            "{}; visual assets are outside the content hash coverage.",
+            dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
+        )];
         content::check_replay(source.replay_ref(), allow_unverified, &mut warnings)?;
+        let stack_key = content.layers.art_stack_key();
+        let language = content::recorded_language(source.replay_ref());
         Ok(Self {
             options,
             presentation: Default::default(),
+            stack_key,
+            language,
             content,
             cells,
             cell_fallbacks: Default::default(),
@@ -1061,13 +1110,13 @@ impl FlagContext {
                         reasons.push(finding.message);
                     }
                 }
-                if let FlagSearch::Found { asset, image } = search {
-                    found = Some((asset, image));
+                if let FlagSearch::Found { asset, image, origin } = search {
+                    found = Some((asset, image, origin));
                     break;
                 }
             }
             match found {
-                Some((asset, image)) => shielded.push((flag, asset, image)),
+                Some((asset, image, origin)) => shielded.push((flag, asset, image, origin)),
                 None => unavailable.push(CountryFlagUnavailable {
                     flag,
                     reason: if reasons.is_empty() {
@@ -1083,7 +1132,7 @@ impl FlagContext {
                 let panel = request.size == CountryFlagSize::Panel;
                 let images: Vec<_> = shielded
                     .iter()
-                    .map(|(_, _, image)| image.as_ref())
+                    .map(|(_, _, image, _)| image.as_ref())
                     .collect();
                 match draw_each(&images, |batch| {
                     style.draw(&self.content.layers, batch, panel)
@@ -1097,10 +1146,11 @@ impl FlagContext {
             }
             None => shielded
                 .iter()
-                .map(|(_, _, image)| Ok(image.as_ref().clone()))
+                .map(|(_, _, image, _)| Ok(image.as_ref().clone()))
                 .collect(),
         };
-        for ((flag, asset, _), drawn) in shielded.into_iter().zip(drawn) {
+        let scope_key = dashboard_base::products::artwork::art_scope_key(flag_layers, &self.language);
+        for ((flag, asset, raw, origin), drawn) in shielded.into_iter().zip(drawn) {
             let image = match drawn {
                 Ok(image) => image,
                 Err(error) => {
@@ -1116,14 +1166,43 @@ impl FlagContext {
             let image = resize(&image, width, height);
             let key = flag_key(&asset, &image.pixels);
             match dashboard_text::artwork::png_url(&image) {
-                Ok(png) => flags.push(CountryFlagImage {
-                    flag,
-                    key,
-                    asset,
-                    width: image.width,
-                    height: image.height,
-                    png,
-                }),
+                Ok(png) => {
+                    let asset_id = png
+                        .strip_prefix(dashboard_text::artwork::base())
+                        .unwrap_or(&png)
+                        .to_owned();
+                    let provenance =
+                        dashboard_base::products::artwork::ArtProvenance::current_install(
+                            &origin,
+                            &scope_key,
+                        );
+                    let resolution = dashboard_base::products::artwork::ArtResolution::Ready {
+                        asset_id,
+                        url: png.clone(),
+                        origin,
+                        file: asset.clone(),
+                        frame: dashboard_base::products::artwork::ArtFrame {
+                            frame_index: 0,
+                            frame_count: 1,
+                            frame_width: raw.width,
+                            frame_height: raw.height,
+                            texture_width: raw.width,
+                            texture_height: raw.height,
+                            output_width: image.width,
+                            output_height: image.height,
+                        },
+                        provenance,
+                    };
+                    flags.push(CountryFlagImage {
+                        flag,
+                        key,
+                        asset,
+                        width: image.width,
+                        height: image.height,
+                        png,
+                        resolution: Some(resolution),
+                    });
+                }
                 Err(error) => unavailable.push(CountryFlagUnavailable {
                     flag,
                     reason: format!("flag artwork could not be encoded: {error}"),
@@ -1161,6 +1240,8 @@ mod tests {
     ) -> FlagContext {
         FlagContext {
             presentation: Default::default(),
+            stack_key: content.layers.art_stack_key(),
+            language: "english".into(),
             options: ResolveOptions {
                 game_dir: "G".into(),
                 user_dir: "U".into(),

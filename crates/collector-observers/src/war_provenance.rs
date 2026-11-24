@@ -32,7 +32,8 @@ const ENTRIES: usize = native::ENTRIES.len();
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; ENTRIES] = [const { AtomicUsize::new(0) }; ENTRIES];
-static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static FLIGHT_GATE: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(0);
 static UNCLASSIFIED: AtomicU64 = AtomicU64::new(0);
 static UNREAD: AtomicU64 = AtomicU64::new(0);
 static FIRST_UNREAD: Mutex<Option<&'static str>> = Mutex::new(None);
@@ -234,20 +235,16 @@ pub fn state_owner_after(before: Option<StateOwner>) {
     });
 }
 
-struct Flight;
-
-impl Flight {
-    fn enter() -> Self {
-        crate::event_feed_observer::writer_moved();
-        ACTIVE.fetch_add(1, Ordering::SeqCst);
-        Self
-    }
+struct Flight {
+    _guard: collector_primitives::asymmetric::FlightGuard<'static>,
 }
 
-impl Drop for Flight {
-    fn drop(&mut self) {
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
-        crate::event_feed_observer::writer_moved();
+impl Flight {
+    #[inline(always)]
+    fn enter() -> Self {
+        Self {
+            _guard: FLIGHT_GATE.enter(true),
+        }
     }
 }
 
@@ -434,7 +431,11 @@ pub fn base_for_test(base: usize) {
 }
 
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    FLIGHT_GATE.active()
+}
+
+pub(crate) fn quiet_epoch() -> Option<u64> {
+    FLIGHT_GATE.quiet_epoch()
 }
 
 

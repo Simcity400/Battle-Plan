@@ -1,6 +1,6 @@
 import { liveKey } from '../../charts/live.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
-import { missingArt, PENDING_ART, type ArtResult } from '../../families/art/types.ts';
+import { failedArt, missingArt, PENDING_ART, type ArtResult } from '../../families/art/types.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import type { BoundedReadView, DeclaredCountryFilter } from '../../families/plan.ts';
 import type { TooltipListItem } from '../../families/host/index.ts';
@@ -82,6 +82,8 @@ function resolveCountry(readView: BoundedReadView, country: Country): ResolvedCo
     flagResult = readView.art(flagArtHandle(who.flagChoice.value, 'panel'));
   } else if (who.flagChoice?.status === 'absent') {
     flagResult = missingArt(who.flagChoice.reason);
+  } else if (who.flagChoice?.status === 'failed') {
+    flagResult = failedArt(who.flagChoice.reason, who.flagChoice.retryable);
   } else {
     flagResult = PENDING_ART;
   }

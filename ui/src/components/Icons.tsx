@@ -10,6 +10,7 @@ const paths = {
   globe: <><circle cx="12" cy="12" r="8.75" /><path d="M3.5 12h17" /><path d="M12 3.25c2.4 2.4 3.6 5.3 3.6 8.75s-1.2 6.35-3.6 8.75c-2.4-2.4-3.6-5.3-3.6-8.75S9.6 5.65 12 3.25Z" /></>,
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.75" /><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5" /><rect x="13.5" y="11" width="7" height="9.5" rx="1.75" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.75" /></>,
   'chart-bars': <><path d="M4 3.5v17h17" /><path d="M8 16V11M13 16V6M18 16V9" /></>,
+  'chart-line': <><path d="M4 18.5h16" /><path d="m5.5 14 4.5-4.5 3.5 3 5-6" /></>,
   parliament: <path d="m3 8 9-5 9 5H3ZM3 21h18M5 18h14M6 8v10M10 8v10M14 8v10M18 8v10" />,
   handshake: <path d="m3 8 4-3 4 2 2-1 4 1 4 5-4 7-3 1-7-5-4-7ZM7 5l-3 7M17 7l4 5M11 7l-3 4 2 2 4-3 5 5M11 16l3 3M14 14l3 3" />,
   flag: <path d="M5 21V3.5c5-3 9 3 14 0v10c-5 3-9-3-14 0" />,

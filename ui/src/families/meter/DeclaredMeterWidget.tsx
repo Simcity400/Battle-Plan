@@ -92,7 +92,12 @@ export default function DeclaredMeterWidget<TProjectionOptions, TAux>({
     subscriptions={plan.subscriptions}
     allowEmptyFollow={plan.allowEmptyFollow}
     owner={plan.owner}
-    staticSources={plan.staticBundle ? { panels: plan.staticBundle.panels, answers: plan.staticBundle.answers, hour: plan.staticBundle.hour } : null}
+    staticSources={plan.staticBundle ? {
+      panels: plan.staticBundle.panels,
+      answers: plan.staticBundle.answers,
+      hour: plan.staticBundle.hour,
+      provenInterval: plan.staticBundle.provenInterval,
+    } : null}
     exactReadView={displayedCtx && perfLog && !blockedState ? plan.exactReadView : undefined}
     offset={plan.offset}
     pin={plan.pin}
@@ -100,6 +105,7 @@ export default function DeclaredMeterWidget<TProjectionOptions, TAux>({
     countryLooks={plan.displayedCountryLooks}
     identitySnapshot={plan.identitySnapshot}
     onIdentityDemands={plan.onIdentityDemands}
+    onViewportSize={plan.measureViewport}
     artResolutions={artResolutions}
     selectedKey={selectedKey}
     onActivate={onActivate}

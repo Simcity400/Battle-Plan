@@ -282,8 +282,10 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
     );
     drop(claim_a);
     let extra = unsafe { shared.take_frame(&mut 0) }.unwrap();
-    assert_eq!(pool.live(), STEADY + 1);
+    let second_extra = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    assert_eq!(pool.live(), STEADY + 2);
     held.push(extra);
+    held.push(second_extra);
     for slot in held {
         // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe { shared.recycle_frame_prepared(slot) };
@@ -307,13 +309,10 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
     let box_bytes = size_of::<crate::extended::ParkedPacks>() as u64;
     let parked = shared.parked_bytes();
     assert!(parked > box_bytes);
-    let steady_bytes = pool.live_bytes();
-    let steady_owned = shared.pool_owned();
-    let reused = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    assert!(shared.drain_surplus_parked());
     assert_eq!(shared.parked_bytes(), 0);
-    assert_eq!(pool.live_bytes(), steady_bytes - box_bytes);
-    assert_eq!(shared.pool_owned(), steady_owned - box_bytes);
     assert_eq!(pool.live_bytes(), pool.gauge().live_bytes);
+    let reused = unsafe { shared.take_frame(&mut 0) }.unwrap();
     let second = unsafe { shared.take_frame(&mut 0) }.unwrap();
     let grown = unsafe { shared.take_frame(&mut 0) }.unwrap();
     assert_eq!(pool.live(), STEADY + 1);
