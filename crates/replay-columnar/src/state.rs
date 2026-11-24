@@ -87,12 +87,17 @@ impl Bits {
         })
     }
 
-    pub(crate) fn set(&mut self, bit: u32) -> io::Result<()> {
+    pub(crate) fn reserve_slot(&mut self, bit: u32) -> io::Result<()> {
         let word = bit as usize / 64;
         if word >= self.words.len() {
             engine_allocation::resize_default(&mut self.words, word + 1)?;
         }
-        self.words[word] |= 1 << (bit % 64);
+        Ok(())
+    }
+
+    pub(crate) fn set(&mut self, bit: u32) -> io::Result<()> {
+        self.reserve_slot(bit)?;
+        self.words[bit as usize / 64] |= 1 << (bit % 64);
         Ok(())
     }
 
@@ -1880,6 +1885,7 @@ impl Table {
         }
         if let Some(&last) = slots.last() {
             self.resize(last as usize + 1)?;
+            self.live.reserve_slot(last)?;
         }
         self.keys.write_slots(slots, keys)?;
         self.by_key.insert_batch(&self.keys, slots, keys)?;
