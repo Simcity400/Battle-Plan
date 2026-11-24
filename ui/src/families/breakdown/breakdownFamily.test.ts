@@ -4,7 +4,9 @@ import { engineHour } from '../../dashboard/calendar.ts';
 import type { Breakdown, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
 import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
 import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
-import { territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
+import { territoryBreakdown, territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import type { CountrySelection } from '../../dashboard/model';
 import type { IdentityProvider } from '../plan.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { resolvePlaybackProvenInterval } from '../broker.ts';
@@ -345,14 +347,17 @@ test('a lone item under a category is still a row', () => {
   assert.ok(parts.rows.some(row => row.depth === 2 && row.part.name === 'Only decision'));
 });
 
-test('territory names each country by its identity at the hour, with its flag and colour, and leaves unnamed land as the product gave it', () => {
+test('territory names each recorded slot by its identity at the hour, with its flag and colour, and leaves unnamed land as the product gave it', () => {
+  const asked: string[] = [];
   const identity: IdentityProvider = {
     resolve(kind, key, atHour) {
+      asked.push(key);
+      const tag = key === countryKey(1) ? 'BBB' : key;
       return {
         kind, key, atHour,
         holder: { status: 'ready', value: key },
-        tag: { status: 'ready', value: key },
-        name: { status: 'ready', value: `${key} land` },
+        tag: { status: 'ready', value: tag },
+        name: { status: 'ready', value: `${tag} land` },
         colour: { status: 'ready', value: '#4f86f7' },
         flagChoice: { status: 'absent', reason: 'Flag not recorded' },
         validInterval: [0, 1000],
@@ -362,14 +367,15 @@ test('territory names each country by its identity at the hour, with its flag an
   };
   const territory: TerritoryBreakdownReply = { hour: 10, warnings: [], breakdown: {
     decimals: 2, unrecordedHours: 0, total: { raw: '583', state: 'known', reason: null },
-    parts: [wire('AAA', 1, '433', { share: 0.74 }), wire('slot:2', 2, '100', { other: true, name: 'Country not named at this hour' }), wire('~unheld', 9, '50', { other: true, name: 'Held by no country' })],
+    parts: [wire('slot:1', 1, '433', { share: 0.74, name: 'AAA' }), wire('slot:2', 2, '100', { other: true, name: 'Country not named at this hour' }), wire('~unheld', 9, '50', { other: true, name: 'Held by no country' })],
   } };
   const project = (reply: TerritoryBreakdownReply, chosen = false) => territoryBreakdownProjection.project(
     createBoundedReadView({ hour: 10, panels: new Map([['main', reply]]), identity }), { measure: 'states', rule: 'controlled', chosen });
   const read = project(territory);
-  assert.deepEqual(read.parts.map(part => part.name), ['AAA land', 'Country not named at this hour', 'Held by no country']);
+  assert.deepEqual(read.parts.map(part => part.name), ['BBB land', 'Country not named at this hour', 'Held by no country'], 'the name is the one the slot holds at the hour, not the tag the product read');
+  assert.deepEqual([...new Set(asked)], [countryKey(1)], 'only a named slot is asked, by its recorded slot');
   assert.equal(read.parts[0]!.color, '#4f86f7');
-  assert.equal(read.parts[0]!.flag, 'AAA');
+  assert.equal(read.parts[0]!.flag, 'BBB');
   assert.equal(read.parts[1]!.flag, undefined, 'a slot no tag names has no flag');
   assert.equal(read.total.text, '5.83');
   assert.equal(read.total.unit, 'states');
@@ -378,6 +384,26 @@ test('territory names each country by its identity at the hour, with its flag an
   const unread = project({ ...territory, breakdown: { decimals: 0, unrecordedHours: 0, total: { raw: null, state: 'notRecorded', reason: 'territory by strategic region is not known at this hour' }, parts: [] } });
   assert.equal(unread.empty, 'Not recorded at this time.');
   assert.equal(unread.emptyDetail, 'Territory by strategic region is not known at this hour');
+});
+
+test('territory asks the product for the chosen countries or the group itself, never an empty list', () => {
+  const ctx = (countries: CountrySelection) => ({
+    widget: { countries },
+    options: { measure: 'states', rule: 'controlled' },
+    countries: { all: countries.kind === 'all', tags: [], top: null },
+    track: { source: { id: 'source', revision: '1', metadata: {} }, axisOffset: 0, selectedSlot: 7 },
+    branch: { id: '1' },
+  }) as unknown as Parameters<typeof territoryBreakdown.sources>[0];
+  const params = (countries: CountrySelection) => (territoryBreakdown.sources(ctx(countries), { width: 400, height: 300 } as Parameters<typeof territoryBreakdown.sources>[1]).entries[0]!.read as { params: unknown }).params;
+  const base = { branchId: '1', measure: 'states', rule: 'controlled' };
+  assert.deepEqual(params({ kind: 'all' }), base);
+  assert.deepEqual(params({ kind: 'selected' }), { ...base, countries: [7] }, 'the selected country is its recorded slot');
+  assert.deepEqual(params({ kind: 'tags', tags: ['AAA', countryKey(9)] }), { ...base, countries: ['AAA', 9] });
+  assert.deepEqual(params({ kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false }),
+    { ...base, group: { type: 'faction', id: '42', membership: 'hour' } }, 'a group is sent as the group: Rust resolves its members at the hour');
+  assert.match(territoryBreakdown.unavailable?.(ctx({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false })) ?? '', /end of the recording/,
+    'members at the end of the recording would read past the displayed hour: refused by name');
+  assert.equal(territoryBreakdown.unavailable?.(ctx({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false })), null);
 });
 
 test('a breakdown reply proves the stretch it stands through, so a quiet hundred played hours asks once', () => {
