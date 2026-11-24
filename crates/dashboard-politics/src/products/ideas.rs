@@ -1,6 +1,6 @@
 
 use dashboard_base::products::Country;
-use dashboard_base::products::{CountryParams, LoadContext, Product, check_reply_budget, idea_format::{self, LocalisedText, ModifierFormat}, politics_content::{PoliticsContent, politics_content}};
+use dashboard_base::products::{LoadContext, Product, check_reply_budget, validate_country, idea_format::{self, LocalisedText, ModifierFormat}, politics_content::{PoliticsContent, politics_content}};
 use dashboard_core::dto::Artwork;
 use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
@@ -25,15 +25,76 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct IdeaSpan {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdeaSpan {
     pub token: String,
     pub first_hour: i32,
     pub last_hour: i32,
     pub slot: Option<String>,
     pub character: Option<IdeaCharacter>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdeaHistoryParams {
+    pub branch_id: String,
+    pub country: Country,
+    #[doc = " The hour answered: nothing recorded after it is read into the reply."]
+    pub hour: i32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum HoldingStart {
+    #[doc = " Witnessed not held the hour before, so it began at `firstHour`."]
+    Seen,
+    #[doc = " Held when the country's identity was first read with no unread hour before it (the"]
+    #[doc = " branch's first hour, or another holder taking over): it began before `firstHour`."]
+    HeldBefore,
+    #[doc = " First seen after hours the country's ideas were not read: it began by `firstHour`, not at it."]
+    FirstObserved,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum HoldingEnd {
+    #[doc = " Held at the reply's hour; `lastHour` is that hour."]
+    Held,
+    #[doc = " Witnessed not held at `lastHour + 1`."]
+    Ended,
+    #[doc = " Not read after `lastHour` until `hour`, which witnessed it no longer held."]
+    EndedBy { hour: i32 },
+    #[doc = " Not read from `lastHour + 1` through the reply's hour: whether it is still held is unknown."]
+    LastSeen,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct IdeaHolding {
+    pub token: String,
+    pub first_hour: i32,
+    #[doc = " The last hour it is known held, never after the reply's hour. Hours not read inside it are"]
+    #[doc = " in `unobserved`."]
+    pub last_hour: i32,
+    pub start: HoldingStart,
+    pub end: HoldingEnd,
+    pub slot: Option<String>,
+    pub character: Option<IdeaCharacter>,
+    #[doc = " Its presentation in `looks`, as named and classified when it was first observed."]
+    pub look: u32,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct IdeaLook {
+    pub info: IdeaInfo,
+    #[doc = " The idea's name and icon; for an advisor, its holder's."]
+    pub artwork: Artwork,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -144,19 +205,6 @@ pub struct CategoryInfo {
     pub slots: Vec<SlotInfo>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct HolderArtwork {
-    pub token: String,
-    #[doc = " The recorded character id, as on the span."]
-    pub character: u32,
-    #[doc = " The script token and saved name, as on the span."]
-    pub character_token: String,
-    pub name: String,
-    pub artwork: Artwork,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -165,19 +213,22 @@ pub struct IdeaHistoryReply {
     pub tag: String,
     #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     pub asked: dashboard_base::products::Country,
-    pub spans: Vec<IdeaSpan>,
-    pub ideas: Vec<IdeaInfo>,
-    pub artwork: Vec<Artwork>,
-    #[doc = " Each recorded holder of an advisor idea with that character's own name and portrait."]
-    pub holders: Vec<HolderArtwork>,
+    #[doc = " The hour answered, never after the branch's last hour."]
+    pub hour: i32,
+    #[doc = " The first hour after `hour` at which anything in this reply changes, other than held"]
+    #[doc = " holdings and an unread stretch running on; null when nothing does."]
+    pub next_change: Option<i32>,
+    #[doc = " Why the country's ideas are not known at `hour`; null when they were read then."]
+    pub unrecorded: Option<String>,
+    #[doc = " Every holding begun by `hour`, by first hour. A holding continues across hours not read."]
+    pub holdings: Vec<IdeaHolding>,
+    #[doc = " The holdings held at `hour`, in display order: the earliest begun first, then by name."]
+    pub held: Vec<u32>,
+    pub looks: Vec<IdeaLook>,
     #[doc = " Every category in content order, so widgets list mod categories too."]
     pub categories: Vec<CategoryInfo>,
-    #[doc = " Hours the country's ideas were not read: a span ending or starting next to one is a gap,"]
-    #[doc = " not a change."]
+    #[doc = " Hours through `hour` the country's ideas were not read."]
     pub unobserved: Vec<HourSpan>,
-    #[doc = " Hours the country's recorded identity starts: its first hour read, after an hour not read,"]
-    #[doc = " or as another holder. The ideas held then are that identity's initial state, not changes."]
-    pub identity_starts: Vec<i32>,
     #[doc = " How the game shows each modifier the effects above use; a key missing here is shown as"]
     #[doc = " authored, unformatted."]
     pub modifiers: Vec<ModifierFormat>,
@@ -203,8 +254,9 @@ pub(crate) struct Ideas {
     pub unobserved: Vec<HourSpan>,
     pub identity_starts: Vec<i32>,
     pub starts: Vec<(u32, u32, u32)>,
-    pub templates: BTreeMap<u32, Result<BuiltTemplate, String>>,
-    pub warnings: BTreeSet<&'static str>,
+    pub templates: BTreeMap<usize, Result<BuiltTemplate, String>>,
+    pub warnings: BTreeMap<&'static str, i32>,
+    pub boundaries: Vec<i32>,
     last: Option<(i32, (u32, u32))>,
     open: BTreeMap<String, usize>,
 }
@@ -338,6 +390,14 @@ pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> 
     for (first, last) in holes {
         mark(&mut ideas.unobserved, first, last);
     }
+    let mut boundaries: Vec<i32> = ideas.identity_starts.clone();
+    for (first, last) in ideas.spans.iter().map(|span| (span.first_hour, span.last_hour)).chain(ideas.unobserved.iter().map(|gap| (gap.first_hour, gap.last_hour))) {
+        boundaries.push(first);
+        boundaries.extend(last.checked_add(1));
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    ideas.boundaries = boundaries;
     Ok(ideas)
 }
 
@@ -446,12 +506,12 @@ impl Ideas {
             for (_, cells) in hired.shown() {
                 let seat = hired.text(cells[at_seat]).unwrap_or_default();
                 let Ok(seat) = std::str::from_utf8(seat) else {
-                    self.warnings.insert(SEAT);
+                    self.warnings.entry(SEAT).or_insert(hour);
                     continue;
                 };
                 let idea = hired.text(cells[at_idea]).unwrap_or_default();
                 if idea.is_empty() {
-                    self.warnings.insert(TOKENLESS_SEATS);
+                    self.warnings.entry(TOKENLESS_SEATS).or_insert(hour);
                     continue;
                 }
                 let Some(id) = number(cells[at_character]).and_then(|id| u32::try_from(id).ok()) else { continue };
@@ -469,7 +529,7 @@ impl Ideas {
         self.open.retain(|token, _| tokens.contains(token.as_bytes()));
         for bytes in tokens {
             let Ok(token) = std::str::from_utf8(&bytes) else {
-                self.warnings.insert(TOKEN);
+                self.warnings.entry(TOKEN).or_insert(hour);
                 continue;
             };
             let role = roles.get(&bytes);
@@ -486,7 +546,7 @@ impl Ideas {
                             }
                             None => Err(missing_template(holder.id, hour)),
                         };
-                        self.templates.insert(holder.id, template);
+                        self.templates.insert(self.spans.len(), template);
                     }
                     self.open.insert(token.to_owned(), self.spans.len());
                     self.spans.push(IdeaSpan {
@@ -499,26 +559,6 @@ impl Ideas {
                 }
             }
         }
-    }
-
-    #[cfg_attr(not(test), expect(dead_code, reason = "only its tests call it"))]
-    pub fn additions(&self) -> impl Iterator<Item = &IdeaSpan> {
-        let mut previous: BTreeMap<&str, &IdeaSpan> = BTreeMap::new();
-        self.spans.iter().filter(move |span| {
-            let preceding = previous.insert(&span.token, span);
-            let same_holding = preceding.is_some_and(|last| {
-                i64::from(last.last_hour) + 1 == i64::from(span.first_hour)
-                    && last.slot == span.slot
-                    && last.character.as_ref().map(|holder| holder.id) == span.character.as_ref().map(|holder| holder.id)
-            });
-            let after_gap = self
-                .unobserved
-                .partition_point(|gap| gap.first_hour < span.first_hour)
-                .checked_sub(1)
-                .and_then(|index| self.unobserved.get(index))
-                .is_some_and(|gap| i64::from(gap.last_hour) + 1 >= i64::from(span.first_hour));
-            !same_holding && !after_gap && self.identity_starts.binary_search(&span.first_hour).is_err()
-        })
     }
 }
 
@@ -733,16 +773,132 @@ pub(crate) fn effect_keys<'a>(ideas: impl IntoIterator<Item = &'a IdeaInfo>) -> 
     (modifier_keys, text_keys)
 }
 
+pub(crate) const NOT_READ: &str = "The country's ideas were not read at this hour";
+pub(crate) const BEFORE_BRANCH: &str = "The hour is before this branch's first recorded hour";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Holding {
+    pub span: usize,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub start: HoldingStart,
+    pub end: HoldingEnd,
+}
+
+type HoldingKey<'a> = (&'a str, Option<&'a str>, Option<(u32, &'a str, &'a str)>);
+
+fn holding_key(span: &IdeaSpan) -> HoldingKey<'_> {
+    (span.token.as_str(), span.slot.as_deref(), span.character.as_ref().map(|holder| (holder.id, holder.token.as_str(), holder.name.as_str())))
+}
+
+impl Ideas {
+    fn gap_at(&self, hour: i32) -> Option<&HourSpan> {
+        let at = self.unobserved.partition_point(|gap| gap.last_hour < hour);
+        self.unobserved.get(at).filter(|gap| gap.first_hour <= hour)
+    }
+
+    fn unread(&self, from: i32, to: i32) -> bool {
+        from > to || self.gap_at(from).is_some_and(|gap| gap.last_hour >= to)
+    }
+
+    pub(crate) fn unread_at(&self, hour: i32) -> bool {
+        self.gap_at(hour).is_some()
+    }
+
+    pub(crate) fn next_change(&self, hour: i32) -> Option<i32> {
+        self.boundaries.get(self.boundaries.partition_point(|boundary| *boundary <= hour)).copied()
+    }
+
+    pub(crate) fn at(&self, hour: i32) -> Vec<Holding> {
+        let begun = self.spans.partition_point(|span| span.first_hour <= hour);
+        let mut holdings: Vec<Holding> = Vec::new();
+        let mut through: Vec<i32> = Vec::new();
+        let mut latest: BTreeMap<HoldingKey<'_>, usize> = BTreeMap::new();
+        for (index, span) in self.spans[..begun].iter().enumerate() {
+            let key = holding_key(span);
+            match latest.get(&key).copied().filter(|&at| self.unread(holdings[at].last_hour.saturating_add(1), span.first_hour - 1)) {
+                Some(at) => {
+                    holdings[at].last_hour = span.last_hour.min(hour);
+                    through[at] = span.last_hour;
+                }
+                None => {
+                    latest.insert(key, holdings.len());
+                    holdings.push(Holding { span: index, first_hour: span.first_hour, last_hour: span.last_hour.min(hour), start: HoldingStart::Seen, end: HoldingEnd::Held });
+                    through.push(span.last_hour);
+                }
+            }
+        }
+        for (holding, through) in holdings.iter_mut().zip(through) {
+            holding.start = if self.unread_at(holding.first_hour - 1) {
+                HoldingStart::FirstObserved
+            } else if self.identity_starts.binary_search(&holding.first_hour).is_ok() {
+                HoldingStart::HeldBefore
+            } else {
+                HoldingStart::Seen
+            };
+            holding.end = if through >= hour {
+                HoldingEnd::Held
+            } else {
+                match self.gap_at(holding.last_hour + 1) {
+                    Some(gap) if gap.last_hour >= hour => HoldingEnd::LastSeen,
+                    Some(gap) => HoldingEnd::EndedBy { hour: gap.last_hour + 1 },
+                    None => HoldingEnd::Ended,
+                }
+            };
+        }
+        holdings
+    }
+}
+
+fn look(content: &PoliticsContent, span: &IdeaSpan, template: Option<&Result<BuiltTemplate, String>>, country: IdeaCountry<'_>) -> (IdeaLook, Option<String>) {
+    let token = span.token.as_str();
+    let built = match template {
+        Some(Ok(template)) if span.character.is_some() => Ok(template),
+        Some(Err(reason)) if span.character.is_some() => Err(reason.as_str()),
+        _ => Err("no recorded holder names its template"),
+    };
+    let mut info = idea_info(content, token, span.slot.as_deref(), built);
+    let held = span.character.as_ref().map(|holder| ((!holder.token.is_empty()).then_some(holder.token.as_str()), holder.name.as_str()));
+    let (artwork, problem) = match held {
+        Some((script, saved)) => {
+            let (mut art, mut problem) = content.held_idea_artwork(token, script, saved, country);
+            if script.is_none() {
+                art.icon = None;
+                problem = Some(format!("{token}: artwork is unknown because the holder has no recorded script token; a placeholder is shown"));
+            }
+            (art, problem)
+        }
+        None => content.idea_artwork(token, None, country),
+    };
+    if artwork.name.is_none() {
+        info.name_missing = match held {
+            Some((script, saved)) => content.idea_name_missing(token, script, country, Some(saved)),
+            None => content.idea_name_missing(token, None, country, None),
+        };
+    }
+    (IdeaLook { info, artwork }, problem)
+}
+
+fn index(at: usize) -> io::Result<u32> {
+    u32::try_from(at).map_err(|_| dashboard_core::invalid("An idea reply holds more entries than it can index"))
+}
+
+pub(crate) struct Asked<'a> {
+    pub params: &'a IdeaHistoryParams,
+    pub tag: &'a str,
+    pub hour: i32,
+    pub unrecorded: Option<String>,
+}
+
 pub(crate) fn present(
     content: &PoliticsContent,
-    params: &CountryParams,
-    tag: &str,
+    asked: &Asked<'_>,
     ideas: &Ideas,
     naming: &[NamingCountry],
     recorded: Option<&BTreeMap<String, ModifierDefinitionRow>>,
     cancelled: &AtomicBool,
 ) -> io::Result<IdeaHistoryReply> {
-    let tokens: BTreeSet<&str> = ideas.spans.iter().map(|span| span.token.as_str()).collect();
+    let (tag, hour) = (asked.tag, asked.hour);
     let mut warnings = vec![format!(
         "{}; visual assets are outside content hash coverage.",
         dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
@@ -753,84 +909,78 @@ pub(crate) fn present(
     for gap in category_gap.into_iter().chain(law_gap) {
         warnings.push(format!("Idea categories and laws may be incomplete: {gap}."));
     }
-    warnings.extend(ideas.warnings.iter().map(|warning| (*warning).to_owned()));
-    let mut artwork = Vec::new();
-    let mut holders = Vec::new();
-    let mut infos = Vec::new();
-    let mut unplaced = Vec::new();
+    warnings.extend(ideas.warnings.iter().filter(|(_, at)| **at <= hour).map(|(warning, _)| (*warning).to_owned()));
     let unnamed = NamingCountry::default();
-    for token in tokens {
+    let mut looks: Vec<IdeaLook> = Vec::new();
+    let mut keyed: BTreeMap<(HoldingKey<'_>, Option<usize>), u32> = BTreeMap::new();
+    let mut unplaced: BTreeSet<&str> = BTreeSet::new();
+    let mut holdings = Vec::new();
+    for holding in ideas.at(hour) {
         check_cancel(cancelled)?;
-        let latest = ideas.spans.iter().rev().find(|span| span.token == token);
-        let named = latest
-            .and_then(|span| ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1))
-            .and_then(|index| naming.get(index))
-            .unwrap_or(&unnamed);
-        let country = if latest.is_some() { named.for_tag(tag) } else { IdeaCountry { tag, slot: 0, look: None } };
-        let built = match latest.and_then(|span| span.character.as_ref()).map(|holder| ideas.templates.get(&holder.id)) {
-            Some(Some(Ok(template))) => Ok(template),
-            Some(Some(Err(reason))) => Err(reason.as_str()),
-            Some(None) | None => Err("no recorded holder names its template"),
-        };
-        let mut found = idea_info(content, token, latest.and_then(|span| span.slot.as_deref()), built);
-        if found.category.is_none() {
-            unplaced.push(token.to_owned());
-        }
-        let holder_art = |script: Option<&str>, saved: &str| {
-            let (mut art, mut problem) = content.held_idea_artwork(token, script, saved, country);
-            if script.is_none() {
-                art.icon = None;
-                problem = Some(format!("{token}: artwork is unknown because the holder has no recorded script token; a placeholder is shown"));
+        let span = &ideas.spans[holding.span];
+        let identity = ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1);
+        let key = (holding_key(span), identity);
+        let at = match keyed.get(&key) {
+            Some(&at) => at,
+            None => {
+                let named = identity.and_then(|identity| naming.get(identity)).unwrap_or(&unnamed);
+                let (found, problem) = look(content, span, ideas.templates.get(&holding.span), named.for_tag(tag));
+                if found.info.category.is_none() {
+                    unplaced.insert(span.token.as_str());
+                }
+                warnings.extend(problem);
+                let at = index(looks.len())?;
+                looks.push(found);
+                keyed.insert(key, at);
+                at
             }
-            (art, problem)
         };
-        let held = latest.and_then(|span| span.character.as_ref()).map(|holder| ((!holder.token.is_empty()).then_some(holder.token.as_str()), holder.name.as_str()));
-        let (art, problem) = match held {
-            Some((script, saved)) => holder_art(script, saved),
-            None => content.idea_artwork(token, None, country),
-        };
-        if art.name.is_none() {
-            found.name_missing = match held {
-                Some((script, saved)) => content.idea_name_missing(token, script, country, Some(saved)),
-                None => content.idea_name_missing(token, None, country, None),
-            };
-        }
-        artwork.push(art);
-        warnings.extend(problem);
-        let mut seen = BTreeSet::new();
-        for holder in ideas
-            .spans
-            .iter()
-            .filter(|span| span.token == token)
-            .filter_map(|span| span.character.as_ref())
-            .filter(|holder| (!holder.token.is_empty() || !holder.name.is_empty()) && seen.insert((holder.id, holder.token.clone(), holder.name.clone())))
-        {
-            let script = (!holder.token.is_empty()).then_some(holder.token.as_str());
-            let (art, problem) = holder_art(script, &holder.name);
-            holders.push(HolderArtwork { token: token.to_owned(), character: holder.id, character_token: holder.token.clone(), name: holder.name.clone(), artwork: art });
-            warnings.extend(problem);
-        }
-        infos.push(found);
+        holdings.push(IdeaHolding {
+            token: span.token.clone(),
+            first_hour: holding.first_hour,
+            last_hour: holding.last_hour,
+            start: holding.start,
+            end: holding.end,
+            slot: span.slot.clone(),
+            character: span.character.clone(),
+            look: at,
+        });
     }
     if !unplaced.is_empty() {
-        warnings.push(format!("{} ideas are in no category the content defines: {}.", unplaced.len(), unplaced.iter().take(8).cloned().collect::<Vec<_>>().join(", ")));
+        warnings.push(format!("{} ideas are in no category the content defines: {}.", unplaced.len(), unplaced.iter().take(8).copied().collect::<Vec<_>>().join(", ")));
     }
-    let (modifier_keys, text_keys) = effect_keys(&infos);
+    let name = |holding: &IdeaHolding| looks[holding.look as usize].artwork.name.clone().unwrap_or_else(|| holding.token.clone());
+    let mut held: Vec<(i32, String, &str, usize)> = holdings
+        .iter()
+        .enumerate()
+        .filter(|(_, holding)| holding.end == HoldingEnd::Held)
+        .map(|(at, holding)| (holding.first_hour, name(holding), holding.token.as_str(), at))
+        .collect();
+    held.sort_unstable();
+    let held = held.into_iter().map(|(_, _, _, at)| index(at)).collect::<io::Result<Vec<_>>>()?;
+    let (modifier_keys, text_keys) = effect_keys(looks.iter().map(|look| &look.info));
     let (modifiers, format_warnings) = idea_format::modifier_formats_from_recorded(recorded, &modifier_keys, content);
     warnings.extend(format_warnings);
     let texts = idea_format::texts(content, &text_keys);
     warnings.extend(content.catalogue.refusal_lines());
+    let unobserved = ideas
+        .unobserved
+        .iter()
+        .filter(|gap| gap.first_hour <= hour)
+        .map(|gap| HourSpan { first_hour: gap.first_hour, last_hour: gap.last_hour.min(hour) })
+        .collect();
     Ok(IdeaHistoryReply {
-        branch_id: params.branch_id.clone(),
+        branch_id: asked.params.branch_id.clone(),
         tag: tag.to_owned(),
-        asked: params.country.clone(),
-        spans: ideas.spans.clone(),
-        ideas: infos,
-        artwork,
-        holders,
+        asked: asked.params.country.clone(),
+        hour,
+        next_change: ideas.next_change(hour),
+        unrecorded: asked.unrecorded.clone(),
+        holdings,
+        held,
+        looks,
         categories: categories(content),
-        unobserved: ideas.unobserved.clone(),
-        identity_starts: ideas.identity_starts.clone(),
+        unobserved,
         modifiers,
         texts,
         warnings,
@@ -865,21 +1015,23 @@ pub struct IdeaHistory;
 impl Product for IdeaHistory {
     const KEY: &'static str = "idea-history";
     const CONTENT_DEPENDENT: bool = true;
-    type Params = CountryParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
+    type Params = IdeaHistoryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
     type Reply = IdeaHistoryReply;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
-            CountryParams::decl(),
+            IdeaHistoryParams::decl(),
             IdeaHistoryReply::decl(),
-            IdeaSpan::decl(),
+            IdeaHolding::decl(),
+            HoldingStart::decl(),
+            HoldingEnd::decl(),
+            IdeaLook::decl(),
             IdeaCharacter::decl(),
             EffectLine::decl(),
             EffectGroup::decl(),
             TraitEffects::decl(),
-            HolderArtwork::decl(),
             ModifierFormat::decl(),
             LocalisedText::decl(),
             IdeaInfo::decl(),
@@ -889,15 +1041,25 @@ impl Product for IdeaHistory {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.validate()
+        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
+        validate_country(&params.country)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let content = politics_content(source, context.content()?)?;
-        let query = dashboard_base::queries::query(source, params.branch())?;
-        let (read, recorded) = rayon::join(|| history(source, params.branch(), &params.country, cancelled), || recorded_definitions(source, &query));
+        let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+        let query = dashboard_base::queries::query(source, branch)?;
+        let (read, recorded) = rayon::join(|| history(source, branch, &params.country, cancelled), || recorded_definitions(source, &query));
         let (read, recorded) = (read?, recorded?);
-        let reply = present(&content, params, &query.holders.name(&params.country, query.timeline.last), &read.0, &read.1, (*recorded).as_ref(), cancelled)?;
+        let hour = params.hour.min(query.timeline.last);
+        let unrecorded = if hour < query.timeline.first {
+            Some(BEFORE_BRANCH.to_owned())
+        } else {
+            read.0.unread_at(hour).then(|| NOT_READ.to_owned())
+        };
+        let tag = query.holders.name(&params.country, hour);
+        let asked = Asked { params, tag: &tag, hour, unrecorded };
+        let reply = present(&content, &asked, &read.0, &read.1, (*recorded).as_ref(), cancelled)?;
         check_reply_budget(&reply)?;
         Ok(reply)
     }

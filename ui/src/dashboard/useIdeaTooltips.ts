@@ -7,11 +7,11 @@ import type { DashboardClient } from './client';
 import { nameReadText, nameReadFailure } from './nameReads.ts';
 import { ideaTooltipSources } from './ideaTooltip.ts';
 import type { BoundTrack } from './model';
-import type { IdeaHistoryReply } from '../generated/dashboard';
+import type { SpendIdeaTooltips } from '../generated/dashboard';
 
 const RETRY_MS = 10_000;
 
-export function useIdeaTooltips(data: Pick<IdeaHistoryReply, 'ideas' | 'artwork' | 'modifiers' | 'texts'> | undefined, track: Pick<BoundTrack, 'source' | 'branch'> | undefined,
+export function useIdeaTooltips(data: SpendIdeaTooltips | undefined, track: Pick<BoundTrack, 'source' | 'branch'> | undefined,
   client: DashboardClient, active: boolean, fallbackName?: (tag: string) => string) {
   const [requested, setRequested] = useState<NameAt[]>([]);
   const asked = useRef(new Map<string, number>());
