@@ -201,6 +201,49 @@ export function serializeAnswer(answer: FollowedRows): Uint8Array {
   return out;
 }
 
+function diffPatchNodes(
+  a: PatchNode | undefined,
+  b: PatchNode | undefined,
+  shift: number,
+  baseChunk: number,
+  rows: number,
+  out: number[],
+): void {
+  if (a === b) return;
+  for (let i = 0; i < BRANCH; i++) {
+    const ca = a?.[i];
+    const cb = b?.[i];
+    if (ca === cb) continue;
+    const at = baseChunk + (i << shift);
+    if (shift === 0) {
+      const start = at * CHUNK_ROWS;
+      const end = Math.min(rows, start + CHUNK_ROWS);
+      for (let r = start; r < end; r++) out.push(r);
+    } else {
+      diffPatchNodes(ca as PatchNode | undefined, cb as PatchNode | undefined, shift - 3, at, rows, out);
+    }
+  }
+}
+
+export function changedAnswerRows(prev: FollowedRows, next: FollowedRows): number[] | null {
+  if (prev === next) return [];
+  if (
+    prev.views.u8 !== next.views.u8
+    || prev.values !== next.values
+    || prev.states !== next.states
+    || prev.rows !== next.rows
+    || prev.columns !== next.columns
+  ) return null;
+  const pa = prev.patches;
+  const pb = next.patches;
+  if (pa === pb) return [];
+  if (pa && pb && pa.shift !== pb.shift) return null;
+  const shift = pb ? pb.shift : pa!.shift;
+  const out: number[] = [];
+  diffPatchNodes(pa?.root, pb?.root, shift, 0, next.rows, out);
+  return out;
+}
+
 export function mergeChanged(base: FollowedAnswer, changed: FollowedRows, _held = Infinity): Uint8Array {
   return serializeAnswer(patchAnswer(base, changed));
 }

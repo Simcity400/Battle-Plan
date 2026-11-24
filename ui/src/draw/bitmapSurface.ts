@@ -16,9 +16,12 @@ const SURFACE = {};
 export function holdElement(element: Element | null, held: boolean, owner: object = SURFACE) {
   if (!element) return;
   let owners = holders.get(element);
+  const had = (owners?.size ?? 0) > 0;
   if (held) { if (!owners) holders.set(element, owners = new Set()); owners.add(owner); }
   else owners?.delete(owner);
-  if (owners?.size) { element.setAttribute('data-held', 'stale'); element.setAttribute('aria-busy', 'true'); }
+  const has = (owners?.size ?? 0) > 0;
+  if (has === had) return;
+  if (has) { element.setAttribute('data-held', 'stale'); element.setAttribute('aria-busy', 'true'); }
   else { element.removeAttribute('data-held'); element.removeAttribute('aria-busy'); }
 }
 

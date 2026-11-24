@@ -247,6 +247,9 @@ export default function FamilyTableHost<TOptions>({
   const lastMetaKeyRef = useRef<{ mode: string; reason: string | null; failureOrigin: FailureOrigin; rawMeta: unknown } | null>(null);
   const lastWidthsRef = useRef<unknown>(null);
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
+  const lastNavFieldRef = useRef<unknown>(null);
+  const lastTableInfoRef = useRef<unknown>(null);
+  const lastVisibleRef = useRef<boolean | null>(null);
   const lastPhasesRef = useRef<unknown>(null);
   const lastAuditUpdatedRef = useRef<{ id: number; widths: unknown } | null>(null);
 
@@ -518,6 +521,9 @@ export default function FamilyTableHost<TOptions>({
     lastMetaKeyRef.current = null;
     lastWidthsRef.current = null;
     lastMirrorObjRef.current = null;
+    lastNavFieldRef.current = null;
+    lastTableInfoRef.current = null;
+    lastVisibleRef.current = null;
     lastPhasesRef.current = null;
     lastAuditUpdatedRef.current = null;
 
@@ -542,11 +548,17 @@ export default function FamilyTableHost<TOptions>({
     const install = () => {
       const shown = pipeline.view(pipe);
       const frameNode = frameRef.current;
-      dimRef.current = !!shown?.dim;
-      holdElement(frameNode, !!shown?.dim);
+      const nextDim = !!shown?.dim;
+      if (dimRef.current !== nextDim) {
+        dimRef.current = nextDim;
+        holdElement(frameNode, nextDim);
+      }
       const visible = shown?.mode === 'picture';
-      node.toggleAttribute('data-table-visible', visible);
-      node.toggleAttribute('data-table-pending', !visible);
+      if (lastVisibleRef.current !== visible) {
+        lastVisibleRef.current = visible;
+        node.toggleAttribute('data-table-visible', visible);
+        node.toggleAttribute('data-table-pending', !visible);
+      }
 
       const mode = shown?.mode ?? 'reading';
       const reason = shown?.reason ?? null;
@@ -636,9 +648,13 @@ export default function FamilyTableHost<TOptions>({
       }
 
       const navField = shown.fields.nav as readonly FamilyNavTuple[] | undefined;
-      if (navField) navRef.current = navField;
+      if (navField && navField !== lastNavFieldRef.current) {
+        lastNavFieldRef.current = navField;
+        navRef.current = navField;
+      }
       const tableInfo = shown.fields.table as { count: number; focusedIndex: number; inspectedPresent: boolean } | undefined;
-      if (tableInfo) {
+      if (tableInfo && (tableInfo !== lastTableInfoRef.current || focusInsideRef.current || inspectedKeyRef.current)) {
+        lastTableInfoRef.current = tableInfo;
         if (lastExtentRef.current.count !== tableInfo.count) {
           lastExtentRef.current.count = tableInfo.count;
           accessibleRef.current?.setAttribute('aria-rowcount', String(tableInfo.count + 1));

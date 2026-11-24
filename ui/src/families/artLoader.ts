@@ -37,6 +37,7 @@ export class FamilyArtLoader<TBitmap extends FamilyArtBitmap = ImageBitmap> {
   private onLoad?: () => void;
   private wanted: ReadonlySet<string> = new Set();
   private disposed = false;
+  private loadVersion = 0;
 
   constructor(options: FamilyArtLoaderOptions<TBitmap> = {}) {
     this.maxEntries = Math.max(1, options.maxEntries ?? DEFAULT_MAX_ENTRIES);
@@ -94,6 +95,7 @@ export class FamilyArtLoader<TBitmap extends FamilyArtBitmap = ImageBitmap> {
             prev.close();
           }
           this.bitmaps.set(url, bitmap);
+          this.loadVersion++;
           this.evict();
           this.onLoad?.();
         },
@@ -142,5 +144,9 @@ export class FamilyArtLoader<TBitmap extends FamilyArtBitmap = ImageBitmap> {
 
   get map(): ReadonlyMap<string, TBitmap | null> {
     return this.bitmaps;
+  }
+
+  get version(): number {
+    return this.loadVersion;
   }
 }

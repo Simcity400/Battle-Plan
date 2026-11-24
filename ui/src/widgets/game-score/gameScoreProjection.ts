@@ -50,6 +50,23 @@ interface ResolvedFaction extends TableGroupSpec {
   readonly missingReason?: string;
 }
 
+const factionRunsByTag = new WeakMap<readonly FactionRun[], Map<string, FactionRun[]>>();
+
+function runsForTag(runs: readonly FactionRun[], tag: string): readonly FactionRun[] | undefined {
+  let byTag = factionRunsByTag.get(runs);
+  if (!byTag) {
+    byTag = new Map();
+    for (let i = 0; i < runs.length; i++) {
+      const run = runs[i]!;
+      let list = byTag.get(run.tag);
+      if (!list) byTag.set(run.tag, list = [run]);
+      else list.push(run);
+    }
+    factionRunsByTag.set(runs, byTag);
+  }
+  return byTag.get(tag);
+}
+
 function factionAt(
   runs: readonly FactionRun[] | null,
   tag: string,
@@ -61,17 +78,21 @@ function factionAt(
   if (inHourRanges(unobserved, hour)) {
     return { key: 'faction-not-recorded', label: 'Faction not recorded', order: 2, missingReason: 'Faction membership was not recorded at this hour' };
   }
-  for (const run of runs) {
-    if (run.tag === tag && run.firstHour <= hour && hour <= run.lastHour) {
-      const entry = run.names.find(n => n.firstHour <= hour && hour <= n.lastHour);
-      const name = entry?.name && entry.name.trim() ? entry.name : null;
-      return {
-        key: `faction:${run.id}`,
-        label: name ?? 'Name not recorded',
-        order: name === null ? 1 : 0,
-        orderKey: BigInt(run.id),
-        ...(name === null ? { missingReason: 'Faction name not recorded at this hour' } : {}),
-      };
+  const tagRuns = runsForTag(runs, tag);
+  if (tagRuns) {
+    for (let i = 0; i < tagRuns.length; i++) {
+      const run = tagRuns[i]!;
+      if (run.firstHour <= hour && hour <= run.lastHour) {
+        const entry = run.names.find(n => n.firstHour <= hour && hour <= n.lastHour);
+        const name = entry?.name && entry.name.trim() ? entry.name : null;
+        return {
+          key: `faction:${run.id}`,
+          label: name ?? 'Name not recorded',
+          order: name === null ? 1 : 0,
+          orderKey: BigInt(run.id),
+          ...(name === null ? { missingReason: 'Faction name not recorded at this hour' } : {}),
+        };
+      }
     }
   }
   if (inHourRanges(incomplete, hour)) {
@@ -123,6 +144,7 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
     kind: 'game-score',
     validate: validateGameScore,
     nextChange: (_sources, hour, options) => nextGameScoreChange(hour, options),
+    incrementalLive: options => options.top == null,
     rank: true,
     rankMarkers: options => options.rankMarkers,
     columns: (reply, options): readonly DeclarativeColumnSpec<GameScoreRow, GameScoreProjectionOptions>[] => {
