@@ -16,8 +16,11 @@ import { shareRecordingPreferences } from './shell/recordingPreferences';
 import { startPerf } from './shell/perf';
 import { registerGameWindow } from './dashboard/gameWindows';
 import EquipmentDesignerWindow from './dashboard/EquipmentDesignerWindow';
+import IndustrialOrganisationWindow from './dashboard/IndustrialOrganisationWindow';
 
 registerGameWindow('equipmentDesigner', EquipmentDesignerWindow);
+registerGameWindow('industrialOrganisation', IndustrialOrganisationWindow);
+registerGameWindow('mioPolicyChooser', IndustrialOrganisationWindow);
 applySavedAppearance();
 void startPerf().catch(error => console.error('Measurement unavailable:', error));
 if (desktopAvailable) void shareRecordingPreferences().catch(error => console.error('Campaign flags stay on this device:', error));

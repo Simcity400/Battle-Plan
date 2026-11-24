@@ -13,6 +13,17 @@ export interface MioPolicySelection {
   organisation: string;
 }
 
+export interface IndustrialOrganisationSelection {
+  kind: 'industrialOrganisation';
+  sourceId: string;
+  revision: string;
+  branchId: string;
+  hour: number;
+  organisation: string;
+  tag?: string;
+  subView?: 'traits' | 'history' | 'policy';
+}
+
 export interface DivisionDesignerSelection {
   kind: 'divisionDesigner';
   sourceId: string;
@@ -36,6 +47,7 @@ export interface EquipmentDesignerSelection {
 
 export type GameWindowSelection =
   | MioPolicySelection
+  | IndustrialOrganisationSelection
   | DivisionDesignerSelection
   | EquipmentDesignerSelection;
 

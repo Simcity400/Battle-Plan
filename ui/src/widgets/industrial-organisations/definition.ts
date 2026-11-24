@@ -1,14 +1,13 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
-import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
-export const POLICY = { id: 'policy', label: 'Policies' };
+export const POLICY = { id: 'organisation', label: 'Industrial organisation' };
 export const SORT_COLUMNS = [{ key: 'size', label: 'Size' }, { key: 'funds', label: 'Funds' }, { key: 'traits', label: 'Traits unlocked' },
   { key: 'organisation', label: 'Organisation' }] as const;
 export const DEFAULT_SORT = { column: 'size', direction: 'descending' } as const;
 
-export const OPTIONS: readonly OptionField[] = [...tableSortOptions(SORT_COLUMNS, DEFAULT_SORT), ...TABLE_OPTIONS, DRILL_OPTION];
+export const OPTIONS: readonly OptionField[] = [...tableSortOptions(SORT_COLUMNS, DEFAULT_SORT), ...TABLE_OPTIONS];
 
 export const definition = {
   kind: 'industrial-organisations', version: 1, title: 'Industrial organisations', icon: 'factory', category: 'Economy',
