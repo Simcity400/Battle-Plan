@@ -1,4 +1,5 @@
 import { contrastInkForFill } from '../../draw/kit.ts';
+import { shadeColour, tintColour } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BreakdownViewMode } from './options.ts';
 import {
@@ -6,8 +7,6 @@ import {
   partColour,
   resolveExpandedMap,
   resolveRingOpenKey,
-  shadeColour,
-  tintColour,
   type BreakdownComparison,
   type BreakdownPart,
   type BreakdownTotal,
@@ -241,9 +240,6 @@ function layoutTotalLine(
   measure: MeasureTextFn,
 ): TotalLineLayout {
   let cursor = x;
-  if (total.atLeast) {
-    cursor += measure('At least ', `400 12px ${theme.font}`);
-  }
   cursor += measure(total.text, `600 22px ${theme.font}`);
   if (total.unit) {
     cursor += 4 + measure(total.unit, `400 12px ${theme.font}`);
@@ -734,7 +730,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     };
   }
 
-  const centerVerb = narrow ? null : (level.total.atLeast ? 'At least' : level.total.verb);
+  const centerVerb = narrow ? null : level.total.verb;
   const centerValueSize = narrow || R < 90 ? 16 : 22;
   const centerUnitLine = narrow
     ? null

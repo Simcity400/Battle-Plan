@@ -1,3 +1,4 @@
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { FamilyTooltipEntry, TooltipListItem } from '../host/tooltips.ts';
 import type { BoundedSeries } from '../plan.ts';
 import { formatDateOnly, notRecordedLabel } from '../valueFormat.ts';
@@ -269,7 +270,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
             item: {
               label: s.name,
               value: formatExactFigure(s.exact.value, model),
-              swatch: negative ? '#ff6b6f' : s.color,
+              swatch: negative ? CHART_MEASURE_COLOURS.shortInk : s.color,
               tone: negative ? 'negative' : undefined,
               ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
               ...(iconUrl ? { icon: iconUrl } : {}),
@@ -316,7 +317,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
         item: {
           label: s.name,
           value: text,
-          swatch: s.negRed && sampled.value < 0 ? '#ff6b6f' : s.color,
+          swatch: s.negRed && sampled.value < 0 ? CHART_MEASURE_COLOURS.shortInk : s.color,
           tone: s.negRed && sampled.value < 0 ? 'negative' : undefined,
           ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           ...(iconUrl ? { icon: iconUrl } : {}),

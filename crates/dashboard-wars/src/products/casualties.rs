@@ -1,9 +1,9 @@
 
 use dashboard_base::products::Country;
 use dashboard_world::products::{army_windows::windows, holder_tags::{HolderTags, Identity}};
-use dashboard_base::products::{BranchParams, LoadContext, Product};
+use dashboard_base::products::{LoadContext, Product};
 use super::wars::{self, WarRelationMembership, WarsReply};
-use dashboard_base::{Source, catalogue, span::HourSpan};
+use dashboard_base::{Source, span::HourSpan};
 use dashboard_query::{Query, read};
 use replay_columnar::summary::Source as Column;
 use replay_data::rows::{CasualtyLifetimeRow, TableId};
@@ -23,8 +23,6 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-const UNKNOWN_KEY: &str = "CASUALTIES_UNKNOWN";
-const UNKNOWN_FALLBACK: &str = "Unknown attacker";
 pub const SEVERAL_WARS: &str = "The native view places this relation in multiple war episodes.";
 pub const NO_WAR: &str = "The native war grouping was not recorded for this relation observation.";
 
@@ -128,7 +126,7 @@ fn push_run<T>(runs: &mut Vec<T>, run: T, joins: impl Fn(&mut T, &T) -> bool) {
     runs.push(run);
 }
 
-dashboard_base::reply_warnings!(CasualtyBreakdownReply, CasualtyLabelsReply);
+dashboard_base::reply_warnings!(CasualtyBreakdownReply);
 
 struct Window {
     first: i32,
@@ -608,57 +606,6 @@ impl Product for CasualtyBreakdown {
         reply.observed = spans(&observed_runs);
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
-    }
-}
-
-
-pub struct CasualtyLabels;
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct CasualtyLabelsReply {
-    #[doc = " The game's name for losses no attacker dealt, in the recording's language."]
-    pub unknown_label: String,
-    pub warnings: Vec<String>,
-}
-
-impl Product for CasualtyLabels {
-    const KEY: &'static str = "casualty-labels";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = BranchParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
-    type Reply = CasualtyLabelsReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![CasualtyLabelsReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id).map(|_| ())
-    }
-
-    fn load(source: &Source, _params: &Self::Params, context: &LoadContext, _cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let mut warnings = Vec::new();
-        let label = match context.content.as_ref() {
-            Some(options) => match catalogue::catalogue(source, options) {
-                Ok(catalogue) => {
-                    let label = catalogue.localised(UNKNOWN_KEY, catalogue::View::Plain);
-                    warnings.extend(catalogue.refusal_lines());
-                    label
-                }
-                Err(error) => {
-                    warnings.push(format!("The name of losses from unknown attackers is unavailable: {error}"));
-                    None
-                }
-            },
-            None => {
-                warnings.push("The name of losses from unknown attackers is unavailable until the game folders are chosen.".into());
-                None
-            }
-        };
-        Ok(CasualtyLabelsReply { unknown_label: label.unwrap_or_else(|| UNKNOWN_FALLBACK.to_owned()), warnings })
     }
 }
 

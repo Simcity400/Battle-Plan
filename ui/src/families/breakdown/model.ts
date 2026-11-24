@@ -1,6 +1,6 @@
 import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
-import { mix, toHex } from '../../shell/appearance/color.ts';
+import { tintColour } from '../../shell/appearance/color.ts';
 import type { AuditRow } from '../../draw/notifications';
 import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
@@ -95,18 +95,6 @@ export function partColour(part: BreakdownPart, theme: FamilyTheme): string {
   return colour(theme.surface, part.ordinal);
 }
 
-export function tintColour(hex: string, amount: number): string {
-  return mix(hex, '#ffffff', amount);
-}
-
-export function shadeColour(hex: string, amount: number): string {
-  return mix(hex, '#000000', amount);
-}
-
-export function rgbHex(r: number, g: number, b: number): string {
-  return toHex({ r, g, b });
-}
-
 export function breakdownLevel(model: BreakdownModel): ResolvedBreakdownLevel {
   return { parts: model.parts, total: model.total };
 }
@@ -175,11 +163,11 @@ export function buildBreakdownTooltip(
   if (targetKey === '__partial__') {
     const reason = level.total.reason ?? level.total.shortReason ?? 'Part of this total was not recorded.';
     const payload: FamilyTooltipPayload = {
-      title: level.total.atLeast ? 'Partly known total' : 'Partial coverage',
+      title: 'Partial',
       hour: model.hour,
       items: [
         {
-          label: level.total.atLeast ? 'Recorded minimum' : level.total.verb,
+          label: level.total.verb,
           value: level.total.unit ? `${level.total.text} ${level.total.unit}` : level.total.text,
           strong: true,
         },
@@ -290,7 +278,7 @@ export function deriveBreakdownAudit(
   const totalVal = level.total.value === null
     ? `notRecorded:${level.total.reason ?? 'Not recorded'}`
     : level.total.atLeast
-      ? `atLeast:${level.total.exact ?? level.total.text}`
+      ? `partial:${level.total.exact ?? level.total.text}`
       : level.total.partial
         ? `partial:${level.total.exact ?? level.total.text}`
         : (level.total.exact ?? level.total.text);

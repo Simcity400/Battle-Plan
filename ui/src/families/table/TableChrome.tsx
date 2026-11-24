@@ -87,6 +87,7 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
       hint: spec?.hint,
       notRecordedReason: spec?.notRecordedReason,
       headerGroup: spec?.headerGroup,
+      cellKind: spec?.cellKind,
       displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
     };
   }), [layout, specMap]);

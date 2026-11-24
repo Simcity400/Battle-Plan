@@ -7,9 +7,9 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
-  PlaceNamesReply,
+  PlaceNameRunsReply,
   StrategicRegionsReply,
-  UnitLeadersReply,
+  LeaderNameRunsReply,
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
@@ -123,10 +123,10 @@ function sampleGroups(): CountryGroupReply {
   };
 }
 
-const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNames' | 'loadLeaders'> = {
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNameRuns' | 'loadLeaderNameRuns'> = {
   loadRegions: () => deferred<StrategicRegionsReply>().promise,
-  loadPlaceNames: () => deferred<PlaceNamesReply>().promise,
-  loadLeaders: () => deferred<UnitLeadersReply>().promise,
+  loadPlaceNameRuns: () => deferred<PlaceNameRunsReply>().promise,
+  loadLeaderNameRuns: () => deferred<LeaderNameRunsReply>().promise,
 };
 
 function deferred<T>() {
@@ -457,7 +457,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
   const ger149 = view.who('country', 'GER', 149);
   assert.deepEqual(ger149.name, { status: 'ready', value: 'Early Republic' });
-  assert.deepEqual(ger149.colour, { status: 'ready', value: 'rgb(51, 68, 85)' });
+  assert.deepEqual(ger149.colour, { status: 'ready', value: '#334455' });
   assert.equal(ger149.flagChoice?.status, 'ready');
   assert.deepEqual(ger149.validInterval, [0, 149]);
   assert.equal(ger149.nextChangeAt, 150);
@@ -473,7 +473,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
   const faction = view.who('faction', '7', 100);
   assert.deepEqual(faction.name, { status: 'ready', value: 'Berlin Pact' });
   assert.deepEqual(faction.holder, { status: 'ready', value: 'GER' });
-  assert.deepEqual(faction.colour, { status: 'ready', value: 'rgb(51, 68, 85)' });
+  assert.deepEqual(faction.colour, { status: 'ready', value: '#334455' });
   assert.equal(workerDemands.length, 0);
 
   assert.throws(() => view.who('country', 'GER', 201), FutureDataError);
@@ -735,19 +735,25 @@ test('leader, state, province and region asks each start their product read and 
       calls.push('regions');
       return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true }], warnings: [] };
     },
-    loadPlaceNames: async (_scope, hour, states, provinces) => {
-      calls.push(`places ${hour} ${states.join(',')} ${provinces.join(',')}`);
+    loadPlaceNameRuns: async (_scope, from, to, states, provinces) => {
+      calls.push(`places ${from}-${to} ${states.join(',')} ${provinces.join(',')}`);
       return {
-        states: states.map(stateId => ({ stateId, hour, name: `State ${stateId}`, missing: null })),
-        places: provinces.map(provinceId => ({ provinceId, hour, name: null, missing: 'Province unnamed in this map' })),
+        from,
+        to,
+        unknown: [{ firstHour: 100, lastHour: 120, reason: 'Not in this recording: the game was paused' }],
+        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null, absent: false }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null, absent: false }] })),
+        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map', absent: false }] })),
         warnings: [],
       };
     },
-    loadLeaders: async (_scope, owner, hour) => {
-      calls.push(`leaders ${owner} ${hour}`);
+    loadLeaderNameRuns: async (_scope, owner, from, to, references) => {
+      calls.push(`leaders ${owner} ${from}-${to} ${references.join(',')}`);
       return {
-        leaders: [{ reference: 'L1', name: 'Ada Vance', role: { owner: 'ALP', kind: 0, category: 0, rank: null, attributeNames: [null, null, null, null], maximumSkill: null }, skill: 3, components: [1, 1, 1, 0], traits: null, traitDates: [], firstSeenHour: 0, fought: 0, won: 0, lost: 0 }],
-        traits: [], withheld: [], missing: null, battlesPartialFrom: null, resultsMissing: '', warnings: [],
+        from,
+        to,
+        unknown: [],
+        leaders: [{ reference: 'L1', runs: [{ firstHour: from, lastHour: 179, name: null, missing: 'Not a leader of this country at this hour', absent: true }, { firstHour: 180, lastHour: to, name: 'Ada Vance', missing: null, absent: false }] }],
+        warnings: [],
       };
     },
   };
@@ -762,16 +768,23 @@ test('leader, state, province and region asks each start their product read and 
   for (let i = 0; i < 20; i++) await Promise.resolve();
   ask();
   for (let i = 0; i < 20; i++) await Promise.resolve();
-  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 150 64 7', 'regions']);
+  assert.deepEqual([...calls].sort(), ['leaders ALP 0-500 L1,L2', 'places 0-500 64 7', 'regions']);
 
   const [region, unknownRegion, state, province, leader, otherLeader] = ask();
   assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
   assert.deepEqual(region!.validInterval, [0, 500]);
   assert.equal(unknownRegion!.name.status, 'absent');
   assert.deepEqual(state!.name, { status: 'ready', value: 'State 64' });
-  assert.deepEqual(state!.validInterval, [150, 150]);
+  assert.deepEqual(state!.validInterval, [121, 199], 'a run is valid up to its rename and never across an unknown span');
+  assert.deepEqual(view.who('state', '64', 110).name, { status: 'absent', reason: 'Not in this recording: the game was paused' });
+  assert.deepEqual(view.who('state', '64', 90).validInterval, [0, 99]);
+  assert.deepEqual(view.who('state', '64', 200).name, { status: 'ready', value: 'Renamed 64' });
+  const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(broker.snapshotOf(SCOPE))));
+  assert.deepEqual(worker.resolve('state', '64', 110 as DisplayedHour).name, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'unknown spans cross to the worker');
   assert.deepEqual(province!.name, { status: 'absent', reason: 'Province unnamed in this map' });
-  assert.deepEqual(leader!.name, { status: 'ready', value: 'Ada Vance' });
+  assert.equal(leader!.holder.status, 'absent', 'a leader before it serves its owner is absent, not named');
+  assert.deepEqual(view.who('leader', 'ALP:L1', 190).name, { status: 'ready', value: 'Ada Vance' });
+  assert.deepEqual(view.who('leader', 'ALP:L1', 190).validInterval, [180, 500]);
   assert.equal(otherLeader!.holder.status, 'absent');
   assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
   broker.dispose();

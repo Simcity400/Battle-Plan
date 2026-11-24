@@ -825,7 +825,7 @@ fn cached_ship_naming_groups(layers: &ResolvedLayers) -> Arc<HashMap<String, Str
     }))
 }
 
-fn witnessed_single_key<'a, T, K>(
+pub(super) fn witnessed_single_key<'a, T, K>(
     frame: &'a DecodedFrame,
     target_key: K,
     key_of: impl Fn(&T::Row) -> K,
@@ -861,7 +861,7 @@ where
     }
 }
 
-fn witnessed_rows<'a, T: TableSchema>(frame: &'a DecodedFrame) -> Result<(&'a [T::Row], bool), String> {
+pub(super) fn witnessed_rows<'a, T: TableSchema>(frame: &'a DecodedFrame) -> Result<(&'a [T::Row], bool), String> {
     match frame.tables[T::ID.index()].held() {
         TableView::Complete(rows) => {
             let slice = rows
@@ -3159,6 +3159,7 @@ fn compose_unknown_auto_upgrade(
         disabled: true,
         close: false,
         passthrough: false,
+        view: None,
         tooltip: Some(tip),
         alpha_mask: None,
     });

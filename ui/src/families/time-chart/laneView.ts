@@ -26,6 +26,7 @@ import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import type { TimeChartModel } from './model.ts';
 import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
+import { unknownProjectionReason } from '../registry.ts';
 
 function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
   return {
@@ -292,12 +293,12 @@ export function timeChartLaneView(
       if (binding.directModel) {
         model = binding.directModel;
       } else {
-        const proj = ensureTimeChartProjection(binding.kind, binding.viewId, () => wake?.(input.widget));
+        const proj = ensureTimeChartProjection(binding, () => wake?.(input.widget));
         if (proj === 'loading') {
           return { surfaces: [], fields: {}, motion: false };
         }
         if (proj === 'unknown') {
-          return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown time-chart kind: ${binding.kind}` };
+          return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: unknownProjectionReason(binding) };
         }
         const sources: SceneSources = {
           sources: binding.sources,
@@ -318,7 +319,7 @@ export function timeChartLaneView(
         for (const url of projected.artUrls) demandedArtUrls.add(url);
         contentSig = contentKey(binding, projected.view.revisions);
       }
-      if (binding.view?.x && model.view?.x !== binding.view.x) model = { ...model, view: { ...model.view, x: binding.view.x } };
+      if (binding.zoom?.x && model.view?.x !== binding.zoom.x) model = { ...model, view: { ...model.view, x: binding.zoom.x } };
 
       const fields: Record<string, { value: unknown; content: string }> = {};
       if (identityDemands.length > 0) {

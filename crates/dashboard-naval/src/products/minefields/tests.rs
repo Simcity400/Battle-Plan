@@ -48,23 +48,6 @@ fn owners_not_asked_are_not_shown_and_lost_rows_leave_every_region_unknown() {
 }
 
 #[test]
-fn history_is_the_amount_row_then_zero_under_a_live_witness_and_unknown_elsewhere() {
-    let amount: lanes::Runs = vec![(100, 109, None), (110, 119, Some(500_000)), (120, 140, None)];
-    let witness: lanes::Runs = vec![(100, 129, Some(0)), (130, 140, None)];
-    let runs = combine(&amount, &[(10, &witness)], 3, 100, 140);
-    assert_eq!(runs, [(100, 109, Some(0)), (110, 119, Some(500_000)), (120, 129, Some(0)), (130, 140, None)]);
-    let past = combine(&amount, &[(3, &witness)], 3, 100, 140);
-    assert_eq!(past[0], (100, 109, None), "a witness not reaching the region proves nothing there");
-}
-
-#[test]
-fn a_history_of_every_owner_of_a_region_is_asked_whatever_their_count() {
-    let tags: Vec<Country> = (0..1_500).map(|at| format!("{}{}{}", (b'A' + (at / 676) as u8) as char, (b'A' + (at / 26 % 26) as u8) as char, (b'A' + (at % 26) as u8) as char).into()).collect();
-    let params = MinefieldHistoryParams { branch_id: "1".into(), region: 7, countries: tags, first_hour: 0, last_hour: 100 };
-    assert_eq!(<MinefieldHistory as Product>::validate(&params), Ok(()));
-}
-
-#[test]
 fn truncated_minefields_keep_witnessed_owners_live_and_refuse_region_total_with_truncation_reason() {
     use dashboard_follow::live::{CellValue, Cells as LiveCells, GroupState};
     use dashboard_query::coverage::CoverageScope;

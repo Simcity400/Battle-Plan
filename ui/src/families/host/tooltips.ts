@@ -112,8 +112,8 @@ export interface FamilyTooltipField {
 }
 
 interface FittedCache {
-  raw: TooltipContent;
-  subtitle: string;
+  entry: FamilyTooltipEntry;
+  hour: number;
   height: number;
   fitted: TooltipContent;
 }
@@ -163,22 +163,23 @@ export class FamilyTooltipController {
     return this.pinned !== null;
   }
 
-  fitCached(channel: 'hover' | 'focus', raw: TooltipContent, hour: number, viewportHeight: number): TooltipContent {
-    const subtitle = formatDateTime(Math.floor(hour));
+  private fitCached(channel: 'hover' | 'focus', entry: FamilyTooltipEntry, hour: number, viewportHeight: number): TooltipContent {
+    const flooredHour = Math.floor(hour);
     const cached = channel === 'hover' ? this.hoverCache : this.focusCache;
-    if (cached && cached.raw === raw && cached.subtitle === subtitle && cached.height === viewportHeight) {
+    if (cached && cached.entry === entry && cached.hour === flooredHour && cached.height === viewportHeight) {
       return cached.fitted;
     }
-    const dated = raw.subtitle ? raw : { ...raw, subtitle };
+    const raw = resolveTooltipEntryContent(entry);
+    const dated = raw.subtitle ? raw : { ...raw, subtitle: formatDateTime(flooredHour) };
     const fitted = fitTooltip([dated], viewportHeight);
-    const entry: FittedCache = { raw, subtitle, height: viewportHeight, fitted };
-    if (channel === 'hover') this.hoverCache = entry;
-    else this.focusCache = entry;
+    const next: FittedCache = { entry, hour: flooredHour, height: viewportHeight, fitted };
+    if (channel === 'hover') this.hoverCache = next;
+    else this.focusCache = next;
     return fitted;
   }
 
   describeFocused(tip: FamilyTooltipEntry, hour: number, viewportHeight: number): string {
-    return tooltipText(this.fitCached('focus', resolveTooltipEntryContent(tip), hour, viewportHeight));
+    return tooltipText(this.fitCached('focus', tip, hour, viewportHeight));
   }
 
   show(
@@ -198,7 +199,7 @@ export class FamilyTooltipController {
     }
     this.hoverShown = true;
     this.tipVisible = true;
-    const fitted = this.fitCached(channel, resolveTooltipEntryContent(tip), tip.hour, viewportHeight);
+    const fitted = this.fitCached(channel, tip, tip.hour, viewportHeight);
     showTooltip(this.owner, fitted, pos.x, pos.y, tip.rowKey);
   }
 

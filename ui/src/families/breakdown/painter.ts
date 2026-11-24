@@ -66,12 +66,6 @@ function drawTotalLine(ctx: Canvas2D, line: TotalLineLayout, theme: FamilyTheme)
   ctx.textAlign = 'left';
 
   let cursor = rect.x;
-  if (total.atLeast) {
-    ctx.font = `400 12px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
-    ctx.fillText('At least ', cursor, cy + 2);
-    cursor += textWidth(ctx, 'At least ');
-  }
 
   ctx.font = `600 22px ${theme.font}`;
   ctx.fillStyle = theme.text;
@@ -133,7 +127,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
   ctx.rect(0, viewTop, layout.width, viewH);
   ctx.clip();
 
-  const trackFill = tokens.dark ? 'rgba(245, 245, 245, 0.045)' : 'rgba(15, 23, 42, 0.05)';
+  const trackFill = tokens.partsTrack;
   const treeStroke = tokens.hairlineStrong;
 
   for (const row of layout.rows) {

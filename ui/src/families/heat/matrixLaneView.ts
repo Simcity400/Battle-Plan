@@ -20,6 +20,7 @@ import {
 } from './matrixModel.ts';
 import { collectVisibleMatrixArt, createMatrixPicture, drawHeatMatrix, type HeatMatrixPicture } from './matrixPainter.ts';
 import { ensureHeatMatrixProjection } from './matrixRegistry.ts';
+import { unknownProjectionReason } from '../registry.ts';
 
 export interface FamilyHeatMatrixBinding<TOptions = unknown> {
   readonly family: 'heat-matrix';
@@ -146,7 +147,7 @@ export function familyHeatMatrixLaneView(
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyHeatMatrixBinding(bound)) return Infinity;
-      const projection = ensureHeatMatrixProjection(bound.kind, bound.view, () => wake(scene.widget));
+      const projection = ensureHeatMatrixProjection(bound, () => wake(scene.widget));
       if (projection === 'loading') return hour + 1;
       if (projection === 'unknown') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
@@ -168,12 +169,12 @@ export function familyHeatMatrixLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyHeatMatrixBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = ensureHeatMatrixProjection(bound.kind, bound.view, () => wake(input.widget));
+      const projection = ensureHeatMatrixProjection(bound, () => wake(input.widget));
       if (projection === 'loading') {
         return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       }
       if (projection === 'unknown') {
-        return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown matrix declaration: ${bound.kind}` };
+        return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: unknownProjectionReason(bound) };
       }
 
       let held = state.get('heatMatrix') as HeldHeatMatrix | undefined;

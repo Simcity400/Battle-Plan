@@ -32,6 +32,8 @@ pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Opt
         "occupation-reserve-manpower" => dashboard_wars::registrations::EXACT_OCCUPATIONRESERVE(source, load, asked),
         "lend-lease-balance" => dashboard_economy::registrations::EXACT_LENDLEASEBALANCE(source, load, asked),
         "occupied-states" => dashboard_wars::registrations::EXACT_OCCUPIEDSTATES(source, load, asked),
+        "air-force-at" => dashboard_land::registrations::EXACT_AIRFORCEAT(source, load, asked),
+        "navy-at" => dashboard_land::registrations::EXACT_NAVYAT(source, load, asked),
         "log-tail" => dashboard_politics::products::logs::dated_panel(source, load, asked),
         "market-ledger-tail" => dashboard_economy::products::economy::market::ledger::dated_panel(source, load, asked),
         "event-feed-tail" => dashboard_politics::products::feed::event_feed_dated_panel(source, load, asked),

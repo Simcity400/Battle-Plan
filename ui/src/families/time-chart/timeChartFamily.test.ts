@@ -182,7 +182,7 @@ describe('time-chart BoundedSeries & Foundation C integration', () => {
     const provider = createSnapshotIdentityProvider(index);
     const res = provider.resolve('country', 'GER', displayedHour(H1936));
     assert.deepEqual(res.name, { status: 'ready', value: 'German Reich' });
-    assert.deepEqual(res.colour, { status: 'ready', value: 'rgb(69, 69, 69)' });
+    assert.deepEqual(res.colour, { status: 'ready', value: '#454545' });
     assert.equal(res.flagChoice?.status, 'ready');
     if (res.flagChoice?.status === 'ready') assert.ok(res.flagChoice.value.includes('GER_fascism'));
   });
@@ -472,7 +472,7 @@ describe('time-chart laneView integration', () => {
       widget: 1,
       subs: [],
       pictures: [],
-      model: { ...binding, view: { x: zoomWindow } },
+      model: { ...binding, zoom: { x: zoomWindow } },
       hour: H1936 + 100 * 24,
       speed: 0,
       binding: { generation: 2, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },

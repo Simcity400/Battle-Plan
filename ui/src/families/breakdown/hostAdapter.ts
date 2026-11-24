@@ -24,6 +24,7 @@ export const breakdownHostAdapter: FamilyHostAdapter<BreakdownModel, BreakdownVi
   auditOwnerId: -4,
   parseHit: parseBreakdownHit,
   inspectToken: key => `row:${key}`,
+  exclusiveExpansion: fields => (fields.meta as { readonly view?: string } | undefined)?.view === 'ring',
   getScrollExtent: fields => {
     const meta = fields.meta as { readonly contentHeight?: number } | undefined;
     return meta?.contentHeight !== undefined ? { height: meta.contentHeight } : null;
@@ -35,8 +36,6 @@ export const breakdownHostAdapter: FamilyHostAdapter<BreakdownModel, BreakdownVi
   buildBinding: ctx => {
     if (!ctx.theme) return null;
     return {
-      family: 'breakdown',
-      kind: ctx.kind,
       options: ctx.options,
       sources: ctx.sources,
       ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

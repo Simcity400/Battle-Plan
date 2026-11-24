@@ -9,6 +9,7 @@ pub mod built;
 pub mod character_portraits;
 pub mod equipment_icon;
 pub mod fixed5_runs;
+pub mod flows;
 pub mod game_text;
 pub mod idea_format;
 pub mod politics_content;

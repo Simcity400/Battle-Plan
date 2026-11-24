@@ -43,14 +43,11 @@ import { linesAt, linesTooltip } from './lines';
 import type { LabelAt } from './lines';
 import type { RaceView } from './options';
 import RaceChart from './RaceChart';
-import DatedArsenal from './DatedArsenal';
-import type { ArsenalFeed } from '../../draw/arsenal';
 import type { LiveRace, RemoteRaceRows } from './RaceChart';
 import type { RaceItem } from './race';
 import './countryRace.css';
 
 export interface CountryRaceViewProps {
-  arsenal?: ArsenalFeed & { exactRead?: (hour: number) => Promise<unknown> };
   runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean;
   options: Readonly<Record<string, OptionValue>>; view: RaceView;
   extent: [number, number]; playhead: number | null; moment: number; slots: number;
@@ -114,14 +111,14 @@ const COUNTRY_NAME_SAMPLES = ['Country name unavailable'];
 type RawPickOwner = { scope: string; client: WidgetRuntime['client'];
   lines: readonly Pick<CountryRaceLine, 'tag' | 'id' | 'runs'>[] | undefined; bands: readonly (readonly Run[])[] | undefined };
 
-export default function CountryRaceView({ runtime, track, active, options, view, extent: shownExtent, playhead, moment, slots, ranked, liveRanked, lines, remoteRows, arsenal,
+export default function CountryRaceView({ runtime, track, active, options, view, extent: shownExtent, playhead, moment, slots, ranked, liveRanked, lines, remoteRows,
   parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, countryLookHours, countryLookHour, entityLooks, lineLegendLabel = 'Countries', segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
   keyHours: suppliedHours, strip, beforeChart, pending, badges, onViewChange: reportViewport, lineSummaries, lineData, onSummaryView, liveHead, onReachHour, exactLineTags, navigation, onPick, pickOwner, selectedHour, selectedHead = false, state, formatAxis, formatTick, labels: chartLabels, lineEmpty, notRecorded, mixEmpty, resetKey,
   presentation = {}, label, empty, formatValue, gaps }: CountryRaceViewProps) {
   const [extentFirst, extentLast] = shownExtent;
   const extent = useMemo<[number, number]>(() => [extentFirst, extentLast], [extentFirst, extentLast]);
   const tokens = useChartTokens();
-  const hoursPerSecond = usePlaybackMotion(runtime.clock, !arsenal);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock, true);
   const viewport = useViewportHeight();
   const menu = useContextMenu(chartLabels?.actions ?? `${label} actions`);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
@@ -350,8 +347,6 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     tooltip: (key, item) => {
       const tag = raceTag(key, item), hour = raceHour(item);
       showTip(hour, [tag]);
-      if (arsenal && item) return { title: nameOf(tag, hour), subtitle: dayLabel(hour),
-        rows: [{ label, value: item.label }, ...item.segments.filter(p => p.id !== 'total').map(p => ({ label: parts.find(n => n.id === p.id)?.label ?? p.id, value: formatValue(p.value) }))] };
       return tipAt(tag, hour, entityLooks ? nameOf(tag, hour) : labelAt(hour)(tag).name);
     },
     onContextMenu: (key, x, y, item) => jump(raceHour(item), x, y, raceTag(key, item)), dateOverlay: dateOverlay ? dayLabel(moment) : null,
@@ -366,9 +361,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     {beforeChart}
     {mixState}
     <div className="country-race-chart" onPointerLeave={() => showTip(null)}>
-      {view === 'race' ? arsenal ? <DatedArsenal {...raceProps} exactRead={arsenal.exactRead} clock={runtime.clock} model={{ ...arsenal, exactRead: undefined, tokens, slots, overlay: dateOverlay, colours,
-        looks: new Map(tags.map(tag => [tag, { name: nameOf(tag), color: country(tag), flag: entity.flag?.(tag) }])) }} />
-        : <RaceChart {...raceProps} />
+      {view === 'race' ? <RaceChart {...raceProps} />
         : <TimeChart key={presentation.resetTimeView ? view : undefined} {...common} label={view === 'mix' && mix ? chartLabels?.mix?.(mixName) ?? `${label} over time`
           : chartLabels?.lines ?? `${label} over time`} layers={timeLayers} gaps={gaps} notRecorded={notRecorded} strip={strip} formatValue={formatAxis ?? formatTick}
           keyHours={timeHours} badges={badges?.length ? badges : undefined}
