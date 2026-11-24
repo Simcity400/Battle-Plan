@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { binAt, binsLabel, chartSummaryFrom, drawApproximateSpans, drawGapSummary, drawLineSummary, pickSummaryLines, scaleSummary, summaryExtent, summaryGeometry } from './chartSummary.ts';
+import { binAt, binsLabel, chartSummaryFrom, drawApproximateSpans, drawLineSummary, pickSummaryLines, scaleSummary, summaryExtent, summaryGeometry } from './chartSummary.ts';
 import { wireSummary } from './chartSummary.fixture.ts';
-import { dayLabel, drawBands, drawGapFill, drawLine, spanLabel } from './draw.ts';
+import { dayLabel, drawBands, drawLine, spanLabel } from './draw.ts';
 import { pickLines } from './linePick.ts';
 import { extentOf } from './series.ts';
 import type { Run } from './series.ts';
@@ -236,19 +236,6 @@ test('stack summaries carry the union of part and total approximate spans withou
   for (const hour of exact.model.hours) if (exact.model.bounds[exact.model.hours.indexOf(hour)]) assert.deepEqual(stacked.sample(hour),exact.sample(hour));
   assert.deepEqual(spans,[{ firstHour: 8, lastHour: 12 }, { firstHour: 2, lastHour: 5 }], 'a summary owned by another chart is not mutated');
   assert.deepEqual(exact.approximate,[]);
-});
-
-test('exact gap summaries paint the identical legacy stream at fractional cutoffs and gaps', () => {
-  const other = exactSource.map(run => ({ ...run, value: 5 - run.value }));
-  for (const until of [null, 5.5, 9.25, 10, 18.5]) {
-    const frame = plotFrame(360, 200, { left: 10, right: 10, top: 10, bottom: 10 }, [1.25, 20.5], [-25, 30], false);
-    const end = until ?? frame.x[1], width = Math.ceil(frame.plotWidth);
-    const a = hourlySummary(exactSource, frame.x[0], end, width), b = hourlySummary(other, frame.x[0], end, width);
-    const legacy = recordingCanvas(), prepared = recordingCanvas();
-    drawGapFill(legacy.context, frame, exactSource, other, '#positive', '#negative', { until: until ?? undefined, alpha: 0.2 });
-    drawGapSummary(prepared.context, frame, tokens, a, b, '#positive', '#negative', until, { alpha: 0.2 });
-    assert.deepEqual(prepared.commands, legacy.commands);
-  }
 });
 
 test('a summary decodes from its bucket columns, gaps and totals in place, and refuses columns that disagree', () => {

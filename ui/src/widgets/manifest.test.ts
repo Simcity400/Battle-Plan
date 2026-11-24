@@ -486,7 +486,8 @@ test('every setting a time-chart view shows reaches what that view reads or proj
   const silent: string[] = [];
   const checked: string[] = [];
   const owned = new Set(['political-power', 'command-power', 'stability', 'fuel', 'experience', 'supply-health', 'ruling-party',
-    'army-size:lines', 'navy-size:lines', 'air-force-size:lines', 'factories:lines', 'occupation-trend:lines']);
+    'army-size:lines', 'navy-size:lines', 'air-force-size:lines', 'factories:lines', 'occupation-trend:lines',
+    'equipment-stockpile:time', 'resource-balance:time']);
   for (const entry of FAMILY_VIEWS.filter(item => item.family === 'time-chart' && (owned.has(item.kind) || owned.has(`${item.kind}:${normalizeView(item.view)}`)))) {
     const view = normalizeView(entry.view);
     const spec = await entry.loadSpec();

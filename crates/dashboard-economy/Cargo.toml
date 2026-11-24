@@ -23,6 +23,7 @@ dashboard-core = { workspace = true }
 dashboard-declare = { workspace = true }
 dashboard-follow = { path = "../dashboard-follow" }
 dashboard-query = { workspace = true }
+game-model = { workspace = true }
 dashboard-text = { workspace = true }
 dashboard-world = { workspace = true }
 engine-fuel = { workspace = true }

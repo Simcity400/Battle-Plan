@@ -114,8 +114,7 @@ mod fuel {
 
 mod resources {
     use super::*;
-    use dashboard_base::products::Product;
-    use crate::products::economy::resources::{ResourceBalance, ResourceSizes};
+    use crate::products::economy::resources::ResourceBalance;
     use replay_data::rows::{CountryResourceRow, CountryRow, LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow, tables};
 
     const DEALS_UNREAD: i32 = 118;
@@ -228,15 +227,6 @@ mod resources {
         assert_eq!(deals_through(&index, GER, 122), (vec![6, 8], 140));
         assert_eq!(deals_through(&index, GER, 141), (vec![8], 200));
         assert_eq!(deals_through(&index, GER, 201), (vec![], i32::MAX), "with no deal begun or to begin, nothing expires");
-    }
-
-    #[test]
-    fn a_resources_campaign_size_is_its_longest_bar_over_the_span() {
-        let source = recording();
-        let params = serde_json::from_value(json!({ "branchId": "1", "country": "GER" })).unwrap();
-        let reply = ResourceSizes::load(&source, &params, &load(), &AtomicBool::new(false)).unwrap();
-        let sizes: Vec<(u32, Option<&str>)> = reply.sizes.iter().map(|size| (size.id, size.longest_raw.as_deref())).collect();
-        assert_eq!(sizes, [(1, Some("1300000")), (2, Some("700000")), (3, Some("3")), (4, Some("0")), (5, None)]);
     }
 }
 

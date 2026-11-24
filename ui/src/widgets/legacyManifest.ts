@@ -29,7 +29,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'occupation-trend', view: 'mix', label: 'Mix', load: () => import('./occupation-trend') },
   { kind: 'peace-deals', load: () => import('./peace-deals') },
   { kind: 'production-spending', load: () => import('./production-spending') },
-  { kind: 'resource-balance', view: 'time', label: 'Time', load: () => import('./resource-balance') },
   { kind: 'ships-sunk', load: () => import('./ships-sunk') },
   { kind: 'territory', view: 'lines', label: 'Lines', load: () => import('./territory') },
   { kind: 'territory', view: 'share', label: 'Share', load: () => import('./territory') },

@@ -198,26 +198,6 @@ export function heldSegments(runs: readonly Run[], from: number, to: number, toX
   return result;
 }
 
-export interface GapRegion { clip: PathCommand[]; fill: PathCommand[] }
-export function gapRegions(first: readonly { points: Point[]; path: PathCommand[] }[], second: readonly { points: Point[]; path: PathCommand[] }[],
-  top: number, bottom: number): { above: GapRegion[]; below: GapRegion[] } {
-  const toEdge = (curve: { points: Point[]; path: PathCommand[] }, edge: number): PathCommand[] => {
-    const start = curve.points[0];
-    const end = curve.points.at(-1)!;
-    return [...curve.path, ['L', end.x, edge], ['L', start.x, edge], ['L', start.x, start.y]];
-  };
-  const above: GapRegion[] = [];
-  const below: GapRegion[] = [];
-  for (let index = 0; index < Math.min(first.length, second.length); index++) {
-    const a = first[index];
-    const b = second[index];
-    if (a.points.length < 2 || b.points.length < 2) continue;
-    above.push({ clip: toEdge(a, bottom), fill: toEdge(b, top) });
-    below.push({ clip: toEdge(b, bottom), fill: toEdge(a, top) });
-  }
-  return { above, below };
-}
-
 export function extentOf(runs: readonly Run[], from: number, to: number): [number, number] | null {
   const [start, end] = rangeBounds(runs, from, to);
   let low = Infinity, high = -Infinity;
