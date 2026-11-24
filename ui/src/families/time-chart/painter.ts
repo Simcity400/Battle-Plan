@@ -663,6 +663,16 @@ export function drawTimeChart(
       const tw = textWidth(ctx, ov.text);
       const ox = layout.left + layout.plotWidth - 8 - tw;
       const oy = ov.position === 'top-right' ? layout.top + 12 : layout.baseY - 12;
+      const arrowW = ov.arrow ? 12 : 0;
+      const padX = 5;
+      const plateLeft = Math.max(layout.left + 2, ox - arrowW - padX);
+      const plateRight = Math.min(layout.left + layout.plotWidth - 2, ox + tw + padX);
+      if (plateRight > plateLeft) {
+        ctx.fillStyle = theme.surface;
+        ctx.beginPath();
+        ctx.roundRect(plateLeft, oy - 8, plateRight - plateLeft, 16, 3);
+        ctx.fill();
+      }
       if (ov.arrow) {
         ctx.fillStyle = ov.color ?? textSecondary;
         ctx.beginPath();
@@ -734,6 +744,8 @@ export function drawTimeChart(
         ctx.lineTo(cx + 5, layout.axisY - 4);
         ctx.stroke();
         ctx.restore();
+      } else if (col.month?.status === 'recorded' && col.month.missingParts && col.month.missingParts.length > 0) {
+        drawSeriesMissingStrip(ctx, col.barX, layout.axisY + 1, col.barWidth, theme.hatch, theme, 4);
       }
       if (col.label && Math.abs(cx - layout.dateTabX) > layout.dateTabWidth / 2 + 10) {
         ctx.save();

@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -9,6 +10,7 @@ import {
 } from '../../families/time-chart/declaration.ts';
 import type { ChartGap, ChartInlinePoint, TimeChartModel, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
+import { formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { WorldTensionStackReply } from '../../generated/dashboard';
 import { validateWorldTensionStack } from './worldTensionProjection.ts';
 
@@ -21,8 +23,7 @@ export interface WorldTensionLinesOptions {
 }
 
 function formatContributionPct(value: number): string {
-  const rounded = Math.round(value * 10) / 10;
-  return `${Number.isInteger(rounded) ? Math.round(rounded) : rounded.toFixed(1)}%`;
+  return formatRecordedPercent(value);
 }
 
 function resolveLineColors(rawColors: readonly (string | null)[], surface: string): string[] {
@@ -147,7 +148,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     });
     const auditRows = series
       .filter(s => s.role === 'primary' && s.headValue !== null && s.headValue !== undefined)
-      .map(s => ({ row: s.name, key: s.id, value: formatContributionPct(s.headValue!) }));
+      .map(s => (auditRow(s.id, formatContributionPct(s.headValue!))));
     return {
       kind: 'world-tension',
       measureTitle: 'Contribution to world tension',

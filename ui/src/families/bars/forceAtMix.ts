@@ -5,7 +5,7 @@ import type { BoundedReadView } from '../contract.ts';
 import { holderTagAt, inHourRanges, type HolderRun, type HourRanges } from '../holders.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
-import { formatValueState, type ValueFormat } from '../valueFormat.ts';
+import { formatShare, formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForcePart } from '../../generated/dashboard';
 import { forcePartLabel } from './forceAtRace.ts';
 import { countryRowPresentation, type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
@@ -45,7 +45,7 @@ function formatScaled(value: Value<bigint | number>, format: ValueFormat): strin
 }
 
 function sharePct(share: number): string {
-  return `${Math.round(share * 100)}%`;
+  return formatShare(share);
 }
 
 export function projectForceAtMix(

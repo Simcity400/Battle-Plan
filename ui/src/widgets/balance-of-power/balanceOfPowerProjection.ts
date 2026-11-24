@@ -1,3 +1,4 @@
+import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { POLITICS_HISTORY, readAt, unknownHours } from '../../dashboard/politicsHistory.ts';
@@ -298,6 +299,9 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
     const headValue = headRaw !== null ? plotValue(headRaw) : null;
     const icon = { art: readView.art(measureArtHandle('balanceOfPower')), label: 'Balance of power' };
     const title = record?.name ?? balanceName(balance, history.names) ?? 'Balance of power';
+    const activeRangeName = record
+      ? (record.range?.name && record.range.name.length > 0 ? record.range.name : null)
+      : (at.range ? rangeName(balance, at.range, history.names) : null);
 
     const series: TimeChartSeriesModel[] = [{
       id: balance.token,
@@ -316,8 +320,9 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
         ? null
         : {
           icon,
-          name: null,
-          fullName: title,
+          name: activeRangeName,
+          shortName: activeRangeName,
+          fullName: activeRangeName ?? title,
           value: valueText(headRaw),
           exactValue: exactValue(headRaw),
         },
@@ -358,7 +363,7 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
       overlays,
       hoverDetail: buildHoverDetail(readView, subject, balance, history, record),
       warnings: warnings.length > 0 ? warnings : undefined,
-      auditRows: headRaw === null ? [] : [{ row: balance.token, key: balance.token, value: valueText(headRaw) }],
+      auditRows: headRaw === null ? [] : [auditRow(balance.token, valueText(headRaw))],
     };
   },
 });

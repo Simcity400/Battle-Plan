@@ -242,7 +242,7 @@ export function identityResultFromIndex(
     kind,
     key,
     atHour,
-    holder: { status: 'ready', value: key },
+    holder: toFieldStatus(res.holder, () => key),
     name: toFieldStatus(res.name),
     validInterval: res.valid,
     nextChangeAt: res.nextBoundary,

@@ -127,3 +127,11 @@ test('a folded column with unrecorded days keeps them unknown instead of spreadi
   const shares = cell.kind === 'parts' ? cell.parts.map(part => [part.id, part.share]) : [];
   assert.deepEqual(shares, [['light_rain', 0.25], ['clear', 0.25]]);
 });
+
+test('conditions take their colour from the identity register, and an unknown one from the palette, never a registered colour', async () => {
+  const { identityColour, readableColour, IDENTITY_COLOURS } = await import('../../charts/palette.ts');
+  assert.equal(identityColour(SURFACE, 'weather', 'heavy_rain', 0), readableColour(IDENTITY_COLOURS.weather.heavy_rain, SURFACE), 'heavy rain is the storm violet whatever its order');
+  assert.equal(identityColour(SURFACE, 'weather', 'light_rain', 5), readableColour(IDENTITY_COLOURS.weather.light_rain, SURFACE));
+  const registered = new Set(Object.values(IDENTITY_COLOURS.weather).map(hex => readableColour(hex, SURFACE)));
+  for (let ordinal = 0; ordinal < 12; ordinal++) assert.ok(!registered.has(identityColour(SURFACE, 'weather', 'mod_acid_rain', ordinal)), 'a mod condition gets its own colour');
+});

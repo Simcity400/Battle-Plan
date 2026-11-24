@@ -1,5 +1,8 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import ResearchWidget from './ResearchWidget';
+import { researchDeclaration } from './researchProjection';
 import { useResearchChoices } from './useResearch';
 
-export default { render: ResearchWidget, useOptionChoices: useResearchChoices } satisfies WidgetRenderer;
+export default {
+  declaration: researchDeclaration,
+  useOptionChoices: useResearchChoices,
+} satisfies WidgetRenderer;

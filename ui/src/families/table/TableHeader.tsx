@@ -9,6 +9,7 @@ import {
   type TableSettings,
 } from './settings.ts';
 import type { TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
+import { TREE_CHEVRON_LANE, treeColumnOf } from './layout.ts';
 import './tableFamily.css';
 
 export const columnWidthVar = (key: string) => `--tf-w-${key.replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -78,6 +79,7 @@ export interface FamilyTableHeaderProps {
   allColumns: readonly TableColumnSpec[];
   settings: TableSettings;
   unsorted?: boolean;
+  treeLane?: boolean;
   editableColumns?: boolean;
   rankWidth?: number;
   pinnedCount?: number;
@@ -94,6 +96,7 @@ export function FamilyTableHeader({
   columns,
   settings,
   unsorted = false,
+  treeLane = false,
   editableColumns = true,
   rankWidth = 0,
   pinnedCount = 1,
@@ -112,6 +115,7 @@ export function FamilyTableHeader({
   const sort = settings.sort;
   const hasTall = columns.some(col => Boolean(col.unit) || Boolean(col.headerGroup));
   const showPinShadow = pinned && scrollLeft > 0;
+  const treeColumn = treeColumnOf(columns);
 
   const reorderColumns = (fromKey: string, toKey: string, side: 'left' | 'right') => {
     if (fromKey === toKey) return;
@@ -194,7 +198,7 @@ export function FamilyTableHeader({
           className={`tf-th${end ? ' end' : ''}${active ? ' sorted' : ''}${isPinned ? ' pinned' : ''}${isLastPinned && showPinShadow ? ' pinned-shadow' : ''}${item.notRecordedReason ? ' is-unrecorded' : ''}${dropClass}`}
           style={{
             width: `var(${columnWidthVar(item.key)}, ${item.width}px)`,
-            ...(index === 0 && { paddingLeft: CELL_INSET + ROW_MARGIN_X }),
+            ...((index === 0 || (treeLane && index === treeColumn)) && { paddingLeft: CELL_INSET + (index === 0 ? ROW_MARGIN_X : 0) + (treeLane && index === treeColumn ? TREE_CHEVRON_LANE : 0) }),
             ...(index === columns.length - 1 && { paddingRight: CELL_INSET + ROW_MARGIN_X }),
             ...(isPinned && { transform: `translateX(${scrollLeft}px)` }),
           }}

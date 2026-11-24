@@ -15,7 +15,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
-import { NO_ART, artHandleKey, missingArt, refusedArt } from '../art/types.ts';
+import { NO_ART, artHandleKey, productArt, refusedArt } from '../art/types.ts';
 import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle, DisplayedHour } from '../plan.ts';
@@ -741,8 +741,8 @@ test('leader, state, province and region asks each start their product read and 
         from,
         to,
         unknown: [{ firstHour: 100, lastHour: 120, reason: 'Not in this recording: the game was paused' }],
-        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null, absent: false }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null, absent: false }] })),
-        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map', absent: false }] })),
+        states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: 199, name: `State ${id}`, missing: null, presence: 'present' }, { firstHour: 200, lastHour: to, name: `Renamed ${id}`, missing: null, presence: 'present' }] })),
+        provinces: provinces.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: null, missing: 'Province unnamed in this map', presence: 'present' }] })),
         warnings: [],
       };
     },
@@ -752,7 +752,10 @@ test('leader, state, province and region asks each start their product read and 
         from,
         to,
         unknown: [],
-        leaders: [{ reference: 'L1', runs: [{ firstHour: from, lastHour: 179, name: null, missing: 'Not a leader of this country at this hour', absent: true }, { firstHour: 180, lastHour: to, name: 'Ada Vance', missing: null, absent: false }] }],
+        leaders: [
+          { reference: 'L1', runs: [{ firstHour: from, lastHour: 179, name: null, missing: 'Not a leader of this country at this hour', presence: 'absent' }, { firstHour: 180, lastHour: to, name: 'Ada Vance', missing: null, presence: 'present' }] },
+          { reference: 'L2', runs: [{ firstHour: from, lastHour: to, name: null, missing: "The leader's owner is not named at this hour", presence: 'unknown' }] },
+        ],
         warnings: [],
       };
     },
@@ -785,7 +788,9 @@ test('leader, state, province and region asks each start their product read and 
   assert.equal(leader!.holder.status, 'absent', 'a leader before it serves its owner is absent, not named');
   assert.deepEqual(view.who('leader', 'ALP:L1', 190).name, { status: 'ready', value: 'Ada Vance' });
   assert.deepEqual(view.who('leader', 'ALP:L1', 190).validInterval, [180, 500]);
-  assert.equal(otherLeader!.holder.status, 'absent');
+  assert.deepEqual(otherLeader!.holder, { status: 'absent', reason: "The leader's owner is not named at this hour" }, 'an unnamed owner is not known, never another owner and never ready');
+  assert.deepEqual(view.who('state', '64', 110).holder, { status: 'absent', reason: 'Not in this recording: the game was paused' }, 'a place inside a recording gap is not ready');
+  assert.deepEqual(worker.resolve('leader', 'ALP:L2', 150 as DisplayedHour).holder, otherLeader!.holder, 'unknown ownership crosses to the worker');
   assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
   broker.dispose();
 });
@@ -945,5 +950,5 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
 
   assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
   assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
-  assert.deepEqual(toFlagSlotState(missingArt('No flag file'), 'GER'), { kind: 'missing', tag: 'GER' });
+  assert.deepEqual(toFlagSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', tag: 'GER' });
 });

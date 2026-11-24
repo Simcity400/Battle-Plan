@@ -20,7 +20,7 @@ export type OptionField = FieldBase & (
   | { kind: 'number'; min: number; max: number; step: number; unit?: string; default: number | null }
   | { kind: 'content-choice'; automatic: string; default: ''; titleChoice?: false; catalogue?: boolean }
   | { kind: 'content-set'; automatic: string; default: ''; catalogue?: boolean }
-  | { kind: 'ordered-set'; automatic: string; default: ''; addLabel?: string; catalogue?: boolean }
+  | { kind: 'regions'; automatic: string; default: ''; sea?: boolean }
   | { kind: 'table'; default: ''; columns: readonly import('../families/table/settings.ts').TableColumnDefaults[]; base: import('../families/table/settings.ts').TableBase }
 );
 
@@ -50,29 +50,6 @@ export function toggleContentSet(value: OptionValue, token: string, max: number)
   const tokens = contentSet(value);
   const next = tokens.includes(token) ? tokens.filter(item => item !== token) : [...tokens, token];
   return next.length > setLimit(max) || !next.every(storableToken) ? null : next.join(' ');
-}
-
-export function addOrderedToken(value: OptionValue, token: string, max = Number.MAX_SAFE_INTEGER): string | null {
-  if (!storableToken(token)) return null;
-  const tokens = contentSet(value);
-  if (tokens.includes(token)) return tokens.join(' ');
-  const next = [...tokens, token];
-  return next.length > setLimit(max) ? null : next.join(' ');
-}
-
-export function removeOrderedToken(value: OptionValue, token: string): string {
-  return contentSet(value).filter(item => item !== token).join(' ');
-}
-
-export function moveOrderedToken(value: OptionValue, index: number, delta: -1 | 1): string {
-  const tokens = contentSet(value);
-  const target = index + delta;
-  if (index < 0 || index >= tokens.length || target < 0 || target >= tokens.length) return tokens.join(' ');
-  const next = [...tokens];
-  const current = next[index]!;
-  next[index] = next[target]!;
-  next[target] = current;
-  return next.join(' ');
 }
 
 export const AFTER_PLAYHEAD_OPTION: OptionField = { key: 'afterPlayhead', section: 'time', label: 'Show after the playhead',
@@ -117,7 +94,7 @@ export function validOption(field: OptionField, value: unknown): value is Option
     case 'choice': return typeof value === 'string' && field.choices.some(choice => choice.value === value);
     case 'content-choice': return typeof value === 'string';
     case 'content-set':
-    case 'ordered-set': {
+    case 'regions': {
       if (typeof value !== 'string') return false;
       const tokens = contentSet(value);
       return tokens.every(storableToken) && new Set(tokens).size === tokens.length;

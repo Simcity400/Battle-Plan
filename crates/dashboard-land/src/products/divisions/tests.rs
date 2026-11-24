@@ -81,3 +81,42 @@ fn a_medal_s_picture_is_its_definition_s_sprite_at_its_authored_frame() {
     let bare = Medal { icon: None, ..medal };
     assert_eq!(super::careers::sprite_of(&bare).unwrap_err(), "The medal's definition names no icon");
 }
+
+#[test]
+fn decorated_divisions_answer_the_first_in_order_with_unread_measures_last_and_ties_by_the_other_measures() {
+    use super::careers::{DecoratedRank, Measures, first_in_order};
+    let division = |id: u64, medals: Option<i32>, experience: Option<i64>, casualties_taken: Option<i32>| Measures { id, medals, experience, casualties_taken };
+    let world = vec![
+        division(1, Some(0), Some(10), Some(5)),
+        division(2, None, Some(90), Some(900)),
+        division(3, Some(2), Some(10), Some(5)),
+        division(4, Some(0), Some(30), Some(5)),
+        division(5, Some(2), Some(10), Some(7)),
+        division(6, Some(0), Some(10), Some(5)),
+    ];
+    let ids = |rows: Vec<Measures>| rows.iter().map(|row| row.id).collect::<Vec<_>>();
+    assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::Medals, true, 10)), [5, 3, 4, 1, 6, 2], "ties fall to experience, then casualties taken, then id; an unread medal total is last");
+    assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::Medals, true, 3)), [5, 3, 4], "only the first of the order is answered");
+    assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::Medals, false, 3)), [4, 1, 6], "ascending keeps the unread last too");
+    assert_eq!(ids(first_in_order(world, DecoratedRank::CasualtiesTaken, true, 2)), [2, 5]);
+}
+
+#[test]
+fn a_medal_total_above_the_identified_awards_keeps_the_rest_as_unidentified() {
+    use super::careers::unidentified;
+    assert_eq!(unidentified(5, 2).map(|award| (award.medal, award.count)), Some((None, 3)));
+    assert_eq!(unidentified(2, 2), None);
+    assert_eq!(unidentified(-1, 0), None);
+}
+
+#[test]
+fn decorated_divisions_hold_until_the_country_filter_next_changes() {
+    use super::careers::{CountryHours, filter_valid_through};
+    let span = |first_hour: i32, last_hour: i32| CountryHours { tag: "GER".into(), first_hour, last_hour };
+    let spans = [span(100, 199), span(300, 399)];
+    assert_eq!(filter_valid_through(None, 150), i32::MAX, "every country never changes membership");
+    assert_eq!(filter_valid_through(Some(&spans), 50), 99, "a country joins at 100");
+    assert_eq!(filter_valid_through(Some(&spans), 150), 199, "and leaves after 199");
+    assert_eq!(filter_valid_through(Some(&spans), 250), 299);
+    assert_eq!(filter_valid_through(Some(&spans), 399), i32::MAX);
+}

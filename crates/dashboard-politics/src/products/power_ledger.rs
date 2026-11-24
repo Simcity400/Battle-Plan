@@ -1094,10 +1094,20 @@ fn balance_at(runs: &[SpendBalanceRun], hour: i32) -> (Option<i128>, Option<Stri
     }
 }
 
-pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i32, i32) -> bool) -> Option<String> {
-    let unheld = |first: i32, last: i32| first <= last && recorded(first, last);
+pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i32, i32) -> i64) -> Option<String> {
+    let unheld = |first: i32, last: i32| first <= last && recorded(first, last) > 0;
     let Some((first, last)) = held.first().zip(held.last()) else {
-        return Some(if recorded(from, to) { "Country was not held during this span" } else { "This span was not recorded" }.to_owned());
+        let hours = if from <= to { recorded(from, to) } else { 0 };
+        return Some(
+            if hours == i64::from(to) - i64::from(from) + 1 {
+                "Country was not held during this span"
+            } else if hours > 0 {
+                "Country was not held for the entire span"
+            } else {
+                "This span was not recorded"
+            }
+            .to_owned(),
+        );
     };
     if unheld(from, first.first.saturating_sub(1)) || unheld(last.last.saturating_add(1), to) || held.windows(2).any(|pair| unheld(pair[0].last.saturating_add(1), pair[1].first.saturating_sub(1))) {
         Some("Country was not held for the entire span".to_owned())
@@ -1110,7 +1120,7 @@ pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i
     }
 }
 
-fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, recorded: impl Fn(i32, i32) -> bool) -> SpendReconciliation {
+fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, recorded: impl Fn(i32, i32) -> i64) -> SpendReconciliation {
     let (from, to) = (params.from, params.to);
     let continuity_reason = continuity(from, to, held, recorded);
 
@@ -1230,9 +1240,15 @@ fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpending
     }
 }
 
-fn items_at(query: &Query<'_>, slot: u32, hour: i32) -> io::Result<DecodedFrame> {
-    let low = u128::from(slot) << 32;
-    let reads = [at_hour::Read { table: TableId::PowerItems, keys: at_hour::Keys::Range(low, low | u128::from(u32::MAX)) }];
+fn item_key(slot: u32, ordinal: u32) -> u128 {
+    PowerItemRow { holder: slot, ordinal, ..PowerItemRow::default() }.key()
+}
+
+fn items_at(query: &Query<'_>, slot: u32, ordinals: &[u32], hour: i32) -> io::Result<DecodedFrame> {
+    let mut keys: Vec<u128> = ordinals.iter().map(|&ordinal| item_key(slot, ordinal)).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let reads = [at_hour::Read { table: TableId::PowerItems, keys: at_hour::Keys::These(keys) }];
     at_hour::frame(query, hour, &reads, "Politics spending")
 }
 
@@ -1255,8 +1271,24 @@ struct Items {
 }
 
 impl Items {
+    fn read(&mut self, query: &Query<'_>, piece: &Piece, asks: &BTreeMap<u32, (i32, bool)>) -> io::Result<HashMap<u32, (u32, bool)>> {
+        let mut by_hour: BTreeMap<i32, Vec<u32>> = BTreeMap::new();
+        for (&ordinal, &(read, _)) in asks {
+            by_hour.entry(read).or_default().push(ordinal);
+        }
+        let mut out = HashMap::with_capacity(asks.len());
+        for (hour, ordinals) in by_hour {
+            let frame = items_at(query, piece.slot, &ordinals, hour)?;
+            for ordinal in ordinals {
+                let recurring = asks[&ordinal].1;
+                out.insert(ordinal, self.at(&frame, piece.run, piece.slot, ordinal, hour, recurring));
+            }
+        }
+        Ok(out)
+    }
+
     fn at(&mut self, frame: &DecodedFrame, run: u32, slot: u32, ordinal: u32, read: i32, recurring: bool) -> (u32, bool) {
-        let key = PowerItemRow { holder: slot, ordinal, ..PowerItemRow::default() }.key();
+        let key = item_key(slot, ordinal);
         let reason = match coverage::witnessed::<tables::PowerItems>(frame, key) {
             coverage::Witness::Row(row) => {
                 let asked = &mut self.asked;
@@ -1266,7 +1298,7 @@ impl Items {
                 });
                 return (at, true);
             }
-            coverage::Witness::Absent => "Its item was no longer among the power items read at the end of the span".to_owned(),
+            coverage::Witness::Absent => "Its item was not among the power items read when it was charged".to_owned(),
             coverage::Witness::NotRecorded(reason) => reason,
         };
         let unrecorded = &mut self.unrecorded;
@@ -1333,17 +1365,22 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
-    let end = held.last().map_or(params.to.min(query.timeline.last), |piece| piece.last);
-    reply.tag = query.holders.tag_at(&params.country, end).map_or_else(|| params.country.key().into_owned(), str::to_owned);
+    reply.tag = query.holders.tag_at(&params.country, params.to.min(query.timeline.last)).map_or_else(|| params.country.key().into_owned(), str::to_owned);
     for piece in &held {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
         coverage(query, piece, currency, &mut reply.coverage)?;
         balances(query, piece, currency, &mut reply.balances)?;
         instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets, &mut allocations)?;
-        let frame = items_at(query, piece.slot, piece.last)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
-        let mut missing = 0_u64;
+        let (payments_from, days_from) = (reply.payments.len(), reply.days.len());
+        let mut asks: BTreeMap<u32, (i32, bool)> = BTreeMap::new();
+        let mut ask = |ordinal: u32, hour: i32, recurring: bool| {
+            let held = asks.entry(ordinal).or_insert((hour, recurring));
+            if hour < held.0 {
+                *held = (hour, recurring);
+            }
+        };
         changes(query, piece, low, low | u128::from(u32::MAX), &mut |change| {
             if change.ordinal == PowerSpendTotalRow::GAINS {
                 if let Some(gain) = gained(&change) {
@@ -1354,36 +1391,33 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
                 }
                 return;
             }
-            let (payment, day) = listed(&change, 0, !has_day_log);
+            let (payment, day) = listed(&change, change.ordinal, !has_day_log);
             if payment.is_none() && day.is_none() {
                 return;
             }
-            let (at, known) = items.at(&frame, piece.run, piece.slot, change.ordinal, change.hour, payment.is_none());
-            missing += u64::from(!known);
-            if let Some(mut payment) = payment {
-                payment.item = at;
-                reply.payments.push(payment);
-            }
-            if let Some(mut day) = day {
-                day.item = at;
-                if day.credits > 0 {
-                    *credits.entry(at).or_default() += day.credits;
-                }
-                reply.days.push(day);
-            }
+            ask(change.ordinal, change.hour, payment.is_none());
+            reply.payments.extend(payment);
+            reply.days.extend(day);
         })?;
         if has_day_log {
             let gaps = day_log(query, piece, currency, &mut |hour, ordinal, mut day| {
-                let (at, known) = items.at(&frame, piece.run, piece.slot, ordinal, hour, true);
-                missing += u64::from(!known);
-                day.item = at;
+                ask(ordinal, hour, true);
+                day.item = ordinal;
                 day.read = hour;
-                if day.credits > 0 {
-                    *credits.entry(at).or_default() += day.credits;
-                }
                 reply.days.push(day);
             })?;
             apply_day_gaps(&mut reply.coverage, coverage_start, &gaps, &mut day_gap_hours);
+        }
+        let resolved = items.read(query, piece, &asks)?;
+        let missing = resolved.values().filter(|(_, known)| !known).count();
+        for payment in &mut reply.payments[payments_from..] {
+            payment.item = resolved[&payment.item].0;
+        }
+        for day in &mut reply.days[days_from..] {
+            day.item = resolved[&day.item].0;
+            if day.credits > 0 {
+                *credits.entry(day.item).or_default() += day.credits;
+            }
         }
         if missing != 0 {
             reply.warnings.push(format!("Politics spending item is not recorded in power items (count: {missing})"));
@@ -1410,7 +1444,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             unmatched: bucket.unmatched,
         })
         .collect();
-    reply.reconciliation = reconcile(params, &held, &reply, &allocations, |first, last| query.timeline.within(first, last).next().is_some());
+    reply.reconciliation = reconcile(params, &held, &reply, &allocations, |first, last| query.timeline.within(first, last).map(|stretch| i64::from(stretch.last) - i64::from(stretch.first) + 1).sum());
     let asked = &items.asked;
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let mut icons = BTreeMap::new();

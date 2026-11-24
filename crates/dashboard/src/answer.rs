@@ -9,6 +9,7 @@ use std::{
 
 pub const SERIES_PRODUCTS: &[&str] = &[
     "series-state",
+    dashboard_query::series::ranked::PRODUCT,
     "series-summary",
     "series-next-change",
     dashboard_query::tile::PRODUCT,

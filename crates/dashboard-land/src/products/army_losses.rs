@@ -544,6 +544,7 @@ impl AtHour for ArmyLosses {
     const KEY: &'static str = "army-losses";
     const TITLE: &'static str = "Army losses";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = ArmyLossesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, view, "view.ledgers[]", "view.month", stack, limit];
     type Reply = ArmyLossesReply;
@@ -709,7 +710,7 @@ impl AtHour for ArmyLosses {
             }
             LossView::Equipment { ledgers } => {
                 let needs_own = ledgers.iter().any(|&l| l != ENEMY_LEDGER);
-                let needs_enemy = ledgers.iter().any(|&l| l == ENEMY_LEDGER);
+                let needs_enemy = ledgers.contains(&ENEMY_LEDGER);
                 let available = reply.availability.armies.is_none()
                     && reply.availability.months.is_none()
                     && (!needs_own || reply.availability.own_equipment.is_none())

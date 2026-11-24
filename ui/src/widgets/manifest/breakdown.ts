@@ -8,13 +8,10 @@ function breakdownView(kind: string, load: () => Promise<BreakdownWidgetSpec<any
     kind,
     view: DEFAULT_VIEW,
     family: 'breakdown',
-    loadSpec: () => load().then(spec => ({
-      family: 'breakdown',
-      kind,
-      view: DEFAULT_VIEW,
-      projection: spec.projection,
-      declaration: breakdownDeclaration(spec),
-    })),
+    loadSpec: () => load().then(spec => {
+      const declaration = breakdownDeclaration(spec);
+      return { family: 'breakdown', kind, view: DEFAULT_VIEW, projection: declaration.projection, declaration };
+    }),
   };
 }
 

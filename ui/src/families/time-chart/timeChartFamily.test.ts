@@ -438,7 +438,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: binding,
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
@@ -462,7 +462,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: { ...binding, focusedKey: `plot:${H1936 + 100 * 24}` },
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
@@ -477,7 +477,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: binding,
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: hit ?? null,
       now: 1,
@@ -493,7 +493,7 @@ describe('time-chart laneView integration', () => {
       pictures: [],
       model: { ...binding, zoom: { x: zoomWindow } },
       hour: H1936 + 100 * 24,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 2, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 2,
@@ -806,7 +806,7 @@ describe('time-chart picture authority', () => {
         tiledLines: [tiled(rev, first, last)], keepTiled: [rev], tiledBySource: { main: { GER: rev } },
       } satisfies TimeChartBinding,
       hour,
-      speed: 0,
+      seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null,
       now: 0,
@@ -830,7 +830,7 @@ describe('time-chart picture authority', () => {
       { label: 'corrected history', binding: bound(2, 30, 10), hour, check: true },
     ], surface);
   });
-  it('reads head rows by an index, not a scan per tag', () => {
+  it('reads head rows by an index, not a scan per tag, and a missing head cell travels as missing with its reason', () => {
     registerFamilyProjection({
       kind: 'test-head-index',
       family: 'time-chart',
@@ -842,7 +842,7 @@ describe('time-chart picture authority', () => {
         const head = bounded?.headValue;
         return {
           kind: 'test-head-index', measureTitle: 'Index', mode: 'lines', hour: readView.hour, extent: [H1936, H1936 + 95], yAxis: { format: 'number' },
-          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head && head.kind === 'known' ? String(head.value) : 'none' }],
+          series: [], auditRows: [{ row: 'ITA', key: 'ITA', value: head?.kind === 'known' ? String(head.value) : head?.kind === 'notRecorded' ? head.reason : `last bucket ${seriesHeadValue(bounded, undefined, 0, 0)}` }],
         };
       },
     });
@@ -854,19 +854,21 @@ describe('time-chart picture authority', () => {
     const hour = H1936 + 95;
     const line = (tag: string) => ({ rev: tag === 'GER' ? 11 : 12, source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
       buckets: [makeBucket(H1936, hour, 1)], missing: [], parts: [], marks: null });
-    const painted = view.paint({
+    const paint = (followed: typeof answer) => (view.paint({
       widget: 1, subs: [], pictures: [],
       model: {
         family: 'time-chart', kind: 'test-head-index', options: {}, sources: {}, extent: [H1936, hour], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME, audit: true, auditId: 1,
         tiledLines: [line('GER'), line('ITA')], keepTiled: [11, 12], tiledBySource: { main: { GER: 11, ITA: 12 } },
         headSourceBySeries: { main: { answerName: 'main', tags } },
-        staticAnswers: { main: answer },
+        staticAnswers: { main: followed },
       } satisfies TimeChartBinding,
-      hour, speed: 0,
+      hour, seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
       inspect: null, now: 0,
-    }, new Map(), () => 'c');
-    assert.deepEqual((painted.fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value), ['7']);
+    }, new Map(), () => 'c').fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value);
+    assert.deepEqual(paint(answer), ['7']);
+    const unread = parseFollowed(message(10, [{ id: 1, answer: { keys: [1n, 2n], columns: 1, values: [5n, 0n], states: [0, 1], reasons: [null, 'Popularity not read at this hour'] } }])).answers[0]!.answer;
+    assert.deepEqual(paint(unread), ['Popularity not read at this hour'], 'an unread followed cell after a known earlier bucket is missing, never the bucket');
   });
 });
 
@@ -1085,9 +1087,9 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.equal(labelTip?.payload?.title, 'Strained');
     const hoverTip = deriveTimeChartTooltip(model, layout, `plot:${hoverAt}`);
     assert.deepEqual(hoverTip?.payload?.items?.map(i => `${i.label}:${i.value}`), [
-      'In supply:27.00% · 27 divisions',
-      'Strained:66.00% · 66 divisions',
-      'No supply:7.00% · 7 divisions',
+      'In supply:27% · 27 divisions',
+      'Strained:66% · 66 divisions',
+      'No supply:7% · 7 divisions',
     ]);
   });
 
@@ -1149,8 +1151,8 @@ describe('stacked bounded series, supply health, and ruling party', () => {
 
     assert.equal(model.mode, 'stack');
     assert.deepEqual(model.stack?.bands.map(b => [b.id, b.endLabel?.value]), [
-      ['fascism', '70.0%'],
-      ['democratic', '30.0%'],
+      ['fascism', '70%'],
+      ['democratic', '30%'],
     ]);
     assert.equal(model.note, 'Test Leader · Nazism · Test Party');
     assert.equal(model.markers?.length, 1, 'future election marker must be clamped');
@@ -1159,8 +1161,8 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.deepEqual(hoverTip?.payload?.items?.map(i => `${i.label}=${i.value}`), [
       'Leader=Test Leader',
       'Ideology · party=Nazism · Test Party',
-      'Fascist (ruling)=70.0%',
-      'Democratic=30.0%',
+      'Fascist (ruling)=70%',
+      'Democratic=30%',
     ]);
   });
 
@@ -1202,6 +1204,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
           theme: LANE_THEME,
         },
         hour: H1936 + 200,
+        seek: 0,
         speed: 0,
         binding: { surfaces: [{ width: 480, height: 180, dpr: 1 }], generation: 1, offset: 0, pin: null },
         inspect: null,
@@ -1223,7 +1226,13 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         color: CHART_MEASURE_COLOURS.bopRight,
         role: 'primary',
         step: true,
-        points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.4 }],
+        points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.9 }],
+        endLabel: {
+          icon: { art: readyArt('bop'), label: 'Balance of power' },
+          name: 'Very Long Consolidated Power Range Name',
+          shortName: 'Very Long Consolidated Power Range Name',
+          value: '0.36',
+        },
       }],
       overlays: [
         { position: 'top-right', text: 'Benito Mussolini', arrow: 'right', color: CHART_MEASURE_COLOURS.bopRight },
@@ -1232,8 +1241,19 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     };
     const { ctx, ops } = mockCanvas(960, 160);
     const layout = layoutTimeChart(withOverlays, 960, 160, FONT, measure);
-    drawTimeChart(ctx, withOverlays, layout, undefined, null, 1);
-    assert.ok(ops.includes('text:Benito Mussolini'), 'top-right overlay renders on wide 160px plot');
+    drawTimeChart(ctx, withOverlays, layout, LANE_THEME, null, 1);
+    const overlayTextIdx = ops.indexOf('text:Benito Mussolini');
+    const plateIdx = ops.lastIndexOf('roundRect', overlayTextIdx);
+    assert.ok(overlayTextIdx > 0, 'top-right overlay renders on wide 160px plot');
+    assert.ok(plateIdx > 0 && plateIdx < overlayTextIdx, 'side overlay paints a surface plate behind the label so the line stays clear');
     assert.ok(ops.includes('text:Grand Council of Fascism'), 'bottom-right overlay renders on wide 160px plot');
+    assert.ok(layout.endLabels[0]?.name?.endsWith('…'), 'long end-label name truncates to fit the right gutter');
+    assert.equal(layout.endLabels[0]?.value, '0.36');
+
+    const narrowLayout = layoutTimeChart(withOverlays, 320, 160, FONT, measure);
+    const narrowLabel = narrowLayout.endLabels[0]!;
+    assert.equal(narrowLabel.value, '0.36', 'value never truncates before the name');
+    assert.ok(narrowLabel.name === null || narrowLabel.name.endsWith('…'), 'narrow end-label truncates or drops name before clipping value');
+    assert.ok(narrowLabel.x + narrowLabel.width <= 320, 'fitted end-label stays inside the chart width');
   });
 });

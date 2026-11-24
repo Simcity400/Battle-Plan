@@ -33,7 +33,7 @@ pub struct TerritoryCountry {
     #[doc = " Its tag at `hour`, its latest transfer's read."]
     pub tag: String,
     pub hour: i32,
-    #[doc = " Transfers observed; at least this many when the reply is `partial`."]
+    #[doc = " Transfers observed; only those observed when the reply is `partial`."]
     pub gained: u32,
     pub lost: u32,
     #[doc = " Null when the reply is `partial`: an unobserved transfer could change it."]
@@ -49,7 +49,7 @@ pub struct TerritoryCountry {
 pub struct TerritoryTransfersReply {
     pub branch_id: String,
     pub through: i32,
-    #[doc = " State transfers known by `through`, a state transferred twice counted twice; at least this many when `partial`."]
+    #[doc = " State transfers known by `through`, a state transferred twice counted twice; only those observed when `partial`."]
     pub transfers: u32,
     #[doc = " Largest net gain first; in key order, unranked, when `partial`."]
     pub countries: Vec<TerritoryCountry>,

@@ -5,7 +5,9 @@ import { engineHour } from '../../dashboard/calendar.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { createLaneArtProvider } from '../art/provider.ts';
-import { missingArt, PENDING_ART } from '../art/types.ts';
+import { PENDING_ART, productArt } from '../art/types.ts';
+
+const missingArt = (reason: string) => productArt({ status: 'confirmedMissing', reason });
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
@@ -253,7 +255,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
       {
         key: 'reg:poland',
         label: 'Eastern Poland',
-        removable: true,
+        region: 40,
         segments: [
           { key: 'axis', label: 'Axis', share: 0.59, value: knownValue(59), color: '#ccb2a7' },
           { key: 'comintern', label: 'Comintern', share: 0.41, value: knownValue(41), color: '#d44852' },
@@ -281,7 +283,20 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
   assert.ok(shareTexts.includes('Axis 59%'));
   assert.ok(shareTexts.includes('90 air wings'));
   assert.ok(shareTexts.includes('Not recorded'));
-  assert.ok(shareTexts.includes('+ Add region'));
+  assert.ok(shareTexts.includes('Add region'));
+  const gripHit = hitFamilyBars(
+    shareLayoutWide,
+    shareModel,
+    { x: shareLayoutWide.nameX - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[1]! + shareLayoutWide.rowHeights[1]! / 2 },
+    0,
+    undefined,
+    0,
+    0,
+    new Set(['reg:poland']),
+  );
+  assert.deepEqual(gripHit, { kind: 'grip-region', rowKey: 'reg:poland' });
+  assert.equal(hitFamilyBars(shareLayoutWide, shareModel, { x: shareLayoutWide.nameX - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[3]! + 4 }, 0, undefined, 0, 0, new Set(['reg:atlantic'])).kind, 'row',
+    'a row that is not a region has no grip');
   const removeHit = hitFamilyBars(
     shareLayoutWide,
     shareModel,
@@ -406,8 +421,8 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
   registerFamilyProjection({
     kind: 'test-bars-1500',
     family: 'bars',
-    project(readView, opts) {
-      const list = opts.swapTop ? [rows1500[1]!, rows1500[0]!, ...rows1500.slice(2)] : rows1500;
+    project(readView) {
+      const list = readView.hour === h + 1 ? [rows1500[1]!, rows1500[0]!, ...rows1500.slice(2)] : rows1500;
       return {
         form: 'ordered',
         hour: readView.hour,
@@ -416,6 +431,7 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
         rows: list,
       };
     },
+    nextChange: readView => readView.hour + 1,
   });
 
   const origOffscreen = globalThis.OffscreenCanvas;
@@ -432,30 +448,33 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
     const state = new Map<string, unknown>();
     let seq = 0;
     const content = () => `c${++seq}`;
-    const mkInput = (hour: number, speed: number, now: number, swapTop = false): PaintInput => ({
+    const options: Record<string, never> = {};
+    const sources = {};
+    const mkInput = (hour: number, speed: number, now: number): PaintInput => ({
       widget: 1,
       subs: [],
       pictures: [],
       hour,
+      seek: 0,
       speed,
       now,
       inspect: null,
-      binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
+      binding: { generation: 1, surfaces: [{ width: 480, height: 240, dpr: 1 }], offset: 0, pin: null },
       model: {
         family: 'bars',
         kind: 'test-bars-1500',
-        options: { swapTop },
-        sources: {},
+        options,
+        sources,
         width: 480,
         height: 240,
         scrollTop: 0,
         theme: THEME,
         audit: true,
         auditId: 7,
-      } satisfies FamilyBarsBinding<{ readonly swapTop: boolean }>,
+      } satisfies FamilyBarsBinding<Record<string, never>>,
     });
 
-    const first = view.paint(mkInput(h, 24, 1000, false), state, content);
+    const first = view.paint(mkInput(h, 24, 1000), state, content);
     assert.equal(first.mode, 'picture');
     assert.equal(first.motion, false);
     const auditField = first.fields.audit?.value as { id: number; rows: readonly { row: string; key: string; value?: string }[] };
@@ -466,12 +485,12 @@ test('lane view scales to 1,500 countries, audits identically, glides at watchin
     assert.equal(mirror.total, 1500);
     assert.equal(mirror.rows.length, 10);
 
-    const watchingSwap = view.paint(mkInput(h + 1, 24, 1050, true), state, content);
+    const watchingSwap = view.paint(mkInput(h + 1, 24, 1050), state, content);
     assert.equal(watchingSwap.mode, 'picture');
     assert.equal(watchingSwap.motion, true, 'rank order glides at watching speed');
     assert.ok(watchingSwap.hit?.([100, 18])?.startsWith('row:'));
 
-    const topSpeed = view.paint(mkInput(h + 2, 720, 1100, false), state, content);
+    const topSpeed = view.paint(mkInput(h + 2, 720, 1100), state, content);
     assert.equal(topSpeed.mode, 'picture', 'top speed stays picture mode with no placeholder');
     assert.equal(topSpeed.motion, false, 'top speed disables glide animation');
   } finally {
@@ -528,7 +547,7 @@ test('a backward seek drops a cached model from a later hour', () => {
     let seq = 0;
     const options: Record<string, never> = {};
     const input = (hour: number): PaintInput => ({
-      widget: 1, subs: [], pictures: [], hour, speed: 24, now: hour, inspect: null,
+      widget: 1, subs: [], pictures: [], hour, seek: 0, speed: 24, now: hour, inspect: null,
       binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
       model: { family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, audit: true, auditId: 1 } satisfies FamilyBarsBinding<Record<string, never>>,
     });
@@ -547,6 +566,23 @@ test('a backward seek drops a cached model from a later hour', () => {
     { label: 'after', binding, hour: 20, speed: 24 },
     { label: 'seek back', binding, hour: 5, check: true },
     { label: 'scrolled', binding: { ...binding, scrollTop: 10 }, hour: 5, check: true },
+  ], surface);
+  registerFamilyProjection<BarsProjection<Record<string, never>>>({
+    kind: 'test-bars-seek-swap',
+    family: 'bars',
+    project(readView) {
+      const a = { kind: 'data' as const, key: 'A', label: 'A', value: { value: knownValue(readView.hour >= 10 ? 1 : 2) }, numeric: readView.hour >= 10 ? 1 : 2 };
+      const b = { kind: 'data' as const, key: 'B', label: 'B', value: { value: knownValue(readView.hour >= 10 ? 2 : 1) }, numeric: readView.hour >= 10 ? 2 : 1 };
+      return { form: 'ordered', hour: readView.hour, animateOrder: true, rows: readView.hour >= 10 ? [b, a] : [a, b] };
+    },
+    nextChange: readView => (readView.hour < 10 ? 10 : Infinity),
+  });
+  const swapping = { ...binding, kind: 'test-bars-seek-swap', reducedMotion: false };
+  assertFreshPaint(() => familyBarsLaneView(() => {}), [
+    { label: 'swapped later', binding: swapping, hour: 3, speed: 24 },
+    { label: 'swapped later', binding: swapping, hour: 20, speed: 24 },
+    { label: 'seek back across the swap while playing', binding: swapping, hour: 5, speed: 24, check: true },
+    { label: 'seek forward across the swap while playing', binding: swapping, hour: 30, speed: 24, check: true },
   ], surface);
 });
 
@@ -599,7 +635,7 @@ test('a hover over 1,500 rows reuses navigation, meta and row bounds, and the mi
     const options: Record<string, never> = {};
     let seq = 0;
     const input = (inspect: string | null, now: number): PaintInput => ({
-      widget: 1, subs: [], pictures: [], hour: 50, speed: 24, now, inspect,
+      widget: 1, subs: [], pictures: [], hour: 50, seek: 0, speed: 24, now, inspect,
       binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
       model: { family: 'bars', kind: 'test-bars-hover', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME } satisfies FamilyBarsBinding<Record<string, never>>,
     });
@@ -639,4 +675,31 @@ test('a two-sided row can carry a ratio column with its own header', () => {
   drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
   const texts = ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
   assert.ok(texts.includes('1.80 : 1') && texts.includes('Ratio'));
+});
+
+test('a measure list sits left of the butterfly: the body moves right, a list row hits as a pick with its key, and the audit names the chosen one', async () => {
+  const { hitPickList, pickAudit, pickNav, pickRowTops } = await import('./pickList.ts');
+  const { parseBarsHit } = await import('./hostAdapter.ts');
+  const pickList = {
+    rows: [
+      { key: 'one', label: 'Invented measure one', left: { fraction: 0.25 }, right: { fraction: 0.75 } },
+      { key: 'two', label: 'Invented measure two', left: { fraction: null }, right: { fraction: null }, divided: true },
+    ],
+    selectedKey: 'two',
+  };
+  const model = {
+    form: 'two-sided' as const, twoSidedLayout: 'split-sides' as const, hour: 10, pickList,
+    rows: [{ kind: 'data' as const, key: 'a', label: 'Country A', value: { value: knownValue(0.5), format: 'share' as const }, numeric: 0.5 }],
+  };
+  const wide = layoutFamilyBars(model, 1600, 320);
+  assert.equal(wide.pickWidth, 330);
+  assert.ok(wide.bodyLeft > wide.pickWidth && wide.nameX > wide.bodyLeft && wide.centerX > wide.bodyLeft, 'the butterfly is laid out right of the list');
+  const tops = pickRowTops(pickList);
+  assert.ok(tops[1]! - tops[0]! > 22, 'a divided row keeps its gap');
+  assert.equal(hitPickList(pickList, wide, { x: 40, y: tops[1]! + 4 }), 'pick:two');
+  assert.equal(hitPickList(pickList, wide, { x: wide.bodyLeft + 40, y: tops[0]! + 4 }), null, 'the butterfly is not the list');
+  assert.deepEqual(parseBarsHit('pick:two')?.meta, { pick: 'two' }, 'activation carries the measure');
+  assert.deepEqual(pickNav(pickList).map(item => item[0]), ['pick:one', 'pick:two']);
+  assert.ok(pickAudit(pickList).some(row => row.row === 'pick:two' && JSON.parse(row.value as string)[3] === true));
+  assert.equal(layoutFamilyBars(model, 500, 320).pickWidth, 0, 'too narrow for the list: the butterfly alone');
 });
