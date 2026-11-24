@@ -114,6 +114,15 @@ test('a mission with a recorded Failed native state shows Failed with its observ
   ], day(4, 1))!;
   assert.equal(abortedLifecycle.status, 'cancelled');
   assert.match(lifecycleLine(abortedLifecycle), /aborted/);
+
+  const availablePool = at([
+    edge('decisionActivated', start, { days: 0, row: { ...edge('decisionActivated', start).row, decisionState: { kind: 'available' } } }),
+  ], day(4, 1));
+  assert.equal(availablePool, null, 'non-timed targeted pool availability is never labeled Running');
+
+  const selfTargeted = decisionCard(card([edge('decisionSelected', start, {}, ['GER', 'GER'])]));
+  assert.equal(selfTargeted?.country, 'GER');
+  assert.equal(selfTargeted?.target, null, 'same holder and target produces one flag, never two');
 });
 
 test('decisions projection formats unsigned costs with PP icon, keeps unknown chargeable edges missing, omits cost on missions, and bounds timer validity', () => {
@@ -169,4 +178,17 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
   const missionRow = byKey.get(missionOcc.id)!;
   assert.equal(missionRow.cells.cost?.value.kind, 'notApplicable');
   assert.equal(missionRow.cells.cost?.blank, true);
+
+  const untimedActiveOcc = card([edge('decisionActivated', start, { days: null })]);
+  const untimedSource = buildRowSourceFromHead('test:decisions-untimed', {
+    ...head,
+    total: '1',
+    rows: [{ hour: start, key: 'k-untimed', ordinal: '0', cells: [], occurrence: untimedActiveOcc }],
+  }, undefined, hour)!;
+  const untimedModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', untimedSource]]) }),
+    { statuses: STATUS_CHOICES.map(s => s.value), artwork: false, breaks: [], filter: { passing: null } },
+  );
+  assert.equal(untimedModel.rows[0]?.cells.timer?.value.kind, 'notRecorded', 'active row without duration shows Duration not recorded, never blank');
+  assert.equal(untimedModel.rows[0]?.cells.timer?.missingFigure, 'Duration');
 });
