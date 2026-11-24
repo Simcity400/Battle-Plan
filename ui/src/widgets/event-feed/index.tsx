@@ -128,7 +128,6 @@ function EventFeedView(props: FamilyViewProps) {
           active={props.active}
           categories={categories}
           excludedKinds={excludedKinds}
-          kinds={recordingKinds}
           from={stripFrom}
           pinnedHour={pinnedHour}
         />

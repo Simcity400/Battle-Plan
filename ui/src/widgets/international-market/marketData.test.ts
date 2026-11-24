@@ -93,3 +93,15 @@ test('a row opens its own detail from its full recorded key: an inventory click 
   assert.equal(unnamed.missing, null, 'an offer whose seller has no country at the hour still opens from its raw seller');
   assert.equal(unnamed.sections[0]!.lines.length, 1);
 });
+
+test('a contract of several equipment labels each variant\'s agreed price with its missing state, and an empty contract is not several equipment', () => {
+  const view = createBoundedReadView({ hour: 7, panels: new Map([['main', raw]]) });
+  const contracts = internationalMarketProjection.project(view, { view: 'contracts', filterAll: true, filter: { passing: null, unrecorded: [], bounds: [] } });
+  const several = contracts.rows.find(row => row.key === '1')!;
+  const extra = (typeof several.tooltipExtra === 'function' ? several.tooltipExtra() : several.tooltipExtra) ?? [];
+  for (const entry of extra.filter(line => line.lookupKey)) assert.match(JSON.stringify(entry.value), /Agreed price not recorded/, `variant ${entry.lookupKey}`);
+  const lines = marketDetail(raw, { section: 'contracts', row: '1', variant: null }).sections.find(section => section.title === 'Equipment')!.lines;
+  assert.deepEqual(lines.map(line => /Agreed price not recorded/.test(line.value)), [true, true]);
+  const empty = contracts.rows.find(row => row.key === '3')!.cells.price!.value;
+  assert.ok(empty.kind === 'notApplicable' && !/Several/.test(empty.reason), `an empty contract's price: ${JSON.stringify(empty)}`);
+});

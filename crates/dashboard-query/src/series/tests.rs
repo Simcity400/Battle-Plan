@@ -1911,4 +1911,17 @@ fn a_missing_span_is_named_at_its_own_hours_and_an_unread_holder_keeps_its_reaso
     assert_eq!(reason_at(FIRST).as_deref(), Some("GER's produced was not recorded here"), "a span is named at its own hours, not where the range ends: {missing:?}");
     assert_eq!(reason_at(FIRST + 3_050), Some(format!("Who holds {} is not known: Countries were not read", country.key())), "an unread holder keeps its reason: {missing:?}");
     assert_eq!(reason_at(FIRST + 3_150).as_deref(), Some(NOT_HELD_AT_HOUR), "{missing:?}");
+
+    let held = |first: i32, last: i32| HolderRun { first, last, holder: Holder::Found { slot: 7, id: 9001 }, starts_segment: true };
+    let renamed = Holders::new([("GER".to_owned(), vec![held(FIRST, FIRST + 1_499)]), ("DDR".to_owned(), vec![held(FIRST + 1_500, FIRST + 2_999)])].into(), Vec::new());
+    let query = Query { replay: base.replay, timeline: Arc::clone(&base.timeline), holders: Arc::new(renamed) };
+    let line = resources_line(&query, "produced");
+    let parts = line.held(&Ask { country: country.clone(), part: 4 }, FIRST, FIRST + 2_999);
+    let missing = line.missing(country.clone(), FIRST, FIRST + 2_999, &parts).unwrap();
+    let reason_at = |hour: i32| missing.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.reason.clone());
+    assert_eq!(
+        [reason_at(FIRST + 1_499).as_deref(), reason_at(FIRST + 1_500).as_deref()],
+        [Some("GER's produced was not recorded here"), Some("DDR's produced was not recorded here")],
+        "R5-S3: one country renamed under one slot is named by the tag it held at each hour: {missing:?}"
+    );
 }

@@ -83,7 +83,7 @@ export const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, B
   tooltip(frame, key, focus) {
     const rowKey = focus ? key : inspectedRow(key);
     const tip = rowKey ? buildBreakdownTooltip(frame.model, frame.layout.level, rowKey, frame.theme) : null;
-    return tip && rowKey ? { hour: frame.model.hour, rowKey, content: tip } : null;
+    return tip && rowKey ? { rowKey, payload: tip } : null;
   },
   structure({ binding, model, layout }) {
     return {
