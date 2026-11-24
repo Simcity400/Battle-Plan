@@ -2385,7 +2385,11 @@ export type ReserveHistoryParams = { branchId: string,
 /**
  * The holder's raw country id.
  */
-holder: number, };
+holder: number,
+/**
+ * The hour answered: nothing recorded after it is read into the reply.
+ */
+hour: number, };
 export type ReserveAmount = { source: number, amount: number, };
 export type ReserveSegment = { firstHour: number, lastHour: number,
 /**
@@ -2400,11 +2404,19 @@ export type SourceTag = { tag: string | null, firstHour: number, lastHour: numbe
 export type ReserveSource = { id: number, tags: Array<SourceTag>, };
 export type ReserveHistoryReply = {
 /**
- * In hour order; hours the timeline does not hold are not in it.
+ * The hour answered, never after the branch's last hour.
+ */
+hour: number,
+/**
+ * The first hour after `hour` at which an entry, admission, table coverage, source tag or timeline stretch changes; null when none does.
+ */
+nextChange: number | null,
+/**
+ * In hour order through `hour`; hours the timeline does not hold are not in it.
  */
 segments: Array<ReserveSegment>,
 /**
- * Every source the segments name, by raw id.
+ * Every source the segments by `hour` name, by raw id, with tags through `hour`.
  */
 sources: Array<ReserveSource>, warnings: Array<string>, };
 export type BattleWindow = { firstHour: number, lastHour: number, };
@@ -6659,7 +6671,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "next-elections": { "hour": "read" },
   "nuclear-arsenal": { "hour": "read" },
   "occupation-at": { "hour": "read" },
-  "occupation-reserve-history": {},
+  "occupation-reserve-history": { "hour": "read" },
   "occupation-reserve-manpower": { "hour": "read" },
   "occupied-states": { "hour": "read" },
   "operative-matrix": { "hour": "read" },
@@ -6843,7 +6855,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "next-elections": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "nuclear-arsenal": { "branchId": "leaf", "hour": "leaf", "top": "leaf" },
   "occupation-at": { "branchId": "leaf", "collaboration": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
-  "occupation-reserve-history": { "branchId": "leaf", "holder": "leaf" },
+  "occupation-reserve-history": { "branchId": "leaf", "holder": "leaf", "hour": "leaf" },
   "occupation-reserve-manpower": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "top": "leaf" },
   "occupied-states": { "branchId": "leaf", "hour": "leaf" },
   "operative-matrix": { "branchId": "leaf", "countries": "node", "countries[]": "any", "form": "leaf", "hour": "leaf", "top": "leaf" },
@@ -7027,7 +7039,7 @@ export type RequestParams<E, B> = {
   "next-elections": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "nuclear-arsenal": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "occupation-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "occupation-reserve-history": {};
+  "occupation-reserve-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "occupation-reserve-manpower": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "occupied-states": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "operative-matrix": { readonly [key: string]: unknown; readonly "hour"?: E | null };
