@@ -11,31 +11,54 @@ export function macrotaskSchedule(
 ): ((run: () => void) => void) | undefined {
   if (!createChannel) return undefined;
   const wake = createChannel();
-  const callbacks = new Map<number, () => void>();
+  let current: { token: number; run: () => void } | null = null;
   let nextToken = 1;
   wake.port1.onmessage = (event: MessageEvent) => {
-    const token = event.data as number;
-    const run = callbacks.get(token);
-    if (run) {
-      callbacks.delete(token);
-      run();
-    }
+    const active = current;
+    if (!active || event.data !== active.token) return;
+    current = null;
+    active.run();
   };
   return run => {
     const token = nextToken++;
-    callbacks.set(token, run);
+    current = { token, run };
     wake.port2.postMessage(token);
   };
 }
 
-export async function cropAll<S, B extends { close(): void }>(sources: readonly S[], make: (source: S) => Promise<B>): Promise<B[]> {
-  const results = await Promise.allSettled(sources.map(make));
-  const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-  if (failed) {
-    for (const result of results) if (result.status === 'fulfilled') result.value.close();
-    throw failed.reason;
-  }
-  return results.map(result => (result as PromiseFulfilledResult<B>).value);
+export function cropAll<S, B extends { close(): void }>(sources: readonly S[], make: (source: S) => Promise<B>): Promise<B[]> {
+  if (!sources.length) return Promise.resolve([]);
+  return new Promise<B[]>((resolve, reject) => {
+    const out = new Array<B | undefined>(sources.length);
+    let remaining = sources.length;
+    let failed = false;
+    const failWith = (error: unknown) => {
+      if (failed) return;
+      failed = true;
+      for (let i = 0; i < out.length; i++) {
+        out[i]?.close();
+        out[i] = undefined;
+      }
+      reject(error);
+    };
+    sources.forEach((source, index) => {
+      if (failed) return;
+      let pending: Promise<B>;
+      try { pending = make(source); }
+      catch (error) { failWith(error); return; }
+      pending.then(
+        bitmap => {
+          if (failed) {
+            bitmap.close();
+            return;
+          }
+          out[index] = bitmap;
+          if (--remaining === 0) resolve(out as B[]);
+        },
+        failWith,
+      );
+    });
+  });
 }
 
 export interface LaneSide {

@@ -2761,7 +2761,93 @@ test('invalidated MessageChannel wake from an interrupted hand-over cannot fire 
   assert.deepEqual(presented.map(p => p.entries[0]?.h), [10, 20, 30], 'delivering wake B serves hour 30');
 });
 
-test('seeded differential search: hand-over lane matches main at quiescence across 300 deterministic interleavings', async () => {
+test('cropAll rejects on first failure while a sibling crop is held, serves exact hour 20 immediately, and closes the late sibling bitmap', async () => {
+  const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
+  interface Tracked extends Fake { closeCount: number }
+  let rejectFirst!: (err: Error) => void;
+  let resolveSecond!: () => void;
+  let lateBitmap: Tracked | null = null;
+  let cropIndex = 0;
+  const failedWidgets: [number, string][] = [];
+  const view: LaneView = {
+    paint: (input): Painted => {
+      const h = input.pictures[0]!.h;
+      const tag = `w${input.widget}:h${h}`;
+      return {
+        surfaces: [{ source: { width: 4, height: 4, content: tag } as never, content: tag }],
+        fields: { tag: { value: tag, content: tag } },
+        motion: false,
+      };
+    },
+  };
+  let lane!: Lane<Tracked>;
+  const page = new Page<Tracked>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+      else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+    },
+  });
+  lane = new Lane<Tracked>({
+    lane: 0, lanes: 1, views: () => view,
+    crop: sources => cropAll(sources, source => {
+      const idx = ++cropIndex;
+      const content = (source as unknown as { content: string }).content;
+      const makeBitmap = (): Tracked => ({
+        content, width: source.width, closed: false, closeCount: 0,
+        close() { this.closeCount++; this.closed = true; },
+      });
+      if (idx === 1) return new Promise<Tracked>((_res, rej) => { rejectFirst = rej; });
+      if (idx === 2) return new Promise<Tracked>(res => {
+        resolveSecond = () => {
+          lateBitmap = makeBitmap();
+          res(lateBitmap);
+        };
+      });
+      return Promise.resolve(makeBitmap());
+    }),
+    present: presentation => { page.offer(presentation); },
+    release: () => {},
+    fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+    failWidget: (widget, reason) => { failedWidgets.push([widget, reason]); page.name(widget, 'failed', reason); },
+    later: () => {},
+  });
+
+  for (const [wid, sub] of [[1, 3], [2, 5], [3, 7]] as const) {
+    lane.follow(sub, 'followed');
+    lane.mount(wid, [sub], 'view');
+    lane.bind(wid, { generation: 1, surfaces: [{ width: 4, height: 4, dpr: 1 }], offset: 0, pin: null });
+    page.mount(wid, { route: ROUTE, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+    lane.bindRoute(sub, ROUTE, NATIVE, 0);
+  }
+
+  lane.receive('follow', message(10, [
+    { id: 3, hour: 10, answer: rows([1n], [10n]) },
+    { id: 5, hour: 10, answer: rows([1n], [10n]) },
+  ], false, NATIVE, 0));
+  page.publish(10, { playing: false, seek: 0 });
+  await drainMicrotasks();
+  assert.equal(cropIndex, 2, 'widgets 1 and 2 both started cropping at hour 10');
+
+  lane.receive('follow', message(20, [
+    { id: 7, hour: 20, answer: rows([1n], [20n]) },
+  ], false, NATIVE, 0));
+  page.publish(20, { playing: false, seek: 0 });
+  rejectFirst(new Error('first crop failed'));
+  await drainMicrotasks();
+  page.frame();
+
+  assert.deepEqual(failedWidgets.map(([w]) => w), [1, 2], 'failure is reported immediately on first rejection without waiting for sibling crop');
+  assert.equal(page.view(3).mode, 'picture', 'third widget installs hour 20 immediately instead of waiting in reading');
+  assert.equal(page.view(3).h, 20);
+
+  resolveSecond();
+  await drainMicrotasks();
+  assert.ok(lateBitmap !== null, 'late sibling crop resolved');
+  assert.equal((lateBitmap as Tracked).closeCount, 1, 'late-fulfilling sibling bitmap is closed exactly once');
+});
+
+test('seeded differential search: hand-over lane matches main at quiescence across 600 deterministic interleavings', async () => {
   const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
   const ROUTE_A = 1, ROUTE_B = 2, NATIVE_B = 10;
 
@@ -2812,6 +2898,8 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
       let exactServeCount = 0;
       let cropCount = 0;
       let offerCount = 0;
+      let lastExactSeek: number | null = null;
+      let pendingSpeculative = false;
       let lastHit1: string | null = null;
       let lastHit2: string | null = null;
       const bitmaps: TrackedBitmap[] = [];
@@ -2835,8 +2923,14 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
       const page = new Page<TrackedBitmap>({
         lanes: 1,
         post: (_lane, m: PageMessage) => {
-          if (m.type === 'frame') lane.frame(m);
-          else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+          if (m.type === 'frame') {
+            if (m.exact) { lastExactSeek = m.seek; pendingSpeculative = false; }
+            else { lastExactSeek = null; pendingSpeculative = true; }
+            lane.frame(m);
+          } else if (m.type === 'stream') {
+            if (lastExactSeek !== null && lastExactSeek < m.seek) lastExactSeek = null;
+            lane.stream(m.route, m.seek, m.target);
+          }
         },
       });
       const view: LaneView = {
@@ -2905,6 +2999,7 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
         release: () => {},
         served: frame => {
           serveCount++;
+          if (!frame.exact) pendingSpeculative = false;
           if (frame.exact && !frame.cancelled) exactServeCount++;
         },
         hit: (widget, key) => {
@@ -2927,6 +3022,8 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
 
       return {
         lane, page, crops, bufferedOffers, wakes, laters, fakeChannel, bitmaps, surfaces,
+        onStream(seek: number) { if (lastExactSeek !== null && lastExactSeek < seek) lastExactSeek = null; },
+        get hasEligibleExactWake() { return lastExactSeek !== null && !pendingSpeculative; },
         get delayOffers() { return delayOffers; },
         set delayOffers(v: boolean) { delayOffers = v; },
         get inCrop() { return inCrop; },
@@ -2992,15 +3089,21 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
       } else if (choice === 1) {
         const hour = rng() < 0.5 ? currentHour : (currentHour = 10 + randInt(5) * 10);
         const val = 300 + step * 10;
+        const overWasInHandover = !over.inCrop && over.wakes.some(w => !w.stale);
+        const overBefore = over.exactServeCount;
         pushFact6(seekB, hour, val);
         log.push(`${step}: exact(h=${hour},val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
         for (const s of sides) s.page.publish(hour, { playing: false, seek: seekB });
         await drainMicrotasks();
+        if (overWasInHandover && !over.inCrop && !holdNextCrop && over.exactServeCount === overBefore) {
+          failWith(`incoming exact frame at step ${step} was held in handover instead of serving immediately`);
+        }
       } else if (choice === 2) {
         const val = 500 + step * 10;
         const mainBefore = main.exactServeCount;
         const overBefore = over.exactServeCount;
         const neitherInCrop = !main.inCrop && !over.inCrop;
+        const overEligibleExact = over.hasEligibleExactWake;
         const targetSub = rng() < 0.5 ? 5 : 6;
         if (targetSub === 5) {
           log.push(`${step}: facts5(val=${val},ms=${paintDurationMs},hold=${holdNextCrop})`);
@@ -3010,7 +3113,7 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
           pushFact6(seekB, currentHour, val);
         }
         await drainMicrotasks();
-        if (neitherInCrop && !holdNextCrop && main.exactServeCount > mainBefore && over.exactServeCount === overBefore) {
+        if (overEligibleExact && neitherInCrop && !holdNextCrop && main.exactServeCount > mainBefore && over.exactServeCount === overBefore) {
           failWith(`exact data wake at step ${step} ran on main but was held/lost in handover`);
         }
       } else if (choice === 3) {
@@ -3028,7 +3131,7 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
           for (const s of sides) s.page.publish(currentHour, { playing: false, seek: seekB });
           pushFact6(seekB, currentHour, val);
         } else {
-          for (const s of sides) s.lane.stream(ROUTE_B, seekB, currentHour);
+          for (const s of sides) { s.onStream(seekB); s.lane.stream(ROUTE_B, seekB, currentHour); }
           pushFact6(seekB, currentHour, val);
         }
         await drainMicrotasks();
@@ -3115,6 +3218,20 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
     };
 
     await drainBoth();
+    const mainServesBeforeSpecProbe = main.serveCount;
+    const overServesBeforeSpecProbe = over.serveCount;
+    for (const s of sides) {
+      s.lane.frame({
+        type: 'frame', serial: 900000 + seed, now: currentHour, target: currentHour,
+        exact: false, seek: seekB, speed: 240, installed: [], refused: [], inspect: [],
+      });
+    }
+    await drainMicrotasks();
+    if (main.serveCount <= mainServesBeforeSpecProbe || over.serveCount <= overServesBeforeSpecProbe) {
+      failWith(`lane stranded working with nothing scheduled after first drain (main ${mainServesBeforeSpecProbe}->${main.serveCount}, over ${overServesBeforeSpecProbe}->${over.serveCount})`);
+    }
+    await drainBoth();
+
     const finalHour = currentHour + 10;
     const finalVal6 = 9000 + seed;
     pushFact6(seekB, finalHour, finalVal6);
@@ -3174,7 +3291,7 @@ test('seeded differential search: hand-over lane matches main at quiescence acro
     }
   };
 
-  for (let seed = 1; seed <= 300; seed++) {
+  for (let seed = 1; seed <= 600; seed++) {
     await runSeed(seed);
   }
 });
