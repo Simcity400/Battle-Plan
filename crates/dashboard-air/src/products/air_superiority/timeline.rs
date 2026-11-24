@@ -342,7 +342,7 @@ impl<'a> Days<'a> {
 
     #[cfg(test)]
     pub fn shown(&self, regions: &[u32], index: &AirIndex, cancelled: &AtomicBool) -> io::Result<Shown> {
-        let mut null = NullSideResolver;
+        let mut null = super::NullSideResolver;
         self.shown_with_resolver(regions, index, &mut null, cancelled)
     }
 
