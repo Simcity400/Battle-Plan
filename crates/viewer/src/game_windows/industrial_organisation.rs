@@ -2,8 +2,14 @@ use super::{
     ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowError, GameWindowRender,
     GameWindowRequest, GameWindowTooltip, Prepared, RenderParams, Service, WindowCacheKey,
     container_holder,
-    equipment_designer::{RenderContext, compute_read_hour, witnessed_rows, witnessed_single_key},
+    equipment_designer::{
+        RenderContext, compute_read_hour, script_tables, witnessed_rows, witnessed_single_key,
+    },
     layout_window, missing_window_refusal, strip_markup,
+};
+use super::compose::{
+    collect_template_assets, disable_by_name, find_direct, hide_by_name, row_size, set_frame_by_name,
+    set_sprite_by_name, set_text_by_name, spell,
 };
 use content_reader_defines::defines;
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
@@ -217,9 +223,21 @@ pub fn compute_funds_progress(
     }
 }
 
+fn organisation_scripts_readable() -> Result<(), String> {
+    script_tables().map_err(|withheld| {
+        format!("organisation scripts are read through the recording's executable tables, and {withheld}")
+    })
+}
+
+fn trait_catalog(layers: &ResolvedLayers) -> Result<Arc<mio_traits::Catalog>, String> {
+    organisation_scripts_readable()?;
+    mio_traits::cached(layers)
+}
+
 fn cached_organisation_database(
     layers: &ResolvedLayers,
 ) -> Result<Arc<OrganisationDatabase>, String> {
+    organisation_scripts_readable()?;
     #[derive(Default)]
     struct Cached(
         content_reader_layers::content::diagnostics::Once<
@@ -254,13 +272,6 @@ fn read_funds_defines(layers: &ResolvedLayers) -> Result<FundsDefines, String> {
         level_factor,
         level_pow,
     })
-}
-
-fn spell(lexical: &[LexicalTokenRow], token: u32) -> Option<String> {
-    let idx = lexical.binary_search_by_key(&token, |row| row.token).ok()?;
-    std::str::from_utf8(&lexical[idx].literal)
-        .ok()
-        .map(str::to_owned)
 }
 
 fn resolve_owner_tag(
@@ -640,78 +651,6 @@ fn format_bonus_plain(name: &str, raw: i64, localisation: &Localisation) -> Stri
     )
 }
 
-fn find_child<'a>(parent: &'a Element, segment: &str) -> Option<&'a Element> {
-    if let Some(found) = parent
-        .children
-        .iter()
-        .find(|child| child.is_named(segment.as_bytes()))
-    {
-        return Some(found);
-    }
-    if let Fields::DropDown(dd) = &parent.fields {
-        if let Some(expand) = dd.expand_button.as_deref()
-            && expand.is_named(segment.as_bytes())
-        {
-            return Some(expand);
-        }
-        if let Some(found) = dd
-            .inner
-            .children
-            .iter()
-            .find(|child| child.is_named(segment.as_bytes()))
-        {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn find_direct<'a>(root: &'a Element, path: &str) -> Option<&'a Element> {
-    let mut current = root;
-    for segment in path.split('/') {
-        current = find_child(current, segment)?;
-    }
-    Some(current)
-}
-
-fn hide_by_name(instance: &mut Instance, root: &Element, name: &str) {
-    if let Some(element) = find_direct(root, name) {
-        let _ = instance.hide(root, element);
-    }
-}
-
-fn disable_by_name(instance: &mut Instance, root: &Element, name: &str) {
-    if let Some(element) = find_direct(root, name)
-        && let Ok(bound) = instance.control(root, element)
-    {
-        bound.enabled = Some(false);
-    }
-}
-
-fn set_text_by_name(instance: &mut Instance, root: &Element, name: &str, text: String) {
-    if let Some(element) = find_direct(root, name)
-        && let Ok(bound) = instance.control(root, element)
-    {
-        bound.text = Some(text);
-    }
-}
-
-fn set_sprite_by_name(instance: &mut Instance, root: &Element, name: &str, sprite: &str) {
-    if let Some(element) = find_direct(root, name)
-        && let Ok(bound) = instance.control(root, element)
-    {
-        bound.sprite = Some(sprite.as_bytes().to_vec());
-    }
-}
-
-fn set_frame_by_name(instance: &mut Instance, root: &Element, name: &str, frame: i32) {
-    if let Some(element) = find_direct(root, name)
-        && let Ok(bound) = instance.control(root, element)
-    {
-        bound.frame = Some(frame);
-    }
-}
-
 fn loc_fill(localisation: &Localisation, key: &str, values: &[(&str, &str)]) -> String {
     let Some(raw) = localisation.get(key) else {
         let shown: Vec<&str> = values.iter().map(|(_, value)| *value).collect();
@@ -756,26 +695,10 @@ fn format_points_line(localisation: &Localisation, value_str: &str) -> String {
     )
 }
 
-fn collect_template_assets(
-    guis: &native::Guis,
-    localisation: &Localisation,
-    names: &[&str],
-    assets: &mut Assets,
-) {
-    for name in names {
-        if let Some(template) = guis.template(name.as_bytes()) {
-            let found = native_gui::assets_in(template, &|n| guis.template(n), localisation);
-            assets.sprites.extend(found.sprites);
-            assets.fonts.extend(found.fonts);
-            assets.textures.extend(found.textures);
-        }
-    }
-}
-
 fn aggregate_bonuses(
-    data: &OrganisationViewData,
-    tree: Option<&Tree<'_>>,
-    org_db: Option<&OrganisationDatabase>,
+    details: &OrganisationDetails,
+    tree: &Tree<'_>,
+    policy: Option<&Policy>,
 ) -> Vec<(String, i64)> {
     let mut totals: Vec<(String, i64)> = Vec::new();
     let mut add = |bonus: &Bonus| {
@@ -785,32 +708,24 @@ fn aggregate_bonuses(
             totals.push((bonus.name.clone(), bonus.value));
         }
     };
-    if let Some(tree) = tree {
-        if let Some(initial) = tree.initial {
-            for bonus in &initial.bonuses {
+    if let Some(initial) = tree.initial {
+        for bonus in &initial.bonuses {
+            add(bonus);
+        }
+    }
+    let unlocked: BTreeSet<String> = details
+        .unlocked
+        .iter()
+        .map(|t| t.to_ascii_lowercase())
+        .collect();
+    for trait_def in tree.traits {
+        if unlocked.contains(&trait_def.token.to_ascii_lowercase()) {
+            for bonus in &trait_def.bonuses {
                 add(bonus);
             }
         }
-        if let RecordedDetails::Available(details) = &data.details {
-            let unlocked: BTreeSet<String> = details
-                .unlocked
-                .iter()
-                .map(|t| t.to_ascii_lowercase())
-                .collect();
-            for trait_def in tree.traits {
-                if unlocked.contains(&trait_def.token.to_ascii_lowercase()) {
-                    for bonus in &trait_def.bonuses {
-                        add(bonus);
-                    }
-                }
-            }
-        }
     }
-    if let RecordedDetails::Available(details) = &data.details
-        && let Some(policy_token) = &details.policy_token
-        && let Some(db) = org_db
-        && let Ok(policy) = db.policies.policy(policy_token.as_bytes())
-    {
+    if let Some(policy) = policy {
         for (_, group_bonuses) in &policy.groups {
             for bonus in group_bonuses {
                 add(bonus);
@@ -824,11 +739,172 @@ fn aggregate_bonuses(
 struct PreparedMio {
     data: OrganisationViewData,
     sub_view: SubView,
-    catalog: Option<Arc<mio_traits::Catalog>>,
-    org_db: Option<Arc<OrganisationDatabase>>,
+    catalog: Result<Arc<mio_traits::Catalog>, String>,
+    org_db: Result<Arc<OrganisationDatabase>, String>,
     emblem_sprite: String,
     tree_background: Option<String>,
     attached_policy_sprite: Option<String>,
+}
+
+fn organisation_tree<'c>(
+    catalog: &'c Result<Arc<mio_traits::Catalog>, String>,
+    token: &str,
+) -> Result<Tree<'c>, String> {
+    let catalog = catalog
+        .as_deref()
+        .map_err(|why| format!("the organisation scripts could not be read ({why})"))?;
+    match catalog.tree(token) {
+        Ok(Some(tree)) => Ok(tree),
+        Ok(None) => Err(format!(
+            "'{token}' is not defined in the recorded mod stack's organisation scripts"
+        )),
+        Err(why) => Err(format!("its trait tree could not be read ({why})")),
+    }
+}
+
+fn trait_positions<'t>(
+    catalog: &Result<Arc<mio_traits::Catalog>, String>,
+    tree: &Tree<'t>,
+    token: &str,
+) -> Result<Vec<(&'t TraitName, [i32; 2])>, String> {
+    let catalog = catalog
+        .as_deref()
+        .map_err(|why| format!("the organisation scripts could not be read ({why})"))?;
+    let mut positions = Vec::new();
+    for trait_def in tree.traits {
+        match catalog.position(token, &trait_def.token) {
+            Ok(Some(pos)) => positions.push((trait_def, pos)),
+            Ok(None) => {}
+            Err(why) => {
+                return Err(format!(
+                    "trait '{}' cannot be placed in the tree ({why})",
+                    trait_def.token
+                ));
+            }
+        }
+    }
+    Ok(positions)
+}
+
+fn attached_policy<'d>(
+    details: &OrganisationDetails,
+    org_db: &'d Result<Arc<OrganisationDatabase>, String>,
+) -> Result<Option<&'d Policy>, String> {
+    let Some(token) = &details.policy_token else {
+        return Ok(None);
+    };
+    let db = org_db.as_deref().map_err(|why| {
+        format!("the attached policy '{token}' is not readable because the organisation scripts could not be read ({why})")
+    })?;
+    db.policies.policy(token.as_bytes()).map(Some).map_err(|why| {
+        format!("the attached policy '{token}' is not readable from the recorded mod stack ({why})")
+    })
+}
+
+fn tab_refusal(token: &str, sub_view: SubView, reason: &str) -> GameWindowError {
+    let tab = match sub_view {
+        SubView::Traits => "trait tree",
+        SubView::History => "history",
+        SubView::Policy => "policies",
+    };
+    GameWindowError::refused(format!(
+        "The {tab} of military industrial organisation '{token}' cannot be shown: {reason}."
+    ))
+}
+
+fn require_template<'g>(
+    guis: &'g native::Guis,
+    name: &str,
+) -> Result<&'g Element, GameWindowError> {
+    guis.template(name.as_bytes())
+        .ok_or_else(|| GameWindowError::refused(missing_window_refusal(name)))
+}
+
+fn require_path<'e>(
+    root: &'e Element,
+    window: &str,
+    path: &str,
+) -> Result<&'e Element, GameWindowError> {
+    find_direct(root, path).ok_or_else(|| {
+        GameWindowError::refused(format!(
+            "Window '{window}' has no '{path}' in the loaded interface files, so what it shows cannot be drawn."
+        ))
+    })
+}
+
+fn require_holder<'l>(
+    layout: &'l Layout,
+    element: &Element,
+) -> Result<&'l native_gui::Holder, GameWindowError> {
+    layout
+        .holders
+        .iter()
+        .find(|holder| holder.path == element.path)
+        .ok_or_else(|| {
+            GameWindowError::refused(format!(
+                "'{}' produced no layout holder, so its rows cannot be placed.",
+                element.path
+            ))
+        })
+}
+
+const BONUS_LIST_PATH: &str = "aggregated_bonuses_window/aggregated_bonus_list";
+const TREE_LIST_PATH: &str = "tree_scrollbar_window/tree_window/tree_list";
+const HISTORY_LIST_PATH: &str = "history_window/variants_window/variant_history_list";
+const POLICY_LIST_PATH: &str = "policy_list_window/policy_list";
+const TREE_WINDOW: &str = "industrial_organisation_tree_window";
+const TREE_TRAITS_PATH: &str = "scrollbar_window/traits_window";
+const TREE_HEADER_PATH: &str = "tree_header";
+
+fn tree_needs_connectors(tree: &Tree<'_>) -> bool {
+    tree.traits.iter().any(|trait_def| {
+        !trait_def.parents.is_empty()
+            || !trait_def.mutually_exclusive.is_empty()
+            || !trait_def.bonuses.is_empty()
+            || trait_def.organisation_modifiers.listed().next().is_some()
+    })
+}
+
+fn tab_requirements(
+    guis: &native::Guis,
+    sub_view: SubView,
+    tree: Option<&Tree<'_>>,
+) -> Result<(), GameWindowError> {
+    let window = sub_view.window_name();
+    let root = require_template(guis, window)?;
+    match sub_view {
+        SubView::Traits | SubView::History => {
+            require_template(guis, "progressbar_widget")?;
+            require_path(root, window, BONUS_LIST_PATH)?;
+        }
+        SubView::Policy => {
+            require_template(guis, "policy_item")?;
+            require_path(root, window, POLICY_LIST_PATH)?;
+        }
+    }
+    match sub_view {
+        SubView::Traits => {
+            require_path(root, window, TREE_LIST_PATH)?;
+            require_template(guis, "industrial_organisation_trait_entry")?;
+            let tree_root = require_template(guis, TREE_WINDOW)?;
+            require_path(tree_root, TREE_WINDOW, TREE_TRAITS_PATH)?;
+            if let Some(tree) = tree {
+                if !tree.tree_header_texts.is_empty() {
+                    require_path(tree_root, TREE_WINDOW, TREE_HEADER_PATH)?;
+                    require_template(guis, "industrial_organisation_flavortext_window")?;
+                }
+                if tree_needs_connectors(tree) {
+                    require_template(guis, "industrial_organisation_bonus_type_icon")?;
+                }
+            }
+        }
+        SubView::History => {
+            require_template(guis, "industrial_organisation_history_item")?;
+            require_path(root, window, HISTORY_LIST_PATH)?;
+        }
+        SubView::Policy => {}
+    }
+    Ok(())
 }
 
 fn configure_detail_main(
@@ -839,7 +915,7 @@ fn configure_detail_main(
     prepared: &PreparedMio,
 ) {
     let data = &prepared.data;
-    let org_db = prepared.org_db.as_deref();
+    let org_db = prepared.org_db.as_deref().ok();
     let display_name = resolve_org_name(data, org_db, localisation);
     set_text_by_name(instance, root, "industrial_org_name", display_name.clone());
 
@@ -991,10 +1067,7 @@ fn configure_detail_main(
             if let Some(queue_btn) =
                 find_direct(root, "aggregated_bonuses_window/open_queue_button")
             {
-                let tree = prepared
-                    .catalog
-                    .as_deref()
-                    .and_then(|cat| cat.tree(&data.token).ok().flatten());
+                let tree = organisation_tree(&prepared.catalog, &data.token).ok();
                 let body = if details.queued.is_empty() {
                     "No traits queued at this hour.".to_owned()
                 } else {
@@ -1113,7 +1186,8 @@ fn configure_policy_main(
     instance: &mut Instance,
     prepared: &PreparedMio,
 ) {
-    let display_name = resolve_org_name(&prepared.data, prepared.org_db.as_deref(), localisation);
+    let display_name =
+        resolve_org_name(&prepared.data, prepared.org_db.as_deref().ok(), localisation);
     set_text_by_name(instance, root, "title/title", display_name);
     set_text_by_name(
         instance,
@@ -1132,9 +1206,7 @@ fn compose_funds_progressbar(
     prepared: &PreparedMio,
     plan: &mut ComposedPlan,
 ) -> Result<(), GameWindowError> {
-    let Some(pb_root) = guis.template(b"progressbar_widget") else {
-        return Ok(());
-    };
+    let pb_root = require_template(guis, "progressbar_widget")?;
     let refuse = |what: &str| {
         GameWindowError::refused(format!(
             "Window '{DETAIL_WINDOW_NAME}' is missing required '{what}' for the funds bar."
@@ -1222,18 +1294,6 @@ fn compose_funds_progressbar(
         tooltip_overrides: overrides,
     });
     Ok(())
-}
-
-fn row_size(template: &Element, window: &str) -> Result<[i32; 2], GameWindowError> {
-    template
-        .container()
-        .map(|container| [container.size.size[0].value, container.size.size[1].value])
-        .filter(|&[_, height]| height > 0)
-        .ok_or_else(|| {
-            GameWindowError::refused(format!(
-                "Template '{window}' declares no height, so its rows cannot be stacked."
-            ))
-        })
 }
 
 struct BonusRow<'a> {
@@ -1325,16 +1385,8 @@ fn compose_aggregated_bonuses(
     prepared: &PreparedMio,
     plan: &mut ComposedPlan,
 ) -> Result<(), GameWindowError> {
-    let Some(list_el) = find_direct(root, "aggregated_bonuses_window/aggregated_bonus_list") else {
-        return Ok(());
-    };
-    let Some(holder) = main_layout
-        .holders
-        .iter()
-        .find(|h| h.path == list_el.path)
-    else {
-        return Ok(());
-    };
+    let list_el = require_path(root, prepared.sub_view.window_name(), BONUS_LIST_PATH)?;
+    let holder = require_holder(main_layout, list_el)?;
     let mut rows = BonusRows {
         separator: guis.template(b"industrial_organisation_detail_separator"),
         modifier: guis.template(b"industrial_organisation_detail_modifier_item"),
@@ -1401,11 +1453,9 @@ fn compose_aggregated_bonuses(
                 )?;
             }
 
-            let tree = prepared
-                .catalog
-                .as_deref()
-                .and_then(|cat| cat.tree(&prepared.data.token).ok().flatten());
-            if let Some(initial) = tree.as_ref().and_then(|t| t.initial) {
+            let tree = organisation_tree(&prepared.catalog, &prepared.data.token);
+            let policy = attached_policy(details, &prepared.org_db);
+            if let Ok(Some(initial)) = tree.as_ref().map(|t| t.initial) {
                 rows.separator(
                     loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_INITIAL_TRAIT_BONUSES"),
                 )?;
@@ -1425,13 +1475,32 @@ fn compose_aggregated_bonuses(
                 )?;
             }
 
-            let totals = aggregate_bonuses(&prepared.data, tree.as_ref(), prepared.org_db.as_deref());
-            if !totals.is_empty() {
-                rows.separator(
-                    loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_EQUIPMENT_BONUSES"),
-                )?;
-                for (name, value) in totals {
-                    rows.bonus(format_bonus_plain(&name, value, localisation))?;
+            match (&tree, &policy) {
+                (Ok(tree), Ok(policy)) => {
+                    let totals = aggregate_bonuses(details, tree, *policy);
+                    if !totals.is_empty() {
+                        rows.separator(
+                            loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_EQUIPMENT_BONUSES"),
+                        )?;
+                        for (name, value) in totals {
+                            rows.bonus(format_bonus_plain(&name, value, localisation))?;
+                        }
+                    }
+                }
+                (Err(reason), _) | (_, Err(reason)) => {
+                    rows.separator(
+                        loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_EQUIPMENT_BONUSES"),
+                    )?;
+                    rows.modifier(
+                        NOT_RECORDED_VALUE.to_owned(),
+                        Some(GameWindowTooltip {
+                            title: "Not available".to_owned(),
+                            body: Some(format!(
+                                "The initial trait and equipment bonuses cannot be shown: {reason}."
+                            )),
+                            detail: None,
+                        }),
+                    )?;
                 }
             }
         }
@@ -1604,21 +1673,14 @@ fn compose_trait_tree(
     prepared: &PreparedMio,
     plan: &mut ComposedPlan,
 ) -> Result<(), GameWindowError> {
-    let Some(tree_list) = find_direct(root, "tree_scrollbar_window/tree_window/tree_list") else {
-        return Ok(());
-    };
-    let Some(tree_holder) = main_layout
-        .holders
-        .iter()
-        .find(|h| h.path == tree_list.path)
-    else {
-        return Ok(());
-    };
-    let Some(tree_tpl) = guis.template(b"industrial_organisation_tree_window") else {
-        return Err(GameWindowError::refused(missing_window_refusal(
-            "industrial_organisation_tree_window",
-        )));
-    };
+    let token = &prepared.data.token;
+    let tree = organisation_tree(&prepared.catalog, token)
+        .map_err(|reason| tab_refusal(token, SubView::Traits, &reason))?;
+    let positions = trait_positions(&prepared.catalog, &tree, token)
+        .map_err(|reason| tab_refusal(token, SubView::Traits, &reason))?;
+    let tree_list = require_path(root, DETAIL_WINDOW_NAME, TREE_LIST_PATH)?;
+    let tree_holder = require_holder(main_layout, tree_list)?;
+    let tree_tpl = require_template(guis, TREE_WINDOW)?;
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
     let tree_layout = layout_window(tree_tpl, resources, viewport, |instance| {
         if let Some(bg) = &prepared.tree_background
@@ -1627,9 +1689,13 @@ fn compose_trait_tree(
             bound.sprite = Some(bg.as_bytes().to_vec());
         }
     })?;
-    let traits_holder = find_direct(tree_tpl, "scrollbar_window/traits_window")
-        .and_then(|el| container_holder(&tree_layout, &el.path));
-    let header_holder = find_direct(tree_tpl, "tree_header")
+    let traits_el = require_path(tree_tpl, TREE_WINDOW, TREE_TRAITS_PATH)?;
+    let mut traits_box = container_holder(&tree_layout, &traits_el.path).ok_or_else(|| {
+        GameWindowError::refused(format!(
+            "'{TREE_WINDOW}/{TREE_TRAITS_PATH}' produced no layout holder, so the traits cannot be placed."
+        ))
+    })?;
+    let header_holder = find_direct(tree_tpl, TREE_HEADER_PATH)
         .and_then(|el| container_holder(&tree_layout, &el.path));
 
     let tree_parts = tree_holder.place([0, 0], &tree_layout);
@@ -1648,35 +1714,6 @@ fn compose_trait_tree(
         tooltip_overrides: BTreeMap::new(),
     });
 
-    let Some(catalog) = prepared.catalog.as_deref() else {
-        return Ok(());
-    };
-    let tree = match catalog.tree(&prepared.data.token) {
-        Ok(Some(tree)) => tree,
-        Ok(None) => {
-            plan.warnings.push(format!(
-                "Military industrial organisation '{}' is not defined in loaded organisation scripts.",
-                prepared.data.token
-            ));
-            return Ok(());
-        }
-        Err(why) => {
-            plan.warnings.push(format!(
-                "Military industrial organisation '{}' trait tree could not be loaded: {why}",
-                prepared.data.token
-            ));
-            return Ok(());
-        }
-    };
-
-    let mut positions: Vec<(&TraitName, [i32; 2])> = Vec::new();
-    for trait_def in tree.traits {
-        match catalog.position(&prepared.data.token, &trait_def.token) {
-            Ok(Some(pos)) => positions.push((trait_def, pos)),
-            Ok(None) => {}
-            Err(why) => plan.warnings.push(why),
-        }
-    }
     let min_x = positions.iter().map(|(_, p)| p[0]).min().unwrap_or(0);
     let min_y = positions.iter().map(|(_, p)| p[1]).min().unwrap_or(0);
     let max_x = positions.iter().map(|(_, p)| p[0]).max().unwrap_or(0);
@@ -1696,9 +1733,13 @@ fn compose_trait_tree(
         TREE_STEP_Y
     };
 
-    if let Some(mut hdr) = header_holder
-        && let Some(flavor_tpl) = guis.template(b"industrial_organisation_flavortext_window")
-    {
+    if !tree.tree_header_texts.is_empty() {
+        let mut hdr = header_holder.ok_or_else(|| {
+            GameWindowError::refused(format!(
+                "'{TREE_WINDOW}/{TREE_HEADER_PATH}' produced no layout holder, so the tree's header texts cannot be placed."
+            ))
+        })?;
+        let flavor_tpl = require_template(guis, "industrial_organisation_flavortext_window")?;
         hdr.origin = [tree_origin[0] + hdr.origin[0], tree_origin[1] + hdr.origin[1]];
         hdr.logical = [
             tree_holder.logical[0] + hdr.logical[0],
@@ -1724,9 +1765,6 @@ fn compose_trait_tree(
         }
     }
 
-    let Some(mut traits_box) = traits_holder else {
-        return Ok(());
-    };
     traits_box.origin = [
         tree_origin[0] + traits_box.origin[0],
         tree_origin[1] + traits_box.origin[1],
@@ -1769,7 +1807,12 @@ fn compose_trait_tree(
         .map(|(tr, grid)| (tr.token.to_ascii_lowercase(), pixel_of(*grid)))
         .collect();
 
-    if let Some(icon_tpl) = guis.template(b"industrial_organisation_bonus_type_icon") {
+    let bonus_icon_tpl = if tree_needs_connectors(&tree) {
+        Some(require_template(guis, "industrial_organisation_bonus_type_icon")?)
+    } else {
+        None
+    };
+    if let Some(icon_tpl) = bonus_icon_tpl {
         let connector_ctx = ConnectorPlace {
             holder: &traits_box,
             icon_tpl,
@@ -1826,12 +1869,7 @@ fn compose_trait_tree(
         }
     }
 
-    let Some(trait_tpl) = guis.template(b"industrial_organisation_trait_entry") else {
-        return Err(GameWindowError::refused(missing_window_refusal(
-            "industrial_organisation_trait_entry",
-        )));
-    };
-    let bonus_icon_tpl = guis.template(b"industrial_organisation_bonus_type_icon");
+    let trait_tpl = require_template(guis, "industrial_organisation_trait_entry")?;
     let has_sprite = |name: &str| resources.sprite_info(name.as_bytes()).is_some();
 
     for (idx, (trait_def, grid)) in positions.iter().enumerate() {
@@ -1985,20 +2023,9 @@ fn compose_history_lists(
     prepared: &PreparedMio,
     plan: &mut ComposedPlan,
 ) -> Result<(), GameWindowError> {
-    let Some(item_tpl) = guis.template(b"industrial_organisation_history_item") else {
-        return Ok(());
-    };
-    let Some(list_el) = find_direct(root, "history_window/variants_window/variant_history_list")
-    else {
-        return Ok(());
-    };
-    let Some(holder) = main_layout
-        .holders
-        .iter()
-        .find(|h| h.path == list_el.path)
-    else {
-        return Ok(());
-    };
+    let item_tpl = require_template(guis, "industrial_organisation_history_item")?;
+    let list_el = require_path(root, DETAIL_WINDOW_NAME, HISTORY_LIST_PATH)?;
+    let holder = require_holder(main_layout, list_el)?;
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
     let size = row_size(item_tpl, "industrial_organisation_history_item")?;
     match &prepared.data.history {
@@ -2094,25 +2121,18 @@ fn compose_policy_list(
     prepared: &PreparedMio,
     plan: &mut ComposedPlan,
 ) -> Result<(), GameWindowError> {
-    let Some(item_tpl) = guis.template(b"policy_item") else {
-        return Err(GameWindowError::refused(missing_window_refusal(
-            "policy_item",
-        )));
-    };
-    let list_el = find_direct(root, "policy_list_window/policy_list").ok_or_else(|| {
-        GameWindowError::refused(format!(
-            "Window '{POLICY_WINDOW_NAME}' is missing required list 'policy_list_window/policy_list'."
-        ))
-    })?;
-    let holder = main_layout
-        .holders
-        .iter()
-        .find(|h| h.path == list_el.path)
-        .ok_or_else(|| {
-            GameWindowError::refused(format!(
-                "Policy list '{}' produced no layout holder.",
-                list_el.path
-            ))
+    let item_tpl = require_template(guis, "policy_item")?;
+    let list_el = require_path(root, POLICY_WINDOW_NAME, POLICY_LIST_PATH)?;
+    let holder = require_holder(main_layout, list_el)?;
+    let org_db = prepared
+        .org_db
+        .as_deref()
+        .map_err(|why| {
+            tab_refusal(
+                &prepared.data.token,
+                SubView::Policy,
+                &format!("the organisation scripts could not be read ({why})"),
+            )
         })?;
     let size = row_size(item_tpl, "policy_item")?;
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
@@ -2174,10 +2194,7 @@ fn compose_policy_list(
             for (idx, (token, place)) in tokens.iter().zip(places).enumerate() {
                 let Some(place) = place else { continue };
                 let key = token.to_ascii_lowercase();
-                let policy_def = prepared
-                    .org_db
-                    .as_deref()
-                    .and_then(|db| db.policies.policy(token.as_bytes()).ok());
+                let policy_def = org_db.policies.policy(token.as_bytes()).ok();
                 let name = resolve_policy_name(token, policy_def, localisation);
                 let icon = resolve_policy_icon(policy_def, has_sprite);
                 let is_attached = attached_lower.as_deref() == Some(key.as_str());
@@ -2266,8 +2283,26 @@ pub fn render_data(
     cancel: &AtomicBool,
 ) -> Result<GameWindowRender, GameWindowError> {
     let window_name = sub_view.window_name();
-    let catalog = mio_traits::cached(layers).ok();
-    let org_db = cached_organisation_database(layers).ok();
+    let catalog = trait_catalog(layers);
+    let org_db = cached_organisation_database(layers);
+    match sub_view {
+        SubView::Traits => {
+            let tree = organisation_tree(&catalog, &data.token)
+                .map_err(|reason| tab_refusal(&data.token, sub_view, &reason))?;
+            trait_positions(&catalog, &tree, &data.token)
+                .map_err(|reason| tab_refusal(&data.token, sub_view, &reason))?;
+        }
+        SubView::Policy => {
+            org_db.as_ref().map_err(|why| {
+                tab_refusal(
+                    &data.token,
+                    sub_view,
+                    &format!("the organisation scripts could not be read ({why})"),
+                )
+            })?;
+        }
+        SubView::History => {}
+    }
     let read_hour = Some(data.read_hour);
     let extra_warnings = data.warnings.clone();
 
@@ -2314,10 +2349,9 @@ pub fn render_data(
                 templates,
                 &mut assets,
             );
+            let tree = organisation_tree(&catalog, &data.token).ok();
+            tab_requirements(shared.guis.as_ref(), sub_view, tree.as_ref())?;
             let has_sprite = |name: &str| shared.registry.sprite(name.as_bytes()).is_some();
-            let tree = catalog
-                .as_deref()
-                .and_then(|cat| cat.tree(&data.token).ok().flatten());
             let emblem_sprite = resolve_org_icon(&data, tree.as_ref(), has_sprite);
             assets.sprites.insert(emblem_sprite.as_bytes().to_vec());
 
@@ -2334,6 +2368,7 @@ pub fn render_data(
                 RecordedDetails::Available(details) => details.policy_token.as_deref().map(|tok| {
                     let def = org_db
                         .as_deref()
+                        .ok()
                         .and_then(|db| db.policies.policy(tok.as_bytes()).ok());
                     resolve_policy_icon(def, has_sprite)
                 }),
@@ -2375,6 +2410,7 @@ pub fn render_data(
                     for tok in &details.allowed_policies {
                         let def = org_db
                             .as_deref()
+                            .ok()
                             .and_then(|db| db.policies.policy(tok.as_bytes()).ok());
                         let sprite = resolve_policy_icon(def, has_sprite);
                         assets.sprites.insert(sprite.as_bytes().to_vec());
@@ -2488,7 +2524,7 @@ pub fn render_data(
             }
             plan.title = Some(resolve_org_name(
                 &prepared.data,
-                prepared.org_db.as_deref(),
+                prepared.org_db.as_deref().ok(),
                 localisation,
             ));
             Ok(())

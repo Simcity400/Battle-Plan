@@ -30,6 +30,7 @@ export interface ShareRowsInput {
   readonly addRegionLabel?: string | null;
   readonly summaryText?: string;
   readonly legend?: readonly BarsLegendItem[];
+  readonly unit?: string;
   readonly empty?: string;
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
@@ -80,6 +81,7 @@ export function buildShareRowsModel(input: ShareRowsInput): BarsModel {
     showAxis: false,
     ...(input.summaryText !== undefined ? { summaryText: input.summaryText } : {}),
     ...(input.legend?.length ? { legend: input.legend } : {}),
+    ...(input.unit ? { scaleUnit: input.unit } : {}),
     ...(input.empty !== undefined ? { empty: input.empty } : {}),
     ...(input.emptyDetail !== undefined ? { emptyDetail: input.emptyDetail } : {}),
     ...(input.emptyKind !== undefined ? { emptyKind: input.emptyKind } : {}),

@@ -121,7 +121,7 @@ fn a_countrys_pacts_end_when_its_row_goes_and_are_unknown_past_a_gap_and_join_ac
     let (pacts, counts) = pacts(&stretches, &held, &names, &[(1, 100, 299)], 299);
     let shown: Vec<_> = pacts
         .iter()
-        .map(|pact| (pact.kind.as_str(), pact.first.as_deref(), pact.second.as_deref(), pact.start_hour, pact.end_hour, pact.first_seen, pact.last_seen, pact.gone_by, pact.present_at_end, pact.ended_by))
+        .map(|pact| (pact.kind.as_str(), pact.first.as_deref(), pact.second.as_deref(), pact.start_hour, pact.end_hour, pact.first_seen, pact.last_seen, pact.gone_by, pact.held, pact.ended_by))
         .collect();
     assert_eq!(
         shown,
@@ -135,6 +135,35 @@ fn a_countrys_pacts_end_when_its_row_goes_and_are_unknown_past_a_gap_and_join_ac
     let broken = [Stretch { run: 0, first: 100, last: 199, join: Join::Start }, Stretch { run: 1, first: 250, last: 299, join: Join::Break }];
     let (pacts, _) = super::pacts(&broken, &held, &names, &[(1, 100, 299)], 299);
     assert!(pacts.iter().any(|pact| pact.kind == "military_access" && pact.ended_by && pact.gone_by.is_none()));
+}
+
+#[test]
+fn a_reply_asked_at_an_hour_holds_no_pact_first_seen_after_it_and_names_and_ends_pacts_only_from_what_it_saw() {
+    let key = |owner: u32, target: u32, kind: u32| u128::from(owner) << 80 | u128::from(target) << 48 | u128::from(kind) << 16;
+    let run = |first, last, endpoints, dates| PactRun { first, last, endpoints, dates };
+    let rows = RunPacts {
+        rows: vec![(key(1, 2, 7), vec![run(100, 149, (1, 2), (50, 0))]), (key(1, 2, 8), vec![run(120, 199, (1, 2), (120, 900))])],
+        kinds: HashMap::from([(7, "guarantee".to_owned()), (8, "non_aggression_pact".to_owned())]),
+        unproven: Vec::new(),
+    };
+    let links = RunLinks { slots: (1..=2).map(|raw| (raw, vec![(100, 199, Some(i64::from(raw) * 10))])).collect() };
+    let held = HashMap::from([(0, (Arc::new(rows), Arc::new(links)))]);
+    let names = Names { slots: HashMap::from([(10, vec![("AAA".to_owned(), 100, 199)]), (20, vec![("BBB".to_owned(), 100, 159), ("NEW".to_owned(), 160, 199)])]) };
+    let stretches = [Stretch { run: 0, first: 100, last: 199, join: Join::Start }];
+    let at = |hour: i32| {
+        let (pacts, counts) = pacts(&stretches, &held, &names, &[(1, 100, 199)], hour);
+        let shown: Vec<_> = pacts.iter().map(|pact| (pact.kind.clone(), pact.second.clone(), pact.last_seen, pact.gone_by, pact.held)).collect();
+        (shown, counts.values().sum::<u32>())
+    };
+    let pair = |kind: &str, second: &str, last: i32, gone: Option<i32>, held: bool| (kind.to_owned(), Some(second.to_owned()), last, gone, held);
+    assert_eq!(at(119), (vec![pair("guarantee", "BBB", 119, None, true)], 1), "a pact first seen at 120 is not in the reply asked at 119, nor in its counts");
+    assert_eq!(at(149), (vec![pair("guarantee", "BBB", 149, None, true), pair("non_aggression_pact", "BBB", 149, None, true)], 2), "held at the asked hour: its end is not known yet");
+    assert_eq!(
+        at(170),
+        (vec![pair("guarantee", "BBB", 149, Some(150), false), pair("non_aggression_pact", "NEW", 170, None, true)], 2),
+        "an endpoint is named by its tag at the last hour the reply saw, never a later one"
+    );
+    assert_eq!(at(155).0[1].1.as_deref(), Some("BBB"));
 }
 
 #[test]
@@ -199,4 +228,24 @@ fn a_country_chosen_by_slot_is_named_by_the_tag_that_holds_it() {
     );
     let ids = holder_ids(&holders, &[Country::Slot(2)], 500);
     assert_eq!(ids[0].0, "ENG", "a country chosen by slot is named by the tag that holds it");
+}
+
+#[test]
+fn the_largest_countries_are_named_only_from_a_whole_factories_read() {
+    use dashboard_query::identity::{Holder, HolderRun};
+    let holders = dashboard_query::identity::Holders::new(
+        [("GER", 1), ("ENG", 2)].iter().map(|(tag, id)| ((*tag).to_owned(), vec![HolderRun { first: 0, last: 1000, holder: Holder::Found { slot: *id, id: *id }, starts_segment: true }])).collect(),
+        vec![],
+    );
+    let factories = |rows: Vec<CountryFactoriesRow>, whole: bool| {
+        let mut held = frame(Vec::new(), Vec::new());
+        let rows = TableRows::CountryFactories(rows);
+        *held.tables[TableId::CountryFactories.index()] = if whole { TableView::Complete(rows) } else { TableView::Truncated { rows, missing: 1 } };
+        held
+    };
+    let row = |country: u32, military_levels: i32| CountryFactoriesRow { country, military_levels, ..CountryFactoriesRow::default() };
+    assert_eq!(top_countries_at(&factories(vec![row(1, 5), row(2, 9)], true), &holders, 500, 1), Ok(vec![Country::from("ENG")]));
+    assert!(top_countries_at(&factories(vec![row(1, 5)], false), &holders, 500, 1).is_err(), "a truncated read never ranks the rest at zero");
+    assert!(top_countries_at(&frame(Vec::new(), Vec::new()), &holders, 500, 1).is_err(), "an unread table never picks countries alphabetically");
+    assert!(top_countries_at(&factories(vec![row(1, 5), row(7, 99)], true), &holders, 500, 1).is_err(), "a row of an unknown country could be the largest");
 }

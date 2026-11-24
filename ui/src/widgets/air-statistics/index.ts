@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import AirStatisticsWidget from './AirStatisticsWidget';
+import { airStatisticsDeclaration } from './airStatisticsProjection.ts';
 import { useAirStatisticsChoices } from './useAirStatistics';
-export default { render: AirStatisticsWidget, useOptionChoices: useAirStatisticsChoices } satisfies WidgetRenderer;
+export default { declaration: airStatisticsDeclaration, useOptionChoices: useAirStatisticsChoices } satisfies WidgetRenderer;

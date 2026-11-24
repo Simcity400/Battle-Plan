@@ -168,29 +168,37 @@ fn party_markers(out: &mut Markers, reply: &PartyHistoryReply) {
     }
 }
 
-fn war_markers(out: &mut Markers, tag: &str, groups: &CountryGroupReply) {
+fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply) {
     for war in &groups.war_starts {
-        let other = if war.attacking == tag { &war.defending } else if war.defending == tag { &war.attacking } else { continue };
+        let other = if holds(&war.attacking, war.hour) {
+            &war.defending
+        } else if holds(&war.defending, war.hour) {
+            &war.attacking
+        } else {
+            continue;
+        };
         let mut made = marker(format!("war:{other}:{}", war.hour), war.hour, StabilityMarkerKind::War, format!("War with {other} began"));
         made.verb = Some(StabilityMarkerVerb::Began);
         made.other = Some(other.clone());
         made.alert = true;
         out.push(made);
     }
-    let mut enemies: BTreeMap<&str, Vec<&groups::WarPairRun>> = BTreeMap::new();
+    let mut fought: BTreeMap<&str, Vec<(&str, &groups::WarPairRun)>> = BTreeMap::new();
     for war in &groups.wars {
-        let enemy = if war.first == tag { &war.second } else if war.second == tag { &war.first } else { continue };
-        enemies.entry(enemy.as_str()).or_default().push(war);
+        fought.entry(war.first.as_str()).or_default().push((war.second.as_str(), war));
+        fought.entry(war.second.as_str()).or_default().push((war.first.as_str(), war));
     }
     for event in &groups.capitulations {
-        if event.tag == tag {
-            let mut made = marker(format!("cap:{tag}:{}", event.hour), event.hour, StabilityMarkerKind::War, "Capitulated".to_owned());
+        if holds(&event.tag, event.hour) {
+            let mut made = marker(format!("cap:{}:{}", event.tag, event.hour), event.hour, StabilityMarkerKind::War, "Capitulated".to_owned());
             made.alert = true;
             out.push(made);
             continue;
         }
         let ends_now = |war: &groups::WarPairRun| event.hour == war.last_hour + 1 && !within(&groups.unobserved.wars, event.hour);
-        let enemy = enemies.get(event.tag.as_str()).is_some_and(|wars| wars.iter().any(|war| war.first_hour <= event.hour && (event.hour <= war.last_hour || ends_now(war))));
+        let enemy = fought.get(event.tag.as_str()).is_some_and(|wars| {
+            wars.iter().any(|&(side, war)| war.first_hour <= event.hour && (event.hour <= war.last_hour || ends_now(war)) && holds(side, event.hour.min(war.last_hour)))
+        });
         if enemy {
             let mut made = marker(format!("cap:{}:{}", event.tag, event.hour), event.hour, StabilityMarkerKind::War, format!("{} capitulated", event.tag));
             made.verb = Some(StabilityMarkerVerb::Capitulated);
@@ -201,14 +209,14 @@ fn war_markers(out: &mut Markers, tag: &str, groups: &CountryGroupReply) {
     }
 }
 
-fn faction_markers(out: &mut Markers, tag: &str, groups: &CountryGroupReply, branch: (i32, i32)) {
+fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply, branch: (i32, i32)) {
     for faction in &groups.factions {
         let unknown: Vec<HourSpan> = groups.unobserved.factions.iter().chain(&faction.incomplete).cloned().collect();
         let founders = faction.members.iter().filter(|member| member.first_hour == faction.first_hour).count();
         let sole = founders == 1 && !within(&unknown, faction.first_hour);
         let name = faction.name.as_deref().unwrap_or(FACTION_UNNAMED);
-        for run in faction.members.iter().filter(|member| member.tag == tag) {
-            if run.first_hour > branch.0 && !within(&unknown, run.first_hour - 1) {
+        for run in &faction.members {
+            if run.first_hour > branch.0 && !within(&unknown, run.first_hour - 1) && holds(&run.tag, run.first_hour) {
                 let verb = if run.first_hour == faction.first_hour && sole { StabilityMarkerVerb::Founded } else { StabilityMarkerVerb::Joined };
                 let word = if verb == StabilityMarkerVerb::Founded { "Founded" } else { "Joined" };
                 let mut made = marker(format!("fac-j:{}:{}", faction.id, run.first_hour), run.first_hour, StabilityMarkerKind::Faction, format!("{word} {name}"));
@@ -216,7 +224,7 @@ fn faction_markers(out: &mut Markers, tag: &str, groups: &CountryGroupReply, bra
                 made.faction = Some(faction.id.clone());
                 out.push(made);
             }
-            if run.last_hour < branch.1 && !within(&unknown, run.last_hour + 1) {
+            if run.last_hour < branch.1 && !within(&unknown, run.last_hour + 1) && holds(&run.tag, run.last_hour) {
                 let hour = run.last_hour + 1;
                 let mut made = marker(format!("fac-l:{}:{hour}", faction.id), hour, StabilityMarkerKind::Faction, format!("Left {name}"));
                 made.verb = Some(StabilityMarkerVerb::Left);
@@ -249,7 +257,6 @@ impl Product for StabilityMarkers {
         let country = CountryParams { branch_id: params.branch_id.clone(), country: params.country.clone() };
         let query = dashboard_base::queries::query(source, country.branch())?;
         let hour = params.hour.min(query.timeline.last);
-        let tag = query.holders.label(&params.country, hour);
         let mut out = Markers { hour, shown: Vec::new(), next: None };
         let mut warnings = Vec::new();
         if params.focus {
@@ -265,13 +272,14 @@ impl Product for StabilityMarkers {
             party_markers(&mut out, &parties);
             warnings.extend(parties.warnings);
         }
-        if (params.wars || params.factions) && let Some(tag) = tag.as_deref() {
+        if params.wars || params.factions {
             let groups = groups::shared(source, &query, context, cancelled)?;
+            let holds = |tag: &str, at: i32| query.holders.tag_at(&params.country, at) == Some(tag);
             if params.wars {
-                war_markers(&mut out, tag, &groups);
+                war_markers(&mut out, &holds, &groups);
             }
             if params.factions {
-                faction_markers(&mut out, tag, &groups, (query.timeline.first, query.timeline.last));
+                faction_markers(&mut out, &holds, &groups, (query.timeline.first, query.timeline.last));
             }
         }
         out.shown.sort_by(|a, b| a.hour.cmp(&b.hour).then_with(|| a.id.cmp(&b.id)));

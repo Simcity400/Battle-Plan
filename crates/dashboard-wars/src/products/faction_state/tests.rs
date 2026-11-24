@@ -133,3 +133,25 @@ fn a_country_s_faction_is_the_one_listing_any_country_linked_to_its_slot() {
     assert_eq!(country_goals::faction_of(&members, &links, 4), Some(OTHER));
     assert_eq!(country_goals::faction_of(&members, &links, 5), None, "a slot no member links to belongs to no faction");
 }
+
+#[test]
+fn faction_goals_return_only_the_goals_the_filter_shows_and_an_unknown_state_is_never_in_progress() {
+    use super::country_goals::{GoalFilter, GoalState, shown_goals};
+    use super::details::{FactionDetailParams, FactionHeldGoal, blank};
+    use super::goals::FactionGoalDefinition;
+    let named = |name: &str| FactionGoalDefinition { token: None, name: Some(name.into()), description: None, icon: None, category: None, category_name: None, bands: Vec::new(), reason: None };
+    let mut detail = blank(&FactionDetailParams { branch_id: "1".into(), faction: "9".into(), viewpoint: None });
+    detail.definitions = vec![named("Arsenal"), named("Union"), named("Seas"), named("Strange")];
+    let held = |ordinal: u32, definition: u32, status: i32| FactionHeldGoal { ordinal, definition, status, active_sections: Vec::new() };
+    detail.goals = vec![held(0, 0, 0), held(1, 3, 9), held(2, 1, 3)];
+    detail.completed = vec![2];
+    let (goals, definitions, warnings) = shown_goals(detail.clone(), GoalFilter::InProgress);
+    let shown: Vec<_> = goals.iter().map(|goal| (goal.key.as_str(), definitions[goal.definition as usize].name.as_deref(), goal.state)).collect();
+    assert_eq!(shown, [("goal:0", Some("Arsenal"), GoalState::InProgress), ("goal:2", Some("Union"), GoalState::Completing)]);
+    assert_eq!(definitions.len(), 2, "only the definitions the shown goals name");
+    assert!(warnings.iter().any(|warning| warning.starts_with("1 faction goals are in a state")));
+    let (all, _, _) = shown_goals(detail.clone(), GoalFilter::All);
+    assert_eq!(all.iter().find(|goal| goal.key == "goal:1").map(|goal| (goal.state, goal.unrecognised_status)), Some((GoalState::Unrecognised, Some(9))));
+    let (done, done_definitions, _) = shown_goals(detail, GoalFilter::Completed);
+    assert_eq!((done.len(), done[0].ordinal, done_definitions[0].name.as_deref()), (1, None, Some("Seas")));
+}

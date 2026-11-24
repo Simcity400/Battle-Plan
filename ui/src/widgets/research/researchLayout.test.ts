@@ -143,7 +143,12 @@ test('research timeline projects slot lanes clipped to the playhead, with covera
   assert.deepEqual(model.lanes.map(l => l.label), ['Slot 1', 'Slot 2']);
   assert.equal(model.lanes[0]!.openedMarker, undefined, 'slot open at coverage start carries no opened marker');
   assert.deepEqual(model.lanes[1]!.openedMarker, { hour: day(100), label: 'opened' }, 'slot opening inside recorded coverage carries opened marker');
-  assert.deepEqual(model.legend?.map(entry => entry.label), ['Completed', 'In progress', 'Idle', 'Not recorded']);
+  assert.deepEqual(model.legend?.map(entry => [entry.label, entry.swatch ?? null]), [
+    ['Completed', 'square'],
+    ['In progress', 'square'],
+    ['Idle', null],
+    ['Not recorded', null],
+  ]);
   assert.equal(model.summaryText, '2 completed');
   assert.deepEqual(model.unobserved, [{ firstHour: day(60) + 1, lastHour: day(80) - 1 }]);
   assert.deepEqual(model.notes, ['Head: 1 in progress · Improved Submarine 81%, 29 days left']);
@@ -197,6 +202,58 @@ test('research timeline projects slot lanes clipped to the playhead, with covera
   });
   const afterGapModel = researchProjection.project(createBoundedReadView({ hour: day(120), panels: new Map<string, unknown>([['main', afterGapData]]) }), opt);
   assert.equal(afterGapModel.lanes[1]!.openedMarker, undefined, 'slot first seen right after a gap has unrecorded opening and omits marker');
+});
+
+test('a hover at an earlier hour of an open block or an idle slot reads the slots at the hit hour, never the playhead', () => {
+  const history: ResearchHistory = {
+    coverage: [{ firstHour: day(0), lastHour: day(200) }],
+    slots: [
+      slot(0, [{ firstHour: day(0), lastHour: day(200) }], [entry('sub', day(120), null, 'active')]),
+      slot(1, [{ firstHour: day(0), lastHour: day(200) }], []),
+    ],
+  };
+  const at = day(160);
+  const opt = { folders: '', firstHour: day(0), surface: '#161616' };
+  const liveMap = new Map([[liveKey('0', 'progress'), 0.81]]);
+  const earlier = slotsReply(day(121));
+  const hovered: ResearchSlotsReply = {
+    ...earlier,
+    slots: [
+      {
+        ...earlier.slots[0]!,
+        state: { ...earlier.slots[0]!.state, details: { remainingDays: 66, estimateRaw: '6600000', modifiers: null, bonuses: null } },
+        progress: { ...earlier.slots[0]!.progress!, progressRaw: '3000000' },
+      },
+      { ...earlier.slots[1]!, state: { ...earlier.slots[1]!.state, bankedDaysRaw: '200000' } },
+    ],
+  };
+  const viewWith = (hovers?: Map<string, { hour: number; data: unknown }>) => createBoundedReadView({
+    hour: at,
+    panels: new Map<string, unknown>([['main', dataOf(history)], ['slots', slotsReply(at)]]),
+    live: new Map([['slots', { get: (key: string) => liveMap.get(key), missing: () => '' }]]),
+    ...(hovers ? { hovers } : {}),
+  });
+  const model = researchProjection.project(viewWith(), opt);
+  const sub = model.lanes[0]!.spans[0]!;
+  const value = (tip: ReturnType<NonNullable<typeof researchProjection.tooltip>>, label: string) => tip?.items?.find(item => item.label === label);
+
+  const pending = researchProjection.tooltip!(model, { kind: 'span', laneKey: 'slot:0', spanId: sub.id, hour: day(121) }, viewWith(), opt)!;
+  assert.equal(pending.hour, day(121));
+  assert.notEqual(value(pending, 'Progress')?.value, '81%', 'the playhead progress is never labelled with an earlier hour');
+  assert.notEqual(value(pending, 'Days left')?.value, '29', 'the playhead estimate is never labelled with an earlier hour');
+  const idlePending = researchProjection.tooltip!(model, { kind: 'lane', laneKey: 'slot:1', hour: day(121) }, viewWith(), opt)!;
+  assert.equal(value(idlePending, 'Saved progress')?.value, undefined, 'saved days at the playhead are not shown for an earlier hour');
+
+  const answered = viewWith(new Map([['hover', { hour: day(121), data: hovered }]]));
+  const tip = researchProjection.tooltip!(model, { kind: 'span', laneKey: 'slot:0', spanId: sub.id, hour: day(121) }, answered, opt)!;
+  assert.equal(value(tip, 'Progress')?.value, '30%');
+  assert.equal(value(tip, 'Days left')?.value, '66');
+  const idle = researchProjection.tooltip!(model, { kind: 'lane', laneKey: 'slot:1', hour: day(121) }, answered, opt)!;
+  assert.equal(value(idle, 'Saved progress')?.value, '2 days saved');
+
+  const playhead = researchProjection.tooltip!(model, { kind: 'span', laneKey: 'slot:0', spanId: sub.id, hour: at }, answered, opt)!;
+  assert.equal(value(playhead, 'Progress')?.value, '81%', 'at the playhead the live progress stays');
+  assert.equal(value(playhead, 'Days left')?.value, '29');
 });
 
 test('coverage helpers and completedRow preserve cross-slot start date and duration', () => {

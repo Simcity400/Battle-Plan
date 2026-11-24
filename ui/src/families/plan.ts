@@ -121,6 +121,7 @@ export interface ExactHoverSourceRead {
   readonly product: DeclaredProduct;
   readonly params: Readonly<Record<string, unknown>> | null;
   readonly hourParam?: string;
+  readonly readsOf?: string;
   readonly validate?: (raw: unknown) => unknown;
 }
 
@@ -410,6 +411,7 @@ export interface AuxProductSpec<TAux = unknown> {
     track: BoundTrack,
     options: Readonly<Record<string, OptionValue>>,
     country: string | null,
+    subject: string | null,
   ) => Record<string, unknown> | null;
   readonly validate: (raw: unknown) => TAux;
   readonly when?: (options: Readonly<Record<string, OptionValue>>) => boolean;
@@ -424,6 +426,7 @@ export interface FamilyPlanContext<TAux = unknown> {
   readonly following: boolean;
   readonly aux: TAux | undefined;
   readonly countryTag: string | null;
+  readonly countrySubject: string | null;
   readonly countryName: string;
   readonly countries: DeclaredCountryState;
   readonly gateSpan: (first: number, last: number) => BoundWindow | null;

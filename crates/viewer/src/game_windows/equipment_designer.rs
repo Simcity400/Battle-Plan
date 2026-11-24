@@ -3,6 +3,7 @@ use super::{
     GameWindowRender, GameWindowRequest, GameWindowTooltip, Prepared, RenderParams, Service,
     WindowCacheKey, container_holder, layout_window, strip_markup,
 };
+use super::compose::{disable_by_name, find_direct, hide_by_name, set_text_by_name, spell};
 use content_reader_equipment_graphics::equipment_graphics::countries as graphics_countries;
 use content_reader_gui::gui::native::{self, Element, Fields, Kind};
 use content_reader_image::native::Decode;
@@ -761,6 +762,29 @@ pub struct RenderContext<'a> {
     pub extra_warnings: Vec<String>,
 }
 
+pub(super) fn script_tables() -> Result<(), String> {
+    use engine_executable::executable_tables::auxiliary_part;
+    auxiliary_part(|tables| &tables.category_names).map_err(ToString::to_string)?;
+    auxiliary_part(|tables| &tables.stat_metadata).map_err(ToString::to_string)?;
+    Ok(())
+}
+
+pub(super) fn designer_database(
+    layers: &ResolvedLayers,
+    equipment_key: &str,
+) -> Result<Arc<Database>, GameWindowError> {
+    script_tables().map_err(|withheld| {
+        GameWindowError::refused(format!(
+            "The designer for '{equipment_key}' cannot be shown: equipment scripts are read through the recording's executable tables, and {withheld}."
+        ))
+    })?;
+    Database::shared(layers).map_err(|error| {
+        GameWindowError::failed(format!(
+            "Could not load recorded equipment definitions: {error}"
+        ))
+    })
+}
+
 fn cached_resource_db(layers: &ResolvedLayers) -> Result<Arc<ResourceDatabase>, String> {
     #[derive(Default)]
     struct Cached(
@@ -986,21 +1010,16 @@ pub fn render(
         Err(error) => Err(error.to_string()),
     };
 
-    let equipment_db = Database::shared(layers).map_err(|error| {
-        GameWindowError::failed(format!(
-            "Could not load recorded equipment definitions: {error}"
-        ))
-    })?;
-    let resource_db = cached_resource_db(layers).map_err(|error| {
-        GameWindowError::failed(format!(
-            "Could not load recorded resource definitions: {error}"
-        ))
-    })?;
-
     let equipment_key = spell(lexical, definition.equipment_token).ok_or_else(|| {
         GameWindowError::refused(format!(
             "Equipment design {} has an unknown equipment token {}.",
             target.variant, definition.equipment_token
+        ))
+    })?;
+    let equipment_db = designer_database(layers, &equipment_key)?;
+    let resource_db = cached_resource_db(layers).map_err(|error| {
+        GameWindowError::failed(format!(
+            "Could not load recorded resource definitions: {error}"
         ))
     })?;
     let equipment = equipment_db.named(&equipment_key).ok_or_else(|| {
@@ -1463,18 +1482,6 @@ pub fn render(
             Ok(())
         },
     )
-}
-
-fn spell(lexical: &[LexicalTokenRow], token: u32) -> Option<String> {
-    if token == 0 {
-        return None;
-    }
-    let index = lexical.binary_search_by_key(&token, |row| row.token).ok()?;
-    let bytes = c_string(&lexical[index].literal);
-    std::str::from_utf8(bytes)
-        .ok()
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
 }
 
 fn slice_by_variant<T>(rows: &[T], variant_id: u64, key: impl Fn(&T) -> u64) -> &[T] {
@@ -2215,62 +2222,6 @@ fn apply_equipment_icon(
 
 fn element_name(element: &Element) -> &str {
     std::str::from_utf8(element.name_bytes()).unwrap_or("")
-}
-
-fn find_child<'a>(parent: &'a Element, segment: &str) -> Option<&'a Element> {
-    if let Some(found) = parent
-        .children
-        .iter()
-        .find(|child| child.is_named(segment.as_bytes()))
-    {
-        return Some(found);
-    }
-    if let Fields::DropDown(dd) = &parent.fields {
-        if let Some(expand) = dd.expand_button.as_deref()
-            && expand.is_named(segment.as_bytes())
-        {
-            return Some(expand);
-        }
-        if let Some(found) = dd
-            .inner
-            .children
-            .iter()
-            .find(|child| child.is_named(segment.as_bytes()))
-        {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn find_direct<'a>(root: &'a Element, path: &str) -> Option<&'a Element> {
-    let mut current = root;
-    for segment in path.split('/') {
-        current = find_child(current, segment)?;
-    }
-    Some(current)
-}
-
-fn hide_by_name(instance: &mut Instance, root: &Element, name: &str) {
-    if let Some(element) = find_direct(root, name) {
-        let _ = instance.hide(root, element);
-    }
-}
-
-fn disable_by_name(instance: &mut Instance, root: &Element, name: &str) {
-    if let Some(element) = find_direct(root, name)
-        && let Ok(bound) = instance.control(root, element)
-    {
-        bound.enabled = Some(false);
-    }
-}
-
-fn set_text_by_name(instance: &mut Instance, root: &Element, name: &str, text: String) {
-    if let Some(element) = find_direct(root, name)
-        && let Ok(bound) = instance.control(root, element)
-    {
-        bound.text = Some(text);
-    }
 }
 
 struct MainWindowContext<'a> {

@@ -35,6 +35,7 @@ use viewer_native_gui::{
 #[cfg(test)]
 mod tests;
 
+mod compose;
 pub mod equipment_designer;
 pub mod industrial_organisation;
 

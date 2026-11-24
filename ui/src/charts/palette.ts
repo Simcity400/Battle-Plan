@@ -77,6 +77,19 @@ interface GeneratedPool {
 
 const palettes = new Map<string, string[]>();
 const pools = new Map<string, GeneratedPool>();
+const readableBySurface = new Map<string, Map<string, string>>();
+const MAX_READABLE_SURFACES = 8;
+const MAX_READABLE_PER_SURFACE = 512;
+let readableSolves = 0;
+
+export const paletteCache = {
+  get readableSolves() { return readableSolves; },
+  get surfaces() { return readableBySurface.size; },
+  clear(): void {
+    readableBySurface.clear();
+    readableSolves = 0;
+  },
+};
 
 function touchMap<K, V>(map: Map<K, V>, key: K, value: V, limit: number): void {
   map.delete(key);
@@ -288,12 +301,30 @@ export function identityColour(surface: string, register: keyof typeof IDENTITY_
 }
 
 export function readableColour(color: AuthoredColour, surface: string, minContrast = MARK_CONTRAST): string {
+  const colorKey = typeof color === 'string'
+    ? color
+    : 'r' in color
+      ? `${color.r},${color.g},${color.b}`
+      : `${color[0]},${color[1]},${color[2]}`;
+  const entryKey = minContrast === MARK_CONTRAST ? colorKey : `${colorKey}\0${minContrast}`;
+  let byColor = readableBySurface.get(surface);
+  const cached = byColor?.get(entryKey);
+  if (cached !== undefined) return cached;
+  readableSolves++;
   const background = parseColor(surface) ?? { r: 0, g: 0, b: 0 };
   const rgb = typeof color === 'string'
     ? (parseColor(color) ?? { r: 128, g: 128, b: 128 })
     : 'r' in color ? color : { r: color[0], g: color[1], b: color[2] };
-  if (contrast(rgb, background) >= minContrast) return toHex(rgb);
-  return toHex(solveQuantised(rgbToOklch(rgb), background, isDark(background), minContrast, []));
+  const resolved = contrast(rgb, background) >= minContrast
+    ? toHex(rgb)
+    : toHex(solveQuantised(rgbToOklch(rgb), background, isDark(background), minContrast, []));
+  if (!byColor) {
+    byColor = new Map();
+    touchMap(readableBySurface, surface, byColor, MAX_READABLE_SURFACES);
+  }
+  if (byColor.size >= MAX_READABLE_PER_SURFACE) byColor.clear();
+  byColor.set(entryKey, resolved);
+  return resolved;
 }
 
 export function categoricalPalette(surface: string): string[] {

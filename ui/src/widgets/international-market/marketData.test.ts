@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateMarketReply } from '../../dashboard/market.ts';
 import type { MarketAt } from '../../dashboard/market';
-import { contractRows, offerRows } from './marketData.ts';
+import { contractRows, marketDetail, offerRows } from './marketData.ts';
 import { internationalMarketProjection } from './internationalMarketProjection.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
@@ -74,4 +74,16 @@ test('each amount, price and level belongs to its own variant: reordered levels 
   assert.equal(several.cells.price!.value.kind, 'notApplicable', 'two equipment never show one price');
   const extra = (typeof several.tooltipExtra === 'function' ? several.tooltipExtra() : several.tooltipExtra) ?? [];
   assert.deepEqual(extra.filter(entry => entry.lookupKey).map(entry => entry.lookupKey), ['5', '6']);
+});
+
+test('a row opens its own detail at the clicked hour: an inventory click marks its own equipment, a contract lists each equipment with its own price and level', () => {
+  const offer = marketDetail(raw, 'offer:44:6');
+  assert.equal(offer.missing, null);
+  const listed = offer.sections.find(section => section.title === 'Listed inventory')!.lines;
+  assert.deepEqual(listed.map(line => [line.label, line.marked]), [['Rifle', false], ['Equipment name unavailable', true]], 'two equipment rows of one seller open different details');
+  assert.match(listed[1]!.value, /High/);
+  const request = marketDetail(raw, 'contract:true:54').sections.find(section => section.title === 'Equipment')!.lines;
+  assert.match(request[0]!.value, /High/, 'the level of its own variant, though another variant is listed first');
+  assert.equal(marketDetail(raw, 'contract:false:99').missing, 'This request or contract is not on the market at this date.');
+  assert.equal(marketDetail({ ...raw, offers: null }, 'offer:44:5').missing, 'Market inventory was not recorded at this date.');
 });

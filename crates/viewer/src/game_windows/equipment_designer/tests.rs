@@ -282,6 +282,38 @@ fn designer_classification_respects_dlc_masks_refuses_missing_features_and_falls
 }
 
 #[test]
+fn a_withheld_category_table_refuses_the_designer_by_equipment_name_before_any_script_is_read() {
+    let dir = std::env::temp_dir().join(format!(
+        "battleplan-designer-withheld-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let eq_dir = dir.join("common").join("units").join("equipment");
+    fs::create_dir_all(&eq_dir).unwrap();
+    fs::write(
+        eq_dir.join("synthetic.txt"),
+        b"equipments = { synthetic_tank_chassis = { is_archetype = yes type = armor } }",
+    )
+    .unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&dir, &[][..])]).unwrap();
+    content_reader_script::test_game::with(|game| {
+        game.auxiliary(|tables| {
+            tables.category_names = Err(engine_executable::availability::Withheld::new(
+                "equipment categories",
+                "not decoded from this build",
+            ));
+        })
+    });
+    let refused = designer_database(&layers, "synthetic_tank_chassis").err();
+    content_reader_script::test_game::enter();
+    let _ = fs::remove_dir_all(&dir);
+    let Some(GameWindowError::Refused(reason)) = refused else {
+        panic!("a withheld category table must refuse the designer, got {refused:?}");
+    };
+    assert!(reason.contains("synthetic_tank_chassis"), "{reason}");
+    assert!(reason.contains("equipment categories withheld: not decoded from this build"), "{reason}");
+}
+
+#[test]
 fn loc_refs_expand_nested_tokens_and_preserve_unknown_tokens() {
     let loc: Localisation = [
         ("tank_engine_upgrade", "$ARMOR_ENGINE_LABEL$"),

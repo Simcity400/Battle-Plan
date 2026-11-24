@@ -10,7 +10,7 @@ const SURFACE = '#161616';
 
 function reply(lastHour: number): NavalSupremacyReply {
   return {
-    firstHour: 0, lastHour, firstDayHour: 0, dayHours: 24, days: 3,
+    firstHour: 0, lastHour, firstDayHour: 0, dayHours: 24, days: 3, rankMissing: null,
     unknown: [{ firstDay: 1, lastDay: 1, reason: 'collector queue overflow' }],
     gaps: [], viewerName: 'German Reich', viewerColor: [90, 90, 90], legend: [], scale: 100000, warnings: [],
     regions: [{

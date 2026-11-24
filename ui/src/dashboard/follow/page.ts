@@ -629,7 +629,7 @@ export class Page<B extends Bitmap = Bitmap> {
 
   private face(widget: Widget<B>) {
     const view = this.view(widget.id);
-    return `${view.mode}|${view.dim}|${widget.drawn}|${view.reason ?? ''}`;
+    return `${view.mode}|${view.dim}|${view.expired === true}|${widget.drawn}|${view.reason ?? ''}`;
   }
 
   private tell() {
