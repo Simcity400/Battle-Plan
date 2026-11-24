@@ -274,6 +274,35 @@ fn a_followed_series_reads_every_tag_its_holders_name_as_its_top_names_them() {
 }
 
 #[test]
+fn a_followed_top_of_named_countries_ranks_only_them_as_series_state_does() {
+    let state = query();
+    let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
+    let series = dashboard_declare::series("country-measure").unwrap();
+    let measure = series.measure("politicalPower").unwrap();
+    let asked = |reads: serde_json::Value| crate::parse::parse(&serde_json::json!({ "product": "series-state",
+        "params": { "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" }, "reads": reads, "top": 2 } }), &identity);
+    let Ok(Query::Series { countries, mode: SeriesMode::Top { n: 2, least: false }, .. }) = asked(serde_json::json!([{ "country": "ITA" }])) else {
+        panic!("a top of named countries is a ranking of those countries")
+    };
+    assert_eq!(countries.len(), 1);
+    let both = asked(serde_json::json!([{ "country": "GER" }, { "country": "ITA" }])).unwrap();
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let line = Line::new(&state, series, measure).unwrap();
+    let mut compared = 0;
+    for hour in (ITA_FROM..ITA_FROM + 60).step_by(7) {
+        let answer = Answer::parse(&answer_at(&both, &lane(&pages, &both, both.declared(), hour)).unwrap()).unwrap();
+        let reads: Vec<SeriesRead> = ["GER", "ITA"].iter().map(|tag| SeriesRead { country: (*tag).into(), hour, part: None }).collect();
+        let mut expected: Vec<(i64, String)> = line.states(&reads, None).unwrap().into_iter()
+            .filter_map(|state| Some((state.run?.value_raw.parse::<i64>().ok()?, state.country.to_string()))).collect();
+        expected.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        let named: Vec<&str> = (0..answer.keys.len()).filter_map(|row| answer.name(row)).collect();
+        assert_eq!(named, expected.iter().map(|(_, tag)| tag.as_str()).collect::<Vec<_>>(), "hour {hour}");
+        compared += usize::from(expected.len() == 2);
+    }
+    assert!(compared > 3, "{compared} hours ranked both countries");
+}
+
+#[test]
 fn a_followed_owners_parts_equal_series_state_of_every_part_at_every_step() {
     let state = query();
     let series = &RESOURCE_SURPLUS;

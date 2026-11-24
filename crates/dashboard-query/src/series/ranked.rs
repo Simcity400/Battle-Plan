@@ -49,6 +49,23 @@ pub(super) fn states(line: &Line<'_, '_>, hour: Option<f64>, n: usize) -> io::Re
     line.states(&reads, None)
 }
 
+pub(super) fn among(line: &Line<'_, '_>, reads: &[SeriesRead], n: usize, least: bool) -> io::Result<Vec<SeriesState>> {
+    let mut ranked: Vec<(i64, SeriesState)> = line
+        .states(reads, None)?
+        .into_iter()
+        .filter_map(|state| {
+            let value = state.run.as_ref()?.value_raw.parse::<i64>().ok()?;
+            Some((value, state))
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        let (x, y) = if least { (a.0, b.0) } else { (b.0, a.0) };
+        x.cmp(&y).then_with(|| a.1.country.to_string().cmp(&b.1.country.to_string()))
+    });
+    ranked.truncate(n);
+    Ok(ranked.into_iter().map(|(_, state)| state).collect())
+}
+
 pub(super) fn summary(line: &Line<'_, '_>, branch_id: &str, from: Option<f64>, to: Option<f64>, width: Option<u32>, n: usize) -> io::Result<SeriesRankedReply> {
     let (from, to) = (hour_of(from, "from")?, hour_of(to, "to")?);
     if from > to {

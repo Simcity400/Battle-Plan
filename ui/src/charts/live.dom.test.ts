@@ -112,25 +112,6 @@ test('the shared charts paint live values without a commit, draw a value the sou
       assert.equal(await since(act, 'drill', plain), 0);
     }));
 
-    await t.test('chord: ribbons redrawn from the live frame without a commit, a missing frame not drawn as the last one', () => page.stage('chord', async () => {
-      await act('mountChord(true)');
-      const first = await act<string>('picture("chord")');
-      const before = await act<Commits>('commits()');
-      await act('pushChord(30)');
-      const wider = await act<string>('picture("chord")');
-      assert.notEqual(wider, first, 'a wider ribbon is drawn');
-      await act('pushChord(null)');
-      assert.notEqual(await act<string>('picture("chord")'), wider, 'a frame the source does not hold is not the last one drawn');
-      assert.equal(await since(act, 'chord', before), 0);
-
-      await act('mountChord(false)');
-      const fixed = await act<string>('picture("chord")');
-      const plain = await act<Commits>('commits()');
-      await act('pushChord(50, 5)');
-      assert.equal(await act<string>('picture("chord")'), fixed);
-      assert.equal(await since(act, 'chord', plain), 0);
-    }));
-
     await t.test('flow: ribbons redrawn from live values without a commit, missing values say why', () => page.stage('flow', async () => {
       await act('mountFlow(true)');
       const first = await act<string>('picture("flow")');

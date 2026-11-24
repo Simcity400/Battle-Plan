@@ -49,6 +49,28 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.stabilityProjection, declaration: mod.stabilityDeclaration }),
     ),
   },
+  {
+    kind: 'experience',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'experience',
+      DEFAULT_VIEW,
+      () => import('../experience/experienceProjection.ts'),
+      mod => ({ projection: mod.experienceProjection, declaration: mod.experienceDeclaration }),
+    ),
+  },
+  {
+    kind: 'fuel',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'fuel',
+      DEFAULT_VIEW,
+      () => import('../fuel/fuelProjection.ts'),
+      mod => ({ projection: mod.fuelProjection, declaration: mod.fuelDeclaration }),
+    ),
+  },
 ];
 
 export const timeChartFamilyManifest: FamilyManifestModule = {

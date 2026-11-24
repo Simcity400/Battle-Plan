@@ -441,24 +441,12 @@ pub(crate) fn region_readout(
                 return WeatherReadout::NotRecorded { reason: "Region weather was not recorded at this hour".into() };
             };
             let mut since_idx = last_idx;
-            let mut bounded = true;
             while since_idx > 0 {
                 let prev = since_idx - 1;
-                if days[prev].at.is_none() {
-                    bounded = true;
+                if days[prev].at.is_none() || region_condition_on_day(region, prev, measures) != Some(current) {
                     break;
                 }
-                match region_condition_on_day(region, prev, measures) {
-                    Some(cond) if cond == current => since_idx = prev,
-                    Some(_) => {
-                        bounded = false;
-                        break;
-                    }
-                    None => {
-                        bounded = true;
-                        break;
-                    }
-                }
+                since_idx = prev;
             }
             let name = if current == "clear" {
                 "Clear".to_owned()
@@ -468,8 +456,8 @@ pub(crate) fn region_readout(
             WeatherReadout::Condition {
                 id: current.to_owned(),
                 name,
-                since_hour: Some(days[since_idx].first),
-                since_bounded: bounded,
+                since_hour: days[since_idx].at.map(|(_, hour)| hour),
+                since_bounded: true,
                 as_of_hour,
             }
         }

@@ -21,6 +21,7 @@ replay-tools.workspace = true
 dashboard-declare.workspace = true
 replay-columnar.workspace = true
 replay-data.workspace = true
+replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 ts-rs = "11.1"
@@ -32,7 +33,6 @@ replay-journal = { workspace = true, features = ["test-support"] }
 replay-settings.workspace = true
 recorder-derive.workspace = true
 recorder-derive-framework.workspace = true
-replay-frame.workspace = true
 
 [lints]
 workspace = true

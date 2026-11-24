@@ -1,8 +1,0 @@
-.faction-goals { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.faction-goal-progress { display: flex; align-items: center; gap: var(--space-2); width: 100%; }
-.faction-goal-progress > .progress-meter { flex: 1; min-width: 32px; }
-.faction-goal-progress > span { flex: none; font-variant-numeric: tabular-nums; }
-.faction-goal-missing { color: var(--muted); font-weight: 400; }
-.faction-goal-name { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; }
-.faction-goal-name > img, .faction-goal-name > .art-fallback { width: 22px; height: 22px; flex: none; object-fit: contain; }
-.faction-goal-name > span { overflow: hidden; text-overflow: ellipsis; }

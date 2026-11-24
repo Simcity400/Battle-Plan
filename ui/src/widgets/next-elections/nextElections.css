@@ -1,3 +1,0 @@
-.next-elections { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.next-elections > .chart-table { flex: 1; }
-.election-term { display: flex; align-items: stretch; gap: var(--space-1); flex-direction: column; min-width: 0; line-height: var(--type-md); }

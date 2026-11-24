@@ -62,6 +62,7 @@ export interface TimeChartSeriesModel {
   readonly icon?: ChartArtSlot;
   readonly missingSpans?: readonly ChartMissingSpan[];
   readonly absentReason?: string | null;
+  readonly exact?: { readonly hour: number; readonly value: number | null; readonly reason?: string } | null;
   readonly rank?: number;
 }
 
@@ -153,6 +154,7 @@ export interface ChartOverlayLabel {
 export interface ChartHoverDetail {
   readonly hour: number;
   readonly items: readonly TooltipListItem[];
+  readonly replacesSeries?: boolean;
 }
 
 export type ChartValueFormat = 'number' | 'percent' | 'compact' | 'signed1' | 'power';

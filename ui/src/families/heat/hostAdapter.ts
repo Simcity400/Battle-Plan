@@ -23,6 +23,7 @@ interface MatrixExtentField {
   readonly totalWidth: number;
   readonly totalHeight: number;
   readonly cellSize: number;
+  readonly cellWidth?: number;
   readonly gridLeft: number;
   readonly gridTop: number;
   readonly rows: readonly MatrixAxisEntity[];
@@ -77,6 +78,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
       rows: ext.rows.length,
       columns: ext.columns.length,
       cellSize: ext.cellSize,
+      ...(ext.cellWidth !== undefined ? { cellWidth: ext.cellWidth } : {}),
       gridLeft: ext.gridLeft,
       gridTop: ext.gridTop,
       rowLabel: r => ext.rows[r]?.label ?? '',
