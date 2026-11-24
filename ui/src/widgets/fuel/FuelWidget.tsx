@@ -11,36 +11,32 @@ import { jumpItem } from '../../charts/jump';
 import type { PlaybackMode } from '../../charts/view';
 import { useComparisonCountries } from '../../dashboard/comparisonCountries';
 import GateState from '../../dashboard/GateState';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { isMember } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
-import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { recordedHour } from '../../dashboard/regionTime.ts';
 import { coverageOf, useRegion } from '../../dashboard/widgetTime.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
-import { DeclaredFamilyWidget } from '../../families/host/index.ts';
-import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
-import { BREAKDOWNS, OPTIONS } from './definition';
+import { BREAKDOWNS } from './definition';
 import FuelBreakdown from './FuelBreakdown';
 import FuelConsumptionBreakdown from './FuelConsumptionBreakdown';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsumption';
 import { fuelDecimals } from './fuelData';
 import type { FuelRecipientSelection } from './fuelDrill';
-import { fuelDeclaration } from './fuelProjection.ts';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 
 const DETAIL_HOURS = 720;
 const HOLDERS = { holders: true };
 const DETAIL_TITLE = 'Fuel consumption and daily accounting';
 
-export default function FuelWidget(props: WidgetProps) {
-  const { widget, runtime, active } = props;
+export default function FuelWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, options } = props;
   const drillControl = useDrill(runtime, useRegion(widget), null, undefined, undefined, HOLDERS);
   const storedDrill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [drillOwner, setDrillOwner] = useState<object>();
-  const options = resolveOptions(OPTIONS, widget.options);
   const digits = fuelDecimals(options);
   const { track, countries } = useComparisonCountries(widget, runtime, active);
   const tags = countries.tags;
@@ -106,7 +102,7 @@ export default function FuelWidget(props: WidgetProps) {
   const detailDay = drillFollows && playing ? 'Following playback' : at === null ? '' : dayLabel(at);
   const closeDetail = () => dispatch({ type: 'close' });
   return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>
-    <DeclaredFamilyWidget {...props} adapter={timeChartHostAdapter} declaration={fuelDeclaration} onActivate={action => open(action.hour)} />
+    {props.manifestDeclaration ? <FamilyWidget {...props} family={props.manifestDeclaration.family} declaration={props.manifestDeclaration} onActivate={action => open(action.hour)} /> : null}
     <DetailWindowHost open={drill.breakdown !== null} subject={drillTag} hour={at} title={DETAIL_TITLE} day={detailDay} anchor={anchor} onClose={closeDetail}>
       <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode="inline" title={DETAIL_TITLE}
         day={detailDay} canFollow={actualHour !== null && !!drillTag} onClose={closeDetail} main={null}>

@@ -14,9 +14,8 @@ use replay_recording::columnar_frames::Recording;
 use replay_lanes::{lanes, points::Cell};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
-use dashboard_follow::live::{Cells, Source as LiveSource};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
@@ -84,10 +83,19 @@ pub struct DiplomaticRelationsParams {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum OpinionMatrixCell {
+pub enum OpinionCell {
     Value { opinion: i32 },
-    Diagonal,
     Missing { reason: String },
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct OpinionPair {
+    #[doc = " The owner's and the target's index in `owners`."]
+    pub row: u32,
+    pub column: u32,
+    pub cell: OpinionCell,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -98,9 +106,9 @@ pub struct OpinionOwner {
     #[doc = " Its holder's raw id at the hour (the part a pair's `relation-opinions` line names it by);"]
     #[doc = " null where no country holds the tag then."]
     pub country_id: Option<u32>,
-    #[doc = " Whether its opinions were read: a known owner's opinion with no row is exactly zero."]
+    #[doc = " Whether its opinions were read whole: its opinion of a shown country with no pair is exactly zero."]
     pub known: bool,
-    #[doc = " Why it is not known."]
+    #[doc = " Why it is not known: its opinions with no pair are not recorded."]
     pub reason: Option<String>,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub read_hour: Option<i32>,
@@ -123,116 +131,90 @@ pub struct DiplomaticRelationsReply {
     #[doc = " Why the countries to show are not known at this hour: factories, which rank a top, were not read whole or name an unresolved country, or a group's membership is not recorded. No owners then."]
     pub chosen_missing: Option<String>,
     pub owners: Vec<OpinionOwner>,
-    pub cells: Vec<OpinionMatrixCell>,
+    #[doc = " The witnessed opinions between owners, and the pairs whose target no country holds, by row then column."]
+    pub pairs: Vec<OpinionPair>,
     pub domain: [i32; 2],
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(DiplomaticRelationsReply);
 
-pub(crate) fn opinions_matrix(
-    frame: &DecodedFrame,
-    ids: &[(&str, Option<(u32, u32)>)],
-    live: &Cells,
-) -> io::Result<(Vec<OpinionOwner>, Vec<OpinionMatrixCell>, [i32; 2])> {
-    let rows = frame.complete::<tables::RelationOpinions>()?;
-    let reads = frame.complete::<tables::SliceReads>()?;
+const UNHELD: &str = "No country holds this tag at this hour";
+
+fn witnessed<T: replay_data::rows::TableSchema>(frame: &DecodedFrame) -> (&[T::Row], Option<String>) {
+    let view: &TableView = &frame.tables[T::ID.index()];
+    let rows = match view {
+        TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.rows::<T>().unwrap_or(&[]),
+        TableView::NotRecorded { .. } | TableView::Unavailable { .. } => &[],
+    };
+    (rows, dashboard_text::scope::unread(T::ID, view))
+}
+
+pub(crate) fn opinions_matrix(frame: &DecodedFrame, ids: &[(&str, Option<(u32, u32)>)]) -> (Vec<OpinionOwner>, Vec<OpinionPair>, [i32; 2]) {
+    let (rows, opinions_unread) = witnessed::<tables::RelationOpinions>(frame);
+    let (reads, reads_unread) = witnessed::<tables::SliceReads>(frame);
     let table = TableId::RelationOpinions.index() as u32;
-    let opinion = dashboard_declare::field(TableId::RelationOpinions, "opinion")?;
-    let sample = dashboard_declare::field(TableId::SliceReads, "sample_hour")?;
     let slot_of = aliases(frame, ids);
-    let mut pairs: HashMap<(u32, u32), (u128, i32)> = HashMap::new();
+    let mut opinions: HashMap<(u32, u32), i32> = HashMap::new();
     for row in rows {
         if let (Some(&owner), Some(&target)) = (slot_of.get(&row.owner_country), slot_of.get(&row.target_country)) {
-            pairs.insert((owner, target), (u128::from(row.owner_country) << 32 | u128::from(row.target_country), row.opinion));
+            opinions.insert((owner, target), row.opinion);
         }
     }
-    let listed: HashSet<u32> = pairs.keys().map(|&(owner, _)| owner).collect();
-    let mut read: HashMap<u32, (i32, u32)> = HashMap::new();
+    let listed: HashSet<u32> = opinions.keys().map(|&(owner, _)| owner).collect();
+    let mut read: HashMap<u32, i32> = HashMap::new();
     for row in reads.iter().filter(|row| row.table == table) {
         if let Some(&slot) = slot_of.get(&row.owner) {
-            let latest = read.entry(slot).or_insert((row.sample_hour, row.owner));
-            if row.sample_hour > latest.0 {
-                *latest = (row.sample_hour, row.owner);
-            }
+            let latest = read.entry(slot).or_insert(row.sample_hour);
+            *latest = (*latest).max(row.sample_hour);
         }
     }
     let owners: Vec<OpinionOwner> = ids
         .iter()
         .map(|&(tag, id)| {
-            let Some((slot, id)) = id else {
-                return OpinionOwner {
-                    tag: tag.to_owned(),
-                    country_id: None,
-                    known: false,
-                    reason: Some("No country holds this tag at this hour".into()),
-                    read_hour: None,
-                    name: None,
-                    name_missing: None,
-                    color: None,
-                    faction_id: None,
-                    faction_name: None,
-                };
-            };
-            let known = read.contains_key(&slot) || listed.contains(&slot);
-            let read_hour = read.get(&slot).map(|&(hour, _)| hour);
-            if known {
-                let stamp = read.get(&slot).map_or(id, |&(_, raw)| raw);
-                live.value(tag, "readHour", LiveSource { table: TableId::SliceReads, column: sample, key: u128::from(table) << 32 | u128::from(stamp) }, 1.0);
-                for &(target, target_id) in ids {
-                    if let Some((target_slot, target_id)) = target_id {
-                        let key = pairs.get(&(slot, target_slot)).map_or(u128::from(id) << 32 | u128::from(target_id), |&(k, _)| k);
-                        live.value(tag, target, LiveSource { table: TableId::RelationOpinions, column: opinion, key }, 1.0);
-                    }
+            let (country_id, read_hour, reason) = match id {
+                None => (None, None, Some(UNHELD.to_owned())),
+                Some((slot, id)) => {
+                    let seen = read.contains_key(&slot) || listed.contains(&slot);
+                    let reason = match (&opinions_unread, seen) {
+                        (Some(unread), _) => Some(unread.clone()),
+                        (None, true) => None,
+                        (None, false) => Some(reads_unread.clone().unwrap_or_else(|| "This country's opinions have not been read".to_owned())),
+                    };
+                    (Some(id), read.get(&slot).copied(), reason)
                 }
-            }
-            let reason = (!known).then(|| "This country's opinions have not been read".to_owned());
-            OpinionOwner {
-                tag: tag.to_owned(),
-                country_id: Some(id),
-                known,
-                reason,
-                read_hour,
-                name: None,
-                name_missing: None,
-                color: None,
-                faction_id: None,
-                faction_name: None,
-            }
+            };
+            OpinionOwner { tag: tag.to_owned(), country_id, known: reason.is_none(), reason, read_hour, name: None, name_missing: None, color: None, faction_id: None, faction_name: None }
         })
         .collect();
-    let mut cells = Vec::with_capacity(ids.len() * ids.len());
-    let mut low = 0_i32;
-    let mut high = 0_i32;
-    for (r, &(_, owner_id)) in ids.iter().enumerate() {
-        for (c, &(_, target_id)) in ids.iter().enumerate() {
-            if r == c {
-                cells.push(OpinionMatrixCell::Diagonal);
-                continue;
-            }
-            if !owners[r].known {
-                cells.push(OpinionMatrixCell::Missing { reason: owners[r].reason.clone().unwrap_or_else(|| "Not recorded".into()) });
-                continue;
-            }
-            match (owner_id, target_id) {
-                (Some((owner_slot, _)), Some((target_slot, _))) => {
-                    let value = pairs.get(&(owner_slot, target_slot)).map_or(0, |&(_, opinion)| opinion);
-                    low = low.min(value);
-                    high = high.max(value);
-                    cells.push(OpinionMatrixCell::Value { opinion: value });
-                }
-                _ => {
-                    cells.push(OpinionMatrixCell::Missing { reason: "No country holds this tag at this hour".into() });
-                }
+    let mut at_slot: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (index, &(_, id)) in ids.iter().enumerate() {
+        if let Some((slot, _)) = id {
+            at_slot.entry(slot).or_default().push(index as u32);
+        }
+    }
+    let mut pairs = Vec::new();
+    let (mut low, mut high) = (0_i32, 0_i32);
+    for (&(owner, target), &opinion) in &opinions {
+        let (Some(rows), Some(columns)) = (at_slot.get(&owner), at_slot.get(&target)) else { continue };
+        for &row in rows {
+            for &column in columns.iter().filter(|&&column| column != row) {
+                low = low.min(opinion);
+                high = high.max(opinion);
+                pairs.push(OpinionPair { row, column, cell: OpinionCell::Value { opinion } });
             }
         }
     }
-    Ok((owners, cells, [low, high]))
-}
-
-#[cfg(test)]
-pub(crate) fn opinions(frame: &DecodedFrame, ids: &[(&str, Option<(u32, u32)>)], live: &Cells) -> io::Result<Vec<OpinionOwner>> {
-    opinions_matrix(frame, ids, live).map(|(owners, ..)| owners)
+    let unheld: Vec<u32> = ids.iter().enumerate().filter(|(_, (_, id))| id.is_none()).map(|(index, _)| index as u32).collect();
+    if !unheld.is_empty() {
+        for row in owners.iter().enumerate().filter(|(_, owner)| owner.known).map(|(row, _)| row) {
+            for &column in &unheld {
+                pairs.push(OpinionPair { row: row as u32, column, cell: OpinionCell::Missing { reason: UNHELD.to_owned() } });
+            }
+        }
+    }
+    pairs.sort_unstable_by_key(|pair| (pair.row, pair.column));
+    (owners, pairs, [low, high])
 }
 
 fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u32) -> Result<Vec<Country>, String> {
@@ -303,7 +285,7 @@ impl AtHour for DiplomaticRelations {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![DiplomaticRelationsParams::decl(), OpinionOrder::decl(), OpinionMatrixCell::decl(), OpinionOwner::decl(), DiplomaticRelationsReply::decl()]
+        vec![DiplomaticRelationsParams::decl(), OpinionOrder::decl(), OpinionCell::decl(), OpinionPair::decl(), OpinionOwner::decl(), DiplomaticRelationsReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -423,7 +405,7 @@ impl AtHour for DiplomaticRelations {
                 na.cmp(nb).then(a.0.cmp(&b.0))
             });
         }
-        let (mut owners, cells, domain) = opinions_matrix(frame, &named(&ids), at.live)?;
+        let (mut owners, pairs, domain) = opinions_matrix(frame, &named(&ids));
         for owner in &mut owners {
             if let Some((name, name_missing, color, faction_id, faction_name)) = metadata.remove(&owner.tag) {
                 owner.name = name;
@@ -437,7 +419,7 @@ impl AtHour for DiplomaticRelations {
         if unresolved > 0 {
             warnings.push(format!("{unresolved} chosen countries have no holder at this hour; their opinions are not known."));
         }
-        Ok(DiplomaticRelationsReply { chosen_missing, owners, cells, domain, warnings })
+        Ok(DiplomaticRelationsReply { chosen_missing, owners, pairs, domain, warnings })
     }
 }
 

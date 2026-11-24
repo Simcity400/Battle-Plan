@@ -12,7 +12,7 @@ import { runAt } from '../../charts/series';
 import type { Span } from '../../charts/series';
 import { useChartTokens } from '../../charts/useChartTokens';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
@@ -48,7 +48,7 @@ function partRows(reply: CountryFuelReply | undefined, measure: 'gain' | 'burn',
 }
 
 export default function FuelBreakdown({ runtime, gate, widget, track, tag, measure, hour, follows, within, selection: retained, onSelection, digits, campaign, aliases, detailHours, history, ...chart }: {
-  runtime: WidgetRuntime; gate: Gate; widget: WidgetSpec; track: BoundTrack; tag: string; measure: 'gain' | 'burn'; hour: number | null; follows: boolean; digits: number;
+  runtime: WidgetRuntime; gate: Gate; widget: WidgetBase; track: BoundTrack; tag: string; measure: 'gain' | 'burn'; hour: number | null; follows: boolean; digits: number;
   campaign: string; aliases?: ReadonlyMap<string, readonly Span[]>; history: CountryAt['history'];
   selection: FuelRecipientSelection | null; onSelection: (selection: FuelRecipientSelection | null) => void;
 } & DrillChart) {

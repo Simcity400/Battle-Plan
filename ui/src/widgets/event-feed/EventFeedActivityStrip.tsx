@@ -3,7 +3,7 @@ import { formatDay } from '../../dashboard/calendar.ts';
 import { validateProductReply } from '../../dashboard/client.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
-import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { useGate } from '../../dashboard/regionGate.ts';
 import { productRequest } from '../../dashboard/request.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
@@ -14,7 +14,7 @@ import './eventFeedActivityStrip.css';
 const STRIP_WINDOW_HOURS = 60 * 24;
 
 export interface EventFeedActivityStripProps {
-  readonly widget: WidgetSpec;
+  readonly widget: WidgetBase;
   readonly track: BoundTrack | undefined;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;

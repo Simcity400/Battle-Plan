@@ -210,6 +210,19 @@ fn cache_keys_vary_each_field_independently_and_evict_cleanly() {
     let cleared = cache.clear();
     assert_eq!(cleared.len(), 1);
     assert!(cache.is_empty());
+
+    let mut bounded: WindowCache<u32> = WindowCache::new(1);
+    let mut interfaces = HashMap::from([
+        (base.interface_key(), "base"),
+        (diff_lang.interface_key(), "german"),
+        (diff_art.interface_key(), "other art"),
+    ]);
+    bounded.insert(base.clone(), 1);
+    bounded.insert(diff_window.clone(), 2);
+    let mut dropped = bounded.drop_unused_interfaces(&mut interfaces, &diff_lang.interface_key());
+    dropped.sort_unstable();
+    assert_eq!(dropped, ["other art"], "an interface no cached window uses leaves with the windows");
+    assert_eq!(interfaces.len(), 2, "the shared interface of a cached window and the one being loaded stay");
 }
 
 #[test]
@@ -254,6 +267,11 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
                     alwaystransparent = yes
                     pdx_tooltip = "CLOSE_TIP"
                 }
+                buttonType = {
+                    name = "plain_tab"
+                    position = { x = 10 y = 60 }
+                    spriteType = "GFX_even"
+                }
             }
         }"#,
         [400, 300],
@@ -288,9 +306,21 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
         [0.0, 0.0],
         &resources,
         &localisation,
-        &["close_button", "ghost_close"],
-        &BTreeMap::new(),
+        &RegionActions { close_paths: &["close_button", "ghost_close"], tooltips: &BTreeMap::new(), views: &BTreeMap::new() },
     );
+    let tab = root.find(native::Kind::Button, "plain_tab").unwrap().path.clone();
+    assert!(regions.iter().all(|region| region.path != tab), "a control with no tooltip and no action has no region");
+    let views = BTreeMap::from([(tab.clone(), "history".to_owned())]);
+    let with_view = regions_from_layout(
+        &[root],
+        &layout.regions,
+        [0.0, 0.0],
+        &resources,
+        &localisation,
+        &RegionActions { close_paths: &["close_button", "ghost_close"], tooltips: &BTreeMap::new(), views: &views },
+    );
+    let tab_region = with_view.iter().find(|region| region.path == tab).expect("a tab's action keeps its region without a tooltip");
+    assert_eq!((tab_region.view.as_deref(), tab_region.tooltip.is_none()), (Some("history"), true));
     let close = regions.iter().find(|region| region.close).unwrap();
     assert_eq!(close.rect, [90.0, 4.0, 20.0, 10.0]);
     assert_eq!(
@@ -339,8 +369,7 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
         [0.0, 0.0],
         &resources,
         &localisation,
-        &["close_button", "ghost_close"],
-        &ghost_tips,
+        &RegionActions { close_paths: &["close_button", "ghost_close"], tooltips: &ghost_tips, views: &BTreeMap::new() },
     );
     for name in ["ghost_icon", "ghost_close"] {
         let ghost = explained
@@ -398,8 +427,7 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
         [0.0, 0.0],
         &alpha_resources,
         &localisation,
-        &["close_button"],
-        &BTreeMap::new(),
+        &RegionActions { close_paths: &["close_button"], tooltips: &BTreeMap::new(), views: &BTreeMap::new() },
     );
     let alpha_close = alpha_regions.iter().find(|region| region.close).unwrap();
     let mask = alpha_close.alpha_mask.as_ref().unwrap();
@@ -1040,6 +1068,7 @@ fn rendered_frames_are_reused_by_fingerprint_bounded_and_dropped_with_their_sour
         art_label: None,
         regions: Vec::new(),
         warnings: Vec::new(),
+        text: Vec::new(),
     };
     let frame = |source: &str, fingerprint: u8| RenderFrameKey {
         window: cache_key(source, "rev-1", "game", "user", "", "english", "ship"),
@@ -1070,6 +1099,41 @@ fn rendered_frames_are_reused_by_fingerprint_bounded_and_dropped_with_their_sour
         frame_fingerprint(window, Some(10), true, &[], &scrolled),
         frame_fingerprint(window, Some(10), true, &[], &BTreeMap::from([("root/list".to_owned(), 45.0)]))
     );
+}
+
+#[test]
+fn a_decoded_hour_is_reused_for_the_same_source_revision_branch_hour_and_tables_only() {
+    let key = |source: &str, revision: &str, branch: u64, hour: i32, tables: &[TableId]| DecodedFrameKey {
+        source_id: source.to_owned(),
+        revision: revision.to_owned(),
+        branch,
+        hour,
+        tables: tables.to_vec(),
+    };
+    let tables = [TableId::VariantDefinitions, TableId::VariantModules];
+    let at = key("a", "rev-1", 1, 100, &tables);
+    let mut frames = DecodedFrames::new(2);
+    frames.insert(at.clone(), Arc::new("hour 100"));
+    assert_eq!(frames.get(&at).as_deref(), Some(&"hour 100"), "a scroll or tab render at one hour reads the decoded hour again");
+    for other in [
+        key("b", "rev-1", 1, 100, &tables),
+        key("a", "rev-2", 1, 100, &tables),
+        key("a", "rev-1", 2, 100, &tables),
+        key("a", "rev-1", 1, 101, &tables),
+        key("a", "rev-1", 1, 100, &tables[..1]),
+    ] {
+        assert!(frames.get(&other).is_none(), "{other:?} is another decoded hour");
+    }
+    frames.insert(key("a", "rev-1", 1, 101, &tables), Arc::new("hour 101"));
+    assert!(frames.get(&at).is_some());
+    frames.insert(key("b", "rev-1", 1, 100, &tables), Arc::new("other source"));
+    assert!(frames.get(&key("a", "rev-1", 1, 101, &tables)).is_none(), "the least recently used hour is dropped");
+    assert!(frames.get(&at).is_some());
+    frames.evict_source("a");
+    assert!(frames.get(&at).is_none(), "a source's decoded hours go with the source");
+    assert!(frames.get(&key("b", "rev-1", 1, 100, &tables)).is_some());
+    frames.clear();
+    assert!(frames.get(&key("b", "rev-1", 1, 100, &tables)).is_none());
 }
 
 #[test]
@@ -1231,6 +1295,12 @@ fn a_list_box_scrolls_to_the_rows_below_its_visible_area() {
                     size = { x = 30 y = 25 }
                     scrollbarType = "list_slider"
                 }
+                listboxType = {
+                    name = "plain_rows"
+                    position = { x = 100 y = 6 }
+                    size = { x = 30 y = 25 }
+                    scrollbarType = "list_slider"
+                }
             }
         }"#,
         [400, 300],
@@ -1238,7 +1308,7 @@ fn a_list_box_scrolls_to_the_rows_below_its_visible_area() {
     let root = gui.template("list_panel").unwrap().clone();
     let mut resources = gui_fixture::fixture_with(gui);
     resources.add_sprite("GFX_arrow", [10, 10], 1);
-    resources.add_sprite("GFX_thumb", [3, 17], 1);
+    resources.add_sprite("GFX_thumb", [3, 2], 1);
     let list = root.find(native::Kind::SmoothListBox, "rows").unwrap();
     let layout = layout_window(&root, &resources, [400, 300], |_| {}).unwrap();
     let holder = layout.holders.iter().find(|holder| holder.path == list.path).unwrap();
@@ -1250,15 +1320,60 @@ fn a_list_box_scrolls_to_the_rows_below_its_visible_area() {
         shown(top.list_rows(list, holder, &rows, &resources).unwrap()),
         [true, true, true, false, false]
     );
-    let region = top.extra_regions.last().unwrap();
+    let own = |holder: &native_gui::Holder, x: i32| {
+        [(holder.logical[0] + x) as f32, (holder.logical[1] + 6) as f32, 30.0, 25.0]
+    };
+    let region = &top.extra_regions[0];
     assert_eq!(region.path, list.path);
     assert!(region.passthrough);
+    assert_eq!(region.rect, own(holder, 4), "the wheel target is the list's own rectangle");
     assert_eq!(
         region.scroll,
-        Some(GameWindowScroll { position: 0.0, range: 25.0, wheel: 10.0 })
+        Some(GameWindowScroll {
+            list: list.path.clone(),
+            vertical: true,
+            position: 0.0,
+            range: 25.0,
+            step: 10.0,
+            page: 25.0,
+            control: GameWindowScrollControl::List,
+        })
+    );
+    let controls: Vec<GameWindowScrollControl> = top.extra_regions[1..]
+        .iter()
+        .map(|region| {
+            let scroll = region.scroll.as_ref().expect("a scrollbar part moves its list");
+            assert_eq!((scroll.list.as_str(), region.passthrough), (list.path.as_str(), false));
+            scroll.control
+        })
+        .collect();
+    for wanted in [
+        GameWindowScrollControl::Step { direction: -1 },
+        GameWindowScrollControl::Step { direction: 1 },
+        GameWindowScrollControl::Track,
+    ] {
+        assert!(controls.contains(&wanted), "{wanted:?} has an input region: {controls:?}");
+    }
+    assert!(
+        controls.iter().any(|control| matches!(control, GameWindowScrollControl::Thumb { travel, thumb: 0 } if *travel > 0)),
+        "the thumb drags along its track: {controls:?}"
     );
     assert_eq!(top.scrollbars.len(), 1);
     assert!(!top.scrollbars[0].parts.is_empty());
+
+    let plain = root.find(native::Kind::ListBox, "plain_rows").unwrap();
+    let plain_holder = layout.holders.iter().find(|holder| holder.path == plain.path).unwrap();
+    let mut beside = ComposedPlan::default();
+    assert_eq!(
+        shown(beside.list_rows(plain, plain_holder, &rows, &resources).unwrap()),
+        [true, true, false, false, false]
+    );
+    let plain_region = &beside.extra_regions[0];
+    assert_eq!(plain_region.rect, own(plain_holder, 100), "a list beside another scrolls only itself");
+    assert_eq!(
+        plain_region.scroll.as_ref().map(|scroll| (scroll.range, scroll.step, scroll.page)),
+        Some((3.0, 1.0, 2.0))
+    );
 
     let mut end = ComposedPlan::scrolled(BTreeMap::from([(list.path.clone(), 400.0)]));
     assert_eq!(
@@ -1266,7 +1381,7 @@ fn a_list_box_scrolls_to_the_rows_below_its_visible_area() {
         [false, false, true, true, true]
     );
     assert_eq!(
-        end.extra_regions.last().and_then(|region| region.scroll.as_ref()).map(|scroll| scroll.position),
+        end.extra_regions[0].scroll.as_ref().map(|scroll| scroll.position),
         Some(25.0)
     );
 

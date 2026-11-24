@@ -2,14 +2,17 @@
 use dashboard_base::products::Country;
 use dashboard_base::products::{LoadContext, Product};
 use dashboard_land::products::forces::{self, ForceAtRow, ForcePart, ForceRun, ForceSeries, ForceSizeReply};
-use dashboard_world::products::army_windows::{ArmySpan, windows};
+use dashboard_world::products::{
+    army_windows::{ArmySpan, windows},
+    group_members::GroupsAt,
+};
 use dashboard_base::Source;
 use dashboard_declare::Key;
 use dashboard_query::{
     Query,
     identity::Holder,
     read,
-    series::{Line, Part},
+    series::{Line, Part, ranked::GroupSelection},
 };
 use game_model::calendar::{HOUR_EPOCH, MONTH_LENGTHS};
 use replay_recording::columnar_frames::Recording;
@@ -443,6 +446,10 @@ pub struct NavalLossesAtParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[doc = " The group whose members at the hour are the rows; never with countries or a top."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
     pub attribution: NavalAttribution,
     pub kind: NavalKind,
     pub period: NavalPeriod,
@@ -473,6 +480,9 @@ fn validate_at(params: &NavalLossesAtParams) -> Result<(), &'static str> {
     }
     if params.top.is_some_and(|top| top == 0 || !params.countries.is_empty()) {
         return Err("Invalid country selection");
+    }
+    if params.group.is_some() && (params.top.is_some() || !params.countries.is_empty()) {
+        return Err("A selection names a group, a top or countries, one of them");
     }
     params.countries.iter().try_for_each(dashboard_base::products::validate_country)
 }
@@ -539,7 +549,7 @@ fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, str
     Ok((lo.min(hour), hi.max(hour)))
 }
 
-pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, cancelled: &AtomicBool) -> io::Result<NavalLossesAtReply> {
+pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &GroupsAt, cancelled: &AtomicBool) -> io::Result<NavalLossesAtReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let hour = params.hour;
     let reply_parts = parts(params.kind);
@@ -562,8 +572,20 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, cancelled: &Ato
     };
     let counts = Counts::read(recording, stretch.run, kinds, &[], from, hour)?;
     let missing_baseline = kinds.iter().any(|&kind| counts.baseline(kind, hour).is_none());
-    let (first_hour, last_hour) = proven_bounds(query, stretch.run, hour, stretch.first, stretch.last, params.period, None, kinds)?;
+    let (mut first_hour, mut last_hour) = proven_bounds(query, stretch.run, hour, stretch.first, stretch.last, params.period, None, kinds)?;
     let mut warnings = Vec::new();
+    let countries: Vec<Country> = match &params.group {
+        None => params.countries.clone(),
+        Some(group) => {
+            let members = groups.members(group, hour)?;
+            first_hour = first_hour.max(members.from).min(hour);
+            last_hour = last_hour.min(members.until).max(hour);
+            if let Some(reason) = members.refused {
+                return Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows: Vec::new(), missing: Some(reason), warnings });
+            }
+            members.tags.into_iter().map(Country::from).collect()
+        }
+    };
     if missing_baseline {
         return Ok(NavalLossesAtReply {
             first_hour,
@@ -606,7 +628,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, cancelled: &Ato
     };
     let mut used_keys = Vec::new();
     let mut rows: Vec<ForceAtRow> = Vec::new();
-    if params.countries.is_empty() {
+    if countries.is_empty() && params.group.is_none() {
         let unresolved = query.holders.unknown.iter().any(|&(first, last, _)| first <= hour && hour <= last)
             || query.holders.tags.values().flatten().any(|run| run.first <= hour && hour <= run.last && run.holder == Holder::Unresolved);
         for (tag, runs) in &query.holders.tags {
@@ -621,6 +643,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, cancelled: &Ato
                 }
                 rows.push(ForceAtRow {
                     country: Country::from(tag.as_str()),
+                    slot: Some(slot),
                     tag: tag.clone(),
                     total,
                     reference_total: None,
@@ -646,11 +669,17 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, cancelled: &Ato
         }
     } else {
         let mut seen = BTreeSet::new();
-        for country in &params.countries {
+        let mut held_slots = BTreeSet::new();
+        for country in &countries {
             if !seen.insert(country.clone()) {
                 continue;
             }
             let Some(run) = query.holders.at(country, hour) else { continue };
+            if let Holder::Found { slot, .. } = run.holder
+                && !held_slots.insert(slot)
+            {
+                continue;
+            }
             let tag = query.holders.name(country, hour);
             match run.holder {
                 Holder::Found { slot, id } => {
@@ -661,6 +690,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, cancelled: &Ato
                     }
                     rows.push(ForceAtRow {
                         country: country.clone(),
+                        slot: Some(slot),
                         tag,
                         total,
                         reference_total: None,
@@ -671,6 +701,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, cancelled: &Ato
                 }
                 Holder::Unresolved => rows.push(ForceAtRow {
                     country: country.clone(),
+                    slot: None,
                     tag,
                     total: None,
                     reference_total: None,
@@ -700,7 +731,7 @@ impl Product for NavalLossesAt {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = NavalLossesAtParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, top, attribution, kind, period, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, top, group, attribution, kind, period, "countries[]"];
     type Reply = NavalLossesAtReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -712,10 +743,11 @@ impl Product for NavalLossesAt {
         validate_at(params)
     }
 
-    fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| invalid("Invalid branch"))?;
         let query = dashboard_base::queries::query(source, branch)?;
-        reply_at(&query, params, cancelled)
+        let groups = GroupsAt::load(source, context, &params.branch_id, params.group.as_ref())?;
+        reply_at(&query, params, &groups, cancelled)
     }
 }
 
