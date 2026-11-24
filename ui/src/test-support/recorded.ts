@@ -3,7 +3,8 @@ import { queryFailure } from '../dashboard/queryError.ts';
 import type { QueryError, SourceReply } from '../generated/dashboard';
 import { packet, resetStamps, splitForLanes } from '../dashboard/follow/split.ts';
 import { upgradeRecorded } from './recordedWire.ts';
-import { DATED_FOLLOW, DATED_PANEL, parseDatedPanels } from '../dashboard/follow/message.ts';
+import { DATED_FOLLOW, DATED_PANEL } from '../dashboard/follow/message.ts';
+import { parseDatedPanels } from './followMessage.ts';
 import { isCellsId } from '../dashboard/follow/liveCells.ts';
 import { busy, busyPreparing } from '../shell/busy.ts';
 

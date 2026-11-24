@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey } from '../../charts/live.ts';
-import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL, parseAnswer } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';

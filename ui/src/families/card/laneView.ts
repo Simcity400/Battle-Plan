@@ -1,6 +1,6 @@
 import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { layoutCards, type CardLayout } from './layout.ts';
-import { assertCardModelValid, cardRowHours, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel } from './model.ts';
+import { assertCardModelValid, cardRowHours, cardRowName, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel, type CardRow } from './model.ts';
 import { drawCards, hitCards, visibleCardIcons } from './painter.ts';
 
 export interface FamilyCardBinding<TOptions = unknown> extends LaneBinding<TOptions> {
@@ -8,6 +8,12 @@ export interface FamilyCardBinding<TOptions = unknown> extends LaneBinding<TOpti
   readonly width: number;
   readonly height: number;
   readonly pauseFlush?: number;
+}
+
+function navName(row: Exclude<CardRow, { readonly kind: 'section' }>): string {
+  if (row.kind === 'hero') return row.key;
+  if (row.kind === 'item') return row.title.kind === 'known' ? String(row.title.value) : row.key;
+  return cardRowName(row);
 }
 
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
@@ -58,7 +64,7 @@ export const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
         warnings: model.warnings ?? [],
       },
       rowHours: cardRowHours(model),
-      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, row.kind === 'hero' || row.title.kind !== 'known' ? row.key : String(row.title.value), index, -1, '', row.subject ?? null, layout.rowTops[index]!, layout.rowHeights[index]!] as const])),
+      nav: model.rows.flatMap((row, index) => (row.kind === 'section' ? [] : [[row.key, navName(row), index, -1, '', row.kind === 'item' || row.kind === 'hero' ? row.subject ?? null : null, layout.rowTops[index]!, layout.rowHeights[index]!] as const])),
     };
   },
   mirror: frame => deriveCardMirror(frame.model),
