@@ -268,7 +268,15 @@ test('BoundedReadView rejects any read after displayed hour H across panels, hov
   const artProvider: ArtProvider = {
     resolve(handle) {
       if (handle.choice === 'ready-flag') {
-        return { status: 'ready', assetId: 'flag-1', origin: 'vanilla' };
+        return {
+          status: 'ready',
+          assetId: 'flag-1',
+          url: 'art://flag-1',
+          origin: { kind: 'baseGame' },
+          file: 'gfx/flags/GER.tga',
+          frame: { frameIndex: 0, frameCount: 1, frameWidth: 41, frameHeight: 26, textureWidth: 41, textureHeight: 26, outputWidth: 41, outputHeight: 26 },
+          provenance: { fromCurrentInstall: true, label: 'Current installation', scopeKey: 'current' },
+        };
       }
       return { status: 'pending' };
     },
