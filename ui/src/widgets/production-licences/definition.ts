@@ -10,6 +10,6 @@ export const definition = {
   kind: 'production-licences', version: 2, title: 'Production licences', icon: 'factory', category: 'Economy',
   description: 'Who builds whose designs under licence.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true, ranked: true, rankedBy: 'licences on each side' },
   defaultCountries: { kind: 'all' }, options: OPTIONS,
 } as const satisfies WidgetMeta;

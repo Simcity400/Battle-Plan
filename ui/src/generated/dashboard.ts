@@ -4844,7 +4844,11 @@ subject?: CountryRef, countries: Array<CountryRef>, between: boolean,
 /**
  * A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries`.
  */
-group?: GroupSelection, limit?: number, };
+group?: GroupSelection, limit?: number,
+/**
+ * An explicit top partners per side: exactly this many named and the rest folded, where the order is proven at the hour.
+ */
+top?: number, };
 export type VolunteerFlowParamsAtHour = VolunteerFlowParams & { hour: number };
 export type TradeFlowParams = { branchId: string,
 /**
@@ -4859,6 +4863,10 @@ group?: GroupSelection,
  * Partners shown per side before the rest are folded into one.
  */
 limit?: number,
+/**
+ * An explicit top partners per side: exactly this many named and the rest folded, where the order is proven at the hour.
+ */
+top?: number,
 /**
  * One resource by its native index; every resource when absent.
  */
@@ -4883,6 +4891,10 @@ part: number,
 amount: string | null, };
 export type FlowEndpoint = {
 /**
+ * The partner's recorded identity: a slot, a reference the recording cannot link, or the unidentified partners the record combines.
+ */
+key: string,
+/**
  * The recorded country slot; null where the record names no country the recording can link.
  */
 slot: number | null,
@@ -4890,6 +4902,10 @@ slot: number | null,
  * The tag the slot holds at the hour.
  */
 tag: string | null,
+/**
+ * The amount combines unidentified partners; how many is not recorded.
+ */
+collective: boolean,
 /**
  * Why the endpoint cannot be named at the hour.
  */
@@ -4915,7 +4931,11 @@ links: Array<FlowLink>, total: string | null,
 /**
  * Why the side's total, order or emptiness is not proven at the hour.
  */
-missing: string | null, };
+missing: string | null,
+/**
+ * Why the asked top partners are not applied: their order is not proven at the hour, so every witnessed link is kept.
+ */
+unranked: string | null, };
 export type FlowTableRow = {
 /**
  * Index into `endpoints`.
@@ -5702,7 +5722,11 @@ subject?: CountryRef, countries: Array<CountryRef>, between: boolean,
 /**
  * A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries`.
  */
-group?: GroupSelection, limit?: number, };
+group?: GroupSelection, limit?: number,
+/**
+ * An explicit top partners per side: exactly this many named and the rest folded, where the order is proven at the hour.
+ */
+top?: number, };
 export type ProductionLicencesParamsAtHour = ProductionLicencesParams & { hour: number };
 export type IndustrialOrganisationsParams = { branchId: string, country: CountryRef, };
 export type IndustrialOrganisationsReply = { branchId: string, tag: string, organisations: Array<OrganisationNow>,
@@ -7401,7 +7425,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "politics-state-history": { "branchId": "leaf", "country": "any", "hour": "leaf", "mode": "leaf" },
   "power-spend-markers": { "branchId": "leaf", "country": "any", "currency": "leaf", "hour": "leaf" },
   "power-spending-breakdown": { "branchId": "leaf", "country": "any", "currency": "leaf", "from": "leaf", "hour": "leaf" },
-  "production-licences": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any" },
+  "production-licences": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any", "top": "leaf" },
   "production-line-breakdown": { "branchId": "leaf", "country": "any", "group": "leaf", "handle": "leaf", "hour": "leaf" },
   "production-lines-at": { "branchId": "leaf", "country": "any", "hour": "leaf", "order": "leaf" },
   "production-spending": { "branchId": "leaf", "country": "any", "repairs": "leaf", "window": "leaf" },
@@ -7444,14 +7468,14 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "territory-breakdown": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "rule": "leaf" },
   "territory-share": { "branchId": "leaf", "hour": "leaf", "measure": "leaf" },
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
-  "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf" },
+  "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf", "top": "leaf" },
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "unit-leader-career": { "branchId": "leaf", "reference": "leaf" },
   "unit-leader-choices": { "branchId": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
   "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
   "unit-leader-portraits": { "branchId": "leaf", "edge": "leaf", "hour": "leaf", "references": "node", "references[]": "leaf" },
   "unit-leaders": { "branchId": "leaf", "hour": "leaf", "leaders": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
-  "volunteer-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any" },
+  "volunteer-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any", "top": "leaf" },
   "war-contributions": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
   "war-timeline": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
   "wargoals": { "branchId": "leaf", "country": "any", "hour": "leaf" },

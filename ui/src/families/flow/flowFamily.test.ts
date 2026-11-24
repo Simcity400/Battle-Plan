@@ -10,6 +10,7 @@ import { registerFamilyProjection } from '../registry.ts';
 import { flowLane } from './laneView.ts';
 import { projectTradeMatrix, projectTradeTable } from '../../widgets/trade-flows/tradeFlowsProjection.ts';
 import { createLaneView } from '../laneRuntime.ts';
+import { flowPerSide } from './countryFlowPlan.ts';
 
 const HOUR = 60_810_000;
 const TEXT: CountryFlowText = {
@@ -27,14 +28,15 @@ const parts = [
   { key: 'oil', name: 'Oil', nameMissing: null, ordinal: 0, icon: null },
   { key: 'steel', name: 'Steel', nameMissing: null, ordinal: 1, icon: null },
 ];
-const side = (links: FlowLink[], total: string | null, missing: string | null = null): FlowSide => ({ links, total, missing });
+const side = (links: FlowLink[], total: string | null, missing: string | null = null, unranked: string | null = null): FlowSide => ({ links, total, missing, unranked });
 const NONE = side([], '0');
 const base: CountryFlowReply = {
   endpoints: [], subject: null, decimals: 5, parts, incoming: NONE, outgoing: NONE,
   links: [], senders: NONE, receivers: NONE, table: [], largest: '0', largestLink: '0', missing: null, warnings: [],
 };
 const amount = (value: number) => String(value * 100_000);
-const endpoint = (slot: number | null, tag: string | null, unknown: string | null = null): FlowEndpoint => ({ slot, tag, unknown });
+const endpoint = (slot: number | null, tag: string | null, unknown: string | null = null, raw: number | null = null): FlowEndpoint =>
+  ({ key: slot !== null ? `s${slot}` : raw !== null ? `r${raw}` : 'collective', slot, tag, collective: slot === null && raw === null, unknown });
 const link = (from: number | null, to: number | null, parts: [number, number | null][], others: number | null = null): FlowLink => {
   const known = parts.every(([, value]) => value !== null);
   return {
@@ -68,19 +70,19 @@ test('a country-centred flow: partners in the product\'s order, an unrecorded pa
   const model = projectCountryFlow(view(centred), TEXT);
   assert.equal(model.mode, 'centred');
   assert.deepEqual(model.left.map(node => [node.key, node.numeric, node.figure]), [
-    ['left:2', 26, '26'],
+    ['left:s2', 26, '26'],
     ['left:others', 14, '14'],
-    ['left:3', null, 'Not recorded'],
+    ['left:s3', null, 'Not recorded'],
   ]);
   assert.equal(model.left[1]!.label, '14 other partners');
   assert.equal(model.right[0]!.numeric, 74);
   assert.equal(model.notRecordedKey, true, 'a hatched partner adds the not-recorded key');
-  const ribbon = model.ribbons.find(item => item.from === 'left:2')!;
+  const ribbon = model.ribbons.find(item => item.from === 'left:s2')!;
   assert.deepEqual(ribbon.bands, [{ part: 0, numeric: 20 }, { part: 1, numeric: 6 }]);
-  assert.equal(findFlowTooltip(model, 'ribbon:left:3>centre:1')?.missingReason, 'A deal\'s daily delivery was not recorded at this hour');
-  assert.ok(deriveFlowAudit(model).some(row => row.key === 'node:left:3' && (row.value ?? '').startsWith('Not recorded · Steel: Not recorded (')));
+  assert.equal(findFlowTooltip(model, 'ribbon:left:s3>centre:s1')?.missingReason, 'A deal\'s daily delivery was not recorded at this hour');
+  assert.ok(deriveFlowAudit(model).some(row => row.key === 'node:left:s3' && (row.value ?? '').startsWith('Not recorded · Steel: Not recorded (')));
   assert.equal(model.left[0]!.audit, '26 · Oil: 20; Steel: 6', 'the audit carries each part, so swapped bands differ');
-  assert.ok(deriveFlowNav(model).some(tuple => tuple[0] === 'ribbon:left:2>centre:1'), 'a ribbon takes keyboard focus');
+  assert.ok(deriveFlowNav(model).some(tuple => tuple[0] === 'ribbon:left:s2>centre:s1'), 'a ribbon takes keyboard focus');
   assert.deepEqual(model.notes, ['A deal\'s daily delivery was not recorded at this hour'], 'the side whose total is unproven says why');
   assert.match(model.centre!.audit, /Imports from Not recorded: .*Exports to 74/);
 });
@@ -96,36 +98,50 @@ test('a partner on both sides has a node on each side: the incoming ribbon start
     largestLink: amount(45),
   };
   const model = projectCountryFlow(view(reply), TEXT);
-  assert.deepEqual([model.left[0]!.key, model.right[0]!.key], ['left:6', 'right:6']);
+  assert.deepEqual([model.left[0]!.key, model.right[0]!.key], ['left:s6', 'right:s6']);
   const layout = layoutFlow(model, 846, 360);
-  const left = layout.nodes.find(box => box.node.key === 'left:6')!;
-  const right = layout.nodes.find(box => box.node.key === 'right:6')!;
+  const left = layout.nodes.find(box => box.node.key === 'left:s6')!;
+  const right = layout.nodes.find(box => box.node.key === 'right:s6')!;
   assert.ok(left.x < right.x, 'the two boxes are apart');
-  const incoming = layout.ribbons.find(box => box.ribbon.to === 'centre:1')!;
+  const incoming = layout.ribbons.find(box => box.ribbon.to === 'centre:s1')!;
   assert.equal(incoming.x0, left.x + 6, 'the incoming ribbon starts at the left box');
-  assert.equal(hitFlow(layout, right.x + 20, right.y + right.height / 2), 'node:right:6');
-  assert.equal(findFlowTooltip(model, 'node:right:6')?.items?.[0]?.value, '45');
-  assert.equal(findFlowTooltip(model, 'node:left:6')?.items?.[0]?.value, '5');
+  assert.equal(hitFlow(layout, right.x + 20, right.y + right.height / 2), 'node:right:s6');
+  assert.equal(findFlowTooltip(model, 'node:right:s6')?.items?.[0]?.value, '45');
+  assert.equal(findFlowTooltip(model, 'node:left:s6')?.items?.[0]?.value, '5');
   assert.equal(new Set(deriveFlowAudit(model).map(row => row.key)).size, deriveFlowAudit(model).length, 'audit keys are unique');
 });
 
-test('a licence with an unknown giver stays one licence, from a partner named as unknown with its reason', () => {
+test('licences from distinct unlinked givers stay distinct partners, a combined amount says it is combined, and every identity reason reaches hover and audit', () => {
   const reason = 'The licence names a country the recording cannot link at this hour';
+  const combined = 'The deal names a country the recording cannot link at this hour';
+  const unnamed = 'Not a country at this hour';
+  const one = (from: number) => ({ from, to: 0, others: null, amounts: [{ part: 0, amount: '1' }], total: '1', missing: null });
   const reply: CountryFlowReply = {
     ...base,
     decimals: 0,
     parts: [{ key: 'licences', name: 'Licences', nameMissing: null, ordinal: 0, icon: null }],
-    endpoints: [endpoint(7, 'GER'), endpoint(8, 'ITA'), endpoint(null, null, reason)],
+    endpoints: [endpoint(7, 'GER'), endpoint(8, 'ITA'), endpoint(null, null, reason, 77), endpoint(null, null, reason, 78), endpoint(null, null, combined), endpoint(9, null, unnamed)],
     subject: 0,
-    incoming: side([{ from: 1, to: 0, others: null, amounts: [{ part: 0, amount: '1' }], total: '1', missing: null }, { from: 2, to: 0, others: null, amounts: [{ part: 0, amount: '1' }], total: '1', missing: null }], '2'),
-    largest: '2',
+    incoming: side([one(1), one(2), one(3), one(4), one(5)], '5'),
+    largest: '5',
     largestLink: '1',
   };
   const model = projectCountryFlow(view(reply), TEXT);
-  assert.deepEqual(model.left.map(node => [node.key, node.label, node.numeric]), [['left:8', 'Loading name…', 1], ['left:unknown', 'Unknown country', 1]], 'a partner whose name has not arrived reads loading, never its tag');
+  assert.deepEqual(model.left.map(node => [node.key, node.label]), [
+    ['left:s8', 'Loading name…'], ['left:r77', 'Unknown country'], ['left:r78', 'Unknown country'], ['left:collective', 'Unknown countries, combined'], ['left:s9', 'Loading name…'],
+  ], '"Unknown country" is a label, not a key');
   assert.equal(model.left[1]!.unknown, reason);
-  assert.equal(findFlowTooltip(model, 'node:left:unknown')?.missingReason, reason);
+  assert.equal(findFlowTooltip(model, 'node:left:r77')?.missingReason, reason);
   assert.equal(model.left[1]!.subject, undefined, 'an unknown partner is no country to open');
+  assert.equal(model.left[4]!.unknown, unnamed, 'a recorded slot that cannot be named keeps its reason');
+  const ribbon = model.ribbons.find(item => item.from === 'left:collective')!;
+  assert.ok(ribbon.tooltip?.items?.some(item => item.label === 'Unknown countries, combined' && item.missingReason === combined), 'the ribbon says why its partner is unknown');
+  assert.ok(ribbon.audit.endsWith(`Unknown countries, combined: ${combined}`));
+});
+
+test('a side whose order is not proven says the asked Top N is not applied', () => {
+  const model = projectCountryFlow(view({ ...centred, incoming: { ...centred.incoming, unranked: 'not recorded' } }), TEXT);
+  assert.ok(model.notes?.includes('Top countries not applied, every partner shown: not recorded'));
 });
 
 test('a partial reply never says there is none: emptiness needs both sides proven', () => {
@@ -149,16 +165,16 @@ test('a partial reply never says there is none: emptiness needs both sides prove
 test('the layout gives every ribbon its width at both ends, keeps labels apart, and hit-tests what it draws', () => {
   const model = projectCountryFlow(view(centred), TEXT);
   const layout = layoutFlow(model, 846, 360);
-  const hol = layout.nodes.find(box => box.node.key === 'left:2')!;
-  const holRibbon = layout.ribbons.find(box => box.ribbon.from === 'left:2')!;
+  const hol = layout.nodes.find(box => box.node.key === 'left:s2')!;
+  const holRibbon = layout.ribbons.find(box => box.ribbon.from === 'left:s2')!;
   assert.ok(Math.abs((holRibbon.a1 - holRibbon.a0) - (holRibbon.b1 - holRibbon.b0)) < 0.01, 'a ribbon keeps its width');
   assert.ok(Math.abs(hol.height - 26 * layout.scale) < 0.01);
   const lefts = layout.nodes.filter(box => box.node.side === 'left');
   for (let i = 1; i < lefts.length; i++) assert.ok(lefts[i]!.slotTop >= lefts[i - 1]!.slotTop + lefts[i - 1]!.slotHeight, 'label slots never overlap');
   const middleX = (holRibbon.x0 + holRibbon.x1) / 2;
   const middleY = (holRibbon.a0 + holRibbon.b0 + holRibbon.a1 + holRibbon.b1) / 4;
-  assert.equal(hitFlow(layout, middleX, middleY), 'ribbon:left:2>centre:1');
-  assert.equal(hitFlow(layout, hol.x - 20, hol.y + hol.height / 2), 'node:left:2');
+  assert.equal(hitFlow(layout, middleX, middleY), 'ribbon:left:s2>centre:s1');
+  assert.equal(hitFlow(layout, hol.x - 20, hol.y + hol.height / 2), 'node:left:s2');
   assert.ok(layout.bodyTop + 26 * layout.scale <= 360);
 
   registerFamilyProjection({ kind: 'test-flow', family: 'flow', project: readView => projectCountryFlow(readView, TEXT) });
@@ -173,7 +189,7 @@ test('the layout gives every ribbon its width at both ends, keeps labels apart, 
     { label: 'seek back', binding: held, hour: HOUR, check: true },
     { label: 'correction', binding: lane(corrected), hour: HOUR, check: true },
   ], surface);
-  assertTooltipDated(() => createLaneView(flowLane, () => {}), { label: 'flow', binding: held, hour: HOUR }, 'node:left:2', 5, surface);
+  assertTooltipDated(() => createLaneView(flowLane, () => {}), { label: 'flow', binding: held, hour: HOUR }, 'node:left:s2', 5, surface);
 });
 
 test('a group subject is a bipartite flow of the product\'s senders and receivers, a country on both sides drawn on both', () => {
@@ -192,12 +208,12 @@ test('a group subject is a bipartite flow of the product\'s senders and receiver
   };
   const model = projectCountryFlow(view(reply), TEXT);
   assert.equal(model.mode, 'bipartite');
-  assert.deepEqual(model.left.map(node => node.key), ['left:10', 'left:8', 'left:11']);
-  assert.deepEqual(model.right.map(node => node.key), ['right:11', 'right:9', 'right:10']);
-  assert.deepEqual(model.ribbons.map(ribbon => ribbon.key), ['left:10>right:11', 'left:8>right:9', 'left:11>right:10']);
+  assert.deepEqual(model.left.map(node => node.key), ['left:s10', 'left:s8', 'left:s11']);
+  assert.deepEqual(model.right.map(node => node.key), ['right:s11', 'right:s9', 'right:s10']);
+  assert.deepEqual(model.ribbons.map(ribbon => ribbon.key), ['left:s10>right:s11', 'left:s8>right:s9', 'left:s11>right:s10']);
   assert.equal(model.leftHeader, 'Exporters');
   const layout = layoutFlow(model, 846, 360);
-  const back = layout.ribbons.find(box => box.ribbon.key === 'left:11>right:10')!;
+  const back = layout.ribbons.find(box => box.ribbon.key === 'left:s11>right:s10')!;
   assert.ok(back.x0 < back.x1, 'a link back to a sender runs left to right, to its receiver box');
 });
 
@@ -212,8 +228,8 @@ test('the trade matrix keys a partner by its recorded slot and an unproven popul
     largestLink: amount(3),
   };
   const model = projectTradeMatrix(view(reply));
-  assert.deepEqual(model.rows.map(row => [row.id, row.label]), [['1', 'Loading name…'], ['unknown', 'Unknown country']]);
-  assert.deepEqual(model.columns.map(column => column.id), ['6']);
+  assert.deepEqual(model.rows.map(row => [row.id, row.label]), [['s1', 'Loading name…'], ['collective', 'Unknown countries, combined']]);
+  assert.deepEqual(model.columns.map(column => column.id), ['s6']);
   assert.equal(model.cells.present.size, 2);
   const absent = model.cells.absent;
   assert.equal(typeof absent === 'function' ? absent(0).kind : absent.kind, 'missing');
@@ -251,7 +267,7 @@ test('a recorded 0.04 a day is drawn as under one tenth and read exactly with it
   const node = model.left[0]!;
   assert.equal(node.figure, '<0.1');
   assert.equal(node.audit, '0.04 per day · Oil: 0.04 per day');
-  assert.equal(findFlowTooltip(model, 'node:left:2')?.items?.[0]?.value, '0.04 per day');
+  assert.equal(findFlowTooltip(model, 'node:left:s2')?.items?.[0]?.value, '0.04 per day');
 });
 
 test('a witnessed zero delivery keeps its partner but its ribbon, which paints nothing, takes no hit', () => {
@@ -267,9 +283,9 @@ test('a witnessed zero delivery keeps its partner but its ribbon, which paints n
   const model = projectCountryFlow(view(zero), TEXT);
   assert.equal(model.left[0]!.figure, '0', 'the witnessed zero stays on the partner node');
   const layout = layoutFlow(model, 846, 360);
-  const box = layout.ribbons.find(item => item.ribbon.from === 'left:2')!;
+  const box = layout.ribbons.find(item => item.ribbon.from === 'left:s2')!;
   const x = (box.x0 + box.x1) / 2;
-  for (let y = layout.bodyTop; y < layout.height; y++) assert.notEqual(hitFlow(layout, x, y), 'ribbon:left:2>centre:1');
+  for (let y = layout.bodyTop; y < layout.height; y++) assert.notEqual(hitFlow(layout, x, y), 'ribbon:left:s2>centre:s1');
 });
 
 test('the other partners band is one neutral band, its parts kept for the tooltip', () => {
@@ -280,8 +296,15 @@ test('the other partners band is one neutral band, its parts kept for the toolti
   assert.equal(findFlowTooltip(model, `ribbon:${others.key}`)?.items?.[0]?.label, 'Oil');
 });
 
-test('a Top N choice reaches the product as its ranked limit and the request key, not replaced by the viewport', async () => {
-  const { tradeFlowDeclaration } = await import('../../widgets/trade-flows/tradeFlowsProjection.ts');
+test('every flow widget offers Top countries, and the choice reaches its product as the explicit top beside the viewport fold', async () => {
+  const { createServer } = await import('vite');
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
+  const { groupKinds } = await vite.ssrLoadModule('/ui/src/dashboard/settings/CountriesSection.tsx').finally(() => vite.close()) as typeof import('../../dashboard/settings/CountriesSection.tsx');
+  const declarations = [
+    [(await import('../../widgets/trade-flows/definition.ts')).definition, (await import('../../widgets/trade-flows/tradeFlowsProjection.ts')).tradeFlowDeclaration],
+    [(await import('../../widgets/production-licences/definition.ts')).definition, (await import('../../widgets/production-licences/licencesProjection.ts')).licencesDeclaration],
+    [(await import('../../widgets/volunteers/definition.ts')).definition, (await import('../../widgets/volunteers/volunteersProjection.ts')).volunteersDeclaration],
+  ] as const;
   const ctx = (top: number | null) => ({
     track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
     branch: { id: '1' },
@@ -291,11 +314,15 @@ test('a Top N choice reaches the product as its ranked limit and the request key
     widget: { countries: top === null ? { kind: 'all' } : { kind: 'group', group: { type: 'top', count: top }, membership: 'hour', aggregate: false } },
   }) as never;
   const view = { following: true, staticSpan: null, height: 360 };
-  const plan = (top: number | null) => tradeFlowDeclaration.sources(ctx(top), view);
-  const limit = (top: number | null) => (plan(top).entries[0]!.read as unknown as { params: { limit: number } }).params.limit;
-  assert.equal(limit(10), 10);
-  assert.equal(limit(3), 3);
-  assert.notEqual(plan(10).owner, plan(null).owner, 'Top 10 and All are different requests');
+  for (const [definition, declaration] of declarations) {
+    assert.ok(groupKinds(undefined, definition.countries).some(kind => kind.value === 'top'), `${definition.kind} offers Top countries`);
+    const plan = (top: number | null) => declaration.sources(ctx(top), view);
+    const params = (top: number | null) => (plan(top).entries[0]!.read as unknown as { params: { limit?: number; top?: number } }).params;
+    assert.deepEqual([params(10).top, params(10).limit], [10, flowPerSide(view)], `${definition.kind}: Top 10 is its own request field; the viewport fold stays`);
+    assert.equal(params(3).top, 3);
+    assert.equal(params(null).top, undefined);
+    assert.notEqual(plan(10).owner, plan(null).owner, 'Top 10 and All are different requests');
+  }
 });
 
 test('in a group, a sender whose total is unknown reserves the width of its known ribbons and its missing marks, so nothing runs into the next node', () => {
@@ -309,9 +336,9 @@ test('in a group, a sender whose total is unknown reserves the width of its know
     largestLink: amount(9),
   };
   const layout = layoutFlow(projectCountryFlow(view(reply), TEXT), 846, 360);
-  const ita = layout.nodes.find(box => box.node.key === 'left:10')!;
-  const sov = layout.nodes.find(box => box.node.key === 'left:8')!;
-  const out = layout.ribbons.filter(box => box.ribbon.from === 'left:10');
+  const ita = layout.nodes.find(box => box.node.key === 'left:s10')!;
+  const sov = layout.nodes.find(box => box.node.key === 'left:s8')!;
+  const out = layout.ribbons.filter(box => box.ribbon.from === 'left:s10');
   const end = Math.max(...out.map(box => box.a1));
   assert.ok(ita.height >= end - ita.y - 0.01, 'the unknown node holds all its ribbons');
   assert.ok(sov.slotTop >= end, 'the next node starts below them');

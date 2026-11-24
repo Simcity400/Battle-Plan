@@ -534,3 +534,33 @@ fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_nam
     );
     assert!(market_held.complete::<tables::ReservedCountryNaming>().is_ok());
 }
+
+#[test]
+fn a_truncated_link_table_keeps_a_licence_whose_parties_it_witnessed_and_unlinked_givers_stay_distinct() {
+    use super::catalogue::witnessed_licences;
+    use dashboard_base::products::flows::{FlowEnd, FlowGap};
+    let mut frame = frame(1_210);
+    let links = match &*frame.tables[TableId::CountryLinks.index()] {
+        TableView::Complete(TableRows::CountryLinks(rows)) => rows.clone(),
+        _ => panic!("the fixture records country links"),
+    };
+    let ger = links.iter().find(|link| link.id == 11).map(|link| link.canonical_slot).unwrap();
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Truncated { rows: TableRows::CountryLinks(links), missing: 5 };
+    let licences = vec![
+        ProductionLicenseRecordRow { owner: 11, ordinal: 0, giver: 9002, ..Default::default() },
+        ProductionLicenseRecordRow { owner: 11, ordinal: 1, giver: 77, ..Default::default() },
+        ProductionLicenseRecordRow { owner: 11, ordinal: 2, giver: 78, ..Default::default() },
+    ];
+    *frame.tables[TableId::ProductionLicenseRecords.index()] = TableView::Complete(TableRows::ProductionLicenseRecords(licences.clone()));
+    let read = witnessed_licences(&frame).unwrap();
+    let ends: Vec<(FlowEnd, FlowEnd)> = read.edges.iter().map(|edge| (edge.from, edge.to)).collect();
+    assert_eq!(ends, [(FlowEnd::Slot(8), FlowEnd::Slot(ger)), (FlowEnd::Raw(77), FlowEnd::Slot(ger)), (FlowEnd::Raw(78), FlowEnd::Slot(ger))], "both parties witnessed: the licence stands; two unlinked givers are two partners");
+    assert!(read.unlinked[&77].contains("read only in part at this hour (5 rows not read)"), "an unlinked giver says why it is unlinked");
+    assert!(read.gaps.is_empty());
+    *frame.tables[TableId::ProductionLicenseRecords.index()] = TableView::Truncated { rows: TableRows::ProductionLicenseRecords(licences[..1].to_vec()), missing: 2 };
+    let read = witnessed_licences(&frame).unwrap();
+    assert_eq!(read.edges.len(), 1, "a truncated licence table keeps the licence it witnessed");
+    assert!(matches!(&read.gaps[..], [gap] if gap.partial && gap.from == FlowGap::everything(String::new()).from && gap.reason.ends_with("read only in part at this hour (2 rows not read)")));
+    *frame.tables[TableId::ProductionLicenseRecords.index()] = TableView::Unavailable { reason: "reader fault".into() };
+    assert!(witnessed_licences(&frame).is_err());
+}
