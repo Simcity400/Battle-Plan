@@ -1,6 +1,6 @@
 import type { BoundFacetFilter, LogReplyRow } from '../../charts/log/logSource';
 import type { BoundHour } from '../../dashboard/regionTime';
-import type { LogCell, LogFacetCountAsk, MembershipRun, MissingSpan } from '../../generated/dashboard';
+import type { LogCell, LogFacetCountAsk, MissingSpan } from '../../generated/dashboard';
 
 export type TailProduct =
   | 'log-tail'
@@ -13,13 +13,15 @@ export interface LogTailQuery {
   readonly product: TailProduct;
   readonly branchId: string;
   readonly log?: string;
-  readonly facets: readonly BoundFacetFilter[];
+  readonly facets?: readonly BoundFacetFilter[];
   readonly from: BoundHour | null;
   readonly limit: number;
   readonly columns?: readonly string[];
   readonly countFacets?: readonly LogFacetCountAsk[];
-  readonly scope?: readonly MembershipRun[];
+  readonly ask?: Readonly<Record<string, unknown>>;
 }
+
+export type PlacedSpan = MissingSpan & { readonly before?: string };
 
 export interface DatedLogRow {
   readonly key: string;
@@ -33,7 +35,7 @@ export interface TailReply<TRow extends DatedLogRow = LogReplyRow> {
   readonly firstOrdinal: number;
   readonly rows: readonly TRow[];
   readonly facetTotals: ReadonlyMap<string, number>;
-  readonly missing: readonly MissingSpan[];
+  readonly missing: readonly PlacedSpan[];
 }
 
 export type LogRowSlot<TRow extends DatedLogRow> =
@@ -136,7 +138,7 @@ export function validateRowTailReply<TRow extends DatedLogRow>(
   const missing = value.missing ?? [];
   if (!Array.isArray(missing) || !missing.every(isSpan)) throw malformed();
   const facetTotals = new Map<string, number>();
-  const rawTotals = value.facetTotals ?? [];
+  const rawTotals = value.counts ?? [];
   if (!Array.isArray(rawTotals)) throw malformed();
   for (const entry of rawTotals) {
     const count = isObject(entry) ? parseCount(entry.total) : null;
@@ -269,7 +271,7 @@ export function buildRowSourceFromHead(
 export function buildNavigableSlots<TRow extends DatedLogRow>(
   readAt: number,
   slots: readonly LogRowSlot<TRow>[],
-  gaps: readonly MissingSpan[],
+  gaps: readonly PlacedSpan[],
   total: number,
   previousRowHour?: number,
 ): LogRowSlot<TRow>[] {
@@ -284,6 +286,7 @@ export function buildNavigableSlots<TRow extends DatedLogRow>(
     .sort((a, b) => b.lastHour - a.lastHour || b.firstHour - a.firstHour);
 
   if (!activeGaps.length) return [...slots];
+  if (gaps.every(span => span.before !== undefined)) return placeByOrdinal(readAt, slots, gaps, upperHour, total);
   if (total === 0) {
     return activeGaps.map(span => ({
       kind: 'gap',
@@ -337,6 +340,40 @@ export function buildNavigableSlots<TRow extends DatedLogRow>(
         beforeOrdinal: total,
       });
     }
+  }
+  return out;
+}
+
+function placeByOrdinal<TRow extends DatedLogRow>(
+  readAt: number,
+  slots: readonly LogRowSlot<TRow>[],
+  gaps: readonly PlacedSpan[],
+  upperHour: number,
+  total: number,
+): LogRowSlot<TRow>[] {
+  const placed = gaps
+    .filter(span => span.firstHour <= upperHour)
+    .map(span => ({ firstHour: span.firstHour, lastHour: Math.min(span.lastHour, upperHour), reason: span.reason, before: Number(span.before) }));
+  const gap = (span: typeof placed[number]): LogRowSlot<TRow> => ({
+    kind: 'gap',
+    key: `gap:${span.firstHour}:${span.lastHour}:${span.reason}`,
+    readAt,
+    firstHour: span.firstHour,
+    lastHour: span.lastHour,
+    reason: span.reason,
+    beforeOrdinal: span.before,
+  });
+  if (total === 0) return placed.map(gap);
+  const out: LogRowSlot<TRow>[] = [];
+  for (const slot of slots) {
+    if (slot.kind !== 'gap') {
+      for (const span of placed) if (span.before === slot.ordinal) out.push(gap(span));
+    }
+    out.push(slot);
+  }
+  const last = slots[slots.length - 1];
+  if (last && last.kind !== 'gap' && last.ordinal + 1 >= total) {
+    for (const span of placed) if (span.before >= total) out.push(gap(span));
   }
   return out;
 }

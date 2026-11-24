@@ -5,10 +5,10 @@ import { resolveCountries } from './groups.ts';
 import { groupNumbers } from './groupsReply.ts';
 import { NumericReply } from './numericReply';
 import type { CountryGroupReply } from '../generated/dashboard';
-import type { WidgetSpec } from './model';
+import type { WidgetBase } from './model';
 import { useCountryGroups } from './useCountryGroups.ts';
 
-export function useComparisonCountries(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
+export function useComparisonCountries(widget: WidgetBase, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const grouped = widget.countries.kind === 'group';
   const groups = useCountryGroups(runtime, track, active && grouped);

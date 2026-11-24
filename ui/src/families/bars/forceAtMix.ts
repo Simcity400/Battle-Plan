@@ -1,14 +1,11 @@
 import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
-import { countryKey } from '../../dashboard/countryKey.ts';
-import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BoundedReadView } from '../contract.ts';
-import { holderTagAt, inHourRanges, type HolderRun, type HourRanges } from '../holders.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
 import { formatShare, formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForcePart } from '../../generated/dashboard';
-import { forcePartLabel } from './forceAtRace.ts';
-import { countryRowPresentation, type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
+import { forcePartLabel, forceRowIdentity, GROUP_EMPTY } from './forceAtRace.ts';
+import { type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
 import { buildShareRowsModel, type ShareRowEntry } from './shareRows.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
@@ -16,9 +13,7 @@ const PART_SURFACE = DEFAULT_CARD_SURFACE;
 export interface ForceAtMixOptions {
   readonly top: number | null;
   readonly all?: boolean;
-  readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
-  readonly membership?: Readonly<Record<string, HourRanges>> | null;
-  readonly unobserved?: HourRanges;
+  readonly group: boolean;
 }
 
 export interface ForceAtMixConfig {
@@ -56,7 +51,6 @@ export function projectForceAtMix(
   config: ForceAtMixConfig,
 ): BarsModel {
   const hour = readView.hour;
-  const ranked = options.top != null || options.all === true;
 
   if (reply.missing !== null) {
     return buildShareRowsModel({
@@ -70,16 +64,10 @@ export function projectForceAtMix(
 
   const partColours = reply.parts.map((_part, index) => colour(PART_SURFACE, index));
   const usedParts = new Set<number>();
-  const rowsWithSort: { readonly entry: ShareRowEntry; readonly numeric: number | null; readonly tag: string }[] = [];
+  const rows: ShareRowEntry[] = [];
 
   for (const item of reply.rows) {
-    const key = countryKey(item.country);
-    const displayTag = options.holders ? (holderTagAt(options.holders[key], hour) ?? item.tag) : item.tag;
-    if (!ranked && options.membership) {
-      const inMember = inHourRanges(options.membership[key], hour) || inHourRanges(options.membership[displayTag], hour);
-      if (!inMember) continue;
-    }
-    const pres = countryRowPresentation(readView, displayTag);
+    const { key, tag: displayTag, pres } = forceRowIdentity(readView, item);
     const { value, numeric } = scaleRaw(item.total, config.decimals, item.missing);
     const countText = value.kind === 'notRecorded' ? undefined : formatScaled(value, config.valueFormat);
     const totalItem: TooltipListItem = value.kind === 'notRecorded'
@@ -97,79 +85,67 @@ export function projectForceAtMix(
     }
 
     if (value.kind === 'notRecorded') {
-      rowsWithSort.push({
-        numeric: null,
-        tag: displayTag,
-        entry: {
-          key,
-          subject: displayTag,
-          label: pres.label,
-          labelMissing: pres.labelMissing,
-          media: pres.media,
-          segments: [],
-          missing: value,
-          format: config.valueFormat,
-          tooltip: {
-            title: pres.labelMissing ? 'Name not recorded' : pres.label,
-            hour,
-            missingReason: value.reason,
-            items: tooltipItems,
-            ...(config.note ? { note: config.note } : {}),
-          },
-          meta: { tag: displayTag, key },
+      rows.push({
+        key,
+        subject: displayTag,
+        label: pres.label,
+        labelMissing: pres.labelMissing,
+        media: pres.media,
+        segments: [],
+        missing: value,
+        format: config.valueFormat,
+        tooltip: {
+          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          hour,
+          missingReason: value.reason,
+          items: tooltipItems,
+          ...(config.note ? { note: config.note } : {}),
         },
+        meta: { tag: displayTag, key },
       });
       continue;
     }
 
     if (numeric === 0) {
-      rowsWithSort.push({
-        numeric: 0,
-        tag: displayTag,
-        entry: {
-          key,
-          subject: displayTag,
-          label: pres.label,
-          labelMissing: pres.labelMissing,
-          media: pres.media,
-          segments: [],
-          countText,
-          tooltip: {
-            title: pres.labelMissing ? 'Name not recorded' : pres.label,
-            hour,
-            items: tooltipItems,
-            ...(config.note ? { note: config.note } : {}),
-          },
-          meta: { tag: displayTag, key },
+      rows.push({
+        key,
+        subject: displayTag,
+        label: pres.label,
+        labelMissing: pres.labelMissing,
+        media: pres.media,
+        segments: [],
+        countText,
+        tooltip: {
+          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          hour,
+          items: tooltipItems,
+          ...(config.note ? { note: config.note } : {}),
         },
+        meta: { tag: displayTag, key },
       });
       continue;
     }
 
     if (item.partsMissing !== null) {
       tooltipItems.push({ label: config.partsLabel, missingReason: item.partsMissing });
-      rowsWithSort.push({
-        numeric,
-        tag: displayTag,
-        entry: {
-          key,
-          subject: displayTag,
-          label: pres.label,
-          labelMissing: pres.labelMissing,
-          media: pres.media,
-          segments: [],
-          countText,
-          missing: notRecorded(item.partsMissing),
-          format: config.valueFormat,
-          tooltip: {
-            title: pres.labelMissing ? 'Name not recorded' : pres.label,
-            hour,
-            missingReason: item.partsMissing,
-            items: tooltipItems,
-            ...(config.note ? { note: config.note } : {}),
-          },
-          meta: { tag: displayTag, key },
+      rows.push({
+        key,
+        subject: displayTag,
+        label: pres.label,
+        labelMissing: pres.labelMissing,
+        media: pres.media,
+        segments: [],
+        countText,
+        missing: notRecorded(item.partsMissing),
+        format: config.valueFormat,
+        tooltip: {
+          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          hour,
+          missingReason: item.partsMissing,
+          items: tooltipItems,
+          ...(config.note ? { note: config.note } : {}),
         },
+        meta: { tag: displayTag, key },
       });
       continue;
     }
@@ -192,28 +168,24 @@ export function projectForceAtMix(
     if (anyMissing) {
       const reason = 'Part breakdown not recorded at this hour';
       tooltipItems.push({ label: config.partsLabel, missingReason: reason });
-      rowsWithSort.push({
-        numeric,
-        tag: displayTag,
-        entry: {
-          key,
-          subject: displayTag,
-          label: pres.label,
-          labelMissing: pres.labelMissing,
-          media: pres.media,
-          segments: [],
-          countText,
-          missing: notRecorded(reason),
-          format: config.valueFormat,
-          tooltip: {
-            title: pres.labelMissing ? 'Name not recorded' : pres.label,
-            hour,
-            missingReason: reason,
-            items: tooltipItems,
-            ...(config.note ? { note: config.note } : {}),
-          },
-          meta: { tag: displayTag, key },
+      rows.push({
+        key,
+        subject: displayTag,
+        label: pres.label,
+        labelMissing: pres.labelMissing,
+        media: pres.media,
+        segments: [],
+        countText,
+        missing: notRecorded(reason),
+        format: config.valueFormat,
+        tooltip: {
+          title: pres.labelMissing ? 'Name not recorded' : pres.label,
+          hour,
+          missingReason: reason,
+          items: tooltipItems,
+          ...(config.note ? { note: config.note } : {}),
         },
+        meta: { tag: displayTag, key },
       });
       continue;
     }
@@ -243,35 +215,21 @@ export function projectForceAtMix(
       }
     }
 
-    rowsWithSort.push({
-      numeric,
-      tag: displayTag,
-      entry: {
-        key,
-        subject: displayTag,
-        label: pres.label,
-        labelMissing: pres.labelMissing,
-        media: pres.media,
-        segments,
-        countText,
-        tooltip: {
-          title: pres.labelMissing ? 'Name not recorded' : pres.label,
-          hour,
-          items: tooltipItems,
-          ...(config.note ? { note: config.note } : {}),
-        },
-        meta: { tag: displayTag, key },
+    rows.push({
+      key,
+      subject: displayTag,
+      label: pres.label,
+      labelMissing: pres.labelMissing,
+      media: pres.media,
+      segments,
+      countText,
+      tooltip: {
+        title: pres.labelMissing ? 'Name not recorded' : pres.label,
+        hour,
+        items: tooltipItems,
+        ...(config.note ? { note: config.note } : {}),
       },
-    });
-  }
-
-  if (!ranked) {
-    rowsWithSort.sort((a, b) => {
-      const aMiss = a.numeric === null;
-      const bMiss = b.numeric === null;
-      if (aMiss !== bMiss) return aMiss ? 1 : -1;
-      if (!aMiss && !bMiss && a.numeric !== b.numeric) return b.numeric! - a.numeric!;
-      return compareTags(a.tag, b.tag);
+      meta: { tag: displayTag, key },
     });
   }
 
@@ -282,13 +240,12 @@ export function projectForceAtMix(
     legend.push({ key: part.key, label: forcePartLabel(part), color: partColours[i]! });
   }
 
-  const rows = rowsWithSort.map(item => item.entry);
   return buildShareRowsModel({
     hour,
     rows,
     legend,
     unit: config.unit,
     warnings: reply.warnings,
-    ...(!rows.length ? { empty: config.emptyMessage, emptyKind: 'empty' as const } : {}),
+    ...(!rows.length ? { empty: options.group ? GROUP_EMPTY : config.emptyMessage, emptyKind: 'empty' as const } : {}),
   });
 }

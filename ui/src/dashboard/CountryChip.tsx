@@ -6,7 +6,8 @@ import { useCampaignSettings } from './campaignSettings';
 import { resolveWindow } from './model';
 import { resolveWidgetCampaign } from './campaigns';
 import { selectedCountryKeys } from './countrySelection';
-import type { WidgetCountryChipProps } from './definitions';
+import type { ResolvedViewOptions, WidgetCountryChipProps } from './definitions';
+import type { WidgetBase } from './model';
 import {
   factionKey,
   useIdentityAtHead,
@@ -18,11 +19,13 @@ import {
 const NO_KEYS: readonly string[] = [];
 const NO_IDENTITY_KEYS: readonly IdentityKey[] = [];
 
-export function PartsCountryChip(props: WidgetCountryChipProps) {
-  return props.widget.options?.show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
+type AnyChipProps = Omit<WidgetCountryChipProps, 'widget'> & { readonly widget: WidgetBase; readonly options?: ResolvedViewOptions };
+
+export function PartsCountryChip(props: AnyChipProps) {
+  return props.options?.show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
 }
 
-export default function CountryChip({ widget, runtime, active, compact = false }: Omit<WidgetCountryChipProps, 'onSlot'>) {
+export default function CountryChip({ widget, runtime, active, compact = false }: Omit<AnyChipProps, 'onSlot'>) {
   const settings = useCampaignSettings();
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const track = runtime.tracks.find(item => item.id === effective.trackIds[0]);

@@ -4,7 +4,7 @@ import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import { DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
@@ -29,6 +29,7 @@ import type {
 import { familyViewOptionFields } from '../../widgets/manifest.ts';
 import { DEFAULT_VIEW } from '../manifest.ts';
 import { renderFamilyStatus } from './FamilyBodyState.tsx';
+import { keepEqual } from './stableValue.ts';
 import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
@@ -75,7 +76,7 @@ export interface DeclaredFamilyWidgetProps<
   TBinding = unknown,
   TAux = unknown,
   TSettings = unknown,
-> extends WidgetProps {
+> extends FamilyViewProps {
   readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding, TSettings>;
   readonly chrome?: ComponentType<FamilyChromeProps<TSettings>>;
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
@@ -102,6 +103,7 @@ export default function DeclaredFamilyWidget<
   declaration,
   view = DEFAULT_VIEW,
   widget,
+  options,
   runtime,
   active,
   onDiagnostics,
@@ -139,7 +141,7 @@ export default function DeclaredFamilyWidget<
     subject: declaration.subject,
     emptyCampaign: declaration.emptyCampaign,
     icon: declaration.icon,
-    optionFields,
+    options,
     countries: declaration.countries,
     aux: declaration.aux,
     sources: declaration.sources,
@@ -207,10 +209,13 @@ export default function DeclaredFamilyWidget<
     [plan.displayedCtx, settingsPolicy, settings],
   );
   const surfaceColor = theme?.surface ?? DEFAULT_DARK_SURFACE;
-  const projectionOptions = useMemo(
-    () => (displayedCtx ? declaration.projectionOptions(displayedCtx, { extent, surface: surfaceColor }) : ({} as TProjectionOptions)),
-    [displayedCtx, declaration.projectionOptions, extent, surfaceColor],
-  );
+  const lastProjectionOptionsRef = useRef<TProjectionOptions | undefined>(undefined);
+  const projectionOptions = useMemo(() => {
+    const next = displayedCtx ? declaration.projectionOptions(displayedCtx, { extent, surface: surfaceColor }) : ({} as TProjectionOptions);
+    const kept = keepEqual(lastProjectionOptionsRef.current, next);
+    lastProjectionOptionsRef.current = kept;
+    return kept;
+  }, [displayedCtx, declaration.projectionOptions, extent, surfaceColor]);
 
   const enableJump = declaration.jumpToDate ?? (adapter.pointerMode === 'continuous');
   const continuous = adapter.pointerMode === 'continuous';
@@ -254,7 +259,10 @@ export default function DeclaredFamilyWidget<
   }, [chooser, regionChoice, storeRegions]);
   const regionsEditable = !!regionField && !!setOption;
   const emptyAction = regionsEditable
-    ? <button type="button" className="button small" onClick={event => onRegions({ op: 'open', ...anchorBelow(event.currentTarget), rows: [] })}>Add region</button>
+    ? <>
+      <button type="button" className="button small" onClick={event => onRegions({ op: 'open', ...anchorBelow(event.currentTarget), rows: [] })}>Add region</button>
+      {!isAutomatic(regionChoice) && <button type="button" className="button small quiet" onClick={() => storeRegions(AUTOMATIC_REGIONS)}>Reset to automatic</button>}
+    </>
     : undefined;
   const regionChooser = regionsEditable
     ? <Popover menu={chooser} className="region-chooser-popover" aria-label="Add region">

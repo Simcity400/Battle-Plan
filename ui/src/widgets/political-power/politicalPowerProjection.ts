@@ -4,7 +4,7 @@ import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../famil
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts';
+import { formatCompactRational, formatCompactScalar, formatRational, formatScalar } from '../../families/valueFormat.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
@@ -21,6 +21,7 @@ import {
   headReading,
   headValueOf,
   type HeadReading,
+  type KnownHeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
 
 export interface PoliticalPowerOptions {
@@ -32,8 +33,16 @@ export interface PoliticalPowerOptions {
   readonly surface: string;
 }
 
-function formatEndAmount(value: number): string {
-  return Math.abs(value) >= 1e4 ? formatCompactScalar(Math.trunc(value), 'integer').text : formatScalar(value, 'integer');
+function formatEndAmount(reading: KnownHeadReading): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    const absWhole = (reading.raw < 0n ? -reading.raw : reading.raw) / reading.denominator;
+    return absWhole >= 10_000n
+      ? formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text
+      : formatRational(reading.raw, reading.denominator, { maxDecimals: 0 });
+  }
+  return Math.abs(reading.value) >= 1e4
+    ? formatCompactScalar(Math.trunc(reading.value), 'integer').text
+    : formatScalar(reading.value, 'integer');
 }
 
 export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions> = registerFamilyProjection({
@@ -77,6 +86,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       const isTail = !single && rank >= 8;
       const bounded = seriesMap?.get(tag) ?? null;
       const { name, flag, color, identities } = looks.get(tag)!;
+      const reading = readingByTag.get(tag);
       const headValue = headByTag.get(tag) ?? null;
       return {
         id: tag,
@@ -96,13 +106,13 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
         icon: measureIcon,
         missingSpans: missingSpansOf(bounded),
         rank,
-        endLabel: isTail || headValue === null
+        endLabel: isTail || !reading || !('value' in reading)
           ? null
           : {
               ...(single ? { icon: measureIcon } : { flag }),
               name: single ? null : name,
               fullName: single ? 'Political power' : name,
-              value: formatEndAmount(headValue),
+              value: formatEndAmount(reading),
             },
       };
     });
