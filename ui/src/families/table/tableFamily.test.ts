@@ -561,7 +561,7 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
   assert.deepEqual(at15.rows.map(r => r.key), ['1']);
   const settings = tableSettingsOf(undefined, OCCUPIED_DEFAULTS, OCCUPIED_BASE);
   const flat15 = resolveTableRows(at15, settings);
-  const tip = deriveTableTooltip(flat15, '1', at15.columns, 15);
+  const tip = deriveTableTooltip(flat15, '1', at15.columns);
   assert.ok(tip);
   assert.equal(tip.rows.find(r => r.label === 'Resistance')?.valueState?.text, '25%');
   assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '0', 'known assigned with no live cell reads 0');
@@ -898,7 +898,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     cells: { name: { value: knownValue(`Row ${i}`) }, rate: { value: knownValue(15 - i), format: 'decimal1' as const, country: 'GER' } },
   }));
   const flatMany = resolveTableRows({ columns: cols, hour: 10, rows: manyRows }, settings);
-  const mirror = deriveTableMirror(flatMany, cols, 10, false, { first: 5, count: 3 }, 'R0');
+  const mirror = deriveTableMirror(flatMany, cols, false, { first: 5, count: 3 }, 'R0');
   assert.equal(mirror.rows[0]!.key, 'R0');
   assert.equal(mirror.rows[0]!.rowIndex, 0, 'off-screen focused row carries its true rowIndex, not window offset');
 
@@ -1138,7 +1138,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
     null,
     'P1: tooltip audit omits presentation hour so valid picture at hour 10 matches exact audit at hour 12',
   );
-  const tip10 = deriveTableTooltip(flat10, 'GER', cols, 10)!;
+  const tip10 = deriveTableTooltip(flat10, 'GER', cols)!;
   assert.equal(tip10.subtitle, undefined, 'P1: deriveRowTooltip carries no hour-derived subtitle');
   const auditColorDiff = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true, countryColors: colorsB });
   assert.notEqual(
@@ -1302,7 +1302,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
     cells: { country: { value: knownValue(`Row ${i}`) }, score: { value: knownValue(10 - i) } },
   }));
   const flatMirror = resolveTableRows({ columns: cols, hour: 10, rows: mirrorRows }, settings);
-  const mirrorWithIdx = deriveTableMirror(flatMirror, cols, 10, false, { first: 5, count: 2 }, 'R1', 1);
+  const mirrorWithIdx = deriveTableMirror(flatMirror, cols, false, { first: 5, count: 2 }, 'R1', 1);
   assert.equal(mirrorWithIdx.rows[0]!.key, 'R1', 'M9: deriveTableMirror uses supplied O(1) focusedIndex');
   assert.equal(mirrorWithIdx.rows[0]!.rowIndex, 1);
 });
@@ -1513,7 +1513,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   const mAtLeast = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: true }));
   const mPlainPartial = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: false }));
   const mDiffUnderlying = mkTipModel(partialValue(1.004, 'Missing corps', { atLeast: true }));
-  const tipAtLeast = deriveTableTooltip(resolveTableRows(mAtLeast, settings), 'GER', cols, 10)!;
+  const tipAtLeast = deriveTableTooltip(resolveTableRows(mAtLeast, settings), 'GER', cols)!;
   const extraRow = tipAtLeast.rows.find(r => r.label === 'Strength')!;
   assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
   assert.equal(extraRow.valueState?.kind, 'partial');
@@ -1569,7 +1569,7 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
   let prevFlat = resolveTableRows(prevModel, settings);
   let prevIndex = new Map<string, number>();
   prevFlat.forEach((item, idx) => { if (item.kind === 'data') prevIndex.set(item.key, idx); });
-  let prevMaxima = computeColumnMaxima(prevFlat, layouts, 1);
+  let prevMaxima = computeColumnMaxima(prevFlat, layouts);
 
   for (let step = 2; step <= 65; step++) {
     const k = step % 7 === 0 ? 0 : 1 + (nextRand() % 8);
@@ -1619,8 +1619,8 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
       assert.equal(incItem.rank, fullItem.rank, `step ${step} rank at ${i} (${incItem.key})`);
       assert.equal(inc.rowIndex.get(incItem.key), i, `step ${step} rowIndex for ${incItem.key}`);
     }
-    const incMax = updateColumnMaximaIncremental(prevMaxima, prevFlat, prevIndex, incRows, inc.rowIndex, layouts, changedKeys, prevModel.hour, step);
-    const fullMax = computeColumnMaxima(full, layouts, step);
+    const incMax = updateColumnMaximaIncremental(prevMaxima, prevFlat, prevIndex, incRows, inc.rowIndex, layouts, changedKeys);
+    const fullMax = computeColumnMaxima(full, layouts);
     assert.deepEqual([...incMax.entries()].sort(), [...fullMax.entries()].sort(), `step ${step} maxima match`);
 
     rows = nextRows;
@@ -1988,7 +1988,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     { key: 'A', name: 'A', cells: { name: { value: knownValue('A') }, net: { value: knownValue(-30) } } },
     { key: 'B', name: 'B', cells: { name: { value: knownValue('B') }, net: { value: knownValue(10) } } },
   ] }, kindSettings);
-  assert.equal(computeColumnMaxima(signedRows, grown.columns, 1).get('net'), 30, 'a two-way column scales by the largest magnitude');
+  assert.equal(computeColumnMaxima(signedRows, grown.columns).get('net'), 30, 'a two-way column scales by the largest magnitude');
   const netColumn = grown.columns.find(col => col.key === 'net')!;
   const loss = signedRows.find(item => item.kind === 'data' && item.key === 'A');
   assert.equal(loss?.kind === 'data' ? resolveCellPaintModel(loss.row.cells.net, netColumn, 1, new Map([['net', 30]])).bar.fraction : null, 1, 'a loss draws its bar at its magnitude');
@@ -2008,7 +2008,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     { key: 'A', name: 'A', cells: { name: { value: knownValue('A') }, oil: { value: knownValue(-40) } } },
     { key: 'B', name: 'B', cells: { name: { value: knownValue('B') }, oil: { value: knownValue(12) } } },
   ] }, shadedSettings);
-  assert.equal(computeColumnMaxima(shadedRows, shadedLayout.columns, 1).get('oil'), 40, 'a shaded column scales imports and exports by the largest magnitude');
+  assert.equal(computeColumnMaxima(shadedRows, shadedLayout.columns).get('oil'), 40, 'a shaded column scales imports and exports by the largest magnitude');
 
   const extraProjection = declareTableProjection<{ rows: { id: string; group: boolean }[] }, { id: string; group: boolean }, Record<string, never>>({
     kind: 'test-cell-extras',
@@ -2081,7 +2081,7 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     key: 'org', name: named, tooltipAction: 'Open its organisation window',
     cells: { pic: { value: knownValue(named), iconSlot: true }, name: { value: knownValue(named) }, size: { value: zeroValue(0) }, spare: { value: knownValue('stray') }, view: { value: knownValue('View'), actionLabel: 'View' } },
   }] }, tableSettingsOf(undefined, withAction, { density: 'normal', sort: { column: 'size', direction: 'descending' } }));
-  const tip = deriveTableTooltip(tipRows, 'org', withAction, 1)!;
+  const tip = deriveTableTooltip(tipRows, 'org', withAction)!;
   assert.equal(tip.title, named, 'the name column, not the picture before it, is the title');
   assert.deepEqual(tip.rows.map(row => row.label), ['Size'], 'no unlabelled row, no repeated name, no action word');
   assert.equal(tip.note, 'Open its organisation window', 'an action column contributes only its hint');
@@ -2218,10 +2218,10 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
   assert.ok(queueGeom.tops[deep.first + deep.count - TABLE_WINDOW_OVERSCAN - 1]! < queueGeom.tops[100]! + 200, 'and ends at the last row the viewport shows');
   const gapTop = geom.tops[6]!;
   assert.deepEqual(hitFamilyTable(grown, flatExpanded, { x: 40, y: gapTop + 10 }, 36, 0, 0, false, 0, undefined, undefined, undefined, geom), { kind: 'row', rowKey: 'gap:1' });
-  const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns, DAY3 + 12);
+  const gapTip = deriveTableTooltip(flatExpanded, 'gap:1', logColumns);
   assert.equal(gapTip?.title, 'Not recorded');
   assert.equal(gapTip?.detail, 'Collector detached');
-  const boundedTip = deriveTableTooltip(flatExpanded, 'h3', logColumns, DAY3 + 12);
+  const boundedTip = deriveTableTooltip(flatExpanded, 'h3', logColumns);
   assert.ok(boundedTip?.rows.some(r => r.valueState?.text?.startsWith('By ')), 'bounded date hover carries By prefix and hour');
   const audit = deriveTableAudit({ model: slottedModel, flatRows: flatExpanded, visibleColumns: grown.columns });
   assert.ok(audit.some(r => r.key === 'gap:1:gap'));

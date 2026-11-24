@@ -1,7 +1,7 @@
 import { liveKey } from '../../charts/live.ts';
-import { flagArtHandle, flagChoiceArt } from '../../families/art/provider.ts';
+import { flagChoiceArt } from '../../families/art/provider.ts';
 import { unavailableArt } from '../../families/art/types.ts';
-import type { ArtHandle, ArtResult } from '../../families/contract.ts';
+import type { ArtResult } from '../../families/contract.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
@@ -29,7 +29,6 @@ export interface ResolvedCountry {
   readonly tag: string;
   readonly name: string;
   readonly colour?: string;
-  readonly flagHandle: ArtHandle | null;
   readonly flag: ArtResult;
 }
 
@@ -75,17 +74,14 @@ function resolveCountry(readView: BoundedReadView, country: Country, hour: numbe
       key: String(country.id),
       tag: '?',
       name: `Country ${country.id}`,
-      flagHandle: null,
       flag: unavailableArt('Country tag not recorded'),
     };
   }
   const who = readView.who('country', tag, hour);
   const name = who.name.status === 'ready' ? who.name.value : tag;
   const colour = who.colour?.status === 'ready' ? who.colour.value : undefined;
-  let flagHandle: ArtHandle | null = null;
-  if (who.flagChoice?.status === 'ready') flagHandle = flagArtHandle(who.flagChoice.value, 'panel');
-  const flag: ArtResult = flagChoiceArt(readView, who.flagChoice);
-  return { key: String(country.id), tag, name, ...(colour ? { colour } : {}), flagHandle, flag };
+  const flag: ArtResult = flagChoiceArt(readView, who.flagChoice, 'panel');
+  return { key: String(country.id), tag, name, ...(colour ? { colour } : {}), flag };
 }
 
 export function readCipherNumbers(live: ReturnType<BoundedReadView['live']>, pair: CipherPair): CipherNumbers {

@@ -57,7 +57,7 @@ test('a reply’s cells are exact amounts, a missing value keeps its reason, and
   const audit = deriveTableAudit({ model, flatRows: flat, visibleColumns: buildColumnLayouts(model.columns, settings) });
   assert.ok(audit.find(row => row.key === 'GER:casualtiesTaken')?.value?.includes(`["partial",["int","-${wide}"],"Some inputs were not recorded at this hour",false]`));
   assert.ok(audit.find(row => row.key === 'GER:stability')?.value?.includes(`["notRecorded","GER's stability was not recorded at this hour"]`));
-  const tip = deriveTableTooltip(flat, 'GER', model.columns, 40);
+  const tip = deriveTableTooltip(flat, 'GER', model.columns);
   assert.ok(tip);
   assert.equal(tip.rows.find(row => row.label === 'Stability')?.detail, "GER's stability was not recorded at this hour");
 

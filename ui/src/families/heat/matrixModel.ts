@@ -1,5 +1,6 @@
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
-import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
+import type { ArtResult } from '../art/types.ts';
+import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 
 export interface MatrixGroup {
@@ -14,8 +15,7 @@ export interface MatrixAxisEntity {
   readonly shortLabel?: string;
   readonly nameMissing?: string;
   readonly tag?: string;
-  readonly flag?: ArtHandle | null;
-  readonly flagPending?: boolean;
+  readonly flag?: ArtResult;
   readonly group?: MatrixGroup | null;
   readonly color?: string;
   readonly trailing?: string;

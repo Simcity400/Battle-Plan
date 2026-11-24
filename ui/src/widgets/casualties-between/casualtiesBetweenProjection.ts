@@ -75,8 +75,7 @@ export function projectCasualtyMatrix(readView: BoundedReadView): HeatMatrixMode
       tag: country.tag,
       ...(shown.nameMissing ? { nameMissing: shown.nameMissing } : {}),
       ...(shown.color ? { color: shown.color } : {}),
-      flag: shown.flag ?? null,
-      flagPending: shown.pending === true,
+      ...(shown.flag ? { flag: shown.flag } : {}),
     };
   });
   const width = entities.length;

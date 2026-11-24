@@ -7,7 +7,7 @@ import { knownValue, textValue, notApplicable, valueFromNullable, type Value } f
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
 import { childCount, fraction, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
-import type { ArtState } from '../../families/table/identityCell.ts';
+import type { CellArt } from '../../families/table/identityCell.ts';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
@@ -17,7 +17,7 @@ const PERCENT = { decimals: 0, maxDecimals: 1, percent: true } as const;
 
 type DockRow =
   | { readonly kind: 'port'; readonly key: string; readonly port: RepairPort; readonly children: readonly DockRow[] }
-  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip; readonly picture: ArtState };
+  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip; readonly picture: CellArt };
 
 const portName = (port: RepairPort): Value<string> => textValue(port.name, 'Port name unavailable');
 

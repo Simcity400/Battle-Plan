@@ -8,13 +8,13 @@ import { knownValue, textValue, notApplicable, notRecorded, valueFromNullable, t
 import type { NavalRefitsReply, RefitLine, YardShip } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 import { childCount, fixedText, fraction, refitAmounts, refitProgress, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
-import type { ArtState } from '../../families/table/identityCell.ts';
+import type { CellArt } from '../../families/table/identityCell.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 
 type RefitRow =
   | { readonly kind: 'line'; readonly key: string; readonly line: RefitLine; readonly children: readonly RefitRow[] }
-  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip; readonly picture: ArtState };
+  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip; readonly picture: CellArt };
 
 const ON_LINE = 'Shown on the refit line';
 const ON_SHIP = 'Shown on each ship';

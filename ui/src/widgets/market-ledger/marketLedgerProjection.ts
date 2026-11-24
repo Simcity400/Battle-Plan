@@ -1,3 +1,4 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import type { BoundFacetFilter } from '../../charts/log/logSource';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { FIXED5, fixedText } from '../../dashboard/market.ts';
@@ -232,9 +233,7 @@ function buildContractRow(
   const sign = perspectiveSign(contract, perspective);
   const summary = primaryItemSummary(contract.items);
   const artHandle = urlArtHandle(summary.iconUrl);
-  const artResult = artHandle ? readView.art(artHandle) : null;
-  const icon = artResult?.status === 'ready' ? artResult.url : undefined;
-  const iconPending = artResult?.status === 'pending' ? true : undefined;
+  const art = artHandle ? readView.art(artHandle) : unavailableArt(summary.missing ?? 'The product drew no icon for this item');
 
   const statusInfo = CONTRACT_STATUS_TEXT[contract.status];
   const children = contract.events.map(ev => buildChildEventRow(ev, sign));
@@ -270,8 +269,7 @@ function buildContractRow(
       date: logDateCell(contract.hour),
       kind: {
         value: summary.label ? knownValue(summary.label) : notRecorded(summary.missing ?? 'Equipment icon not recorded'),
-        icon,
-        iconPending,
+        art,
         iconSlot: true,
         artShape: 'equipment',
         artName: title,

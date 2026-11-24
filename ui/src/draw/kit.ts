@@ -346,9 +346,10 @@ export type ArtSlotState =
   | { readonly kind: 'none' }
   | { readonly kind: 'pending' }
   | { readonly kind: 'ready'; readonly bitmap: CanvasImageSource; readonly width: number; readonly height: number }
-  | { readonly kind: 'missing'; readonly resolvedName?: string }
-  | { readonly kind: 'refused'; readonly reason?: string }
-  | { readonly kind: 'failed'; readonly reason?: string };
+  | { readonly kind: 'missing'; readonly reason: string; readonly label?: string }
+  | { readonly kind: 'unrecorded'; readonly reason: string }
+  | { readonly kind: 'refused'; readonly reason: string }
+  | { readonly kind: 'failed'; readonly reason: string; readonly retryable: boolean };
 
 export interface ArtSlotResult {
   readonly x: number;
@@ -356,7 +357,80 @@ export interface ArtSlotResult {
   readonly width: number;
   readonly height: number;
   readonly drawn: ArtSlotState['kind'];
-  readonly initials?: string;
+  readonly label?: string;
+}
+
+function drawSlotImage(
+  ctx: Canvas2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  state: Extract<ArtSlotState, { kind: 'ready' }>,
+  radius: number,
+): void {
+  const sw = Math.max(1, state.width);
+  const sh = Math.max(1, state.height);
+  const scale = Math.min(width / sw, height / sh);
+  const dw = sw * scale;
+  const dh = sh * scale;
+  ctx.save();
+  if (radius > 0) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, height, radius);
+    ctx.clip();
+  }
+  ctx.drawImage(state.bitmap, x + (width - dw) / 2, y + (height - dh) / 2, dw, dh);
+  ctx.restore();
+}
+
+function drawSlotMark(
+  ctx: Canvas2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  state: Extract<ArtSlotState, { kind: 'missing' | 'unrecorded' | 'refused' | 'failed' }>,
+  label: string,
+  labelSize: number,
+  radius: number,
+  theme: FamilyTheme,
+): void {
+  if (state.kind === 'missing' || state.kind === 'unrecorded') {
+    drawHatchRect(ctx, x, y, width, height, radius, theme);
+    if (state.kind === 'missing' && label) {
+      ctx.font = `${VALUE_WEIGHT} ${labelSize}px ${theme.font}`;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(ellipsise(label, Math.max(1, width - 2), s => textWidth(ctx, s)), x + width / 2, y + height / 2 + 0.5);
+    }
+    return;
+  }
+  const tokens = resolveKitTokens(theme);
+  ctx.fillStyle = tokens.headerBand;
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, radius);
+  ctx.fill();
+  ctx.strokeStyle = theme.line;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1), radius);
+  ctx.stroke();
+  ctx.strokeStyle = theme.muted;
+  ctx.fillStyle = theme.muted;
+  if (state.kind === 'refused') {
+    const inset = Math.max(2, Math.min(width, height) * 0.25);
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.moveTo(x + inset, y + height - inset);
+    ctx.lineTo(x + width - inset, y + inset);
+    ctx.stroke();
+    return;
+  }
+  ctx.beginPath();
+  ctx.arc(x + width / 2, y + height / 2, Math.max(1.5, Math.min(2.5, Math.min(width, height) * 0.12)), 0, Math.PI * 2);
+  ctx.fill();
 }
 
 export function drawArtSlot(
@@ -373,112 +447,39 @@ export function drawArtSlot(
   if (width <= 0 || height <= 0 || state.kind === 'none' || state.kind === 'pending') {
     return { x, y, width, height, drawn: state.kind };
   }
+  ctx.save();
+  if (options?.alpha !== undefined) ctx.globalAlpha = options.alpha;
   if (state.kind === 'ready') {
-    const sw = Math.max(1, state.width);
-    const sh = Math.max(1, state.height);
-    const scale = Math.min(width / sw, height / sh);
-    const dw = sw * scale;
-    const dh = sh * scale;
-    const dx = x + (width - dw) / 2;
-    const dy = y + (height - dh) / 2;
-    ctx.save();
-    if (options?.alpha !== undefined) ctx.globalAlpha = options.alpha;
-    if (radius > 0) {
-      ctx.beginPath();
-      ctx.roundRect(x, y, width, height, radius);
-      ctx.clip();
-    }
-    ctx.drawImage(state.bitmap, dx, dy, dw, dh);
+    drawSlotImage(ctx, x, y, width, height, state, radius);
     ctx.restore();
     return { x, y, width, height, drawn: 'ready' };
   }
-  if (state.kind === 'missing') {
-    ctx.save();
-    if (options?.alpha !== undefined) ctx.globalAlpha = options.alpha;
-    drawHatchRect(ctx, x, y, width, height, radius, theme);
-    const initials = Math.min(width, height) > 24 ? artInitials(state.resolvedName) : '';
-    if (initials) {
-      const size = Math.max(9, Math.min(13, Math.round(Math.min(width, height) * 0.34)));
-      ctx.font = `${VALUE_WEIGHT} ${size}px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const shown = ellipsise(initials, Math.max(1, width - 4), s => textWidth(ctx, s));
-      ctx.fillText(shown, x + width / 2, y + height / 2);
-    }
-    ctx.restore();
-    return { x, y, width, height, drawn: 'missing', ...(initials ? { initials } : {}) };
-  }
-  const tokens = resolveKitTokens(theme);
-  ctx.save();
-  if (options?.alpha !== undefined) ctx.globalAlpha = options.alpha;
-  ctx.fillStyle = tokens.headerBand;
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, radius);
-  ctx.fill();
-  ctx.strokeStyle = theme.line;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.roundRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1), radius);
-  ctx.stroke();
-  ctx.fillStyle = theme.muted;
-  ctx.beginPath();
-  ctx.arc(x + width / 2, y + height / 2, Math.max(1.5, Math.min(2.5, Math.min(width, height) * 0.12)), 0, Math.PI * 2);
-  ctx.fill();
+  const edge = Math.min(width, height);
+  const label = state.kind === 'missing' && edge >= 14 ? (artInitials(state.label) || '?') : '';
+  drawSlotMark(ctx, x, y, width, height, state, label, Math.max(7, Math.min(13, Math.round(edge * 0.34))), radius, theme);
   ctx.restore();
-  return { x, y, width, height, drawn: state.kind };
-}
-
-export type FlagSlotState =
-  | { readonly kind: 'none' }
-  | { readonly kind: 'pending' }
-  | { readonly kind: 'ready'; readonly bitmap: CanvasImageSource; readonly width: number; readonly height: number }
-  | { readonly kind: 'missing'; readonly tag?: string }
-  | { readonly kind: 'refused'; readonly reason?: string }
-  | { readonly kind: 'failed' };
-
-export interface FlagSlotResult {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-  readonly drawn: FlagSlotState['kind'];
-  readonly tag?: string;
+  return { x, y, width, height, drawn: state.kind, ...(label ? { label } : {}) };
 }
 
 export function drawFlagSlot(
   ctx: Canvas2D,
   x: number,
   y: number,
-  state: FlagSlotState,
+  state: ArtSlotState,
   theme: FamilyTheme,
   options?: { readonly width?: number; readonly height?: number; readonly dimmed?: boolean; readonly radius?: number },
-): FlagSlotResult {
+): ArtSlotResult {
   const width = options?.width ?? FLAG_SLOT_WIDTH;
   const height = options?.height ?? FLAG_SLOT_HEIGHT;
   const radius = options?.radius ?? 2;
-  const alpha = options?.dimmed ? FLAG_LOSER_ALPHA : 1;
   if (width <= 0 || height <= 0 || state.kind === 'pending' || state.kind === 'none') {
     return { x, y, width, height, drawn: state.kind };
   }
+  const alpha = options?.dimmed ? FLAG_LOSER_ALPHA : 1;
+  ctx.save();
+  ctx.globalAlpha = alpha;
   if (state.kind === 'ready') {
-    const sw = Math.max(1, state.width);
-    const sh = Math.max(1, state.height);
-    const scale = Math.min(width / sw, height / sh);
-    const dw = sw * scale;
-    const dh = sh * scale;
-    const dx = x + (width - dw) / 2;
-    const dy = y + (height - dh) / 2;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    if (radius > 0) {
-      ctx.beginPath();
-      ctx.roundRect(x, y, width, height, radius);
-      ctx.clip();
-    }
-    ctx.drawImage(state.bitmap, dx, dy, dw, dh);
-    ctx.restore();
-    ctx.save();
+    drawSlotImage(ctx, x, y, width, height, state, radius);
     ctx.globalAlpha = alpha * 0.4;
     ctx.strokeStyle = theme.line;
     ctx.lineWidth = 1;
@@ -488,30 +489,10 @@ export function drawFlagSlot(
     ctx.restore();
     return { x, y, width, height, drawn: 'ready' };
   }
-  if (state.kind === 'missing') {
-    const tag = state.tag?.trim().toUpperCase().slice(0, 3) || '?';
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    drawHatchRect(ctx, x, y, width, height, radius, theme);
-    if (width >= 16 && height >= 11) {
-      ctx.font = `${VALUE_WEIGHT} ${Math.max(7, Math.min(9, height - 4))}px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(ellipsise(tag, Math.max(1, width - 2), s => textWidth(ctx, s)), x + width / 2, y + height / 2 + 0.5);
-    }
-    ctx.restore();
-    return { x, y, width, height, drawn: 'missing', tag };
-  }
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = theme.line;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.roundRect(x + 0.5, y + 0.5, Math.max(0, width - 1), Math.max(0, height - 1), radius);
-  ctx.stroke();
+  const label = state.kind === 'missing' && width >= 16 && height >= 11 ? (state.label?.trim().toUpperCase().slice(0, 3) || '?') : '';
+  drawSlotMark(ctx, x, y, width, height, state, label, Math.max(7, Math.min(9, height - 4)), radius, theme);
   ctx.restore();
-  return { x, y, width, height, drawn: state.kind };
+  return { x, y, width, height, drawn: state.kind, ...(label ? { label } : {}) };
 }
 
 export function drawNameSlot(
@@ -849,7 +830,7 @@ export function drawLegendEntry(
     readonly hatch?: boolean;
     readonly outlined?: boolean;
     readonly swatch?: 'line' | 'square';
-    readonly flag?: FlagSlotState;
+    readonly flag?: ArtSlotState;
     readonly maxWidth?: number;
     readonly muted?: boolean;
   },
@@ -1974,7 +1955,7 @@ export interface LegendStripEntry {
   readonly hatch?: boolean;
   readonly outlined?: boolean;
   readonly swatch?: 'line' | 'square';
-  readonly flag?: FlagSlotState;
+  readonly flag?: ArtSlotState;
   readonly muted?: boolean;
 }
 

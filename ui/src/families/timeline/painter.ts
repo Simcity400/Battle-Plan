@@ -14,12 +14,11 @@ import {
   drawTimeAxis,
   drawTimeAxisGrid,
   drawTimelineBar,
-  type ArtSlotState,
   type TimeAxisTick,
 } from '../../draw/kit.ts';
-import { drawMediaSlot, toArtSlotState } from '../art/adapters.ts';
-import { unavailableArt } from '../art/types.ts';
-import type { ArtHandle, BoundedReadView, FamilyTheme } from '../contract.ts';
+import { drawMediaSlot, resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
+import type { FamilyTheme } from '../contract.ts';
 import {
   BAR_HEIGHT,
   BAR_HEIGHT_ICONS,
@@ -38,7 +37,7 @@ import { coalescedGaps, paintedSpans, type TimelineResolution } from './resoluti
 export interface TimelinePaintInput {
   readonly model: TimelineModel;
   readonly layout: TimelineLayout;
-  readonly readView: BoundedReadView;
+  readonly artCache?: LaneArtCache;
   readonly theme: FamilyTheme;
   readonly scrollTop: number;
   readonly expanded: Readonly<Record<string, boolean>>;
@@ -55,14 +54,10 @@ const INDENT = 18;
 const FLAG_W = 20;
 const FLAG_H = 13;
 
-function artState(readView: BoundedReadView, handle: ArtHandle | null | undefined, missing: boolean | undefined, name: string): ArtSlotState {
-  if (handle) return toArtSlotState(readView.art(handle), name);
-  return missing ? { kind: 'missing', resolvedName: name } : { kind: 'none' };
-}
 
 function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: TimelinePaintInput): void {
   const { lane } = placed;
-  const { layout, theme, readView, expanded } = input;
+  const { layout, theme, expanded, artCache } = input;
   const mid = y + placed.height / 2;
   let x = LABEL_PAD + (lane.depth ?? 0) * INDENT;
   const right = layout.labelWidth;
@@ -70,19 +65,11 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
     drawChevron(ctx, x - 4, mid, laneOpen(lane, expanded), theme);
     x += CHEVRON + 6;
   }
-  if (lane.flag || lane.flagTag) {
-    drawMediaSlot(ctx, x, mid, FLAG_W, FLAG_H, {
-      kind: 'flag',
-      art: lane.flag ? readView.art(lane.flag) : unavailableArt('Flag unavailable'),
-      tag: lane.flagTag,
-    }, theme);
+  if (lane.flag) {
+    drawMediaSlot(ctx, x, mid, FLAG_W, FLAG_H, { kind: 'flag', art: lane.flag, ...(lane.flagTag ? { tag: lane.flagTag } : {}) }, theme, { artCache });
     x += FLAG_W + 8;
-  } else if (lane.icon || lane.iconMissing) {
-    drawMediaSlot(ctx, x, mid, LANE_ICON, LANE_ICON, {
-      kind: 'art',
-      art: lane.icon ? readView.art(lane.icon) : unavailableArt('Art unavailable'),
-      resolvedName: lane.label,
-    }, theme, { radius: 3 });
+  } else if (lane.icon) {
+    drawMediaSlot(ctx, x, mid, LANE_ICON, LANE_ICON, { kind: 'art', art: lane.icon, name: lane.label }, theme, { artCache, radius: 3 });
     x += LANE_ICON + 8;
   } else if (lane.swatch) {
     ctx.save();
@@ -150,7 +137,7 @@ function drawGroupRule(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Ti
 }
 
 function laneHasIcons(lane: TimelineLane): boolean {
-  return lane.spans.some(span => span.icon || span.iconMissing);
+  return lane.spans.some(span => span.icon !== undefined);
 }
 
 function drawOpenedMarker(ctx: Canvas2D, lane: TimelineLane, mid: number, input: TimelinePaintInput): void {
@@ -179,7 +166,7 @@ function drawOpenedMarker(ctx: Canvas2D, lane: TimelineLane, mid: number, input:
 }
 
 function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: TimelinePaintInput): void {
-  const { layout, model, theme, readView } = input;
+  const { layout, model, theme, artCache } = input;
   const icons = model.iconsOnBars && laneHasIcons(lane);
   const barH = icons ? BAR_HEIGHT_ICONS : BAR_HEIGHT;
   const y = Math.round(mid - barH / 2);
@@ -195,7 +182,7 @@ function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Timelin
       heldBefore: span.heldBefore,
       startBy: span.startBy,
       endUnseen: span.endUnseen,
-      ...(icons && (span.icon || span.iconMissing) ? { icon: artState(readView, span.icon, span.iconMissing, span.label ?? lane.label) } : {}),
+      ...(icons && span.icon ? { icon: toArtSlotState(resolveCachedArt(span.icon, artCache), span.label ?? lane.label) } : {}),
       ...(span.label ? { label: span.label } : {}),
     });
   }

@@ -1,5 +1,5 @@
 import type { DashboardSource } from '../../dashboard/client';
-import type { CountryFlagChoice } from '../../generated/dashboard';
+import type { Artwork, CountryFlagChoice } from '../../generated/dashboard';
 import type { IdentityBroker } from '../identity/broker.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { parseFlagChoiceKey, type DrawnFlagEntry, type IdentityScope } from '../identity/types.ts';
@@ -38,6 +38,20 @@ export function flagChoiceArt(
     case 'failed':
       return failedArt(choice.reason, choice.retryable);
   }
+}
+
+export function productIconArt(
+  readView: { art(handle: ArtHandle): ArtResult },
+  url: string | null | undefined,
+  missing: string | null | undefined,
+): ArtResult {
+  return url ? readView.art({ kind: 'url', url }) : unavailableArt(missing ?? 'The product drew no icon');
+}
+
+export function artworkArt(readView: { art(handle: ArtHandle): ArtResult }, artwork: Pick<Artwork, 'icon' | 'sprite'>): ArtResult {
+  if (artwork.icon) return readView.art({ kind: 'url', url: artwork.icon });
+  if (artwork.sprite) return readView.art({ kind: 'sprite', key: artwork.sprite, frame: 0 });
+  return unavailableArt('The recording names no icon for this item');
 }
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {

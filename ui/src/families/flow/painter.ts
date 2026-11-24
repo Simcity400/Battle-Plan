@@ -2,8 +2,8 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { colour } from '../../charts/palette.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
-import { drawFlagSlot, drawLegendStrip, FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, resolveKitTokens } from '../../draw/kit.ts';
-import { resolveCachedArt, toFlagSlotState } from '../art/adapters.ts';
+import { drawFlagSlot, drawLegendStrip, FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, resolveKitTokens, type ArtSlotState } from '../../draw/kit.ts';
+import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import type { ArtResult, FamilyTheme } from '../contract.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
@@ -232,9 +232,8 @@ export interface DrawFlowInput {
   readonly artCache?: LaneArtCache;
 }
 
-function flagState(art: ArtResult | undefined, tag: string | undefined, cache?: LaneArtCache) {
-  if (!art) return { kind: 'missing' as const, tag: tag ?? '?' };
-  return toFlagSlotState(resolveCachedArt(art, { artCache: cache }), tag);
+function flagState(art: ArtResult | undefined, tag: string | undefined, cache?: LaneArtCache): ArtSlotState {
+  return art ? toArtSlotState(resolveCachedArt(art, cache), tag) : { kind: 'none' };
 }
 
 function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, theme: FamilyTheme, artCache: LaneArtCache | undefined, highlighted: boolean): void {

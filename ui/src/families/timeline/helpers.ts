@@ -1,13 +1,13 @@
 import type { LegendStripEntry } from '../../draw/kit.ts';
 import type { HourSpan } from '../../generated/dashboard';
-import { flagArtHandle } from '../art/provider.ts';
-import type { ArtHandle, BoundedReadView, DisplayedHour } from '../contract.ts';
+import { flagChoiceArt } from '../art/provider.ts';
+import type { ArtResult, BoundedReadView, DisplayedHour } from '../contract.ts';
 import type { TimelineLane, TimelineModel } from './model.ts';
 
 export interface CountryLook {
   readonly tag: string;
   readonly name: string;
-  readonly flag: ArtHandle | null;
+  readonly flag: ArtResult;
   readonly colour: string | null;
 }
 
@@ -16,7 +16,7 @@ export function countryLook(readView: BoundedReadView, tag: string, atHour: numb
   return {
     tag,
     name: who.name.status === 'ready' ? who.name.value : tag,
-    flag: who.flagChoice?.status === 'ready' ? flagArtHandle(who.flagChoice.value, 'panel') : null,
+    flag: flagChoiceArt(readView, who.flagChoice, 'panel'),
     colour: who.colour?.status === 'ready' ? who.colour.value : null,
   };
 }

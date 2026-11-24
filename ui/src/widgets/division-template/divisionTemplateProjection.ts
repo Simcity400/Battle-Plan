@@ -1,3 +1,4 @@
+import { productIconArt } from '../../families/art/provider.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import {
@@ -63,7 +64,7 @@ const TEMPLATE_COLUMNS: readonly DeclarativeColumnSpec<TemplateRow, DivisionTemp
     widest: ['Infantry Division'],
     hint: 'Sorted by the game’s roster order',
     iconSlot: true,
-    icon: row => (row.kind === 'template' ? row.entry.icon ?? undefined : undefined),
+    art: (row, readView) => (row.kind === 'template' ? productIconArt(readView, row.entry.icon, 'The product drew no icon for this template') : undefined),
     value: row => row.kind === 'obsolete'
       ? knownValue(`Obsolete templates (${row.count})`)
       : row.kind === 'status-unknown'

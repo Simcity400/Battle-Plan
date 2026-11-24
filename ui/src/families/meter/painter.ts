@@ -15,7 +15,7 @@ import {
   drawTrackBar,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
+import { toArtSlotState } from '../art/adapters.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import type {
@@ -408,7 +408,7 @@ function drawStandardMeterRow(
     }
     cursorX += size + 10;
   } else if (row.flag) {
-    drawFlagSlot(ctx, cursorX, Math.round(midY - 6.5), toFlagSlotState(row.flag.result, row.flag.tag), theme, { width: 20, height: 13 });
+    drawFlagSlot(ctx, cursorX, Math.round(midY - 6.5), toArtSlotState(row.flag.result, row.flag.tag), theme, { width: 20, height: 13 });
     cursorX += 28;
   }
 
@@ -654,7 +654,7 @@ function drawCipherMeterRow(
   if (row.pair) {
     const flagY = Math.round(midY - 6.5);
     let cx = x;
-    drawFlagSlot(ctx, cx, flagY, toFlagSlotState(row.pair.ownerFlag.result, row.pair.ownerFlag.tag), theme, { width: 20, height: 13 });
+    drawFlagSlot(ctx, cx, flagY, toArtSlotState(row.pair.ownerFlag.result, row.pair.ownerFlag.tag), theme, { width: 20, height: 13 });
     cx += 20;
     if (wide) {
       cx += 6;
@@ -680,7 +680,7 @@ function drawCipherMeterRow(
     cx += textWidth(ctx, '\u2192') + 5;
     ctx.restore();
 
-    drawFlagSlot(ctx, cx, flagY, toFlagSlotState(row.pair.targetFlag.result, row.pair.targetFlag.tag), theme, { width: 20, height: 13 });
+    drawFlagSlot(ctx, cx, flagY, toArtSlotState(row.pair.targetFlag.result, row.pair.targetFlag.tag), theme, { width: 20, height: 13 });
     cx += 26;
     const remW = Math.max(24, x + pairW - cx);
     ctx.save();
@@ -724,7 +724,7 @@ function drawChipLineBlock(
   focusedKey: string | null,
 ): void {
   const firstMidY = block.y + 11;
-  drawFlagSlot(ctx, block.x, Math.round(firstMidY - 6.5), toFlagSlotState(block.ownerFlag.result, block.ownerFlag.tag), theme, { width: 20, height: 13 });
+  drawFlagSlot(ctx, block.x, Math.round(firstMidY - 6.5), toArtSlotState(block.ownerFlag.result, block.ownerFlag.tag), theme, { width: 20, height: 13 });
   if (block.showOwnerName) {
     const maxW = Math.max(24, block.ownerWidth - 26);
     ctx.save();
@@ -744,7 +744,7 @@ function drawChipLineBlock(
     if (focusedKey === chip.key) drawRowFocusRing(ctx, placed.x - 4, placed.y, placed.width + 8, placed.height, theme, 0);
 
     let cx = placed.x;
-    drawFlagSlot(ctx, cx, Math.round(midY - 6), toFlagSlotState(chip.targetFlag.result, chip.targetFlag.tag), theme, { width: 18, height: 12 });
+    drawFlagSlot(ctx, cx, Math.round(midY - 6), toArtSlotState(chip.targetFlag.result, chip.targetFlag.tag), theme, { width: 18, height: 12 });
     cx += 18;
     if (block.showTargetName) {
       cx += 5;

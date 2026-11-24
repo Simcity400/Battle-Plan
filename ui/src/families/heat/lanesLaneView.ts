@@ -92,8 +92,7 @@ export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, H
       hoveredHour: hovered.hour,
       selectedRowId: frame.binding.selectedKey ?? null,
       focusedRowId: frame.binding.focusedKey ?? null,
-      artProvider: frame.artProvider,
-      identityIndex: frame.index,
+      artCache: frame.art,
     });
     return false;
   },
@@ -144,5 +143,5 @@ export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, H
     const window = shown(frame);
     return deriveLanesAudit(frame.model, { firstRow: window.firstRow, endRow: window.endRow });
   },
-  visibleArt: frame => collectVisibleLaneArt(frame.model, shown(frame), frame.index),
+  visibleArt: frame => collectVisibleLaneArt(frame.model, shown(frame)),
 };

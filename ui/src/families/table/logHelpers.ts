@@ -1,3 +1,4 @@
+import { unavailableArt } from '../art/types.ts';
 import type { DashboardSource } from '../../dashboard/client';
 import type { MissingSpan } from '../../generated/dashboard';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
@@ -174,16 +175,11 @@ export function logCountryCell(
   const names: string[] = [];
   for (const entry of entries) {
     if (entry.tag === null) {
-      flags.push({ tag: '?', ...(entry.dimmed ? { dimmed: true } : {}) });
+      flags.push({ tag: '?', art: unavailableArt(entry.missingLabel ?? 'Country not recorded'), ...(entry.dimmed ? { dimmed: true } : {}) });
       names.push(entry.missingLabel ?? 'Country not recorded');
     } else {
-      const f = byTag.get(entry.tag);
-      flags.push({
-        tag: entry.tag,
-        ...(f?.icon ? { icon: f.icon } : {}),
-        ...(f?.pending ? { pending: true } : {}),
-        ...(entry.dimmed ? { dimmed: true } : {}),
-      });
+      const f = byTag.get(entry.tag)!;
+      flags.push({ ...f, ...(entry.dimmed ? { dimmed: true } : {}) });
       names.push(identityName(readView, 'country', entry.tag, atHour));
     }
   }

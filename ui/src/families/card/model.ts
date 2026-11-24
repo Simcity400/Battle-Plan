@@ -1,6 +1,7 @@
+import { artTooltipItem } from '../art/adapters.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
-import { flagChoiceArt } from '../art/provider.ts';
-import { unavailableArt, type ArtResult } from '../art/types.ts';
+import { flagChoiceArt, productIconArt } from '../art/provider.ts';
+
 import { canonicalAuditValue } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
@@ -11,7 +12,6 @@ import { formatDateHover, formatDateOnly, formatValueState, notRecordedLabel } f
 export interface CardMedia {
   readonly kind: 'flag' | 'art';
   readonly art: ArtResult;
-  readonly iconUrl?: string;
   readonly tag?: string;
   readonly name?: string;
 }
@@ -138,10 +138,7 @@ export function cardRowHours(model: CardModel): Readonly<Record<string, number>>
 }
 
 export function cardMediaFromIcon(readView: BoundedReadView, url: string | null | undefined, missing: string | null | undefined, name?: string): CardMedia {
-  if (url) {
-    return { kind: 'art', art: readView.art({ kind: 'url', url }), iconUrl: url, ...(name ? { name } : {}) };
-  }
-  return { kind: 'art', art: unavailableArt(missing ?? 'The product drew no icon'), ...(name ? { name } : {}) };
+  return { kind: 'art', art: productIconArt(readView, url, missing), ...(name ? { name } : {}) };
 }
 
 export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number): { readonly media: CardMedia; readonly name: Value<string> } {
@@ -152,7 +149,7 @@ export function cardFlag(readView: BoundedReadView, tag: string, atHour?: number
       ? { kind: 'known', value: tag }
       : { kind: 'notRecorded', reason: identity.name.reason };
   const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
-  return { media: { kind: 'flag', art, ...(art.status === 'ready' ? { iconUrl: art.url } : {}), tag }, name };
+  return { media: { kind: 'flag', art, tag }, name };
 }
 
 export function cardTitleText(title: Value<string>, figure = 'Name'): string {
@@ -191,9 +188,10 @@ export function deriveCardTooltip(model: CardModel, key: string): FamilyTooltipP
     }
     if (row.state) items.push({ label: 'State', value: row.state.label });
   }
-  const media = row.kind === 'item' ? row.art ?? row.flag : row.art;
-  if (media?.art.status === 'confirmedMissing') items.push({ label: 'Art', missingReason: `${media.art.reason}; art missing from the current installation` });
-  else if (media?.art.status === 'unavailable') items.push({ label: 'Art', missingReason: media.art.reason });
+  for (const [label, media] of [['Flag', row.kind === 'item' ? row.flag : undefined], ['Art', row.art]] as const) {
+    const item = artTooltipItem(label, media?.art);
+    if (item) items.push(item);
+  }
   return { title, fullText: title, hour: model.hour, ...(items.length ? { items } : {}) };
 }
 

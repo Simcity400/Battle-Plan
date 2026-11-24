@@ -1,3 +1,4 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { BoundedReadView, SourceEntry, SourcePlan } from '../../families/contract.ts';
@@ -345,9 +346,7 @@ function buildFeedTableRow(
   const artHandle = artwork
     ? (urlArtHandle(event.item?.icon ?? null) ?? (spriteKey ? { kind: 'sprite' as const, key: spriteKey, frame: 0 } : null))
     : null;
-  const artResult = artHandle ? readView.art(artHandle) : null;
-  const icon = artResult?.status === 'ready' ? artResult.url : undefined;
-  const iconPending = artResult?.status === 'pending' ? true : undefined;
+  const art = artHandle ? readView.art(artHandle) : unavailableArt('The product drew no icon for this item');
 
   const rawRoles = event.participants ?? event.tags;
   const countryEntries: { readonly tag: string | null; readonly dimmed?: boolean; readonly missingLabel?: string }[] = [];
@@ -387,8 +386,8 @@ function buildFeedTableRow(
       title: event.item?.name ?? null,
       countryTag: recipient,
       countryName,
-      flagUrl: flag?.icon,
-      flagPending: flag?.pending,
+      flagUrl: flag?.art.status === 'ready' ? flag.art.url : undefined,
+      flagPending: flag?.art.status === 'pending',
       item: event.item,
       chosenOrdinal,
       awaiting,
@@ -445,8 +444,7 @@ function buildFeedTableRow(
         kind: artwork
           ? {
               value: knownValue(titleLabel),
-              icon,
-              iconPending,
+              art,
               iconSlot: true,
               artShape: viewable ? 'wide' : 'square',
               artName: titleLabel,

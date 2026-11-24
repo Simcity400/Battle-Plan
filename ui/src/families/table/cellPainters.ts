@@ -1,4 +1,3 @@
-import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import {
   drawActionButton,
@@ -20,11 +19,12 @@ import {
   FLAG_SLOT_HEIGHT,
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
+  type ArtSlotState,
   type IconStripItem,
 } from '../../draw/kit.ts';
-import { resolveCachedArt, toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
+import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
-import { PENDING_ART, readyArt, unavailableArt } from '../art/types.ts';
+import { readyArt, type ArtResult } from '../art/types.ts';
 import { formatDateParts, formatScalar, formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
 import { SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout } from './layout.ts';
@@ -76,7 +76,6 @@ export interface CellRenderContext {
   readonly treeColumn: number;
   readonly treeLevels: number;
   readonly hasActionColumn?: boolean;
-  readonly icons?: ReadonlyMap<string, ImageBitmap | null>;
   readonly artCache?: LaneArtCache;
   readonly measure: (text: string, font: string) => number;
   readonly fit: (text: string, font: string, maxWidth: number) => string;
@@ -100,9 +99,8 @@ export interface CellDrawArgs {
 
 const fontOf = (theme: TableTheme, size: number, weight: number) => `${weight} ${size}px ${theme.font}`;
 
-function cellArt(url: string | null | undefined, pending: boolean, rc: CellRenderContext) {
-  const resolution = url ? readyArt(url) : pending ? PENDING_ART : unavailableArt('Artwork unavailable');
-  return resolveCachedArt(resolution, { artCache: rc.artCache, icons: rc.icons });
+function slotOf(art: ArtResult | null | undefined, label: string | undefined, rc: CellRenderContext): ArtSlotState {
+  return art ? toArtSlotState(resolveCachedArt(art, rc.artCache), label) : { kind: 'none' };
 }
 
 function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHeight: number): { readonly width: number; readonly height: number } {
@@ -240,9 +238,9 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 
   if (kind === 'kind') {
-    if (!cell || (!cell.icon && !paintModel.iconPending && !cell.iconSlot)) return;
+    if (!cell || (!cell.art && !cell.iconSlot)) return;
     const geom = artGeometry(cell.artShape ?? 'square', density, rowHeight);
-    const state = toArtSlotState(cellArt(paintModel.icon, paintModel.iconPending === true, rc), cell.artName ?? item.name);
+    const state = slotOf(paintModel.art, cell.artName ?? item.name, rc);
     drawArtSlot(ctx, Math.round(x + (column.width - geom.width) / 2), Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 2 });
     return;
   }
@@ -350,10 +348,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
       return;
     }
-    const iconUrl = cell?.icon ?? column.skillIcon ?? null;
-    const iconState = iconUrl
-      ? toArtSlotState(cellArt(iconUrl, paintModel.iconPending === true, rc), column.label)
-      : { kind: 'none' as const };
+    const iconState = slotOf(paintModel.art ?? (column.skillIcon ? readyArt(column.skillIcon) : null), column.label, rc);
     drawSkillFigure(ctx, left, right, middle, formatted.text, iconState, theme, {
       badge: column.key === 'skill' || column.key === 'level',
       muted: item.row.muted,
@@ -378,7 +373,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       return;
     }
     const stripItems: IconStripItem[] = list.map(entry => ({
-      state: toArtSlotState(cellArt(entry.url, entry.pending === true, rc), entry.name),
+      state: slotOf(entry.art, entry.name, rc),
       name: entry.name,
       count: entry.count,
     }));
@@ -491,43 +486,31 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
     for (const fl of cell.flags) {
-      const state = toFlagSlotState(cellArt(fl.icon, fl.pending === true, rc), fl.tag);
+      const state = slotOf(fl.art, fl.tag, rc);
       drawFlagSlot(ctx, fx, fy, state, theme, { dimmed: fl.dimmed });
       fx += FLAG_SLOT_WIDTH + 6;
     }
     if (column.display === 'flag') return;
     left = fx + 2;
-  } else if (cell?.artShape && (cell.icon || paintModel.iconPending || cell.iconSlot)) {
+  } else if (cell?.artShape && (cell.art || cell.iconSlot)) {
     const geom = artGeometry(cell.artShape, density, rowHeight);
-    const state = toArtSlotState(cellArt(paintModel.icon, paintModel.iconPending === true, rc), cell.artName ?? item.name);
+    const state = slotOf(paintModel.art, cell.artName ?? item.name, rc);
     drawArtSlot(ctx, left, Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 3 });
     left += geom.width + 10;
   } else if (cell?.iconSlot && showsIcon(column.display)) {
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
     const isFlag = column.display === 'flag' || column.display === 'flagName';
     if (isFlag) {
-      const state = toFlagSlotState(cellArt(paintModel.icon, paintModel.iconPending === true, rc), paintModel.country ?? undefined);
+      const state = slotOf(paintModel.art, paintModel.country ?? undefined, rc);
       drawFlagSlot(ctx, left, fy, state, theme);
       if (column.display === 'flag') return;
       left += FLAG_SLOT_WIDTH + 8;
     } else {
       const geom = artGeometry('square', density, rowHeight);
-      const state = toArtSlotState(cellArt(paintModel.icon, paintModel.iconPending === true, rc), cell.artName ?? item.name);
+      const state = slotOf(paintModel.art, cell.artName ?? item.name, rc);
       drawArtSlot(ctx, left, Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 3 });
       left += geom.width + 8;
     }
-  }
-
-  if (paintModel.missingName) {
-    const font = fontOf(theme, 13, LABEL_WEIGHT);
-    ctx.save();
-    ctx.font = font;
-    ctx.fillStyle = theme.muted;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(fit('Name not recorded', font, Math.max(0, right - left)), left, middle);
-    ctx.restore();
-    return;
   }
 
   if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
@@ -604,12 +587,12 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     ctx.fillStyle = figureColor;
     ctx.fillText(shownNum, numRight, textMid);
     ctx.restore();
-    if (cell?.unitIcon || cell?.unitIconPending) {
+    if (cell?.unitArt) {
       const iconSize = 14;
       const numW = measure(shownNum, font);
       const iconX = Math.round(numRight - numW - iconSize - 5);
       if (iconX >= left) {
-        const state = toArtSlotState(cellArt(cell.unitIcon, cell.unitIconPending === true, rc), cell.unitSuffix ?? column.label);
+        const state = slotOf(cell.unitArt, cell.unitSuffix ?? column.label, rc);
         drawArtSlot(ctx, iconX, Math.round(textMid - iconSize / 2), iconSize, iconSize, state, theme, { radius: 2 });
       }
     }

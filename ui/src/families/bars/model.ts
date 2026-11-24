@@ -1,3 +1,4 @@
+import { artTooltipItem } from '../art/adapters.ts';
 import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import type { ArtResult } from '../art/types.ts';
@@ -14,7 +15,6 @@ export type BarsTwoSidedLayout = 'paired' | 'split-sides' | 'stacked-pair';
 export interface BarsRowMedia {
   readonly kind: 'none' | 'flag' | 'art';
   readonly art: ArtResult;
-  readonly iconUrl?: string;
   readonly tag?: string;
   readonly resolvedName?: string;
   readonly dimmed?: boolean;
@@ -39,12 +39,11 @@ export function countryRowPresentation(
   const label = identity.name.status === 'ready' ? identity.name.value : tag;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
   const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
-  const iconUrl = art.status === 'ready' ? art.url : undefined;
   return {
     label,
     labelMissing,
     color,
-    media: { kind: 'flag', art, ...(iconUrl ? { iconUrl } : {}), tag, dimmed },
+    media: { kind: 'flag', art, tag, dimmed },
   };
 }
 
@@ -76,8 +75,6 @@ export interface BarsNeedTarget {
   readonly format?: ValueFormat;
   readonly shortfall?: Value;
   readonly shortfallNumeric?: number;
-  readonly iconUrl?: string;
-  readonly iconMissing?: boolean;
 }
 
 export interface BarsSideMeasure {
@@ -102,8 +99,6 @@ export interface BarsReadout {
   readonly primary: string;
   readonly secondary?: string;
   readonly tone?: 'default' | 'shortage' | 'muted';
-  readonly iconUrl?: string;
-  readonly iconMissing?: boolean;
   readonly shortfall?: string;
 }
 
@@ -415,9 +410,8 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
   if (row.readout?.primary && !items.length && !missingReason) {
     items.push({ label: row.readout.secondary ?? 'Count', value: row.readout.primary });
   }
-  if (row.media?.art.status === 'confirmedMissing' || row.media?.art.status === 'unavailable') {
-    items.push({ label: 'Artwork', missingReason: row.media.art.reason });
-  }
+  const art = artTooltipItem(row.media?.kind === 'flag' ? 'Flag' : 'Art', row.media?.art);
+  if (art) items.push(art);
 
   return {
     title,
@@ -514,8 +508,8 @@ export function deriveBarsAudit(
       }
     }
     if (item.readout) {
-      const { primary, secondary, shortfall, tone, iconMissing } = item.readout;
-      cell(item.key, 'readout', JSON.stringify([primary, secondary ?? null, shortfall ?? null, tone ?? 'default', iconMissing === true]));
+      const { primary, secondary, shortfall, tone } = item.readout;
+      cell(item.key, 'readout', JSON.stringify([primary, secondary ?? null, shortfall ?? null, tone ?? 'default']));
     }
   }
   return rows;

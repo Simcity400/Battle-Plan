@@ -5,7 +5,7 @@ import { IdentityIndex } from '../identity/index.ts';
 import { flagChoiceKey, parseFlagChoiceKey } from '../identity/types.ts';
 import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
-import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt, toArtSlotState, toFlagSlotState } from './adapters.ts';
+import { drawMediaSlot, flagEntryToArt, resolveCachedArt, spriteImageToArt, toArtSlotState } from './adapters.ts';
 import { artUrlForHandle, collectArtUrls, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand, urlArtHandle } from './provider.ts';
 import { DEFAULT_FAMILY_THEME } from '../../draw/kit.ts';
 import { MAX_ART_CALLS, SpriteCaches, artCacheScope, fetchArtHandles, spriteResolutions } from './transport.ts';
@@ -475,7 +475,7 @@ test('a status is the product\'s to the drawn slot: an unread table, an unrecord
   for (const [key, resolution] of Object.entries(flags)) {
     const art = flagEntryToArt(broker.flagFor(scope, 'small', choice(key)));
     assert.equal(art.status, resolution.status, `flag ${key}`);
-    assert.equal(toFlagSlotState(art, 'AAA').kind, { unread: 'missing', refused: 'refused', searched: 'missing' }[key], `flag ${key} slot`);
+    assert.equal(toArtSlotState(art, 'AAA').kind, { unread: 'missing', refused: 'refused', searched: 'missing' }[key], `flag ${key} slot`);
   }
   const relayed: CountryFlagChoice = { keys: [null, 'aaa', 'aaa'], reasons: ['none drawn', null, null], searched: [true, null, null] };
   assert.deepEqual(parseFlagChoiceKey(flagChoiceKey(relayed)), relayed, 'a completed search travels with the choice to the flag product');

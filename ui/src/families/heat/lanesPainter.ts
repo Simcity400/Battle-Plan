@@ -28,10 +28,10 @@ import {
 } from '../../draw/kit.ts';
 import { REGION_ADD_KEY } from '../regions/regionRows.ts';
 import { mix } from '../../shell/appearance/color.ts';
-import { toFlagSlotState } from '../art/adapters.ts';
+import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
 import { collectArtUrls } from '../art/provider.ts';
-import type { ArtProvider, FamilyTheme } from '../contract.ts';
-import type { IdentityIndex } from '../identity/index.ts';
+import type { FamilyTheme } from '../contract.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import {
@@ -53,21 +53,19 @@ export interface DrawHeatLanesInput {
   readonly hoveredHour: number | null;
   readonly selectedRowId: string | null;
   readonly focusedRowId: string | null;
-  readonly artProvider?: ArtProvider;
-  readonly identityIndex?: IdentityIndex | null;
+  readonly artCache?: LaneArtCache;
 }
 
 export function collectVisibleLaneArt(
   model: HeatLanesModel,
   layout: HeatLanesLayout,
-  identityIndex?: IdentityIndex | null,
 ): readonly string[] {
-  const handles = [];
+  const flags = [];
   for (let i = layout.firstRow; i < layout.endRow; i++) {
     const row = model.rows[i];
-    if (row?.flag) handles.push(row.flag);
+    if (row?.flag) flags.push(row.flag);
   }
-  return collectArtUrls(handles, identityIndex);
+  return collectArtUrls(flags);
 }
 
 function drawRowFlag(
@@ -77,21 +75,11 @@ function drawRowFlag(
   y: number,
   rowHeight: number,
   theme: FamilyTheme,
-  artProvider?: ArtProvider,
+  artCache?: LaneArtCache,
 ): void {
+  if (!row.flag) return;
   const fy = Math.round(y + (rowHeight - FLAG_SLOT_HEIGHT) / 2);
-  if (row.flag) {
-    const state = artProvider
-      ? toFlagSlotState(artProvider.resolve(row.flag), row.tag ?? row.id)
-      : ({ kind: 'pending' } as const);
-    drawFlagSlot(ctx, x, fy, state, theme);
-    return;
-  }
-  if (row.flagPending) {
-    drawFlagSlot(ctx, x, fy, { kind: 'pending' }, theme);
-    return;
-  }
-  drawFlagSlot(ctx, x, fy, { kind: 'missing', tag: row.tag ?? row.id }, theme);
+  drawFlagSlot(ctx, x, fy, toArtSlotState(resolveCachedArt(row.flag, artCache), row.tag ?? row.id), theme);
 }
 
 export const READOUT_SWATCH = 10;
@@ -214,7 +202,7 @@ function drawInRunLabel(
 }
 
 export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
-  const { model, layout, theme, scrollTop, hoveredRow, hoveredAdd = false, hoveredHour, selectedRowId, focusedRowId, artProvider } = input;
+  const { model, layout, theme, scrollTop, hoveredRow, hoveredAdd = false, hoveredHour, selectedRowId, focusedRowId, artCache } = input;
   const tokens = resolveKitTokens(theme);
 
   ctx.save();
@@ -300,7 +288,7 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
 
     let nameX = LANE_PAD;
     if (layout.showFlags && (row.flag !== undefined || row.tag !== undefined)) {
-      drawRowFlag(ctx, row, nameX, y, layout.rowHeight, theme, artProvider);
+      drawRowFlag(ctx, row, nameX, y, layout.rowHeight, theme, artCache);
       nameX += FLAG_SLOT_WIDTH + 6;
     }
     const tools = row.region !== undefined && (isHovered || isFocused);

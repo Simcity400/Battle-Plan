@@ -13,7 +13,7 @@ import {
   resolveKitTokens,
 } from '../../draw/kit.ts';
 import { parseColor, rgbaRgb } from '../../shell/appearance/color.ts';
-import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
+import { toArtSlotState } from '../art/adapters.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
@@ -249,7 +249,7 @@ export function drawTimeChart(
             ...(isLineLegend && !item.hatch ? { line: true } : {}),
             dash: item.dash,
             hatch: item.hatch,
-            flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
+            flag: item.flag ? toArtSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
             muted: false,
           };
         },
@@ -705,7 +705,7 @@ export function drawTimeChart(
       cursorX += 9;
     }
     if (label.flag && label.flag.art.status !== 'noArtExpected') {
-      drawFlagSlot(ctx, cursorX, label.y - 6, toFlagSlotState(label.flag.art, label.flag.tag ?? label.flag.label), theme, { width: 18, height: 12 });
+      drawFlagSlot(ctx, cursorX, label.y - 6, toArtSlotState(label.flag.art, label.flag.tag ?? label.flag.label), theme, { width: 18, height: 12 });
       cursorX += 24;
     } else if (label.icon && label.icon.art.status !== 'noArtExpected') {
       drawArtSlot(ctx, cursorX, label.y - 7.5, 16, 15, toArtSlotState(label.icon.art, label.icon.label), theme, { radius: 0 });
@@ -770,7 +770,7 @@ export function drawTimeChart(
 
   for (const m of layout.markers) {
     if (m.kind === 'flag' && m.marker.flag) {
-      drawFlagSlot(ctx, m.x - 8, m.y - 5, toFlagSlotState(m.marker.flag.art, m.marker.flag.tag ?? m.marker.flag.label), theme, { width: 16, height: 10 });
+      drawFlagSlot(ctx, m.x - 8, m.y - 5, toArtSlotState(m.marker.flag.art, m.marker.flag.tag ?? m.marker.flag.label), theme, { width: 16, height: 10 });
     } else if (m.kind === 'icon' && m.marker.icon) {
       drawArtSlot(ctx, m.x - 9, m.y - 9, 18, 18, toArtSlotState(m.marker.icon.art, m.marker.icon.label), theme, { radius: 0 });
     } else {
