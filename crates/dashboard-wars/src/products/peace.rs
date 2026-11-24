@@ -789,7 +789,7 @@ pub fn fold(spans: &[PeaceConferenceSpanRow], outcomes: &[Outcome], settled: &[S
         }
         let publication_hour = *publication_hour;
         let Some(id) = row.conference else {
-            warnings.push(PeaceWarning::at(row.hour.unwrap_or(publication_hour), format!("A finalizer conference identity was unavailable: {}", String::from_utf8_lossy(row.failure.as_deref().unwrap_or_default()))));
+            warnings.push(PeaceWarning::at(publication_hour, format!("A finalizer conference identity was unavailable: {}", String::from_utf8_lossy(row.failure.as_deref().unwrap_or_default()))));
             continue;
         };
         let id = id.to_string();

@@ -6,8 +6,8 @@ fn no_modular_designer_dlc_answers_no_modular_categories_without_reading_the_fam
     use engine_executable::native_values::dlc_feature::{BY_BLOOD_ALONE, MAN_THE_GUNS, NO_STEP_BACK};
     content_reader_script::test_game::with(|game| {
         game.auxiliary(|tables| {
-            tables.category_names = Err(engine_executable::availability::Withheld::new(
-                "equipment categories",
+            tables.category_families = Err(engine_executable::availability::Withheld::new(
+                engine_executable::executable_tables::auxiliary::CATEGORY_FAMILIES,
                 "not decoded from this build",
             ));
         })

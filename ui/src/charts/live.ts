@@ -9,28 +9,6 @@ export function valuesOf<V>(values: ReadonlyMap<string, V>, reason: string | ((k
   return { get: key => values.get(key), missing: typeof reason === 'string' ? () => reason : reason };
 }
 
-export function liveByColumn<V>(columns: Readonly<Record<string, Live<LiveValues<V>>>>): Live<LiveValues<V>> {
-  const sources = Object.entries(columns);
-  const split = (key: string) => { const at = key.lastIndexOf('\u0000'); return [key.slice(0, at), key.slice(at + 1)] as const; };
-  let made: { from: LiveValues<V>[]; value: LiveValues<V> } | null = null;
-  return {
-    read: () => {
-      const from = sources.map(([, live]) => live.read());
-      if (made && from.every((values, at) => values === made!.from[at])) return made.value;
-      const byColumn = new Map(sources.map(([column], at) => [column, from[at]!]));
-      made = { from, value: {
-        get: key => { const [row, column] = split(key); return byColumn.get(column)?.get(row); },
-        missing: key => { const [row, column] = split(key); return byColumn.get(column)?.missing(row) ?? 'Not followed'; },
-      } };
-      return made.value;
-    },
-    subscribe: changed => {
-      const stops = sources.map(([, live]) => live.subscribe(changed));
-      return () => { for (const stop of stops) stop(); };
-    },
-  };
-}
-
 export const noValues = (reason: string): LiveValues<never> => ({ get: () => undefined, missing: () => reason });
 
 export interface LiveClock {
@@ -71,9 +49,6 @@ export function mapLive<T, U>(source: Live<T>, make: (value: T) => U): Live<U> {
     subscribe: source.subscribe,
   };
 }
-
-export const sameBy = <T>(key: (item: T) => string) => (a: readonly T[], b: readonly T[]) =>
-  a.length === b.length && a.every((item, i) => key(item) === key(b[i]));
 
 export class LiveCell<T> implements Live<T> {
   private value: T;
@@ -119,4 +94,3 @@ export function liveTexts(clock: TextClock, hour: () => number, read: (hour: num
   };
 }
 
-export const separated = (text: string | null | undefined) => text ? ` · ${text}` : '';

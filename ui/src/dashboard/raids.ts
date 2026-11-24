@@ -264,7 +264,7 @@ export type RaidMetric = 'both' | 'launched' | 'succeeded';
 export interface RaidTallyRun { firstHour: number; lastHour: number; readHour: number; launched: number; succeeded: number; partial: string | null }
 export const RAID_GAP_REASON = 'Raids during an unrecorded stretch before this date are not counted.';
 export interface RaidTallySeries { tag: string; runs: RaidTallyRun[]; segments: Span[]; membership: Span[] | null; identities?: undefined }
-export interface RaidTally { series: RaidTallySeries[]; hours: number[]; unattributed: number }
+export interface RaidTally { series: RaidTallySeries[]; hours: number[]; unattributed: [hour: number, count: number][] }
 
 export function recordedSpans(span: Span, missing: readonly Span[]): Span[] {
   const out: Span[] = [];
@@ -289,20 +289,22 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
     list.push([hour, kind, delta]);
     events.set(key, list);
   };
-  let unattributed = 0;
+  const unnamed: [number, 1 | -1][] = [];
   for (const episode of episodes) {
     const slot = episode.raiderSlot === null ? null : countryKey(episode.raiderSlot);
     const owner = (tag: string | null) => slot !== null && chosenKeys.has(slot) ? slot : tag;
-    let missingRaider = false;
+    let launchUnnamed: number | null = null;
+    const success: [number, boolean][] = [];
     if (episode.launchedHour !== null) {
       const key = owner(episode.launchedRaider);
-      if (key === null) missingRaider = true; else count(key, episode.launchedHour, 0, 1);
+      if (key === null) launchUnnamed = episode.launchedHour; else count(key, episode.launchedHour, 0, 1);
     }
     if (episode.succeededHour !== null) {
       const succeeded = episode.succeededHour;
       const known = episode.ends.filter(end => end.hour <= succeeded);
       let held = owner(known[known.length - 1]?.raider ?? null);
       if (held !== null) count(held, succeeded, 1, 1);
+      success.push([succeeded, held === null]);
       for (const end of episode.ends) {
         if (end.hour <= succeeded) continue;
         const key = owner(end.raider);
@@ -310,10 +312,17 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
         if (held !== null) count(held, end.hour, 1, -1);
         if (key !== null) count(key, end.hour, 1, 1);
         held = key;
+        success.push([end.hour, held === null]);
       }
-      if (held === null) missingRaider = true;
     }
-    if (missingRaider) unattributed++;
+    const hours = [...new Set([...launchUnnamed === null ? [] : [launchUnnamed], ...success.map(([hour]) => hour)])].sort((a, b) => a - b);
+    let shown = false, missing = false, next = 0;
+    for (const hour of hours) {
+      while (next < success.length && success[next][0] <= hour) missing = success[next++][1];
+      const now = missing || (launchUnnamed !== null && launchUnnamed <= hour);
+      if (now !== shown) unnamed.push([hour, now ? 1 : -1]);
+      shown = now;
+    }
   }
   for (const list of events.values()) list.sort((a, b) => a[0] - b[0]);
   const hours = [...new Set([...events.values()].flatMap(list => list.map(([hour]) => hour)))].sort((a, b) => a - b);
@@ -322,7 +331,23 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
   const tags = top ? [...membership!.keys()] : [...new Set(chosen)];
   const series = tags.sort(compareTags).map(tag => ({ tag, runs: tallyRuns(events.get(tag) ?? [], segments), segments,
     membership: membership ? membership.get(tag) ?? [] : null }));
-  return { series, hours, unattributed };
+  return { series, hours, unattributed: steps(unnamed) };
+}
+
+function steps(changes: [number, 1 | -1][]): [number, number][] {
+  const out: [number, number][] = [];
+  let held = 0;
+  for (const [hour, delta] of changes.sort((a, b) => a[0] - b[0])) {
+    held += delta;
+    if (out.length && out[out.length - 1][0] === hour) out[out.length - 1][1] = held; else out.push([hour, held]);
+  }
+  return out;
+}
+
+export function unattributedAt(tally: Pick<RaidTally, 'unattributed'>, hour: number): number {
+  let lo = 0, hi = tally.unattributed.length;
+  while (lo < hi) { const mid = (lo + hi) >>> 1; if (tally.unattributed[mid][0] <= hour) lo = mid + 1; else hi = mid; }
+  return lo === 0 ? 0 : tally.unattributed[lo - 1][1];
 }
 
 function tallyRuns(events: readonly TallyEvent[], segments: readonly Span[]): RaidTallyRun[] {

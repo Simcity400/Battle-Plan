@@ -81,8 +81,11 @@ pub struct ApmValue {
     pub apm: Option<f64>,
     pub confirmed_apm: Option<f64>,
     pub orders: Option<String>,
+    pub confirmed_orders: Option<String>,
     pub paused_orders: Option<String>,
     pub unpaused_minutes: Option<f64>,
+    pub unpaused_minutes_num: Option<String>,
+    pub unpaused_minutes_den: Option<String>,
     pub complete: bool,
     #[doc = " Part of the period no capture observed; orders and minutes both leave it out."]
     pub gaps: bool,
@@ -225,10 +228,111 @@ fn tag(bytes: &[u8]) -> Option<&str> {
     Some(tag)
 }
 
+fn gcd(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Minutes {
+    pub(super) num: u128,
+    pub(super) den: u128,
+}
+
+impl Default for Minutes {
+    fn default() -> Self {
+        Self { num: 0, den: 1 }
+    }
+}
+
+impl Minutes {
+    pub(super) fn add_ticks(&mut self, ticks: u128, frequency: u64) {
+        if ticks == 0 || frequency == 0 {
+            return;
+        }
+        self.add_rational(ticks, u128::from(frequency) * 60);
+    }
+
+    pub(super) fn add_rational(&mut self, num: u128, den: u128) {
+        if num == 0 || den == 0 {
+            return;
+        }
+        let g_in = gcd(num, den);
+        let num = num / g_in;
+        let den = den / g_in;
+        if self.num == 0 {
+            self.num = num;
+            self.den = den;
+            return;
+        }
+        if self.den == den {
+            if let Some(sum) = self.num.checked_add(num) {
+                let g = gcd(sum, self.den);
+                self.num = sum / g;
+                self.den /= g;
+                return;
+            }
+        }
+        let g = gcd(self.den, den);
+        let a = self.den / g;
+        let b = den / g;
+        if let Some(lhs) = self.num.checked_mul(b)
+            && let Some(rhs) = num.checked_mul(a)
+            && let Some(next_num) = lhs.checked_add(rhs)
+            && let Some(next_den) = a.checked_mul(den)
+        {
+            let g2 = gcd(next_num, next_den);
+            self.num = next_num / g2;
+            self.den = next_den / g2;
+        }
+    }
+
+    pub(super) fn is_positive(&self) -> bool {
+        self.num > 0
+    }
+
+    pub(super) fn as_f64(&self) -> f64 {
+        self.num as f64 / self.den as f64
+    }
+}
+
+pub(super) fn compare_apm_desc(a: &ApmValue, b: &ApmValue) -> std::cmp::Ordering {
+    match (a.apm, b.apm) {
+        (Some(x), Some(y)) => {
+            let exact = a
+                .orders
+                .as_deref()
+                .and_then(|s| s.parse::<u128>().ok())
+                .zip(a.unpaused_minutes_num.as_deref().and_then(|s| s.parse::<u128>().ok()))
+                .zip(a.unpaused_minutes_den.as_deref().and_then(|s| s.parse::<u128>().ok()))
+                .zip(
+                    b.orders
+                        .as_deref()
+                        .and_then(|s| s.parse::<u128>().ok())
+                        .zip(b.unpaused_minutes_num.as_deref().and_then(|s| s.parse::<u128>().ok()))
+                        .zip(b.unpaused_minutes_den.as_deref().and_then(|s| s.parse::<u128>().ok())),
+                )
+                .and_then(|(((ao, an), ad), ((bo, bn), bd))| {
+                    let lhs = ao.checked_mul(ad)?.checked_mul(bn)?;
+                    let rhs = bo.checked_mul(bd)?.checked_mul(an)?;
+                    Some(rhs.cmp(&lhs))
+                });
+            exact.unwrap_or_else(|| y.total_cmp(&x))
+        }
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
 #[derive(Clone, Default)]
 pub(super) struct Amount {
     pub(super) counts: Counts,
-    pub(super) minutes: f64,
+    pub(super) minutes: Minutes,
     pub(super) incomplete: bool,
     pub(super) gaps: bool,
     pub(super) paused_incomplete: bool,
@@ -238,7 +342,7 @@ pub(super) struct Amount {
 
 impl Amount {
     fn observe(&mut self, measured: &commands::Measurement) {
-        self.minutes += measured.minutes;
+        self.minutes.add_ticks(measured.ticks, measured.frequency);
         self.incomplete |= !measured.complete;
         self.first_hour = Some(
             self.first_hour
@@ -252,18 +356,22 @@ impl Amount {
 
     fn value(&self) -> ApmValue {
         let complete = !self.incomplete && self.first_hour.is_some();
+        let minutes_f64 = self.minutes.as_f64();
         let confirmed_apm =
-            (complete && self.minutes > 0.0).then(|| self.counts.orders as f64 / self.minutes);
+            (complete && self.minutes.is_positive()).then(|| self.counts.orders as f64 / minutes_f64);
         let known = complete && self.counts.unresolved == 0 && self.counts.unclassified == 0;
         ApmValue {
             apm: confirmed_apm.filter(|_| known),
             confirmed_apm,
             orders: known.then(|| self.counts.orders.to_string()),
+            confirmed_orders: complete.then(|| self.counts.orders.to_string()),
             paused_orders: (complete
                 && !self.paused_incomplete
                 && self.counts.paused_unresolved == 0)
                 .then(|| self.counts.paused_orders.to_string()),
-            unpaused_minutes: complete.then_some(self.minutes),
+            unpaused_minutes: complete.then_some(minutes_f64),
+            unpaused_minutes_num: complete.then(|| self.minutes.num.to_string()),
+            unpaused_minutes_den: complete.then(|| self.minutes.den.to_string()),
             complete,
             gaps: self.gaps,
         }
@@ -869,13 +977,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
         })
         .collect();
     reply.series.sort_by(|a, b| {
-        match (a.summary.apm, b.summary.apm) {
-            (Some(x), Some(y)) => y.total_cmp(&x),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
-        .then_with(|| a.id.cmp(&b.id))
+        compare_apm_desc(&a.summary, &b.summary).then_with(|| a.id.cmp(&b.id))
     });
     check_reply_budget(&reply)?;
     Ok(reply)
@@ -1319,5 +1421,40 @@ mod tests {
                 24
             );
         }
+    }
+
+    #[test]
+    fn exact_recorded_operands_preserve_rational_rate_without_float_drift() {
+        let (session, mut batch) = fixture(|batch| {
+            batch.actors.truncate(1);
+            batch.spans = vec![Span {
+                from_qpc: 0,
+                to_qpc: 18,
+                complete: true,
+                hour: 100,
+                paused: false,
+            }];
+            batch.events = [1, 5, 10]
+                .map(|qpc| Event {
+                    qpc,
+                    hour: 100,
+                    actor: 1,
+                    player: 1,
+                    kind: 1,
+                    command_country: Some(3),
+                    origin: Origin::PlayerOrder,
+                    sequence: qpc as u32,
+                    paused: false,
+                })
+                .into();
+        });
+        let index = commands::index(&[session], &[packet(&batch, 0, 0, 18, 0)], 4).unwrap();
+        let reply = query(&index, &params(ApmGroup::Country, 100, 100), &AtomicBool::new(false)).unwrap();
+        let summary = &reply.series[0].summary;
+        assert_eq!(summary.orders.as_deref(), Some("3"));
+        assert_eq!(summary.confirmed_orders.as_deref(), Some("3"));
+        assert_eq!(summary.unpaused_minutes_num.as_deref(), Some("3"));
+        assert_eq!(summary.unpaused_minutes_den.as_deref(), Some("10"));
+        assert_eq!(summary.apm, Some(3.0 / (3.0 / 10.0)));
     }
 }

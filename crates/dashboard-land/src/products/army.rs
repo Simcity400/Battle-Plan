@@ -791,7 +791,7 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
                         (None, NavigationKey::End) => to,
                         (None, _) => from,
                     };
-                    line.rank_at(at, top, false)?.unwrap_or_default().into_iter().map(Country::from).collect()
+                    line.rank_at(at, top, false)?.unwrap_or_default()
                 }
                 None => params.countries.clone(),
             };

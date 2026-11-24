@@ -1,4 +1,4 @@
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { measureCanvasText, textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   DEFAULT_FAMILY_THEME,
   drawArtSlot,
@@ -10,7 +10,11 @@ import {
   drawPlayheadLine,
   drawSeriesMissingStrip,
   drawTimeAxis,
+  fitLegendStrip,
   resolveKitTokens,
+  type LegendFit,
+  type LegendMeasure,
+  type LegendStripSpec,
 } from '../../draw/kit.ts';
 import { parseColor, rgbaRgb } from '../../shell/appearance/color.ts';
 import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
@@ -21,7 +25,42 @@ import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import { seriesLookAt, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 
-export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout): string[] {
+export function timeChartLegendSpec(model: TimeChartModel): LegendStripSpec | null {
+  const legend = model.legend;
+  if (!legend || legend.length === 0) return null;
+  const isLineLegend = model.mode === 'lines';
+  let ordinaryLen = legend.length;
+  while (ordinaryLen > 0 && legend[ordinaryLen - 1]!.hatch) ordinaryLen--;
+  const trailing = ordinaryLen < legend.length
+    ? legend.slice(ordinaryLen).map(item => ({ label: item.label, color: item.color, hatch: true, muted: false }))
+    : undefined;
+  return {
+    entries: {
+      length: ordinaryLen,
+      at: i => {
+        const item = legend[i]!;
+        return {
+          label: item.label,
+          color: item.color,
+          ...(isLineLegend && !item.hatch ? { line: true } : {}),
+          dash: item.dash,
+          hatch: item.hatch,
+          flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
+          muted: false,
+        };
+      },
+      ...(trailing ? { trailing } : {}),
+    },
+    entryGap: 14,
+  };
+}
+
+export function fitTimeChartLegend(model: TimeChartModel, layout: TimeChartLayout, theme: FamilyTheme, measure: LegendMeasure): LegendFit | null {
+  const spec = layout.legendTop === null ? null : timeChartLegendSpec(model);
+  return spec ? fitLegendStrip(layout.left, layout.width - layout.left, spec, theme, measure) : null;
+}
+
+export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout, legend: LegendFit | null): string[] {
   const items: ArtUrlInput[] = [];
   for (const label of layout.endLabels) {
     items.push(label.flag, label.icon);
@@ -30,8 +69,8 @@ export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartL
     if (m.kind === 'flag') items.push(m.marker.flag);
     if (m.kind === 'icon') items.push(m.marker.icon);
   }
-  if (model.legend) {
-    for (const item of model.legend) items.push(item.flag);
+  if (legend && model.legend) {
+    for (let i = 0; i < legend.shown.length; i++) items.push(model.legend[i]!.flag);
   }
   if (model.overlays) {
     for (const ov of model.overlays) items.push(ov.icon);
@@ -222,6 +261,7 @@ export function drawTimeChart(
   themeInput: FamilyTheme | undefined,
   inspectKey: string | null | undefined,
   dpr: number,
+  legendFit?: LegendFit | null,
 ): void {
   const theme = themeInput ?? DEFAULT_FAMILY_THEME;
   const tokens = resolveKitTokens(theme);
@@ -244,38 +284,11 @@ export function drawTimeChart(
   const overlayFont = `${theme.fontSize.body}px ${theme.font}`;
   const textSecondary = tokens.textSecondary;
 
-  if (layout.legendTop !== null && model.legend && model.legend.length > 0) {
-    const legend = model.legend;
-    const isLineLegend = model.mode === 'lines';
-    let ordinaryLen = legend.length;
-    while (ordinaryLen > 0 && legend[ordinaryLen - 1]!.hatch) ordinaryLen--;
-    const trailing = ordinaryLen < legend.length
-      ? legend.slice(ordinaryLen).map(item => ({
-          label: item.label,
-          color: item.color,
-          hatch: true,
-          muted: false,
-        }))
-      : undefined;
-    drawLegendStrip(ctx, layout.left, layout.legendTop, layout.width - layout.left, 14, {
-      entries: {
-        length: ordinaryLen,
-        at: i => {
-          const item = legend[i]!;
-          return {
-            label: item.label,
-            color: item.color,
-            ...(isLineLegend && !item.hatch ? { line: true } : {}),
-            dash: item.dash,
-            hatch: item.hatch,
-            flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
-            muted: false,
-          };
-        },
-        ...(trailing ? { trailing } : {}),
-      },
-      entryGap: 14,
-    }, theme);
+  const legendSpec = layout.legendTop === null ? null : timeChartLegendSpec(model);
+  if (legendSpec && layout.legendTop !== null) {
+    const width = layout.width - layout.left;
+    drawLegendStrip(ctx, layout.left, layout.legendTop, width, 14, legendSpec, theme,
+      legendFit ?? fitLegendStrip(layout.left, width, legendSpec, theme, (text, font) => measureCanvasText(ctx, text, font)));
   }
 
   for (const v of layout.yTicks) {

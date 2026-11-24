@@ -231,7 +231,7 @@ test('occupation-reserve-manpower breakdown asks history to the hour, asks hover
   assert.equal(model.note, 'Negative entries: Beta −50');
   assert.deepEqual(model.auditRows?.map(r => [r.key, r.value]), [['__total__', '450'], ['9', '400'], ['12', '50']]);
 
-  const layout = hoverTimeChartLayout(layoutTimeChart(model, 600, 260, 'sans-serif', t => t.length * 6), model.hour, 'sans-serif', t => t.length * 6, 150, null);
+  const layout = hoverTimeChartLayout(layoutTimeChart(model, 600, 260, 'sans-serif', t => t.length * 6), null);
   const tip = deriveTimeChartTooltip(model, layout, 'plot:150');
   assert.ok(tip?.payload?.items?.some(item => item.label === 'Old Gamma' && item.value === '300'), 'hover resolves source name at hovered hour');
   assert.ok(tip?.payload?.items?.some(item => item.label === 'Negative entries'));

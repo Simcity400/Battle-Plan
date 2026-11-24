@@ -445,8 +445,8 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
         }
         assert_eq!(ranking.refused, None, "hour {hour}");
         let ranked = line.rank_at(hour, 1, false).unwrap().unwrap();
-        assert_eq!(top.lines.iter().map(|line| line.country.to_string()).collect::<Vec<_>>(), ranked, "the reply names exactly the top at {hour}");
-        let plain = tile(&line, "1", &whole(&ranked.iter().map(String::as_str).collect::<Vec<_>>()), None, bin_hours, top.index, false).unwrap();
+        assert_eq!(top.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), ranked, "the reply names exactly the top at {hour}");
+        let plain = tile(&line, "1", &ranked.iter().map(Ask::whole).collect::<Vec<_>>(), None, bin_hours, top.index, false).unwrap();
         assert_eq!(top.bins, plain.bins, "the top's bins are its countries' tiles at {hour}");
         assert!(ranking.from <= hour && hour <= ranking.until);
         for at in ranking.from..=ranking.until {
@@ -468,8 +468,8 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
     let index = i64::from(hour).div_euclid(BINS as i64 * bin_hours);
     let by = reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "politicalPower" })).unwrap();
     let ranked = line.rank_at(hour, 2, false).unwrap().unwrap();
-    assert_eq!(by.lines.iter().map(|line| line.country.to_string()).collect::<Vec<_>>(), ranked, "ranked by the named measure");
-    let plain = tile(&other, "1", &whole(&ranked.iter().map(String::as_str).collect::<Vec<_>>()), None, bin_hours, index, false).unwrap();
+    assert_eq!(by.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), ranked, "ranked by the named measure");
+    let plain = tile(&other, "1", &ranked.iter().map(Ask::whole).collect::<Vec<_>>(), None, bin_hours, index, false).unwrap();
     assert_eq!(by.bins, plain.bins, "the tiles are of the asked measure");
     assert_eq!(by.measure, "commandPower");
     assert!(reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "noSuchMeasure" })).is_err());

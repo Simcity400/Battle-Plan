@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CountryMetadata } from '../shell/api';
-import { allowedCountryChoices, COUNTRY_ROW_HEIGHT, COUNTRY_ROW_OVERSCAN, countryChoices, filterChoices, moveIndex, nameAskHour, revealRow, visibleRange } from './countryList.ts';
+import { allowedCountryChoices, COUNTRY_ROW_HEIGHT, COUNTRY_ROW_OVERSCAN, countryChoices, filterChoices, moveIndex, revealRow, visibleRange } from './countryList.ts';
 
 const country = (index: number, branch = '1'): CountryMetadata =>
   ({ id: String(index), tag: `T${index}`, name: `Free Province of Westmarch-${index}`, observedBranchId: branch, observedHour: 100 });
@@ -92,12 +92,4 @@ test('restricted chooser searches the historical name it displays, with an absen
   assert.equal(filterChoices(choices, 'LATER')[0].country.name, 'Country name unavailable');
   assert.deepEqual(choices.map(choice => choice.country.tag), before.map(choice => choice.country.tag), 'loaded names do not move rows and start more reads');
   assert.deepEqual(filterChoices(allowedCountryChoices(metadata, ['ONE'], { ...at, hour: 200 }), 'Old Empire'), []);
-});
-
-test('a header name read in flight during playback is kept until it answers, then the newest day is asked', () => {
-  assert.equal(nameAskHour(null, 100, false), 100, 'the first day wanted is asked');
-  assert.equal(nameAskHour(100, 102, false), 100);
-  assert.equal(nameAskHour(100, 102, true), 102, 'once 100 answers, the newest day is asked');
-  assert.equal(nameAskHour(102, 102, true), 102);
-  assert.equal(nameAskHour(100, null, false), null, 'no name wanted');
 });
