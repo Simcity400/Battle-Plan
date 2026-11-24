@@ -1,6 +1,6 @@
 use super::{
     ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowError, GameWindowRegion,
-    GameWindowRender, GameWindowRequest, GameWindowTooltip, RenderFrameKey, RenderParams, Service,
+    GameWindowRender, GameWindowRequest, GameWindowTooltip, Prepared, RenderParams, Service,
     WindowCacheKey, container_holder, layout_window, strip_markup,
 };
 use content_reader_equipment_graphics::equipment_graphics::countries as graphics_countries;
@@ -14,7 +14,7 @@ use content_reader_layers::{ResolveOptions, ResolvedLayers, content::ResolvedCon
 use content_reader_localisation::localisation::Localisation;
 use content_reader_parser::parser::c_string;
 use content_reader_script::equipment_stats::{
-    STAT_COUNT, category_mask, category_names, stat_index,
+    STAT_COUNT, category_names, stat_index,
 };
 use dashboard_base::{
     Source,
@@ -77,7 +77,7 @@ const REQUIRED_TABLES: &[TableId] = &[
     TableId::IndustrialOrganisations,
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UpgradeDomain {
     Land,
     Air,
@@ -94,7 +94,7 @@ impl UpgradeDomain {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DesignerKind {
     Ship,
     Tank,
@@ -129,7 +129,6 @@ impl DesignerKind {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Target {
-    tag: String,
     variant: String,
 }
 
@@ -154,7 +153,7 @@ pub enum SlotIcon {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum RecordedStats {
     Available {
         values: [Option<i64>; 10],
@@ -203,13 +202,13 @@ impl RecordedStats {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum FittedSlot {
     Resolved(FittedModule),
     Unresolved { token: u32, reason: String },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 enum RecordedModules {
     Available {
         slots: BTreeMap<String, FittedSlot>,
@@ -218,7 +217,7 @@ enum RecordedModules {
     Unavailable(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 enum RecordedUpgrades {
     Available {
         entries: Vec<(String, Option<u8>)>,
@@ -230,14 +229,14 @@ enum RecordedUpgrades {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RecordedResource {
     pub key: Option<String>,
     pub token: u32,
     pub amount: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum RecordedMio {
     None,
     Resolved(ResolvedMio),
@@ -262,21 +261,21 @@ pub struct StatColumns {
     pub misc: Vec<StatLine>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ResolvedMio {
     name: String,
     sprite: Option<String>,
     trait_count: Option<i32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FittedModule {
     module: String,
     category: String,
     gui_category: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 enum ResolvedEquipmentIcon {
     Ready {
         icon: Icon,
@@ -295,7 +294,7 @@ enum ResolvedEquipmentIcon {
     NoneExpected,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 struct EquipmentDesignData {
     kind: DesignerKind,
     tag: String,
@@ -804,7 +803,7 @@ fn cached_ship_naming_groups(layers: &ResolvedLayers) -> Arc<HashMap<String, Str
                     continue;
                 };
                 for item in &doc.items {
-                    let Some(key) = item.key_str() else {
+                    let Ok(key) = item.key_str() else {
                         continue;
                     };
                     if let Some(fields) = item.value.items() {
@@ -906,55 +905,24 @@ fn extract_unresolved_residuals(
     map
 }
 
-fn fingerprint_design(
-    data: &EquipmentDesignData,
-    definition: &VariantDefinitionRow,
-    read_hour: i32,
-    extra_warnings: &[String],
-) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(format!("{:?}", data.kind).as_bytes());
-    hasher.update(data.tag.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(data.equipment_key.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(data.archetype_key.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(data.air_map_icon_frame.to_le_bytes());
-    hasher.update(data.category_mask.to_le_bytes());
-    hasher.update(data.base_name.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(data.version_suffix.as_bytes());
-    hasher.update(b"\0");
-    hasher.update([u8::from(data.append_version)]);
-    hasher.update([match data.auto_upgraded {
-        Some(true) => 2,
-        Some(false) => 1,
-        None => 0,
-    }]);
-    hasher.update(definition.icon_active.to_le_bytes());
-    hasher.update(definition.icon_kind.to_le_bytes());
-    hasher.update(&definition.icon);
-    hasher.update(b"\0");
-    hasher.update(definition.creator_link.to_le_bytes());
-    hasher.update(definition.origin_link.to_le_bytes());
-    hasher.update(read_hour.to_le_bytes());
-    hasher.update(format!("{:?}", data.mio).as_bytes());
-    hasher.update(format!("{:?}", data.fitted_modules).as_bytes());
-    hasher.update(format!("{:?}", data.upgrades).as_bytes());
-    hasher.update(format!("{:?}", data.stats).as_bytes());
-    hasher.update(format!("{:?}", data.manpower).as_bytes());
-    hasher.update(format!("{:?}", data.build_cost).as_bytes());
-    hasher.update(format!("{:?}", data.build_resources).as_bytes());
-    hasher.update(format!("{:?}", data.naming_group).as_bytes());
-    hasher.update(format!("{:?}", data.niche_frame).as_bytes());
-    hasher.update(format!("{:?}", data.design_state_reason).as_bytes());
-    for warning in extra_warnings {
-        hasher.update(warning.as_bytes());
-        hasher.update(b"\0");
+struct DigestHasher(sha2::Sha256);
+
+impl std::hash::Hasher for DigestHasher {
+    fn finish(&self) -> u64 {
+        0
     }
-    hasher.finalize().into()
+
+    fn write(&mut self, bytes: &[u8]) {
+        sha2::Digest::update(&mut self.0, bytes);
+    }
+}
+
+fn fingerprint_frame(data: &EquipmentDesignData, visuals: &impl std::hash::Hash) -> [u8; 32] {
+    use std::hash::Hash;
+    let mut hasher = DigestHasher(sha2::Digest::new());
+    data.hash(&mut hasher);
+    visuals.hash(&mut hasher);
+    sha2::Digest::finalize(hasher.0).into()
 }
 
 pub fn render(
@@ -1067,7 +1035,7 @@ pub fn render(
         dlc_unavailable.as_deref(),
     )
     .map_err(GameWindowError::refused)?;
-    let (tag, tag_tables) = resolve_variant_tag(&frame, definition, &target.tag);
+    let (tag, tag_tables) = resolve_variant_tag(&frame, definition);
     let (design_state, design_state_reason) = match &definition.design {
         Recorded::Value(state) => (Some(state), None),
         Recorded::NotRecorded => (
@@ -1143,9 +1111,6 @@ pub fn render(
     if kind.is_modular() && modules_table.is_ok() {
         base_sampled_tables.insert(TableId::VariantModules);
     }
-    if matches!(kind, DesignerKind::Upgrade(_)) && upgrades_table.is_ok() {
-        base_sampled_tables.insert(TableId::VariantUpgrades);
-    }
     if matches!(data.mio, RecordedMio::Resolved(_)) {
         base_sampled_tables.insert(TableId::IndustrialOrganisations);
     }
@@ -1177,47 +1142,27 @@ pub fn render(
         visual_revision: visual_revision.to_owned(),
         language: language.to_owned(),
         force_pow2_textures: decode.force_pow2_textures,
+        art_stack: layers.art_stack_key(),
         window: window_name.to_owned(),
     };
+    #[derive(Hash)]
     struct ResolvedVisuals {
         equipment_icon: ResolvedEquipmentIcon,
         blueprint_name: Option<String>,
         mio_sprite: Option<String>,
         prep_warnings: Vec<String>,
-        bound_tables: BTreeSet<TableId>,
+        read_hour: i32,
     }
 
     let empty_tooltips = BTreeMap::new();
     let recorded_language = language.to_owned();
-    let base_tables_for_cache = base_sampled_tables.clone();
-    let base_samples: Vec<(TableId, i32)> = base_tables_for_cache
+    let base_samples: Vec<(TableId, i32)> = base_sampled_tables
         .iter()
         .filter_map(|&id| frame.tables[id.index()].sampled_at().map(|h| (id, h)))
         .collect();
     let (provisional_read_hour, _) = compute_read_hour(request.hour, &base_samples);
-    let normalized_scale = super::normalize_scale(request.scale);
-    let can_cache_frame = definition.icon_active != 0
-        && !(definition.icon_kind == 1 && definition.icon.as_slice() == b".");
-    let frame_cache_key = can_cache_frame.then(|| RenderFrameKey {
-        source_id: request.source_id.clone(),
-        revision: request.revision.clone(),
-        branch_id: request.branch_id.clone(),
-        kind: request.kind.clone(),
-        target_key: target.variant.clone(),
-        sub_view: request.sub_view.clone(),
-        scale_bits: normalized_scale.to_bits(),
-        visual_revision: visual_revision.to_owned(),
-        language: language.to_owned(),
-        force_pow2_textures: decode.force_pow2_textures,
-        data_hash: fingerprint_design(&data, definition, provisional_read_hour, &extra_warnings),
-    });
-    if let Some(ref fkey) = frame_cache_key
-        && let Some(cached_render) = service.lookup_cached_render(fkey, admitted_gen)
-    {
-        return Ok(cached_render);
-    }
 
-    let rendered = service.render_composed_from_layers(
+    service.render_composed_from_layers(
         cache_key,
         layers,
         RenderParams {
@@ -1242,7 +1187,7 @@ pub fn render(
                 blueprint_name: None,
                 mio_sprite: None,
                 prep_warnings: Vec::new(),
-                bound_tables: BTreeSet::new(),
+                read_hour: request.hour,
             };
             add_sprite(&mut extra, "GFX_resources_strip");
             add_sprite(&mut extra, "GFX_production_cost");
@@ -1252,10 +1197,7 @@ pub fn render(
             add_sprite(&mut extra, "GFX_EMI_unknown");
             add_sprite(&mut extra, "GFX_idea_unknown");
 
-            if kind.is_modular()
-                && let Some(root_tpl) = guis.template(window_name.as_bytes())
-                && !discover_upgrade_slots(root_tpl, kind).is_empty()
-            {
+            if reads_upgrades(kind, guis.template(window_name.as_bytes())) {
                 if upgrades_table.is_ok() {
                     bound_tables.insert(TableId::VariantUpgrades);
                 } else if let RecordedUpgrades::Unavailable { reason, .. } = &data.upgrades {
@@ -1263,12 +1205,6 @@ pub fn render(
                         "Upgrade levels are unknown because VariantUpgrades is unavailable at this hour ({reason})."
                     ));
                 }
-            } else if matches!(kind, DesignerKind::Upgrade(_))
-                && let RecordedUpgrades::Unavailable { reason, .. } = &data.upgrades
-            {
-                visuals.prep_warnings.push(format!(
-                    "Upgrade levels are unknown because VariantUpgrades is unavailable at this hour ({reason})."
-                ));
             }
 
             let icon_content_res = shared.icon_content(layers, &equipment_db, || {
@@ -1279,7 +1215,7 @@ pub fn render(
             });
             match icon_content_res {
                 Ok(icon_content) => {
-                    match IconHour::read_for_variant(&frame, &icon_content, definition) {
+                    match IconHour::read(&frame, &icon_content) {
                         Ok(icon_hour) => {
                             for table in [
                                 TableId::Countries,
@@ -1490,8 +1426,19 @@ pub fn render(
                 );
             }
 
-            visuals.bound_tables = bound_tables;
-            Ok((extra, visuals))
+            let samples: Vec<(TableId, i32)> = bound_tables
+                .iter()
+                .filter_map(|&id| frame.tables[id.index()].sampled_at().map(|h| (id, h)))
+                .collect();
+            let (read_hour, mixed_warning) = compute_read_hour(request.hour, &samples);
+            visuals.read_hour = read_hour;
+            visuals.prep_warnings.extend(mixed_warning);
+            let fingerprint = fingerprint_frame(&data, &visuals);
+            Ok(Prepared {
+                assets: extra,
+                state: visuals,
+                fingerprint: Some(fingerprint),
+            })
         },
         |root, _guis, resources, localisation, instance, tooltips, visuals| {
             configure_main_window(
@@ -1523,16 +1470,7 @@ pub fn render(
                     equipment_icon: &visuals.equipment_icon,
                 },
             )?;
-            let samples: Vec<(TableId, i32)> = visuals
-                .bound_tables
-                .iter()
-                .filter_map(|&id| frame.tables[id.index()].sampled_at().map(|h| (id, h)))
-                .collect();
-            let (final_read_hour, mixed_warning) = compute_read_hour(request.hour, &samples);
-            plan.read_hour = Some(final_read_hour);
-            if let Some(warning) = mixed_warning {
-                plan.warnings.push(warning);
-            }
+            plan.read_hour = Some(visuals.read_hour);
             plan.title = Some(resolve_full_title(&data, localisation));
             if let ResolvedEquipmentIcon::Ready { provenance, .. } = &visuals.equipment_icon {
                 plan.art_label = Some(provenance.label.clone());
@@ -1540,12 +1478,7 @@ pub fn render(
             plan.warnings.extend(visuals.prep_warnings.iter().cloned());
             Ok(plan)
         },
-    )?;
-
-    if let Some(fkey) = frame_cache_key {
-        service.store_cached_render(fkey, admitted_gen, rendered.clone());
-    }
-    Ok(rendered)
+    )
 }
 
 fn spell(lexical: &[LexicalTokenRow], token: u32) -> Option<String> {
@@ -1569,7 +1502,6 @@ fn slice_by_variant<T>(rows: &[T], variant_id: u64, key: impl Fn(&T) -> u64) -> 
 fn resolve_variant_tag(
     frame: &DecodedFrame,
     definition: &VariantDefinitionRow,
-    fallback: &str,
 ) -> (String, Vec<TableId>) {
     let mut tables = Vec::new();
     let link_id = if definition.origin_link != 0 {
@@ -1578,7 +1510,7 @@ fn resolve_variant_tag(
         definition.creator_link
     };
     if link_id == 0 {
-        return (fallback.to_owned(), tables);
+        return (String::new(), tables);
     }
     let Ok(links) = frame.complete::<tables::CountryLinks>() else {
         return (String::new(), tables);
@@ -1688,7 +1620,7 @@ fn extract_design_data(inputs: ExtractInputs<'_>) -> EquipmentDesignData {
         });
     let mio = match (mio_id, mio_lookup) {
         (None, _) => RecordedMio::None,
-        (Some(id), Some(Ok(Some(row)))) => {
+        (Some(_), Some(Ok(Some(row)))) => {
             let token = spell(lexical, row.token).unwrap_or_default();
             let raw_name = std::str::from_utf8(c_string(&row.name))
                 .ok()
@@ -2011,6 +1943,15 @@ fn discover_upgrade_slots(root: &Element, kind: DesignerKind) -> Vec<usize> {
     upgrade_slots
 }
 
+fn reads_upgrades(kind: DesignerKind, root: Option<&Element>) -> bool {
+    match kind {
+        DesignerKind::Upgrade(_) => true,
+        DesignerKind::Ship | DesignerKind::Tank | DesignerKind::Plane => {
+            root.is_some_and(|root| !discover_upgrade_slots(root, kind).is_empty())
+        }
+    }
+}
+
 fn resolve_blueprint_window(data: &EquipmentDesignData, guis: &native::Guis) -> Option<String> {
     let tag_lower = data.tag.to_ascii_lowercase();
     let candidates = [
@@ -2124,24 +2065,17 @@ pub fn resolve_tank_role_and_frame(
         return None;
     }
     let names = category_names(category).ok()?;
-    let mut specific: Option<String> = None;
     let mut fallback_cat: Option<String> = None;
     for name in &names {
         let designer_key = format!("tank_designer_{name}");
         if let Some(label) = loc_opt(localisation, &designer_key) {
             return Some((label, None));
         }
-        if *name != "armor"
-            && let Some(label) = loc_opt(localisation, name)
-        {
-            specific.get_or_insert(label);
-        } else if let Some(label) = loc_opt(localisation, name) {
+        if let Some(label) = loc_opt(localisation, name) {
             fallback_cat.get_or_insert(label);
         }
     }
-    specific
-        .or(fallback_cat)
-        .map(|label| (label, None))
+    fallback_cat.map(|label| (label, None))
 }
 
 pub fn resolve_plane_role(category: u64, localisation: &Localisation) -> Option<String> {
@@ -3073,61 +3007,15 @@ fn compose_sub_windows(
             )?;
         }
 
-        if data.auto_upgraded.is_none()
-            && let Some(check) = find_direct(root, "auto_upgraded_checkbox_button")
-            && let Some(root_holder) = container_holder(main_layout, &root.path)
-            && let Fields::Button(btn) = &check.fields
-        {
-            let pos = [btn.position.x.value, btn.position.y.value];
-            let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
-            let na_layout = layout_window(stat_root, resources, viewport, |instance| {
-                set_text_by_name(instance, stat_root, "label", NOT_RECORDED_VALUE.to_owned());
-                set_text_by_name(instance, stat_root, "value", String::new());
-            })?;
-            let tip = GameWindowTooltip {
-                title: loc_or(
-                    localisation,
-                    "EQUIPMENT_DESIGNER_AUTO_UPGRADED_CHECKBOX_BUTTON_DESC",
-                )
-                .lines()
-                .next()
-                .unwrap_or("EQUIPMENT_DESIGNER_AUTO_UPGRADED_CHECKBOX_BUTTON_DESC")
-                .to_owned(),
-                body: Some(
-                    data.design_state_reason
-                        .clone()
-                        .unwrap_or_else(|| NOT_RECORDED_TOOLTIP.to_owned()),
-                ),
-                detail: None,
-            };
-            plan.sub_windows.push(ComposedSubWindow {
-                before_part: root_holder.before,
-                parts: root_holder.place(pos, &na_layout),
-                regions: Vec::new(),
-                diagnostics: na_layout.diagnostics,
-                root_window: "stat_entry".to_owned(),
-                path_prefix: "auto_upgraded_missing/".to_owned(),
-                close_paths: Vec::new(),
-                tooltip_overrides: BTreeMap::new(),
-            });
-            plan.extra_regions.push(GameWindowRegion {
-                path: check.path.clone(),
-                rect: [
-                    root_holder.origin[0] + pos[0] as f32,
-                    root_holder.origin[1] + pos[1] as f32,
-                    32.0,
-                    24.0,
-                ],
-                clip: root_holder.clip.map(|[l, t, r, b]| {
-                    [l as f32, t as f32, (r - l).max(0) as f32, (b - t).max(0) as f32]
-                }),
-                disabled: true,
-                close: false,
-                passthrough: false,
-                tooltip: Some(tip),
-                alpha_mask: None,
-            });
-        }
+        compose_unknown_auto_upgrade(
+            main_layout,
+            root,
+            stat_root,
+            resources,
+            localisation,
+            data,
+            &mut plan,
+        )?;
     } else if let DesignerKind::Upgrade(domain) = data.kind {
         let sub_name = domain.sub_window();
         let sub_root = guis.template(sub_name.as_bytes()).ok_or_else(|| {
@@ -3204,6 +3092,78 @@ fn compose_sub_windows(
     }
 
     Ok(plan)
+}
+
+fn compose_unknown_auto_upgrade(
+    main_layout: &Layout,
+    root: &Element,
+    stat_root: &Element,
+    resources: &dyn Resources,
+    localisation: &Localisation,
+    data: &EquipmentDesignData,
+    plan: &mut ComposedPlan,
+) -> Result<(), GameWindowError> {
+    if data.auto_upgraded.is_some() {
+        return Ok(());
+    }
+    let Some(check) = find_direct(root, "auto_upgraded_checkbox_button") else {
+        return Ok(());
+    };
+    let (Some(root_holder), Fields::Button(btn)) =
+        (container_holder(main_layout, &root.path), &check.fields)
+    else {
+        return Ok(());
+    };
+    let pos = btn.position;
+    let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
+    let na_layout = layout_window(stat_root, resources, viewport, |instance| {
+        set_text_by_name(instance, stat_root, "label", NOT_RECORDED_VALUE.to_owned());
+        set_text_by_name(instance, stat_root, "value", String::new());
+    })?;
+    let tip = GameWindowTooltip {
+        title: loc_or(
+            localisation,
+            "EQUIPMENT_DESIGNER_AUTO_UPGRADED_CHECKBOX_BUTTON_DESC",
+        )
+        .lines()
+        .next()
+        .unwrap_or("EQUIPMENT_DESIGNER_AUTO_UPGRADED_CHECKBOX_BUTTON_DESC")
+        .to_owned(),
+        body: Some(
+            data.design_state_reason
+            .clone()
+            .unwrap_or_else(|| NOT_RECORDED_TOOLTIP.to_owned()),
+        ),
+        detail: None,
+    };
+    plan.sub_windows.push(ComposedSubWindow {
+        before_part: root_holder.before,
+        parts: root_holder.place(pos, &na_layout),
+        regions: Vec::new(),
+        diagnostics: na_layout.diagnostics,
+        root_window: "stat_entry".to_owned(),
+        path_prefix: "auto_upgraded_missing/".to_owned(),
+        close_paths: Vec::new(),
+        tooltip_overrides: BTreeMap::new(),
+    });
+    plan.extra_regions.push(GameWindowRegion {
+        path: check.path.clone(),
+        rect: [
+            root_holder.origin[0] + pos[0] as f32,
+            root_holder.origin[1] + pos[1] as f32,
+            na_layout.size[0] as f32,
+            na_layout.size[1] as f32,
+        ],
+        clip: root_holder.clip.map(|[l, t, r, b]| {
+            [l as f32, t as f32, (r - l).max(0) as f32, (b - t).max(0) as f32]
+        }),
+        disabled: true,
+        close: false,
+        passthrough: false,
+        tooltip: Some(tip),
+        alpha_mask: None,
+    });
+    Ok(())
 }
 
 fn configure_blueprint(

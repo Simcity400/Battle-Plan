@@ -87,7 +87,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   const [windowLines, setWindowLines] = useState<readonly string[]>(NO_WARNINGS);
   const onWindowDiagnostics = useCallback((lines: string[]) =>
     setWindowLines(previous => previous.length === lines.length && previous.every((line, index) => line === lines[index]) ? previous : lines), []);
-  const [windowShown, setWindowShown] = useState<ShownWindow | null>(null);
+  const [windowShown, setWindowShown] = useState<{ subject: string; shown: ShownWindow } | null>(null);
   const Designer = useSyncExternalStore(subscribeGameWindows, equipmentDesignerWindow, equipmentDesignerWindow);
   const diagnostics = useMemo(() => withWindowDiagnostics(data?.warnings ?? NO_WARNINGS, windowLines), [data?.warnings, windowLines]);
   useDiagnostics(onDiagnostics, diagnostics);
@@ -105,6 +105,13 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
   const [stored, setPicked] = useState<{ owner: object; row: DesignRow } | null>(null);
   const picked = stored?.owner === owner ? rows.find(row => row.key === stored.row.key) ?? stored.row : null;
+  const pickedKey = useRef<string | null>(null);
+  pickedKey.current = picked?.key ?? null;
+  const onWindowShown = useCallback((shown: ShownWindow | null) => {
+    const subject = pickedKey.current;
+    setWindowShown(shown && subject !== null ? { subject, shown } : null);
+  }, []);
+  const matchedShown = picked && windowShown?.subject === picked.key ? windowShown.shown : null;
   const closeForHandover = useCallback(() => {
     dispatch({ type: 'close' });
     setWindowLines(NO_WARNINGS);
@@ -178,7 +185,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
           {table('Obsolete designs', obsolete, obsoleteColumns, true)}</div>
       </details>}
     </div>;
-  const title = picked ? picked.name ?? UNNAMED : SHEET.label;
+  const title = matchedShown?.title ?? SHEET.label;
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="equipment-designs">
     {header}
     {main}
@@ -187,12 +194,12 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
       subject={picked ? picked.key : null}
       hour={at}
       title={title}
-      day={shut ? '' : windowShown ? windowDayLabel(windowShown) : at === null ? '' : dayLabel(at)}
+      day={shut ? '' : matchedShown ? windowDayLabel(matchedShown) : at === null ? '' : dayLabel(at)}
       placement="center"
       anchor={anchor}
       returnFocus={picked && typeof CSS !== 'undefined' ? `tr[data-table-row="${CSS.escape(picked.key)}"]` : undefined}
       initialPosition={inheritedPos}
-      settled={windowShown !== null}
+      settled={matchedShown !== null}
       onPositionChange={onPositionChange}
       headerActions={<FollowControl following={drillControl.following} onFollow={drillControl.follow} onPause={drillControl.pause} />}
       className="detail-window-game"
@@ -215,7 +222,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
             active={active}
             client={runtime.client}
             onDiagnostics={onWindowDiagnostics}
-            onShown={setWindowShown}
+            onShown={onWindowShown}
             onClose={closeDrill}
           />
           : picked && !Designer ? <DesignSheet /> : null}

@@ -50,17 +50,16 @@ pub async fn render_game_window(
         .runtime(window.app_handle())
         .map_err(QueryError::from)?;
     let renderer = Arc::clone(&renderer.0);
-    let admitted_gen = renderer.capture_generation(&request.source_id);
-    let source = runtime
-        .source(&request.source_id)
-        .map_err(QueryError::from)?;
+    let Some((source, admitted_gen)) = renderer
+        .admit(&request.source_id, || runtime.source(&request.source_id))
+        .map_err(QueryError::from)?
+    else {
+        return Err(map_window_error(GameWindowError::Cancelled));
+    };
     if source.key().revision != request.revision {
         return Err(QueryError::Refused {
             text: "The recording changed while loading this game window.".to_owned(),
         });
-    }
-    if !renderer.is_generation_fresh(&request.source_id, admitted_gen) {
-        return Err(map_window_error(GameWindowError::Cancelled));
     }
     let visual_mods = runtime
         .map_settings(source.replay_ref())

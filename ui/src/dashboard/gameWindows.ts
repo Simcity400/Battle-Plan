@@ -51,6 +51,7 @@ export interface GameWindowProps<S extends GameWindowSelection = GameWindowSelec
 export interface ShownWindow {
   hour: number;
   readHour: number | null;
+  title: string | null;
   logicalSize?: readonly [number, number];
 }
 

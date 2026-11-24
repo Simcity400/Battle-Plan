@@ -48,7 +48,7 @@ fn type_model<'a>(equipment: &'a Database, key: &str) -> Result<TypeModel<'a>, S
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Icon {
     Sprite(String),
     Path(String),
@@ -222,19 +222,8 @@ impl IconChoice {
                 .contains(name)
                 .then(|| Icon::Sprite(name.to_owned()))),
         };
-        let file = |path: &str| match layers.art_file_source(path.as_bytes()) {
-            Ok(content_reader_layers::content::ArtFileSource::Mounted { .. }) => {
-                Ok(Some(Icon::Path(path.to_owned())))
-            }
-            Ok(content_reader_layers::content::ArtFileSource::Unmounted { layer, reason }) => {
-                let owner = &layers.layers[layer];
-                let name = owner.display_name().unwrap_or(&owner.id);
-                Err(format!(
-                    "{name} is not mounted ({reason}); {path} cannot be resolved without risking a substitute"
-                ))
-            }
-            Ok(content_reader_layers::content::ArtFileSource::Missing) => Ok(None),
-            Err(error) => Err(format!("{path}: {error}")),
+        let file = |path: &str| {
+            art_file_present(layers, path).map(|found| found.then(|| Icon::Path(path.to_owned())))
         };
         self.walk(|probe| match probe {
             Probe::Sprite(name) => sprite(name),
@@ -356,7 +345,6 @@ impl IconContent {
             .keys()
             .filter_map(|name| std::str::from_utf8(name).ok().map(str::to_owned))
             .collect();
-        let art_layers = layers.presentation().clone();
         Ok(Self {
             catalogue: None,
             units,
@@ -366,7 +354,7 @@ impl IconContent {
             dlc,
             sprites,
             refused_sprites: BTreeMap::new(),
-            files: Box::new(move |path| art_layers.has_file(path).map_err(|e| e.to_string())),
+            files: Box::new(move |path| art_file_present(layers.presentation(), path)),
             stamped: false,
             load_warnings: warnings,
             visual: String::new(),
@@ -673,6 +661,21 @@ impl IconContent {
     }
 }
 
+fn art_file_present(layers: &content_reader_layers::ResolvedLayers, path: &str) -> Result<bool, String> {
+    match layers.art_file_source(path.as_bytes()) {
+        Ok(content_reader_layers::content::ArtFileSource::Mounted { .. }) => Ok(true),
+        Ok(content_reader_layers::content::ArtFileSource::Unmounted { layer, reason }) => {
+            let owner = &layers.layers[layer];
+            let name = owner.display_name().unwrap_or(&owner.id);
+            Err(format!(
+                "{name} is not mounted ({reason}); {path} cannot be resolved without risking a substitute"
+            ))
+        }
+        Ok(content_reader_layers::content::ArtFileSource::Missing) => Ok(false),
+        Err(error) => Err(format!("{path}: {error}")),
+    }
+}
+
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct IconHour {
     links: BTreeMap<u32, u32>,
@@ -739,29 +742,6 @@ impl IconHour {
     }
 
     pub fn read(frame: &DecodedFrame, content: &IconContent) -> io::Result<Self> {
-        Self::read_with_filter(frame, content, None)
-    }
-
-    pub fn read_for_variant(
-        frame: &DecodedFrame,
-        content: &IconContent,
-        variant: &VariantDefinitionRow,
-    ) -> io::Result<Self> {
-        let mut keep = BTreeSet::new();
-        if (variant.creator_link as i32) > 0 {
-            keep.insert(variant.creator_link);
-        }
-        if (variant.origin_link as i32) > 0 {
-            keep.insert(variant.origin_link);
-        }
-        Self::read_with_filter(frame, content, (!keep.is_empty()).then_some(&keep))
-    }
-
-    fn read_with_filter(
-        frame: &DecodedFrame,
-        content: &IconContent,
-        filter_links: Option<&BTreeSet<u32>>,
-    ) -> io::Result<Self> {
         let failed = |error: io::Error| io::Error::new(error.kind(), undated(frame, &error));
         let links: BTreeMap<u32, u32> = frame
             .complete::<tables::CountryLinks>()
@@ -826,38 +806,13 @@ impl IconHour {
                 undated(frame, error)
             )),
         };
-        let keep_slots: Option<BTreeSet<u32>> = filter_links.map(|wanted| {
-            let mut slots: BTreeSet<u32> = wanted
-                .iter()
-                .filter_map(|raw| links.get(raw).copied())
-                .collect();
-            if let Ok(rows) = &appearance {
-                for row in *rows {
-                    if let Some(slot) = links.get(&row.country)
-                        && slots.contains(slot)
-                        && let Recorded::Value(Some(orig)) = row.original_tag_reference
-                        && orig > 0
-                        && let Some(orig_slot) = links.get(&(orig as u32))
-                    {
-                        slots.insert(*orig_slot);
-                    }
-                }
-            }
-            slots
-        });
         let original_refs = appearance
             .as_ref()
             .map(|rows| {
                 rows.iter()
                     .filter_map(|row| {
-                        let slot = *links.get(&row.country)?;
-                        if let Some(allowed) = &keep_slots
-                            && !allowed.contains(&slot)
-                        {
-                            return None;
-                        }
                         Some((
-                            slot,
+                            *links.get(&row.country)?,
                             (row.original_tag_reference, row.original_tag.clone()),
                         ))
                     })
@@ -874,14 +829,8 @@ impl IconHour {
             .map(|rows| {
                 rows.iter()
                     .filter_map(|row| {
-                        let slot = *links.get(&row.country)?;
-                        if let Some(allowed) = &keep_slots
-                            && !allowed.contains(&slot)
-                        {
-                            return None;
-                        }
                         Some((
-                            slot,
+                            *links.get(&row.country)?,
                             String::from_utf8_lossy(&row.graphical_culture_2d).into_owned(),
                         ))
                     })
@@ -893,13 +842,6 @@ impl IconHour {
                     undated(frame, error)
                 )
             });
-        let countries = match &keep_slots {
-            Some(allowed) => countries
-                .into_iter()
-                .filter(|(slot, _)| allowed.contains(slot))
-                .collect(),
-            None => countries,
-        };
         Ok(Self {
             prepared: Prepared::read(frame, &content.geography).map_err(|why| undated(frame, why)),
             links,

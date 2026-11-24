@@ -1176,20 +1176,18 @@ fn resolve_native_sprite_in_stack(
             file: None,
         };
     };
-    let (raw_texture, declared_origin) = match &sprite.kind {
-        SpriteKind::Plain(plain) | SpriteKind::FrameAnimated { plain, .. } => {
-            let origin = stack
-                .layer_index(&sprite.file)
-                .map(|index| ArtOrigin::from_layer(&stack.layers[index]));
-            (&plain.texture, origin)
-        }
+    let declared_origin = registry
+        .sprite_file(name.as_bytes())
+        .filter(|file| !file.is_empty())
+        .and_then(|file| stack.layer_index(file.as_bytes()))
+        .map(|index| ArtOrigin::from_layer(&stack.layers[index]));
+    let raw_texture = match &sprite.kind {
+        SpriteKind::Plain(plain) | SpriteKind::FrameAnimated { plain, .. } => &plain.texture,
         other => {
             return NativeIconResolution::Refused {
                 reason: format!("sprite {name}: {} cannot be bound as a plain icon", other.keyword()),
                 construct: other.keyword().to_owned(),
-                origin: stack
-                    .layer_index(&sprite.file)
-                    .map(|index| ArtOrigin::from_layer(&stack.layers[index])),
+                origin: declared_origin,
                 file: None,
             };
         }
@@ -1558,6 +1556,28 @@ mod tests {
         let missing = resolve_sprite(&cat, "GFX_ModMissing", 0, 48);
         assert!(matches!(missing, ArtResolution::ConfirmedMissing { .. }), "{missing:?}");
 
+        let native = |cat: &Catalogue, name: &str| {
+            let layers = &cat.content.layers;
+            let registry = resources::Registry::load(layers.presentation()).unwrap();
+            resolve_native_equipment_icon(
+                layers,
+                &registry,
+                None,
+                "english",
+                &crate::products::equipment_icon::Icon::Sprite(name.to_owned()),
+                Decode::default(),
+            )
+        };
+        match native(&cat, "GFX_Shared") {
+            NativeIconResolution::Ready { origin, file, .. } => {
+                assert_eq!(origin, ArtOrigin::Mod { id: "mod_synthetic".into(), name: "Synthetic Mod".into() });
+                assert_eq!(file, "gfx/shared.png");
+            }
+            other => panic!("expected the native icon from the mod override, got {other:?}"),
+        }
+        assert!(matches!(native(&cat, "GFX_BaseOnly"), NativeIconResolution::Ready { origin: ArtOrigin::BaseGame, .. }));
+        assert!(matches!(native(&cat, "GFX_ModMissing"), NativeIconResolution::ConfirmedMissing { .. }));
+
         let (unmounted_cat, _unmounted_folders) = two_layer_catalogue(
             &[
                 (
@@ -1581,6 +1601,10 @@ mod tests {
                 assert_eq!(file.as_deref(), Some("gfx/shared.dds"));
             }
             other => panic!("expected ConfirmedMissing when mod unmounted, got {other:?}"),
+        }
+        match native(&unmounted_cat, "GFX_Shared") {
+            NativeIconResolution::ConfirmedMissing { reason, .. } => assert!(reason.contains("not installed"), "{reason}"),
+            other => panic!("the native icon must not fall through to base-game art, got {other:?}"),
         }
     }
 

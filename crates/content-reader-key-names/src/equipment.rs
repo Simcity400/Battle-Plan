@@ -16,6 +16,7 @@ pub use groups::{GROUPS_DIRECTORY, Group, Groups};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::Arc,
 };
 
 use content_reader_layers::ResolvedLayers;
