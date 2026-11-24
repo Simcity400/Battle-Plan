@@ -6,7 +6,7 @@ import type { Scene, Value as LaneValue } from '../draw/lane.ts';
 import { sectionLiveValues } from '../draw/views/fields.ts';
 import { laneArtDemand, type ArtResolutions } from './art/provider.ts';
 import { createBoundedReadView } from './boundedView.ts';
-import type { ArtHandle, ArtProvider, BoundedReadView, BoundedSeries, EntityKind, IdentityProvider } from './contract.ts';
+import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
 
 export interface SceneSources {
@@ -32,6 +32,14 @@ export interface SceneProjection<TModel> {
   readonly identityDemands: readonly SceneIdentityDemand[];
   readonly artUrls: readonly string[];
   readonly artAsks: readonly ArtHandle[];
+  readonly boundary: number;
+  readonly reads: SceneReads;
+}
+
+export interface SceneReads {
+  readonly identity: number;
+  readonly art: number;
+  unchanged(readers: SceneReaders): boolean;
 }
 
 type Live = LiveValues<number | bigint | string>;
@@ -123,15 +131,89 @@ export function projectScene<TModel>(
   project: (view: BoundedReadView) => TModel,
 ): SceneProjection<TModel> {
   const demands = { identity: new Map<string, SceneIdentityDemand>(), urls: new Set<string>(), asks: new Map<string, ArtHandle>() };
-  const view = readScene(scene, sources, hour, readers, demands);
+  const whoReads: [EntityKind, string, DisplayedHour, IdentityResult][] = [];
+  const artReads: [ArtHandle, ArtResult][] = [];
+  let recording = true;
+  const inner = readers.identity;
+  const innerArt = readers.art;
+  const recorded: SceneReaders = {
+    ...readers,
+    ...(inner
+      ? {
+          identity: {
+            ...(inner.demandOwner ? { demandOwner: inner.demandOwner } : {}),
+            resolve: (kind, key, atHour) => {
+              const result = inner.resolve(kind, key, atHour);
+              if (recording) whoReads.push([kind, key, atHour, result]);
+              return result;
+            },
+          } satisfies IdentityProvider,
+        }
+      : {}),
+    ...(innerArt
+      ? {
+          art: {
+            ...(innerArt.demandOwner ? { demandOwner: innerArt.demandOwner } : {}),
+            resolve: handle => {
+              const result = innerArt.resolve(handle);
+              if (recording) artReads.push([handle, result]);
+              return result;
+            },
+          } satisfies ArtProvider,
+        }
+      : {}),
+  };
+  const view = readScene(scene, sources, hour, recorded, demands);
   const model = project(view);
+  recording = false;
+  let boundary = Infinity;
+  for (const read of whoReads) if (read[2] === view.hour && read[3].nextChangeAt < boundary) boundary = read[3].nextChangeAt;
   return {
     model,
     view,
     identityDemands: [...demands.identity.values()],
     artUrls: [...demands.urls],
     artAsks: [...demands.asks.values()],
+    boundary,
+    reads: {
+      identity: whoReads.length,
+      art: artReads.length,
+      unchanged: next => {
+        if (!next.identity !== !inner || !next.art !== !innerArt) return false;
+        for (const [kind, key, atHour, was] of whoReads) {
+          if (!sameIdentity(was, next.identity!.resolve(kind, key, atHour))) return false;
+        }
+        for (const [handle, was] of artReads) {
+          if (!sameArt(was, next.art!.resolve(handle))) return false;
+        }
+        return true;
+      },
+    },
   };
+}
+
+function sameField<T>(a: FieldStatus<T> | undefined, b: FieldStatus<T> | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.status !== b.status) return false;
+  if (a.status === 'ready') return a.value === (b as typeof a).value;
+  if (a.status === 'absent' || a.status === 'failed') return a.reason === (b as typeof a).reason;
+  return true;
+}
+
+function sameIdentity(a: IdentityResult, b: IdentityResult): boolean {
+  return a.nextChangeAt === b.nextChangeAt
+    && sameField(a.holder, b.holder)
+    && sameField(a.tag, b.tag)
+    && sameField(a.name, b.name)
+    && sameField(a.colour, b.colour)
+    && sameField(a.flagChoice, b.flagChoice);
+}
+
+function sameArt(a: ArtResult, b: ArtResult): boolean {
+  if (a === b) return true;
+  if (a.status !== b.status) return false;
+  if (a.status === 'ready' && b.status === 'ready') return a.url === b.url && a.bitmap === b.bitmap;
+  return true;
 }
 
 export function samePictures(prev: readonly (readonly unknown[])[], pictures: readonly Picture<LaneValue>[]): boolean {

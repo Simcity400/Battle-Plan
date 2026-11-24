@@ -29,7 +29,6 @@ pub const DAY: i32 = replay_data::cadence::STAGGER_PERIOD;
 const BUCKET: i32 = replay_columnar::summary::BASE_HOURS as i32;
 const SERIES: &str = "air-scores";
 const TOP: usize = 10;
-pub const TILE_DAYS: i32 = 256;
 
 #[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -63,10 +62,6 @@ pub struct AirTimelineParams {
     #[doc = " How many of the most active regions are shown, without `regions`."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<usize>,
-    #[doc = " The tile of `TILE_DAYS` game days (on the absolute grid of days) whose cells are asked, of"]
-    #[doc = " the regions `regions` names, in their order; the whole view ranked when none."]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional, type = "number"))]
-    pub tile: Option<i64>,
 }
 
 impl AirTimelineParams {
@@ -87,9 +82,6 @@ impl AirTimelineParams {
         self.moment().validate()?;
         if self.first_hour > self.last_hour {
             return Err("Air timeline hours are reversed");
-        }
-        if self.tile.is_some() && self.regions.is_none() {
-            return Err("An air timeline tile names its regions");
         }
         Ok(())
     }
@@ -717,29 +709,12 @@ fn bounds(query: &Query<'_>, stretches: &[Stretch], viewpoint: bool) -> Option<H
     Some(out.into_iter().map(|(region, bound)| (region, u128::try_from(bound).unwrap_or(0))).collect())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Want {
-    Whole,
-    Tile(i64),
-}
-
-fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, cancelled: &AtomicBool, want: Want) -> io::Result<AirTimelineReply> {
+fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<AirTimelineReply> {
     let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid air branch"))?;
     let query = dashboard_base::queries::query(source, branch)?;
     let index = index::index(source, branch).map_err(|error| dashboard_core::refused(format!("Air sides are not known: {error}")))?;
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let (view_first, view_last) = match want {
-        Want::Tile(tile) => {
-            let hours = i64::from(TILE_DAYS * DAY);
-            let first = i64::from(params.first_hour).max(tile * hours);
-            let last = i64::from(params.last_hour).min(tile * hours + hours - 1);
-            if first > last {
-                return Err(dashboard_core::invalid("The air timeline's tile is outside its view"));
-            }
-            (first as i32, last as i32)
-        }
-        _ => (params.first_hour, params.last_hour),
-    };
+    let (view_first, view_last) = (params.first_hour, params.last_hour);
     let first_day = view_first.div_euclid(DAY);
     let first_hour = first_day.checked_mul(DAY).ok_or_else(|| dashboard_core::invalid("Air timeline start is outside the calendar range"))?;
     let count = (i64::from(view_last.div_euclid(DAY)) - i64::from(first_day) + 1) as usize;
@@ -853,23 +828,18 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         }
     }
     let candidates: Vec<u32> = candidates.into_iter().filter(|region| params.regions.is_some() || (!pinned_set.contains(region) && !hidden_set.contains(region))).collect();
-    let shown = match want {
-        Want::Tile(_) => params.regions.clone().ok_or_else(|| dashboard_core::invalid("An air timeline tile names its regions"))?,
-        _ => {
-            let counted = if count <= 1 || view_last.rem_euclid(DAY) == DAY - 1 { count } else { count - 1 };
-            let viewpoint = params.mode == Some(AirMode::Viewpoint);
-            let bounds = top.and_then(|_| bounds(&query, &stretches, viewpoint));
-            let mut ranked = composer.rank(&candidates, bounds.as_ref(), counted, top, cancelled)?;
-            if params.regions.is_none() && !pinned_list.is_empty() {
-                let mut combined = pinned_list.clone();
-                combined.append(&mut ranked);
-                combined
-            } else {
-                ranked
-            }
-        }
+    let counted = if count <= 1 || view_last.rem_euclid(DAY) == DAY - 1 { count } else { count - 1 };
+    let viewpoint = params.mode == Some(AirMode::Viewpoint);
+    let bounds = top.and_then(|_| bounds(&query, &stretches, viewpoint));
+    let mut ranked = composer.rank(&candidates, bounds.as_ref(), counted, top, cancelled)?;
+    let shown = if params.regions.is_none() && !pinned_list.is_empty() {
+        let mut combined = pinned_list.clone();
+        combined.append(&mut ranked);
+        combined
+    } else {
+        ranked
     };
-    let mut resolver = RecordedSideResolver::new(source, &query, branch, load, cancelled, &mut warnings)?;
+    let mut resolver = RecordedSideResolver::new(source, &query, load, cancelled, &mut warnings)?;
     let cells = composer.shown_with_resolver(&shown, &index, &mut resolver, cancelled)?;
     let viewpoint_country_style = (params.mode == Some(AirMode::Viewpoint) && params.viewpoint_country == Some(true)).then(|| {
         let tag = super::viewpoint_name(params.viewpoint.as_ref(), true, &query.holders, view_last);
@@ -914,6 +884,6 @@ impl Product for AirSuperiorityTimeline {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        timeline(source, params, context, cancelled, params.tile.map_or(Want::Whole, Want::Tile))
+        timeline(source, params, context, cancelled)
     }
 }

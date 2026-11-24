@@ -7,6 +7,13 @@ import { nationalSpiritsProjection } from '../../widgets/national-spirits/nation
 import { warGoalsProjection } from '../../widgets/war-goals/warGoalsProjection.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import { CARD_VIEWS } from '../../widgets/manifest/card.ts';
+import { DEFAULT_VIEW } from '../manifest.ts';
+import type { FamilyBindingContext } from '../host/adapter.ts';
+import { cardHostAdapter } from './hostAdapter.ts';
+import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
+import { ensureFamilyProjection, registerFamilyProjection } from '../registry.ts';
+import { familyCardLaneView, type FamilyCardBinding } from './laneView.ts';
 import { layoutCards } from './layout.ts';
 import { assertCardModelValid, deriveCardAudit, FutureCardDataError, type CardHeroRow, type CardItemRow, type CardModel } from './model.ts';
 
@@ -120,6 +127,20 @@ test('national spirits list only what is held at the displayed hour, with since 
   assert.equal(model.nextChangeAt, first + 40 * DAY);
   const unseen = nationalSpiritsProjection.project(view(first + 60 * DAY, reply), { branchFirst: first });
   assert.equal(unseen.emptyKind, 'unavailable');
+
+  registerFamilyProjection(nationalSpiritsProjection);
+  const options = { branchFirst: first };
+  const lane = (panel: unknown) => ({ family: 'card', kind: 'national-spirits', options, sources: {}, staticPanels: { main: panel }, scrollTop: 0, theme: LANE_THEME, width: 420, height: 160 });
+  const held = lane(reply);
+  const renamed = { ...reply, artwork: reply.artwork.map(entry => (entry.token === 'home_free' ? { ...entry, name: 'Arsenal of Democracy' } : entry)) } as IdeaHistoryReply;
+  const surface = { width: 420, height: 160, dpr: 1 };
+  assert.equal(assertQuietFrames(() => familyCardLaneView(() => {}), { label: 'spirits', binding: held, hour }, 24, surface), first + 40 * DAY);
+  assertFreshPaint(() => familyCardLaneView(() => {}), [
+    { label: 'held', binding: held, hour, check: true },
+    { label: 'a spirit gained', binding: held, hour: first + 45 * DAY, speed: 24 },
+    { label: 'seek back', binding: held, hour, check: true },
+    { label: 'same-hour correction', binding: lane(renamed), hour, check: true },
+  ], surface);
 });
 
 test('a card dated after the displayed hour is refused, and narrow cards fold the place under the title', () => {
@@ -167,4 +188,23 @@ test('special projects follow the product’s order: running with progress and s
   assert.deepEqual(radar!.figure?.value, { kind: 'known', value: 'No scientist' });
   assert.deepEqual(old!.date, { hour: null, reason: 'Already complete when the project was first recorded' });
   assert.equal(radar!.art?.art.status, 'confirmedMissing');
+});
+
+test('every card view in the manifest reaches its projection through the binding the card adapter builds', async () => {
+  for (const entry of CARD_VIEWS) {
+    const ctx = {
+      kind: entry.kind, view: entry.view ?? DEFAULT_VIEW, options: {}, settings: undefined, window: null, sources: {}, extent: null, plan: null,
+      viewport: { width: 400, height: 300, scrollLeft: 0, scrollTop: 0 }, theme: {} as FamilyBindingContext<unknown>['theme'], reducedMotion: false,
+      identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
+    } as FamilyBindingContext<unknown>;
+    const binding = cardHostAdapter.buildBinding(ctx) as FamilyCardBinding;
+    assert.equal(binding.view, ctx.view, `${entry.kind} keeps its view in the binding`);
+    const lookup = (onReady: () => void) => ensureFamilyProjection('card', binding.kind, binding.view, onReady);
+    const found = await new Promise<ReturnType<typeof lookup>>(resolve => {
+      const first = lookup(() => resolve(lookup(() => {})));
+      if (first !== 'loading') resolve(first);
+    });
+    assert.notEqual(found, 'unknown', `${entry.kind}/${ctx.view} is found by the worker`);
+    assert.notEqual(found, 'loading');
+  }
 });

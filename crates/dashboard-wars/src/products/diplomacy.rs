@@ -334,8 +334,8 @@ impl AtHour for DiplomaticRelations {
             return Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings });
         };
         let looks = Some(Arc::new(dashboard_world::products::styles::BranchLooks::load(source, &query.timeline, load, &mut warnings)?));
-        let factions = match dashboard_world::products::groups::groups(source, &query, &branch.to_string(), load, &AtomicBool::new(false)) {
-            Ok(reply) => Arc::new(reply.factions),
+        let factions = match dashboard_world::products::groups::shared(source, &query, load, &AtomicBool::new(false)) {
+            Ok(reply) => Arc::new(reply.factions.clone()),
             Err(_) => Arc::new(Vec::new()),
         };
         Ok(DiplomacyContext { looks, factions, warnings })

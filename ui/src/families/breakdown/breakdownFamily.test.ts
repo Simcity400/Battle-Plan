@@ -6,7 +6,10 @@ import { constructionProjection } from '../../widgets/construction-spending/cons
 import { ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { FamilyTheme } from '../contract.ts';
+import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { registerFamilyProjection } from '../registry.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
+import { familyBreakdownLaneView } from './laneView.ts';
 import { layoutBreakdown, type PartsViewLayout, type RingViewLayout, type MosaicViewLayout } from './layout.ts';
 import { deriveBreakdownAudit, deriveBreakdownNavAndMirror, partColour, breakdownLevel, type BreakdownModel } from './model.ts';
 import { breakdownParts, breakdownTotal, type BreakdownWords } from './product.ts';
@@ -105,7 +108,7 @@ test('colours follow the recorded ordinal, so a reordered breakdown keeps them',
   }
 });
 
-test('a partly known whole is drawn as at least, with parts not recorded never as zero', () => {
+test('a partly known whole is the figure with its partial mark and no shares, with parts not recorded never as zero', () => {
   const read = model(partlyKnown());
   assert.equal(read.total.atLeast, true);
   assert.equal(read.total.text, '211');
@@ -118,9 +121,9 @@ test('a partly known whole is drawn as at least, with parts not recorded never a
   assert.ok(parts.rows.every(row => row.shareText === ''), 'no shares beside a lower bound');
 
   const ring = layoutBreakdown({ view: 'ring', level: breakdownLevel(read), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as RingViewLayout;
-  assert.equal(ring.center.verb, 'At least');
+  assert.equal(ring.center.verb, 'Spent', 'no lower-bound wording');
   assert.ok(ring.innerSlices.every(slice => slice.label === null), 'no names on a hatched ring');
-  assert.deepEqual(deriveBreakdownAudit(read).map(row => row.value), ['atLeast:211', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
+  assert.deepEqual(deriveBreakdownAudit(read).map(row => row.value), ['partial:211', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
 });
 
 test('the three views lay out the same parts', () => {
@@ -183,6 +186,23 @@ test('political power spending reads the product at the displayed hour', () => {
   const unrecorded = project(reply({ decimals: 0, total: { raw: '0', state: 'partial', reason: 'Spending was not recorded' }, parts: [], unrecordedHours: 5 }));
   assert.equal(unrecorded.empty, 'No spending recorded at this date.', 'unrecorded hours never read as no spending');
   assert.equal(unrecorded.emptyDetail, 'Spending was not recorded');
+
+  registerFamilyProjection(ppSpendingProjection);
+  const parts = { view: 'parts' as const, namesInRing: true, digits: 0 };
+  const lane = (data: PowerSpendingBreakdownReply, options: typeof parts | { view: 'ring'; namesInRing: boolean; digits: number } = parts, expanded: Record<string, boolean> = {}) => ({
+    family: 'breakdown', kind: ppSpendingProjection.kind, options, sources: {}, staticPanels: { main: data }, scrollTop: 0, theme: THEME, width: 600, height: 300, expanded,
+  });
+  const held = lane(reply(spent()));
+  const surface = { width: 600, height: 300, dpr: 1 };
+  assertQuietFrames(() => familyBreakdownLaneView(() => {}), { label: 'spending', binding: held, hour: START + 10 }, 24, surface);
+  assertFreshPaint(() => familyBreakdownLaneView(() => {}), [
+    { label: 'spent', binding: held, hour: START + 10, check: true },
+    { label: 'later', binding: lane(reply(partlyKnown(), { hour: START + 20 })), hour: START + 20, speed: 24 },
+    { label: 'seek back', binding: held, hour: START + 10, check: true },
+    { label: 'same-hour correction', binding: lane(reply(spent(), { gainedRaw: '6000' })), hour: START + 10, check: true },
+    { label: 'another view', binding: lane(reply(spent()), { view: 'ring', namesInRing: true, digits: 0 }), hour: START + 10, check: true },
+    { label: 'a part opened', binding: lane(reply(spent()), parts, { Decisions: true }), hour: START + 10, check: true },
+  ], surface);
 });
 
 test('nothing after the displayed hour reaches the projection', () => {
