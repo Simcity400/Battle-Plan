@@ -21,5 +21,5 @@ export const definition = {
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 9 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, rankedBy: 'the Top N by measure' },
   defaultCountries: TOP_COUNTRIES,
-  options: OPTIONS, variants: breakdownVariants('Diplomatic relations', OPTIONS),
+  options: OPTIONS, variants: breakdownVariants('Diplomatic relations', OPTIONS), playsBackDated: true,
 } as const satisfies WidgetMeta;

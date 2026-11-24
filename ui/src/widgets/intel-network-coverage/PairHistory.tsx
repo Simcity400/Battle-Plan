@@ -12,9 +12,41 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { useKeyedSeries } from '../../dashboard/keyedSeries';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import { contentKey, resolveOptions } from '../../dashboard/options';
-import { OPTIONS } from './definition';
-import { fieldText, LABELS, measureField, pairOf } from './intelCoverageData';
-import type { Basis, ChosenPair, Measure } from './intelCoverageData';
+import { OPTIONS } from './definition.ts';
+
+export type Measure = 'covered' | 'strength' | 'strongest';
+export type Basis = 'controlled' | 'core';
+export type NetworkField = 'coveredControlled' | 'coveredCore' | 'controlledStrength' | 'coreStrength' | 'maxStrength';
+export interface ChosenPair { readonly owner: string; readonly target: string; readonly targetId: number; readonly hour: number }
+
+const LABELS: Record<NetworkField, string> = {
+  coveredControlled: 'Controlled states covered',
+  coveredCore: 'Core states covered',
+  controlledStrength: 'Controlled strength',
+  coreStrength: 'Core strength',
+  maxStrength: 'Strongest state',
+};
+
+function measureField(measure: Measure, basis: Basis): NetworkField {
+  if (measure === 'strongest') return 'maxStrength';
+  if (measure === 'strength') return basis === 'core' ? 'coreStrength' : 'controlledStrength';
+  return basis === 'core' ? 'coveredCore' : 'coveredControlled';
+}
+
+function fieldText(field: NetworkField, value: number): string {
+  if (field === 'coveredControlled' || field === 'coveredCore') return value.toLocaleString('en-US');
+  return `${Math.round(value / 100_000)}%`;
+}
+
+function pairOf(owner: string | null, target: string | null): ChosenPair | null {
+  if (!owner || !target) return null;
+  const parts = target.split(':');
+  if (parts.length < 3) return null;
+  const targetId = Number(parts[1]);
+  const hour = Number(parts[2]);
+  if (!Number.isFinite(targetId) || !Number.isFinite(hour)) return null;
+  return { owner, target: parts[0]!, targetId, hour };
+}
 
 export default function PairHistory({ widget, runtime, active, pair, gate, hour }: WidgetProps & { pair: ChosenPair | null; gate: Gate; hour: number | null }) {
   const tokens = useChartTokens();
@@ -27,8 +59,14 @@ export default function PairHistory({ widget, runtime, active, pair, gate, hour 
   const keys = useMemo(() => chosen ? [{ tag: chosen.owner, part: String(chosen.targetId) }] : [], [chosen?.owner, chosen?.targetId]);
   const family = useMemo(() => ({ kind: 'intel-networks', measure: field }), [field]);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const series = useKeyedSeries(runtime.client, runtime.clock, gate, track && keys.length ? { source: track.source, branch: track.branch, family, keys, partBits: 32,
-    lastHour: track.branch.lastHour } : null, gate.recorded(hour), gate.recorded(hoverHour), false, active, root);
+  const series = useKeyedSeries(runtime.client, runtime.clock, gate, track && keys.length ? {
+    source: track.source,
+    branch: track.branch,
+    family,
+    keys,
+    partBits: 32,
+    lastHour: track.branch.lastHour,
+  } : null, gate.recorded(hour), gate.recorded(hoverHour), false, active, root);
   const layers = useMemo<ChartLayer[]>(() => keys.map(key => ({
     draw: (ctx, frame, chartTokens, state) => {
       const summary = series.summaryOf(keyId(key));
@@ -40,20 +78,31 @@ export default function PairHistory({ widget, runtime, active, pair, gate, hour 
   if (!chosen) return <WidgetState kind="empty" icon="eye" message="Choose a pair of countries: click a cell of the matrix." />;
   if (series.error) return <WidgetState kind="error" failure={series.error} onRetry={series.retry} />;
   const valueAt = (at: number) => {
-    const line = series.lines.find(item => keyId(item.key) === keyId(keys[0]));
+    const line = series.lines.find(item => keyId(item.key) === keyId(keys[0]!));
     const run = line?.runs.find(item => item.firstHour <= at && at <= item.lastHour);
     return run ? fieldText(field, Number(run.valueRaw)) : 'Not recorded';
   };
-  return <div ref={root} className="intel-pair-history" onContextMenu={event => {
+  return <div ref={root} style={{ width: '100%', height: '100%' }} onContextMenu={event => {
     if (hoverHour === null) return;
     event.preventDefault();
     menu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, hoverHour)]);
   }}>
-    <TimeChart label={`${LABELS[field]} over time`} extent={[track.branch.firstHour, Math.max(track.branch.firstHour + 1, track.branch.lastHour)]}
-      playhead={hour} playback="cursor" branchStart={track.branch.firstHour} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
-      layers={layers} active={active} notRecorded={series.unrecorded} revision={`${chosen.owner}|${chosen.targetId}|${field}:${series.summaryByKey.size}`} data={chartData}
-      onSummaryView={series.onSummaryView} onHover={setHoverHour}
-      tooltip={at => ({ title: dayLabel(at), rows: [{ label: LABELS[field], value: valueAt(Math.floor(at)), swatch: tokens.accent }] })} />
+    <TimeChart
+      label={`${LABELS[field]} over time`}
+      extent={[track.branch.firstHour, Math.max(track.branch.firstHour + 1, track.branch.lastHour)]}
+      playhead={hour}
+      playback="cursor"
+      branchStart={track.branch.firstHour}
+      axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
+      layers={layers}
+      active={active}
+      notRecorded={series.unrecorded}
+      revision={`${chosen.owner}|${chosen.targetId}|${field}:${series.summaryByKey.size}`}
+      data={chartData}
+      onSummaryView={series.onSummaryView}
+      onHover={setHoverHour}
+      tooltip={at => ({ title: dayLabel(at), rows: [{ label: LABELS[field], value: valueAt(Math.floor(at)), swatch: tokens.accent }] })}
+    />
     {menu.menu}
   </div>;
 }
