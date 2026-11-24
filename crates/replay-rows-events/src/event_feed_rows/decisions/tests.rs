@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_arguments)]
 use super::*;
 fn apply(
     state: &mut DecisionState,

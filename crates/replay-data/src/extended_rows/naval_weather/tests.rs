@@ -347,7 +347,7 @@ fn naval_result_source_codec_keeps_full_references_hours_and_transient_witnesses
         NavalResultSourceRow {
             transient: true,
             combat_created_hour: Some(i32::MIN),
-            ..original.clone()
+            ..original
         },
     ] {
         let mut bytes = Vec::new();
@@ -364,7 +364,7 @@ fn naval_result_source_codec_keeps_full_references_hours_and_transient_witnesses
     }
     let merged = NavalResultSourceRow {
         merged: true,
-        ..original.clone()
+        ..original
     };
     assert_eq!(merged.delta(Some(&original)).unwrap().unwrap().mask, 1 << 3);
     for combat_created_hour in [None, Some(i32::MIN + 1)] {

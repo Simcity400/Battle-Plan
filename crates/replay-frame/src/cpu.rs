@@ -1039,7 +1039,7 @@ impl Handle {
             return None;
         }
         let mut cycles = 0u64;
-        (unsafe { QueryThreadCycleTime(self.0, &mut cycles) } != 0).then_some(cycles)
+        (unsafe { QueryThreadCycleTime(self.0, &raw mut cycles) } != 0).then_some(cycles)
     }
 
     fn times_ns(&self) -> Option<u64> {
@@ -1053,7 +1053,7 @@ impl Handle {
         };
         let [mut created, mut exited, mut kernel, mut user] = [zero; 4];
         let read =
-            unsafe { GetThreadTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user) };
+            unsafe { GetThreadTimes(self.0, &raw mut created, &raw mut exited, &raw mut kernel, &raw mut user) };
         (read != 0).then(|| (filetime(kernel) + filetime(user)) * 100)
     }
 }
@@ -1077,7 +1077,7 @@ fn current_cycles() -> u64 {
     use windows_sys::Win32::System::Threading::GetCurrentThread;
     CYCLE_READS.with(|reads| reads.set(reads.get() + 1));
     let mut cycles = 0u64;
-    unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) };
+    unsafe { QueryThreadCycleTime(GetCurrentThread(), &raw mut cycles) };
     cycles
 }
 
@@ -1095,10 +1095,10 @@ fn process_ns() -> Option<u64> {
     let read = unsafe {
         GetProcessTimes(
             GetCurrentProcess(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
         )
     };
     (read != 0).then(|| (filetime(kernel) + filetime(user)) * 100)

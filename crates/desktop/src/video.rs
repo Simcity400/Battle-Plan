@@ -248,11 +248,10 @@ pub fn launch_actions(
         settings.vsync
     };
     let map_ui_scale = if settings.use_game_settings {
-        VideoSettings::default()
+        VideoSettings::default().map_ui_scale_action()
     } else {
-        settings.clone()
-    }
-    .map_ui_scale_action();
+        settings.map_ui_scale_action()
+    };
     Ok([
         dashboard_core::protocol::MapAction::Vsync { enabled: vsync },
         map_ui_scale,

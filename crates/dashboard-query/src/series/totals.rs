@@ -164,7 +164,6 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "a part's set, its columns, the hours shown and the window")]
     fn part_windows(&self, running: &RunningTotal, part: &Part, keys: &[(u128, u128)], rest: Option<u128>, columns: &Columns, (first, last): (i32, i32), back: &dyn Fn(i32) -> Option<i32>) -> io::Result<Vec<(i32, i32, Result<i64, Gap>)>> {
         let mut reach = REACH;
         let clock = loop {

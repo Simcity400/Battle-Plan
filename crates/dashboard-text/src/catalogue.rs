@@ -841,7 +841,6 @@ impl Catalogue {
         ))
     }
 
-    #[allow(clippy::too_many_arguments, reason = "each is one independent part of the catalogue")]
     pub fn from_parts(
         content: Arc<ResolvedContent>,
         presentation: Presentation,

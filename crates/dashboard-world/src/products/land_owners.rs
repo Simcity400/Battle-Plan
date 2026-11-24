@@ -52,9 +52,9 @@ fn witnesses(source: &Source, cancelled: &AtomicBool) -> io::Result<BTreeMap<(St
             }
         }
         for stretch in &query.timeline.stretches {
-            if !lives.contains_key(&stretch.run) {
+            if let std::collections::hash_map::Entry::Vacant(vacant) = lives.entry(stretch.run) {
                 let read = crate::products::land_owners::cached_territory(source, stretch.run)?;
-                lives.insert(stretch.run, read.iter().map(|&(key, first, last)| (key as u32, first, last)).collect());
+                vacant.insert(read.iter().map(|&(key, first, last)| (key as u32, first, last)).collect());
             }
             for &(slot, first, last) in &lives[&stretch.run] {
                 let (first, last) = (first.max(i64::from(stretch.first)), last.min(i64::from(stretch.last)));
@@ -102,8 +102,8 @@ impl Product for LandOwnersProduct {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let query = dashboard_base::queries::query(source, timeline)?;
                 let Some(stretch) = query.timeline.at(hour).copied() else { continue };
-                if !looks.contains_key(&stretch.run) {
-                    looks.insert(stretch.run, crate::products::styles::cached_looks(source, stretch.run)?);
+                if let std::collections::hash_map::Entry::Vacant(slot) = looks.entry(stretch.run) {
+                    slot.insert(crate::products::styles::cached_looks(source, stretch.run)?);
                 }
                 let run = &looks[&stretch.run];
                 let look = run.spans.iter().find(|&&(number, _, first, last)| {
@@ -168,7 +168,6 @@ pub fn holding(recording: &Recording, run: u32) -> io::Result<Vec<(u128, i64, i6
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments, reason = "a summary-guided read names its run, source, keys, hours and level")]
 fn refine(recording: &Recording, run: u32, source: Summary, keys: Option<&[u128]>, from: i32, to: i32, level: u8, spans: &mut BTreeMap<u128, Vec<(i64, i64)>>) -> io::Result<()> {
     let world = u128::from(TerritoryTotalRow::WORLD);
     if level == lanes::WALKED {

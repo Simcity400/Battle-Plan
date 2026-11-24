@@ -256,7 +256,7 @@ mod tests {
         ];
         let files: BTreeMap<&[u8], Vec<u8>> = [
             (&b"gfx/mod/icon.png"[..], png.clone()),
-            (b"gfx/mod/renamed.tga", png.clone()),
+            (b"gfx/mod/renamed.tga", png),
             (b"gfx/mod/photo.dds", jpeg),
             (b"gfx/mod/tiny.dds", undefined),
             (b"gfx/mod/short.dds", short),

@@ -48,7 +48,7 @@ fn land_combat_division_modifiers_hold_a_row_a_member_keyed_as_its_combat_row() 
         .key()
     );
     for row in [
-        row.clone(),
+        row,
         member(0, Vec::new()),
         member(
             3,

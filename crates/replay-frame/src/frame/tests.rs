@@ -2074,7 +2074,7 @@ fn unavailable_and_truncated_tables_require_their_own_next_snapshot() {
         TableUpdate::Unchanged { baseline: 1 }
     );
     assert_eq!(decoder.apply(&wire(&frame)).unwrap(), recovered);
-    let frame = encoder.encode(source(1, 3).clone(), false).unwrap();
+    let frame = encoder.encode(source(1, 3), false).unwrap();
     assert_eq!(
         frame.tables[TableId::Provinces.index()],
         TableUpdate::Unchanged { baseline: 2 }
@@ -2317,7 +2317,7 @@ fn division_failures_and_partial_keyframes_clear_only_their_own_baseline() {
     {
         assert_eq!(actual.tables[table.index()], expected.tables[table.index()]);
     }
-    let later = encoder.encode(source(1, 8).clone(), false).unwrap();
+    let later = encoder.encode(source(1, 8), false).unwrap();
     unavailable(
         &decoder.apply(&wire(&later)).unwrap().tables[index],
         "baseline at hour 7",
@@ -2612,8 +2612,8 @@ fn malformed_key_differences_cannot_wrap_snapshot_or_deleted_keys() {
     assert!(decode_rows(table, &mut Decoder::new(&bytes)).is_err());
 
     let mut encoder = FrameEncoder::new();
-    encoder.encode(source(1, 0).clone(), false).unwrap();
-    let frame = encoder.encode(source(1, 1).clone(), false).unwrap();
+    encoder.encode(source(1, 0), false).unwrap();
+    let frame = encoder.encode(source(1, 1), false).unwrap();
     bytes.clear();
     let sizes = frame.encode_with_sizes(&mut bytes).unwrap();
     let table_start =
@@ -2631,7 +2631,7 @@ fn malformed_key_differences_cannot_wrap_snapshot_or_deleted_keys() {
 #[test]
 fn direct_delta_application_rejects_narrow_key_overflow_and_nonzero_singleton_keys() {
     let mut encoder = FrameEncoder::new();
-    let first = encoder.encode(source(1, 0).clone(), false).unwrap();
+    let first = encoder.encode(source(1, 0), false).unwrap();
     let expected = source(1, 1);
     let next = encoder.encode(expected.clone(), false).unwrap();
     for (table, invalid_key) in [
@@ -2752,7 +2752,7 @@ fn missing_baseline_isolates_one_table_and_a_snapshot_restores_it() {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
     decoder
-        .apply(&encoder.encode(source(1, 0).clone(), false).unwrap())
+        .apply(&encoder.encode(source(1, 0), false).unwrap())
         .unwrap();
     let mut expected = source(1, 1);
     change_country(&mut expected, -123_456_789);
@@ -2769,7 +2769,7 @@ fn missing_baseline_isolates_one_table_and_a_snapshot_restores_it() {
     {
         assert_eq!(actual.tables[table.index()], expected.tables[table.index()]);
     }
-    let frame = encoder.encode(source(1, 2).clone(), false).unwrap();
+    let frame = encoder.encode(source(1, 2), false).unwrap();
     unavailable(
         &decoder.apply(&frame).unwrap().tables[TableId::Provinces.index()],
         "baseline at hour 1",
@@ -2784,7 +2784,7 @@ fn insertion_deletion_and_field_updates_reconstruct_the_direct_rows() {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
     decoder
-        .apply(&encoder.encode(source(1, 0).clone(), false).unwrap())
+        .apply(&encoder.encode(source(1, 0), false).unwrap())
         .unwrap();
     let mut expected = source(1, 1);
     *expected.tables[TableId::Provinces.index()] =
@@ -2845,10 +2845,10 @@ fn sorted_delta_merge_handles_insertions_around_deleted_and_retained_rows() {
 #[test]
 fn invalid_delta_operations_do_not_damage_other_tables_or_retain_partial_rows() {
     let mut encoder = FrameEncoder::new();
-    let first = encoder.encode(source(1, 0).clone(), false).unwrap();
+    let first = encoder.encode(source(1, 0), false).unwrap();
     let next_source = source(1, 1);
     let next = encoder.encode(next_source.clone(), false).unwrap();
-    let later = encoder.encode(source(1, 2).clone(), false).unwrap();
+    let later = encoder.encode(source(1, 2), false).unwrap();
     let change = province(2, 99)
         .delta(Some(&province(2, 2)))
         .unwrap()
@@ -2924,9 +2924,9 @@ fn invalid_delta_operations_do_not_damage_other_tables_or_retain_partial_rows() 
 fn invalid_input_and_keyframes_are_rejected_without_advancing_state() {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
-    let initial = encoder.encode(source(1, 0).clone(), false).unwrap();
+    let initial = encoder.encode(source(1, 0), false).unwrap();
     decoder.apply(&initial).unwrap();
-    assert!(encoder.encode(source(1, 0).clone(), false).is_err());
+    assert!(encoder.encode(source(1, 0), false).is_err());
     assert!(decoder.apply(&initial).is_err());
     let mut invalid_source = source(1, 1);
     change_country(&mut invalid_source, i64::MAX);
@@ -3016,7 +3016,7 @@ fn complete_singletons_and_clock_hours_are_validated_without_losing_other_tables
 #[test]
 fn singleton_invariants_apply_after_deltas_and_unchanged_updates() {
     let mut encoder = FrameEncoder::new();
-    let first = encoder.encode(source(1, 0).clone(), false).unwrap();
+    let first = encoder.encode(source(1, 0), false).unwrap();
     let expected = source(1, 1);
     let next = encoder.encode(expected.clone(), false).unwrap();
     for (table, update, reason) in [
@@ -3559,7 +3559,7 @@ fn a_frame_refuses_a_mix_of_capture_modes_and_tables_its_mode_leaves_out() {
         assert!(input.capture_mode().is_err());
         assert!(FrameEncoder::new().prepare_bytes(input, true).is_err());
     }
-    let mut missing = map.clone();
+    let mut missing = map;
     missing.tables[TableId::Divisions.index()] = TableView::NotRecorded {
         mode: CaptureMode::Map,
     }

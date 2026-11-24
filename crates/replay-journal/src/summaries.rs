@@ -108,7 +108,6 @@ impl Summaries {
             .collect()
     }
 
-    #[allow(clippy::type_complexity, reason = "the block's pieces and the higher levels it closes, returned together")]
     pub fn finish<W: io::Write + Seek + io::Read>(&mut self, last_hour: i32, block: u32, first_hour: i32, file: &mut FileWriter<W>) -> io::Result<(Vec<(u32, Vec<u8>)>, Vec<(u32, u8, Vec<u8>)>)> {
         let clock = Instant::now();
         let closes = (block + 1) % SPAN_BLOCKS == 0;

@@ -921,7 +921,7 @@ mod tests {
             (
                 Recorded::Value(Some(OrderChildFrontInputs {
                     sections: None,
-                    ..inputs.clone()
+                    ..inputs
                 })),
                 1,
             ),

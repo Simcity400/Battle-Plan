@@ -593,7 +593,7 @@ fn thread_cpu() -> Duration {
 
 fn performance_counter() -> Option<u64> {
     let mut counter = 0;
-    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut counter) }
+    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceCounter(&raw mut counter) }
         .ne(&0)
         .then_some(counter as u64)
 }
@@ -611,7 +611,7 @@ fn system_times() -> Option<(u64, u64)> {
     };
     let mut kernel = idle;
     let mut user = idle;
-    if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
+    if unsafe { GetSystemTimes(&raw mut idle, &raw mut kernel, &raw mut user) } == 0 {
         return None;
     }
     let ticks =
@@ -2207,7 +2207,7 @@ pub(crate) fn capture(
             let game_facts =
                 game_facts::GameFacts::start(&content, &identity, &directory, &facts_cache);
             let mut frequency = 0;
-            if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0 || frequency <= 0 {
+            if unsafe { QueryPerformanceFrequency(&raw mut frequency) } == 0 || frequency <= 0 {
                 return Err("QueryPerformanceFrequency failed".into());
             }
             let session = SessionStart {
@@ -3833,7 +3833,7 @@ fn recorder_activity(recorder: &Process) -> Option<(u64, u64, u64)> {
     let [creation, exit, kernel, user] = &mut times;
     let mut io = IO_COUNTERS::default();
     if unsafe { GetProcessTimes(recorder.handle.0, creation, exit, kernel, user) } == 0
-        || unsafe { GetProcessIoCounters(recorder.handle.0, &mut io) } == 0
+        || unsafe { GetProcessIoCounters(recorder.handle.0, &raw mut io) } == 0
     {
         return None;
     }
@@ -4403,7 +4403,6 @@ fn discarded_completion(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn finish_capture(
     directory: &Path,
     target: &Path,
@@ -8422,7 +8421,7 @@ mod tests {
         assert!(session_discarded(&session));
         let error = command(vec![
             "finalize".into(),
-            session.clone().into_os_string(),
+            session.into_os_string(),
             "--out".into(),
             root.clone().into_os_string(),
         ])

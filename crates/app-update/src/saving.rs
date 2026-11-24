@@ -103,7 +103,7 @@ fn run(shown: &Arc<Mutex<Shown>>, title: &str) {
         description.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_WAIT);
         description.hbrBackground = (COLOR_WINDOW + 1) as usize as HBRUSH;
         description.lpszClassName = class.as_ptr();
-        RegisterClassExW(&description);
+        RegisterClassExW(&raw const description);
         let x = (GetSystemMetrics(SM_CXSCREEN) - WIDTH) / 2;
         let y = (GetSystemMetrics(SM_CYSCREEN) - HEIGHT) / 2;
         let hwnd = CreateWindowExW(
@@ -125,7 +125,7 @@ fn run(shown: &Arc<Mutex<Shown>>, title: &str) {
             return;
         }
         let mut client = RECT::default();
-        GetClientRect(hwnd, &mut client);
+        GetClientRect(hwnd, &raw mut client);
         let text = shown.lock().unwrap_or_else(PoisonError::into_inner).text.clone();
         let line = CreateWindowExW(
             0,
@@ -158,9 +158,9 @@ fn run(shown: &Arc<Mutex<Shown>>, title: &str) {
             PostMessageW(hwnd, SAY, 0, 0);
         }
         let mut message: MSG = std::mem::zeroed();
-        while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+        while GetMessageW(&raw mut message, std::ptr::null_mut(), 0, 0) > 0 {
+            TranslateMessage(&raw const message);
+            DispatchMessageW(&raw const message);
         }
     }
 }

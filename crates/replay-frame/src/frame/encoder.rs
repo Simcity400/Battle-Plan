@@ -220,7 +220,7 @@ pub struct TableSegment {
 #[derive(Default)]
 pub struct Retired(Vec<Retiring>);
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "the variants hold replaced rows only so they are dropped later, off the commit path")]
 enum Retiring {
     Baseline(BaselineRows),
     Input(TableInput),

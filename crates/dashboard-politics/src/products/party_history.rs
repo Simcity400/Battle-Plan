@@ -277,7 +277,6 @@ pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> 
 }
 
 impl Parties {
-    #[allow(clippy::too_many_arguments, reason = "one holder's read over one span of one run")]
     fn country(&mut self, query: &Query<'_>, columns: &Columns, run: u32, who: (u32, u32), tag: &str, first: i32, last: i32, cancelled: &AtomicBool) -> io::Result<()> {
         let recording = query.replay.recording();
         let key = u128::from(who.1);
@@ -319,7 +318,6 @@ impl Parties {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one hour's three row sets of one holder")]
     fn observe(&mut self, query: &Query<'_>, run: u32, hour: i32, end: i32, who: (u32, u32), tag: &str, columns: &Columns, held: &Stepper<'_>, looks: &Stepper<'_>, politics: &Stepper<'_>) -> io::Result<()> {
         let continues = self.last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
         let same = self.last.is_some_and(|(_, seen)| seen == who) || self.election.is_some_and(|(seen, _)| seen == who);

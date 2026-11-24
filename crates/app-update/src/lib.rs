@@ -611,7 +611,7 @@ impl Updates {
             }
         });
         match state.error_context {
-            Some(Action::Check) => Err(state.message.clone().unwrap_or_default()),
+            Some(Action::Check) => Err(state.message.unwrap_or_default()),
             _ => Ok(state),
         }
     }
@@ -708,7 +708,7 @@ impl Updates {
             }
         });
         match state.error_context {
-            Some(Action::Download) => Err(state.message.clone().unwrap_or_default()),
+            Some(Action::Download) => Err(state.message.unwrap_or_default()),
             _ => Ok(state),
         }
     }

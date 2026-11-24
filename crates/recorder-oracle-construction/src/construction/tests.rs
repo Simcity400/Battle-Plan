@@ -2034,7 +2034,7 @@ fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_base
     assert_eq!(run(&row, &bases).differences.len(), 1);
     row.countries_unreadable = false;
     row.country_tags = Recorded::Value(Some(tags.to_vec()));
-    let mut wrong_occurrence = bases.clone();
+    let mut wrong_occurrence = bases;
     wrong_occurrence[0].naval_bases.as_mut().unwrap()[1]
         .countries
         .reverse();

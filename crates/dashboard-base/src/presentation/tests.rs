@@ -972,7 +972,7 @@ fn a_stale_rebind_retries_and_the_newest_configuration_wins() {
 fn a_rebind_paused_across_shutdown_installs_nothing() {
     use crate::presentation::{Config, rebind};
     let (_machine, source, options) = machine("rebind_shutdown");
-    let config = Config::new(Some(options.options.clone()));
+    let config = Config::new(Some(options.options));
     let never = std::sync::atomic::AtomicBool::new(false);
     let install = |_: &Option<content_reader_layers::ResolveOptions>,
                    folders: Option<content_reader_layers::ResolveOptions>| {

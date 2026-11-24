@@ -220,7 +220,6 @@ impl Patch {
         id
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn compare(
         &mut self,
         out: &mut Vec<u32>,
@@ -304,7 +303,6 @@ impl Patch {
         self.non_nan.insert(result);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn smoothstep(
         &mut self,
         out: &mut Vec<u32>,
@@ -431,7 +429,6 @@ impl Patch {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn extremum(
         &mut self,
         out: &mut Vec<u32>,

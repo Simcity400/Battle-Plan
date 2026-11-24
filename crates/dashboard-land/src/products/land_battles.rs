@@ -744,7 +744,6 @@ struct Shaped {
     course: Vec<(i32, bool, Option<Losses>)>,
 }
 
-#[allow(clippy::too_many_arguments, reason = "a battle is shaped from its reads, names, links, branch, span and peaks' hour")]
 fn shape(battle: &Battle, data: &Combats, names: &Names, links: &dashboard_base::queries::country_ids::RunLinks, branch: u64, from: i32, to: i32, peaks_through: i32) -> Shaped {
     let combat = battle.combat;
     let end = battle.end.as_ref();

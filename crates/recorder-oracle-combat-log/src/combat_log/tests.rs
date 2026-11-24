@@ -806,7 +806,7 @@ fn lend_lease_compares_every_saved_amount_and_receiver() {
     lend_lease(&frame, &save, &links, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["LendLeaseEquipment"], 1);
-    let mut redirected = rows.clone();
+    let mut redirected = rows;
     redirected[1].receiver = GER;
     let mut report = Report::default();
     lend_lease(&frame_of(&redirected), &save, &links, &mut report).unwrap();

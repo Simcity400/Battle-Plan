@@ -129,7 +129,7 @@ fn missing_extra_reordered_and_changed_zero_members_remain_differences() {
         .swap(0, 1);
     assert_eq!(run(&frame, &reordered_save).unwrap().differences.len(), 2);
 
-    let mut changed_frame = frame.clone();
+    let mut changed_frame = frame;
     let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
         &mut *changed_frame.tables[TableId::ReservedCountryNaming.index()]
     else {
@@ -159,7 +159,7 @@ fn duplicate_zero_members_and_noncontiguous_ordinals_are_rejected() {
     members(&mut skipped)[1].ordinal = 2;
     assert!(run(&skipped, &save).is_err());
 
-    let mut duplicate_ordinal = frame.clone();
+    let mut duplicate_ordinal = frame;
     members(&mut duplicate_ordinal)[1].ordinal = 0;
     assert!(run(&duplicate_ordinal, &save).is_err());
 }

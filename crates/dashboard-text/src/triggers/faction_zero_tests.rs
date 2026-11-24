@@ -68,7 +68,7 @@ fn faction_leader_raw_zero_is_empty_at_the_context_mask_in_flat_and_graph_paths(
             EventScope::of(EventObject::Country(2)),
             EventScope::of(EventObject::State(64)),
         ])));
-        let evaluator = evaluator.with_event_scopes(graph.clone());
+        let evaluator = evaluator.with_event_scopes(graph);
         let caller = evaluator.event_scopes(0).unwrap();
         let parsed = content_reader_script::scope::parse("faction_leader", false, world.recorded());
         let entered = evaluator.enter_scope(&parsed, caller).unwrap().unwrap();

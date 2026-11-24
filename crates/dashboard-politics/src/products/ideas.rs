@@ -427,7 +427,6 @@ impl Ideas {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one hour's four row sets of one holder")]
     fn observe(&mut self, hour: i32, end: i32, run: u32, who: (u32, u32), columns: &Columns, held: &Stepper<'_>, hired: &Stepper<'_>, characters: &Stepper<'_>, lexicon: &Stepper<'_>) {
         let continues = self.last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
         if !continues {
@@ -502,7 +501,7 @@ impl Ideas {
         }
     }
 
-    #[allow(dead_code, reason = "the event feed's builder reads it")]
+    #[cfg_attr(not(test), expect(dead_code, reason = "only its tests call it"))]
     pub fn additions(&self) -> impl Iterator<Item = &IdeaSpan> {
         let mut previous: BTreeMap<&str, &IdeaSpan> = BTreeMap::new();
         self.spans.iter().filter(move |span| {

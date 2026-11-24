@@ -25,10 +25,6 @@ pub struct TemplateState {
     pub selected_staff: Option<Option<u64>>,
     pub next_hq_order: Option<i32>,
     pub lock_all: bool,
-    #[allow(
-        clippy::type_complexity,
-        reason = "Country and state scope presence and an unset template are independent saved facts."
-    )]
     pub garrisons: Option<BTreeMap<(Option<Vec<u8>>, Option<u32>), Option<u64>>>,
 }
 
@@ -544,10 +540,6 @@ pub(super) fn parse_with_countries(
     })
 }
 
-#[allow(
-    clippy::type_complexity,
-    reason = "Preserve country/state scope presence and unset selections in the shared saved map representation."
-)]
 fn parse_garrison_templates(
     items: &[Item],
 ) -> io::Result<BTreeMap<(Option<Vec<u8>>, Option<u32>), Option<u64>>> {

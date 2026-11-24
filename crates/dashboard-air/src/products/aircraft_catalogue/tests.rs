@@ -439,11 +439,11 @@ fn origins_name_the_mod_or_dlc_supplying_a_declaration_or_its_geometry() {
         all.origins,
         [
             AircraftOriginCount {
-                origin: game.clone(),
+                origin: game,
                 count: 2
             },
             AircraftOriginCount {
-                origin: modern.clone(),
+                origin: modern,
                 count: 2
             },
         ]

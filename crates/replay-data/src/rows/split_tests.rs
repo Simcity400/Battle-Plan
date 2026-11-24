@@ -612,7 +612,7 @@ mod extended_rows_fresh_eta_tests {
         };
         let row = RailCooldownRow {
             selection: Some(input.clone()).into(),
-            ..previous.clone()
+            ..previous
         };
         check_suffix(TableId::RailCooldowns, 2, &previous, &row);
         check_suffix(
@@ -639,7 +639,7 @@ mod extended_rows_fresh_eta_tests {
         );
         let bound = RailCooldownRow {
             building_bound: Some(true).into(),
-            ..current.clone()
+            ..current
         };
         for building_bound in [Some(false), None] {
             check_suffix(
@@ -1336,7 +1336,7 @@ mod extended_rows_market_tests {
                 id: u64::MAX,
                 receiver: 4_999,
                 revision: 123,
-                monthly: pool.clone().into(),
+                monthly: pool.into(),
                 fuel_daily_raw: 32_769,
                 fuel_percentage_raw: -10_001,
                 ..Default::default()

@@ -70,7 +70,7 @@ fn entry_invocations_detect_cycles_and_render_finite_scope_changes() {
         text.expand_in("[Walk] [Walk]", &scopes),
         Ok(format!("{expected} {expected}"))
     );
-    let mut shorter = scopes.clone();
+    let mut shorter = scopes;
     shorter.scopes[0].from = Link::Scope(2);
     assert_eq!(
         text.expand_in("[Walk]", &shorter),
