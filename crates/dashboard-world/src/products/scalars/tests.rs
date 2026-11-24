@@ -80,10 +80,16 @@ fn a_nuclear_total_adds_the_shown_counts_as_the_top_bar_does_and_ranks_ties_by_t
     let mut rank = serde_json::to_value(&countries).unwrap();
     let mut changed = rows.to_vec();
     changed[0] = nuke(1, 0, 8);
-    nuclear_arsenal::rerank(&mut rank, &changed, 1, "GER").unwrap();
+    nuclear_arsenal::rerank(&mut rank, &changed, 1, "GER", None).unwrap();
     assert_eq!(rank, serde_json::to_value(nuclear_arsenal::countries(&changed, tag).0).unwrap());
     let (sentinel, _, _) = nuclear_arsenal::countries(&[NukeRow { country: 1, nuke_type: 0, amount_raw: i64::MAX, ready: 0 }, nuke(1, 1, 1)], tag);
     assert_eq!(sentinel[0].total, 0xa7c5 + 1, "the top bar adds the game's sentinel as it shows it");
+    let chosen = nuclear_arsenal::chosen_countries(countries, &[(9, 3, "FRA".to_owned()), (8, 5, "ITA".to_owned()), (7, 1, "GER".to_owned())]);
+    assert_eq!(
+        chosen.iter().map(|country| (country.tag.as_str(), country.slot, country.total)).collect::<Vec<_>>(),
+        [("GER", Some(7), 5), ("FRA", Some(9), 1), ("ITA", Some(8), 0)],
+        "each chosen holder is one row keyed by its slot, the product orders them, and one with no stockpile row in a whole table holds none"
+    );
 }
 
 #[test]
