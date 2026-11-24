@@ -5220,7 +5220,11 @@ export type MinefieldReportsReply = { region: number,
 readHour: number | null, reports: Array<MineReport>, warnings: Array<string>, };
 export type MinefieldReportsParamsAtHour = MinefieldReportsParams & { hour: number };
 export type NavalYardsParams = { branchId: string, country: CountryRef, };
-export type YardShip = { handle: string, name: string | null, nameRebuilt: string | null, design: string | null, class: string | null, hull: string | null, maximum: string | null, taskForce: string | null, policy: string | null, };
+export type YardShip = { handle: string, name: string | null, nameRebuilt: string | null, design: string | null, class: string | null,
+/**
+ * The class's unit sprite as the recorded content names it; none with `class_icon_missing` saying why.
+ */
+classIcon: SpriteFrame | null, classIconMissing: string | null, hull: string | null, maximum: string | null, taskForce: string | null, policy: string | null, };
 export type RepairPort = { province: number, name: string | null, priority: number | null,
 /**
  * The game's name of the port's repair priority.
