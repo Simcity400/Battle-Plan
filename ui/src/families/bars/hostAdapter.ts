@@ -41,13 +41,10 @@ export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBi
     return {
       options: ctx.options,
       sources: ctx.sources,
-      ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-      ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
       width: ctx.viewport.width,
       height: ctx.viewport.height,
       scrollTop: ctx.viewport.scrollTop,
       theme: ctx.theme,
-      ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
       selectedKey: ctx.selectedKey,
       focusedKey: ctx.focusedKey,
       reducedMotion: ctx.reducedMotion,

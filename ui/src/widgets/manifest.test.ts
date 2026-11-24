@@ -83,7 +83,7 @@ test('every manifest view reaches its own projection through the binding the hos
       const ctx: FamilyBindingContext<unknown, unknown> = {
         kind: declaration?.kind ?? entry.kind, view, options: {}, settings: {}, window: null, sources: {}, extent: [0, 100], plan: null,
         viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, theme: {} as FamilyTheme, reducedMotion: false,
-        identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
+        selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
       };
       const binding: FamilyBindingIdentity | null = familyBinding(manifest.hostAdapter!, ctx);
       assert.ok(binding, `${entry.kind}/${view}: the ${manifest.family} adapter builds a binding`);

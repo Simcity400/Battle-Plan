@@ -14,7 +14,6 @@ import type {
   SourcePlan,
 } from '../contract.ts';
 import type { OptionValue } from '../../dashboard/options';
-import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { normalizeView } from '../manifest.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
@@ -83,7 +82,11 @@ export interface FamilyStaticSources {
   readonly answers?: Readonly<Record<string, FollowedAnswer>>;
   readonly hour: number;
   readonly follows?: boolean;
-  readonly provenInterval?: readonly [lo: number, hi: number];
+}
+
+export interface FamilyStaticProof {
+  read(): { readonly hour: number; readonly proof: readonly [lo: number, hi: number] } | null;
+  subscribe(changed: () => void): () => void;
 }
 
 export interface ParsedFamilyHit {
@@ -159,8 +162,6 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly settings: TSettings | undefined;
   readonly window: FamilyRowWindow | null;
   readonly sources: Readonly<Record<string, number>>;
-  readonly staticPanels?: Readonly<Record<string, unknown>>;
-  readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
@@ -169,7 +170,6 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly viewport: FamilyViewportState;
   readonly theme: FamilyTheme | undefined;
   readonly reducedMotion: boolean;
-  readonly identitySnapshot: IdentitySnapshot | null;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
   readonly expanded: Readonly<Record<string, boolean>>;

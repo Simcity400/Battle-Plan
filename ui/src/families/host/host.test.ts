@@ -911,9 +911,9 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
 });
 
 test('a followed bounded read dates its picture by its proof even when the widget also has subscriptions', () => {
-  const followed = { hour: 120, follows: true, provenInterval: [100, 140] as const };
-  assert.deepEqual(boundDated(followed, true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
-  assert.equal(boundDated({ hour: 120 }, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
-  assert.deepEqual(boundDated({ hour: 120 }, false, false, null), { h: 120, c: 120 });
-  assert.deepEqual(boundDated(null, false, true, [0, 500]), { h: 0, c: 500 });
+  const followed = { hour: 120, follows: true };
+  assert.deepEqual(boundDated(followed, [100, 140], true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
+  assert.equal(boundDated({ hour: 120 }, null, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
+  assert.deepEqual(boundDated({ hour: 120 }, null, false, false, null), { h: 120, c: 120 });
+  assert.deepEqual(boundDated(null, null, false, true, [0, 500]), { h: 0, c: 500 });
 });

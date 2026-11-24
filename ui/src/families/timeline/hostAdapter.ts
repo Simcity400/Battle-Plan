@@ -41,13 +41,10 @@ export const timelineHostAdapter: FamilyHostAdapter<TimelineModel, unknown, Fami
   buildBinding: ctx => (ctx.theme ? {
     options: ctx.options,
     sources: ctx.sources,
-    ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-    ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
     width: ctx.viewport.width,
     height: ctx.viewport.height,
     scrollTop: ctx.viewport.scrollTop,
     theme: ctx.theme,
-    identitySnapshot: ctx.identitySnapshot,
     selectedKey: ctx.selectedKey,
     focusedKey: ctx.focusedKey,
     expanded: ctx.expanded,
