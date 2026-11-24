@@ -6,6 +6,7 @@ const VIEWS: readonly View[] = ['traits', 'history', 'policy'];
 
 export default function IndustrialOrganisationWindow({
   selection,
+  generation,
   active,
   client,
   onDiagnostics,
@@ -27,6 +28,7 @@ export default function IndustrialOrganisationWindow({
   return <GameWindowView
     client={client}
     request={request}
+    generation={generation}
     active={active}
     label="military industrial organisation"
     onDiagnostics={onDiagnostics}

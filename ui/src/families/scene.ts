@@ -4,7 +4,7 @@ import type { Picture } from '../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import type { Scene, Value as LaneValue } from '../draw/lane.ts';
 import { sectionLiveValues } from '../draw/views/fields.ts';
-import { laneArtDemand, type ArtResolutions } from './art/provider.ts';
+import { artUrlForHandle, laneArtDemand, type ArtResolutions } from './art/provider.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
@@ -157,7 +157,7 @@ export function projectScene<TModel>(
 ): SceneProjection<TModel> {
   const demands = { identity: new Map<string, SceneIdentityDemand>(), urls: new Set<string>(), asks: new Map<string, ArtHandle>() };
   const whoReads: [EntityKind, string, DisplayedHour, IdentityResult][] = [];
-  const artReads: [ArtHandle, ArtResult][] = [];
+  const artReads: [ArtHandle, ArtResult, string | null][] = [];
   let recording = true;
   const inner = readers.identity;
   const innerArt = readers.art;
@@ -181,7 +181,7 @@ export function projectScene<TModel>(
             ...(innerArt.demandOwner ? { demandOwner: innerArt.demandOwner } : {}),
             resolve: handle => {
               const result = innerArt.resolve(handle);
-              if (recording) artReads.push([handle, result]);
+              if (recording) artReads.push([handle, result, artUrlForHandle(handle, readers.index, readers.artResolutions)]);
               return result;
             },
           } satisfies ArtProvider,
@@ -210,8 +210,8 @@ export function projectScene<TModel>(
         for (const [kind, key, atHour, was] of whoReads) {
           if (!sameIdentity(was, next.identity!.resolve(kind, key, atHour))) return false;
         }
-        for (const [handle, was] of artReads) {
-          if (!sameArt(was, next.art!.resolve(handle))) return false;
+        for (const [handle, was, url] of artReads) {
+          if (!sameArt(was, next.art!.resolve(handle)) || url !== artUrlForHandle(handle, next.index, next.artResolutions)) return false;
         }
         return true;
       },
@@ -223,12 +223,15 @@ function sameField<T>(a: FieldStatus<T> | undefined, b: FieldStatus<T> | undefin
   if (a === b) return true;
   if (!a || !b || a.status !== b.status) return false;
   if (a.status === 'ready') return a.value === (b as typeof a).value;
-  if (a.status === 'absent' || a.status === 'failed') return a.reason === (b as typeof a).reason;
+  if (a.status === 'absent') return a.reason === (b as typeof a).reason;
+  if (a.status === 'failed') return a.reason === (b as typeof a).reason && a.retryable === (b as typeof a).retryable;
   return true;
 }
 
 function sameIdentity(a: IdentityResult, b: IdentityResult): boolean {
   return a.nextChangeAt === b.nextChangeAt
+    && a.validInterval[0] === b.validInterval[0]
+    && a.validInterval[1] === b.validInterval[1]
     && sameField(a.holder, b.holder)
     && sameField(a.tag, b.tag)
     && sameField(a.name, b.name)
@@ -238,9 +241,21 @@ function sameIdentity(a: IdentityResult, b: IdentityResult): boolean {
 
 function sameArt(a: ArtResult, b: ArtResult): boolean {
   if (a === b) return true;
-  if (a.status !== b.status) return false;
-  if (a.status === 'ready' && b.status === 'ready') return a.url === b.url && a.bitmap === b.bitmap;
+  const left = a as unknown as Readonly<Record<string, unknown>>;
+  const right = b as unknown as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(left).filter(key => key !== 'retry');
+  if (keys.length !== Object.keys(right).filter(key => key !== 'retry').length) return false;
+  for (const key of keys) if (!sameShallow(left[key], right[key])) return false;
   return true;
+}
+
+function sameShallow(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  const left = a as Readonly<Record<string, unknown>>;
+  const right = b as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every(key => left[key] === right[key]);
 }
 
 export function samePictures(prev: readonly (readonly unknown[])[], pictures: readonly Picture<LaneValue>[]): boolean {
