@@ -17,6 +17,7 @@ export interface MatrixAxisEntity {
   readonly flag?: ArtHandle | null;
   readonly flagPending?: boolean;
   readonly group?: MatrixGroup | null;
+  readonly color?: string;
   readonly trailing?: string;
   readonly meta?: unknown;
 }
@@ -26,7 +27,8 @@ export type MatrixValueMark = 'fill' | 'square' | 'ring';
 export type MatrixCell =
   | {
       readonly kind: 'value';
-      readonly color: string;
+      readonly color?: string;
+      readonly intensity?: number;
       readonly mark?: MatrixValueMark;
       readonly fraction?: number;
       readonly text?: string;
@@ -46,6 +48,8 @@ export type MatrixCell =
   | {
       readonly kind: 'diagonal';
       readonly label?: string;
+      readonly text?: string;
+      readonly outlined?: boolean;
       readonly tooltip?: FamilyTooltipPayload;
       readonly selectable?: boolean;
     }
@@ -58,13 +62,25 @@ export type MatrixCell =
     };
 
 export interface MatrixLegend {
-  readonly entries?: readonly { readonly id: string; readonly label: string; readonly color: string; readonly hatched?: boolean }[];
+  readonly entries?: readonly { readonly id: string; readonly label: string; readonly color: string; readonly hatched?: boolean; readonly outlined?: boolean }[];
   readonly gradient?: {
     readonly lowLabel: string;
     readonly highLabel: string;
     readonly stops: readonly string[];
   };
   readonly rightNote?: string;
+}
+
+export type MatrixRamp = 'accent' | 'red' | 'amber';
+
+export type MatrixMarginCell =
+  | { readonly kind: 'value'; readonly fraction: number; readonly text: string; readonly exact?: string; readonly color?: string }
+  | { readonly kind: 'missing'; readonly reason: string }
+  | { readonly kind: 'none'; readonly label: string };
+
+export interface MatrixMargin {
+  readonly header: string;
+  readonly cell: (rowIndex: number) => MatrixMarginCell;
 }
 
 export interface HeatMatrixModel {
@@ -74,6 +90,9 @@ export interface HeatMatrixModel {
   readonly rows: readonly MatrixAxisEntity[];
   readonly columns: readonly MatrixAxisEntity[];
   readonly cell: (rowIndex: number, columnIndex: number) => MatrixCell;
+  readonly shape?: 'square' | 'wide';
+  readonly ramp?: MatrixRamp;
+  readonly margin?: MatrixMargin;
   readonly legend?: MatrixLegend;
   readonly tooltip?: (row: MatrixAxisEntity, column: MatrixAxisEntity, cell: MatrixCell, rowIndex: number, columnIndex: number) => FamilyTooltipPayload | null;
   readonly empty?: string;
@@ -133,6 +152,7 @@ export function deriveMatrixTooltip(
   columnIndex: number,
 ): FamilyTooltipPayload | null {
   const row = model.rows[rowIndex];
+  if (row && model.margin && columnIndex === model.columns.length) return marginTooltip(model, model.margin, row, rowIndex);
   const col = model.columns[columnIndex];
   if (!row || !col) return null;
   const cell = model.cell(rowIndex, columnIndex);
@@ -160,8 +180,21 @@ export function deriveMatrixTooltip(
   };
 }
 
+function marginTooltip(model: HeatMatrixModel, margin: MatrixMargin, row: MatrixAxisEntity, rowIndex: number): FamilyTooltipPayload {
+  const item = margin.cell(rowIndex);
+  if (item.kind === 'missing') return { title: row.label, hour: model.hour, missingReason: item.reason };
+  if (item.kind === 'none') return { title: row.label, hour: model.hour, items: [{ label: margin.header, value: item.label }] };
+  return { title: row.label, hour: model.hour, items: [{ label: margin.header, value: item.exact ?? item.text }] };
+}
+
+export function marginAuditValue(item: MatrixMarginCell): string {
+  if (item.kind === 'missing') return `Not recorded (${item.reason})`;
+  if (item.kind === 'none') return item.label;
+  return item.exact ?? item.text;
+}
+
 export function cellAuditValue(cell: MatrixCell): string {
-  if (cell.kind === 'diagonal') return '—';
+  if (cell.kind === 'diagonal') return cell.text ?? '—';
   if (cell.kind === 'missing') return cell.audit ?? `Not recorded (${cell.reason})`;
   if (cell.kind === 'empty') return cell.audit ?? cell.label ?? '0';
   return cell.audit ?? cell.text ?? (cell.value !== undefined ? String(cell.value) : '');
@@ -181,12 +214,15 @@ export function deriveMatrixAudit(
     for (let c = firstCol; c < endCol; c++) {
       const col = model.columns[c]!;
       const cell = model.cell(r, c);
-      if (cell.kind === 'diagonal') continue;
+      if (cell.kind === 'diagonal' && cell.text === undefined) continue;
       out.push({
         key: `${row.id}->${col.id}`,
         row: `${row.label} → ${col.label}`,
         value: cellAuditValue(cell),
       });
+    }
+    if (model.margin) {
+      out.push({ key: `${row.id}->margin`, row: `${row.label} · ${model.margin.header}`, value: marginAuditValue(model.margin.cell(r)) });
     }
   }
   return out;

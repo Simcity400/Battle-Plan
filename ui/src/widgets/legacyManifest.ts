@@ -12,7 +12,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'bombing-damage', load: () => import('./bombing-damage') },
   { kind: 'bombing-damage-breakdown', slots: ['render', 'countryChip'], load: () => import('./bombing-damage-breakdown') },
   { kind: 'casualties', load: () => import('./casualties') },
-  { kind: 'casualties-between', load: () => import('./casualties-between') },
   { kind: 'casualties-breakdown', load: () => import('./casualties-breakdown') },
   { kind: 'civil-wars', load: () => import('./civil-wars') },
   { kind: 'command-power-spending', load: () => import('./command-power-spending') },
@@ -72,6 +71,5 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'volunteers', load: () => import('./volunteers') },
   { kind: 'war-contribution', load: () => import('./war-contribution') },
   { kind: 'wars', load: () => import('./wars') },
-  { kind: 'who-spies-on-whom', load: () => import('./who-spies-on-whom') },
   { kind: 'world-tension', load: () => import('./world-tension') },
 ];
