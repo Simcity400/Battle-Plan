@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, resolve } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseAst } from 'rolldown/parseAst';
 import { astLang, extractImportSpecifiers, relPosix, resolveLocalImport, staticStringLiteral, walkAst, walkImportGraph } from './ui-import-graph.mjs';
@@ -49,22 +49,24 @@ const GLOBAL_REGISTRIES = new Set([
 ]);
 const NON_PRODUCT_PROPERTY_NAMES = new Set(['kind', 'view', 'owner', 'className', 'icon', 'category', 'family']);
 
-export const BASE_SNAPSHOT_PATHSPECS = [
-  'ui/src',
-  'ui/vite.config.ts',
-  'ui/browserBridge.ts',
-  'ui/replayLibrary.ts',
-  ':(glob)ui/*.html',
-  ':(glob)crates/*/src/**/*.rs',
-  ':(glob)tools/**/*.mjs',
-  ':(glob)tools/**/*.ts',
-  ':(glob)tools/**/*.js',
-  ':(glob)tools/**/*.cjs',
-  ':(glob)tools/**/*.py',
-  ':(glob)tools/**/*.ps1',
-  ':(glob)tools/**/*.json',
-  ':(glob)tools/**/*.toml',
+const BASE_SNAPSHOT_RULES = [
+  { pathspec: 'ui/src', match: rel => rel.startsWith('ui/src/') },
+  { pathspec: 'ui/vite.config.ts', match: rel => rel === 'ui/vite.config.ts' },
+  { pathspec: 'ui/browserBridge.ts', match: rel => rel === 'ui/browserBridge.ts' },
+  { pathspec: 'ui/replayLibrary.ts', match: rel => rel === 'ui/replayLibrary.ts' },
+  { pathspec: ':(glob)ui/*.html', match: rel => /^ui\/[^/]+\.html$/.test(rel) },
+  { pathspec: ':(glob)crates/*/src/**/*.rs', match: rel => /^crates\/[^/]+\/src\/.+\.rs$/.test(rel) },
+  { pathspec: ':(glob)tools/**/*.mjs', match: rel => rel.startsWith('tools/') && rel.endsWith('.mjs') },
+  { pathspec: ':(glob)tools/**/*.ts', match: rel => rel.startsWith('tools/') && rel.endsWith('.ts') },
+  { pathspec: ':(glob)tools/**/*.js', match: rel => rel.startsWith('tools/') && rel.endsWith('.js') },
+  { pathspec: ':(glob)tools/**/*.cjs', match: rel => rel.startsWith('tools/') && rel.endsWith('.cjs') },
+  { pathspec: ':(glob)tools/**/*.py', match: rel => rel.startsWith('tools/') && rel.endsWith('.py') },
+  { pathspec: ':(glob)tools/**/*.ps1', match: rel => rel.startsWith('tools/') && rel.endsWith('.ps1') },
+  { pathspec: ':(glob)tools/**/*.json', match: rel => rel.startsWith('tools/') && rel.endsWith('.json') },
+  { pathspec: ':(glob)tools/**/*.toml', match: rel => rel.startsWith('tools/') && rel.endsWith('.toml') },
 ];
+
+export const BASE_SNAPSHOT_PATHSPECS = BASE_SNAPSHOT_RULES.map(rule => rule.pathspec);
 
 function walkDirectory(dirPath, root, predicate, out = []) {
   if (!existsSync(dirPath)) return out;
@@ -2431,11 +2433,21 @@ function resolveBaseCommit(root, explicitRef) {
   return baseSha;
 }
 
-export function materializeCommitSnapshot(root, sha, destDir, pathspecs = BASE_SNAPSHOT_PATHSPECS) {
+export function materializeCommitSnapshot(root, sha, destDir) {
+  const treeOut = execFileSync(
+    'git',
+    ['ls-tree', '-r', '-z', '--name-only', sha],
+    { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  const files = treeOut.split('\0').filter(Boolean);
+  const activeSpecs = BASE_SNAPSHOT_RULES
+    .filter(rule => files.some(rule.match))
+    .map(rule => rule.pathspec);
+  if (activeSpecs.length === 0) return;
   const tarPath = join(destDir, '__base.tar');
   execFileSync(
     'git',
-    ['archive', '--output', tarPath, sha, '--', ...pathspecs],
+    ['archive', '--output', tarPath, sha, '--', ...activeSpecs],
     { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] },
   );
   execFileSync('tar', ['-xf', '__base.tar'], { cwd: destDir, stdio: ['ignore', 'ignore', 'pipe'] });

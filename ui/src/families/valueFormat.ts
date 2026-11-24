@@ -61,12 +61,14 @@ function amountText(value: number | bigint, decimals: number, percent = false): 
 
 export type ValueFormat =
   | 'integer'
+  | 'progress'
   | 'fixed5Percent'
   | 'fixed5Amount'
   | 'fixed5Width'
   | 'clockSeconds'
   | 'decimal1'
   | 'percent2'
+  | 'share'
   | { readonly decimals: number; readonly percent?: boolean; readonly unit?: string; readonly signed?: boolean; readonly maxDecimals?: number; readonly fixedDecimals?: boolean };
 
 export interface FormatValueOptions {
@@ -136,13 +138,15 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
     const digits = groupDigits(String(Math.abs(whole)));
     return `${negative ? '\u2212' : ''}${digits}`;
   }
+  if (format === 'progress') return formatProgress(Number(raw) / 100);
   if (format === 'clockSeconds') return formatClockSeconds(raw);
+  if (format === 'share') return formatShare(Number(raw));
   if (format === 'decimal1') {
     return formatFixedDecimal(raw, 1, false, true, '\u2212');
   }
   if (format === 'percent2') {
     if (raw === 0 || raw === 0n) return '0%';
-    return `${formatFixedDecimal(raw, 2, true, false, '-')}%`;
+    return `${formatFixedDecimal(raw, 2, true, false, '\u2212')}%`;
   }
   if (format === 'fixed5Percent') {
     if (raw === 0 || raw === 0n) return '0%';
@@ -160,7 +164,6 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
     return formatNativeFixed5(big, 1);
   }
   const suffix = format.unit ? ` ${format.unit}` : '';
-  const sign = format.signed && raw > 0 ? '+' : '';
   if (raw === 0 || raw === 0n) {
     if (format.fixedDecimals && format.maxDecimals !== undefined && format.maxDecimals > 0) {
       return `0.${'0'.repeat(format.maxDecimals)}${format.percent ? '%' : ''}${suffix}`;
@@ -173,23 +176,49 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
     const divisor = 10n ** BigInt(format.decimals - format.maxDecimals);
     const rounded = ((negative ? -scaled : scaled) + divisor / 2n) / divisor;
     if (rounded === 0n) return `${format.percent ? '0%' : '0'}${suffix}`;
-    return `${negative ? '−' : sign}${amountText(rounded, format.maxDecimals, format.percent)}${suffix}`;
+    return `${negative ? '−' : format.signed ? '+' : ''}${amountText(rounded, format.maxDecimals, format.percent)}${suffix}`;
   }
   if (format.maxDecimals !== undefined && format.decimals === 0) {
     const formatted = formatFixedDecimal(raw, format.maxDecimals, format.fixedDecimals === true, true, '\u2212', format.signed === true);
     return `${formatted}${format.percent ? '%' : ''}${suffix}`;
   }
-  return `${sign}${amountText(raw, format.decimals, format.percent)}${suffix}`;
+  const text = amountText(raw, format.decimals, format.percent);
+  const zeroText = format.percent ? '0%' : '0';
+  const sign = format.signed && raw > 0 && text !== zeroText ? '+' : '';
+  return `${sign}${text}${suffix}`;
 }
 
 export function formatShare(share: number | null | undefined): string {
   if (share == null || !Number.isFinite(share) || share < 0) return '';
+  if (share === 0) return '0%';
+  if (share >= 1) return '100%';
   const pct = share * 100;
-  if (pct === 0) return '0%';
-  if (pct < 0.05) return '<0.1%';
-  if (pct >= 99.95) return '100%';
-  if (pct >= 10) return `${Math.round(pct)}%`;
-  return `${pct.toFixed(1)}%`;
+  if (pct < 0.1) return '<0.1%';
+  if (pct >= 10) return `${Math.min(99, Math.round(pct))}%`;
+  return `${pct.toFixed(1).replace(/\.0$/, '')}%`;
+}
+
+export function formatProgress(fraction: number | null | undefined): string {
+  if (fraction == null || !Number.isFinite(fraction)) return '';
+  if (fraction <= 0) return '0%';
+  if (fraction >= 1) return '100%';
+  return `${Math.min(99, Math.floor(fraction * 100 + 1e-12))}%`;
+}
+
+export function formatRecordedPercent(
+  value: number | bigint,
+  options?: { readonly signed?: boolean },
+): string {
+  if (typeof value === 'bigint' || (Number.isFinite(value) && Math.abs(value) >= 2 ** 53)) {
+    return `${formatGroupedBigInt(exactTruncBigInt(value), options?.signed === true)}%`;
+  }
+  if (!Number.isFinite(value)) return '';
+  return formatScalar(value, {
+    decimals: 0,
+    maxDecimals: 5,
+    percent: true,
+    ...(options?.signed ? { signed: true } : {}),
+  });
 }
 
 export interface CompactScalar {
@@ -208,7 +237,7 @@ const COMPACT_UNITS = [
 export function formatCompactScalar(raw: Scalar, format?: ValueFormat): CompactScalar {
   const exact = formatScalar(raw, format);
   if (typeof raw === 'string') return { text: exact, exact, compacted: false };
-  if (format === 'clockSeconds' || format === 'fixed5Percent' || format === 'percent2') {
+  if (format === 'clockSeconds' || format === 'fixed5Percent' || format === 'percent2' || format === 'progress' || format === 'share') {
     return { text: exact, exact, compacted: false };
   }
   if (typeof format === 'object' && format.percent) {
@@ -273,8 +302,7 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
       const compact = options?.compact ? formatCompactScalar(value.value, format) : null;
       const text = compact ? compact.text : formatScalar(value.value, format);
       const exact = compact ? compact.exact : text;
-      const lead = value.atLeast ? `at least ${exact}` : exact;
-      const spoken = `${lead}, partial: ${value.reason}`;
+      const spoken = `${exact}, partial: ${value.reason}`;
       return {
         kind: 'partial',
         text,
@@ -469,12 +497,13 @@ export function auditValue(value: Value, _format?: ValueFormat): string {
 
 export function defaultWidestSamples(format?: ValueFormat): readonly string[] {
   if (!format) return [];
-  if (format === 'fixed5Percent') return ['100%'];
+  if (format === 'fixed5Percent' || format === 'progress') return ['100%'];
   if (format === 'fixed5Amount') return ['999.99'];
   if (format === 'fixed5Width') return ['99.9'];
   if (format === 'clockSeconds') return ['99:59:59'];
   if (format === 'decimal1') return ['999.9'];
   if (format === 'percent2') return ['100.00%'];
+  if (format === 'share') return ['100%'];
   if (format === 'integer') return ['9,999,999'];
   if (format.percent) return ['100.00%'];
   const frac = format.decimals > 0 ? `.${'9'.repeat(Math.min(format.decimals, 2))}` : '';

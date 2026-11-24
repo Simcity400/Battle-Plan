@@ -1,5 +1,6 @@
-import type { CountrySelection } from '../dashboard/model';
+import type { BoundTrack, CountrySelection } from '../dashboard/model';
 import type { Gate } from '../dashboard/regionGate';
+import { coverageSpan, recordedHour, type BoundWindow, type GatedHour } from '../dashboard/regionTime.ts';
 import { authoredHex } from '../charts/palette.ts';
 import type { CountryFlagChoice, CountryGroupReply, HourSpan } from '../generated/dashboard';
 import { nextFactionsChange, type FamilyFactionRun, type HourRanges } from './holders.ts';
@@ -20,6 +21,18 @@ export function freezeGate(
   recordedRun?: (hour: number) => readonly [number, number],
 ): FrozenGate {
   return recordedRun ? { recorded: gate.recorded, span: gate.span, recordedRun } : { recorded: gate.recorded, span: gate.span };
+}
+
+export function trackGate(track: Pick<BoundTrack, 'branch' | 'source'>): FrozenGate {
+  const { firstHour, lastHour } = track.branch;
+  return {
+    recorded: hour => recordedHour(track, hour) as GatedHour | null,
+    span: (first, last) => {
+      const from = Math.max(Math.floor(first), firstHour), to = Math.min(Math.floor(last), lastHour);
+      return from <= to ? { firstHour: from, lastHour: to } as BoundWindow : null;
+    },
+    recordedRun: hour => coverageSpan(track, hour),
+  };
 }
 
 export function effectiveCountryUnobserved(

@@ -63,6 +63,7 @@ export interface TimelineModelParts {
   readonly empty?: string | null;
   readonly emptyKind?: 'empty' | 'unavailable';
   readonly warnings?: readonly string[];
+  readonly notes?: readonly string[];
   readonly nextChangeAt?: number;
 }
 
@@ -77,6 +78,7 @@ export function timelineModel(parts: TimelineModelParts): TimelineModel {
     ...(parts.summaryText ? { summaryText: parts.summaryText } : {}),
     ...(parts.empty ? { empty: parts.empty, emptyKind: parts.emptyKind ?? 'empty' } : {}),
     warnings: parts.warnings ?? [],
+    ...(parts.notes?.length ? { notes: parts.notes } : {}),
     nextChangeAt: parts.nextChangeAt ?? Infinity,
   };
 }

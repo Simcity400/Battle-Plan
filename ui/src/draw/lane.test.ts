@@ -13,6 +13,7 @@ import { splitForLanes } from '../dashboard/follow/split.ts';
 import { componentReading } from '../dashboard/follow/useFollowed.ts';
 import { installedEntry } from '../dashboard/follow/store.ts';
 import type { Pipeline } from '../dashboard/follow/pipeline';
+import { boundDated } from '../families/host/dated.ts';
 
 interface Fake extends Bitmap { content: string; closed: boolean }
 const NATIVE = 9, ROUTE = 1;
@@ -157,6 +158,30 @@ test('addendum 2: a moving widget stays due, one step per acknowledgement, after
   assert.equal(page.view(1).fields?.step, 3, 'motion ran to its end, each step a whole install');
 });
 
+test('the host’s dated binding and the lane’s intersection meet: a static proof dates the picture alone or beside a followed stream', async () => {
+  const proof = [100, 140] as const;
+  const alone = rig();
+  alone.mount(1, [], 'fields', 0, { dated: boundDated({ hour: 100, follows: true }, proof, false, false, null)! });
+  await alone.step(99, { playing: false });
+  assert.equal(alone.page.view(1).mode, 'reading', 'nothing before the hour the static read answered');
+  await alone.step(120, { playing: false });
+  assert.deepEqual([alone.page.view(1).mode, alone.page.view(1).h, alone.page.view(1).through, alone.page.view(1).dim], ['picture', 100, 120, false]);
+  await alone.step(150, { playing: false });
+  assert.deepEqual([alone.page.view(1).through, alone.page.view(1).dim], [140, true], 'at rest past the proof the picture is held as not current');
+
+  const beside = rig();
+  const dated = boundDated({ hour: 100, follows: true }, proof, true, false, null);
+  assert.deepEqual(dated, { h: 100, c: 140 }, 'a followed static read is dated by its proof even beside subscriptions');
+  beside.mount(1, [{ id: 5, channel: 'followed' }], 'fields', 0, { dated: dated! });
+  beside.lane.bindRoute(5, ROUTE, NATIVE);
+  beside.lane.receive('follow', message(160, [{ id: 5, hour: 90, answer: rows([1n], [1n]) }], false, NATIVE));
+  await beside.step(130, { playing: false });
+  assert.deepEqual([beside.page.view(1).mode, beside.page.view(1).h, beside.page.view(1).through], ['picture', 100, 130], 'the join starts at the later of the stream and the static read');
+  await beside.step(150, { playing: false });
+  assert.deepEqual([beside.page.view(1).through, beside.page.view(1).dim], [140, true], 'and is confirmed only through the static proof, though the stream confirms 160');
+  assert.equal(boundDated({ hour: 100 }, null, true, false, null), undefined, 'a pinned read beside subscriptions leaves dating to the stream');
+});
+
 test('addendum 3: a widget of two subscriptions installs their join, or waits while either is missing', async () => {
   const { page, lane, mount, step } = rig();
   mount(1, [{ id: 5, channel: 'followed' }, { id: 7, channel: 'followed' }]);
@@ -173,6 +198,29 @@ test('addendum 3: a widget of two subscriptions installs their join, or waits wh
   await step(29);
   assert.equal(page.view(2).mode, 'picture', 'and installs once the clock reaches the hour that read answered');
   assert.deepEqual([page.view(2).h, page.view(2).through], [28, 28], 'the picture claims only the hours both its static read and its followed stream prove');
+});
+
+test('R3-S2: a finite static proof is never left open to a later confirmation, on the followed or the panel channel', async () => {
+  const followed = rig();
+  followed.mount(1, [{ id: 5, channel: 'followed' }], 'fields', 0, { dated: { h: 28, c: 28 } });
+  followed.lane.bindRoute(5, ROUTE, NATIVE);
+  followed.lane.receive('follow', message(28, [{ id: 5, hour: 20, answer: rows([1n], [1n]) }], false, NATIVE));
+  await followed.step(28, { playing: false });
+  assert.deepEqual([followed.page.view(1).mode, followed.page.view(1).through], ['picture', 28], 'the route confirms exactly the static proof’s end');
+  followed.lane.receive('follow', message(30, [], false, NATIVE));
+  await followed.step(30, { playing: false });
+  assert.equal(followed.page.view(1).through, 28, 'a route confirmation of 30 does not extend a picture whose static read proves only 28');
+  assert.equal(followed.page.view(1).dim, true);
+
+  const panel = rig();
+  panel.mount(1, [{ id: 3, channel: 'panel', product: 'demo' }], 'fields', 0, { dated: { h: 28, c: 28 } });
+  panel.lane.bindRoute(3, ROUTE, NATIVE);
+  panel.lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 28, kind: 'completed' }]));
+  await panel.step(28, { playing: false });
+  assert.deepEqual([panel.page.view(1).mode, panel.page.view(1).through], ['picture', 28]);
+  panel.lane.receive('panels', panels([{ id: 0, hour: 30, kind: 'completed' }]));
+  await panel.step(30, { playing: false });
+  assert.equal(panel.page.view(1).through, 28, 'nor does a panel confirmation');
 });
 
 const at: LaneView = {
@@ -328,12 +376,34 @@ test('should-fix a: a pointer hit-tests the installed picture, never a candidate
   lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: {} }]));
   page.publish(20, { playing: false });
   await flush(); await flush();
-  lane.pointer(1, 0, [1, 1]);
+  lane.pointer(1, 0, [1, 1], page.view(1).id);
   await flush(); await flush();
   assert.deepEqual(hits, ['row:10']);
   const offered = presented.at(-1)!.entries.at(-1)!;
   lane.pointer(1, 0, [1, 1], offered.id);
   assert.deepEqual(hits, ['row:10', 'row:20'], 'a pointer hit-tests the picture it names (the page names the one it installed), even before the lane hears its acknowledgement');
+});
+
+test('R3-S6: a same-owner rebind during a deferred acknowledgement keeps the picture the page shows as the hit target', async () => {
+  const view: LaneView = { paint: (input): Painted => ({ surfaces: [], fields: { h: { value: input.pictures[0]!.h, content: `h:${input.pictures[0]!.h}` } }, motion: false,
+    hit: () => `row:${input.pictures[0]!.h}` }) };
+  const { page, lane, mount, step, hits, presented } = rig({ view });
+  mount(1, [{ id: 3, channel: 'panel' }], 'view');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }]));
+  await step(10, { playing: false });
+  lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: {} }]));
+  page.publish(20, { playing: false });
+  await flush(); await flush();
+  page.frame();
+  const shown = presented.at(-1)!.entries.at(-1)!;
+  assert.equal(page.view(1).id, shown.id, 'the page installed B; its acknowledgement waits for the next frame');
+  lane.bind(1, { generation: 2, surfaces: [], offset: 0, pin: null });
+  lane.pointer(1, 0, [1, 1], shown.id);
+  assert.deepEqual(hits, ['row:20'], 'the lane hit-tests B, which the page still shows, not the A it last acknowledged');
+  await step(20);
+  lane.pointer(1, 0, [1, 1], shown.id);
+  assert.deepEqual(hits, ['row:20', 'row:20'], 'and still after B’s acknowledgement arrives under the old binding');
 });
 
 test('changed rows still in flight from before a rewind never merge onto the new stream, and an early stream waits for its seek', async () => {

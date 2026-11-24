@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
+import type { CountryGroupReply, FactionGroup, GroupCount } from '../../generated/dashboard';
+import { rankedCounts } from '../../dashboard/groupCounts.ts';
 import { LEADER_GLYPH, UNNAMED, factionChangeHours, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, tagAt } from './factionsData.ts';
 import type { LaneOptions } from './factionsData';
 import { worldFilter } from '../../dashboard/groups.ts';
@@ -25,7 +26,9 @@ const reply: CountryGroupReply = {
 };
 const names: Record<string, string> = { D01: 'Free Republic', ITA: 'Italy', HUN: 'Hungary', 'MY TAG': 'Modded Realm', 'A:B': 'Colon Land' };
 const text = { country: (tag: string) => ({ name: names[tag] ?? tag, flag: `flag:${tag}` }), day: (hour: number) => `day ${hour}` };
-const options: LaneOptions = { order: 'founded', members: 'joined', ended: true, countries: null };
+const counted = (hour: number, groups: readonly [string, number | null][]) => rankedCounts({ branchId: '1', of: 'factions', hour, nextChange: null, missing: null, warnings: [],
+  groups: groups.map(([key, count]): GroupCount => ({ key, count, missing: count === null ? 'Its roster was not read whole at this hour' : null })) });
+const options: LaneOptions = { order: 'founded', members: 'joined', ended: true, countries: null, counts: null };
 const summaryName = (faction: FactionGroup) => ({ name: faction.name, reason: faction.nameReason });
 const views = factionViews(reply, summaryName, id => `colour-${id}`);
 
@@ -102,7 +105,7 @@ test('factions keep recorded ids, colours and names, and count members over know
 });
 
 test('lanes list each faction founded by the hour, then its members, the leader marked', () => {
-  const early = factionLanes(views, 180, options, text, reply.unobserved.factions, 100);
+  const early = factionLanes(views, 180, { ...options, counts: counted(180, [[factions[0].id, 3]]) }, text, reply.unobserved.factions, 100);
   assert.deepEqual(early.lanes.map(lane => lane.identity?.label), [UNNAMED, 'Free Republic', 'Hungary', 'Italy']);
   assert.equal(early.lanes[0].heading, true);
   assert.equal(early.lanes[0].label, '3 members', 'the heading counts members; the leader is marked in its row');
@@ -126,8 +129,9 @@ test('dissolved factions and former members can be hidden, and chosen countries 
   assert.deepEqual(hidden.lanes.map(lane => lane.identity?.label), [UNNAMED, 'Free Republic', 'Hungary', 'Italy']);
   const chosen = factionLanes(views, 320, { ...options, countries: new Set(['MY TAG']), countryIds: countryIdentityIndex(reply.countryIdentities).selected(['MY TAG']) }, text, reply.unobserved.factions, 100);
   assert.deepEqual(chosen.lanes.map(lane => lane.identity?.label), ['Pact of Steel Reforged', 'Modded Realm', 'Colon Land']);
-  const byMembers = factionLanes(views, 280, { ...options, order: 'members' }, text, reply.unobserved.factions, 100);
-  assert.deepEqual(byMembers.lanes.filter(lane => lane.heading).map(lane => lane.identity?.label), [UNNAMED, 'Pact of Steel Reforged']);
+  const byMembers = factionLanes(views, 280, { ...options, order: 'members', counts: counted(280, [[factions[1].id, 2], [factions[0].id, null]]) }, text, reply.unobserved.factions, 100);
+  assert.deepEqual(byMembers.lanes.filter(lane => lane.heading).map(lane => [lane.identity?.label, lane.label]), [['Pact of Steel Reforged', '2 members'], [UNNAMED, 'Members not recorded']],
+    'the product ranks: a faction whose count it does not know follows, unranked, never counted here');
   const byName = factionLanes(views, 280, { ...options, order: 'name', members: 'name' }, text, reply.unobserved.factions, 100);
   assert.deepEqual(byName.lanes.map(lane => lane.identity?.label),
     ['Pact of Steel Reforged', 'Colon Land', 'Modded Realm', UNNAMED, 'Free Republic', 'Hungary', 'Italy']);
@@ -142,7 +146,7 @@ test('a member whose tag changes stays one member, neither leaving nor joining',
   };
   const [view] = factionViews(renamed, summaryName, id => id);
   assert.equal(view.members.length, 2);
-  const lanes = factionLanes([view], 250, options, text, [], 0).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
+  const lanes = factionLanes([view], 250, { ...options, counts: counted(250, [['1', 2]]) }, text, [], 0).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
   assert.deepEqual(lanes, ['Pact: 2 members', `BBB: ${LEADER_GLYPH} Leader · Joined day 100`, 'CCC: Joined day 100']);
   assert.equal(factionViews({ ...renamed, identityChanges: [] }, summaryName, id => id)[0].members.length, 2);
   const [unjoined] = factionViews({ ...renamed, identityChanges: [],

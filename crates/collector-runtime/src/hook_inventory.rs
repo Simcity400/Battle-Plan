@@ -485,7 +485,11 @@ pub(crate) fn patches() -> Vec<Patch> {
         add("event_feed_observer", entry.name, entry.rva, FIVE);
     }
     use engine_events::script_event_sites as script;
-    for site in script::TAPS {
+    for site in script::TAPS
+        .into_iter()
+        .chain(engine_events::event_window_sites::VERDICT_TAPS)
+        .chain(engine_events::event_window_sites::PRESENTATION_TAPS)
+    {
         add("event_feed_observer", site.name, site.rva, TAP);
     }
     for site in script::REGISTRY_ENTRIES

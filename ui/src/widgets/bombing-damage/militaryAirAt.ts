@@ -8,7 +8,7 @@ import { formatCompactScalar } from '../../families/valueFormat.ts';
 import type { MilitaryAirAtReply, MilitaryAirAtRow, MilitaryAirFamily, MilitaryAirMetric } from '../../generated/dashboard';
 
 export const MILITARY_AIR_AT = 'military-air-at';
-const PARTIAL = 'Some events since the totals’ start may be missing: at least this much.';
+const PARTIAL = 'Some events since the totals’ start may be missing.';
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const whole = (value: unknown) => typeof value === 'string' && /^-?\d+$/.test(value);
@@ -95,15 +95,15 @@ function ratioFigure(row: MilitaryAirAtRow): string | null {
   return `${hundredths / 100n}.${String(hundredths % 100n).padStart(2, '0')}`;
 }
 
-function wholeCompact(raw: string, options: MilitaryAirAtOptions, complete: boolean): string {
+function wholeCompact(raw: string, options: MilitaryAirAtOptions): string {
   const scale = BigInt(options.scale);
   const whole = (BigInt(raw) + scale / 2n) / scale;
-  return `${complete ? '' : '\u2265'}${formatCompactScalar(whole, { decimals: 0 }).text}`;
+  return formatCompactScalar(whole, { decimals: 0 }).text;
 }
 
 function pairedReadout(row: MilitaryAirAtRow, options: MilitaryAirAtOptions): BarsReadout {
   const ratio = ratioFigure(row);
-  const figures = `${wholeCompact(row.dealt, options, row.complete)} / ${wholeCompact(row.taken, options, row.complete)}`;
+  const figures = `${wholeCompact(row.dealt, options)} / ${wholeCompact(row.taken, options)}`;
   return { primary: ratio ? `${figures} \u00b7 ${ratio}` : figures };
 }
 
@@ -163,7 +163,7 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
       kind: 'data', key: `${row.tag}\u0000${row.identity}`, subject: row.tag, label: pres.label, labelMissing: pres.labelMissing, media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       segments,
-      readout: { primary: `${wholeCompact(row.taken, options, row.complete)} lost` },
+      readout: { primary: `${wholeCompact(row.taken, options)} lost` },
       tooltip: {
         title: pres.labelMissing ? 'Name not recorded' : pres.label,
         hour: readView.hour,

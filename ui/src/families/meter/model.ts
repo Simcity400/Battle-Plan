@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications.ts';
+import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { ThresholdTick } from '../../draw/kit.ts';
 import type { ArtResult, BoundedReadView, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
@@ -141,21 +141,21 @@ export function deriveMeterMirror(model: MeterModel): MirrorModel {
   return { first: 0, total: rows.length, rows };
 }
 
-export function deriveMeterAudit(model: MeterModel): readonly AuditRow[] {
-  const rows: AuditRow[] = [];
-  if (model.summaryText) rows.push({ row: 'summary', key: 'summary', value: model.summaryText });
+export function deriveMeterAudit(model: MeterModel): readonly FamilyAuditRow[] {
+  const rows: FamilyAuditRow[] = [];
+  if (model.summaryText) rows.push(auditRow('summary', model.summaryText));
   if (model.sections) {
     for (const section of model.sections) {
-      rows.push({ row: `section:${section.key}`, key: `section:${section.key}`, value: [section.title, section.count ?? '', section.rightCaption ?? ''].join('|') });
+      rows.push(auditRow(`section:${section.key}`, [section.title, section.count ?? '', section.rightCaption ?? ''].join('|')));
       if (section.rows) {
         for (const row of section.rows) {
-          rows.push({ row: row.key, key: row.key, value: row.audit });
+          rows.push(auditRow(row.key, row.audit));
         }
       }
       if (section.chipLines) {
         for (const line of section.chipLines) {
           for (const chip of line.chips) {
-            rows.push({ row: chip.key, key: chip.key, value: chip.audit });
+            rows.push(auditRow(chip.key, chip.audit));
           }
         }
       }

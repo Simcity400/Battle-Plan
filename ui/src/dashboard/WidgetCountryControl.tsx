@@ -14,7 +14,9 @@ export default function WidgetCountryControl({ widget, template, runtime, onAppl
 }) {
   const id = useId();
   const menu = usePopover();
-  const limits = widgetDefinition(widget.kind)?.countries ?? { max: 1 };
+  const definition = widgetDefinition(widget.kind);
+  const limits = definition?.countries ?? { max: 1 };
+  const SubjectMenu = definition?.subjectMenu;
   const reference = runtime.tracks.find(track => track.id === resolveWidgetCampaign(widget, template, runtime.defaultRoleId).trackIds[0]);
 
   useEffect(() => {
@@ -36,6 +38,7 @@ export default function WidgetCountryControl({ widget, template, runtime, onAppl
     </button>
     <Popover menu={menu} id={id} className="widget-countries-menu" aria-label={`${widget.title} countries`}>
       {menu.open && <CountriesSection inline widget={widget} reference={reference} runtime={runtime} limits={limits} onChange={save} />}
+      {menu.open && SubjectMenu && <SubjectMenu widget={widget} runtime={runtime} onApply={next => { onApply(next, true); menu.close(); }} />}
     </Popover>
   </>;
 }

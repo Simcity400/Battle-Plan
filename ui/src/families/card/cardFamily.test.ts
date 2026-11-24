@@ -107,7 +107,7 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.equal(withPause(null).figure?.value.kind, 'notRecorded');
   const named = warGoalsProjection.project(view(hour, reply, live), { targetNames: true });
   assert.equal(items(named)[0]!.subtitle, 'Take state');
-  assert.ok(deriveCardAudit(model).some(row => row.key === 'state' && String(row.value).endsWith(':Expired')));
+  assert.ok(deriveCardAudit(model).some(row => row.key === `${row.row}:state` && String(row.value).endsWith(':Expired')));
 });
 
 test('national spirits list the product’s membership at the displayed hour, in its order, with since dates and unclassified items kept', () => {
@@ -226,7 +226,7 @@ test('the card audit lists what is drawn: printed meter text, subtitle, hero det
       figure: { value: { kind: 'known', value: '58 days' }, caption: 'Due 3 Mar 1937' }, meter: { fraction: { kind: 'known', value: 0 }, text: '-20%' } },
     { kind: 'item', key: 'item', title: { kind: 'known', value: 'Invented project' }, subtitle: 'Invented science' },
   ] };
-  const audit = new Map(deriveCardAudit(model).map(row => [`${row.row}/${row.key}`, row.value]));
+  const audit = new Map(deriveCardAudit(model).map(row => [row.key.replace(`${row.row}:`, `${row.row}/`), row.value]));
   assert.equal(audit.get('hero/meterText'), '-20%');
   assert.equal(audit.get('hero/detail'), 'Day 12 of 70');
   assert.equal(audit.get('hero/caption'), 'Due 3 Mar 1937');

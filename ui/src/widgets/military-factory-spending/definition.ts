@@ -1,4 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
+import { scopedOptionKey } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOptions.ts';
 import { IC_DECIMALS_OPTION } from '../../dashboard/icDecimals.ts';
@@ -24,7 +25,10 @@ const variants = EQUIPMENT.flatMap(equipment => VIEWS.map(view => ({ equipment, 
   .map(({ equipment, view }) => ({
     key: `equipment=${equipment.value},view=${view.value}`,
     initial: { title: `${equipment.label} factory spending${view.value === 'months' ? ' by month' : ''}`,
-      options: { ...equipment.value === 'air' ? {} : { equipment: equipment.value }, ...view.value === 'circle' ? {} : { view: view.value } } },
+      options: {
+        ...equipment.value === 'air' ? {} : { [view.value === 'months' ? scopedOptionKey('equipment', 'months') : 'equipment']: equipment.value },
+        ...view.value === 'circle' ? {} : { view: view.value },
+      } },
   }));
 
 export const definition = {

@@ -154,7 +154,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
     use dashboard_wars::products::{casualties, casualty_matrix, diplomacy, faction_state, occupation, peace, scoreboard, territory_transfers, volunteers, wargoals, wars};
     use dashboard_politics::products::{feed, national_focus, stability, technology_artwork};
     use dashboard_economy::products::{convoys, economy, trade_flow};
-    use dashboard_production::products::{construction, equipment_losses, equipment_produced, production, production_spending};
+    use dashboard_production::products::{construction, equipment_losses, equipment_produced, production, production_spending, production_spending_months};
     use dashboard_air::products::aircraft_catalogue;
     use dashboard_players::products::{campaign_clock, player_apm};
     use dashboard_research::products::research;
@@ -244,7 +244,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("Ship classes and roles resolve recorded class tokens through the sub-unit database; totals and classes require the recorded navy tables.".into())
         }
         <volunteers::VolunteerFlow as at_hour::AtHour>::KEY => Ok("No content dependency: links are the recorded military aid table and the identity table.".into()),
-        production_spending::ProductionSpending::KEY => {
+        production_spending::ProductionSpending::KEY | production_spending_months::ProductionSpendingMonths::KEY => {
             let units = dashboard_base::catalogue::equipment_units(content.catalogue()?)?;
             Ok(format!("Equipment types resolve each design's recorded archetype through the equipment database ({} types); design names localise the recorded naming operands; amounts and repair rates are the recorded production tables.", units.equipment.len()))
         }
@@ -252,7 +252,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             content.catalogue()?;
             Ok("Deployment orders, divisions in training, manpower and equipment come from the recorded daily queue read; template, priority, location and archetype names resolve through the recorded naming operands and the content stack.".into())
         }
-        <divisions::careers::DivisionCareers as at_hour::AtHour>::KEY | <divisions::careers::DivisionRecord as at_hour::AtHour>::KEY => {
+        <divisions::careers::DivisionCareers as at_hour::AtHour>::KEY | <divisions::careers::DecoratedDivisions as at_hour::AtHour>::KEY | <divisions::careers::DivisionRecord as at_hour::AtHour>::KEY => {
             content.catalogue()?;
             Ok("Division histories, medal totals, experience and kill counters come from recorded rows; medal, level, entry and place names resolve through recorded lexical spellings and the content stack's localisation and defines.".into())
         }

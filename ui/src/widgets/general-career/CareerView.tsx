@@ -95,7 +95,7 @@ export default function CareerView({ reference, onPick, caption, widget, runtime
     {now && role && !now.missing ? <div className="career-top"><LeaderIdentity {...leaderIdentityProps({ name: leaderName(now), role, skill: now.skill }, country)}
       {...leaderPortraitProps(portraitAt[0] ? portraits.at(portraitAt[0]) : undefined)} showCountry />
       <div className="career-stats">
-        <span><strong>{partial ? `≥${now.fought}` : now.fought}</strong>fought</span>
+        <span title={partial ? 'Battle counts are incomplete: some battles were not recorded.' : undefined}><strong>{now.fought}</strong>fought</span>
         <span><strong>{now.won}</strong>won</span><span><strong>{now.lost}</strong>lost</span>
         <span><strong>{decided ? `${Math.round(now.won * 100 / decided)}%` : '—'}</strong>win rate</span>
         <span><strong>{now.fought - decided}</strong>unresolved</span>

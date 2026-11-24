@@ -38,19 +38,23 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
     "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
     "family-colour-literal": "use ui/src/charts/palette.ts, ui/src/shell/appearance/color.ts, or resolveKitTokens in ui/src/draw/kit.ts",
     "family-locale-string": "use formatScalar, formatCompactScalar, or formatValueState from ui/src/families/valueFormat.ts",
     "family-measure-text-loop": "use textWidth or measureCanvasText from ui/src/charts/textWidth.ts, or fitLabelWidth / fitLabel from ui/src/charts/labels.ts",
+    "family-hand-percent": "use formatShare, formatProgress, or formatRecordedPercent from ui/src/families/valueFormat.ts",
+    "family-at-least-wording": "show the figure with the partial mark and a plain missing reason; never print 'at least', '≥', or '+ means'",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 TS_FIXTURE = re.compile(r"\.fixtures?\.tsx?$")
 FAMILY_OR_WIDGET_TS = re.compile(r"^ui/src/(?:families|widgets)/.+\.tsx?$")
 TS_TOKEN = re.compile(r"""//|/\*|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""", re.DOTALL)
 TS_FN_RHS = r"(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$]\w*\s*=>)"
+AT_LEAST_STRING = re.compile(r"\bat\s+least\b|\u2265|\\u2265|\+\s*means\b", re.IGNORECASE)
+AT_LEAST_JSX = re.compile(r"\u2265|\+\s*means\b", re.IGNORECASE)
 LOCAL_CONTRAST_INK = re.compile(
     rf"\b(?:function\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*|(?:const|let)\s+(?:inkOn|contrastInk|relativeLuminance|readableText)\w*\s*=\s*{TS_FN_RHS}|\breadableText\s*\()"
 )
@@ -61,6 +65,9 @@ FAMILY_COLOUR_LITERAL = re.compile(r"""['"`]#[0-9a-fA-F]{3,8}(?=['"`])|\b(?:rgba
 SELECTOR_CALL_PREFIX = re.compile(r"\b(?:querySelector(?:All)?|closest|matches)\s*\(\s*$")
 FAMILY_LOCALE_CODE = re.compile(r"""\.toLocaleString\s*\(|\bnew\s+Intl\.NumberFormat\s*\(""")
 FAMILY_LOCALE_IMPORT = re.compile(r"""from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]""")
+FAMILY_HAND_PERCENT = re.compile(
+    r"""\$\{[^}\n]*(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^}\n]*\}\s*%|(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^;\n]*\+\s*['"`]%"""
+)
 TS_LOOP_HEAD = re.compile(r"\b(?:for|while)\s*\(|\bdo\s*\{|\.(?:forEach|map|reduce|flatMap|filter|some|every)\s*\(")
 TS_MEASURE_TEXT = re.compile(r"\.measureText\s*\(")
 TS_MEASURE_BOX_METRIC = re.compile(r"\s*\.\s*(?:actual|font)BoundingBox(?:Ascent|Descent)\b")
@@ -589,10 +596,56 @@ def rust_matches(name, revision):
     return found
 
 
-def is_family_or_projection(name):
+def is_family_or_widget(name):
     if JS_TEST.search(name) or TS_FIXTURE.search(name):
         return False
     return bool(FAMILY_OR_WIDGET_TS.match(name))
+
+
+def at_least_wording_lines(text):
+    lines = []
+
+    def scan_template(body, base_offset):
+        at, length = 0, len(body)
+        while at < length:
+            interp = body.find("${", at)
+            chunk = body[at:] if interp < 0 else body[at:interp]
+            for hit in AT_LEAST_STRING.finditer(chunk):
+                lines.append(line_of(text, base_offset + at + hit.start()))
+            if interp < 0:
+                break
+            end = closing(body, interp + 1, "{", "}")
+            lines.extend(at_least_wording_lines_in_segment(text, body[interp + 2:end - 1], base_offset + interp + 2))
+            at = end
+
+    def at_least_wording_lines_in_segment(full_text, segment, base_offset):
+        found_lines = []
+        at, length = 0, len(segment)
+        while (tok := TS_TOKEN.search(segment, at)) is not None:
+            start, token = tok.start(), tok.group()
+            plain = segment[at:start]
+            for hit in AT_LEAST_JSX.finditer(plain):
+                found_lines.append(line_of(full_text, base_offset + at + hit.start()))
+            if token == "//":
+                end = segment.find("\n", start)
+                end = length if end < 0 else end
+            elif token == "/*":
+                close = segment.find("*/", start + 2)
+                end = length if close < 0 else close + 2
+            elif token.startswith("`"):
+                end = tok.end()
+                scan_template(token[1:-1], base_offset + start + 1)
+            else:
+                end = tok.end()
+                for hit in AT_LEAST_STRING.finditer(token[1:-1]):
+                    found_lines.append(line_of(full_text, base_offset + start + 1 + hit.start()))
+            at = end
+        for hit in AT_LEAST_JSX.finditer(segment[at:]):
+            found_lines.append(line_of(full_text, base_offset + at + hit.start()))
+        return found_lines
+
+    lines.extend(at_least_wording_lines_in_segment(text, text, 0))
+    return sorted(lines)
 
 
 def mask_ts_comments(text, *, blank_strings=False):
@@ -664,6 +717,9 @@ def family_ts_matches(name, text):
         locale_lines = [line_of(text, offset) for offset in sorted(locale_offsets)]
         if locale_lines:
             found["family-locale-string"] = locale_lines
+        percent_lines = [line_of(text, m.start()) for m in FAMILY_HAND_PERCENT.finditer(code_with_strings)]
+        if percent_lines:
+            found["family-hand-percent"] = percent_lines
     if ".measureText" in code:
         loops = ts_loop_spans(code)
         measure_lines = [
@@ -673,6 +729,9 @@ def family_ts_matches(name, text):
         ]
         if measure_lines:
             found["family-measure-text-loop"] = measure_lines
+    at_least_lines = at_least_wording_lines(text)
+    if at_least_lines:
+        found["family-at-least-wording"] = at_least_lines
     return found
 
 
@@ -683,7 +742,7 @@ def matches(name, revision):
         return {}
     if name.endswith(".rs"):
         return rust_matches(name, revision)
-    if is_family_or_projection(name):
+    if is_family_or_widget(name):
         return family_ts_matches(name, text)
     pattern = JS_CLOCK if JS_TEST.search(name) else PS_CLOCK if PS_TEST.search(name) else None
     if pattern is None:
@@ -699,10 +758,10 @@ def git(*args):
 
 
 def read(name):
-    """Whether a rule reads the file: first-party Rust, family/projection TS, JS and TS tests, PowerShell tests."""
+    """Whether a rule reads the file: first-party Rust, family/widget TS, JS and TS tests, PowerShell tests."""
     if name.startswith(("vendor/", "fuzz/")):
         return False
-    return name.endswith(".rs") or is_family_or_projection(name) or bool(JS_TEST.search(name) or PS_TEST.search(name))
+    return name.endswith(".rs") or is_family_or_widget(name) or bool(JS_TEST.search(name) or PS_TEST.search(name))
 
 
 def changes(base, head):
