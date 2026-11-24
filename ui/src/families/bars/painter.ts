@@ -430,11 +430,14 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
             : (row.numeric ?? 0) === 0
               ? theme.muted
               : theme.text;
-          ctx.fillText(ellipsise(formatted.text, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY - 7);
-          const sub = row.value?.caption ?? ((row.numeric ?? 0) < 0 ? 'Short a day' : (row.numeric ?? 0) > 0 ? 'Surplus a day' : 'Balanced');
-          ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
-          ctx.fillStyle = theme.muted;
-          ctx.fillText(ellipsise(sub, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY + 8);
+          const captioned = layout.showPair;
+          ctx.fillText(ellipsise(formatted.text, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, captioned ? middleY - 7 : middleY);
+          if (captioned) {
+            const sub = row.value?.caption ?? ((row.numeric ?? 0) < 0 ? 'Short a day' : (row.numeric ?? 0) > 0 ? 'Surplus a day' : 'Balanced');
+            ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
+            ctx.fillStyle = theme.muted;
+            ctx.fillText(ellipsise(sub, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY + 8);
+          }
           ctx.restore();
         }
       }
