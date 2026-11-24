@@ -216,6 +216,18 @@ test('clock: a paused forward step that native has not covered keeps the install
   assert.deepEqual([view().dim, view().expired], [true, true], 'a pending rebind does not hide that the coverage expired');
 });
 
+test('clock: a picture already dimmed by a pending rebind tells its widget when a paused step then expires it (R3-S4)', () => {
+  const { p, offer, view } = page();
+  offer(entry({ id: 1, h: 10, c: 20 })); p.publish(20, { playing: false });
+  p.rebind(1);
+  assert.deepEqual([view().dim, view().expired], [true, false], 'dimmed by the rebind, still covered');
+  let told = 0;
+  p.widgets.get(1)!.changed = () => { told++; };
+  p.publish(21);
+  assert.deepEqual([view().id, view().dim, view().expired], [1, true, true]);
+  assert.equal(told, 1, 'the expiry reaches the host, whose input gate must refuse the old picture');
+});
+
 test('clock: pause, speed change, seek and rebind each wake a request at the actual target', () => {
   const { p, posted } = page();
   p.publish(100, { playing: true, step: 24 });
