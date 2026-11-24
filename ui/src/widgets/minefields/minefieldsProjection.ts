@@ -11,7 +11,7 @@ import { regionLabel } from '../../families/heat/scale.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
-import { ADD_REGION_LABEL, mostActiveHeading, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
+import { ADD_REGION_LABEL, mostActiveHeading, noRegionsBody, PICKED_REGIONS_HEADING, type RegionNouns } from '../../families/regions/regionRows.ts';
 import { formatShare } from '../../families/valueFormat.ts';
 import type { MinedRegion } from '../../generated/dashboard';
 import { minesText, validateMinefields, type RegionRow } from './minefieldsData.ts';
@@ -19,6 +19,8 @@ import { minesText, validateMinefields, type RegionRow } from './minefieldsData.
 const FALLBACK_SURFACE = DEFAULT_CARD_SURFACE;
 
 export type MinefieldsOrderOption = 'mines' | 'name';
+
+const MINED_REGIONS: RegionNouns = { one: 'mined region', many: 'mined regions', none: 'No minefields at this date.' };
 
 export interface MinefieldsProjectionOptions {
   readonly order: MinefieldsOrderOption;
@@ -183,7 +185,7 @@ function projectMineRegion(
 export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> = registerFamilyProjection({
   kind: 'minefields',
   family: 'bars',
-  project(readView: BoundedReadView): BarsModel {
+  project(readView: BoundedReadView, options: MinefieldsProjectionOptions): BarsModel {
     const hour = readView.hour;
     const refused = readView.refused('main');
     if (refused) {
@@ -199,18 +201,15 @@ export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> =
     for (const region of reply.regions) {
       (region.pinned ? picked : automatic).push({ ...projectMineRegion(region, reply.scale, readView), region: region.region });
     }
-    const empty = !reply.regions.length
-      ? (reply.unknown.length > 0 ? "Some countries' minefields were not recorded at this date." : 'No minefields at this date.')
-      : undefined;
-    const emptyKind = reply.unknown.length > 0 ? 'unavailable' : 'empty';
+    const empty = reply.empty ? noRegionsBody(reply.empty, MINED_REGIONS) : null;
     return buildShareRowsModel({
       hour,
       picked,
       automatic,
       pickedHeading: PICKED_REGIONS_HEADING,
-      automaticHeading: mostActiveHeading(null),
+      automaticHeading: options.order === 'name' ? 'Mined regions' : mostActiveHeading(null),
       addRegionLabel: ADD_REGION_LABEL,
-      ...(empty !== undefined ? { empty, emptyKind } : {}),
+      ...(empty ?? {}),
       warnings: reply.warnings,
     });
   },

@@ -42,8 +42,12 @@ import {
   resolveWidgetScopedOptions,
   resolveWidgetViewSwitch,
   familyViewOptionFields,
+  presetStoredOptions,
   widgetOptionFields,
+  widgetViewOptions,
 } from './manifest.ts';
+import { viewSlotProps } from './viewProps.ts';
+import type { WidgetSpec } from '../dashboard/model';
 
 test('manifest accounts for every widget kind once across family views and legacy entries', () => {
   const familyKinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
@@ -108,6 +112,9 @@ test('every manifest view reaches its own projection through the binding the hos
           const reopened = parseStoredOptions(JSON.parse(JSON.stringify(written)));
           assert.ok(reopened, `${entry.kind}/${view}: ${field.key} written by the ${editor} survives a save`);
           assert.equal(resolveOptions(read, reopened)[field.key], value, `${entry.kind}/${view}: ${field.key} written by the ${editor} is what the host reads`);
+          const handed = viewSlotProps(entry.kind, { widget: { kind: entry.kind, options: reopened } as unknown as WidgetSpec });
+          assert.equal(handed.options[field.key], value, `${entry.kind}/${view}: ${field.key} written by the ${editor} is what the view's wrapper, chip and detail window are handed`);
+          assert.equal(Object.hasOwn(handed.widget ?? {}, 'options'), false, `${entry.kind}/${view}: the view's wrapper is never handed the stored record`);
         }
       }
     }
@@ -437,4 +444,13 @@ test('two table views of one kind each draw their own projection, and a missing 
   await drain(() => woken > 1);
   assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => {}), shares);
   assert.equal(familyProjection('table', 'synthetic-same-family'), undefined, 'a kind with named views has no default view to fall back to');
+});
+
+test('a preset is stored through the mapping of the view it opens, so the view reads what the preset chose (R3-S3)', () => {
+  const stored = presetStoredOptions('world-tension', { values: 'recorded' });
+  assert.equal(resolveWidgetActiveView('world-tension', stored), 'tension');
+  assert.equal(widgetViewOptions('world-tension', stored).values, 'recorded', 'the Tension view shows recorded contributions, not its default share');
+  const race = presetStoredOptions('army-size', { view: 'race', countFor: 'host' });
+  assert.equal(widgetViewOptions('army-size', race).countFor, 'host', 'R3-S2: a race preset counting expeditionary forces for the host is what the race view and its detail read');
+  assert.equal(viewSlotProps('army-size', { widget: { kind: 'army-size', options: race } as unknown as WidgetSpec }).options.countFor, 'host');
 });

@@ -4,7 +4,7 @@ import { useCallback, useMemo } from 'react';
 import type { CountryGroupReply, FactionGroup } from '../generated/dashboard';
 import type { BoundTrack } from './model';
 import type { OptionChoices, WidgetRuntime } from './definitions';
-import type { WidgetSpec } from './model';
+import type { WidgetBase, WidgetSpec } from './model';
 import { contentKey, setToken } from './options.ts';
 import { selectedCountryKeys } from './countrySelection.ts';
 import { factionNameAt as recordedNameAt } from './factionNames.ts';
@@ -77,7 +77,7 @@ export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, tra
   return { groups, pick, tag, hour };
 }
 
-export function useFactionDetails(runtime: WidgetRuntime, widget: WidgetSpec, faction: string | null, active: boolean) {
+export function useFactionDetails(runtime: WidgetRuntime, widget: WidgetBase, faction: string | null, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const params = useMemo(() => faction ? { faction, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, [faction, viewpointTag]);

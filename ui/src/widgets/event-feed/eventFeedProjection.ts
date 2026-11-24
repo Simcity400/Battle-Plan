@@ -1,6 +1,6 @@
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
-import type { BoundedReadView, SourceEntry, SourcePlan } from '../../families/contract.ts';
+import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import {
@@ -8,6 +8,7 @@ import {
   logCountryCell,
   logDateCell,
   logStatusCell,
+  occurrenceSelection,
   pagedTailEntry,
   projectPagedSlots,
   urlArtHandle,
@@ -18,30 +19,16 @@ import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/r
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
-import type { EventFeedPageRow, EventFeedRow, EventFeedSpanReply, MembershipRun } from '../../generated/dashboard';
+import type { EventFeedPageRow, EventFeedRow } from '../../generated/dashboard';
 import { optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
-import {
-  EVENT_FEED_NOISE_KINDS,
-  eventCountryHour,
-  familyRows,
-  feedFacets,
-  kindsRequest,
-  spanNotes,
-  validateFeedRow,
-  validateSpan,
-} from './eventFeedData.ts';
+import { validateFeedRow } from './eventFeedData.ts';
 import { plainScripted, reasonsOf } from './scriptedGaps.ts';
 
 export interface EventFeedProjectionOptions {
   readonly categories: readonly string[];
-  readonly excludedKinds: readonly string[];
   readonly artwork: boolean;
-  readonly from: number | null;
-  readonly filter: {
-    readonly passing: Readonly<Record<string, readonly (readonly [number, number])[]>> | null;
-  };
 }
 
 const HEAD_LIMIT = 256;
@@ -471,75 +458,16 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
   family: 'table',
   project(readView, options): TableModel {
     const hour = readView.hour;
-    const categorySet = new Set(options.categories);
-    const excludedSet = new Set(options.excludedKinds);
-    if (!categorySet.size) {
-      return {
-        columns: EVENT_FEED_COLUMNS,
-        rows: [],
-        hour,
-        hideHeader: true,
-        unsorted: true,
-        dateGrouped: true,
-        empty: 'No recorded events match these settings.',
-      };
-    }
-    const refused = readView.refused('main') ?? readView.refused('span');
-    if (refused !== undefined) {
-      return { columns: EVENT_FEED_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused };
-    }
+    const empty = { columns: EVENT_FEED_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true } as const;
+    if (!options.categories.length) return { ...empty, empty: 'No recorded events match these settings.' };
+    const refused = readView.refused('main');
+    if (refused !== undefined) return { ...empty, refused };
     const source = readView.rows<EventFeedPageRow & DatedLogRow>('main');
-    const rawSpan = readView.panel<EventFeedSpanReply>('span');
-    if (!source && rawSpan === undefined) {
-      return { columns: EVENT_FEED_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true };
-    }
-    if (source?.refused) {
-      return { columns: EVENT_FEED_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
-    }
+    if (!source) return empty;
+    if (source.refused) return { ...empty, refused: source.refused };
 
     const boundary = newIdentityBoundary();
     const foldByKey = new Map<string, FoldMeta>();
-    const countryFn = options.filter.passing
-      ? (tag: string, atHour: number) => !!options.filter.passing![tag]?.some(([first, last]) => first <= atHour && atHour <= last)
-      : null;
-
-    const spanBuilt: TableRow[] = [];
-    const warnings: string[] = [];
-    if (rawSpan) {
-      warnings.push(...spanNotes(rawSpan));
-      const fRows = familyRows(rawSpan, categorySet, options.from, countryFn);
-      for (let i = fRows.length - 1; i >= 0; i--) {
-        const entry = fRows[i]!;
-        if ((entry.revealedHour ?? entry.hour) > hour) continue;
-        if (excludedSet.has(entry.item.event.kind)) continue;
-        const built = buildFeedTableRow(readView, entry.item.event, entry.key, options.artwork, hour, boundary);
-        foldByKey.set(built.row.key, built.fold);
-        spanBuilt.push(built.row);
-      }
-    }
-
-    if (!source) {
-      const win = readView.rowWindow ?? { first: 0, count: 64 };
-      const sliced = spanBuilt.slice(win.first, win.first + win.count);
-      const rawSlots: TableModelSlot[] = sliced.map(row => ({ kind: 'data', row }));
-      const folded = foldConsecutiveSlots(rawSlots, foldByKey);
-      return {
-        columns: EVENT_FEED_COLUMNS,
-        rows: folded.rows,
-        slots: folded.slots,
-        hour,
-        hideHeader: true,
-        unsorted: true,
-        dateGrouped: true,
-        windowOffset: win.first,
-        totalRows: spanBuilt.length,
-        nextChangeAt: boundary.next,
-        rowTimeBoundaries: false,
-        ...(warnings.length ? { warnings } : {}),
-        ...(folded.slots.length === 0 ? { empty: 'No recorded events match these settings.' } : {}),
-      };
-    }
-
     const paged = projectPagedSlots(
       source,
       hour,
@@ -552,58 +480,21 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
         } catch {
           return null;
         }
-        if (valid.readHour > hour) return null;
-        if (EVENT_FEED_NOISE_KINDS.has(valid.kind) || excludedSet.has(valid.kind)) return null;
-        if (countryFn && !valid.tags.some(tag => countryFn(tag, eventCountryHour(valid)))) return null;
-        const built = buildFeedTableRow(readView, valid, rawRow.key, options.artwork, hour, boundary);
+        const event: EventRowWithChoice = rawRow.choice ? { ...valid, chosenOption: rawRow.choice.option, chosenHour: rawRow.choice.row.hour } : valid;
+        const built = buildFeedTableRow(readView, event, rawRow.key, options.artwork, hour, boundary);
         foldByKey.set(built.row.key, built.fold);
         return built.row;
       },
     );
-
-    const mergedSlots: TableModelSlot[] = [];
     const rawHead = source.rawHead as { readonly warnings?: readonly string[]; readonly unavailable?: readonly { readonly label: string; readonly reason: string }[] } | undefined;
-    if (rawHead?.warnings) warnings.push(...rawHead.warnings);
-    if (rawHead?.unavailable) warnings.push(...rawHead.unavailable.map(u => `${u.label}: ${u.reason}`));
-
-    if (!spanBuilt.length) {
-      mergedSlots.push(...paged.slots);
-    } else {
-      const oldestNativeHour = paged.rows.length ? paged.rows[paged.rows.length - 1]!.rowHour ?? -Infinity : -Infinity;
-      const newestNativeHour = paged.windowOffset === 0 ? hour : (paged.rows[0]?.rowHour ?? hour);
-      const relevantSpan = spanBuilt.filter(row => {
-        const rh = row.rowHour ?? -Infinity;
-        return rh <= newestNativeHour && (paged.windowOffset + paged.rows.length >= source.total || rh >= oldestNativeHour);
-      });
-      let sIdx = 0;
-      for (const slot of paged.slots) {
-        if (slot.kind === 'data') {
-          const rh = slot.row.rowHour ?? -Infinity;
-          while (sIdx < relevantSpan.length && (relevantSpan[sIdx]!.rowHour ?? -Infinity) >= rh) {
-            mergedSlots.push({ kind: 'data', row: relevantSpan[sIdx++]! });
-          }
-          mergedSlots.push(slot);
-        } else {
-          mergedSlots.push(slot);
-        }
-      }
-      while (sIdx < relevantSpan.length) {
-        mergedSlots.push({ kind: 'data', row: relevantSpan[sIdx++]! });
-      }
-    }
-
-    const folded = foldConsecutiveSlots(mergedSlots, foldByKey);
-
+    const warnings = [...(rawHead?.warnings ?? []), ...(rawHead?.unavailable ?? []).map(u => `${u.label}: ${u.reason}`)];
+    const folded = foldConsecutiveSlots(paged.slots, foldByKey);
     return {
-      columns: EVENT_FEED_COLUMNS,
+      ...empty,
       rows: folded.rows,
       slots: folded.slots,
-      hour,
-      hideHeader: true,
-      unsorted: true,
-      dateGrouped: true,
       windowOffset: paged.windowOffset,
-      totalRows: paged.totalRows + (paged.windowOffset === 0 ? spanBuilt.length : 0),
+      totalRows: paged.totalRows,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       ...(warnings.length ? { warnings: [...new Set(warnings)] } : {}),
@@ -617,7 +508,7 @@ function excludedKindsOf(raw: unknown): string[] {
   return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === 'string') : [];
 }
 
-export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOptions, EventFeedSpanReply> = {
+export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOptions> = {
   family: 'table',
   kind: 'event-feed',
   label: 'Event feed',
@@ -625,11 +516,6 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
   emptyCampaign: 'Load a campaign to see key moments.',
   icon: 'clock',
   countries: { mode: 'filter', labels: true },
-  aux: {
-    product: 'event-feed-span',
-    params: track => kindsRequest(track).params as Record<string, unknown>,
-    validate: validateSpan,
-  },
   columns: EVENT_FEED_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx): SourcePlan {
@@ -638,24 +524,13 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
     if (!categories.length) {
       return { owner: `${ctx.track.source.id}:${ctx.branch.id}:event-feed:empty`, entries: [], allowEmptyFollow: true };
     }
-    const kinds = ctx.aux?.kinds;
-    if (!kinds) return { owner: `${ctx.track.source.id}:${ctx.branch.id}:event-feed:loading`, entries: [] };
     const win = !ctx.following ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;
     const rawFrom = ctx.widget.time.mode === 'range' && win ? Math.max(Math.floor(win.firstHour), ctx.branch.firstHour) : null;
     const boundFrom = rawFrom !== null ? ctx.gateSpan(rawFrom, ctx.branch.lastHour)?.firstHour ?? null : null;
-    const facets = feedFacets(kinds, new Set(categories), excludedKinds.length ? new Set(excludedKinds) : undefined);
-    const scopeRuns: MembershipRun[] | undefined = ctx.countries.filter.passing
-      ? Object.entries(ctx.countries.filter.passing).flatMap(([tag, ranges]) =>
-          ranges.flatMap(([first, last]) => {
-            const bound = ctx.gateSpan(first, last);
-            return bound ? [{ tag, firstHour: bound.firstHour, lastHour: bound.lastHour }] : [];
-          }),
-        )
-      : undefined;
-
-    const entries: SourceEntry[] = [];
-    if (facets) {
-      entries.push(
+    const selection = occurrenceSelection(ctx);
+    return {
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-feed:${categories.join(',')}:${excludedKinds.join(',')}:${selection ? JSON.stringify(selection) : 'all'}`,
+      entries: [
         pagedTailEntry(
           'main',
           ctx.track.source,
@@ -664,49 +539,19 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
           {
             product: 'event-feed-tail',
             branchId: ctx.branch.id,
-            facets,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ...(scopeRuns ? { scope: scopeRuns } : {}),
+            ask: { categories, ...(excludedKinds.length ? { exclude: excludedKinds } : {}), ...selection },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
         ),
-      );
-    }
-    entries.push({
-      name: 'span',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'branch-to-hour',
-        coverage: { mode: 'population', form: 'all' },
-        product: 'event-feed-span',
-        followQuery: null,
-        params: { branchId: ctx.branch.id, categories },
-        buildSpanParams: (base, span) => ({ ...base, from: span.firstHour, to: span.lastHour }),
-        dynamicKeys: ['from', 'to'],
-        validate: validateSpan,
-      },
-    });
-    return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:event-feed:${categories.join(',')}:${excludedKinds.join(',')}:${scopeRuns ? scopeRuns.length : 'all'}`,
-      entries,
+      ],
     };
   },
   projection: eventFeedProjection,
   projectionOptions(ctx): EventFeedProjectionOptions {
     const categories = CATEGORIES.filter(c => ctx.options[c.value] === true).map(c => c.value);
-    const excludedKinds = excludedKindsOf(ctx.options.excludedKinds);
-    const win = !ctx.following ? resolveWindow(ctx.widget, ctx.track, [ctx.track], ctx.branch.lastHour) : null;
-    const from = ctx.widget.time.mode === 'range' && win ? Math.max(Math.floor(win.firstHour), ctx.branch.firstHour) : null;
-    return {
-      categories,
-      excludedKinds,
-      artwork: ctx.options.artwork !== false,
-      from,
-      filter: { passing: ctx.countries.filter.passing },
-    };
+    return { categories, artwork: ctx.options.artwork !== false };
   },
 };

@@ -18,6 +18,8 @@ import { tableLane } from './laneView.ts';
 import { tableSettingsOf } from './settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDom.fixture.ts';
 import FamilyHost from '../host/FamilyHost.tsx';
+import { DetailWindowHost } from '../host/DetailWindowHost.tsx';
+import { mirrorRowSelector } from '../host/mirror.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
 import TableChrome from './TableChrome.tsx';
@@ -419,6 +421,19 @@ window.tableFamilyDom = {
     }
   },
 
+  async mirrorSyncsOverFrames(frames: number) {
+    const body = hostNode?.querySelector('table tbody');
+    if (!body) throw new Error('No accessible mirror body');
+    let mutations = 0;
+    const observer = new MutationObserver(records => { mutations += records.length; });
+    observer.observe(body, { subtree: true, childList: true, attributes: true, characterData: true });
+    const installsBefore = installs;
+    const paintsBefore = pipeline.view(pipeId)?.id ?? null;
+    for (let i = 0; i < frames; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    observer.disconnect();
+    return { mutations, installs: installs - installsBefore, samePicture: (pipeline.view(pipeId)?.id ?? null) === paintsBefore };
+  },
+
   async verifyRepaintAndHeld() {
     const hashCanvas = async () => {
       const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.fh-canvas')!;
@@ -593,10 +608,26 @@ window.tableFamilyDom = {
     const didActivate = await until(() => activated.length === 1, 2000);
     if (!didActivate) throw new Error('Enter did not activate focused row');
     const liveStatus = hostNode!.querySelector('[role="status"]')?.textContent ?? '';
+    const openedFrom = afterDown ?? '';
+    const windowNode = document.createElement('div');
+    document.body.append(windowNode);
+    const windowRoot = createRoot(windowNode);
+    const anchor = { current: hostNode };
+    flushSync(() => windowRoot.render(
+      <DetailWindowHost open subject={openedFrom} hour={10} title="Opened row" anchor={anchor}
+        returnFocus={mirrorRowSelector(openedFrom)} onClose={() => {}}>
+        <button type="button" className="opened-row-inside">Inside</button>
+      </DetailWindowHost>,
+    ));
+    document.querySelector<HTMLElement>('.opened-row-inside')?.focus();
+    document.querySelector<HTMLElement>('.opened-row-inside')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    const focusReturned = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === openedFrom, 2000);
+    windowRoot.unmount();
+    windowNode.remove();
 
     hostNode!.style.width = '210px';
     const scrollsSideways = await until(() => !!hostNode!.querySelector('.tf-edges[data-right]'), 3000);
-    return { firstKey, afterDown, activated: [...activated], liveStatus, scrollsSideways, totalInstallReads };
+    return { firstKey, afterDown, activated: [...activated], liveStatus, focusReturned, scrollsSideways, totalInstallReads };
   },
 
   async testEmptySpaceContextMenuAndValueStateTooltip() {

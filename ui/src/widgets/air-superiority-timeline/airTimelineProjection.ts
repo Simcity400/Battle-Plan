@@ -18,7 +18,7 @@ import { contestedGrey, countryColourAt, readableOn, regionLabel, type DatedColo
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { readRegionChoice, regionParams, type RegionChoice } from '../../families/regions/regionChoice.ts';
-import { countrySubject, regionLanes } from '../../families/regions/regionRows.ts';
+import { countrySubject, noRegionsBody, regionLanes } from '../../families/regions/regionRows.ts';
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
@@ -350,8 +350,8 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
       const piece = own?.[spanIndexAt(own, at, item => item.reply.firstHour)];
       return piece && at <= piece.reply.lastHour ? inspectDay(piece, rows[rowIndex]!.label, at, look, surface) : null;
     },
-    ...(rows.length ? {} : { empty: `No air activity${subject ? ` for ${subject}` : ''} at this date.` }),
-    warnings: [...new Set([...tiles, now].flatMap(reply => reply.warnings))],
+    ...(now.empty ? noRegionsBody(now.empty, { one: 'active region', many: 'active regions', none: `No air activity${subject ? ` for ${subject}` : ''} at this date.` }) : {}),
+    warnings: [...new Set([...tiles, now].flatMap(reply => reply.warnings).concat(rows.length && now.rankMissing ? [now.rankMissing] : []))],
   };
 }
 
@@ -368,7 +368,7 @@ function airEntries(ctx: FamilyPlanContext, params: Record<string, unknown>): So
     now: {
       params,
       coverage: { mode: 'population', form: 'top', limit: Number(top) },
-      span: (base, first, last, rankFrom) => ({ ...base, firstHour: first, lastHour: last, rankFrom }),
+      span: (base, first, last) => ({ ...base, firstHour: first, lastHour: last }),
       validThrough: () => null,
     },
     tile: {

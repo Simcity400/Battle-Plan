@@ -1,4 +1,4 @@
-use super::super::spending::{Facts, LineFacts, SpentStep};
+use super::super::spending::{Facts, LineFacts, SpentStep, unread_spans};
 use super::super::SpendingGap;
 use super::index;
 use dashboard_base::products::breakdown::BreakdownState;
@@ -44,10 +44,29 @@ fn hours_with_neither_queue_read_are_not_an_exact_zero() {
     held.spent.clear();
     held.unrecorded.push((0, 4, "The construction queues were not read, so output in those hours is not counted".into()));
     let early = index(&held).at(3);
-    assert_eq!((early.breakdown.total.state, early.breakdown.unrecorded_hours), (BreakdownState::Partial, 4));
+    assert_eq!((early.breakdown.total.state, early.breakdown.total.raw.as_deref(), early.breakdown.unrecorded_hours), (BreakdownState::NotRecorded, None, 4), "no hour witnessed is no figure at all");
     assert_eq!(early.through, 3, "the count of unread hours grows each hour");
     let later = index(&held).at(50);
     assert_eq!((later.breakdown.total.state, later.breakdown.total.raw.as_deref()), (BreakdownState::Partial, Some("0")), "an unread stretch keeps every later zero partial");
+}
+
+#[test]
+fn an_empty_queue_read_in_full_certifies_only_itself() {
+    let mut gaps = Vec::new();
+    unread_spans(0, 100, vec![(0, 100)], "buildings", &mut gaps);
+    unread_spans(0, 100, vec![(0, 39), (60, 100)], "railways", &mut gaps);
+    assert_eq!(gaps, [(40, 59, "railways".to_owned())], "a railway queue unread at 40 to 59 is unread then, whatever the building queue shows");
+    let mut held = facts();
+    held.unrecorded = gaps;
+    let at = index(&held).at(50);
+    assert_eq!((at.breakdown.total.state, at.breakdown.unrecorded_hours), (BreakdownState::Partial, 11), "no witness of the railway queue is never a recorded zero");
+    assert!(at.breakdown.total.reason.as_deref().is_some_and(|reason| reason.contains("railways")));
+    let mut both = facts();
+    both.unrecorded = vec![(40, 59, "buildings".to_owned()), (45, 59, "railways".to_owned())];
+    let at = index(&both).at(59);
+    assert_eq!(at.breakdown.unrecorded_hours, 20, "an hour neither queue was read is one unread hour, not two");
+    let reason = at.breakdown.total.reason.unwrap_or_default();
+    assert!(reason.contains("buildings") && reason.contains("railways"), "each queue names its own gap: {reason}");
 }
 
 #[test]
