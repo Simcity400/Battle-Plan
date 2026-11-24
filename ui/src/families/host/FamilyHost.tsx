@@ -895,7 +895,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           accessibleTableRef.current?.setAttribute('aria-rowcount', String(table.count + 1));
         }
         const hovered = inspectedKeyRef.current;
-        if (hovered && !navRef.current.some(entry => entry[0] === hovered)) clearHoverRef.current();
+        if (hovered && !record.nav.some(entry => entry[0] === hovered)) clearHoverRef.current();
       }
       if (focusInsideRef.current && focusedKeyRef.current && navNow() !== lastFocusNavRef.current) {
         lastFocusNavRef.current = navNow();

@@ -167,9 +167,19 @@ export function buildLineSubpaths(
       }
       const x = layout.toX(pt.hour);
       const y = layout.toY(pt.value);
-      if (!cur.length) cur.push([x, y]);
-      else if (step) cur.push([x, cur[cur.length - 1]![1]], [x, y]);
-      else cur.push([x, y]);
+      const hasRange = pt.min != null && pt.max != null && Number.isFinite(pt.min) && Number.isFinite(pt.max) && pt.min !== pt.max;
+      if (!cur.length) {
+        if (hasRange) cur.push([x, layout.toY(pt.min!)], [x, layout.toY(pt.max!)], [x, y]);
+        else cur.push([x, y]);
+      } else if (step) {
+        cur.push([x, cur[cur.length - 1]![1]]);
+        if (hasRange) cur.push([x, layout.toY(pt.min!)], [x, layout.toY(pt.max!)], [x, y]);
+        else cur.push([x, y]);
+      } else if (hasRange) {
+        cur.push([x, layout.toY(pt.min!)], [x, layout.toY(pt.max!)], [x, y]);
+      } else {
+        cur.push([x, y]);
+      }
       end = [x, y];
     }
     if (cur.length) subpaths.push(cur);

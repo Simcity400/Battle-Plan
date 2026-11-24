@@ -1213,10 +1213,10 @@ export type FactionLinesReply = { branchId: string, measure: string, decimals: n
 bounds: boolean, lines: Array<FactionLine>, warnings: Array<string>, };
 export type TensionValueMode = "share" | "recorded";
 export type WorldTensionStackParams = { branchId: string, firstHour: number, lastHour: number, layers: number, values: TensionValueMode, countries: Array<string> | null, width: number | null, };
-export type TensionStackBand = { slot: number, tag: string | null, remembered: boolean, values: Array<number | null>, endValue: number | null, endRaw: string | null, };
+export type TensionStackBand = { slot: number, tag: string | null, remembered: boolean, values: Array<number | null>, minValues: Array<number | null>, maxValues: Array<number | null>, endValue: number | null, endRaw: string | null, };
 export type TensionStackOther = { count: number, values: Array<number | null>, endValue: number | null, };
 export type TensionStackEvent = { hour: number, tag: string | null, remembered: boolean, reason: string, addedRaw: string, firstRead: number, lastRead: number | null, };
-export type WorldTensionStackReply = { branchId: string, tensionScale: number, contributionScale: number, ceilingRaw: string, endHour: number | null, cappedEndTension: number | null, hours: Array<number>, total: Array<number | null>, bands: Array<TensionStackBand>, other: TensionStackOther | null, events: Array<TensionStackEvent>, missing: Array<MissingSpan>, nextChangeHour: number | null, warnings: Array<string>, };
+export type WorldTensionStackReply = { branchId: string, tensionScale: number, contributionScale: number, ceilingRaw: string, endHour: number | null, cappedEndTension: number | null, downsampled: boolean, hours: Array<number>, total: Array<number | null>, bands: Array<TensionStackBand>, other: TensionStackOther | null, events: Array<TensionStackEvent>, missing: Array<MissingSpan>, nextChangeHour: number | null, warnings: Array<string>, };
 export type FactoryGroupsParams = { branchId: string, };
 export type FactoryGroupBuilding = {
 /**
@@ -5359,11 +5359,19 @@ lastAlive: number | null,
 /**
  * The first read that saw it dead after one that saw it alive.
  */
-byHour: number | null, killerAce: string | null,
+byHour: number | null,
+/**
+ * The first read that saw it dead: the hour its killer's country is named at.
+ */
+seenDead: number | null, killerAce: string | null,
 /**
  * The killer's name when the killer is on the roster at the hour.
  */
-killerName: string | null, killerTag: string | null, };
+killerName: string | null,
+/**
+ * The killer's country tag at `seen_dead`; none when that hour is not known.
+ */
+killerTag: string | null, };
 export type AirAcesParamsAtHour = AirAcesParams & { hour: number };
 export type StabilityBreakdownParams = { branchId: string, country: CountryRef, };
 export type StabilityBreakdownReply = { tag: string, hour: number,
@@ -5621,7 +5629,11 @@ missing: string | null, warnings: Array<string>, };
 export type DecoratedRank = "medals" | "experience" | "casualtiesTaken";
 export type CountryHours = { tag: string, firstHour: number, lastHour: number, };
 export type DecoratedDivisionsParamsAtHour = DecoratedDivisionsParams & { hour: number };
-export type DivisionEquipmentParams = { branchId: string, country: CountryRef, countFor: ArmyAttribution, };
+export type DivisionEquipmentParams = { branchId: string, country: CountryRef, countFor: ArmyAttribution,
+/**
+ * The view whose tables are read and returned: the other view's are neither read nor withheld for.
+ */
+view: DivisionEquipmentView, };
 export type DivisionEquipmentReply = { tag: string, countFor: ArmyAttribution,
 /**
  * Why the country's division equipment is not known at this hour, when it is not.
@@ -5634,7 +5646,11 @@ divisionsShort: number | null, unknownDivisions: number | null, types: Array<Equ
 export type EquipmentVariant = { variant: string, name: string | null, heldRaw: string | null, };
 export type EquipmentType = {
 /**
- * None is the unclassified bucket, not a content key.
+ * The recorded type token, the row's identity; `unclassified` for equipment whose design names no type.
+ */
+key: string, unclassified: boolean,
+/**
+ * The type's content key; none when unclassified or when its token's spelling was not read (`name_missing` says which).
  */
 archetype: string | null, name: string | null, nameMissing: string | null,
 /**
@@ -5658,6 +5674,7 @@ neededRaw: string | null,
  * Needed archetypes only, each division capped at its own need.
  */
 heldRaw: string | null, typesShort: number | null, unknownDivisions: number | null, };
+export type DivisionEquipmentView = "types" | "templates";
 export type DivisionEquipmentParamsAtHour = DivisionEquipmentParams & { hour: number };
 export type ResearchSlotsParams = { branchId: string, country: CountryRef, };
 export type ResearchSlotsReply = { tag: string,
@@ -5734,15 +5751,7 @@ missing: string | null,
 /**
  * The missions any region records, in bit order.
  */
-missions: Array<AirMissionChoice>, regions: Array<AirMissionRegion>,
-/**
- * The owner's theatres, in the game's order; none where membership is not known.
- */
-theatres: Array<AirMissionTheatre> | null,
-/**
- * Why the theatres are not known at the hour.
- */
-theatresMissing: string | null, warnings: Array<string>, };
+missions: Array<AirMissionChoice>, regions: Array<AirMissionRegion>, warnings: Array<string>, };
 export type AirMissionChoice = { id: string, name: string, icon: SpriteFrame | null, };
 export type AirMissionRegion = { region: string, name: string | null,
 /**
@@ -6108,13 +6117,40 @@ manpower: Array<FactionManpowerDetail> | null, manpowerUnlocked: boolean | null,
  */
 researchCountries: Array<string> | null, doctrineFolders: Array<FactionDoctrineDetail> | null, refusals: Array<FactionRefusalDetail>, warnings: Array<string>, };
 export type FactionDetailParamsAtHour = FactionDetailParams & { hour: number };
-export type CountryFactionGoalsParams = { branchId: string, country: CountryRef, };
+export type CountryFactionGoalsParams = { branchId: string, country: CountryRef, goals: GoalFilter, };
 export type CountryFactionGoalsReply = {
 /**
- * The faction the country belongs to at the hour, as `faction-details` answers it; none when it
- * belongs to none, or when `membership_missing` says membership is not known.
+ * The faction the country belongs to at the hour; none when it belongs to none, or when
+ * `membership_missing` says membership is not known.
  */
-faction: FactionDetailReply | null, membershipMissing: string | null, warnings: Array<string>, };
+faction: string | null,
+/**
+ * The goals the filter shows, held goals first in the game's order, then completed, then cancelled.
+ */
+goals: Array<CountryGoal>,
+/**
+ * The definitions the goals name, once each.
+ */
+definitions: Array<FactionGoalDefinition>,
+/**
+ * Why the faction's goal lists are not known at the hour; the goals are then empty.
+ */
+goalReason: string | null, membershipMissing: string | null, warnings: Array<string>, };
+export type GoalFilter = "all" | "inProgress" | "completed";
+export type GoalState = "inProgress" | "completing" | "cancelling" | "completed" | "cancelled" | "unrecognised";
+export type CountryGoal = { key: string,
+/**
+ * An index into the reply's `definitions`.
+ */
+definition: number, state: GoalState,
+/**
+ * The held goal's ordinal, the row of its live progress cell `goal:<ordinal>`; none for a goal in the completed or cancelled lists.
+ */
+ordinal: number | null,
+/**
+ * The native state, where it is `unrecognised`.
+ */
+unrecognisedStatus: number | null, };
 export type CountryFactionGoalsParamsAtHour = CountryFactionGoalsParams & { hour: number };
 export type WarContributionsParams = { branchId: string,
 /**
@@ -6641,7 +6677,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "construction-log-manifest": { "branchId": "leaf" },
   "content-entity-stats": { "branchId": "leaf", "hour": "leaf", "kind": "leaf", "token": "leaf" },
   "convoy-health": { "branchId": "leaf", "country": "any", "from": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "to": "leaf", "top": "leaf", "view": "leaf" },
-  "country-faction-goals": { "branchId": "leaf", "country": "any", "hour": "leaf" },
+  "country-faction-goals": { "branchId": "leaf", "country": "any", "goals": "leaf", "hour": "leaf" },
   "country-facts": { "branchId": "leaf" },
   "country-flags": { "flags": "node", "flags[]": "node", "flags[].keys": "node", "flags[].keys.0": "leaf", "flags[].keys.1": "leaf", "flags[].keys.2": "leaf", "flags[].reasons": "node", "flags[].reasons.0": "leaf", "flags[].reasons.1": "leaf", "flags[].reasons.2": "leaf", "flags[].searched": "node", "flags[].searched.0": "leaf", "flags[].searched.1": "leaf", "flags[].searched.2": "leaf", "size": "leaf" },
   "country-fuel": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6659,7 +6695,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "diplomatic-pacts": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "diplomatic-relations": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "order": "leaf", "top": "leaf" },
   "division-careers": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
-  "division-equipment": { "branchId": "leaf", "countFor": "leaf", "country": "any", "hour": "leaf" },
+  "division-equipment": { "branchId": "leaf", "countFor": "leaf", "country": "any", "hour": "leaf", "view": "leaf" },
   "division-log": { "branchId": "leaf", "cursor": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "pageSize": "leaf", "to": "leaf" },
   "division-log-manifest": { "branchId": "leaf" },
   "division-record": { "branchId": "leaf", "division": "leaf", "hour": "leaf" },
