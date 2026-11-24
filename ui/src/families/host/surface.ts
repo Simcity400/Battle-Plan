@@ -28,6 +28,7 @@ export interface FamilyPlacementOptions {
   readonly declarationKind: string;
   readonly widgetId: string;
   readonly widgetKind: string;
+  readonly owner?: string;
   readonly subject?: string;
   readonly widgetTrackIds?: readonly string[];
   readonly dataContext?: string;
@@ -60,6 +61,7 @@ export function useFamilyPlacement(options: FamilyPlacementOptions): FamilyPlace
     declarationKind,
     widgetId,
     widgetKind,
+    owner,
     subject = '',
     widgetTrackIds,
     dataContext = '',
@@ -83,7 +85,8 @@ export function useFamilyPlacement(options: FamilyPlacementOptions): FamilyPlace
     pin,
     bounds,
     widget: widgetKey,
-    key: `${widgetKind}|${declarationKind}`,
+    kind: `${widgetKind}:${declarationKind}`,
+    key: `${widgetId}|${declarationKind}|${instanceId}`,
   });
 
   const frameElement = useElement(frameRef);
@@ -100,7 +103,7 @@ export function useFamilyPlacement(options: FamilyPlacementOptions): FamilyPlace
       })
     : runtime.tracks.map(track => [track.source.id, track.source.revision, track.branch.id]);
   const subsContext = subscriptions.map(s => [s.source.id, s.source.revision, s.branch]);
-  const dataContextKey = JSON.stringify([declarationKind, subject, trackContext, subsContext, dataContext]);
+  const dataContextKey = JSON.stringify([declarationKind, owner ?? '', subject, trackContext, subsContext, dataContext]);
 
   const subsRef = useRef(subscriptions);
   subsRef.current = subscriptions;

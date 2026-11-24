@@ -1,4 +1,11 @@
-export { renderFamilyBodyState, type FamilyBodyStateProps } from './FamilyBodyState.tsx';
+export { renderFamilyBodyState, renderFamilyStatus, type FamilyBodyStateProps } from './FamilyBodyState.tsx';
+export {
+  useFamilyPlan,
+  type BannerFailureInfo,
+  type StaticBundle,
+  type UseFamilyPlanInput,
+  type UseFamilyPlanResult,
+} from './useFamilyPlan.ts';
 export { handleFamilyKeyDown, TYPEAHEAD_RESET_MS, type FamilyKeyboardOptions, type FamilyNavTuple } from './keyboard.ts';
 export {
   optionElementId,
