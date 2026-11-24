@@ -288,7 +288,7 @@ impl Block {
         self.describe_at(definitions, icons, loc, scale, prefix, include_mask, 2)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the native description options, each its own operand")]
+    #[expect(clippy::too_many_arguments, reason = "the native description options, each its own operand")]
     pub(super) fn describe_at(
         &self,
         definitions: &Definitions<'_>,

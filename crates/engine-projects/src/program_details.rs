@@ -163,7 +163,10 @@ fn skill_level(
     Ok(0)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the program pointer and row identify one program, and the owner, assignment and emit callbacks belong to the caller"
+)]
 pub fn observe(
     memory: &impl Memory,
     base: usize,

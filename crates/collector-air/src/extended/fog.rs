@@ -675,7 +675,7 @@ impl Captured {
         self.carrier_scratch.prepare(demand)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one decode's borrowed parts")]
+    #[expect(clippy::too_many_arguments, reason = "one decode's borrowed parts")]
     pub fn decode_registrations_prepared(
         &mut self,
         base: usize,

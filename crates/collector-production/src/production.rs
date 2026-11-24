@@ -466,7 +466,7 @@ impl Variants {
         )
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "the capture context, its four dispatches and the phase marks"
     )]
@@ -636,7 +636,6 @@ impl Variants {
             },
         );
         let retry = census.as_ref().is_some_and(|census| !census.is_current());
-        drop(census);
         drop(held);
         if retry {
             capture_text(
@@ -1056,10 +1055,6 @@ impl Captured {
         self.acquire_buffers(memory, base, game_state, divisions, hour, force_full)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The fixed reference and worker use identical native readers"
-    )]
     fn acquire_buffers(
         &mut self,
         memory: &impl Memory,

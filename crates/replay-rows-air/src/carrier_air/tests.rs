@@ -28,7 +28,7 @@ fn carrier_base_suffix_preserves_raw_host_bytes_and_dense_occurrences() {
     };
     let after = AirBaseRow {
         carrier: Recorded::Value(Some(inputs)),
-        ..previous.clone()
+        ..previous
     };
     let delta = after.delta(Some(&previous)).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 5);

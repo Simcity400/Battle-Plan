@@ -289,7 +289,7 @@ struct Entry {
 
 type Identity = (u32, Option<u32>);
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "one template's recorded facts and the entries and index it adds to")]
 fn aggregate(
     content: &Content,
     template: &DivisionTemplateIconRow,

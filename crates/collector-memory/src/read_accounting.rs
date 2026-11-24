@@ -10,7 +10,7 @@ use std::{
 };
 
 pub type TableCounts = [ReadCounts; TABLE_COUNT];
-#[allow(
+#[expect(
     clippy::large_const_arrays,
     reason = "The zero counts also initialize thread-local state in a const context."
 )]

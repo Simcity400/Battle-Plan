@@ -1591,7 +1591,7 @@ impl<'a> Walk<'a> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the element, the scrollbar, its placement and range, its track frame and clip")]
     fn extended_parts(
         &mut self,
         element: &Element,

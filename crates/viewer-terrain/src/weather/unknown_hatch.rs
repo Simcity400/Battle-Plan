@@ -235,7 +235,7 @@ impl UnknownHatch {
         ring.streams.retain_mut(|(.., drawn)| std::mem::take(drawn));
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "the device, the targets, the pass's textures, its blocks and its parameters"
     )]

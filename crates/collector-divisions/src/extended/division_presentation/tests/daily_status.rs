@@ -554,8 +554,8 @@ fn an_hour_never_waits_for_the_store_the_hour_before_still_settles() {
     assert_eq!(tables, expected[1]);
     drop(first.take_settled_store().unwrap());
     let newer = second.take_settled_store().unwrap();
-    let newer_address = &*newer as *const _;
+    let newer_address = &raw const *newer;
     drop(newer);
     slot.prepare_hour(3, false);
-    assert_eq!(&*slot.take().unwrap() as *const _, newer_address);
+    assert_eq!(&raw const *slot.take().unwrap(), newer_address);
 }

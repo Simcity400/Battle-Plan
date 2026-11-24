@@ -149,7 +149,10 @@ fn auth(memory: &impl Memory, base: usize, p: usize, rva: Rva) -> Result<(), &'s
 
 const UNREADABLE: &str = "reinforcement input unreadable";
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the accumulator, scope and keys select the modifiers, and the sources, output and length are caller-owned"
+)]
 fn append_modifiers(
     memory: &impl Memory,
     base: usize,
@@ -672,7 +675,10 @@ pub(crate) fn owned_war_relation(
     Ok(false)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the army, stats and location locate one context, and the sources, country reader and row are caller-owned"
+)]
 fn air(
     memory: &impl Memory,
     base: usize,
@@ -835,7 +841,10 @@ fn transport_owner(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the army and location locate one context, and the sources, modifier and transport arenas are caller-owned"
+)]
 fn transport_context(
     memory: &impl Memory,
     base: usize,
@@ -1024,7 +1033,10 @@ fn transport_context(
     Ok(row)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the army and expected handle identify one context, and the sources and each term arena are caller-owned"
+)]
 #[cfg(test)]
 pub(crate) fn capture_context(memory: &impl Memory, base: usize, game: usize, sources: &mut Sources, army: usize, expected_handle: u64, modifiers: &mut Vec<ModifierTerm>, supply: &mut Vec<SupplyTerm>, acclimatization_terms: &mut Vec<AcclimatizationTerm>, transport_terms: &mut Vec<TransportTerm>, transport_start: usize) -> Result<ContextRow, &'static str> {
     capture_context_buffer(memory, base, game, sources, army, expected_handle, Buffer::Growing(modifiers), Buffer::Growing(supply), Buffer::Growing(acclimatization_terms), transport_terms, transport_start)

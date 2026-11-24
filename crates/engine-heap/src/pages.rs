@@ -337,7 +337,7 @@ pub(crate) unsafe fn resize(pointer: *mut u8, old: usize, new: usize) -> bool {
     let read = unsafe {
         VirtualQuery(
             tail.cast(),
-            &mut region,
+            &raw mut region,
             size_of::<MEMORY_BASIC_INFORMATION>(),
         )
     };

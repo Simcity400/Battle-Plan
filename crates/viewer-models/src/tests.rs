@@ -195,7 +195,7 @@ fn merging_a_shard_rebases_every_palette_slot() {
     };
     let mut shard = ModelLibrary {
         palette: vec![joint; 3],
-        meshes: vec![shard_mesh.clone()],
+        meshes: vec![shard_mesh],
         rigs: vec![Arc::new(Rig {
             nodes: vec![entity_animation::Node {
                 native: None,

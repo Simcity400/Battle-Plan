@@ -275,7 +275,7 @@ fn used_up_types_locked_categories_and_undetected_buildings_offer_nothing() {
             owner_slot: 0,
             ordinal: 0,
             raid_type: OILFIELD,
-            scope: dam.scope.clone(),
+            scope: dam.scope,
         }],
     );
     let icons = icons(&assets, &frame, 0, &launch::Unreconstructed);
@@ -2978,7 +2978,7 @@ mod launch_gate {
         rows[0].owned_state_count = replay_data::rows::Recorded::Value(Some(0));
         rows[0].launch_sources = replay_data::rows::Recorded::NotRecorded;
         put::<tables::ReservedCountryNaming>(&mut frame, rows);
-        let mut empty = kind.clone();
+        let mut empty = kind;
         empty.unit_requirements = vec![UnitRequirement::default()];
         *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
             reason: "unreached building tokens".into(),

@@ -446,7 +446,7 @@ mod tests {
         ));
         let switched = owners.get_with(identities(&other), &CounterFilter::Players, &mut read);
         assert_eq!(switched, Some(Arc::new(BTreeSet::from([2]))));
-        let mut changed = other.clone();
+        let mut changed = other;
         changed[1] = view();
         owners.get_with(identities(&changed), &CounterFilter::Players, &mut read);
         owners.get_with(identities(&changed), &CounterFilter::All, &mut read);

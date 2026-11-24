@@ -980,7 +980,7 @@ fn shown_or_recorded<T>(
     None
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the entity, its bones, its animation source and its rocket defines build one rig together")]
 fn scenario_rig(
     entity: &str,
     (kind, outcome): (u8, u8),
@@ -4290,6 +4290,7 @@ impl AircraftPlan {
         }
         {
             let library = assets.library();
+            #[expect(clippy::mutable_key_type, reason = "asset keys cache display data outside equality and ordering")]
             let mut wings = BTreeMap::new();
             for (ordinal, f) in self.flights.iter().enumerate() {
                 let entry = wings

@@ -361,12 +361,12 @@ mod owner_tests {
         let owner = Owner::new(&frame, 7).unwrap();
         let first = owner.pointer_active_slot(2).unwrap_err();
         let cached = match owner.context.get().unwrap() {
-            Err(reason) => reason as *const String,
+            Err(reason) => std::ptr::from_ref::<String>(reason),
             Ok(_) => panic!("stale packet unexpectedly admitted"),
         };
         assert_eq!(owner.pointer_active_slot(0), Err(first));
         let later = match owner.context.get().unwrap() {
-            Err(reason) => reason as *const String,
+            Err(reason) => std::ptr::from_ref::<String>(reason),
             Ok(_) => panic!("failed admission unexpectedly replaced"),
         };
         assert_eq!(cached, later);

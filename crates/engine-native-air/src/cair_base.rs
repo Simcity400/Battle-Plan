@@ -28,7 +28,10 @@ pub use state_summary::{
     state_country_order, state_country_order_demand, verify_country_occurrences,
 };
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the registration, pool, members and first wing locate one carrier pool, and the resolved links are caller-owned"
+)]
 pub fn state_pool_inputs<M: Memory>(
     memory: &M,
     image: usize,
@@ -443,7 +446,10 @@ impl<M: Memory> Reader<'_, M> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one registration updates the shared resolver, buffers, state, carrier capture and reuse"
+    )]
     fn registration<O: Memory>(
         &self,
         observed: RegistrationBase,
@@ -902,7 +908,10 @@ pub fn walk_registrations_with_carrier<M: Memory, O: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the registration buffers, base rows, carrier capture, slot mode and reuse are separate caller-owned parts of one walk"
+)]
 pub fn walk_registrations_with_carrier_planned<M: Memory, O: Memory>(
     memory: &M,
     base: usize,
@@ -925,7 +934,10 @@ pub fn walk_registrations_with_carrier_planned<M: Memory, O: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the registration buffers, base rows, carrier capture, slot mode and reuse are separate caller-owned parts of one walk"
+)]
 fn walk_registrations_inner<M: Memory, O: Memory>(
     memory: &M,
     base: usize,

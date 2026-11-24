@@ -144,23 +144,23 @@ mod tests {
     fn a_take_while_the_latest_store_is_out_gets_its_own_and_only_the_latest_carries() {
         let slot = Slot::new(held()).unwrap();
         let first = slot.take().unwrap();
-        let first_address = &*first as *const ArmyStatStore;
+        let first_address = &raw const *first;
         let mut second = slot.take().unwrap();
-        assert_ne!(&*second as *const ArmyStatStore, first_address);
+        assert_ne!(&raw const *second, first_address);
         assert!(second.held_name(0, 7).is_none());
         second.complete();
-        let second_address = &*second as *const ArmyStatStore;
+        let second_address = &raw const *second;
         let third = slot.take().unwrap();
         drop(first);
         assert_eq!(slot.0.state.lock().unwrap().spares.len(), 1);
         drop(second);
         assert!(slot.0.state.lock().unwrap().store.is_none());
-        let third_address = &*third as *const ArmyStatStore;
+        let third_address = &raw const *third;
         drop(third);
         assert_eq!(slot.spare_bytes(), 0);
         let state = slot.0.state.lock().unwrap();
         assert!(state.spares.is_empty());
-        assert_eq!(state.store.as_deref().unwrap() as *const ArmyStatStore, third_address);
+        assert_eq!(std::ptr::from_ref::<ArmyStatStore>(state.store.as_deref().unwrap()), third_address);
         drop(state);
         assert_ne!(third_address, second_address);
         let out = slot.take().unwrap();

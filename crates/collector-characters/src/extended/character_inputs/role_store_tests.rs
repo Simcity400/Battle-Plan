@@ -356,13 +356,13 @@ fn quiet_hours_carry_scientist_rows_until_a_scientist_writer_runs() {
     let token = TRAITS + 0x20 + 8;
     world.memory.data[token..token + 4].copy_from_slice(&203_u32.to_le_bytes());
     let (stale, _, reads) = world.hour_with(&mut store, &domain, scientists.clone());
-    assert_eq!((stale, reads), (first.clone(), 0));
+    assert_eq!((stale, reads), (first, 0));
     domain.watches.scientist_write();
     let (written, counts, reads) = world.hour_with(&mut store, &domain, scientists.clone());
     assert!(counts.quiet);
     assert_ne!(reads, 0);
     assert_eq!(scientist_tokens(&written), vec![vec![203]; COUNTRIES]);
-    let (again, _, reads) = world.hour_with(&mut store, &domain, scientists.clone());
+    let (again, _, reads) = world.hour_with(&mut store, &domain, scientists);
     assert_eq!((again, reads), (written, 0));
 }
 

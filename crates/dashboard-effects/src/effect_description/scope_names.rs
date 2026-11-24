@@ -132,10 +132,7 @@ impl Renderer<'_, '_, '_> {
         )
     }
 
-    #[allow(
-        dead_code,
-        reason = "shared carrier name entry point for raid effect ports"
-    )]
+    #[cfg_attr(not(test), expect(dead_code, reason = "only its tests call it"))]
     pub(super) fn raid_name(&self, reference: u64) -> Result<String, String> {
         self.context
             .world()?

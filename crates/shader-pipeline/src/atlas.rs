@@ -308,7 +308,6 @@ impl<'a> Stage<'a> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn block(
         &mut self,
         handle: Option<Handle<Function>>,
@@ -359,7 +358,6 @@ impl<'a> Stage<'a> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     fn expression(
         &self,
         handle: Option<Handle<Function>>,

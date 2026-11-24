@@ -603,7 +603,7 @@ fn a_building_source_compares_template_and_location() {
         &mut frame,
         RaidSource {
             building_location: 7302,
-            ..building.clone()
+            ..building
         },
     );
     assert!(
@@ -660,7 +660,7 @@ fn tooltip_operand_oracle_checks_references_ordinals_and_missing_census() {
     *frame.tables[TableId::RaidTooltipOperands.index()] =
         TableView::Complete(TableRows::RaidTooltipOperands(rows.clone()));
     assert!(compare(&frame).differences.is_empty());
-    let mut wrong = rows.clone();
+    let mut wrong = rows;
     wrong[1].raw = 1;
     wrong[1].ordinal = 3;
     *frame.tables[TableId::RaidTooltipOperands.index()] =

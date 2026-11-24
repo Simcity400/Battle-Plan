@@ -357,7 +357,7 @@ impl EngagedIndex {
     #[cfg(any(test, feature = "test-support"))]
     pub fn folded(frames: &[DecodedFrame], country: Country, load: Option<Hour>) -> Self {
         let shared = Arc::new(History::default());
-        let mut pass = Pass::new(Arc::clone(&shared), country.clone());
+        let mut pass = Pass::new(Arc::clone(&shared), country);
         for frame in frames {
             pass.fold_hour(frame.branch, frame.hour, Some(frame), load, false);
         }

@@ -353,8 +353,8 @@ pub(crate) fn presentation_counter() -> u32 {
         }
         let (mut count, mut frequency) = (0_i64, 0_i64);
         unsafe {
-            QueryPerformanceCounter(&mut count);
-            QueryPerformanceFrequency(&mut frequency);
+            QueryPerformanceCounter(&raw mut count);
+            QueryPerformanceFrequency(&raw mut frequency);
         }
         if frequency > 0 {
             return (i128::from(count) * 1_000_000_000 / i128::from(frequency)) as u32;
@@ -392,7 +392,7 @@ mod tests {
         let defines = defines();
         let height = |_, _| 0.;
         let mut fleet = ConvoyFleet::new(
-            &[line.clone(), line.clone()],
+            &[line.clone(), line],
             &defines,
             &|| 7,
             &|_| Some(1000.),

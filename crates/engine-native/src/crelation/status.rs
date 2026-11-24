@@ -223,7 +223,10 @@ pub(crate) fn serially<T>(walk: impl FnOnce() -> T) -> T {
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the country reader, resolver, country, diplomacy, matrix and records feed one country's candidates"
+)]
 fn gather_candidates(
     memory: &impl Memory,
     countries: &ccountry::Reader<'_, impl Memory>,
@@ -379,7 +382,10 @@ pub fn links_observed_transport(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, war buffers and resolver are caller-owned, and the ordered and transport hours are optional"
+)]
 fn links_observed_inner(
     memory: &impl Memory,
     base: usize,
@@ -1074,7 +1080,10 @@ pub fn count(memory: &impl Memory, base: usize, game_state: usize, active: [bool
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the opinion and tuple arenas, resolver and baseline are caller-owned, and the active flags, observation and selection come from the caller"
+)]
 pub fn walk_with(
     memory: &impl Memory,
     base: usize,
@@ -1101,7 +1110,10 @@ pub fn walk_with(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the opinion and tuple buffers, resolver and baseline are caller-owned, and the active flags, observation and selection come from the caller"
+)]
 fn walk_buffers(
     memory: &impl Memory,
     base: usize,
@@ -2660,7 +2672,10 @@ fn read_pointers(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the country reader, owner, target and serializable array locate the tuples, and the output, counters and resolver are caller-owned"
+)]
 fn read_tuples(
     memory: &impl Memory,
     base: usize,
@@ -2813,6 +2828,5 @@ mod zero_subject_tests;
     target_env = "msvc",
     target_arch = "x86_64"
 ))]
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[doc(hidden)]
 pub mod bench;

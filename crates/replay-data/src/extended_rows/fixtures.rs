@@ -4523,7 +4523,7 @@ fn character_input_rows_refuse_contradictions() {
         },
         CharacterRoleTraitRow {
             definitions: Vec::new(),
-            ..role.clone()
+            ..role
         },
     ] {
         assert!(encode_row(&bad, 0, &mut Vec::new()).is_err(), "{bad:?}");
@@ -4588,7 +4588,7 @@ fn character_input_rows_refuse_contradictions() {
     );
     let bad = CharacterOperativeRow {
         reference: 0,
-        ..operative.clone()
+        ..operative
     };
     assert!(decoded.apply(Some(bad)).is_err());
 }
@@ -4656,7 +4656,7 @@ fn supply_vertex_rows_round_trip_beside_nodes_and_delta_only_their_edge() {
         route_to: 40,
         break_after: 1,
         path: vec![40, 41],
-        ..vertex.clone()
+        ..vertex
     };
     let delta = moved.delta(Some(&vertex)).unwrap().unwrap();
     let mut bytes = Vec::new();
@@ -5172,7 +5172,7 @@ fn party_leader_role_keys_round_trip_and_delta() {
     let none = PartyLeaderRow {
         character: None,
         role: None,
-        ..previous.clone()
+        ..previous
     };
     let delta = none.delta(Some(&previous)).unwrap().unwrap();
     assert_eq!(delta.apply(Some(previous.clone())).unwrap(), none);
@@ -5722,7 +5722,7 @@ fn intel_networks_carry_gains_quiet_bytes_and_the_selected_subnetworks_targets()
         target_from_operatives_raw: Some(3_000_000),
         target_from_counterintelligence_raw: Some(-4_750_000),
         subnetwork_quiet: 1,
-        ..previous.clone()
+        ..previous
     };
     let delta = next.delta(Some(&previous)).unwrap().unwrap();
     assert_eq!(delta.mask, 0b1111_1111_1000);
@@ -6088,7 +6088,7 @@ fn land_combat_members_store_their_division_values_once() {
     );
     let own = LandCombatMemberValues {
         armour: 1,
-        ..values.clone()
+        ..values
     };
     let orphan = LandCombatDivisionRow {
         own: Some(own.clone()),
@@ -7572,7 +7572,7 @@ fn participation_rows_round_trip_exact_components_membership_and_column_deltas()
     };
     let changed = WarParticipationRow {
         equipment_damage: i64::MAX,
-        ..baseline.clone()
+        ..baseline
     };
     let delta = changed.delta(Some(&baseline)).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 2);
@@ -7834,7 +7834,7 @@ fn country_mine_reduction_keeps_refusal_absent_key_and_signed_value_distinct() {
     assert_eq!(absent.delta(Some(&before)).unwrap().unwrap().mask, 1 << 24);
     let present = CountryCounterInputRow {
         mines_effect_reduction: Recorded::Value(Some(Some(i64::MIN))),
-        ..before.clone()
+        ..before
     };
     assert_eq!(present.delta(Some(&absent)).unwrap().unwrap().mask, 1 << 24);
     check_table::<CountryCounterInputRow>(TableId::CountryCounterInputs);

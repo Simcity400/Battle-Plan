@@ -73,7 +73,7 @@ pub(super) fn transfers(before: &Snapshot, after: &Snapshot, recorded: bool, sta
         if from == to || changed_tags.contains(&from) || changed_tags.contains(&to) {
             continue;
         }
-        if [from, to].into_iter().any(|tag| before.countries.identities.get(&tag).is_none() || before.countries.identities.get(&tag) != after.countries.identities.get(&tag)) {
+        if [from, to].into_iter().any(|tag| !before.countries.identities.contains_key(&tag) || before.countries.identities.get(&tag) != after.countries.identities.get(&tag)) {
             continue;
         }
         let key = pair(from, to);
@@ -169,7 +169,7 @@ pub(super) fn populate(before: &Snapshot, after: &Snapshot, transfers: &[Transfe
                 if country == from
                     || old.get(&country) != Some(&false)
                     || new.get(&country) != Some(&true)
-                    || before.countries.identities.get(&country).is_none()
+                    || !before.countries.identities.contains_key(&country)
                     || before.countries.identities.get(&country) != after.countries.identities.get(&country)
                     || first_existing.get(&country).is_some_and(|&first| first <= before.hour)
                 {

@@ -1,6 +1,6 @@
 
-#![allow(unused_parens, unused_assignments, unused_variables, unused_mut)]
-#![allow(clippy::all)]
+#![expect(unused_parens, unused_assignments, unused_variables, unused_mut, reason = "the inverse DCTs keep libjpeg's integer arithmetic step for step, so they can be checked against it")]
+#![expect(clippy::all, reason = "the inverse DCTs keep libjpeg's integer arithmetic step for step, so they can be checked against it")]
 
 use std::num::Wrapping as W;
 

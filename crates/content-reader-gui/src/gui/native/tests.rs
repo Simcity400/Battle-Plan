@@ -87,12 +87,12 @@ fn nested_paths_keep_native_name_order_without_losing_backgrounds() {
     assert!(window.path_named("Background").is_some());
     assert!(std::ptr::eq(
         window.path_named("duplicate").unwrap(),
-        &window.children[0]
+        &raw const window.children[0]
     ));
     let inner = window.path_named("inner").unwrap();
     assert!(std::ptr::eq(
         inner.path_named("duplicate").unwrap(),
-        &inner.children[0]
+        &raw const inner.children[0]
     ));
 }
 
@@ -309,7 +309,6 @@ fn script_variables_resolve_in_file_order() {
     assert_eq!(icon(&window, "j").position, [4.0, 4.0]);
 }
 
-#[allow(clippy::type_complexity)]
 const SHARED_VARIABLE_RULES: &[(&str, &[(&[u8], &[u8], bool)], (&[u8], bool), (&[u8], bool))] = &[
     (
         "the first definition wins",

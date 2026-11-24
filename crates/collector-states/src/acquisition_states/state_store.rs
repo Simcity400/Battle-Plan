@@ -219,7 +219,10 @@ impl StateStore {
             && self.hour.globals == self.held.globals
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the carry fills the rows, names, flag visitor and inputs separately"
+    )]
     pub(super) fn carry(
         &mut self,
         memory: &impl Memory,

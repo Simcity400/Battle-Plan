@@ -893,7 +893,7 @@ mod tests {
             result
         }
         let state = AtomicUsize::new(0);
-        let pointer = (&state as *const AtomicUsize) as usize;
+        let pointer = (&raw const state) as usize;
         assert_eq!(
             unsafe {
                 dispatch_navy_reset(

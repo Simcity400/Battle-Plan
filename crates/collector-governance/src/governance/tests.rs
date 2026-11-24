@@ -602,7 +602,10 @@ pub mod focus_test_kit {
             self.w64(country + ccountry::FOCUS_PROGRESS, root as u64);
         }
 
-        #[allow(clippy::too_many_arguments)]
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "writes every field of one fake research root"
+        )]
         fn root(
             &mut self,
             root: usize,

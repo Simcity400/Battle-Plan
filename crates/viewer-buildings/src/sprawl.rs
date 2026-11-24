@@ -930,7 +930,7 @@ mod tests {
         assert!(held.differs(&one) && one.differs(&held), "one province's health");
         let gone = Damage { health: health.patched(&[(4_999, None)]).unwrap(), refused: None };
         assert!(held.differs(&gone), "a province no longer held");
-        let refused = Damage { health: health.clone(), refused: Some("not recorded".into()) };
+        let refused = Damage { health: health, refused: Some("not recorded".into()) };
         assert!(held.differs(&refused), "the refusal");
         let mut scene = presentation(held);
         scene.damage_changed = false;
@@ -1411,7 +1411,7 @@ mod tests {
                 }
             })
             .collect();
-        let mut grouped = Presentation::new(cities.clone(), 80_000, 30_000);
+        let mut grouped = Presentation::new(cities, 80_000, 30_000);
         assert_eq!(grouped.groups.len(), 60);
         let damage = |hour: u32| {
             Arc::new(Damage {

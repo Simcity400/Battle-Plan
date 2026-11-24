@@ -53,6 +53,13 @@ def checkpoint():
     Path(str(METADATA) + '.tmp').replace(METADATA)
     BOOT_MARKER.write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
 
+def cargo_command(args, target, structured):
+    """Cargo's command line, with Boat's own options ahead of any arguments for the program after `--`."""
+    split = args.index('--') if '--' in args else len(args)
+    owned = ['--target', target, *(['--message-format=json-render-diagnostics'] if structured else [])]
+    return ['cargo', 'xwin', *args[:split], *owned, *args[split:]]
+
+
 def prune_incremental():
     usage = shutil.disk_usage(ROOT)
     if usage.used < usage.total * 0.7:
@@ -534,9 +541,8 @@ elif mode in {'check', 'build', 'test', 'ui'}:
                     if subprocess.run(['rustup', 'component', 'add', 'clippy'], cwd=SRC).returncode:
                         print('Clippy could not be installed on this VM', file=sys.stderr, flush=True)
                         sys.exit(80)
-                command = ['cargo', 'xwin', *args, '--target', TARGET]
+                command = cargo_command(args, TARGET, mode in {'build', 'test'})
                 if mode in {'build', 'test'}:
-                    command.append('--message-format=json-render-diagnostics')
                     cache_started = True
                     cache = start_cache(token)
             print('Remote command: ' + ' '.join(command), file=sys.stderr, flush=True)

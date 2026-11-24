@@ -297,6 +297,7 @@ impl CasterKey {
     }
 }
 
+#[expect(clippy::large_enum_variant, reason = "one value per shadow pass, held in place in its cell and never moved in bulk")]
 #[derive(Debug, Default, PartialEq)]
 enum Held {
     #[default]

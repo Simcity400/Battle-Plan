@@ -667,7 +667,10 @@ impl Captured {
         self.certify_prepared(memory, base, seeds, outcome, store, changes, |_| None);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "certification takes the seeds, outcome, store, change source and preparation separately"
+    )]
     pub fn certify_prepared<'a>(
         &mut self,
         memory: &impl Memory,
@@ -683,7 +686,10 @@ impl Captured {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "certification takes the seeds, outcome, store, change source, preparation and deferral separately"
+    )]
     pub fn certify_staged<'a>(
         &mut self,
         memory: &impl Memory,
@@ -1077,7 +1083,10 @@ impl Captured {
         self.certify_ticks
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the capture takes the seeds, outcome, store and maxima beside the read operands"
+    )]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -1091,7 +1100,10 @@ impl Captured {
         self.capture_prepared(memory, base, hour, seeds, outcome, store, maxima, |_| None);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the capture takes the seeds, outcome, store, maxima and preparation beside the read operands"
+    )]
     pub fn capture_prepared<'a>(
         &mut self,
         memory: &impl Memory,
@@ -1130,7 +1142,10 @@ impl Captured {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the owned capture takes the seeds, outcome, store, maxima and preparation separately"
+    )]
     pub fn capture_owned<'a>(
         &mut self,
         base: usize,
@@ -1153,7 +1168,10 @@ impl Captured {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the value capture takes the seeds, outcome, store, maxima and preparation beside the read operands"
+    )]
     fn capture_values<'a>(
         &mut self,
         memory: &impl Memory,
@@ -1834,7 +1852,7 @@ mod tests {
             },
             DivisionMovementStats {
                 terrain: vec![-5_000, 8],
-                ..movement.clone()
+                ..movement
             },
         ] {
             assert!(!captured.same_movement(3, &replay_data::rows::Recorded::Value(Some(changed))));

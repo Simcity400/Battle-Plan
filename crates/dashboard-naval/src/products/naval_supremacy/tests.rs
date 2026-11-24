@@ -20,8 +20,8 @@ fn each_day_is_read_at_its_last_held_hour_and_a_day_split_by_runs_takes_the_late
 #[test]
 fn equal_days_make_one_run_and_an_unknown_day_ends_it() {
     let contested = Values { control: Some(0), friendly: Some(5), enemy: Some(5), share: Some(50_000), own: Some(5) };
-    let friendly = Values { control: Some(1), ..contested.clone() };
-    let refused = Values { control: None, ..contested.clone() };
+    let friendly = Values { control: Some(1), ..contested };
+    let refused = Values { control: None, ..contested };
     let piece = |day: u32, values: &Values| (day, day, values.clone());
     let runs = runs(BTreeMap::from([(9, vec![piece(3, &contested), piece(4, &friendly), piece(5, &refused), (0, 1, contested.clone())])]));
     let summary: Vec<(u32, u32, Option<i8>)> = runs[&9].iter().map(|run| (run.first_day, run.last_day, run.control)).collect();

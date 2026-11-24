@@ -49,7 +49,7 @@ fn cpu() -> u64 { panic!("This benchmark measures Windows process CPU time") }
 fn cycles() -> u64 {
     use windows_sys::Win32::System::{Threading::GetCurrentProcess, WindowsProgramming::QueryProcessCycleTime};
     let mut count = 0;
-    assert_ne!(unsafe { QueryProcessCycleTime(GetCurrentProcess(), &mut count) }, 0);
+    assert_ne!(unsafe { QueryProcessCycleTime(GetCurrentProcess(), &raw mut count) }, 0);
     count
 }
 

@@ -35,7 +35,7 @@ impl Binding {
             && bank.is_some_and(|bank| {
                 self.bank.ptr_eq(bank)
                     && bank.strong_count() != 0
-                    && bank.as_ptr() == inputs.map as *const MapData
+                    && bank.as_ptr() == std::ptr::from_ref::<MapData>(inputs.map)
             })
     }
 }

@@ -266,7 +266,7 @@ fn encode_capture(
     let frame = wire.decode().unwrap();
     replay_capture_spool::spool::encode_record(&replay_capture_spool::spool::Record::Frame(frame.clone())).unwrap();
     let decoded = decoder.apply(&frame).unwrap();
-    decoded.clone()
+    decoded
 }
 struct NoReads;
 impl Memory for NoReads {

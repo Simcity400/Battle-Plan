@@ -157,7 +157,7 @@ impl Observer {
             && self.cursor.load(Ordering::SeqCst) == self.consumed.load(Ordering::SeqCst)
         {
             let mut next = swap.next.take().unwrap();
-            self.log.store(&mut *next, Ordering::SeqCst);
+            self.log.store(&raw mut *next, Ordering::SeqCst);
             self.log_capacity.store(next.words.len(), Ordering::Release);
             swap.retired = swap.current.replace(next);
         }
@@ -1414,7 +1414,7 @@ pub mod test_support {
             (0..words).map(|_| AtomicU64::new(0)).collect(),
             Default::default(),
         ));
-        LIVE.log.store(&mut *storage, Ordering::SeqCst);
+        LIVE.log.store(&raw mut *storage, Ordering::SeqCst);
         LIVE.log_capacity.store(words, Ordering::SeqCst);
         LIVE.log_required.store(0, Ordering::SeqCst);
         LIVE.base_words.store(0, Ordering::SeqCst);
@@ -1489,7 +1489,7 @@ pub mod test_support {
                 (0..words).map(|_| AtomicU64::new(0)).collect(),
                 Default::default(),
             ));
-            observer.log.store(&mut *storage, Ordering::SeqCst);
+            observer.log.store(&raw mut *storage, Ordering::SeqCst);
             observer.log_capacity.store(words, Ordering::SeqCst);
             observer.log_swap.lock().unwrap().current = Some(storage);
             observer.enabled.store(true, Ordering::SeqCst);
@@ -1794,7 +1794,7 @@ mod tests {
         assert_eq!(code[11], 0xf0, "lock inc follows the load");
         let mut base = 0;
         let entry =
-            unsafe { RtlLookupFunctionEntry((stub.start + 4) as u64, &mut base, ptr::null_mut()) };
+            unsafe { RtlLookupFunctionEntry((stub.start + 4) as u64, &raw mut base, ptr::null_mut()) };
         assert!(!entry.is_null());
         let entry = unsafe { &*entry };
         assert_eq!(base as usize + entry.BeginAddress as usize, stub.start);
@@ -1845,9 +1845,9 @@ mod tests {
         let relay_loop = hook.executable_ranges()[0].start + 32;
         let mut bytes = [0u8; 29];
         bytes[..2].copy_from_slice(&[0x48, 0xb8]);
-        bytes[2..10].copy_from_slice(&((&IP_ENTERED as *const _ as usize) as u64).to_le_bytes());
+        bytes[2..10].copy_from_slice(&((&raw const IP_ENTERED as usize) as u64).to_le_bytes());
         bytes[10..15].copy_from_slice(&[0xc6, 0x00, 1, 0x48, 0xb8]);
-        bytes[15..23].copy_from_slice(&((&IP_RELEASE as *const _ as usize) as u64).to_le_bytes());
+        bytes[15..23].copy_from_slice(&((&raw const IP_RELEASE as usize) as u64).to_le_bytes());
         bytes[23..].copy_from_slice(&[0x80, 0x38, 0, 0x74, 0xfb, 0xc3]);
         let mut protection = 0;
         assert_ne!(
@@ -1856,7 +1856,7 @@ mod tests {
                     relay_loop as *const _,
                     bytes.len(),
                     PAGE_READWRITE,
-                    &mut protection,
+                    &raw mut protection,
                 )
             },
             0
@@ -1871,7 +1871,7 @@ mod tests {
                     relay_loop as *const _,
                     bytes.len(),
                     protection,
-                    &mut ignored,
+                    &raw mut ignored,
                 )
             },
             0
@@ -2107,9 +2107,9 @@ mod tests {
         let land_side = engine_native::cland_combatant::VTABLE_RVA.0 as u64;
         let unsupported_unit = [engine_native::carmy::VTABLE_RVA.0 as u64, 1];
         unsafe {
-            observe_wipe(&unknown_side as *const _ as usize, 0);
+            observe_wipe(&raw const unknown_side as usize, 0);
             observe_wipe(
-                &land_side as *const _ as usize,
+                &raw const land_side as usize,
                 unsupported_unit.as_ptr() as usize,
             );
         }
@@ -2278,7 +2278,7 @@ mod tests {
             assert!(hook.set_enabled(tapped).unwrap());
             let mut output = [0u64; 20];
             let army = 0x101_u64;
-            let army_pointer = &army as *const u64 as usize;
+            let army_pointer = &raw const army as usize;
             let _flags = unsafe { land_wipe_test_caller(output.as_mut_ptr(), army_pointer) };
             assert_eq!(
                 &output[..6],

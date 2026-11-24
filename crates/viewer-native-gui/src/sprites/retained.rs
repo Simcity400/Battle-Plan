@@ -463,7 +463,7 @@ mod tests {
             quad.rect[0] = f32::from_bits(0x7fc0_0001);
         }
         assert!(kept.matches(&moved, [16, 16], 1., Some(3)));
-        let mut loose = batch.clone();
+        let mut loose = batch;
         loose.quads[4].rect[0] = -0.;
         assert!(!kept.matches(&loose, [16, 16], 1., Some(3)));
         for changed in [
@@ -513,7 +513,7 @@ mod tests {
         assert_eq!(kept.moved_windows(&batch, [17, 16], 1., Some(3)), None);
         assert_eq!(kept.moved_windows(&batch, [16, 16], 2., Some(3)), None);
         assert_eq!(kept.moved_windows(&batch, [16, 16], 1., Some(4)), None);
-        let mut more = batch.clone();
+        let mut more = batch;
         more.append(&windowed(
             3,
             super::super::WindowStamp { painting: 3, taken: 30 },

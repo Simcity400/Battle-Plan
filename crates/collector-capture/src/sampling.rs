@@ -2210,7 +2210,7 @@ impl Shared {
     }
 
     pub(crate) fn prepare_clock_len(&mut self, len: usize) {
-        let capture = self.clock_capture.get_mut() as *mut ClockCapture;
+        let capture = std::ptr::from_mut::<ClockCapture>(self.clock_capture.get_mut());
         // SAFETY: `&mut self`: no hook runs and nothing else holds the clock buffers.
         let _ = engine_allocation::advisory(|| unsafe { self.grow_own_clock(&mut *capture, len) });
         self.grow_free_clocks(len, 0);
@@ -2291,10 +2291,7 @@ impl Shared {
     /// # Safety
     /// The running capture, which makes no other borrow of the clock buffers while this one lives;
     /// the borrow ends with the hour.
-    #[allow(
-        clippy::mut_from_ref,
-        reason = "the running capture owns the clock buffers alone"
-    )]
+    #[expect(clippy::mut_from_ref, reason = "the running capture owns the clock buffers alone")]
     unsafe fn prepared_clock_capture(
         &self,
         memory: &impl engine_native_memory::Memory,
@@ -2478,7 +2475,7 @@ fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
         }
     }
     unsafe {
-        std::ptr::swap(shared.pending.get(), &mut frame.dropped_before);
+        std::ptr::swap(shared.pending.get(), &raw mut frame.dropped_before);
         (&mut *shared.pending.get()).push(frame.clock.as_ref().map(Clock::borrowed));
     }
     shared.dropped.fetch_add(1, Ordering::Relaxed);
@@ -6496,7 +6493,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             shared.force_next.store(true, Ordering::Release);
         }
         unsafe {
-            std::ptr::swap(&mut frame.dropped_before, shared.pending.get());
+            std::ptr::swap(&raw mut frame.dropped_before, shared.pending.get());
         }
         frame.pool_bytes = shared.pool_total();
         frame.dropped_frames = shared.dropped.load(Ordering::Relaxed);

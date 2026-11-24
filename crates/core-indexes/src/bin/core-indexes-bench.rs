@@ -33,7 +33,7 @@ mod clock {
     }
     pub fn cycles() -> io::Result<u64> {
         let mut cycles = 0;
-        if unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) } == 0 {
+        if unsafe { QueryThreadCycleTime(GetCurrentThread(), &raw mut cycles) } == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(cycles)
@@ -46,10 +46,10 @@ mod clock {
         if unsafe {
             GetThreadTimes(
                 GetCurrentThread(),
-                &mut created,
-                &mut ended,
-                &mut kernel,
-                &mut user,
+                &raw mut created,
+                &raw mut ended,
+                &raw mut kernel,
+                &raw mut user,
             )
         } == 0
         {

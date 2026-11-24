@@ -338,7 +338,7 @@ fn gathered_land_headers_match_per_field_reads() {
     let bytes = fixture();
     let (clean, rows, calls) = run(&bytes, None, false);
     assert_eq!(clean.land, Outcome::Rows { len: 1 });
-    assert_eq!((clean, rows.clone()), {
+    assert_eq!((clean, rows), {
         let (walk, rows, _) = run(&bytes, None, true);
         (walk, rows)
     });

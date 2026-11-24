@@ -915,8 +915,8 @@ impl Product for NavalBattleDetails {
             }
             let through: Vec<(i32, i32)> = reads.iter().take_while(|read| read.0 <= hour).map(|&(start, end)| (start, end.min(hour))).collect();
             let Some(&(_, read)) = through.last() else { continue };
-            if !lists.contains_key(&read) {
-                lists.insert(read, sunk::sinkings_seen(&mut seeker, run, read)?);
+            if let std::collections::hash_map::Entry::Vacant(slot) = lists.entry(read) {
+                slot.insert(sunk::sinkings_seen(&mut seeker, run, read)?);
             }
             let Some((read_at, entries)) = &lists[&read] else { continue };
             let asked: BTreeSet<u64> = combats.iter().copied().collect();

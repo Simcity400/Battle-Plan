@@ -135,7 +135,7 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
     for (filters, keep) in [
         (vec![kinds.clone()], Box::new(|_: i32, kind: u8, _: u32| kind == 1 || kind == 7) as Box<dyn Fn(i32, u8, u32) -> bool>),
         (vec![countries.clone()], Box::new(|_: i32, _: u8, _: u32| true)),
-        (vec![kinds.clone(), countries.clone()], Box::new(|_: i32, kind: u8, _: u32| kind == 1 || kind == 7)),
+        (vec![kinds, countries], Box::new(|_: i32, kind: u8, _: u32| kind == 1 || kind == 7)),
     ] {
         let selection = reader.select(&filters, query.timeline.first, last).unwrap();
         let wanted = events(&query, FIRST, last, &keep);

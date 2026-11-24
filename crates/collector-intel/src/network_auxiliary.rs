@@ -86,7 +86,7 @@ struct Store {
     pairs: Vec<(u32, u32, usize)>,
     seed_order: Vec<usize>,
     owners: Vec<Owner>,
-    #[allow(
+    #[expect(
         clippy::vec_box,
         reason = "Published lane pointers must remain stable when the retention vector grows."
     )]
@@ -132,7 +132,7 @@ impl Store {
             .map_err(|_| "network auxiliary event lane registry allocation failed")?;
         self.lanes.push(lane);
         CURRENT.store(
-            (&**self.lanes.last().unwrap() as *const SharedLane<Event>).cast_mut(),
+            (&raw const **self.lanes.last().unwrap()).cast_mut(),
             Ordering::SeqCst,
         );
         Ok(())

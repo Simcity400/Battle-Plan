@@ -828,7 +828,7 @@ mod tests {
         std::fs::write(&path, "NDefines={Synthetic={Value=7}}").unwrap();
         let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
         let first = super::read(&layers).unwrap();
-        let second = super::read(&layers.clone()).unwrap();
+        let second = super::read(&layers).unwrap();
         assert_eq!(first.number("Synthetic", "Value").unwrap(), 7.0);
         assert_eq!(second.number("Synthetic", "Value").unwrap(), 7.0);
         assert!(second.load("test", b"NDefines.Synthetic.Value=9").is_err());
@@ -905,14 +905,14 @@ mod tests {
         );
         fs::write(&first, b"NDefines={Synthetic={Value=9}}").unwrap();
         fs::write(&later, b"NDefines.Synthetic.Value=0").unwrap();
-        let error = super::read(&layers.clone()).unwrap_err().to_string();
+        let error = super::read(&layers).unwrap_err().to_string();
         assert!(
             error.contains("changed since verification") && error.contains("common/defines/z.lua"),
             "{error}"
         );
         fs::write(&first, source).unwrap();
         fs::remove_file(&later).unwrap();
-        let error = super::read(&layers.clone()).unwrap_err().to_string();
+        let error = super::read(&layers).unwrap_err().to_string();
         assert!(
             error.contains("changed since verification")
                 && error.contains("common/defines/a/a.lua"),

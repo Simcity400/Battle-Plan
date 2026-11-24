@@ -321,6 +321,12 @@ def artifact(package, name, kind, test, executable):
 class TestPrograms(unittest.TestCase):
     """The runner's reading of Cargo's messages: which executable is which test program."""
 
+    def test_boats_own_cargo_options_go_ahead_of_the_programs_arguments(self):
+        command = remote_function("cargo_command")
+        self.assertEqual(command(["clippy", "-p", "a", "--", "-W", "clippy::perf"], "t", False), ["cargo", "xwin", "clippy", "-p", "a", "--target", "t", "--", "-W", "clippy::perf"])
+        self.assertEqual(command(["build", "-p", "a", "--"], "t", True), ["cargo", "xwin", "build", "-p", "a", "--target", "t", "--message-format=json-render-diagnostics", "--"])
+        self.assertEqual(command(["test", "-p", "a"], "t", True), ["cargo", "xwin", "test", "-p", "a", "--target", "t", "--message-format=json-render-diagnostics"])
+
     def test_each_test_program_comes_with_its_package_and_only_named_binaries_come_too(self):
         deps = f"/home/user/hoi4/target/{bt.TARGET}/debug"
         viewer, other = "path+file:///home/user/hoi4/src/crates/viewer#0.1.0", "path+file:///home/user/hoi4/src/crates/viewer-core#0.2.0-rc.1"

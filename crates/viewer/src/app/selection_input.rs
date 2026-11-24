@@ -160,7 +160,7 @@ impl SelectionInput {
         self.refused.iter().map(|(reason, count)| format!("Map selection: {reason} ({count})"))
     }
 
-    #[allow(clippy::too_many_arguments, reason = "one pick's whole input, read where it is held")]
+    #[expect(clippy::too_many_arguments, reason = "one pick's whole input, read where it is held")]
     pub fn pick(
         &mut self,
         history: &History,
@@ -336,7 +336,7 @@ impl super::Viewer {
         self.selection_input.pick(&scene.unit_history, divisions, &library, pass, eye, ray, document.map.width as f32, fallback, order, ours, after)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "a click's whole context, as its siblings take it")]
+    #[expect(clippy::too_many_arguments, reason = "a click's whole context, as its siblings take it")]
     pub(super) fn click_model(
         &mut self,
         document: &Document,
@@ -399,7 +399,7 @@ impl super::Viewer {
         Some(())
     }
 
-    #[allow(clippy::too_many_arguments, reason = "a click's whole context, as its siblings take it")]
+    #[expect(clippy::too_many_arguments, reason = "a click's whole context, as its siblings take it")]
     pub(super) fn select_box(
         &mut self,
         document: &Document,

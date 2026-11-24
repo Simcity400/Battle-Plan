@@ -160,7 +160,7 @@ pub fn prepare(
     Ok((prepared, refused))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "the field and labels it fills, the order inputs and key, its children and the refusals it counts")]
 pub fn emit(
     field: &mut super::OrderField,
     labels: &mut Vec<super::WorldName>,

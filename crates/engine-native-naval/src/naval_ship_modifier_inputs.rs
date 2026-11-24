@@ -406,7 +406,10 @@ fn mixed_terrain(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the task, location and country identify one term, and the row, memo and emit callback are caller-owned"
+)]
 fn location_terms<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
@@ -781,7 +784,10 @@ pub(crate) fn read(
     Ok(row)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the ship and side identify one context, and the doctrine keys, memo and emit callback are caller-owned"
+)]
 pub fn visit_sources<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,

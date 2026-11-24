@@ -126,7 +126,7 @@ fn witnessed_repeats_keep_all_emissions_and_all_typed_country_packs() {
     assert_eq!(representatives.len(), 1);
     assert!(std::ptr::eq(
         representatives[0],
-        &repeated.original_country_items().unwrap()[0],
+        &raw const repeated.original_country_items().unwrap()[0],
     ));
     let mut projected = repeated.project(&identities).unwrap().parse().unwrap();
     assert_eq!(projected.countries.len(), 1);

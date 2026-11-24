@@ -526,7 +526,6 @@ impl Captured {
     /// Caller holds hourly capture admission for the active session (or isolated fixture control)
     /// so global `template_changes` sizing demand updates belong to this pass.
     #[cfg(any(test, feature = "test-support"))]
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn capture_original(
         &mut self,
         memory: &impl Memory,
@@ -543,7 +542,10 @@ impl Captured {
         ticks
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the change source and workers"
+    )]
     fn capture_observed(
         &mut self,
         memory: &impl Memory,

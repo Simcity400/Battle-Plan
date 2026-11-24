@@ -97,7 +97,7 @@ impl Trees {
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "the census slices are separately owned arenas of the naval pack"
     )]
@@ -146,7 +146,7 @@ impl Trees {
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "the census slices, the store and the observer are separate owners"
     )]

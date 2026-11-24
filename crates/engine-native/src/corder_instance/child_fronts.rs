@@ -237,7 +237,10 @@ fn sections(
     Ok((start, *used - start))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the roots, visits, orders, paths and source come from earlier walks, and the plans, output, scratch and group source are caller-owned"
+)]
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -278,7 +281,10 @@ pub fn walk(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the roots, visits, orders, paths, source, placement and census come from earlier walks, and the plans and scratch are caller-owned"
+)]
 pub fn walk_areas(
     memory: &impl Memory,
     base: usize,
@@ -377,7 +383,10 @@ pub fn walk_areas(
     report
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the roots and areas come from earlier walks, and the plans, output, scratch and group source are caller-owned"
+)]
 pub fn walk_groups(
     memory: &impl Memory,
     base: usize,

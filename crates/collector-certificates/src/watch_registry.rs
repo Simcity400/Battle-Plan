@@ -306,7 +306,7 @@ impl WatchRegistry {
 
     #[inline(always)]
     fn tag(&self) -> usize {
-        self as *const Self as usize
+        std::ptr::from_ref::<Self>(self) as usize
     }
 
     #[inline(always)]

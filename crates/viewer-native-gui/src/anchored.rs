@@ -60,7 +60,7 @@ impl Shifts {
         &self.found
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the two cameras, the frame's head and the view")]
+    #[expect(clippy::too_many_arguments, reason = "the two cameras, the frame's head and the view")]
     pub fn move_to(
         &mut self,
         batch: &mut Batch,

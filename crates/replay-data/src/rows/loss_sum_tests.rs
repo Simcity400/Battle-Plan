@@ -127,7 +127,7 @@ fn earlier_provisional_captures_decode_their_samples_to_the_sum() {
     assert_eq!(decoded(&earlier, crate::FORMAT_VERSION), side);
     let empty = LandCombatSideDetails {
         committed: Vec::new(),
-        ..side.clone()
+        ..side
     };
     assert_eq!(encoded(&empty)[..4], u32::MAX.to_le_bytes());
     assert_eq!(

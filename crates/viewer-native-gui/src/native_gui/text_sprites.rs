@@ -90,7 +90,7 @@ impl Walk<'_> {
         ])
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the element, the sprite and its text, frame and state, and its placement, rotation and clip")]
     pub(super) fn text_sprite(
         &mut self,
         element: &Element,

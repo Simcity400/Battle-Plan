@@ -2285,7 +2285,7 @@ fn union_capacity_counts_raw_insertions_even_when_declarations_will_deduplicate(
     )
     .unwrap();
     assert!(matches!(
-        Subscription::union(&[family.clone()], &mut storage),
+        Subscription::union(std::slice::from_ref(&family), &mut storage),
         Err(SubscriptionError::Capacity {
             owner: "fields",
             needed: 2
@@ -3251,7 +3251,7 @@ fn observation_sources_are_stable_across_group_order_and_available_to_foreign_gr
     let consumer = subscription(vec![Declaration::ObservationLookup { source }]);
     for families in [
         [producer.clone(), consumer.clone()],
-        [consumer.clone(), producer.clone()],
+        [consumer.clone(), producer],
     ] {
         let mut storage = union_storage();
         let union = Subscription::union(&families, &mut storage).unwrap();
@@ -3263,8 +3263,8 @@ fn observation_sources_are_stable_across_group_order_and_available_to_foreign_gr
     }
     let mut storage = union_storage();
     let union = Subscription::union_with_observations(
-        &[consumer.clone()],
-        &[observation.clone()],
+        std::slice::from_ref(&consumer),
+        std::slice::from_ref(&observation),
         &mut storage,
     )
     .unwrap();

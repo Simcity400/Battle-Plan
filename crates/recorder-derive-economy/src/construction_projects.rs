@@ -662,7 +662,7 @@ impl ConstructionProjects {
         for slot in slots {
             let output: ConstructionLineOutputRow = row(&view, slot, &OUTPUT)?;
             let id = output.line;
-            if !self.lines.contains_key(&id) {
+            if let std::collections::hash_map::Entry::Vacant(vacant) = self.lines.entry(id) {
                 if output.exact && !output.linked && output.construction_raw == 0 && output.repair_raw == 0 && !output.ended {
                     continue;
                 }
@@ -684,7 +684,7 @@ impl ConstructionProjects {
                     first_read: hour.hour,
                     ..Default::default()
                 };
-                self.lines.insert(id, Line { row, open: None, run: None, since: None, restarted: false, ended: None });
+                vacant.insert(Line { row, open: None, run: None, since: None, restarted: false, ended: None });
             }
             let line = self.lines.get_mut(&id).expect("line");
             Self::output_of(line, &output, hour.hour);

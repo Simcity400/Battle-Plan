@@ -394,7 +394,7 @@ mod tests {
         }
         let other = TaskForceRow {
             id: 8,
-            ..force.clone()
+            ..force
         };
         assert_eq!(
             standing

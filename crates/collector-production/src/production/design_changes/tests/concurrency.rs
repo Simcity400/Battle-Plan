@@ -134,7 +134,7 @@ fn spawn<const SITE: usize>(
     pause: &Barrier,
     value: usize,
 ) -> std::thread::JoinHandle<usize> {
-    let args = [pointer, pause as *const Barrier as usize, value, 0];
+    let args = [pointer, std::ptr::from_ref::<Barrier>(pause) as usize, value, 0];
     std::thread::spawn(move || {
         collector_test_support::with_allocations_denied(|| unsafe { around::<SITE>(args, edited) })
     })
@@ -255,7 +255,7 @@ fn same_thread_nesting_keeps_outer_snapshot_and_independent_nested_receiver() {
     let args = [
         registry[0].pointer(),
         registry[1].pointer(),
-        &pauses[0] as *const Barrier as usize,
+        &raw const pauses[0] as usize,
         0,
     ];
     let first = std::thread::spawn(move || {
@@ -542,7 +542,7 @@ fn consuming_a_saved_parent_forces_its_carried_child_to_rederive_identity() {
     let args = [
         registry[0].pointer(),
         registry[1].pointer(),
-        &pause as *const Barrier as usize,
+        &raw const pause as usize,
         0,
     ];
     let moving = std::thread::spawn(move || unsafe { around::<9>(args, moved) });
@@ -650,7 +650,7 @@ fn unknown_create_scope_conflicts_with_a_foreign_saved_writer() {
     }
     let (space, registry, _) = setup(1);
     let pause = Barrier::new(2);
-    let args = [0, &pause as *const Barrier as usize, 0, 0];
+    let args = [0, &raw const pause as usize, 0, 0];
     let creating = std::thread::spawn(move || unsafe { around::<22>(args, wait_only) });
     pause.wait();
     assert_eq!(
@@ -798,7 +798,7 @@ fn a_consuming_move_and_an_unrelated_saved_edit_keep_binding_events_and_exact_ro
     let args = [
         registry[0].pointer(),
         registry[1].pointer(),
-        &pauses[0] as *const Barrier as usize,
+        &raw const pauses[0] as usize,
         0,
     ];
     let moving = std::thread::spawn(move || {
@@ -848,7 +848,7 @@ fn a_move_source_claim_survives_saved_binding_retirement() {
     let args = [
         registry[0].pointer(),
         registry[1].pointer(),
-        &pause as *const Barrier as usize,
+        &raw const pause as usize,
         0,
     ];
     let moving = std::thread::spawn(move || unsafe { around::<9>(args, moved) });
@@ -872,7 +872,7 @@ fn a_saved_destruction_conflict_is_not_mistaken_for_two_unwatched_drafts() {
     let (space, registry, _) = setup(1);
     let pointer = registry[0].pointer();
     let pause = Barrier::new(2);
-    let args = [pointer, &pause as *const Barrier as usize, 0, 0];
+    let args = [pointer, &raw const pause as usize, 0, 0];
     let destroying = std::thread::spawn(move || unsafe { around::<11>(args, wait_only) });
     pause.wait();
     assert!(
@@ -908,7 +908,7 @@ fn parent_snapshot_refuses_a_consuming_move(operand: usize) {
     let args = [
         registry[0].pointer(),
         registry[1].pointer(),
-        &pause as *const Barrier as usize,
+        &raw const pause as usize,
         0,
     ];
     let moving = std::thread::spawn(move || unsafe { around::<9>(args, moved) });

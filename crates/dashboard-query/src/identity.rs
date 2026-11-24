@@ -295,8 +295,8 @@ pub fn holders(recording: &Recording, timeline: &Timeline) -> io::Result<Holders
     let mut out = Holders::default();
     let mut read: std::collections::HashMap<u32, Vec<Row>> = std::collections::HashMap::new();
     for stretch in &timeline.stretches {
-        if !read.contains_key(&stretch.run) {
-            read.insert(stretch.run, history(recording, stretch.run)?);
+        if let std::collections::hash_map::Entry::Vacant(slot) = read.entry(stretch.run) {
+            slot.insert(history(recording, stretch.run)?);
         }
         for row in &read[&stretch.run] {
             let first = row.first.max(stretch.first);

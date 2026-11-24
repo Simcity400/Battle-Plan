@@ -178,10 +178,6 @@ struct RankEvent {
 }
 type RankPosition<'a> = dyn FnMut(usize, &str, i32, i32) -> io::Result<()> + 'a;
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The shared sweep also supplies prepared rank positions"
-)]
 fn membership<R>(
     series: &BTreeMap<String, Vec<R>>,
     count: usize,
@@ -285,10 +281,6 @@ impl<'a, R> RankPlan<'a, R> {
         )?;
         Ok(())
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The shared sweep supplies membership and prepared positions"
-    )]
     fn membership(
         &self,
         count: usize,

@@ -277,7 +277,7 @@ fn weapon_damage_summary_includes_piercing_in_native_order() {
         weapon_description(&side, &opponent, 0, Some(&invalid), &NoIcons, &loc),
         Err("NNavy piercing threshold arrays differ or have fewer than two entries".into())
     );
-    let mut unread = defines.clone();
+    let mut unread = defines;
     unread.piercing = Err("missing NDefines.NNavy.NAVY_PIERCING_THRESHOLDS".into());
     assert!(
         weapon_description(&side, &opponent, 0, Some(&unread), &NoIcons, &loc)

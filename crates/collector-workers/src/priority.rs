@@ -78,7 +78,7 @@ fn background_cpu_sets_with(
             let bytes = buffer.as_ptr().cast::<u8>();
             let mut offset = 0usize;
             while offset + entry_size <= length as usize && sets.len() < sets.capacity() {
-                let entry = unsafe { &*bytes.add(offset).cast::<SYSTEM_CPU_SET_INFORMATION>() };
+                let entry = unsafe { bytes.add(offset).cast::<SYSTEM_CPU_SET_INFORMATION>().read_unaligned() };
                 if (entry.Size as usize) < entry_size {
                     break;
                 }
@@ -266,7 +266,7 @@ impl OwnPriority {
                 SetThreadInformation(
                     GetCurrentThread(),
                     ThreadPowerThrottling,
-                    (&throttling as *const THREAD_POWER_THROTTLING_STATE).cast(),
+                    (&raw const throttling).cast(),
                     size_of::<THREAD_POWER_THROTTLING_STATE>() as u32,
                 )
             } == 0

@@ -16,7 +16,6 @@ pub trait Value: Sized {
     fn to_units(&self, _step: Step) -> io::Result<Self> {
         Err(invalid("value takes no display step"))
     }
-    #[allow(clippy::wrong_self_convention, reason = "the pair to `to_units`: consumes a decoded wire value")]
     fn from_units(self, _step: Step) -> io::Result<Self> {
         Err(invalid("value takes no display step"))
     }

@@ -802,7 +802,7 @@ mod tests {
         no_bc.textures = false;
         let warp = adapter("warp", DeviceType::Cpu, Backend::Dx12);
         assert_eq!(chosen(&[no_compute.clone(), warp.clone()]), "warp");
-        assert_eq!(chosen(&[elsewhere.clone(), warp.clone()]), "warp");
+        assert_eq!(chosen(&[elsewhere, warp.clone()]), "warp");
         assert_eq!(chosen(&[no_bc, warp.clone()]), "warp");
         assert_eq!(chosen(std::slice::from_ref(&warp)), "warp");
         let lavapipe = adapter("lavapipe", DeviceType::Cpu, Backend::Vulkan);

@@ -73,7 +73,6 @@ pub struct RowOps<R: 'static> {
 }
 
 impl<R: TableRow> RowOps<R> {
-    #[allow(clippy::new_without_default, reason = "a descriptor is a static, built in a const")]
     pub const fn new() -> Self {
         Self {
             decode: decode_typed::<R>,
@@ -147,12 +146,12 @@ where
 #[macro_export]
 macro_rules! row_ops {
     ($($table:ident => $row:ident),+ $(,)?) => {
-        $(#[allow(non_upper_case_globals, reason = "a descriptor is named as the table it serves")]
+        $(#[expect(non_upper_case_globals, reason = "a descriptor is named as the table it serves")]
         pub static $table: $crate::rows::RowOps<$row> = $crate::rows::RowOps::new();)+
         #[cfg(feature = "test-support")]
         pub mod fixtures {
             use super::*;
-            $(#[allow(non_upper_case_globals, reason = "a fixture descriptor shares its table name")]
+            $(#[expect(non_upper_case_globals, reason = "a fixture descriptor shares its table name")]
             pub static $table: $crate::rows::ops::FixtureOps<$row> =
                 $crate::rows::ops::FixtureOps::OPS;)+
         }

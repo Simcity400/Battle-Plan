@@ -128,10 +128,8 @@ impl Context<'_> {
         let args = [("COUNTRY", Arg::Text(&owner)), ("FROM", Arg::Text(&viewer))];
         let relation = if owner_slot == self.vision.ours() {
             highlighted(&owner)
-        } else if replay_derive::directed_wars::Owner::new(self.frame, viewer_raw)
-            .map_err(|why| why.to_string())?
-            .at_war(state.owner)
-            .map_err(|why| why.to_string())?
+        } else if replay_derive::directed_wars::Owner::new(self.frame, viewer_raw)?
+            .at_war(state.owner)?
         {
             self.loc("MAPMODE_ENEMY", &args)?
         } else if self.same_faction(owner_slot)? {
@@ -635,7 +633,6 @@ impl OccupationDefines {
         })
     }
 
-    #[allow(clippy::double_ended_iterator_last)]
     pub(super) fn state_vp(&self, victory_points: i64) -> i64 {
         self.state_vp
             .iter()

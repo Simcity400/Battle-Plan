@@ -307,7 +307,7 @@ struct Lexicon {
 impl Lexicon {
     fn spelling(&mut self, query: &Query<'_>, hour: i32, token: u32) -> Result<String, String> {
         let run = query.timeline.at(hour).ok_or("The hour is not recorded")?.run;
-        if !self.runs.contains_key(&run) {
+        if let std::collections::hash_map::Entry::Vacant(vacant) = self.runs.entry(run) {
             let read = (|| -> io::Result<HashMap<u32, String>> {
                 let recording = query.replay.recording();
                 let held = recording.run(run)?;
@@ -320,7 +320,7 @@ impl Lexicon {
                     .collect())
             })()
             .map_err(|why| why.to_string())?;
-            self.runs.insert(run, read);
+            vacant.insert(read);
         }
         self.runs[&run].get(&token).cloned().ok_or_else(|| format!("Faction token {token} has no lexical tokens spelling"))
     }

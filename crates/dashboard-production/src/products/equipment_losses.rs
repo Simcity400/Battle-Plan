@@ -563,7 +563,6 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
     reply(query, params, content, leaves, covered, listed, restarts, reads, (from, to))
 }
 
-#[allow(clippy::too_many_arguments, reason = "the reply joins every read of the window")]
 fn reply(
     query: &Query<'_>,
     params: &LossesParams,

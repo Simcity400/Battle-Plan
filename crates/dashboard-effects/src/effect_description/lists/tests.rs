@@ -21,7 +21,6 @@ fn random_headers_weights_modifiers_and_member_seed_reset() {
     );
 }
 
-#[allow(clippy::field_reassign_with_default)]
 #[test]
 fn scripted_templates_ignore_call_boolean_and_refuse_recursive_cycles() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -264,7 +263,6 @@ fn scripted_depth_is_bounded_when_this_keeps_changing() {
     );
 }
 
-#[allow(clippy::field_reassign_with_default)]
 #[test]
 fn own_like_scripted_keys_are_not_removed_from_unrelated_bodies() {
     engine_executable::executable_tables::initialize_for_tests()

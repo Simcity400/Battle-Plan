@@ -28,7 +28,10 @@ static SERIAL: AtomicU64 = AtomicU64::new(1);
 static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static SPILL_REFUSED_EPOCH: AtomicU64 = AtomicU64::new(0);
 const SPILL_REFUSED: &str = "operation completion spill allocation failed";
-#[allow(clippy::vec_box)]
+#[expect(
+    clippy::vec_box,
+    reason = "LOG and OFFERED point into boxed logs, so each log keeps its address when the list grows"
+)]
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<std::borrow::Cow<'static, str>> = OnceLock::new();
 static REQUIRED_LANES: AtomicUsize = AtomicUsize::new(1);
@@ -113,7 +116,10 @@ impl ByteRing {
 struct Lane {
     records: Box<[UnsafeCell<Record>]>,
     byte_ring: AtomicUsize,
-    #[allow(clippy::vec_box)]
+    #[expect(
+        clippy::vec_box,
+        reason = "byte_ring points into a boxed ring, so each ring keeps its address when the list grows"
+    )]
     byte_rings: Mutex<Vec<Box<ByteRing>>>,
     write: UnsafeCell<u64>,
     attempts: UnsafeCell<u64>,
@@ -136,7 +142,7 @@ impl Lane {
             "operation completion description capacity overflow"
         })?;
         let ring = boxed(ByteRing::try_new(bytes.max(1))?)?;
-        let pointer = &*ring as *const ByteRing as usize;
+        let pointer = &raw const *ring as usize;
         let mut records = Vec::new();
         engine_allocation::reserve_exact(&mut records, entries)
             .map_err(|_| "operation completion description allocation failed")?;
@@ -186,7 +192,7 @@ impl Lane {
             })?;
             let fresh = boxed(ByteRing::try_new(capacity)?)?;
             before_publish();
-            let pointer = &*fresh as *const ByteRing as usize;
+            let pointer = &raw const *fresh as usize;
             let mut retained = self
                 .byte_rings
                 .lock()
@@ -369,7 +375,7 @@ enum Target<'a> {
 }
 fn lane(log: &Log) -> Target<'_> {
     LANE.with(|cache| {
-        let pointer = log as *const Log as usize;
+        let pointer = std::ptr::from_ref::<Log>(log) as usize;
         let (old, serial, index) = cache.get();
         let index = if old == pointer && serial == log.serial {
             index
@@ -426,7 +432,7 @@ fn seal_offered(log: &'static Log) -> &'static Log {
     offered.consumed_epoch.store(epoch, Ordering::SeqCst);
     offered.assembled_epoch.store(epoch, Ordering::SeqCst);
     log.next
-        .store(offered as *const Log as usize, Ordering::Release);
+        .store(std::ptr::from_ref::<Log>(offered) as usize, Ordering::Release);
     if log
         .publishers
         .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Relaxed)
@@ -434,9 +440,9 @@ fn seal_offered(log: &'static Log) -> &'static Log {
     {
         return log;
     }
-    LOG.store(offered as *const Log as usize, Ordering::Release);
+    LOG.store(std::ptr::from_ref::<Log>(offered) as usize, Ordering::Release);
     let _ = OFFERED.compare_exchange(
-        offered as *const Log as usize,
+        std::ptr::from_ref::<Log>(offered) as usize,
         0,
         Ordering::AcqRel,
         Ordering::Relaxed,
@@ -578,7 +584,7 @@ fn presize_with_hooks(
             return;
         };
         before_publish();
-        let pointer = &*fresh as *const Log as usize;
+        let pointer = &raw const *fresh as usize;
         let mut retained = LOGS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -633,7 +639,7 @@ pub(crate) fn reset_admitted() {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
     {
-        if &**log as *const Log as usize != current
+        if &raw const **log as usize != current
             && log.assembled.load(Ordering::Acquire) != log.consumed.load(Ordering::Acquire)
         {
             restart();
@@ -781,7 +787,7 @@ fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memo
         *lane.records[index].get() = Record {
             event,
             order,
-            byte_ring: ring as *const ByteRing as usize,
+            byte_ring: std::ptr::from_ref::<ByteRing>(ring) as usize,
             byte_start,
             byte_demand,
         };
@@ -903,7 +909,7 @@ pub unsafe fn handoff_buffer(
     }
     let shared_rejected = log.shared.rejected();
     Ok(Handoff {
-        log: log as *const Log as usize,
+        log: std::ptr::from_ref::<Log>(log) as usize,
         epoch: EPOCH.load(Ordering::Acquire),
         sequence: log.sequence.load(Ordering::Acquire),
         lanes,

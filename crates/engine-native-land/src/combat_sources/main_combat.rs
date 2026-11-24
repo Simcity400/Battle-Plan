@@ -1,4 +1,7 @@
-#![allow(dead_code, clippy::all)]
+#![expect(
+    dead_code,
+    reason = "the test reference copy of the main combat reader keeps items the comparison tests do not call"
+)]
 
 use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice};
 use engine_native::{carmy, cunit};

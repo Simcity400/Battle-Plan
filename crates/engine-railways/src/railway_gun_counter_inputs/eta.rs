@@ -76,7 +76,10 @@ pub(super) fn named_demand(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the gun locates the speed, and the named bonuses, registry, layout and layout buffer are caller-owned"
+)]
 fn equipment_speed(
     memory: &impl Memory,
     base: usize,
@@ -135,7 +138,10 @@ fn supply_factor(
         .wrapping_add(fixed5::SCALE.wrapping_sub(supplied).wrapping_mul(penalty) / fixed5::SCALE))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the gun locates the speed, and the named bonuses, registry, layout, layout buffer and observations are caller-owned"
+)]
 pub(super) fn maximum_speed(
     memory: &impl Memory,
     base: usize,
@@ -173,7 +179,10 @@ pub(super) fn land_supply_factor(
         .get_or_insert_with(|| supply_factor(memory, base, gun, exiled))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the source, row and next hop identify one estimate, and the named bonuses, registry, layout, buffer and observations are caller-owned"
+)]
 pub(super) fn capture(
     memory: &impl Memory,
     base: usize,

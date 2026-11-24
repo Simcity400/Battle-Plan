@@ -463,7 +463,7 @@ impl Content {
     pub fn projection_id(&self) -> u64 {
         self.id
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "each content source a map mode reads, each from another owner")]
     pub fn new(
         defines: &Defines,
         ideologies: Arc<content_reader_key_names::ideologies::Ideologies>,

@@ -75,7 +75,7 @@ fn coverage_inexact_counts_and_an_unread_rocket_table_are_never_counted() {
     assert_eq!(total(&producer, &lost, Part::Rest, Count::Ic, 6), Amount::Unknown(Row::LOST_OUTPUT), "an archetype it has no row of is unknown with the lines");
     let unread = Run { rocket_world: false, ..RUN };
     assert_eq!(total(&producer, &unread, Part::Rest, Count::Units, 5), Amount::Unknown(Row::ROCKET_TABLE_UNAVAILABLE));
-    let own = Producer { own_rocket: Some(Covered { units_unknown_from: Some(3), reason: Total::ROCKET_INPUT_INEXACT, ..Covered::default() }), ..producer.clone() };
+    let own = Producer { own_rocket: Some(Covered { units_unknown_from: Some(3), reason: Total::ROCKET_INPUT_INEXACT, ..Covered::default() }), ..producer };
     assert_eq!(total(&own, &RUN, Part::Rest, Count::Units, 5), Amount::Unknown(Row::ROCKET_INPUT_INEXACT));
     let big = Producer { country: totals(i64::MAX, Some(0)), rocket: vec![(INFANTRY, rocket(1, 0))], ..Producer::default() };
     let cells = row(&big, &RUN, Part::Whole, 5);

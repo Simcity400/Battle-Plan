@@ -725,7 +725,7 @@ fn the_planned_pass_and_moved_witness_match_the_content_pass() {
     let mut broken = base.clone();
     broken.provinces[4].neighbours.push(9);
     variants.push(broken);
-    let mut wide = base.clone();
+    let mut wide = base;
     wide.settings.provinces_per_update = i32::MIN;
     variants.push(wide);
     let anchored = vec![

@@ -304,7 +304,7 @@ export class Pipeline {
         }
       }
       if (auditing()) recordPicture({ t: 'workerFrame', at: performance.timeOrigin + performance.now(), lane, lanes: this.lanes, seek: message.seek, head: message.target,
-        playing: !message.exact && this.page.playing, changed: message.changed, workMs: message.ms });
+        playing: !message.exact && this.page.playing, changed: message.changed, workMs: message.ms, ...message.cancelled ? { cancelled: true } : {} });
       return;
     }
     this.page.offer(message);

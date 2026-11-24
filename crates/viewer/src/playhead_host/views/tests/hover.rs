@@ -228,7 +228,7 @@ fn the_province_hover_is_made_only_from_rows_its_worker_prepared() {
     hovers.rows_wait(Family::Province, |frame| declares(frame, &[TableId::WeatherProvinces, COUNTRIES]), left(until)).unwrap_or_else(|error| panic!("the province hover's tables are in its rows at the next step: {error}"));
     let posted = hovers.ask(Family::Province, head, key(what.clone()), |_| leaf(&gate)).map(|text| text.title.clone());
     assert!(gate.asked(), "its rows go to its worker, which asks the gate to prepare them, within the test's deadline");
-    let preparing = hovers.ask(Family::Province, head, key(what.clone()), |_| leaf(&gate)).map(|text| text.title.clone());
+    let preparing = hovers.ask(Family::Province, head, key(what), |_| leaf(&gate)).map(|text| text.title.clone());
     for shown in [posted, preparing] {
         assert!(shown.is_none(), "nothing from rows before they are prepared, and nothing from any other source: {shown:?}");
     }

@@ -28,8 +28,8 @@ fn counters() -> Counters {
         OtherTransferCount: 0,
     };
     unsafe {
-        GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user);
-        GetProcessIoCounters(GetCurrentProcess(), &mut io);
+        GetProcessTimes(GetCurrentProcess(), &raw mut created, &raw mut exited, &raw mut kernel, &raw mut user);
+        GetProcessIoCounters(GetCurrentProcess(), &raw mut io);
     }
     let ticks = |time: FILETIME| u64::from(time.dwHighDateTime) << 32 | u64::from(time.dwLowDateTime);
     Counters {

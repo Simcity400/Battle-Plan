@@ -870,7 +870,6 @@ pub trait NativeValue: Sized {
     fn to_units(&self, _step: Step) -> io::Result<Self> {
         Err(invalid("row field takes no display step"))
     }
-    #[allow(clippy::wrong_self_convention, reason = "the decoded value is consumed into native units")]
     fn from_units(self, _step: Step) -> io::Result<Self> {
         Err(invalid("row field takes no display step"))
     }
@@ -1339,13 +1338,11 @@ macro_rules! typed_codec {
                 $(if self.$($field)+ != previous.$($field)+ { mask |= 1 << $index; })+
                 mask
             }
-            #[allow(clippy::field_reassign_with_default, reason = "a key initializer also serves rows with nested fields")]
             fn try_clone(&self) -> io::Result<Self> {
                 self.check_key_fields()?;
                 check_native_key(self.key(), Self::KEY_BITS)?;
                 self.try_clone_validated()
             }
-            #[allow(clippy::field_reassign_with_default, reason = "a key initializer also serves rows with nested fields")]
             fn try_clone_validated(&self) -> io::Result<Self> {
                 let $key_name = self.key();
                 let mut row = $initial;
@@ -1422,7 +1419,6 @@ macro_rules! typed_codec {
                 $(encode_native_field(&self.$($field)+, $crate::display_step!($($step)?), output).map_err($crate::rows::column_error(self.key(), stringify!($($field)+)))?;)+
                 Ok(())
             }
-            #[allow(clippy::field_reassign_with_default, reason = "a key initializer also serves rows with nested fields")]
             fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {
                 let $key_name = key;
                 let mut row = $initial;
@@ -1447,7 +1443,6 @@ macro_rules! typed_codec {
                 self.check_key_fields()?;
                 Ok(true)
             }
-            #[allow(clippy::field_reassign_with_default, reason = "a key initializer also serves rows with nested fields")]
             fn from_wire_fields<'a>(key: u128, mask: u64, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<Self> {
                 let all = full_mask(Self::SCHEMA.len());
                 if mask & all == all { return Self::from_wire(key, wire); }
@@ -1460,7 +1455,6 @@ macro_rules! typed_codec {
                 row.check_selected_fields(mask)?;
                 Ok(row)
             }
-            #[allow(clippy::field_reassign_with_default, reason = "a key initializer also serves rows with nested fields")]
             fn from_wire<'a>(key: u128, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<Self> {
                 check_native_key(key, Self::KEY_BITS)?;
                 let $key_name = key;

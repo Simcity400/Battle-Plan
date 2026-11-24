@@ -179,7 +179,6 @@ fn ship_name_witness_refuses_stale_identity_and_faults_without_empty_substitutio
     ));
 }
 
-#[allow(clippy::type_complexity)]
 fn world(countries: u32) -> (Vec<u8>, usize, Vec<(usize, u64, Vec<u8>)>) {
     let mut bytes = vec![0; 8];
     let state = allocate(&mut bytes, 0x1000);

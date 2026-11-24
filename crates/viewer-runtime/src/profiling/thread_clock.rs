@@ -90,7 +90,7 @@ pub(super) fn current() -> Option<Duration> {
         }
         let hz = cpu_clock_hz()?;
         let mut cycles = 0;
-        if unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) } == 0 {
+        if unsafe { QueryThreadCycleTime(GetCurrentThread(), &raw mut cycles) } == 0 {
             return None;
         }
         cycles_duration(cycles, hz)

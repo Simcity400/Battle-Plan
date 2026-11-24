@@ -212,7 +212,7 @@ impl State {
         self.prepare_with(arena, label, template, vertices, instances, None, None)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, the label and template, the counts, and the prepared and previous submissions")]
     pub fn prepare_with(
         &mut self,
         arena: &gpu::Arena,
@@ -228,7 +228,7 @@ impl State {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "the arena, the label and template, the counts, the prepared and previous submissions, and the cache")]
     pub fn prepare_with_cache(
         &mut self,
         arena: &gpu::Arena,

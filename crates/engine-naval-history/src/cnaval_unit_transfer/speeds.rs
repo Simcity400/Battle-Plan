@@ -407,7 +407,7 @@ impl<M: Memory> Shared<'_, M> {
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "One owner's query over the shared region slice, its chosen indices and the hour's cache"
 )]
@@ -427,7 +427,10 @@ pub fn movement_speeds<M: Memory>(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the owner, regions and wanted list select the speeds, and the cache and emit callback are caller-owned"
+)]
 pub fn movement_speeds_inputs<M: Memory>(
     memory: &M,
     base: usize,

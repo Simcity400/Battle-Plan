@@ -200,7 +200,7 @@ fn checkpoint_schema_corruption_and_invalid_state_are_refused_atomically() {
         unknown[offset] ^= 1;
         assert!(DecodedFrame::decode_checkpoint(&mut Decoder::new(&unknown)).is_err());
     }
-    let mut trailing = bytes.clone();
+    let mut trailing = bytes;
     trailing.push(0);
     let mut input = Decoder::new(&trailing);
     DecodedFrame::decode_checkpoint(&mut input).unwrap();
@@ -220,7 +220,7 @@ fn checkpoint_schema_corruption_and_invalid_state_are_refused_atomically() {
         assert_eq!(before.sampled_at(), after.sampled_at());
     }
 
-    let mut empty_singleton = source.clone();
+    let mut empty_singleton = source;
     empty_singleton.tables[TableId::Campaign.index()] =
         TableView::Complete(TableRows::Campaign(Vec::new())).into();
     assert!(empty_singleton.encode_checkpoint(&mut output).is_err());

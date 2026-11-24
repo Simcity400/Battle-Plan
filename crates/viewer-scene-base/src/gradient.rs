@@ -565,7 +565,6 @@ fn fill_plane(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 #[cfg(any(test, feature = "test-support"))]
 fn fill_band(
     map: &ProvinceMap,

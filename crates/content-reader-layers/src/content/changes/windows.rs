@@ -137,7 +137,7 @@ impl Owner {
             completed: Condvar::new(),
             subtree,
         });
-        let key = (&*subscription as *const Subscription) as usize;
+        let key = (&raw const *subscription) as usize;
         let associated = unsafe {
             CreateIoCompletionPort(
                 subscription
@@ -196,7 +196,7 @@ fn run(port: &Port, state: &State) {
         let mut key = 0;
         let mut overlapped = std::ptr::null_mut();
         let ok = unsafe {
-            GetQueuedCompletionStatus(port.0 as _, &mut bytes, &mut key, &mut overlapped, u32::MAX)
+            GetQueuedCompletionStatus(port.0 as _, &raw mut bytes, &raw mut key, &raw mut overlapped, u32::MAX)
         };
         if key == 0 {
             if !state.stopping.load(Ordering::Acquire) {

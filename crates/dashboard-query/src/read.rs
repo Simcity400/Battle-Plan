@@ -143,8 +143,6 @@ fn may_change(buckets: &[Vec<Held>], before: Option<&[Held]>) -> bool {
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "a change search names its run, table, column, keys and bounds")]
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn nearest_change(
     recording: &Recording,
     run: u32,
@@ -159,7 +157,6 @@ pub fn nearest_change(
     crate::cost::storage(|| nearest_change_counted(recording, run, table, source, column, keys, origin, forward, bounds))
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 fn nearest_change_counted(
     recording: &Recording,
     run: u32,

@@ -211,12 +211,12 @@ impl CombatRows {
         ]
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
+    #[expect(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
     pub(crate) fn land_marker(&mut self, head: Head<'_>, document: &Document, viewer: u32, id: u64, index: Option<Arc<History>>, nato: bool, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
         self.land_marker_from(head, document, viewer, id, index, nato, wake)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
+    #[expect(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
     fn land_marker_from(&mut self, from: Head<'_>, document: &Document, viewer: u32, id: u64, index: Option<Arc<History>>, nato: bool, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
         let (content, covering) = (Arc::clone(&document.combat), index.clone());
         self.land_marker.ask(from, ([u64::from(viewer), id, u64::from(nato)], |frame| covered(covering.as_deref(), frame)), move |frame| Arc::new(land_marker_tooltips::build(&content, frame, viewer, id, index.as_deref(), nato)), wake)
@@ -275,7 +275,6 @@ impl CombatRows {
         })
     }
 
-    #[allow(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
     pub(crate) fn raid(&mut self, views: Head<'_>, document: &Document, ours: u32, nato: bool, key: Key, ctx: &egui::Context) -> Option<Arc<Tooltip>> {
         self.raid_asked = true;
         let missed = self.raid_lane.take_missed();
