@@ -563,6 +563,13 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
         vec![history_ev(13, EventFeedSource::DecisionTimeoutEffect, None, None, None)],
     );
     assert_eq!(resolve_in_pack(&effect, &effect_pack), not_applicable(DECISION_NO_MISSION_LIFECYCLE));
+    let duration = feed_ev(14, EventFeedSource::DecisionDurationChanged, None, None);
+    let duration_pack = make_pack(
+        EventFeedCoverage::Complete,
+        0,
+        vec![history_ev(14, EventFeedSource::DecisionDurationChanged, None, None, None)],
+    );
+    assert_eq!(resolve_in_pack(&duration, &duration_pack), not_recorded(DECISION_CONTAINER_NOT_RECORDED), "a changed duration is a timed decision whose container was not recorded");
 
     let partial_instant = make_pack(EventFeedCoverage::Partial, 0, instant_pack.events.clone());
     assert_eq!(resolve_in_pack(&instant, &partial_instant), not_recorded(EVENT_FEED_HISTORY_INCOMPLETE));

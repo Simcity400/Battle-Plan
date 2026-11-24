@@ -423,7 +423,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.push(Finding::new(Kind::Offline, key, "seller and buyer flows and their quantities need the recorded TradeFlows rows; unavailable offline"));
             Ok("Resource names and icons are read through the shared resource naming of the recorded content stack.".into())
         }
-        key if key == <economy::market::MarketLendLease as AtHour>::KEY || key == economy::market::history::LendLeaseHistory::KEY || key == economy::market::ledger::MarketLedger::KEY => {
+        key if key == <economy::market::MarketLendLease as AtHour>::KEY || key == economy::market::ledger::MarketLedger::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "market listings, contracts, agreements and occurrences need the recorded market tables; unavailable offline"));
             Ok("Equipment names and icons need the recorded variant operands through the content stack; subsidy archetypes are localised from it.".into())
         }
