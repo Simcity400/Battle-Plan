@@ -34,10 +34,11 @@ import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
 import { Popover, usePopover } from '../../components/Popover';
-import RegionChooser, { type RegionInChart } from '../regions/RegionChooser.tsx';
+import RegionChooser from '../regions/RegionChooser.tsx';
 import { addRegion, AUTOMATIC_REGIONS, isAutomatic, moveRegion, readRegionChoice, removeRegion, writeRegionChoice, type RegionChoice } from '../regions/regionChoice.ts';
-import { keyboardMove, type RegionCommand } from '../regions/regionRows.ts';
+import { keyboardMove, type RegionCommand, type RegionInChart } from '../regions/regionRows.ts';
 import { useRegionList } from '../regions/useRegionList.ts';
+import type { ActiveRegions } from '../../generated/dashboard';
 
 const SERIES_PLOT_INSET_PX = 60;
 
@@ -232,7 +233,7 @@ export default function DeclaredFamilyWidget<
   const regionField = optionFields?.find((field): field is Extract<OptionField, { kind: 'regions' }> => field.kind === 'regions');
   const regionChoice = regionField ? readRegionChoice(plan.options[regionField.key]) : AUTOMATIC_REGIONS;
   const chooser = usePopover('start');
-  const [inChart, setInChart] = useState<readonly RegionInChart[]>([]);
+  const [inChart, setInChart] = useState<{ readonly rows: readonly RegionInChart[]; readonly active: ActiveRegions | null }>(NOTHING_IN_CHART);
   const regionList = useRegionList(runtime.client, plan.track, !!regionField && chooser.open);
   const storeRegions = useCallback((next: RegionChoice) => {
     if (regionField && setOption) setOption(regionField.key, writeRegionChoice(next));
@@ -240,7 +241,7 @@ export default function DeclaredFamilyWidget<
   const onRegions = useCallback((command: RegionCommand): string | null => {
     switch (command.op) {
       case 'open':
-        setInChart(command.rows.map(row => ({ id: row.id, label: row.label, ...(row.activity ? { activity: row.activity } : {}) })));
+        setInChart({ rows: command.rows.map(row => ({ id: row.id, label: row.label, active: row.active })), active: command.active ?? null });
         chooser.openAt({ left: command.x, right: command.x, top: command.y, bottom: command.y });
         return null;
       case 'remove':
@@ -259,14 +260,14 @@ export default function DeclaredFamilyWidget<
   }, [chooser, regionChoice, storeRegions]);
   const regionsEditable = !!regionField && !!setOption;
   const emptyAction = regionsEditable
-    ? <>
-      <button type="button" className="button small" onClick={event => onRegions({ op: 'open', ...anchorBelow(event.currentTarget), rows: [] })}>Add region</button>
+    ? (openRegions: (anchor: { readonly x: number; readonly y: number }) => void) => <>
+      <button type="button" className="button small" onClick={event => openRegions(anchorBelow(event.currentTarget))}>Add region</button>
       {!isAutomatic(regionChoice) && <button type="button" className="button small quiet" onClick={() => storeRegions(AUTOMATIC_REGIONS)}>Reset to automatic</button>}
     </>
     : undefined;
   const regionChooser = regionsEditable
     ? <Popover menu={chooser} className="region-chooser-popover" aria-label="Add region">
-      {chooser.open && <RegionChooser list={regionList} inChart={inChart} seaOnly={regionField.sea === true} automatic={isAutomatic(regionChoice)}
+      {chooser.open && <RegionChooser list={regionList} inChart={inChart.rows} active={inChart.active} seaOnly={regionField.sea === true} automatic={isAutomatic(regionChoice)}
         onChoose={(id, charted) => { storeRegions(charted ? removeRegion(regionChoice, id) : addRegion(regionChoice, id)); chooser.close(); }}
         onReset={() => { storeRegions(AUTOMATIC_REGIONS); chooser.close(); }} />}
     </Popover>
@@ -371,6 +372,8 @@ export default function DeclaredFamilyWidget<
     </div>
   );
 }
+
+const NOTHING_IN_CHART = { rows: [], active: null } as const;
 
 function anchorBelow(element: HTMLElement): { readonly x: number; readonly y: number } {
   const box = element.getBoundingClientRect();
