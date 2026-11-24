@@ -1,9 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { createBoundedReadView, displayedHour, type IdentityProvider } from '../../families/contract.ts';
+import {
+  createBoundedReadView,
+  displayedHour,
+  type BranchToHourSourceRead,
+  type ExactHoverSourceRead,
+  type FamilyPlanContext,
+  type IdentityProvider,
+} from '../../families/contract.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
+import { DEFAULT_LINE_SETTINGS } from '../../families/time-chart/settings.ts';
 import type { RaidTallyAtReply, RaidTallyReply } from '../../generated/dashboard';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
 import {
@@ -17,28 +25,35 @@ import {
 
 function fakeIdentity(slots: Record<number, { tag: string; name: string; colour: string }>): IdentityProvider {
   return {
-    who(_kind, key) {
+    resolve(kind, key, atHour) {
       const slot = key.startsWith('\u0000') ? Number(key.slice(1)) : NaN;
       const found = slots[slot];
       if (!found) {
         return {
-          name: { status: 'missing' as const, reason: 'tag not recorded' },
-          tag: { status: 'missing' as const, reason: 'tag not recorded' },
-          colour: { status: 'missing' as const, reason: 'tag not recorded' },
-          flagChoice: { status: 'missing' as const, reason: 'tag not recorded' },
-          validInterval: [0, Infinity] as const,
+          kind,
+          key,
+          atHour,
+          holder: { status: 'ready', value: key },
+          name: { status: 'absent', reason: 'tag not recorded' },
+          tag: { status: 'absent', reason: 'tag not recorded' },
+          colour: { status: 'absent', reason: 'tag not recorded' },
+          flagChoice: { status: 'absent', reason: 'tag not recorded' },
+          validInterval: [0, Infinity],
+          nextChangeAt: Infinity,
         };
       }
       return {
-        name: { status: 'ready' as const, value: found.name },
-        tag: { status: 'ready' as const, value: found.tag },
-        colour: { status: 'ready' as const, value: found.colour },
-        flagChoice: { status: 'ready' as const, value: found.tag },
-        validInterval: [0, Infinity] as const,
+        kind,
+        key,
+        atHour,
+        holder: { status: 'ready', value: key },
+        name: { status: 'ready', value: found.name },
+        tag: { status: 'ready', value: found.tag },
+        colour: { status: 'ready', value: found.colour },
+        flagChoice: { status: 'ready', value: found.tag },
+        validInterval: [0, Infinity],
+        nextChangeAt: Infinity,
       };
-    },
-    changedAt() {
-      return [];
     },
   };
 }
@@ -49,7 +64,7 @@ test('raid-tally lines manifest entry, canonical slot plan, causal hour params, 
   assert.equal(entry.family, 'time-chart');
 
   const slot7 = countryKey(7);
-  const plan = raidTallyLinesDeclaration.sources({
+  const ctx = {
     track: { source: { id: 's1', revision: 'r1' }, axisOffset: 0 },
     branch: { id: '1', firstHour: 100, lastHour: 140, gaps: [] },
     options: { metric: 'both', endLabels: true },
@@ -73,20 +88,27 @@ test('raid-tally lines manifest entry, canonical slot plan, causal hour params, 
     },
     following: false,
     aux: undefined,
-    gateSpan: (a, b) => ({ firstHour: a, lastHour: b }),
+    gateSpan: (a: number, b: number) => ({ firstHour: a, lastHour: b }),
     staticSpan: null,
-  } as never);
+  } as unknown as FamilyPlanContext;
 
-  const tally = plan.entries.find(e => e.name === 'tally');
-  const hover = plan.entries.find(e => e.name === 'hover');
-  assert.equal(tally?.read.shape, 'branch-to-hour');
-  assert.equal(tally?.read.product, 'raid-tally');
-  assert.deepEqual(tally?.read.params.countries, [7], 'requests canonical slot number rather than tag string');
-  assert.deepEqual(tally?.read.dynamicKeys, ['hour']);
-  assert.equal(tally?.read.buildSpanParams?.(tally.read.params, { firstHour: 100, lastHour: 120 }).hour, 120);
-  assert.equal(hover?.read.shape, 'exact-hover');
-  assert.equal(hover?.read.product, 'raid-tally-at');
-  assert.deepEqual(hover?.read.params.countries, [7]);
+  const plan = raidTallyLinesDeclaration.sources(ctx, { width: 600, height: 260, following: false, staticSpan: [100, 140] });
+  const tally = plan.entries.find(e => e.name === 'tally')?.read as BranchToHourSourceRead;
+  const hover = plan.entries.find(e => e.name === 'hover')?.read as ExactHoverSourceRead;
+  assert.equal(tally.shape, 'branch-to-hour');
+  assert.equal(tally.product, 'raid-tally');
+  assert.deepEqual(tally.params!.countries, [7], 'requests canonical slot number rather than tag string');
+  assert.deepEqual(tally.dynamicKeys, ['hour']);
+  assert.equal(
+    tally.buildSpanParams!(
+      tally.params!,
+      { firstHour: 100, lastHour: 120 } as Parameters<NonNullable<BranchToHourSourceRead['buildSpanParams']>>[1],
+    )!.hour,
+    120,
+  );
+  assert.equal(hover.shape, 'exact-hover');
+  assert.equal(hover.product, 'raid-tally-at');
+  assert.deepEqual(hover.params!.countries, [7]);
 });
 
 test('raid-tally lines breaks across unread Raids spans, keeps distinct unresolved slots, and answers earlier-hour exact hover', () => {
@@ -160,12 +182,10 @@ test('raid-tally lines breaks across unread Raids spans, keeps distinct unresolv
     holders: null,
     membership: null,
     endLabels: true,
+    settings: DEFAULT_LINE_SETTINGS,
     extent: [100, 140] as const,
     gaps: [],
     surface: '#161616',
-    yMin: null,
-    yMax: null,
-    log: false,
   };
 
   assert.equal(raidTallyLinesProjection.nextChange?.(view, opts), 135);
@@ -240,12 +260,10 @@ test('raid-tally lines reports unavailable when raid types are absent or head is
     holders: null,
     membership: null,
     endLabels: true,
+    settings: DEFAULT_LINE_SETTINGS,
     extent: [100, 120],
     gaps: [],
     surface: '#161616',
-    yMin: null,
-    yMax: null,
-    log: false,
   });
   assert.equal(model.empty?.kind, 'unavailable');
   assert.equal(model.empty?.message, 'No raid types available.');

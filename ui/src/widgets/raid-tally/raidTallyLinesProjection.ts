@@ -1,6 +1,7 @@
 import { CHART_MEASURE_COLOURS, SECONDARY_DASH } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { auditRow, type FamilyAuditRow } from '../../families/auditRow.ts';
+import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
 import {
   FutureDataError,
   type BoundedReadView,
@@ -24,6 +25,12 @@ import {
   countrySeriesLooks,
   memberAt,
 } from '../../families/time-chart/seriesHelpers.ts';
+import {
+  chartAxis,
+  chartWindow,
+  lineChartSettings,
+  type LineChartSettings,
+} from '../../families/time-chart/settings.ts';
 import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
 import type {
   RaidTallyAtReply,
@@ -45,22 +52,16 @@ export interface RaidTallyLinesOptions {
   readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
   readonly endLabels: boolean;
+  readonly settings: LineChartSettings;
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
-  readonly yMin: number | null;
-  readonly yMax: number | null;
-  readonly log: boolean;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v);
 const isText = (v: unknown): v is string => typeof v === 'string';
 const maybe = (v: unknown, test: (x: unknown) => boolean): boolean => v === null || test(v);
-
-function numericOption(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
 
 function topOf(countries: FamilyPlanContext['countries']): number | null {
   return countries.top ?? (countries.all ? Math.max(1, countries.every.length) : null);
@@ -238,14 +239,12 @@ function buildHoverDetail(
     const look = looks.get(key);
     const atHour = look ? seriesLookAt(look, hour) : null;
     const who = readView.who('country', key, hour);
-    const countryFlag = who.tag?.status === 'ready'
-      ? { tag: who.tag.value, flag: who.flagChoice?.status === 'ready' ? who.flagChoice.value : null }
-      : undefined;
+    const flagUrl = artUrlOf(flagChoiceArt(readView, who.flagChoice));
     return {
       label,
       value: formatHoverRowValue(options.metric, row.launched, row.succeeded),
       ...(atHour ? { swatch: atHour.color } : {}),
-      ...(countryFlag ? { countryFlag } : {}),
+      ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
     };
   });
   return { hour, replacesSeries: true, items };
@@ -267,10 +266,9 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
     const yAxis = {
       format: 'compact' as const,
       decimals: 0,
-      ...(options.log ? { log: true } : {}),
-      ...(options.yMin !== null ? { min: options.yMin } : {}),
-      ...(options.yMax !== null ? { max: options.yMax } : {}),
+      ...chartAxis(options.settings),
     };
+    const view = chartWindow(options.settings, hour, options.extent[0]);
     const reply = readView.panel<RaidTallyReply>('tally');
     if (!reply) {
       return {
@@ -279,6 +277,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
         mode: 'lines',
         hour,
         extent: options.extent,
+        ...(view ? { view } : {}),
         yAxis,
         series: [],
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
@@ -455,6 +454,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       mode: 'lines',
       hour,
       extent: options.extent,
+      ...(view ? { view } : {}),
       yAxis,
       series,
       ...(legend ? { legend } : {}),
@@ -528,12 +528,10 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
       holders: ctx.countries.holders,
       membership: top === null ? ctx.countries.membership : null,
       endLabels: ctx.options.endLabels !== false,
+      settings: lineChartSettings(ctx.options),
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,
-      yMin: numericOption(ctx.options.yMin),
-      yMax: numericOption(ctx.options.yMax),
-      log: ctx.options.log === true,
     };
   },
 };

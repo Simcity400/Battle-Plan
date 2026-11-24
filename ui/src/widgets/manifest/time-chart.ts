@@ -14,7 +14,10 @@ const ARMY_SIZE_BREAKDOWN_OPTIONS = ARMY_SIZE_OPTIONS.filter(field => ['view', '
 const DOCKYARD_MONTHS_OPTIONS = DOCKYARD_OPTIONS.filter(field => field.key === 'view' || field.key === 'icDecimals');
 const FACTORY_MONTHS_OPTIONS = FACTORY_OPTIONS.filter(field => field.key === 'equipment' || field.key === 'view' || field.key === 'icDecimals');
 const OCCUPATION_RESERVE_BREAKDOWN_OPTIONS = OCCUPATION_RESERVE_OPTIONS.filter(field => ['show', 'holder', 'yMin', 'yMax'].includes(field.key));
-const RAID_TALLY_LINES_OPTIONS = RAID_TALLY_OPTIONS.filter(field => ['view', 'metric', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key));
+const RAID_TALLY_LINES_OPTIONS = [
+  ...RAID_TALLY_OPTIONS.filter(field => ['view', 'metric', 'endLabels', 'yMin', 'yMax', 'log'].includes(field.key)),
+  ...LINES_VIEW_OPTIONS,
+];
 const WORLD_TENSION_VIEW_FIELD = WORLD_TENSION_OPTIONS.filter(field => field.key === 'view');
 const WORLD_TENSION_TENSION_OPTIONS = [...WORLD_TENSION_VIEW_FIELD, ...TENSION_CHART_OPTIONS];
 
