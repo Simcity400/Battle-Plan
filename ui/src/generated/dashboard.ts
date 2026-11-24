@@ -6198,7 +6198,11 @@ filledRaw: string | null, missingRaw: string | null, divisionsShort: number | nu
 /**
  * National stock, never used in the shortfall.
  */
-stockpileRaw: string | null, stockpileHour: number | null, variants: Array<EquipmentVariant>, };
+stockpileRaw: string | null, stockpileHour: number | null, variants: Array<EquipmentVariant>,
+/**
+ * Why the type's designs are not known at this hour; `variants` is then empty.
+ */
+variantsMissing: string | null, };
 export type EquipmentTemplate = { template: string, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null, divisions: number | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null,
 /**
  * Known divisions only, `unknown_divisions` naming the rest.

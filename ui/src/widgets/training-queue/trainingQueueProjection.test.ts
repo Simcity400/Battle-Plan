@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
-import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue } from '../../families/value.ts';
 import type { TrainingDivision, TrainingQueueReply } from '../../generated/dashboard';
 import { trainingQueueProjection, validateTrainingQueue } from './trainingQueueProjection.ts';
 
@@ -59,5 +59,5 @@ test('a division’s name and training survive unread manpower, and held amounts
   assert.deepEqual([first!.cells.manpower!.value, first!.cells.manpower!.secondaryValue], [notRecorded(unread), notRecorded(unread)]);
   assert.equal(order!.cells.manpower!.value.kind, 'notRecorded', 'an order total over an unknown division is not a sum');
   const tip = typeof first!.tooltipExtra === 'function' ? first!.tooltipExtra() : first!.tooltipExtra;
-  assert.deepEqual(tip?.[0]?.value, notRecorded('Held equipment not read whole'), 'no exact held figure that leaves out what was not read');
+  assert.deepEqual(tip?.[0]?.value, partialValue('1,000 needed', 'Held equipment not read whole'), 'no exact held figure that leaves out what was not read, and the recorded need still shown');
 });
