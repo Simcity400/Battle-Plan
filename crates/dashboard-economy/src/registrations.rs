@@ -1,5 +1,4 @@
 dashboard_base::register_products! {
-    ECONOMY_RESOURCES_RESOURCESIZES => crate::products::economy::resources::ResourceSizes,
     ECONOMY_RESOURCE_MONTHS_RESOURCEMONTHS => crate::products::economy::resource_months::ResourceMonths,
     CONVOYS_CONVOYHEALTH => crate::products::convoys::ConvoyHealth,
     ECONOMY_MARKET_LEDGER_MARKETLEDGERTAIL => crate::products::economy::market::ledger::MarketLedgerTail,

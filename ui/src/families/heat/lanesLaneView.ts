@@ -42,12 +42,12 @@ function regionRows(model: HeatLanesModel, layout: HeatLanesLayout): RegionRowsF
       picked: row.pinned === true,
       top: layout.plotTop + layout.rowTops[index]!,
       height: layout.rowHeight,
-      ...(row.readout?.kind === 'value'
-        ? { activity: { ...(typeof row.readout.swatch === 'string' && row.readout.swatch !== 'hollow' ? { color: row.readout.swatch } : {}), text: [row.readout.primary, row.readout.secondary].filter(Boolean).join(' ') } }
-        : {}),
+      active: row.pinned !== true || row.readout?.kind === 'value',
     }])),
     add: layout.addTop === null ? null : { top: layout.plotTop + layout.addTop, height: layout.rowHeight },
     nameLeft: LANE_PAD,
+    nameRight: layout.plotLeft,
+    ...(model.regions.active ? { active: model.regions.active } : {}),
   };
 }
 

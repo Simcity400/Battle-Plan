@@ -399,6 +399,10 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   assert.equal(mirror.total, 2);
   assert.equal(mirror.rows[0]!.name, 'English Channel');
   assert.equal(mirror.rows[0]!.cells[0]!.spoken, 'English Channel');
+  const sectioned = deriveLanesMirror({ ...model, rows: [{ ...model.rows[0]!, pinned: true }, model.rows[1]!], regions: { pickedHeading: 'Your regions', automaticHeading: 'Most active for Germany', addLabel: 'Add region' } }, 0, 10);
+  assert.deepEqual(sectioned.rows.map(row => [row.name, row.cells.find(cell => cell.column === 'Group')?.spoken ?? row.cells[0]!.spoken]),
+    [['English Channel', 'Your regions'], [model.rows[1]!.label, 'Most active for Germany'], ['Add region', 'Add region']], 'the text alternative says which rows are the user’s and offers Add region');
+  assert.equal(sectioned.total, 3);
 
   const ticks = computeTimeAxisTicks(0, 167, layout.plotWidth, 24);
   assert.ok(ticks.length >= 2);

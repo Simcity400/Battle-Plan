@@ -27,7 +27,7 @@ test('spending rows are the product\'s categories and items, dated by their late
       ],
       unrecordedHours: 4,
     },
-    gainedRaw: '134700', lostAtCapRaw: '7600', gainedReason: null, warnings: [],
+    gainedRaw: '134700', lostAtCapRaw: '7600', gainedReason: null, lostAtCapReason: null, warnings: [],
   };
   const asked: ArtHandle[] = [];
   const model = commandSpendingProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', reply]]), onArtDemand: handle => asked.push(handle) }), { currency: 'Command' });
@@ -53,6 +53,8 @@ test('spending rows are the product\'s categories and items, dated by their late
   assert.equal(model.titleSummaryPartial, 'Some hours were not recorded', 'a partial total carries its hatch and reason');
   const unnamed = commandSpendingProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', { ...reply, breakdown: { ...reply.breakdown, parts: [part('group_a_cat', '5', { nameMissing: 'The recorded localisation holds no name for group_a_cat' })] } }]]) }), { currency: 'Command' });
   assert.deepEqual(unnamed.rows[0]!.cells.item, { value: { kind: 'notRecorded', reason: 'The recorded localisation holds no name for group_a_cat' }, missingFigure: 'group_a_cat' }, 'a key the localisation does not name is shown with the missing mark and its reason');
+  const partlyLost = commandSpendingProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', { ...reply, lostAtCapReason: 'Some losses at the cap were not recorded.' }]]) }), { currency: 'Command' });
+  assert.equal(partlyLost.titleSummaryPartial, 'Some hours were not recorded; Some losses at the cap were not recorded.', 'a partly known loss at the cap says why');
   const partlyGained = commandSpendingProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', { ...reply, gainedReason: 'Gains in hours when power changes were not read are not counted.' }]]) }), { currency: 'Command' });
   assert.equal(partlyGained.titleSummaryPartial, 'Some hours were not recorded; Gains in hours when power changes were not read are not counted.', 'a partial gain names why beside its figure');
 });

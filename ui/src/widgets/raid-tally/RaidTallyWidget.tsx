@@ -9,7 +9,7 @@ import NoMembersState from '../../dashboard/NoMembersState';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { raidTally, useRaidLog } from '../../dashboard/raids';
+import { raidTally, unattributedAt, useRaidLog } from '../../dashboard/raids';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownEachFrame, useShownHour } from '../../dashboard/widgetPerf';
@@ -69,8 +69,9 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   const liveHead = useMemo(() => widget.time.mode === 'follow' && track
     ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
   [widget.time.mode, runtime.clock, track]);
+  const unattributed = tally ? unattributedAt(tally, moment) : 0;
   useDiagnostics(onDiagnostics, data || groups.data ? [...data?.warnings ?? [], ...groups.data?.warnings ?? [],
-    ...tally?.unattributed ? [`${tally.unattributed} raids have no named raider and are not counted.`] : []] : null);
+    ...unattributed ? [`${unattributed} raids have no named raider and are not counted.`] : []] : null);
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raid tally." />;
   if (read && readBlocked(read)) return <ReadView read={read} loading="">{() => null}</ReadView>;
@@ -81,7 +82,7 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   if (!data || !tally || (grouped && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading the raid tally…" /></>;
   if (data.available === false) return <>{groupFailure}<WidgetState kind="unavailable" message="No raid types available." detail={data.unavailable ?? undefined} /></>;
   if (resolved.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={resolved.reason} /></>;
-  const none = coverage.outside ? null : noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
+  const none = coverage.outside ? null : noMembersAt(widget.countries, resolved, groups.data, moment);
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="target" /></>;
   if (resolved.top == null && !tally.series.some(item => item.runs.length)) return <>{groupFailure}<WidgetState kind="unavailable" message="No raid counts were recorded for these countries." /></>;
   const recorded = !data.missing.some(gap => gap.firstHour <= moment && moment <= gap.lastHour);

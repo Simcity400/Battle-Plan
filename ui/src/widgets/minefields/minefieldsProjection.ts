@@ -210,6 +210,7 @@ export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> =
       automaticHeading: options.order === 'name' ? 'Mined regions' : mostActiveHeading(null),
       addRegionLabel: ADD_REGION_LABEL,
       ...(empty ?? {}),
+      active: reply.activeUnlisted,
       warnings: reply.warnings,
     });
   },
