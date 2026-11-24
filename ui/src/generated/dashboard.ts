@@ -1452,6 +1452,11 @@ export type RaidArtwork = { key: string, image: string | null, missing: string |
 export type RaidVictimSource = "completionCountry" | "fixedTarget" | "controllerAtFirstEndedRead" | "controllerAtObservedRead" | "captorAtFirstEndedRead" | "captorAtObservedRead";
 export type RaidEndedSource = "nativeEndDate" | "observedEndedRead";
 export type RaidVictimAt = { hour: number, tag: string | null, missing: string | null, source: RaidVictimSource | null, };
+export type RaidEndAt = { hour: number, endedHour: number, exact: boolean, source: RaidEndedSource,
+/**
+ * The raider slot's tag at the end.
+ */
+raider: string | null, };
 export type RaidPhaseRun = { firstHour: number, lastHour: number, firstExact: boolean, afterHour: number | null, raider: string | null, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null, };
 export type RaidPreparationRun = [number, number, number, number];
 export type RaidEpisode = {
@@ -1462,11 +1467,15 @@ id: string,
 /**
  * The first and last hour its row lived within the span.
  */
-firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, raiderSlot: number | null, launchedRaider: string | null, endedRaider: string | null, victim: string | null,
+firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, raiderSlot: number | null, launchedRaider: string | null, victim: string | null,
 /**
  * Why the victim is not named, when it is not.
  */
 victimMissing: string | null, victimSource: RaidVictimSource | null, victims: Array<RaidVictimAt>,
+/**
+ * The hour the raid type's spelling was first read; none, and no type, before it.
+ */
+raidTypeHour: number | null,
 /**
  * The raid type's token and its name in the reader's language.
  */
@@ -1474,15 +1483,23 @@ raidType: string | null, raidTypeName: string | null,
 /**
  * The sprite key into the reply's artwork, or why there is none.
  */
-icon: string | null, iconMissing: string | null, province: number | null, state: number | null,
+icon: string | null, iconMissing: string | null,
 /**
- * Its last phase and outcome.
+ * The hour the target's place was first read; none, and no place, before it.
+ */
+placeHour: number | null, province: number | null, state: number | null,
+/**
+ * Its last phase, and its last outcome read.
  */
 phase: number | null, phaseName: string | null, outcome: number | null, outcomeName: string | null, outcomeMissing: string | null,
 /**
  * Its phases over the span, in hour order.
  */
-runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean, endedHour: number | null, endedExact: boolean, endedSource: RaidEndedSource | null,
+runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean,
+/**
+ * What was known of its end, by the hour it was read: an observed end, then a native end date once read.
+ */
+ends: Array<RaidEndAt>,
 /**
  * The first read that saw it ended and successful: what a later read reveals is never counted before it.
  */
@@ -2385,7 +2402,11 @@ export type ReserveHistoryParams = { branchId: string,
 /**
  * The holder's raw country id.
  */
-holder: number, };
+holder: number,
+/**
+ * The hour answered: nothing recorded after it is read into the reply.
+ */
+hour: number, };
 export type ReserveAmount = { source: number, amount: number, };
 export type ReserveSegment = { firstHour: number, lastHour: number,
 /**
@@ -2400,11 +2421,19 @@ export type SourceTag = { tag: string | null, firstHour: number, lastHour: numbe
 export type ReserveSource = { id: number, tags: Array<SourceTag>, };
 export type ReserveHistoryReply = {
 /**
- * In hour order; hours the timeline does not hold are not in it.
+ * The hour answered, never after the branch's last hour.
+ */
+hour: number,
+/**
+ * The first hour after `hour` at which an entry, admission, table coverage, source tag or timeline stretch changes; null when none does.
+ */
+nextChange: number | null,
+/**
+ * In hour order through `hour`; hours the timeline does not hold are not in it.
  */
 segments: Array<ReserveSegment>,
 /**
- * Every source the segments name, by raw id.
+ * Every source the segments by `hour` name, by raw id, with tags through `hour`.
  */
 sources: Array<ReserveSource>, warnings: Array<string>, };
 export type BattleWindow = { firstHour: number, lastHour: number, };
@@ -3736,6 +3765,10 @@ export type BreakdownPart = {
  * Unique among its siblings.
  */
 key: string, name: string,
+/**
+ * Why `name` is only an identifier: the recording names it nowhere.
+ */
+nameMissing: string | null,
 /**
  * Its place in the recording's own order of the parts at its level: colours follow it, so a
  * filtered or reordered breakdown keeps them.
@@ -6655,7 +6688,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "next-elections": { "hour": "read" },
   "nuclear-arsenal": { "hour": "read" },
   "occupation-at": { "hour": "read" },
-  "occupation-reserve-history": {},
+  "occupation-reserve-history": { "hour": "read" },
   "occupation-reserve-manpower": { "hour": "read" },
   "occupied-states": { "hour": "read" },
   "operative-matrix": { "hour": "read" },
@@ -6839,7 +6872,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "next-elections": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "nuclear-arsenal": { "branchId": "leaf", "hour": "leaf", "top": "leaf" },
   "occupation-at": { "branchId": "leaf", "collaboration": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
-  "occupation-reserve-history": { "branchId": "leaf", "holder": "leaf" },
+  "occupation-reserve-history": { "branchId": "leaf", "holder": "leaf", "hour": "leaf" },
   "occupation-reserve-manpower": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "top": "leaf" },
   "occupied-states": { "branchId": "leaf", "hour": "leaf" },
   "operative-matrix": { "branchId": "leaf", "countries": "node", "countries[]": "any", "form": "leaf", "hour": "leaf", "top": "leaf" },
@@ -7023,7 +7056,7 @@ export type RequestParams<E, B> = {
   "next-elections": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "nuclear-arsenal": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "occupation-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "occupation-reserve-history": {};
+  "occupation-reserve-history": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "occupation-reserve-manpower": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "occupied-states": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "operative-matrix": { readonly [key: string]: unknown; readonly "hour"?: E | null };

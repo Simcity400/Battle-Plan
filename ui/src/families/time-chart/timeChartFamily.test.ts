@@ -21,7 +21,8 @@ import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
 import { timeChartLaneView } from './laneView.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
-import { formatChartAxisValue, layoutTimeChart } from './layout.ts';
+import { SceneTiles } from '../sceneTiles.ts';
+import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths } from './painter.ts';
 import { parseFollowed } from '../../dashboard/follow/message.ts';
@@ -705,6 +706,36 @@ describe('time-chart picture authority', () => {
     const tip = deriveTimeChartTooltip(model, layout, key);
     assert.equal(tip?.payload?.note, 'Ongoing gap');
     assert.equal(tip?.payload?.subtitle, `From ${formatDateOnly(H1936 + 300)}`, 'no end after the displayed hour');
+  });
+  it('a deselected line leaves the tile cursors, so cycling countries keeps no history behind', () => {
+    const hour = H1936 + 95;
+    const line = (tag: string) => ({ source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
+      buckets: [makeBucket(H1936, hour, 1)], missing: [], parts: [], marks: null });
+    const tiles = new SceneTiles();
+    const scene = { widget: 1, subs: [], pictures: [], model: null };
+    const held = () => (tiles as unknown as { readonly cursors: ReadonlyMap<string, unknown> }).cursors.size;
+    for (let at = 0; at < 50; at++) tiles.series(scene, { sources: {} }, { tiledBySource: { main: { [`C${at}`]: line(`C${at}`) } } }, hour);
+    assert.equal(held(), 1, 'only the line still selected keeps a cursor');
+    tiles.series(scene, { sources: {} }, {}, hour);
+    assert.equal(held(), 0);
+  });
+  it('a hover reuses the laid-out chart: only end-label fading and the axis labels under the hover tab change', () => {
+    const base = Math.floor(H1936 / 96) * 96;
+    const hour = base + 900;
+    const line = makeTiledLine('GER', [makeBucket(base, base + 899, 10)]);
+    const series = (id: string, value: number) => ({ id, key: id, name: id, color: '#e3a83b', role: 'primary' as const,
+      bounded: boundTiledSeries(line, displayedHour(hour), { headValue: knownValue(value) }), headValue: value, headHour: hour, endLabel: { value: String(value) } });
+    const model = pictureModel(hour, { series: [series('a', 10), series('b', 20)] });
+    const laid = layoutTimeChart(model, 600, 260, FONT, measure);
+    let measured = 0;
+    const counting = (text: string, font: string) => { measured++; return measure(text, font); };
+    const tick = laid.axisTicks.find(item => item.label !== null && item.hour < hour - 200)!;
+    const hovered = hoverTimeChartLayout(laid, model.hour, FONT, counting, tick.hour, 'a');
+    assert.equal(measured, 1, 'only the hover tab is measured; no series, bucket or label is laid out again');
+    for (const field of ['yTicks', 'markers', 'gaps', 'columns', 'axisCandidates', 'toX'] as const) assert.equal(hovered[field], laid[field], `${field} is the base layout's`);
+    assert.equal(hovered.axisTicks.find(item => item.hour === tick.hour)!.label, null, 'the axis label under the hover tab is hidden');
+    assert.deepEqual(Object.fromEntries(hovered.endLabels.map(label => [label.seriesId, label.faded])), { a: false, b: true }, 'the other series fades');
+    assert.equal(hoverTimeChartLayout(laid, model.hour, FONT, counting, null, null), laid, 'no hover is the base layout itself');
   });
   it('scales and draws a historical zoom from its own window, never from the current head', () => {
     const base = Math.floor(H1936 / 96) * 96;

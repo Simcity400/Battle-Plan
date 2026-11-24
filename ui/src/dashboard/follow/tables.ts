@@ -1,4 +1,4 @@
-import { rowName, rowReason, textAt } from './message.ts';
+import { cellState, cellValue, rowName, rowReason, textAt } from './message.ts';
 import type { FollowedAnswer, FollowedRows, PatchNode, RowChunk, RowPatches } from './message';
 
 const NO_TEXT = 0xffff_ffff;
@@ -260,15 +260,25 @@ function diffPatchNodes(
   }
 }
 
+function changedAcross(prev: FollowedRows, next: FollowedRows): number[] | null {
+  for (let row = 0; row < next.rows; row++) if (compareKeys(prev, row, next, row) !== 0) return null;
+  const out: number[] = [];
+  const columns = next.columns;
+  for (let row = 0; row < next.rows; row++) {
+    let differs = rowReason(prev, row) !== rowReason(next, row);
+    for (let column = 0; column < columns && !differs; column++) {
+      const at = row * columns + column;
+      differs = cellState(prev, at) !== cellState(next, at) || cellValue(prev, at) !== cellValue(next, at);
+    }
+    if (differs) out.push(row);
+  }
+  return out;
+}
+
 export function changedAnswerRows(prev: FollowedRows, next: FollowedRows): number[] | null {
   if (prev === next) return [];
-  if (
-    prev.views.u8 !== next.views.u8
-    || prev.values !== next.values
-    || prev.states !== next.states
-    || prev.rows !== next.rows
-    || prev.columns !== next.columns
-  ) return null;
+  if (prev.rows !== next.rows || prev.columns !== next.columns || prev.kind !== next.kind) return null;
+  if (prev.views.u8 !== next.views.u8 || prev.values !== next.values || prev.states !== next.states) return changedAcross(prev, next);
   const pa = prev.patches;
   const pb = next.patches;
   if (pa === pb) return [];

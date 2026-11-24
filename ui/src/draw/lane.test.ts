@@ -3423,3 +3423,30 @@ test('a date-only supply for a stamp the lane does not hold is dropped, and a ne
   await step(26, { playing: false });
   assert.equal(seen.at(-1)?.panels, null, 'the previous owner’s panels are gone');
 });
+
+test('a view that is waiting presents nothing and is not painted again until it wakes the widget; a family switch disposes the outgoing view', async () => {
+  let paints = 0, ready = false;
+  const unmounted: string[] = [];
+  const states: Map<string, unknown>[] = [];
+  const others: Map<string, unknown>[] = [];
+  const loading: LaneView = {
+    paint: (_input, state): Painted => { paints++; states.push(state); return ready ? { surfaces: [], fields: { at: { value: 1, content: 'one' } }, motion: false } : { surfaces: [], fields: {}, motion: false, waiting: true }; },
+    unmount: () => { unmounted.push('loading'); },
+  };
+  const other: LaneView = { paint: (_input, state) => { others.push(state); return { surfaces: [], fields: {}, motion: false }; } };
+  const { page, lane, mount, step } = rig({ loading, other });
+  mount(1, [], 'loading', 0, { dated: { h: 0, c: 100 } });
+  for (let hour = 10; hour < 15; hour++) await step(hour, { playing: false });
+  assert.equal(paints, 1, 'one paint while the view waits, not one per frame');
+  assert.notEqual(page.view(1).mode, 'picture');
+  ready = true;
+  lane.touch(1);
+  await step(15, { playing: false });
+  assert.equal(paints, 2, 'its own wake paints it again');
+  lane.mount(1, [], 'other');
+  lane.bind(1, { generation: 2, surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+  await step(16, { playing: false });
+  assert.deepEqual(unmounted, ['loading'], 'the outgoing view is disposed');
+  assert.ok(others.length > 0, 'the new view paints');
+  assert.ok(others.every(state => !states.includes(state)), 'the new view starts with its own state');
+});

@@ -43,12 +43,13 @@ interface RouteState {
 interface WidgetState {
   id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
-  held: Map<string, unknown>; error?: Failure; wire?: unknown; payloads: { own: ReadonlySet<number>; statics: ReadonlySet<number>; identity: ReadonlySet<number> };
+  held: Map<string, unknown>; error?: Failure; wire?: unknown; stamp: number | undefined; payloads: { own: ReadonlySet<number>; statics: ReadonlySet<number>; identity: ReadonlySet<number> };
 }
 
 const NO_PAYLOADS: ReadonlySet<number> = new Set();
 
 export interface SupplyChange {
+  readonly stamp?: number;
   readonly statics?: { readonly staticPanels?: unknown; readonly staticAnswers?: unknown; readonly staticShifts?: unknown } | null;
   readonly identity?: object | null;
   readonly dated?: Dated | null;
@@ -364,7 +365,7 @@ export class Pipeline {
     this.loads[lane]!++;
     this.costLoads[lane]! += cost;
     const widget: WidgetState = { id, lane, kind, cost, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
-      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map(),
+      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map(), stamp: undefined,
       payloads: { own: NO_PAYLOADS, statics: NO_PAYLOADS, identity: NO_PAYLOADS } };
     if (options.model !== undefined) this.own(widget, options.model);
     this.widgets.set(id, widget);
@@ -538,7 +539,12 @@ export class Pipeline {
 
   private timed(widget: WidgetState, binding: Omit<Binding, 'generation' | 'offset' | 'pin'>): Binding {
     const shown = this.page.widgets.get(widget.id);
-    return { ...binding, generation: shown?.binding ?? 1, ...(shown?.owner !== undefined ? { owner: shown.owner } : {}), offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
+    const { dated: _, ...own } = binding;
+    const was = widget.binding;
+    const owner = shown?.owner;
+    const kept = was.owner === undefined || owner === undefined || was.owner === owner;
+    if (!kept) widget.stamp = undefined;
+    return { ...own, ...kept && was.dated ? { dated: was.dated } : {}, generation: shown?.binding ?? 1, ...(shown?.owner !== undefined ? { owner: shown.owner } : {}), offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
   }
 
   bind(id: number, surfaces: readonly PageSurface<ImageBitmap>[], binding: Omit<Binding, 'generation' | 'offset' | 'pin'>, change: RebindChange = {}, model?: unknown) {
@@ -611,20 +617,24 @@ export class Pipeline {
         identity = next ?? null;
       }
     }
-    if (change.dated !== undefined) {
+    if (statics !== undefined) widget.stamp = change.stamp;
+    const dated = change.dated !== undefined && (statics !== undefined || change.stamp === widget.stamp) ? change.dated : undefined;
+    if (dated !== undefined) {
       const { dated: _, ...rest } = widget.binding;
-      widget.binding = change.dated ? { ...rest, dated: change.dated } : rest;
+      widget.binding = dated ? { ...rest, dated } : rest;
     }
-    if (statics !== undefined || identity !== undefined || change.dated !== undefined) {
+    if (statics !== undefined || identity !== undefined || dated !== undefined) {
       this.host.lanes[widget.lane]!.postMessage({
         type: 'supply',
         widget: widget.id,
+        ...widget.stamp !== undefined && (statics !== undefined || dated !== undefined) ? { stamp: widget.stamp } : {},
         ...statics !== undefined ? { statics: statics as Supply['statics'] } : {},
         ...identity !== undefined ? { identity } : {},
-        ...change.dated !== undefined ? { dated: change.dated } : {},
+        ...dated !== undefined ? { dated } : {},
       });
     }
     for (const ids of released) sender.release(ids);
+    if (statics !== undefined && widget.error) this.retryWidget(id);
   }
 
   held<T>(id: number, kind: string, make: () => T): T | null {

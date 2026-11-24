@@ -57,6 +57,7 @@ export interface Painted {
   mode?: 'picture' | 'refused';
   reason?: string;
   nextChangeAt?: number;
+  waiting?: true;
   viewport?: InstalledViewport;
   hit?: (point: readonly [number, number]) => string | null;
 }
@@ -558,13 +559,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   mount(widget: number, subs: readonly number[], view: string, model?: unknown) {
     const was = this.widgets.get(widget);
     if (was) this.unindexWidget(was);
+    const switched = !!was && was.view !== view;
+    if (switched) this.host.views(was.view).unmount?.(widget, was.state);
     const early = was ? undefined : this.earlySupply.get(widget);
     this.earlySupply.delete(widget);
     const supplied: Supplied = was?.supplied ?? { stamp: undefined, statics: null, identity: null };
     const own = this.store.resolve(model);
     const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model: own, own, supplied, supply: was?.supply ?? 0,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
-      installed: was?.installed ?? null, shown: was?.shown ?? null, inflight: null, sent: {}, forceFull: false, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
+      installed: was?.installed ?? null, shown: was?.shown ?? null, inflight: null, sent: {}, forceFull: false, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: switched ? new Map() : was?.state ?? new Map(), cost: was?.cost ?? 0.1,
       served: was?.served ?? 0, deferrals: 0, halted: null, parked: null };
     made.model = this.compose(made);
     this.widgets.set(widget, made);
@@ -1723,6 +1726,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         break;
       }
       if (failedLocally) continue;
+      if (painted.waiting) {
+        widget.validWindow = null;
+        widget.motion = false;
+        this.motionWidgets.delete(widget.id);
+        this.syncWindowTracking(widget);
+        continue;
+      }
       widget.validWindow = activeSelected.window;
       const paintMs = this.time() - start;
       widget.motion = painted.motion;

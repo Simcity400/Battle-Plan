@@ -89,7 +89,8 @@ pub struct SpendItem {
 pub struct SpendKind {
     pub id: Option<String>,
     pub name: Option<String>,
-    #[doc = " Why the category or role is not known."]
+    #[doc = " Why the category or role is not known; with `id` and `name`, why that name is its key (the"]
+    #[doc = " recorded localisation holds none)."]
     pub unknown: Option<String>,
 }
 
