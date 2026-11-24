@@ -1050,7 +1050,7 @@ impl Context {
                 );
                 match drawn.get() {
                     Ok(icon) => {
-                        drawn_sprite = Some(sprite.clone());
+                        drawn_sprite = Some(sprite);
                         Some(icon.clone())
                     }
                     Err(why) if *why == undeclared => {
@@ -1896,7 +1896,7 @@ mod tests {
             &[
                 (
                     "common/national_focus/mod.txt",
-                    "focus_tree={focus={id=mod_focus text=mod_title icon={GFX_unavailable={has_country_flag=mod_flag}}} focus={id=mod_empty text=empty_title}}",
+                    "focus_tree={focus={id=mod_focus text=mod_title icon={GFX_unavailable={has_country_flag=mod_flag}}} focus={id=mod_empty text=empty_title} focus={id=mod_static text=empty_title icon=GFX_mod_static}}",
                 ),
                 (
                     "localisation/mod_l_english.yml",
@@ -1961,6 +1961,11 @@ mod tests {
                 .as_deref(),
             Some("")
         );
+        let (metadata, _) = text
+            .focus_metadata(BTreeSet::from(["mod_focus", "mod_static"]), &AtomicBool::new(false))
+            .unwrap();
+        let sprites: Vec<_> = metadata.iter().map(|art| (art.token.as_str(), art.sprite.as_deref())).collect();
+        assert_eq!(sprites, [("mod_focus", None), ("mod_static", Some("GFX_mod_static"))], "a triggered icon names no sprite");
     }
 
     #[test]

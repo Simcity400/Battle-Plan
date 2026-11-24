@@ -594,20 +594,6 @@ mod tests {
     }
 
     #[test]
-    fn focus_metadata_names_a_static_icon_sprite_and_no_sprite_for_a_triggered_one() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let frame = focus_scale_frame(100, 24, 12, &["static"]);
-        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-        let (source, context, _folders) = icon_product_source(replay);
-        let mut slot = None;
-        let national = artwork::ensure(&mut slot, &source, context.content().unwrap(), artwork::Kind::Focus(FocusDatabase::National)).unwrap();
-        let (items, _) = national.focus_metadata(["conditional", "static"].into_iter().collect(), &AtomicBool::new(false)).unwrap();
-        let sprites: Vec<_> = items.iter().map(|art| (art.token.as_str(), art.sprite.as_deref(), art.icon.as_deref())).collect();
-        assert_eq!(sprites, [("conditional", None, None), ("static", Some("GFX_mod_static"), None)]);
-    }
-
-    #[test]
     fn static_icon_only_product_skips_scoped_titles() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
