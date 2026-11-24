@@ -460,8 +460,8 @@ fn decode_texture_checked(
     display_file: &str,
 ) -> Result<content_reader_layers::textures::Texture, ArtResolution> {
     let read = |path: &[u8]| {
-        if path == winning_path {
-            stack.read_uncovered_path(path)
+        if path.eq_ignore_ascii_case(winning_path) {
+            stack.read_uncovered_path(winning_path)
         } else {
             Err(io::Error::from(io::ErrorKind::NotFound))
         }
@@ -1760,6 +1760,27 @@ mod tests {
             }
             other => panic!("expected ConfirmedMissing for unmounted mod flag, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_texture_found_under_another_spelling_decodes_from_the_file_found() {
+        let (_, folder) = crate::catalogue::tests::localisation_catalogue(&[]);
+        write_entries(&folder.0, &[("gfx/Sample_Icon.png", &png_bytes(&solid(4, 2, [30, 60, 90, 255])))]);
+        let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+        let layers = ResolvedLayers::from_test_layers(layers.layers).unwrap();
+        let scope_key = art_scope_key(&layers, "english");
+        let variant = ArtRenderVariant { max_edge: 48, decode: Decode::default() };
+        match resolve_texture_in_stack(layers.presentation(), "gfx/sample_icon.png", 1, 0, variant, &scope_key) {
+            ArtResolution::Ready { url, frame, .. } => {
+                assert_eq!((frame.texture_width, frame.texture_height), (4, 2));
+                assert_eq!(&from_url(&url).pixels[..4], &[30, 60, 90, 255]);
+            }
+            other => panic!("a texture the lookup found must decode, got {other:?}"),
+        }
+        assert!(matches!(
+            resolve_native_texture_in_stack(layers.presentation(), "gfx/sample_icon.png", Decode::default(), &scope_key),
+            NativeIconResolution::Ready { .. }
+        ));
     }
 
     #[test]
