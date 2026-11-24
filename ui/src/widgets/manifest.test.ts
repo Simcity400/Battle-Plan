@@ -81,7 +81,7 @@ test('every manifest view reaches its own projection through the binding the hos
       const declaration = spec.declaration as { readonly kind?: string } | undefined;
       assert.equal(declaration?.kind ?? entry.kind, entry.kind, `${entry.kind}/${view}: the declaration is for its own kind`);
       const ctx: FamilyBindingContext<unknown, unknown> = {
-        kind: declaration?.kind ?? entry.kind, view, options: {}, settings: {}, window: null, sources: {}, extent: [0, 100], plan: null,
+        kind: declaration?.kind ?? entry.kind, view, options: {}, settings: {}, sources: {}, extent: [0, 100], plan: null,
         viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, theme: {} as FamilyTheme, reducedMotion: false,
         identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
       };

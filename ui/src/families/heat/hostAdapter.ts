@@ -112,21 +112,6 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
   },
   deriveAuditRows: model => deriveMatrixAudit(model),
   auditOrdered: false,
-  buildBinding: ctx => ({
-    options: ctx.options,
-    sources: ctx.sources,
-    ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-    ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-    width: ctx.viewport.width,
-    height: ctx.viewport.height,
-    scrollLeft: ctx.viewport.scrollLeft,
-    scrollTop: ctx.viewport.scrollTop,
-    theme: ctx.theme,
-    ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
-    focusedKey: ctx.focusedKey,
-    pauseFlush: ctx.pauseFlush,
-    ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
-  }),
 };
 
 export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, FamilyHeatLanesBinding> = {
@@ -142,15 +127,6 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
   getScrollExtent: fields => {
     const ext = fields.extent as LanesExtentField | undefined;
     return ext ? { height: ext.totalHeight } : null;
-  },
-  getRowStride: fields => {
-    const ext = fields.extent as LanesExtentField | undefined;
-    return ext?.rowStride ?? 30;
-  },
-  getPageStep: (fields, viewport) => {
-    const ext = fields.extent as LanesExtentField | undefined;
-    const stride = Math.max(1, ext?.rowStride ?? 30);
-    return Math.max(1, Math.floor(Math.max(1, ext?.plotHeight ?? viewport.height) / stride));
   },
   resolveHitAction: (hit, installed, fields) => {
     const ext = fields.extent as LanesExtentField | undefined;
@@ -189,19 +165,4 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
     return deriveLanesAudit(model, { firstRow: layout.firstRow, endRow: layout.endRow });
   },
   auditOrdered: true,
-  buildBinding: ctx => ({
-    options: ctx.options,
-    sources: ctx.sources,
-    ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-    ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-    width: ctx.viewport.width,
-    height: ctx.viewport.height,
-    scrollTop: ctx.viewport.scrollTop,
-    theme: ctx.theme,
-    ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
-    selectedKey: ctx.selectedKey,
-    focusedKey: ctx.focusedKey,
-    pauseFlush: ctx.pauseFlush,
-    ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
-  }),
 };

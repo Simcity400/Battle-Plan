@@ -228,12 +228,16 @@ function seriesEndPoint(
 
 function buildColumnsLayout(
   columns: ChartColumnModel,
+  xDomain: readonly [number, number],
   until: number,
   left: number,
   plotWidth: number,
   small: boolean,
+  measure: MeasureText,
+  smallFont: string,
 ): PlacedColumnItem[] {
-  const visible = columns.months.filter(m => m.firstHour <= until);
+  const cutoff = Math.min(xDomain[1], until);
+  const visible = columns.months.filter(m => m.lastHour >= xDomain[0] && m.firstHour <= cutoff);
   if (!visible.length) return [];
   const threshold = columns.foldThreshold ?? 6;
   const groups: ({ kind: 'fold'; months: ChartMonthSlot[] } | { kind: 'month'; month: ChartMonthSlot })[] = [];
@@ -263,6 +267,7 @@ function buildColumnsLayout(
   const slotWidth = Math.max(4, (plotWidth - foldCount * foldWidth) / Math.max(1, monthCount));
   const out: PlacedColumnItem[] = [];
   let x = left;
+  let lastLabelRight = -1e9;
 
   for (let idx = 0; idx < groups.length; idx++) {
     const g = groups[idx]!;
@@ -272,6 +277,10 @@ function buildColumnsLayout(
       const shortEnd = String(b.year).slice(-2);
       const foldLabel = a.year === b.year ? String(a.year) : `${a.year}\u2013${shortEnd}`;
       const foldSpanText = `${shortMonth(a.month)} ${a.year} \u2013 ${shortMonth(b.month)} ${b.year}`;
+      const cx = x + foldWidth / 2;
+      const lw = measure(foldLabel, smallFont);
+      const shownLabel = cx - lw / 2 >= lastLabelRight + 6 ? foldLabel : null;
+      if (shownLabel) lastLabelRight = cx + lw / 2;
       out.push({
         kind: 'fold',
         index: idx,
@@ -279,7 +288,7 @@ function buildColumnsLayout(
         width: foldWidth,
         barX: x + 4,
         barWidth: Math.max(4, foldWidth - 8),
-        label: foldLabel,
+        label: shownLabel,
         majorLabel: true,
         foldMonths: g.months,
         foldLabel,
@@ -301,6 +310,15 @@ function buildColumnsLayout(
     }
     if (small && idx > 0 && idx < groups.length - 1 && m.month !== 1 && !prevFold) {
       label = null;
+    }
+    if (label) {
+      const cx = x + slotWidth / 2;
+      const lw = measure(label, smallFont);
+      if (cx - lw / 2 < lastLabelRight + 8) {
+        label = null;
+      } else {
+        lastLabelRight = cx + lw / 2;
+      }
     }
     out.push({
       kind: 'month',
@@ -342,11 +360,19 @@ export function layoutTimeChart(
   let dataMin = Infinity;
   let dataMax = -Infinity;
   if (model.mode === 'columns' && model.columns) {
+    const cutoff = Math.min(xDomain[1], model.hour);
     for (const m of model.columns.months) {
-      if (m.firstHour > model.hour || m.status !== 'recorded') continue;
-      if (m.totalValue < dataMin) dataMin = m.totalValue;
-      if (m.totalValue > dataMax) dataMax = m.totalValue;
-      if (0 < dataMin) dataMin = 0;
+      if (m.lastHour < xDomain[0] || m.firstHour > cutoff || m.status !== 'recorded') continue;
+      let posSum = 0;
+      let negSum = 0;
+      for (const seg of m.segments) {
+        if (seg.value > 0) posSum += seg.value;
+        else if (seg.value < 0) negSum += seg.value;
+      }
+      const lo = Math.min(0, negSum, m.totalValue);
+      const hi = Math.max(0, posSum, m.totalValue);
+      if (lo < dataMin) dataMin = lo;
+      if (hi > dataMax) dataMax = hi;
     }
   } else if (model.mode === 'stack' && model.stack) {
     const { hours, bands, total } = model.stack;
@@ -473,12 +499,19 @@ export function layoutTimeChart(
     for (let i = model.stack.hours.length - 1; i >= 0; i--) {
       if (model.stack.hours[i]! <= model.hour) { lastIdx = i; break; }
     }
+    const estPlotHeight = Math.max(1, height - top - bottom);
+    const ySpan = Math.max(1e-9, yDomain[1] - yDomain[0]);
+    const trailingGap = model.stack.step === true && lastIdx >= 0
+      && (model.gaps?.some(g => g.firstHour > model.stack!.hours[lastIdx]! && g.firstHour <= model.hour) ?? false);
     const lastValid = lastIdx >= 0
-      && Math.abs(model.hour - model.stack.hours[lastIdx]!) <= 48
-      && model.stack.bands.every(band => {
-        const v = band.values[lastIdx];
-        return v !== null && v !== undefined && Number.isFinite(v);
-      });
+      && !trailingGap
+      && (model.stack.step === true || Math.abs(model.hour - model.stack.hours[lastIdx]!) <= 48)
+      && (model.stack.total
+        ? model.stack.total.values[lastIdx] !== null && model.stack.total.values[lastIdx] !== undefined && Number.isFinite(model.stack.total.values[lastIdx])
+        : model.stack.bands.every(band => {
+          const v = band.values[lastIdx];
+          return v !== null && v !== undefined && Number.isFinite(v);
+        }));
     if (lastValid) {
       let acc = 0;
       for (const band of model.stack.bands) {
@@ -486,8 +519,13 @@ export function layoutTimeChart(
         const mid = acc + v / 2;
         acc += v;
         if (!band.endLabel) continue;
-        const showName = !!(band.endLabel.name && (!small || !band.endLabel.flag));
-        const nameText = showName ? ellipsise(band.endLabel.name!, END_LABEL_MAX_NAME_PX, measureName) : null;
+        const bandPx = (Math.abs(v) / ySpan) * estPlotHeight;
+        if (small && bandPx < 10) continue;
+        const rawName = small && band.endLabel.shortName !== undefined
+          ? band.endLabel.shortName
+          : band.endLabel.name;
+        const showName = !!(rawName && (!small || !band.endLabel.flag));
+        const nameText = showName ? ellipsise(rawName!, END_LABEL_MAX_NAME_PX, measureName) : null;
         const barW = 9;
         const artW = band.endLabel.flag && band.endLabel.flag.art.status !== 'noArtExpected' ? 24 : 0;
         const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
@@ -553,7 +591,7 @@ export function layoutTimeChart(
   };
 
   const columns = model.mode === 'columns' && model.columns
-    ? buildColumnsLayout(model.columns, model.hour, left, plotWidth, small)
+    ? buildColumnsLayout(model.columns, xDomain, model.hour, left, plotWidth, small, measure, smallFont)
     : [];
 
   const playheadX = model.mode === 'columns' && columns.length > 0

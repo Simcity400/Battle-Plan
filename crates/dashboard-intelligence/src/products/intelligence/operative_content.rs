@@ -48,6 +48,7 @@ pub struct Experience {
     pub text: Option<String>,
     pub ratio: Option<f64>,
     pub missing: Option<String>,
+    pub at_cap: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -410,8 +411,9 @@ pub fn experience(localisation: &Localisation, skills: &Skills, skill: Option<i3
         None => catalogue::localised_with(localisation, "LEADER_SKILL_AT_CAP", &[("SKILL", Argument::Int32(skill))], View::Plain),
     };
     let ratio = progress.map(|raw| raw as f64 / 100_000.0);
+    let at_cap = progress.is_none();
     match text {
-        Ok(text) => Experience { text: Some(text), ratio, missing: None },
-        Err(missing) => Experience { text: None, ratio, missing: Some(missing) },
+        Ok(text) => Experience { text: Some(text), ratio, missing: None, at_cap },
+        Err(missing) => Experience { text: None, ratio, missing: Some(missing), at_cap },
     }
 }

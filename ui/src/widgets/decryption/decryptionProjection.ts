@@ -8,7 +8,7 @@ import type {
   MeterRow,
   MeterSection,
 } from '../../families/meter/model.ts';
-import { registerMeterProjection } from '../../families/meter/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatProgress } from '../../families/valueFormat.ts';
 import type { CipherPair } from '../../generated/dashboard';
 import { pairKey, percentOf, progressLabel, workingStatus } from './decryptionData.ts';
@@ -26,7 +26,7 @@ import {
 
 const flagOf = (country: ResolvedCountry): MeterFlag => ({ tag: country.tag, result: country.flag });
 
-export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = registerMeterProjection({
+export const decryptionProjection: MeterProjection<DecryptionFilterOptions> = registerFamilyProjection({
   family: 'meters',
   kind: 'decryption',
   nextChange(readView, options): number {

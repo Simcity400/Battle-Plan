@@ -5,7 +5,7 @@ import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { countryLook, nextBoundaryAfter, timelineModel, clipSpansToHour, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, type TimelineProjection } from '../../families/timeline/model.ts';
-import { registerTimelineProjection } from '../../families/timeline/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
 import { aboutElsewhere, agreementKinds, agreementLanes, agreementsOf, changeHours, validatePacts, type AgreementLaneMeta } from './pactsData.ts';
 
@@ -17,7 +17,8 @@ export interface DiplomaticPactsOptions {
   readonly surface: string;
 }
 
-export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOptions> = registerTimelineProjection<DiplomaticPactsOptions>({
+export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOptions> = registerFamilyProjection<TimelineProjection<DiplomaticPactsOptions>>({
+  family: 'timeline',
   kind: 'diplomatic-pacts',
 
   nextChange(readView) {

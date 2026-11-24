@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, io};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PeopleExile {
-    pub tag: String,
+    pub tag: Option<String>,
     pub host: Option<String>,
     pub legitimacy: Option<String>,
     pub manpower: Option<i32>,
@@ -117,9 +117,12 @@ pub struct ExileAt {
 pub fn exile_rows(frame: &DecodedFrame, include: impl Fn(u32, u32) -> bool) -> (Vec<ExileAt>, [u32; 5]) {
     let mut refusals = [0_u32; 5];
     let mut out = Vec::new();
-    let (Ok(links), Ok(rows)) = (Links::new(frame), frame.complete::<tables::CountryStabilityInputs>()) else {
+    let Ok(rows) = frame.complete::<tables::CountryStabilityInputs>() else {
         return (out, refusals);
     };
+    let links = Links::new(frame).ok();
+    let slot = |raw: u32| links.as_ref().and_then(|links| links.slot(raw));
+    let tag = |raw: u32| links.as_ref().and_then(|links| links.tag(raw));
     let deployed = frame.complete::<tables::CountryDeployedManpower>().ok();
     let reads = frame.complete::<tables::SliceReads>().ok();
     for row in rows {
@@ -143,14 +146,14 @@ pub fn exile_rows(frame: &DecodedFrame, include: impl Fn(u32, u32) -> bool) -> (
                 refusals[index + 1] += 1;
             }
         }
-        let deployed_air = links.slot(row.country).and_then(|slot| {
+        let deployed_air = slot(row.country).and_then(|slot| {
             let rows = deployed?;
             let at = rows.binary_search_by_key(&slot, |row| row.slot).ok()?;
             recorded(&rows[at].exile_air)
         });
-        out.push(ExileAt { country: row.country, slot: links.slot(row.country), exile: PeopleExile {
-            tag: links.tag(row.country).unwrap_or_else(|| format!("Country {}", row.country)),
-            host: links.tag(host as u32),
+        out.push(ExileAt { country: row.country, slot: slot(row.country), exile: PeopleExile {
+            tag: tag(row.country),
+            host: tag(host as u32),
             legitimacy: scalar(&row.exile_legitimacy).map(|value| value.to_string()),
             manpower: scalar(&row.exile_manpower),
             cap: scalar(&row.exile_manpower_cap),

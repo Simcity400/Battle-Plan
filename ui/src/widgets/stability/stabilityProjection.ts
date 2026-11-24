@@ -9,11 +9,8 @@ import {
 } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type {
   ChartArtSlot,
@@ -141,7 +138,7 @@ function markerDays(raw: readonly StabilityRawMarker[]): readonly MarkerDay[] {
   return days;
 }
 
-export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerTimeChart({
+export const stabilityProjection: TimeChartProjection<StabilityOptions> = registerFamilyProjection({
   kind: 'stability',
   family: 'time-chart',
   variant: 'line',

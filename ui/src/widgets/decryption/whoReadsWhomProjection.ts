@@ -1,6 +1,6 @@
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell, MatrixCells } from '../../families/heat/matrixModel.ts';
-import { registerHeatMatrixProjection } from '../../families/heat/matrixRegistry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatProgress } from '../../families/valueFormat.ts';
 import type { CipherCounts, CipherPair } from '../../generated/dashboard';
 import { pairKey, percentOf } from './decryptionData.ts';
@@ -51,7 +51,7 @@ function firstSeen(pairs: readonly CipherPair[], side: 'owner' | 'target'): numb
   return ids;
 }
 
-export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOptions> = registerHeatMatrixProjection({
+export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOptions> = registerFamilyProjection({
   family: 'heat-matrix',
   kind: 'decryption',
   nextChange(readView, options): number {

@@ -690,6 +690,15 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
             }
         })
         .collect();
+    reply.series.sort_by(|a, b| {
+        match (a.summary.apm, b.summary.apm) {
+            (Some(x), Some(y)) => y.total_cmp(&x),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| a.id.cmp(&b.id))
+    });
     check_reply_budget(&reply)?;
     Ok(reply)
 }

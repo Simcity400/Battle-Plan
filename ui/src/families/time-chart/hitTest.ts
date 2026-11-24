@@ -9,8 +9,8 @@ export type ParsedChartInspect =
   | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'label'; readonly seriesId: string }
   | { readonly kind: 'gap'; readonly index: number }
-  | { readonly kind: 'fold'; readonly index: number }
-  | { readonly kind: 'month'; readonly index: number }
+  | { readonly kind: 'fold'; readonly index: number; readonly hour?: number }
+  | { readonly kind: 'month'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'line'; readonly seriesId: string; readonly hour: number }
   | { readonly kind: 'plot'; readonly hour: number };
 
@@ -32,12 +32,18 @@ export function parseChartInspect(key: string | null | undefined): ParsedChartIn
     return Number.isInteger(index) && index >= 0 ? { kind: 'gap', index } : null;
   }
   if (key.startsWith('fold:')) {
-    const index = Number(key.slice(5));
-    return Number.isInteger(index) && index >= 0 ? { kind: 'fold', index } : null;
+    const [rawIndex, rawHour] = key.slice(5).split('@');
+    const index = Number(rawIndex);
+    const hour = rawHour === undefined ? undefined : Number(rawHour);
+    if (!Number.isInteger(index) || index < 0 || (hour !== undefined && !Number.isFinite(hour))) return null;
+    return hour === undefined ? { kind: 'fold', index } : { kind: 'fold', index, hour };
   }
   if (key.startsWith('month:')) {
-    const index = Number(key.slice(6));
-    return Number.isInteger(index) && index >= 0 ? { kind: 'month', index } : null;
+    const [rawIndex, rawHour] = key.slice(6).split('@');
+    const index = Number(rawIndex);
+    const hour = rawHour === undefined ? undefined : Number(rawHour);
+    if (!Number.isInteger(index) || index < 0 || (hour !== undefined && !Number.isFinite(hour))) return null;
+    return hour === undefined ? { kind: 'month', index } : { kind: 'month', index, hour };
   }
   if (key.startsWith('line:')) {
     const at = key.lastIndexOf('@');
@@ -150,7 +156,12 @@ export function hitTestTimeChart(
   if (model.mode === 'columns') {
     for (const col of layout.columns) {
       if (px >= col.x && px <= col.x + col.width) {
-        return col.kind === 'fold' ? `fold:${col.index}` : `month:${col.index}`;
+        if (col.kind === 'fold') {
+          const hour = col.foldMonths?.[0]?.firstHour;
+          return hour !== undefined ? `fold:${col.index}@${hour}` : `fold:${col.index}`;
+        }
+        const hour = col.month?.firstHour;
+        return hour !== undefined ? `month:${col.index}@${hour}` : `month:${col.index}`;
       }
     }
     return null;
@@ -230,6 +241,11 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
       else break;
     }
     if (at >= 0) {
+      const totalVal = model.stack.total?.values[at];
+      if (model.stack.total && totalVal === null) return [];
+      const totalItem: TooltipListItem | null = totalVal !== null && totalVal !== undefined && Number.isFinite(totalVal)
+        ? { label: model.measureTitle, value: formatExactFigure(totalVal, model), strong: true }
+        : null;
       for (const band of model.stack.bands) {
         const v = band.values[at];
         if (v === null || v === undefined || !Number.isFinite(v)) continue;
@@ -244,6 +260,13 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
           },
         });
       }
+      entries.sort((a, b) => b.sortVal - a.sortVal);
+      const bandItems = entries.map(e => e.item);
+      if (totalItem) {
+        if (bandItems.length > 0) bandItems[0] = { ...bandItems[0]!, divider: true };
+        return [totalItem, ...bandItems];
+      }
+      return bandItems;
     }
   } else {
     for (const s of model.series) {
@@ -437,6 +460,32 @@ export function deriveTimeChartTooltip(
   }
 
   if (parsed.kind === 'label') {
+    if (model.mode === 'stack' && model.stack) {
+      if (parsed.seriesId === '__total__') {
+        const items = seriesTooltipItemsAt(model, model.hour);
+        return {
+          hour: model.hour,
+          rowKey: inspectKey,
+          payload: {
+            title: model.measureTitle,
+            subtitle: formatDateOnly(model.hour),
+            items,
+          },
+        };
+      }
+      const band = model.stack.bands.find(b => b.id === parsed.seriesId);
+      if (!band) return null;
+      const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === band.name);
+      return {
+        hour: model.hour,
+        rowKey: inspectKey,
+        payload: {
+          title: band.endLabel?.fullName ?? band.name,
+          subtitle: model.measureTitle,
+          items,
+        },
+      };
+    }
     const s = model.series.find(item => item.id === parsed.seriesId);
     if (s) {
       const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === s.name);

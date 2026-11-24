@@ -66,6 +66,22 @@ export interface LayoutHeatMatrixInput {
 
 export const MATRIX_TRAILING_GAP = 16;
 
+interface AxisFacts {
+  readonly groups: readonly MatrixGroupSpan[];
+  readonly flags: boolean;
+}
+
+const heldAxes = new WeakMap<readonly MatrixAxisEntity[], AxisFacts>();
+
+function axisFacts(items: readonly MatrixAxisEntity[]): AxisFacts {
+  let facts = heldAxes.get(items);
+  if (!facts) {
+    facts = { groups: matrixGroupSpans(items), flags: items.some(item => item.flag !== undefined || item.tag !== undefined) };
+    heldAxes.set(items, facts);
+  }
+  return facts;
+}
+
 export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout {
   const width = Math.max(1, Math.floor(input.width));
   const height = Math.max(1, Math.floor(input.height));
@@ -73,12 +89,13 @@ export function layoutHeatMatrix(input: LayoutHeatMatrixInput): HeatMatrixLayout
     input.legend && ((input.legend.entries?.length ?? 0) > 0 || input.legend.gradient || input.legend.rightNote),
   );
   const legendHeight = hasLegend ? MATRIX_LEGEND_HEIGHT : 0;
-  const rowGroups = matrixGroupSpans(input.rows);
-  const colGroups = matrixGroupSpans(input.columns);
+  const rowAxis = axisFacts(input.rows);
+  const colAxis = axisFacts(input.columns);
+  const rowGroups = rowAxis.groups;
+  const colGroups = colAxis.groups;
   const colGroupHeight = colGroups.length > 0 ? MATRIX_GROUP_BAND_HEIGHT : 0;
   const rowGroupWidth = rowGroups.length > 0 ? 4 : 0;
-  const showFlags = input.rows.some(item => item.flag !== undefined || item.tag !== undefined)
-    || input.columns.some(item => item.flag !== undefined || item.tag !== undefined);
+  const showFlags = rowAxis.flags || colAxis.flags;
   const wide = input.shape === 'wide';
   const showNames = width >= (wide ? MATRIX_WIDE_COMPACT_WIDTH : MATRIX_COMPACT_WIDTH);
 

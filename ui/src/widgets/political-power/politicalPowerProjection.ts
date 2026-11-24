@@ -2,11 +2,8 @@ import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
@@ -37,7 +34,7 @@ function formatEndAmount(value: number): string {
   return Math.abs(value) >= 1e4 ? formatCompactScalar(Math.trunc(value), 'integer').text : formatScalar(value, 'integer');
 }
 
-export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions> = registerTimeChart({
+export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions> = registerFamilyProjection({
   kind: 'political-power',
   family: 'time-chart',
   variant: 'line',

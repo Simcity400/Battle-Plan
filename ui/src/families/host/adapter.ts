@@ -18,6 +18,7 @@ import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { normalizeView } from '../manifest.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
+import { parseDefaultRowHit } from './pointer.ts';
 
 const navActionIndexCache = new WeakMap<readonly FamilyNavTuple[], Map<string, FamilyNavTuple>>();
 
@@ -147,17 +148,11 @@ export interface FamilyRowWindow {
   readonly count: number;
 }
 
-export interface FamilyRowGeometry {
-  readonly rowHeight: number;
-  readonly overscan: number;
-}
-
 export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly kind: string;
   readonly view: string;
   readonly options: TOptions;
   readonly settings: TSettings | undefined;
-  readonly window: FamilyRowWindow | null;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
@@ -182,7 +177,6 @@ export interface FamilyAuditContext<TSettings = unknown> {
   readonly viewport: FamilyViewportState;
   readonly settings: TSettings | undefined;
   readonly expanded: Readonly<Record<string, boolean>>;
-  readonly window: FamilyRowWindow | null;
   readonly theme: FamilyTheme | undefined;
   readonly fields: Readonly<Record<string, unknown>>;
 }
@@ -225,14 +219,64 @@ export interface FamilyBindingIdentity {
   readonly view: string;
 }
 
-export type FamilyBindingBody<TBinding> = Omit<TBinding, keyof FamilyBindingIdentity>;
+export interface FamilyBaseBinding<TOptions = unknown> extends FamilyBindingIdentity {
+  readonly options: TOptions;
+  readonly sources: Readonly<Record<string, number>>;
+  readonly staticPanels?: Readonly<Record<string, unknown>>;
+  readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
+  readonly width: number;
+  readonly height: number;
+  readonly scrollTop: number;
+  readonly scrollLeft: number;
+  readonly theme: FamilyTheme;
+  readonly identitySnapshot?: IdentitySnapshot;
+  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly selectedKey: string | null;
+  readonly focusedKey: string | null;
+  readonly audit: boolean;
+  readonly auditId?: number;
+  readonly pauseFlush: number;
+}
+
+export type FamilyBindingExtras<TBinding> = Omit<TBinding, keyof FamilyBaseBinding>;
 
 export function familyBinding<TOptions, TBinding, TSettings>(
   adapter: FamilyHostAdapter<any, TOptions, TBinding, TSettings>,
   ctx: FamilyBindingContext<TOptions, TSettings>,
-): (TBinding & FamilyBindingIdentity) | null {
-  const body = adapter.buildBinding(ctx);
-  return body === null ? null : { ...body, family: adapter.family, kind: ctx.kind, view: normalizeView(ctx.view) } as TBinding & FamilyBindingIdentity;
+): (TBinding & FamilyBaseBinding<TOptions>) | null {
+  if (!ctx.theme) return null;
+  const extras = adapter.buildBinding ? adapter.buildBinding(ctx) : {};
+  if (extras === null) return null;
+  const base: FamilyBaseBinding<TOptions> = {
+    family: adapter.family,
+    kind: ctx.kind,
+    view: normalizeView(ctx.view),
+    options: ctx.options,
+    sources: ctx.sources,
+    ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
+    ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
+    width: ctx.viewport.width,
+    height: ctx.viewport.height,
+    scrollTop: ctx.viewport.scrollTop,
+    scrollLeft: ctx.viewport.scrollLeft,
+    theme: ctx.theme,
+    ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
+    ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
+    selectedKey: ctx.selectedKey,
+    focusedKey: ctx.focusedKey,
+    audit: ctx.audit,
+    ...(ctx.auditId !== undefined ? { auditId: ctx.auditId } : {}),
+    pauseFlush: ctx.pauseFlush,
+  };
+  return { ...base, ...extras } as TBinding & FamilyBaseBinding<TOptions>;
+}
+
+export function parseFamilyHit(adapter: Pick<FamilyHostAdapter, 'parseHit'>, hitKey: string | null): ParsedFamilyHit | null {
+  return (adapter.parseHit ?? parseDefaultRowHit)(hitKey);
+}
+
+export function familyInspectToken(adapter: Pick<FamilyHostAdapter, 'inspectToken'>, key: string): string {
+  return adapter.inspectToken ? adapter.inspectToken(key) : `row:${key}`;
 }
 
 export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBinding = unknown, TSettings = unknown> {
@@ -245,17 +289,14 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly mirrorFocus?: 'body' | 'rows';
   readonly tree?: boolean;
   readonly settings?: FamilySettingsPolicy<TSettings>;
-  readonly rowGeometry?: (settings: TSettings | undefined, fields: Readonly<Record<string, unknown>>) => FamilyRowGeometry | null;
   readonly chromeState?: (fields: Readonly<Record<string, unknown>>, previous: unknown) => unknown;
   readonly auditOwnerId?: number;
   readonly defaultSize?: readonly [width: number, height: number];
-  readonly buildBinding: (ctx: FamilyBindingContext<TOptions, TSettings>) => FamilyBindingBody<TBinding> | null;
-  readonly parseHit: (hitKey: string | null) => ParsedFamilyHit | null;
-  readonly inspectToken: (key: string) => string;
+  readonly buildBinding?: (ctx: FamilyBindingContext<TOptions, TSettings>) => FamilyBindingExtras<TBinding> | null;
+  readonly parseHit?: (hitKey: string | null) => ParsedFamilyHit | null;
+  readonly inspectToken?: (key: string) => string;
   readonly resolveHitAction?: (hit: ParsedFamilyHit, installed: InstalledPicture, fields: Readonly<Record<string, unknown>>) => InstalledAction | null;
-  readonly getScrollExtent?: (fields: Readonly<Record<string, unknown>>, rows: FamilyRowGeometry | null) => FamilyScrollExtent | null;
-  readonly getRowStride?: (fields: Readonly<Record<string, unknown>>) => number;
-  readonly getPageStep?: (fields: Readonly<Record<string, unknown>>, viewport: FamilyViewportState) => number;
+  readonly getScrollExtent?: (fields: Readonly<Record<string, unknown>>) => FamilyScrollExtent | null;
   readonly getGridMetrics?: (fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null;
   readonly parseGridKey?: (key: string | null) => { readonly row: number; readonly column: number } | null;
   readonly formatGridKey?: (row: number, column: number) => string;

@@ -5,7 +5,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
@@ -180,7 +180,7 @@ function projectMineRegion(
   };
 }
 
-export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> = registerBarsProjection({
+export const minefieldsProjection: BarsProjection<MinefieldsProjectionOptions> = registerFamilyProjection({
   kind: 'minefields',
   family: 'bars',
   project(readView: BoundedReadView): BarsModel {
