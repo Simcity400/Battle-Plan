@@ -1313,7 +1313,11 @@ missing: string | null,
  * earliest, then by key. A group whose count is not known follows them with its reason, unranked.
  */
 groups: Array<GroupCount>, warnings: Array<string>, };
-export type DiplomaticPactsParams = { branchId: string, country: CountryRef, };
+export type DiplomaticPactsParams = { branchId: string, country: CountryRef,
+/**
+ * The hour answered: nothing recorded after it is read into the reply.
+ */
+hour: number, };
 export type DiplomacyKind = {
 /**
  * The relation's id as the game spells it.
@@ -1333,22 +1337,35 @@ first: string | null, second: string | null,
  */
 startHour: number | null, endHour: number | null,
 /**
- * The first and last hour the chosen country's row held it.
+ * The first and last hour the chosen country's row held it, never after the reply's hour.
  */
 firstSeen: number, lastSeen: number,
 /**
- * The hour its row was gone: a read of the chosen country no longer listed it.
+ * The hour by which its row was gone: a read of the chosen country no longer listed it.
  */
 goneBy: number | null,
 /**
- * Held at the timeline's last hour.
+ * Held at the reply's hour.
  */
-presentAtEnd: boolean,
+held: boolean,
 /**
  * Its row's hours ended at a gap in the recording: whether it ended then is not known.
  */
 endedBy: boolean, };
-export type DiplomacyPactsReply = { kinds: Array<DiplomacyKind>, pacts: Array<DiplomacyPact>, unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type DiplomacyPactsReply = {
+/**
+ * The hour answered, never after the branch's last hour.
+ */
+hour: number,
+/**
+ * The first hour after `hour` at which a pact, its end, a partner's tag or an unread stretch changes; null
+ * when none does.
+ */
+nextChange: number | null,
+/**
+ * Every relation the pacts by the hour name, with its count by then.
+ */
+kinds: Array<DiplomacyKind>, pacts: Array<DiplomacyPact>, unobserved: Array<HourSpan>, warnings: Array<string>, };
 export type EspionageLogParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
 export type EspionageOperationParams = { branchId: string,
 /**
@@ -4306,9 +4323,22 @@ part: number,
  * A fixed-point decimal string at the reply's `decimals`; null where not recorded.
  */
 amount: string | null, };
+export type FlowEndpoint = {
+/**
+ * The recorded country slot; null where the record names no country the recording can link.
+ */
+slot: number | null,
+/**
+ * The tag the slot holds at the hour.
+ */
+tag: string | null,
+/**
+ * Why the endpoint cannot be named at the hour.
+ */
+unknown: string | null, };
 export type FlowLink = {
 /**
- * Indexes into `countries`; null on the side folded into the others.
+ * Indexes into `endpoints`; null on the side folded into the others.
  */
 from: number | null, to: number | null,
 /**
@@ -4319,48 +4349,49 @@ others: number | null, amounts: Array<FlowAmount>, total: string | null,
  * Why the total is not known, where an amount was not recorded.
  */
 missing: string | null, };
-export type FlowTableRow = { country: number,
+export type FlowSide = {
+/**
+ * Known amounts largest first, ties by slot, the rest of them folded into one link; then every link whose amount or partner is unknown.
+ */
+links: Array<FlowLink>, total: string | null,
+/**
+ * Why the side's total, order or emptiness is not proven at the hour.
+ */
+missing: string | null, };
+export type FlowTableRow = {
+/**
+ * Index into `endpoints`.
+ */
+partner: number,
 /**
  * One signed amount per part (in to the subject positive, out negative, zero where none); null where not recorded.
  */
 cells: Array<string | null>, net: string | null, };
-export type CountryFlowReply = { countries: Array<string>,
+export type CountryFlowReply = { endpoints: Array<FlowEndpoint>,
 /**
- * The centre country, when the subject is one country.
+ * The centre endpoint, when the subject is one country.
  */
-subject: number | null, decimals: number, parts: Array<FlowPart>,
-/**
- * Into the subject, largest first; ties by tag; the rest folded into one last link.
- */
-incoming: Array<FlowLink>,
-/**
- * Out of the subject, in the same order.
- */
-outgoing: Array<FlowLink>, incomingTotal: string | null, outgoingTotal: string | null,
+subject: number | null, decimals: number, parts: Array<FlowPart>, incoming: FlowSide, outgoing: FlowSide,
 /**
  * A group subject: every link between its senders and receivers.
  */
 links: Array<FlowLink>,
 /**
- * A group subject: each sender's total (`from`) and each receiver's (`to`), largest first, the rest folded into one last entry.
+ * A group subject: each sender's total (`from`) and each receiver's (`to`).
  */
-senders: Array<FlowLink>, receivers: Array<FlowLink>,
+senders: FlowSide, receivers: FlowSide,
 /**
  * Partners by part, signed, largest net first; only when asked.
  */
 table: Array<FlowTableRow>,
 /**
- * The largest side or node total, for the scale.
+ * The largest known side or node amount, for the scale.
  */
 largest: string,
 /**
  * The largest single link, for a colour scale.
  */
-largestLink: string, missing: string | null,
-/**
- * Why some of the flows at the hour are left out.
- */
-partial: string | null, warnings: Array<string>, };
+largestLink: string, missing: string | null, warnings: Array<string>, };
 export type TradeFlowParamsAtHour = TradeFlowParams & { hour: number };
 export type CasualtyMatrixParams = { branchId: string,
 /**
@@ -6430,7 +6461,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "decisions-tail": { "from": "start", "hour": "read", "scope[].firstHour": "start", "scope[].lastHour": "end", "facets[].membership[].firstHour": "start", "facets[].membership[].lastHour": "end", "facets[].unobserved[].firstHour": "start", "facets[].unobserved[].lastHour": "end", "countFacets[].facets[].membership[].firstHour": "start", "countFacets[].facets[].membership[].lastHour": "end", "countFacets[].facets[].unobserved[].firstHour": "start", "countFacets[].facets[].unobserved[].lastHour": "end" },
   "decorated-divisions": { "hour": "read" },
   "decryption": { "hour": "read" },
-  "diplomatic-pacts": {},
+  "diplomatic-pacts": { "hour": "read" },
   "diplomatic-relations": { "hour": "read" },
   "division-careers": { "hour": "read" },
   "division-equipment": { "hour": "read" },
@@ -6615,7 +6646,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "decisions-tail": { "branchId": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "scope": "node", "scope[]": "node", "scope[].firstHour": "leaf", "scope[].lastHour": "leaf", "scope[].tag": "leaf" },
   "decorated-divisions": { "branchId": "leaf", "by": "leaf", "count": "leaf", "countries": "node", "countries[]": "node", "countries[].firstHour": "leaf", "countries[].lastHour": "leaf", "countries[].tag": "leaf", "descending": "leaf", "hour": "leaf" },
   "decryption": { "branchId": "leaf", "hour": "leaf" },
-  "diplomatic-pacts": { "branchId": "leaf", "country": "any" },
+  "diplomatic-pacts": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "diplomatic-relations": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "order": "leaf", "top": "leaf" },
   "division-careers": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf" },
   "division-equipment": { "branchId": "leaf", "countFor": "leaf", "country": "any", "hour": "leaf" },
@@ -6800,7 +6831,7 @@ export type RequestParams<E, B> = {
   "decisions-tail": { readonly [key: string]: unknown; readonly "countFacets"?: readonly ({ readonly [key: string]: unknown; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null })[] | null; readonly "facets"?: readonly ({ readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null; readonly "unobserved"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null })[] | null; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "scope"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null };
   "decorated-divisions": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "decryption": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "diplomatic-pacts": {};
+  "diplomatic-pacts": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "diplomatic-relations": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "division-careers": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "division-equipment": { readonly [key: string]: unknown; readonly "hour"?: E | null };
