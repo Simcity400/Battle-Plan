@@ -353,7 +353,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   ctx.rect(0, layout.bodyTop, layout.width, layout.bodyHeight);
   ctx.clip();
 
-  if (model.form === 'net' || model.form === 'two-sided') {
+  if (model.form === 'net' || (model.form === 'two-sided' && layout.twoSidedLayout !== 'stacked-pair')) {
     const px = Math.floor(layout.centerX) + 0.5;
     ctx.save();
     ctx.strokeStyle = model.form === 'net' ? tokens.zeroLine : tokens.hairlineStrong;
