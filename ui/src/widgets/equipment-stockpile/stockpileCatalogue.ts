@@ -20,11 +20,6 @@ export const servedHour = (reply: EquipmentStockpileReply | undefined, hour: num
 
 export const stockpileGroupKey = (group: StockGroup) => JSON.stringify([group.kind, group.kind === 'variant' ? group.variants[0]?.id : group.key]);
 
-export function groupIn(reply: EquipmentStockpileReply, group: StockGroup): StockGroup {
-  const variants = new Map(reply.variants.map(variant => [variant.id, variant]));
-  return { ...group, variants: group.variants.flatMap(variant => variants.get(variant.id) ?? []) };
-}
-
 export const stockpileHolders = (spans: ReadonlyMap<string, readonly Span[]>): StockpileHolder[] =>
   [...spans].map(([tag, within]) => ({ country: countryFromKey(tag), within: within.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) }));
 

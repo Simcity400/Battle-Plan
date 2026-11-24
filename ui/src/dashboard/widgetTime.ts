@@ -83,6 +83,12 @@ function compact(shared: Boundaries): void {
   }
 }
 
+export function watchTrackHours(clock: PlaybackController, changed: () => void): () => void {
+  return pageClock(clock).onPublish((previous, next) => {
+    if (previous.hour !== next.hour || previous.seekSequence !== next.seekSequence) changed();
+  });
+}
+
 export function watchBoundary(clock: PlaybackController, span: (axis: number) => AxisSpan, changed: () => void): () => void {
   const page = pageClock(clock);
   let shared = boundaries.get(page);
@@ -180,7 +186,7 @@ export function epochOf(epochs: readonly number[] | undefined, hour: number | nu
   return low;
 }
 
-export function useRegionHour(runtime: Timed, region: Region, on = true, epochs?: readonly number[]): TrackHour | null {
+export function useRegionHour(runtime: Timed, region: Region, on = true, epochs?: readonly number[], everyHour = false): TrackHour | null {
   const hourAt = useRegionHourAt(runtime, region);
   const track = regionTrack(region, runtime.tracks);
   const follows = regionFollows(region);
@@ -192,8 +198,9 @@ export function useRegionHour(runtime: Timed, region: Region, on = true, epochs?
     const notify = () => { generation.current++; changed(); };
     const stopAnchor = clock.subscribe(notify);
     const stopBoundary = track ? watchBoundary(clock, followSpan(track, epochs), notify) : () => {};
-    return () => { stopAnchor(); stopBoundary(); };
-  }, [on, follows, clock, track, epochs]);
+    const stopHours = everyHour ? watchTrackHours(clock, notify) : () => {};
+    return () => { stopAnchor(); stopBoundary(); stopHours(); };
+  }, [on, follows, clock, track, epochs, everyHour]);
   const read = () => {
     const now = hourAt(axisHour(clock));
     const epoch = epochOf(epochs, now);

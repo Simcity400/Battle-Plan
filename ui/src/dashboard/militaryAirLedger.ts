@@ -11,7 +11,6 @@ import { worldFilter } from './groups.ts';
 import type { CountryGroupReply, MilitaryAirCountry, MilitaryAirOpening, MilitaryAirPart, MilitaryAirReply } from '../generated/dashboard';
 import type { CountrySelection } from './model';
 import { formatDateTime } from './calendar.ts';
-import { formatRatio } from '../charts/butterfly/layout.ts';
 import type { LabelAt } from '../charts/race/lines';
 import type { TooltipContent } from '../charts/tooltip';
 import type { SunburstText } from '../charts/sunburst/layout';
@@ -375,3 +374,10 @@ export function partAmount(part: MilitaryAirPart, from: number, hour: number): b
   return total(at(part.points, hour, point => point[1])) - total(at(part.points, from - 1, point => point[1]));
 }
 
+
+function formatRatio(right: bigint, left: bigint): string {
+  const numerator = right < 0n ? -right : right, denominator = left < 0n ? -left : left;
+  const hundredths = (numerator * 200n + denominator) / (denominator * 2n);
+  const sign = (right < 0n) !== (left < 0n) && hundredths !== 0n ? '-' : '';
+  return `${sign}${hundredths / 100n}.${String(hundredths % 100n).padStart(2, '0')} : 1`;
+}

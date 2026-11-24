@@ -23,6 +23,7 @@ function part(wire: WirePart, decimals: number, words: BreakdownWords, parent: s
   return {
     key,
     name: wire.name,
+    ...(wire.nameMissing ? { nameMissing: sentence(wire.nameMissing) } : {}),
     ordinal: wire.ordinal,
     value: raw === null ? null : scaled(raw, decimals),
     text: raw === null ? '' : words.format(raw, decimals),

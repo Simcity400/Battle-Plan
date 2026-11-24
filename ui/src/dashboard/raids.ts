@@ -8,7 +8,7 @@ import { drawableIcon } from './artwork.ts';
 import { compareTags } from './tagOrder.ts';
 import { isOrderedSpans } from '../charts/series.ts';
 import type { Span } from '../charts/series';
-import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo, RaidVictimAt, RaidVictimSource } from '../generated/dashboard';
+import type { RaidEndAt, RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo, RaidVictimAt, RaidVictimSource } from '../generated/dashboard';
 import { productRequest } from './request.ts';
 import { countryKey } from './countryKey.ts';
 import { gatedRead, readData } from './gatedRead.ts';
@@ -28,6 +28,9 @@ const victimObservations = (items: unknown): items is RaidVictimAt[] => Array.is
   object(item) && integer(item.hour) && (index === 0 || (items[index - 1] as { hour: number }).hour < (item.hour as number))
   && maybe(item.tag, text) && maybe(item.missing, text) && (item.tag === null) !== (item.missing === null)
   && maybe(item.source, victimSource) && (item.tag !== null || item.source === null));
+const endObservations = (items: unknown): items is RaidEndAt[] => Array.isArray(items) && items.every((item, index) =>
+  object(item) && integer(item.hour) && (index === 0 || (items[index - 1] as { hour: number }).hour < (item.hour as number))
+  && integer(item.endedHour) && typeof item.exact === 'boolean' && endedSource(item.source) && maybe(item.raider, text));
 
 export function validateRaidLog(value: unknown): RaidLogReply {
   const ok = object(value) && Array.isArray(value.episodes) && Array.isArray(value.missing) && Array.isArray(value.warnings)
@@ -37,22 +40,21 @@ export function validateRaidLog(value: unknown): RaidLogReply {
     && Array.isArray(value.artwork) && value.artwork.every(art => object(art) && text(art.key) && maybe(art.image, text) && maybe(art.missing, text))
     && value.warnings.every(text) && value.missing.every(span => object(span) && integer(span.firstHour) && integer(span.lastHour) && text(span.reason))
     && value.episodes.every(item => object(item) && text(item.id) && integer(item.firstHour) && typeof item.firstHourExact === 'boolean' && integer(item.lastHour) && (item.firstHour as number) <= (item.lastHour as number)
-      && maybe(item.raider, text) && maybe(item.raiderSlot, integer) && maybe(item.launchedRaider, text) && maybe(item.endedRaider, text)
+      && maybe(item.raider, text) && maybe(item.raiderSlot, integer) && maybe(item.launchedRaider, text)
       && maybe(item.victim, text) && (item.victim === null) !== (item.victimMissing === null)
       && maybe(item.victimSource, victimSource) && (item.victim !== null || item.victimSource === null)
       && victimObservations(item.victims)
-      && maybe(item.raidType, text) && maybe(item.raidTypeName, text) && maybe(item.icon, text) && maybe(item.iconMissing, text)
+      && maybe(item.raidTypeHour, integer) && maybe(item.placeHour, integer) && maybe(item.raidType, text) && maybe(item.raidTypeName, text) && maybe(item.icon, text) && maybe(item.iconMissing, text)
       && maybe(item.province, integer) && maybe(item.state, integer)
       && maybe(item.phase, integer) && maybe(item.phaseName, text) && maybe(item.outcome, integer) && maybe(item.outcomeName, text) && maybe(item.outcomeMissing, text)
       && isOrderedSpans(item.runs) && (item.runs as unknown[]).every(run => object(run) && typeof run.firstExact === 'boolean' && maybe(run.afterHour, integer) && maybe(run.raider, text) && integer(run.phase) && integer(run.outcome) && maybe(run.phaseName, text) && maybe(run.outcomeName, text))
       && preparationRuns(item.preparation)
       && maybe(item.launchedHour, integer) && typeof item.launchedExact === 'boolean' && typeof item.launched === 'boolean'
-      && maybe(item.endedHour, integer) && typeof item.endedExact === 'boolean' && maybe(item.endedSource, endedSource) && maybe(item.succeededHour, integer)
+      && endObservations(item.ends) && maybe(item.succeededHour, integer)
       && maybe(item.disappearedHour, integer) && typeof item.disappearedExact === 'boolean'
       && (item.launchedHour === null || item.launched) && (!item.launchedExact || item.launchedHour !== null)
-      && (!item.endedExact || item.endedHour !== null) && (item.endedHour === null) === (item.endedSource === null)
       && (!item.disappearedExact || item.disappearedHour !== null)
-      && (item.succeededHour === null || item.endedHour !== null));
+      && (item.succeededHour === null || (item.ends as unknown[]).length > 0));
   if (!ok) throw new Error('The raid log reply is malformed.');
   const reply = value as unknown as RaidLogReply;
   return { ...reply, artwork: reply.artwork.map(art => ({ ...art, image: drawableIcon(art.image) })) };
@@ -97,21 +99,53 @@ export function raidIcon(data: Pick<RaidLogReply, 'artwork'>, episode: RaidEpiso
   return episode.icon === null ? null : data.artwork.find(art => art.key === episode.icon)?.image ?? null;
 }
 
-export function raidVictimAt(episode: RaidEpisode, hour: number): RaidVictimAt {
-  const list = episode.victims;
-  let found = -1;
-  for (let low = 0, high = list.length - 1; low <= high;) {
-    const middle = (low + high) >> 1;
-    if (list[middle].hour <= hour) { found = middle; low = middle + 1; } else high = middle - 1;
+export type RaidOutcomeCodes = Pick<RaidLogReply, 'outcomeNone' | 'outcomeFailure' | 'outcomeCanceled'>;
+
+export function raidOutcomeMissing(codes: RaidOutcomeCodes, ended: boolean, disappeared: boolean, outcome: number | null): string | null {
+  if (ended) {
+    if (outcome !== null && outcome >= codes.outcomeFailure && outcome <= codes.outcomeCanceled) return null;
+    if (outcome !== null && outcome !== codes.outcomeNone) return `Unsupported raid outcome (${outcome})`;
+    return 'raid outcome was not recorded';
   }
-  if (found >= 0) return list[found];
-  return list[0] ?? { hour: episode.firstHour, tag: episode.victim, missing: episode.victimMissing, source: episode.victimSource };
+  return disappeared ? 'raid outcome was not recorded' : null;
+}
+
+export function raidEpisodeAt(codes: RaidOutcomeCodes, episode: RaidEpisode, hour: number): RaidEpisode | null {
+  if (episode.firstHour > hour) return null;
+  const runs = episode.runs.filter(run => run.firstHour <= hour).map(run => run.lastHour > hour ? { ...run, lastHour: hour } : run);
+  const latest = runs[runs.length - 1];
+  if (!latest) return null;
+  const preparation = episode.preparation.filter(run => run[0] <= hour)
+    .map((run): RaidPreparationRun => run[1] > hour ? [run[0], hour, run[2], run[0] === hour ? 0 : run[3]] : run);
+  const held = episode.victims.filter(victim => victim.hour <= hour);
+  const victims: RaidVictimAt[] = held.length ? held : [{ hour: episode.firstHour, tag: null, missing: "The raid's target is not recorded", source: null }];
+  const summary = victims[victims.length - 1];
+  const typed = episode.raidTypeHour !== null && episode.raidTypeHour <= hour;
+  const placed = episode.placeHour === null || episode.placeHour <= hour;
+  const launched = episode.launchedHour === null || episode.launchedHour <= hour;
+  const ends = episode.ends.filter(end => end.hour <= hour);
+  const disappeared = episode.disappearedHour !== null && episode.disappearedHour <= hour;
+  const known = [...runs].reverse().find(run => run.outcome !== codes.outcomeNone) ?? latest;
+  return {
+    ...episode, runs, preparation, victims, lastHour: latest.lastHour,
+    victim: summary.tag, victimMissing: summary.missing, victimSource: summary.source,
+    raidTypeHour: typed ? episode.raidTypeHour : null, raidType: typed ? episode.raidType : null, raidTypeName: typed ? episode.raidTypeName : null,
+    icon: typed ? episode.icon : null, iconMissing: typed ? episode.iconMissing : "The raid's type is not recorded",
+    placeHour: placed ? episode.placeHour : null, province: placed ? episode.province : null, state: placed ? episode.state : null,
+    launched: launched && episode.launched, launchedHour: launched ? episode.launchedHour : null, launchedExact: launched && episode.launchedExact,
+    launchedRaider: launched ? episode.launchedRaider : null,
+    ends, succeededHour: episode.succeededHour !== null && episode.succeededHour <= hour ? episode.succeededHour : null,
+    disappearedHour: disappeared ? episode.disappearedHour : null, disappearedExact: disappeared && episode.disappearedExact,
+    phase: latest.phase, phaseName: latest.phaseName, outcome: known.outcome, outcomeName: known.outcomeName,
+    outcomeMissing: raidOutcomeMissing(codes, ends.length > 0, disappeared, known.outcome),
+  };
 }
 
 export interface RaidAt {
   episode: RaidEpisode;
   latest: RaidPhaseRun;
   current: RaidPhaseRun | null;
+  end: RaidEndAt | null;
   since: number;
   sinceExact: boolean;
   afterHour: number | null;
@@ -122,33 +156,30 @@ export interface RaidAt {
   hour: number;
 }
 
-export function raidAt(episode: RaidEpisode, hour: number): RaidAt | null {
+export function raidAt(codes: RaidOutcomeCodes, full: RaidEpisode, hour: number): RaidAt | null {
+  const episode = raidEpisodeAt(codes, full, hour);
+  if (!episode) return null;
   const runs = episode.runs;
-  let index = -1;
-  for (let low = 0, high = runs.length - 1; low <= high;) {
-    const middle = (low + high) >> 1;
-    if (runs[middle].firstHour <= hour) { index = middle; low = middle + 1; } else high = middle - 1;
-  }
-  if (index < 0) return null;
-  const latest = runs[index];
-  let first = index;
+  const latest = runs[runs.length - 1];
+  let first = runs.length - 1;
   while (first > 0 && runs[first - 1].phase === latest.phase && runs[first - 1].outcome === latest.outcome) first--;
   const current = latest.lastHour >= hour ? latest : null;
-  const disappeared = current === null && episode.disappearedHour !== null && hour >= episode.disappearedHour;
-  const ended = episode.endedHour !== null && episode.phase !== null && latest.phase === episode.phase;
-  const nativeEnded = ended && episode.endedSource === 'nativeEndDate' && episode.endedHour !== null;
+  const disappeared = current === null && episode.disappearedHour !== null;
+  const end = episode.ends[episode.ends.length - 1] ?? null;
+  const nativeEnded = end !== null && end.source === 'nativeEndDate';
   const shown = current ?? latest;
   return {
     episode,
     latest,
     current,
-    since: disappeared ? episode.disappearedHour! : nativeEnded ? episode.endedHour! : runs[first].firstHour,
+    end,
+    since: disappeared ? episode.disappearedHour! : nativeEnded ? end.endedHour : runs[first].firstHour,
     sinceExact: disappeared ? episode.disappearedExact : nativeEnded ? true : runs[first].firstExact,
-    afterHour: disappeared ? episode.lastHour : nativeEnded ? episode.endedHour! - 1 : runs[first].afterHour,
+    afterHour: disappeared ? episode.lastHour : nativeEnded ? end.endedHour - 1 : runs[first].afterHour,
     disappeared,
-    ended,
+    ended: end !== null,
     raider: shown.raider ?? episode.raider,
-    victim: raidVictimAt(episode, hour),
+    victim: episode.victims[episode.victims.length - 1],
     hour,
   };
 }
@@ -162,6 +193,9 @@ export function raidChangeHours(episodes: readonly RaidEpisode[]): number[] {
       if (episode.runs.every(run => run.firstHour !== hour && run.lastHour + 1 !== hour)) hours.push(hour);
     }
     if (episode.disappearedHour !== null) hours.push(episode.disappearedHour);
+    for (const hour of [episode.raidTypeHour, episode.placeHour, ...episode.ends.map(end => end.hour)]) {
+      if (hour !== null && hour !== episode.firstHour && episode.runs.every(run => run.firstHour !== hour && run.lastHour + 1 !== hour)) hours.push(hour);
+    }
   }
   return hours.sort((a, b) => a - b);
 }
@@ -239,24 +273,40 @@ export function recordedSpans(span: Span, missing: readonly Span[]): Span[] {
   return out;
 }
 
+type TallyEvent = [number, 0 | 1, 1 | -1];
+
 export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing: readonly Span[], chosen: readonly string[],
   top: { count: number; metric: RaidMetric } | null): RaidTally {
-  const events = new Map<string, [number, 0 | 1][]>();
+  const events = new Map<string, TallyEvent[]>();
   const chosenKeys = new Set(chosen);
+  const count = (key: string, hour: number, kind: 0 | 1, delta: 1 | -1) => {
+    const list = events.get(key) ?? [];
+    list.push([hour, kind, delta]);
+    events.set(key, list);
+  };
   let unattributed = 0;
   for (const episode of episodes) {
-    const marks: [number, 0 | 1, string | null][] = [];
-    if (episode.launchedHour !== null) marks.push([episode.launchedHour, 0, episode.launchedRaider]);
-    if (episode.succeededHour !== null) marks.push([episode.succeededHour, 1, episode.endedRaider]);
-    if (!marks.length) continue;
     const slot = episode.raiderSlot === null ? null : countryKey(episode.raiderSlot);
+    const owner = (tag: string | null) => slot !== null && chosenKeys.has(slot) ? slot : tag;
     let missingRaider = false;
-    for (const [hour, kind, raider] of marks) {
-      const key = slot !== null && chosenKeys.has(slot) ? slot : raider;
-      if (key === null) { missingRaider = true; continue; }
-      const list = events.get(key) ?? [];
-      list.push([hour, kind]);
-      events.set(key, list);
+    if (episode.launchedHour !== null) {
+      const key = owner(episode.launchedRaider);
+      if (key === null) missingRaider = true; else count(key, episode.launchedHour, 0, 1);
+    }
+    if (episode.succeededHour !== null) {
+      const succeeded = episode.succeededHour;
+      const known = episode.ends.filter(end => end.hour <= succeeded);
+      let held = owner(known[known.length - 1]?.raider ?? null);
+      if (held !== null) count(held, succeeded, 1, 1);
+      for (const end of episode.ends) {
+        if (end.hour <= succeeded) continue;
+        const key = owner(end.raider);
+        if (key === held) continue;
+        if (held !== null) count(held, end.hour, 1, -1);
+        if (key !== null) count(key, end.hour, 1, 1);
+        held = key;
+      }
+      if (held === null) missingRaider = true;
     }
     if (missingRaider) unattributed++;
   }
@@ -270,12 +320,12 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
   return { series, hours, unattributed };
 }
 
-function tallyRuns(events: readonly [number, 0 | 1][], segments: readonly Span[]): RaidTallyRun[] {
+function tallyRuns(events: readonly TallyEvent[], segments: readonly Span[]): RaidTallyRun[] {
   const runs: RaidTallyRun[] = [];
   let launched = 0, succeeded = 0, next = 0;
   for (const segment of segments) {
     let first = segment.firstHour;
-    const take = (through: number) => { while (next < events.length && events[next][0] <= through) { if (events[next][1] === 0) launched++; else succeeded++; next++; } };
+    const take = (through: number) => { while (next < events.length && events[next][0] <= through) { if (events[next][1] === 0) launched += events[next][2]; else succeeded += events[next][2]; next++; } };
     take(first);
     while (first <= segment.lastHour) {
       const change = next < events.length ? events[next][0] : Infinity;
@@ -288,16 +338,16 @@ function tallyRuns(events: readonly [number, 0 | 1][], segments: readonly Span[]
   return runs;
 }
 
-function topMembership(events: ReadonlyMap<string, readonly [number, 0 | 1][]>, hours: readonly number[], span: Span,
+function topMembership(events: ReadonlyMap<string, readonly TallyEvent[]>, hours: readonly number[], span: Span,
   top: { count: number; metric: RaidMetric }): Map<string, Span[]> {
   const counts = new Map<string, [number, number]>();
-  const by = new Map<number, [string, 0 | 1][]>();
-  for (const [tag, list] of events) for (const [hour, kind] of list) by.set(hour, [...by.get(hour) ?? [], [tag, kind]]);
+  const by = new Map<number, [string, 0 | 1, 1 | -1][]>();
+  for (const [tag, list] of events) for (const [hour, kind, delta] of list) by.set(hour, [...by.get(hour) ?? [], [tag, kind, delta]]);
   const out = new Map<string, Span[]>();
   let members: string[] = [];
   const close = (tag: string, last: number) => { const spans = out.get(tag)!; spans[spans.length - 1].lastHour = last; };
   for (const hour of hours) {
-    for (const [tag, kind] of by.get(hour)!) { const count = counts.get(tag) ?? [0, 0]; count[kind]++; counts.set(tag, count); }
+    for (const [tag, kind, delta] of by.get(hour)!) { const count = counts.get(tag) ?? [0, 0]; count[kind] += delta; counts.set(tag, count); }
     if (hour > span.lastHour) break;
     const value = ([launched, succeeded]: [number, number]) => top.metric === 'succeeded' ? succeeded : launched;
     const next = [...counts].filter(([, count]) => value(count) !== 0 || (top.metric === 'both' && count[1] !== 0))

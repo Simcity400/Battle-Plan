@@ -223,24 +223,21 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
   ctx.save();
   ctx.textBaseline = 'middle';
   if (model.form === 'two-sided' && layout.twoSidedLayout === 'stacked-pair') {
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-    ctx.textAlign = 'left';
-    let cursor = layout.nameX;
-    const swatch = 9;
-    (model.legend ?? []).forEach((item, at) => {
-      const top = Math.round(middleY - swatch / 2);
-      ctx.fillStyle = theme.text;
-      ctx.strokeStyle = theme.muted;
-      if (at === 0) {
-        ctx.fillRect(cursor, top, swatch, swatch);
-      } else {
-        ctx.lineWidth = 1;
-        ctx.strokeRect(cursor + 0.5, top + 0.5, swatch - 1, swatch - 1);
-      }
-      ctx.fillStyle = theme.muted;
-      ctx.fillText(item.label, cursor + swatch + 6, middleY);
-      cursor += swatch + 6 + textWidth(ctx, item.label) + 18;
-    });
+    const legend = model.legend ?? [];
+    if (legend.length > 0) {
+      drawLegendStrip(ctx, layout.nameX, layout.headerTop, Math.max(0, layout.width - layout.nameX - BARS_PAD_X), layout.headerHeight, {
+        entries: {
+          length: legend.length,
+          at: at => ({
+            label: legend[at]!.label,
+            color: theme.text,
+            ...(at > 0 ? { outlined: true } : {}),
+            muted: true,
+          }),
+        },
+        entryGap: 18,
+      }, theme);
+    }
   } else if (model.form === 'two-sided' && layout.twoSidedLayout === 'paired') {
     ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
     ctx.fillStyle = theme.text;
@@ -747,15 +744,53 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   }
   ctx.restore();
 
-  if (layout.legendHeight > 0 && model.legend?.length) {
-    drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
-      entries: model.legend.map(entry => ({
-        label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
-        color: entry.color,
-      })),
-      padX: BARS_PAD_X,
-      entryGap: 14,
-    }, theme);
+  if (layout.legendHeight > 0 && (model.legend?.length || model.scaleUnit)) {
+    const entries = (model.legend ?? []).map(entry => ({
+      label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
+      color: entry.color,
+      ...(entry.hatched ? { hatch: true } : {}),
+    }));
+    const rowCount = Math.max(1, Math.round(layout.legendHeight / 22));
+    if (rowCount > 1 && entries.length > 1) {
+      const rowH = layout.legendHeight / rowCount;
+      const entryGap = 14;
+      ctx.save();
+      ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
+      const rightReserve = model.scaleUnit ? Math.min(Math.floor(layout.width * 0.3), Math.ceil(textWidth(ctx, model.scaleUnit))) + entryGap : 0;
+      const row1Limit = Math.max(80, layout.width - BARS_PAD_X * 2 - rightReserve);
+      let used = 0;
+      let splitAt = entries.length;
+      for (let i = 0; i < entries.length; i++) {
+        const w = 18 + Math.ceil(textWidth(ctx, entries[i]!.label));
+        const next = used + (i > 0 ? entryGap : 0) + w;
+        if (i > 0 && next > row1Limit) {
+          splitAt = i;
+          break;
+        }
+        used = next;
+      }
+      ctx.restore();
+      drawLegendStrip(ctx, 0, layout.legendTop, layout.width, rowH, {
+        entries: entries.slice(0, splitAt),
+        ...(model.scaleUnit ? { rightNote: model.scaleUnit } : {}),
+        padX: BARS_PAD_X,
+        entryGap,
+      }, theme);
+      if (splitAt < entries.length) {
+        drawLegendStrip(ctx, 0, layout.legendTop + rowH, layout.width, rowH, {
+          entries: entries.slice(splitAt),
+          padX: BARS_PAD_X,
+          entryGap,
+        }, theme);
+      }
+    } else {
+      drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
+        entries,
+        ...(model.scaleUnit ? { rightNote: model.scaleUnit } : {}),
+        padX: BARS_PAD_X,
+        entryGap: 14,
+      }, theme);
+    }
   }
 
   if (model.pickList) drawPickList(ctx, model.pickList, layout, theme, inspectedKey ?? null, focusedKey ?? null);

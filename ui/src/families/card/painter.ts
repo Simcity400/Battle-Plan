@@ -25,7 +25,7 @@ import {
   CARD_HERO_HEIGHT,
   CARD_PAD_X,
   cardRowAt,
-  visibleCardRange,
+  visibleCardRows,
   type CardLayout,
 } from './layout.ts';
 import { cardTitleText, type CardHeroRow, type CardItemRow, type CardMeter, type CardModel, type CardSectionRow } from './model.ts';
@@ -164,44 +164,50 @@ function drawItem(ctx: Canvas2D, model: CardModel, row: CardItemRow, top: number
 export function drawCards(ctx: Canvas2D, input: DrawCardsInput): void {
   const { model, layout, theme, scrollTop, artCache, inspectedKey, selectedKey, focusedKey } = input;
   ctx.clearRect(0, 0, layout.width, layout.height);
-  const { first, last } = visibleCardRange(layout, scrollTop);
-  for (let i = first; i < last; i++) {
+  const width = layout.rowWidth;
+  for (const i of visibleCardRows(layout, scrollTop)) {
     const row = model.rows[i]!;
     const top = layout.rowTops[i]! - scrollTop;
     const height = layout.rowHeights[i]!;
-    if (row.kind === 'section') {
-      drawSection(ctx, row, top, height, layout.width, theme);
-      continue;
-    }
-    if (row.kind === 'hero') {
-      drawHero(ctx, row, top, layout, theme, artCache);
-      if (focusedKey === row.key) drawRowFocusRing(ctx, CARD_PAD_X - 4, top - 2, layout.width - CARD_PAD_X * 2 + 8, CARD_HERO_HEIGHT - 8, theme);
-      continue;
-    }
-    if (selectedKey === row.key) drawRowSelected(ctx, 0, top, layout.width, height, theme);
-    else if (inspectedKey === row.key) drawRowHover(ctx, 0, top, layout.width, height, theme);
-    drawItem(ctx, model, row, top, height, layout, theme, artCache);
-    const next = model.rows[i + 1];
-    if (!next || next.kind === 'item') drawRowHairline(ctx, CARD_PAD_X, layout.width - CARD_PAD_X, top + height, theme, next ? 'normal' : 'strong');
-    if (focusedKey === row.key) drawRowFocusRing(ctx, 0, top, layout.width, height, theme);
+    ctx.save();
+    ctx.translate(layout.rowLefts[i]!, 0);
+    paintRow(i, row, top, height);
+    ctx.restore();
   }
   if (layout.totalHeight - scrollTop > layout.height + 1) {
     drawScrollFade(ctx, 0, layout.height - CARD_FADE, layout.width, CARD_FADE, theme, 'bottom');
+  }
+
+  function paintRow(i: number, row: CardModel['rows'][number], top: number, height: number): void {
+    if (row.kind === 'section') {
+      drawSection(ctx, row, top, height, width, theme);
+      return;
+    }
+    if (row.kind === 'hero') {
+      drawHero(ctx, row, top, layout, theme, artCache);
+      if (focusedKey === row.key) drawRowFocusRing(ctx, CARD_PAD_X - 4, top - 2, width - CARD_PAD_X * 2 + 8, CARD_HERO_HEIGHT - 8, theme);
+      return;
+    }
+    if (selectedKey === row.key) drawRowSelected(ctx, 0, top, width, height, theme);
+    else if (inspectedKey === row.key) drawRowHover(ctx, 0, top, width, height, theme);
+    drawItem(ctx, model, row, top, height, layout, theme, artCache);
+    const next = model.rows[i + 1];
+    if (!next || next.kind === 'item') drawRowHairline(ctx, CARD_PAD_X, width - CARD_PAD_X, top + height, theme, next ? 'normal' : 'strong');
+    if (focusedKey === row.key) drawRowFocusRing(ctx, 0, top, width, height, theme);
   }
 }
 
 export function hitCards(layout: CardLayout, model: CardModel, point: { readonly x: number; readonly y: number }, scrollTop: number): string | null {
   if (point.x < 0 || point.x > layout.width || point.y < 0 || point.y > layout.height) return null;
-  const index = cardRowAt(layout, point.y, scrollTop);
+  const index = cardRowAt(layout, point.x, point.y, scrollTop);
   if (index < 0) return null;
   const row = model.rows[index]!;
   return row.kind === 'section' ? null : row.key;
 }
 
 export function visibleCardIcons(model: CardModel, layout: CardLayout, scrollTop: number): string[] {
-  const { first, last } = visibleCardRange(layout, scrollTop);
   const items: ArtUrlInput[] = [];
-  for (let i = first; i < last; i++) {
+  for (const i of visibleCardRows(layout, scrollTop)) {
     const row = model.rows[i]!;
     if (row.kind === 'section') continue;
     items.push(row.art);

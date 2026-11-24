@@ -232,6 +232,11 @@ export function rowName(answer: FollowedRows, row: number): string | null {
   return at === NO_REASON ? null : textAt(answer, at);
 }
 
+export function rowNameText(answer: FollowedRows, row: number): number {
+  const at = answer.views.u32[answer.names + row]!;
+  return at === NO_REASON || at + 1 >= answer.ends.length ? -1 : at;
+}
+
 export const rowKey = (answer: FollowedRows, row: number): bigint =>
   (answer.views.u64[answer.keys + answer.rows + row]! << 64n) | answer.views.u64[answer.keys + row]!;
 

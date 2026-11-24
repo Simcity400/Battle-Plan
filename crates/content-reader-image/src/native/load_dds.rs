@@ -98,13 +98,13 @@ pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Ze
         let misc = word(136);
         let array_size = word(140);
         if dimension != 3 || word(24) > 1 || word(112) & VOLUME != 0 {
-            return Err(Failure::Undecodable(format!(
+            return Err(Failure::Unsupported(format!(
                 "a DX10 DDS (DXGI format {dxgi}): unsupported resource dimension {dimension} or volume depth {}",
                 word(24)
             )));
         }
         if array_size != 1 {
-            return Err(Failure::Undecodable(format!(
+            return Err(Failure::Unsupported(format!(
                 "a DX10 DDS (DXGI format {dxgi}): unsupported texture array size {array_size}"
             )));
         }
@@ -118,7 +118,7 @@ pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Ze
             85 => Form::Pixels(Pixels::B5G6R5),
             86 => Form::Pixels(Pixels::A1R5G5B5),
             other => {
-                return Err(Failure::Undecodable(format!(
+                return Err(Failure::Unsupported(format!(
                     "a DX10 DDS with unsupported DXGI format {other}"
                 )));
             }

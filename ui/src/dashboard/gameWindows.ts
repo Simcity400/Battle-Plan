@@ -52,6 +52,7 @@ export type GameWindowSelection =
 
 export interface GameWindowProps<S extends GameWindowSelection = GameWindowSelection> {
   selection: S;
+  generation: number;
   active: boolean;
   client: DashboardClient;
   onDiagnostics?: (lines: string[]) => void;

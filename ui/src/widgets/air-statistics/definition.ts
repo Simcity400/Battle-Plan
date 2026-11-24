@@ -7,7 +7,6 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'regions', section: 'options', label: 'Regions', kind: 'content-set', automatic: 'Most active regions', default: '' },
   { key: 'regionCount', section: 'options', label: 'Number of regions', kind: 'number', min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, default: 10,
     visibleWhen: o => !o.regions },
-  { key: 'values', section: 'options', label: 'Values at bar ends', kind: 'toggle', default: true },
   { key: 'ratio', section: 'options', label: 'Ratio column', kind: 'toggle', default: true },
 ];
 export const definition = {

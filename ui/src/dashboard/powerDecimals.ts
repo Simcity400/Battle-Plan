@@ -11,11 +11,6 @@ export function powerDecimals(options: Readonly<Record<string, OptionValue>>, sc
 
 export const formatPower = (raw: bigint, digits: number, scale = 5) => formatAmount(raw, scale, digits);
 
-export const formatSpent = (raw: bigint, digits: number, scale = 5) => {
-  const text = formatAmount(raw, scale, digits);
-  return text === '0' ? text : `−${text}`;
-};
-
 export const formatPowerChange = (raw: bigint, digits: number, scale = 5) => {
   const text = formatAmount(raw, scale, digits);
   return raw > 0n && text !== '0' ? `+${text}` : text;

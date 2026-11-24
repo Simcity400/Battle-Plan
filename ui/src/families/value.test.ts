@@ -14,6 +14,7 @@ import {
   notRecorded,
   partialValue,
   valueFromLive,
+  answerRowIndex,
   valueFromNamedAnswer,
   valueFromNullable,
   valueFromRawBigInt,
@@ -99,6 +100,23 @@ test('wire and exact adapters map every wire state and nullable meaning into the
   assert.deepEqual(valueFromNamedAnswer(rows, 'FRA'), { kind: 'notRecorded', reason: 'Missing in source' });
   assert.deepEqual(valueFromNamedAnswer(rows, 'JAP'), { kind: 'known', value: big });
   assert.deepEqual(valueFromNamedAnswer(rows, 'USA'), { kind: 'notRecorded', reason: 'Not in the answer' });
+
+  const nextHour = answer({
+    keys: [1n, 2n, 3n, 4n, 5n, 6n],
+    columns: 1,
+    names: ['GER', 'ENG', 'FRA', 'SOV', 'ITA', 'JAP'],
+    values: [43n, 1n, 0n, 0n, 0n, big],
+    states: [CELL.value, CELL.value, CELL.value, CELL.unrecorded, CELL.noRow, CELL.value],
+    reasons: [null, 'A reason that moves every text offset', null, null, 'Not held', null],
+  });
+  assert.equal(nextHour.kind === 'rows' && rows.kind === 'rows' && answerRowIndex(nextHour) === answerRowIndex(rows), true,
+    'the next hour\'s answer with the same names reuses the row index: none is rebuilt');
+  assert.deepEqual(valueFromNamedAnswer(nextHour, 'GER'), { kind: 'known', value: 43 });
+  const renamed = answer({ keys: [1n, 2n], columns: 1, names: ['GER', 'ITA'], values: [1n, 2n], states: [CELL.value, CELL.value], reasons: [null, null] });
+  const sameSize = answer({ keys: [1n, 2n], columns: 1, names: ['GER', 'ENG'], values: [1n, 2n], states: [CELL.value, CELL.value], reasons: [null, null] });
+  assert.equal(renamed.kind === 'rows' && sameSize.kind === 'rows' && answerRowIndex(renamed) !== answerRowIndex(sameSize), true, 'different names build their own index');
+  assert.deepEqual(valueFromNamedAnswer(sameSize, 'ENG'), { kind: 'known', value: 2 });
+  assert.deepEqual(valueFromNamedAnswer(renamed, 'ENG'), { kind: 'notRecorded', reason: 'Not in the answer' });
 
   const refused = answer({ notRecorded: 'Table not recorded' });
   assert.deepEqual(valueFromNamedAnswer(refused, 'GER'), { kind: 'notRecorded', reason: 'Table not recorded' });
