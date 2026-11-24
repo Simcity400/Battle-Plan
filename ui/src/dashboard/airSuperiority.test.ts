@@ -15,7 +15,7 @@ const values = (entries: Record<string, number>) => valuesOf(new Map(Object.entr
 })), 'No live row has this key');
 
 const reply: AirSuperiorityReply = {
-  missing: null, sides: SIDES, viewpoint: null, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, warnings: [],
+  missing: null, sides: SIDES, legend: [0, 1], viewpoint: null, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, warnings: [],
   fallback: { kind: 'sides', parts: [], viewpoints: [], unknown: [], noAirObject: [], filtered: false, excluded: 0 },
   regions: [
     { id: 10, name: 'North Sea', nameMissing: null, active: true, wings: 'live',

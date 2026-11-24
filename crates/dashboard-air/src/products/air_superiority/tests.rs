@@ -51,9 +51,10 @@ fn frame(rows: Vec<RaidAirScoreRow>, complete: bool) -> DecodedFrame {
 }
 
 fn moment_of(frame: &DecodedFrame, params: &AirSuperiorityParams) -> (AirSuperiorityReply, Cells) {
-    let context = AirContext { names: names(), index: Ok(Arc::new(index::build(groups(100), 0, 100))) };
+    let context = AirContext { names: names(), index: Ok(Arc::new(index::build(groups(100), 0, 100))), resolver: None, resolver_warnings: Vec::new() };
     let cells = Cells::default();
-    let reply = moment(frame, params, &holders(100), 50, &context, &cells).unwrap();
+    let mut null = NullSideResolver;
+    let reply = moment(frame, params, &holders(100), 50, &context, &cells, &mut null).unwrap();
     (reply, cells)
 }
 
@@ -245,9 +246,10 @@ fn non_merging_factions_keep_unchanged_region_sides_and_filtered_ranking() {
         identities: TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![Identity { first_hour: 0, last_hour: 100, slot: *id, country_id: *id }])).collect(),
     };
     let index = Arc::new(index::build(groups, 0, 100));
-    let context = AirContext { names: names(), index: Ok(Arc::clone(&index)) };
+    let context = AirContext { names: names(), index: Ok(Arc::clone(&index)), resolver: None, resolver_warnings: Vec::new() };
     let holders = holders(100);
-    let reply = moment(&frame(scores(), true), &params(AirMode::Sides), &holders, 50, &context, &Cells::default()).unwrap();
+    let mut null = NullSideResolver;
+    let reply = moment(&frame(scores(), true), &params(AirMode::Sides), &holders, 50, &context, &Cells::default(), &mut null).unwrap();
     let keys: Vec<_> = reply.sides.iter().map(|side| side.key.as_str()).collect();
     assert_eq!(keys, ["f:7", "f:10"]);
     struct Rows(Vec<RaidAirScoreRow>);

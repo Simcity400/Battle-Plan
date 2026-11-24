@@ -513,6 +513,7 @@ impl Site {
 pub struct Bindings {
     bound: HashMap<Site, Bound>,
     pub regions: bool,
+    pub size_cornered_buttons: bool,
     pub time: f32,
     pub pointer: Option<Pointer>,
     pub viewport: Option<[i32; 2]>,
@@ -1587,7 +1588,7 @@ fn pointer_targets(
     Ok((hovered, boxes, target))
 }
 
-pub(crate) fn part_rect(kind: &PartKind) -> Option<Rect> {
+pub fn part_rect(kind: &PartKind) -> Option<Rect> {
     match kind {
         PartKind::Sprite { geometry, .. }
         | PartKind::Cell { geometry, .. }
@@ -2184,7 +2185,18 @@ impl<'a> Walk<'a> {
         .map(|_| ())
     }
 
-    #[expect(clippy::too_many_arguments, reason = "the element, the sprite's name, frame and state, and its scale, rotation, placement and clip")]
+    fn effective_extent(info: &SpriteInfo, sized: Option<[i32; 2]>, scale: f32) -> [i32; 2] {
+        if let (SpriteKind::CorneredTile { .. }, Some(size)) = (&info.kind, sized) {
+            size
+        } else {
+            info.scaled_extent(scale)
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the element, the sprite's name, frame and state, and its scale, rotation, placement and clip"
+    )]
     fn state_part(
         &mut self,
         element: &Element,
@@ -2263,12 +2275,12 @@ impl<'a> Walk<'a> {
             }),
             None => info,
         };
-        let extent = info.scaled_extent(scale);
+        let extent = Self::effective_extent(&info, self.sized, scale);
         let offset = match centre {
             Centre::None => [0, 0],
             Centre::Position => [extent[0] / 2, extent[1] / 2],
             Centre::Unscaled => {
-                let unscaled = info.scaled_extent(1.0);
+                let unscaled = Self::effective_extent(&info, self.sized, 1.0);
                 [unscaled[0] / 2, unscaled[1] / 2]
             }
             Centre::Anchor => match info.kind {
@@ -2895,6 +2907,10 @@ impl<'a> Walk<'a> {
             let drawn = [sprite, FALLBACK_SPRITE]
                 .into_iter()
                 .find_map(|name| self.info_ref(path, name));
+            let button_sized = (self.bindings.size_cornered_buttons
+                && button.size[0] > 0
+                && button.size[1] > 0)
+                .then_some(button.size);
             if let Some(info) = &drawn
                 && matches!(info.kind, SpriteKind::Text { .. })
             {
@@ -2925,7 +2941,10 @@ impl<'a> Walk<'a> {
                 }
                 frame_size = Some([0, 0]);
             } else {
-                frame_size = drawn.map(|info| info.extent());
+                frame_size = drawn.map(|info| match (&info.kind, button_sized) {
+                    (SpriteKind::CorneredTile { .. }, Some(sized)) => sized,
+                    _ => info.extent(),
+                });
             }
             let (frame, centre) = match (standard, button.center_position) {
                 (true, true) => (FrameSource::Own(own_frame), Centre::Unscaled),
@@ -2933,7 +2952,8 @@ impl<'a> Walk<'a> {
                 (false, true) => (FrameSource::State(own_frame), Centre::Position),
                 (false, false) => (FrameSource::State(own_frame), Centre::None),
             };
-            if let Some((part, hit)) = self.state_part(
+            self.sized = button_sized;
+            let drawn_part = self.state_part(
                 element,
                 sprite,
                 frame,
@@ -2943,8 +2963,9 @@ impl<'a> Walk<'a> {
                 place,
                 centre,
                 clip,
-            )? && !button.always_transparent
-            {
+            );
+            self.sized = None;
+            if let Some((part, hit)) = drawn_part? && !button.always_transparent {
                 self.hits.push(Hittable {
                     path: path.clone(),
                     part,
@@ -3907,6 +3928,15 @@ impl Walk<'_> {
             },
             None => info,
         };
+        if self.bindings.size_cornered_buttons
+            && element.kind != Kind::Checkbox
+            && let Some(button) = button
+            && button.size[0] > 0
+            && button.size[1] > 0
+            && matches!(info.kind, SpriteKind::CorneredTile { .. })
+        {
+            return Ok(Some(button.size));
+        }
         Ok(Some(info.scaled_extent(
             bound.and_then(|bound| bound.scale).unwrap_or(scale),
         )))
