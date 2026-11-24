@@ -773,7 +773,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const trackOffset = track?.axisOffset ?? 0;
 
   const [tileClockHour, setTileClockHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
-  const tileHour = following ? tileClockHour : Math.floor(pinHour ?? window?.lastHour ?? effectiveEndHour);
+  const tileSeenHour = useMemo(
+    () => Math.floor(runtime.clock.getHour()) + trackOffset,
+    [currentTiled, tileClockHour, runtime.clock, trackOffset],
+  );
+  const tileHour = following ? tileSeenHour : Math.floor(pinHour ?? window?.lastHour ?? effectiveEndHour);
   const tileUnrecorded = useMemo(() => {
     if (!currentTiled) return null;
     const lines: UnrecordedLine[] = [];
