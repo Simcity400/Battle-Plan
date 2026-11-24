@@ -1,6 +1,7 @@
 import { Segmented } from '../../components/Segmented';
 import { SettingLabel } from './SettingLabel';
 import type { OptionValue } from '../options';
+import { BARS_BEHIND_CHOICES, ROW_HEIGHT_CHOICES, type BarsBehindMode } from '../../families/settingsControls.ts';
 import {
   encodeTableSettings,
   tableSettingsOf,
@@ -20,8 +21,13 @@ export function TableSettingsField({ field, value, onChange }: {
   return <div data-setting={field.key} className="table-settings-field" role="group" aria-label={field.label}>
     <div className="setting-row setting-row-stacked">
       <SettingLabel label="Rows" />
-      <Segmented label="Rows" value={settings.density} options={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]}
+      <Segmented label="Rows" value={settings.density} options={ROW_HEIGHT_CHOICES}
         onChange={value => save(next => { next.density = value as TableSettings['density']; })} />
+    </div>
+    <div className="setting-row setting-row-stacked">
+      <SettingLabel label="Bars behind figures" />
+      <Segmented label="Bars behind figures" value={settings.barsBehind ?? 'sorted'} options={BARS_BEHIND_CHOICES}
+        onChange={value => save(next => { next.barsBehind = value as BarsBehindMode; })} />
     </div>
     <div className="setting-row setting-row-stacked">
       <SettingLabel label="When columns don't fit" />

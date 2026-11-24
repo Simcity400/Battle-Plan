@@ -1,5 +1,7 @@
 import type { ComponentType } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
+import type { AnyBarsWidgetDeclaration } from '../bars/declaration.ts';
+import DeclaredBarsWidget from '../bars/DeclaredBarsWidget';
 import type { FamilyViewModule } from '../manifest.ts';
 import type { FamilyId } from '../plan.ts';
 import DeclaredTableWidget from '../table/DeclaredTableWidget';
@@ -27,4 +29,9 @@ function TableFamilyHostAdapter({ spec, ...props }: FamilyHostProps) {
   return <DeclaredTableWidget declaration={spec.declaration as AnyTableWidgetDeclaration} {...props} />;
 }
 
+function BarsFamilyHostAdapter({ spec, ...props }: FamilyHostProps) {
+  return <DeclaredBarsWidget declaration={spec.declaration as AnyBarsWidgetDeclaration} {...props} />;
+}
+
 registerFamilyHost('table', TableFamilyHostAdapter);
+registerFamilyHost('bars', BarsFamilyHostAdapter);

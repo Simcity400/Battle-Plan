@@ -1,17 +1,16 @@
 import type { ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
-import type { WidgetProps, WidgetRenderer } from '../dashboard/definitions';
+import type { FamilyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
 import { familyHost } from '../families/host/registry';
 import type { FamilyViewModule } from '../families/manifest';
-import type { AnyTableWidgetDeclaration } from '../families/table/declaration';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
 type Slot = 'render' | 'countryChip';
 const nothing = () => null;
 const declaredRenderers = new WeakMap<object, ComponentType<WidgetProps>>();
 
-function rendererForDeclaration(declaration: AnyTableWidgetDeclaration): ComponentType<WidgetProps> {
+function rendererForDeclaration(declaration: FamilyWidgetDeclaration): ComponentType<WidgetProps> {
   let held = declaredRenderers.get(declaration);
   if (!held) {
     const spec: FamilyViewModule = {

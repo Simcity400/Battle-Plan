@@ -247,12 +247,23 @@ export function drawFamilyTable(
     return cached;
   };
 
-  const maximaCols = JSON.stringify(layout.columns.map(c => (c.numeric && measuresColumn(c) ? [c.key, c.display] : null)));
+  const effectiveDisplayOf = (column: FamilyColumnLayout): FamilyColumnLayout['display'] => {
+    if (!column.numeric || settings.barsBehind === undefined) return column.display;
+    if (column.display !== 'faint' && column.display !== 'plain') return column.display;
+    if (settings.barsBehind === 'off') return 'plain';
+    if (settings.barsBehind === 'all') return 'faint';
+    return column.key === settings.sort.column ? 'faint' : 'plain';
+  };
+  const effectiveColumns = layout.columns.map(column => {
+    const display = effectiveDisplayOf(column);
+    return display === column.display ? column : { ...column, display };
+  });
+  const maximaCols = JSON.stringify(effectiveColumns.map(c => (c.numeric && measuresColumn(c) ? [c.key, c.display] : null)));
   let maxima: Map<string, number>;
   if (picture && picture.maxima && picture.maximaRows === rows && picture.maximaHour === hour && picture.maximaCols === maximaCols) {
     maxima = picture.maxima;
   } else {
-    maxima = computeColumnMaxima(rows, layout.columns, hour);
+    maxima = computeColumnMaxima(rows, effectiveColumns, hour);
     if (picture) {
       picture.maximaRows = rows;
       picture.maximaHour = hour;
@@ -273,7 +284,7 @@ export function drawFamilyTable(
         first,
         last,
         rows.length ? '' : empty ?? '',
-        layout.columns.map(c => [c.key, c.width, c.display, c.tone ?? '']),
+        effectiveColumns.map(c => [c.key, c.width, c.display, c.tone ?? '']),
       ])
     : null;
 
@@ -518,8 +529,8 @@ export function drawFamilyTable(
     const rowWidth = Math.max(width, layout.totalWidth);
 
     let x = rank - bounds.left;
-    for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
-      const column = layout.columns[colIndex]!;
+    for (let colIndex = 0; colIndex < effectiveColumns.length; colIndex++) {
+      const column = effectiveColumns[colIndex]!;
       const slotWidth = trackSlotWidth(column);
       let drawn = picture.cells.get(column.key);
       if (!drawn) picture.cells.set(column.key, drawn = []);
@@ -613,8 +624,8 @@ export function drawFamilyTable(
 
   const paintBody = (pinned = false) => {
     let x = pinned ? rank : rank - bounds.left;
-    for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
-      const column = layout.columns[colIndex]!;
+    for (let colIndex = 0; colIndex < effectiveColumns.length; colIndex++) {
+      const column = effectiveColumns[colIndex]!;
       const isPinned = pinned && colIndex === 0;
       if (isPinned) x = rank;
       const slotWidth = trackSlotWidth(column);

@@ -12,6 +12,7 @@ import type { DeclaredTableContext, TableWidgetDeclaration } from './declaration
 import FamilyTableHost from './FamilyTableHost.tsx';
 import type { TableColumnSpec } from './model.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
+import { barsBehindOf, rowHeightOf } from '../settingsControls.ts';
 
 export interface DeclaredTableWidgetProps<TProjectionOptions, TAux> extends WidgetProps {
   readonly declaration: TableWidgetDeclaration<TProjectionOptions, TAux>;
@@ -38,8 +39,9 @@ function resolveTableSettings<TProjectionOptions, TAux>(
   if (sp.kind === 'options') {
     const sort = tableSortOf(options.tableSort as string | undefined, sp.defaultSort);
     const overflow = narrowTableOf(options as never) === 'scroll' ? 'scroll' as const : 'tooltip' as const;
-    const density = options.density === 'compact' ? 'compact' as const : 'comfortable' as const;
-    return tableSettingsOf(undefined, columns, { density, overflow, sort });
+    const density = rowHeightOf(options.rowHeight ?? options.density, 'comfortable');
+    const barsBehind = options.barsBehind !== undefined ? barsBehindOf(options.barsBehind) : undefined;
+    return tableSettingsOf(undefined, columns, { density, ...(barsBehind !== undefined ? { barsBehind } : {}), overflow, sort });
   }
   return ctx
     ? sp.resolve(ctx, columns)
