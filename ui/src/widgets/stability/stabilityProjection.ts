@@ -21,8 +21,8 @@ import type {
   ChartMarkerItem,
   TimeChartSeriesModel,
 } from '../../families/time-chart/model.ts';
-import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
-import type { StabilityBreakdownReply } from '../../generated/dashboard';
+import { formatRecordedPercent, notRecordedLabel } from '../../families/valueFormat.ts';
+import type { StabilityBreakdownReply, StabilityMarker, StabilityMarkersReply } from '../../generated/dashboard';
 import {
   assignCountrySeriesColours,
   branchGapsOf,
@@ -37,20 +37,6 @@ import {
 } from '../../families/time-chart/seriesHelpers.ts';
 import { breakdownRows, linesPerMeasure, type Measure } from './stabilityData.ts';
 
-export interface StabilityRawMarker {
-  readonly id: string;
-  readonly hour: number;
-  readonly kind: 'focus' | 'idea' | 'war' | 'faction' | 'party';
-  readonly title: string;
-  readonly otherTag?: string;
-  readonly warVerb?: 'began' | 'capitulated';
-  readonly factionId?: string;
-  readonly factionVerb?: 'Founded' | 'Joined' | 'Left';
-  readonly fallbackFactionName?: string;
-  readonly sprite?: string | null;
-  readonly warAlert?: boolean;
-}
-
 export interface StabilityOptions {
   readonly tags: readonly string[];
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
@@ -61,25 +47,21 @@ export interface StabilityOptions {
   readonly showStability: boolean;
   readonly showWarSupport: boolean;
   readonly zoom: boolean;
-  readonly rawMarkers: readonly StabilityRawMarker[];
 }
 
 
-function formatPct(value: number): string {
-  return formatScalar(value, { decimals: 0, maxDecimals: 1, percent: true });
-}
+const FACTION_VERBS = { founded: 'Founded', joined: 'Joined', left: 'Left' } as const;
 
-function resolveMarkerTitle(m: StabilityRawMarker, readView: BoundedReadView, limitHour: number): string {
+function resolveMarkerTitle(m: StabilityMarker, readView: BoundedReadView, limitHour: number): string {
   const at = displayedHour(Math.min(m.hour, limitHour));
-  if (m.otherTag && m.warVerb) {
-    const who = readView.who('country', m.otherTag, at);
-    const other = who.name.status === 'ready' ? who.name.value : m.otherTag;
-    return m.warVerb === 'began' ? `War with ${other} began` : `${other} capitulated`;
+  if (m.other && (m.verb === 'began' || m.verb === 'capitulated')) {
+    const who = readView.who('country', m.other, at);
+    if (who.name.status !== 'ready') return m.title;
+    return m.verb === 'began' ? `War with ${who.name.value} began` : `${who.name.value} capitulated`;
   }
-  if (m.factionId && m.factionVerb) {
-    const who = readView.who('faction', m.factionId, at);
-    const faction = who.name.status === 'ready' ? who.name.value : (m.fallbackFactionName ?? 'Unnamed faction');
-    return `${m.factionVerb} ${faction}`;
+  if (m.faction && (m.verb === 'founded' || m.verb === 'joined' || m.verb === 'left')) {
+    const who = readView.who('faction', m.faction, at);
+    return who.name.status === 'ready' ? `${FACTION_VERBS[m.verb]} ${who.name.value}` : m.title;
   }
   return m.title;
 }
@@ -110,8 +92,8 @@ function breakdownDetail(readView: BoundedReadView, measures: readonly { readonl
   return { hour: hover.hour, items };
 }
 
-function markerPriority(m: StabilityRawMarker): number {
-  if (m.warAlert) return 3;
+function markerPriority(m: StabilityMarker): number {
+  if (m.alert) return 3;
   if (m.kind === 'focus' && m.sprite) return 2;
   if (m.kind === 'idea' && m.sprite) return 1;
   return 0;
@@ -120,15 +102,15 @@ function markerPriority(m: StabilityRawMarker): number {
 interface MarkerDay {
   readonly key: number;
   readonly hour: number;
-  readonly markers: readonly StabilityRawMarker[];
+  readonly markers: readonly StabilityMarker[];
 }
 
-const markerDayCache = new WeakMap<readonly StabilityRawMarker[], readonly MarkerDay[]>();
+const markerDayCache = new WeakMap<readonly StabilityMarker[], readonly MarkerDay[]>();
 
-function markerDays(raw: readonly StabilityRawMarker[]): readonly MarkerDay[] {
+function markerDays(raw: readonly StabilityMarker[]): readonly MarkerDay[] {
   const held = markerDayCache.get(raw);
   if (held) return held;
-  const byDay = new Map<number, StabilityRawMarker[]>();
+  const byDay = new Map<number, StabilityMarker[]>();
   for (const m of raw) {
     const key = Math.floor(m.hour / 24);
     let list = byDay.get(key);
@@ -213,7 +195,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
                 ...(single ? { icon: stabIcon } : { flag }),
                 name: single ? 'Stability' : `${name} · Stability`,
                 fullName: single ? 'Stability' : `${name} Stability`,
-                value: formatPct(headValue),
+                value: formatRecordedPercent(headValue),
               },
         });
       }
@@ -244,20 +226,21 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
                 ...(single ? { icon: warIcon } : { flag }),
                 name: single ? 'War support' : `${name} · War support`,
                 fullName: single ? 'War support' : `${name} War support`,
-                value: formatPct(headValue),
+                value: formatRecordedPercent(headValue),
               },
         });
       }
     }
 
     const markers: ChartMarker[] = [];
-    if (single && options.rawMarkers.length > 0) {
-      const days = markerDays(options.rawMarkers);
+    const recorded = single ? readView.panel<StabilityMarkersReply>('markers')?.markers ?? [] : [];
+    if (recorded.length > 0) {
+      const days = markerDays(recorded);
       for (const day of days) {
         if (day.hour > hour) break;
         if (day.hour < options.extent[0]) continue;
-        const iconSlot = (m: StabilityRawMarker): ChartArtSlot | undefined => {
-          if (m.warAlert) return { art: readView.art(measureArtHandle('warAlert')), label: 'War' };
+        const iconSlot = (m: StabilityMarker): ChartArtSlot | undefined => {
+          if (m.alert) return { art: readView.art(measureArtHandle('warAlert')), label: 'War' };
           if (m.sprite) return { art: readView.art({ kind: 'sprite', key: m.sprite, frame: 0 }), label: m.title };
           return undefined;
         };
@@ -373,11 +356,32 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
           params: { branchId: ctx.branch.id, country: countries[0]! },
         },
       });
+      const marks = { focus: ctx.options.markFocus !== false, government: ctx.options.markGovernment !== false, wars: ctx.options.markWars !== false, factions: ctx.options.markFactions !== false };
+      if (marks.focus || marks.government || marks.wars || marks.factions) {
+        entries.push({
+          name: 'markers',
+          source: ctx.track.source,
+          branch: ctx.branch.id,
+          offset: ctx.track.axisOffset,
+          read: {
+            shape: 'point',
+            channel: 'panel',
+            coverage: { mode: 'keyed', keys: tags },
+            product: 'stability-markers',
+            followQuery: null,
+            params: { branchId: ctx.branch.id, country: countries[0]!, ...marks },
+            provenInterval: (data, hour) => {
+              const next = (data as StabilityMarkersReply | null)?.nextChange;
+              return [hour, next == null ? Infinity : next - 1] as const;
+            },
+          },
+        });
+      }
     }
     const rank = rankEntry(ctx, { kind: 'country-stability', measure: showStab ? 'stability' : 'warSupport' }, tags);
     if (rank && (showStab || showWar)) entries.push(rank);
     return {
-      owner: `stability:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showStab ? 1 : 0}:${showWar ? 1 : 0}:${ctx.following ? 1 : 0}`,
+      owner: `stability:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showStab ? 1 : 0}:${showWar ? 1 : 0}:${['markFocus', 'markGovernment', 'markWars', 'markFactions'].map(key => ctx.options[key] !== false ? 1 : 0).join('')}:${ctx.following ? 1 : 0}`,
       entries,
     };
   },
@@ -393,14 +397,6 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
       showStability: ctx.options.stability !== false,
       showWarSupport: ctx.options.warSupport !== false,
       zoom: ctx.options.scale === 'zoom',
-      rawMarkers: [],
     };
   },
 };
-
-export function stabilityDeclarationWith(markers: readonly StabilityRawMarker[]): TimeChartWidgetDeclaration<StabilityOptions> {
-  return {
-    ...stabilityDeclaration,
-    projectionOptions: (ctx, extra) => ({ ...stabilityDeclaration.projectionOptions(ctx, extra), rawMarkers: markers }),
-  };
-}

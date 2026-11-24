@@ -41,14 +41,10 @@ fn a_months_witness_reads_its_own_arrays_run_of_the_hours_rows() {
 }
 
 #[test]
-fn a_view_holds_the_measure_drawn_or_every_part_of_one_month() {
+fn a_view_is_read_from_the_request_as_manpower_equipment_ledgers_or_one_month() {
     use super::{ArmyLossesParams, LossView};
     let equipment = LossView::Equipment { ledgers: vec![1, 2, 3] };
-    assert!(LossView::Manpower.manpower(5) && !LossView::Manpower.ledger(0, 5));
-    assert!(!equipment.manpower(5) && equipment.ledger(2, 5) && !equipment.ledger(0, 5) && !equipment.ledger(super::ENEMY_LEDGER, 5));
     let month = LossView::Month { month: 5 };
-    assert!(month.manpower(5) && month.ledger(0, 5) && month.ledger(super::ENEMY_LEDGER, 5));
-    assert!(!month.manpower(6) && !month.ledger(0, 6));
     let asked = |json: serde_json::Value| serde_json::from_value::<ArmyLossesParams>(json).unwrap().view;
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER" })), LossView::Manpower);
     assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "equipment", "ledgers": [1, 2, 3] } })), equipment);

@@ -59,6 +59,9 @@ fn event(code: u8, hour: i32, actor: Slot, target: Slot) -> FeedEvent {
         outstanding: None,
         refusals: None,
         failure: Vec::new(),
+        incomplete: None,
+        window: None,
+        presentation: None,
     }
 }
 
@@ -205,6 +208,7 @@ fn a_decisions_cost_is_listed_only_when_proven_and_only_the_currencies_it_charge
         cause: None,
         strike: None,
         decision_state: None,
+        window: None,
     };
     let mut selected = event(EventFeedSource::DecisionSelected as u8, 10, Slot::Of(7), Slot::None);
     selected.costs = Some([Some(-5_000_000), Some(0)]);
@@ -426,6 +430,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
         events,
         script_tokens: Vec::new(),
         script_scopes: Vec::new(),
+        windows: Default::default(),
     };
 
     let timed_fail = feed_ev(10, EventFeedSource::DecisionTimedOut, Some(50), Some(2));
@@ -542,6 +547,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
             cause: None,
             strike: None,
             decision_state: Some(DecisionLifecycleState::Active),
+            window: None,
         }),
         Some(super::EventFeedRow {
             id: timed_fail.id(),
@@ -558,6 +564,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
             cause: None,
             strike: None,
             decision_state: Some(DecisionLifecycleState::Failed { observed_hour: 101 }),
+            window: None,
         }),
     ];
     enforce_same_incarnation(&[&opener, &timed_fail], &mut rows);
@@ -633,6 +640,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
             events,
             script_tokens: tokens.to_vec(),
             script_scopes: Vec::new(),
+            windows: Default::default(),
         }
     };
     let with_pack = |branch: u64, hour: i32, row: Option<EventFeedHistoryRow>| {
@@ -852,6 +860,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
             events,
             script_tokens: tokens.to_vec(),
             script_scopes: Vec::new(),
+            windows: Default::default(),
         }
     };
     let frames: Vec<_> = (100..=106)

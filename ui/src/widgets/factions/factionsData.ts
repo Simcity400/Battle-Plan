@@ -7,6 +7,7 @@ import type { CountryIdentityIndex } from '../../dashboard/countryIdentity';
 import type { FactionName } from '../../dashboard/factionNames';
 import { UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
+import type { RankedCounts } from '../../dashboard/groupCounts.ts';
 import type { CountryGroupReply, FactionGroup, HourSpan, MembershipRun } from '../../generated/dashboard';
 
 
@@ -135,6 +136,7 @@ export interface LaneOptions {
   ended: boolean;
   countries: ReadonlySet<string> | null;
   countryIds?: ReadonlySet<string> | null;
+  counts: RankedCounts | null;
 }
 
 export const UNNAMED = UNNAMED_FACTION;
@@ -183,18 +185,17 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
   const shown = views.filter(view => firstHour(view.existence) <= hour
     && (options.ended || runState(lifetime(view), hour, unobserved).kind !== 'ended')
     && (!chosen || involves(view)));
-  const counts = new Map(shown.map(view => [view, membersAt(view, hour) ?? -1]));
-  const count = (view: FactionView) => counts.get(view)!;
+  const founded = (a: FactionView, b: FactionView) => firstHour(a.existence) - firstHour(b.existence) || compareIds(a.id, b.id);
+  const rank = (view: FactionView) => options.counts?.rank.get(view.id) ?? Infinity;
   const names = options.order === 'name' ? new Map(shown.map(view => [view, factionLabel(view, hour)])) : null;
   shown.sort(options.order === 'name' ? (a, b) => names!.get(a)!.localeCompare(names!.get(b)!) || compareIds(a.id, b.id)
-    : options.order === 'members' ? (a, b) => count(b) - count(a) || firstHour(a.existence) - firstHour(b.existence) || compareIds(a.id, b.id)
-      : (a, b) => firstHour(a.existence) - firstHour(b.existence) || compareIds(a.id, b.id));
+    : options.order === 'members' ? (a, b) => rank(a) - rank(b) || founded(a, b)
+      : founded);
   for (const view of shown) {
     const name = names?.get(view) ?? factionLabel(view, hour);
     const exists = runState(lifetime(view), hour, unobserved).kind === 'held';
     const leader = leaderAt(view.leaders, hour);
-    const recordedCount = count(view);
-    const members = recordedCount < 0 ? null : recordedCount;
+    const members = options.counts?.count(view.id)?.count ?? null;
     const state = exists
       ? members == null ? 'Members not recorded' : `${members} ${members === 1 ? 'member' : 'members'}`
       : describeRun(lifetime(view), hour, factionWords(text.day), unobserved, branchFirstHour) ?? '';

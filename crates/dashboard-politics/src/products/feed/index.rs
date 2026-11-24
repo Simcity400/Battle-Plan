@@ -100,6 +100,7 @@ pub(crate) struct Scanned {
     briefs: Vec<Brief>,
     native: Vec<Occurrence<Item>>,
     pub incomplete: Vec<(i32, u128, FeedEvent)>,
+    pub windows_unrecorded: Vec<(i32, u128, FeedEvent)>,
     states: HashMap<u128, DecisionLifecycleState>,
     breaks: Vec<(i32, i32)>,
     pub gaps: Vec<MissingSpan>,
@@ -185,6 +186,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let mut briefs = Vec::new();
     let mut native = Vec::new();
     let mut incomplete = Vec::new();
+    let mut windows_unrecorded = Vec::new();
     let mut lifecycles: Vec<FeedEvent> = Vec::new();
     for run in runs {
         dashboard_text::metadata::check_cancel(cancelled)?;
@@ -195,6 +197,10 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
             let event = columns.read(&row)?;
             if event.code == FeedEventRow::READ_INCOMPLETE {
                 incomplete.push((row.hour, row.key, event));
+                return Ok(());
+            }
+            if event.code == FeedEventRow::WINDOWS_UNRECORDED {
+                windows_unrecorded.push((row.hour, row.key, event));
                 return Ok(());
             }
             let Some(kind) = EventFeedKind::of_code(event.code) else { return Ok(()) };
@@ -222,6 +228,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     }
     briefs.sort_by_key(|brief| brief.at);
     incomplete.sort_by_key(|(hour, key, _)| (*hour, *key));
+    windows_unrecorded.sort_by_key(|(hour, key, _)| (*hour, *key));
     let refs: Vec<&FeedEvent> = lifecycles.iter().collect();
     let resolved = decision_state::resolve_all(query, &refs)?;
     let states = lifecycles.iter().zip(resolved).filter_map(|(event, state)| state.map(|state| ((u128::from(event.generation) << 64) | u128::from(event.sequence), state))).collect();
@@ -230,7 +237,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     breaks.retain(|(first, last)| first <= last);
     breaks.sort_unstable();
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
-    Ok(Scanned { briefs, native, incomplete, states, breaks, gaps })
+    Ok(Scanned { briefs, native, incomplete, windows_unrecorded, states, breaks, gaps })
 }
 
 fn break_after(breaks: &[(i32, i32)], from: i32, hour: i32) -> Option<(i32, i32)> {

@@ -9,6 +9,7 @@ dashboard_base::register_products! {
     FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard,
     IDEAS_IDEAHISTORY => crate::products::ideas::IdeaHistory,
     PARTY_HISTORY_PARTYHISTORY => crate::products::party_history::PartyHistory,
+    STABILITY_MARKERS_STABILITYMARKERS => crate::products::stability_markers::StabilityMarkers,
     FEED_EVENTFEEDTAIL => crate::products::feed::EventFeedTail,
     FEED_EVENTCHOICESTAIL => crate::products::feed::EventChoicesTail,
     FEED_DECISIONSTAIL => crate::products::feed::DecisionsTail,

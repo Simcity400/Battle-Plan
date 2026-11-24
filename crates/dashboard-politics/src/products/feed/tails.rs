@@ -286,6 +286,7 @@ fn locators(index: &Index<Item>, answer: &Answer, hour: i32) -> Vec<Locator> {
 
 fn notices_for(prepared: &Prepared, answer: &Answer, from: i32, hour: i32, notices: &mut Notices) {
     families::incomplete_notices(&prepared.scanned.incomplete, &prepared.losses, from, hour, notices);
+    families::window_notices(&prepared.scanned.windows_unrecorded, from, hour, notices);
     if answer.unattributed > 0 {
         notices.unavailable(
             "unattributed",
@@ -483,6 +484,11 @@ impl Product for EventFeedTail {
             super::EventFeedItem::decl(),
             super::EventFeedCause::decl(),
             super::DecisionLifecycleState::decl(),
+            super::EventWindowDecision::decl(),
+            super::EventWindowKind::decl(),
+            super::EventWindowOption::decl(),
+            super::EventWindowPresented::decl(),
+            super::EventFeedWindow::decl(),
             EventFeedRow::decl(),
             super::EventFeedStrike::decl(),
             EventFeedUnavailable::decl(),

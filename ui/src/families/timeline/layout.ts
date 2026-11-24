@@ -4,6 +4,7 @@ export const LANE_HEIGHT = 38;
 export const LANE_HEIGHT_COMPACT = 26;
 export const GROUP_LANE_HEIGHT = 38;
 export const HEADING_LANE_HEIGHT = 20;
+export const LEGEND_HEIGHT = 20;
 export const AXIS_HEIGHT = 26;
 export const BAR_HEIGHT = 14;
 export const BAR_HEIGHT_ICONS = 18;
@@ -29,6 +30,7 @@ export interface TimelinePlacement {
   readonly labelWidth: number;
   readonly plotLeft: number;
   readonly plotRight: number;
+  readonly bodyTop: number;
   readonly bodyHeight: number;
   readonly contentHeight: number;
   readonly axisTop: number;
@@ -53,7 +55,8 @@ export function placeTimeline(
   expanded: Readonly<Record<string, boolean>>,
 ): TimelinePlacement {
   const w = Math.max(160, width);
-  const h = Math.max(AXIS_HEIGHT + LANE_HEIGHT_COMPACT, height);
+  const bodyTop = model.legend?.length ? LEGEND_HEIGHT : 0;
+  const h = Math.max(bodyTop + AXIS_HEIGHT + LANE_HEIGHT_COMPACT, height);
   const compact = w < MIN_SUBTITLE_WIDTH;
   const labelWidth = compact
     ? MIN_LABEL_WIDTH
@@ -69,8 +72,8 @@ export function placeTimeline(
     lanes.push({ lane, ordinal: i, y, height: lh });
     y += lh;
   }
-  const bodyHeight = h - AXIS_HEIGHT;
-  return { width: w, height: h, compact, labelWidth, plotLeft, plotRight, bodyHeight, contentHeight: y + TOP_PAD, axisTop: bodyHeight, lanes, startHour: model.firstHour };
+  const bodyHeight = h - AXIS_HEIGHT - bodyTop;
+  return { width: w, height: h, compact, labelWidth, plotLeft, plotRight, bodyTop, bodyHeight, contentHeight: y + TOP_PAD, axisTop: bodyTop + bodyHeight, lanes, startHour: model.firstHour };
 }
 
 export function frameTimeline(placement: TimelinePlacement, hour: number): TimelineLayout {

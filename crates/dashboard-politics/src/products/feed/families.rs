@@ -39,6 +39,15 @@ pub(crate) fn incomplete_notices(incomplete: &[(i32, u128, FeedEvent)], losses: 
     raised_notices(raised, losses, notices);
 }
 
+pub(crate) fn window_notices(unrecorded: &[(i32, u128, FeedEvent)], from: i32, to: i32, notices: &mut Notices) {
+    let first = unrecorded.partition_point(|(hour, ..)| *hour < from);
+    let held: Vec<&FeedEvent> = unrecorded[first..].iter().take_while(|(hour, ..)| *hour <= to).map(|(.., read)| read).collect();
+    let total = u32::try_from(held.len()).unwrap_or(u32::MAX);
+    for (at, read) in held.iter().take(3).enumerate() {
+        notices.sampled("eventWindows", "Event windows", format!("Read {}: {}", read.read_hour, String::from_utf8_lossy(&read.failure)), if at == 0 { total } else { 0 });
+    }
+}
+
 pub(crate) fn raised_notices(mut raised: Vec<(usize, u64, Vec<(i32, u128, FeedEvent)>)>, losses: &[(i32, i32)], notices: &mut Notices) {
     raised.retain(|(_, _, examples)| !examples.is_empty());
     raised.sort_by_key(|(notice, _, examples)| (examples[0].0, examples[0].1, *notice));
@@ -106,6 +115,7 @@ fn family_row(kind: EventFeedKind, hour: i32, read_hour: i32, name_hour: i32, ta
         cause: None,
         strike: None,
         decision_state: None,
+        window: None,
     }
 }
 
