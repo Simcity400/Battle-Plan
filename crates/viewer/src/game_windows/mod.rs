@@ -34,6 +34,8 @@ use viewer_native_gui::{
 #[cfg(test)]
 mod tests;
 
+pub mod equipment_designer;
+
 pub const STEADY_TICK: Tick = Tick {
     time: 10.0,
     dt: 10.0,
@@ -465,6 +467,90 @@ pub fn drawn_bounds(layout: &Layout) -> [i32; 4] {
     [left, top, width, height]
 }
 
+pub struct ComposedSubWindow {
+    pub before_part: usize,
+    pub parts: Vec<native_gui::Part>,
+    pub regions: Vec<Region>,
+    pub root_window: String,
+    pub path_prefix: String,
+    pub close_paths: Vec<String>,
+    pub tooltip_overrides: BTreeMap<String, GameWindowTooltip>,
+}
+
+#[derive(Default)]
+pub struct ComposedPlan {
+    pub sub_windows: Vec<ComposedSubWindow>,
+    pub extra_regions: Vec<GameWindowRegion>,
+    pub warnings: Vec<String>,
+}
+
+pub fn container_holder(layout: &Layout, container_path: &str) -> Option<native_gui::Holder> {
+    let region = layout
+        .regions
+        .iter()
+        .find(|region| region.path == container_path)?;
+    let prefix = format!("{container_path}/");
+    let before = layout
+        .parts
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, part)| part.path == container_path || part.path.starts_with(&prefix))
+        .map_or(layout.parts.len(), |(index, _)| index + 1);
+    Some(native_gui::Holder {
+        path: container_path.to_owned(),
+        child: None,
+        content: [region.rect[2].round() as i32, region.rect[3].round() as i32],
+        origin: [region.rect[0], region.rect[1]],
+        scale: 1.0,
+        hit_scales: Some(Vec::new()),
+        logical: [region.rect[0].round() as i32, region.rect[1].round() as i32],
+        clip: region.clip,
+        opacity: 1.0,
+        before,
+        position: None,
+    })
+}
+
+pub fn merge_composed_layout(main_layout: &Layout, sub_windows: &[ComposedSubWindow]) -> Layout {
+    let extra_parts: usize = sub_windows.iter().map(|sub| sub.parts.len()).sum();
+    let mut parts = Vec::with_capacity(main_layout.parts.len() + extra_parts);
+    let main_len = main_layout.parts.len();
+    for index in 0..=main_len {
+        for sub in sub_windows {
+            if sub.before_part.min(main_len) == index {
+                parts.extend(sub.parts.iter().cloned());
+            }
+        }
+        if let Some(part) = main_layout.parts.get(index) {
+            parts.push(part.clone());
+        }
+    }
+    Layout {
+        size: main_layout.size,
+        parts,
+        holders: Vec::new(),
+        regions: Vec::new(),
+        diagnostics: Vec::new(),
+        pointed: None,
+        hovered: None,
+        target: None,
+        boxes: Vec::new(),
+    }
+}
+
+pub fn render_composed_layout_offscreen(
+    gpu: &GpuContext,
+    pass: &mut SpritePass,
+    main_layout: &Layout,
+    sub_windows: &[ComposedSubWindow],
+    sheets: &dyn Sheets,
+    scale: f32,
+) -> Result<OffscreenOutput, String> {
+    let merged = merge_composed_layout(main_layout, sub_windows);
+    render_layout_offscreen(gpu, pass, &merged, sheets, scale)
+}
+
 pub fn render_layout_offscreen(
     gpu: &GpuContext,
     pass: &mut SpritePass,
@@ -818,6 +904,56 @@ impl Service {
         tooltip_overrides: &BTreeMap<String, GameWindowTooltip>,
         configure: impl FnOnce(&Element, &Localisation, &mut Instance),
     ) -> Result<GameWindowRender, String> {
+        let extra = extra_assets.clone();
+        self.render_composed_from_layers(
+            key,
+            layers,
+            window_name,
+            scale,
+            read_hour,
+            art_from_current_install,
+            close_paths,
+            tooltip_overrides,
+            move |_, _, _| Ok(extra),
+            move |root, _, localisation, instance, _| configure(root, localisation, instance),
+            |_, _, _, _, _| Ok(ComposedPlan::default()),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the window cache key, layers, and per-render callbacks are independent inputs"
+    )]
+    pub fn render_composed_from_layers(
+        &self,
+        key: WindowCacheKey,
+        layers: &ResolvedLayers,
+        window_name: &str,
+        scale: f32,
+        read_hour: Option<i32>,
+        art_from_current_install: bool,
+        close_paths: &[&str],
+        tooltip_overrides: &BTreeMap<String, GameWindowTooltip>,
+        prepare_assets: impl FnOnce(
+            &NativeWindows,
+            &resources::Registry,
+            &Localisation,
+        ) -> Result<Assets, String>,
+        configure_main: impl FnOnce(
+            &Element,
+            &NativeWindows,
+            &Localisation,
+            &mut Instance,
+            &mut BTreeMap<String, GameWindowTooltip>,
+        ),
+        compose: impl FnOnce(
+            &Layout,
+            &Element,
+            &NativeWindows,
+            &dyn Resources,
+            &Localisation,
+        ) -> Result<ComposedPlan, String>,
+    ) -> Result<GameWindowRender, String> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.gpu.is_none() {
             inner.gpu = Some(GpuContext::initialize()?);
@@ -828,14 +964,19 @@ impl Service {
             cache,
         } = &mut *inner;
         let gpu = gpu.as_ref().expect("gpu initialized");
+        let interface_key = key.interface_key();
+        if !interfaces.contains_key(&interface_key) {
+            let shared = SharedInterface::load(layers, DEFAULT_VIEWPORT)?;
+            interfaces.insert(interface_key.clone(), shared);
+        }
+        let shared = interfaces.get(&interface_key).expect("interface cached");
+        let extra_assets = prepare_assets(
+            shared.windows.as_ref(),
+            &shared.registry,
+            shared.localisation.as_ref(),
+        )?;
         if cache.get_mut(&key).is_none() {
-            let interface_key = key.interface_key();
-            if !interfaces.contains_key(&interface_key) {
-                let shared = SharedInterface::load(layers, DEFAULT_VIEWPORT)?;
-                interfaces.insert(interface_key.clone(), shared);
-            }
-            let shared = interfaces.get(&interface_key).expect("interface cached");
-            let loaded = CachedWindow::load(gpu, layers, shared, window_name, extra_assets)?;
+            let loaded = CachedWindow::load(gpu, layers, shared, window_name, &extra_assets)?;
             cache.insert(key.clone(), loaded);
         }
         let cached = cache.get_mut(&key).expect("window cached");
@@ -843,7 +984,7 @@ impl Service {
             || !extra_assets.fonts.is_empty()
             || !extra_assets.textures.is_empty()
         {
-            cached.ensure_assets(gpu, layers, extra_assets)?;
+            cached.ensure_assets(gpu, layers, &extra_assets)?;
         }
         let scale = normalize_scale(scale);
         let physical_viewport = [
@@ -870,23 +1011,81 @@ impl Service {
         instance
             .gui_show(root, root)
             .map_err(|refusal| refusal.to_string())?;
-        configure(root, cached.localisation.as_ref(), &mut instance);
+        let mut main_tooltips = tooltip_overrides.clone();
+        configure_main(
+            root,
+            cached.windows.as_ref(),
+            cached.localisation.as_ref(),
+            &mut instance,
+            &mut main_tooltips,
+        );
         instance.tick(root, &assets, STEADY_TICK)?;
         let layout = instance
             .layout_with_regions(root, &assets, None, true)
             .map_err(|refusals| format_refusals(&refusals))?
             .ok_or_else(|| format!("Game window '{window_name}' did not produce a layout."))?;
-        let output = render_layout_offscreen(gpu, &mut cached.pass, &layout, &assets, scale)?;
-        let regions = regions_from_layout(
+        let plan = compose(
+            &layout,
+            root,
+            cached.windows.as_ref(),
+            &assets,
+            cached.localisation.as_ref(),
+        )?;
+        let output = if plan.sub_windows.is_empty() {
+            render_layout_offscreen(gpu, &mut cached.pass, &layout, &assets, scale)?
+        } else {
+            render_composed_layout_offscreen(
+                gpu,
+                &mut cached.pass,
+                &layout,
+                &plan.sub_windows,
+                &assets,
+                scale,
+            )?
+        };
+        let mut regions = regions_from_layout(
             &[root],
             &layout.regions,
             output.origin,
             &assets,
             cached.localisation.as_ref(),
             close_paths,
-            tooltip_overrides,
+            &main_tooltips,
         );
+        for sub in &plan.sub_windows {
+            let sub_roots: Vec<&Element> = cached
+                .windows
+                .gui_type(sub.root_window.as_bytes())
+                .into_iter()
+                .collect();
+            let sub_close: Vec<&str> = sub.close_paths.iter().map(String::as_str).collect();
+            let mut sub_regions = regions_from_layout(
+                &sub_roots,
+                &sub.regions,
+                output.origin,
+                &assets,
+                cached.localisation.as_ref(),
+                &sub_close,
+                &sub.tooltip_overrides,
+            );
+            if !sub.path_prefix.is_empty() {
+                for region in &mut sub_regions {
+                    region.path = format!("{}{}", sub.path_prefix, region.path);
+                }
+            }
+            regions.extend(sub_regions);
+        }
+        for mut region in plan.extra_regions {
+            region.rect[0] -= output.origin[0] as f32;
+            region.rect[1] -= output.origin[1] as f32;
+            if let Some(clip) = &mut region.clip {
+                clip[0] -= output.origin[0] as f32;
+                clip[1] -= output.origin[1] as f32;
+            }
+            regions.push(region);
+        }
         let mut warnings = cached.warnings.clone();
+        warnings.extend(plan.warnings);
         for diagnostic in &layout.diagnostics {
             warnings.push(format!(
                 "{window_name} ({}): {}",
@@ -944,8 +1143,12 @@ impl Service {
                 visual_revision = plan.revision;
             }
         }
-        let _ = (layers, visual_revision, resolve);
-        Err(unsupported_window_kind_refusal(&request.kind))
+        match request.kind.as_str() {
+            "equipmentDesigner" => {
+                equipment_designer::render(self, source, &layers, &resolve, &visual_revision, request)
+            }
+            other => Err(unsupported_window_kind_refusal(other)),
+        }
     }
 }
 
