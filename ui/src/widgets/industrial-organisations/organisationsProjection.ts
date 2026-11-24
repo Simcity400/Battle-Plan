@@ -10,7 +10,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { IndustrialOrganisationsReply, OrganisationNow } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 
 export interface OrganisationsProjectionOptions {
   readonly canOpen: boolean;
@@ -128,6 +128,7 @@ export const organisationsProjection: TableProjection<OrganisationsProjectionOpt
 export const organisationsDeclaration: TableWidgetDeclaration<OrganisationsProjectionOptions> = {
   family: 'table',
   kind: 'industrial-organisations',
+  optionFields: OPTIONS,
   label: 'Industrial organisations',
   subject: 'organisations',
   emptyCampaign: 'Load a campaign to see organisations.',
