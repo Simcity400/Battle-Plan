@@ -3823,7 +3823,15 @@ gains: Array<SpendGain>,
 /**
  * The span's hours the tag was held, in order; an hour of the span in none was not recorded.
  */
-coverage: Array<SpendCoverage>, icons: Array<EquipmentIcon>,
+coverage: Array<SpendCoverage>,
+/**
+ * The span's hours where instant power changes were read completely.
+ */
+gainCoverage: Array<SpendCoverage>,
+/**
+ * Recorded currency balances over the span and its baseline hour, in order.
+ */
+balances: Array<SpendBalanceRun>, icons: Array<EquipmentIcon>,
 /**
  * None where no item is an idea or an advisor.
  */
@@ -3915,17 +3923,21 @@ realizedRaw: string | null,
  * Negative daily costs: a credit, not spending.
  */
 credits: number, };
-export type SpendGain = { read: number,
+export type SpendGain = {
 /**
- * What the days gained before daily costs, fixed5; none where not recorded.
+ * The event's own hour when distinct from `read`; none for daily totals counted at day close.
+ */
+hour: number | null, read: number,
+/**
+ * What the period gained before daily costs, fixed5; none where not recorded.
  */
 gainedRaw: string | null,
 /**
- * What the cap kept off the days' gains.
+ * What the cap kept off the period's gains.
  */
 cappedRaw: string | null, days: number,
 /**
- * Days whose gain was not read.
+ * Days or instant gains whose amount was not read.
  */
 unknownDays: number,
 /**
@@ -3933,6 +3945,11 @@ unknownDays: number,
  */
 unmatched: number, };
 export type SpendCoverage = { firstHour: number, lastHour: number, covered: boolean, reason: string | null, };
+export type SpendBalanceRun = { firstHour: number, lastHour: number,
+/**
+ * Recorded currency balance, fixed5; none when the balance or Countries table was not recorded.
+ */
+valueRaw: string | null, reason: string | null, };
 export type SpendIdeaTooltips = { ideas: Array<IdeaInfo>, artwork: Array<Artwork>, modifiers: Array<ModifierFormat>, texts: Array<LocalisedText>, };
 export type StabilityReadsParams = { branchId: string, from: number, to: number, };
 export type StabilityReadsReply = { reads: Array<HourSpan>, warnings: Array<string>, };

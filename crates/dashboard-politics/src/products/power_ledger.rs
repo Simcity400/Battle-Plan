@@ -14,7 +14,7 @@ use dashboard_base::{Source, products::at_hour};
 use dashboard_query::Query;
 use replay_lanes::{lanes::{self, Keys}, points::Cell};
 use replay_columnar::manifest::Status;
-use replay_data::rows::{PowerCause, PowerItemRow, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
+use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -149,13 +149,15 @@ pub struct SpendDay {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendGain {
+    #[doc = " The event's own hour when distinct from `read`; none for daily totals counted at day close."]
+    pub hour: Option<i32>,
     pub read: i32,
-    #[doc = " What the days gained before daily costs, fixed5; none where not recorded."]
+    #[doc = " What the period gained before daily costs, fixed5; none where not recorded."]
     pub gained_raw: Option<String>,
-    #[doc = " What the cap kept off the days' gains."]
+    #[doc = " What the cap kept off the period's gains."]
     pub capped_raw: Option<String>,
     pub days: u32,
-    #[doc = " Days whose gain was not read."]
+    #[doc = " Days or instant gains whose amount was not read."]
     pub unknown_days: u32,
     #[doc = " Daily costs whose day's application was not recorded."]
     pub unmatched: u32,
@@ -168,6 +170,17 @@ pub struct SpendCoverage {
     pub first_hour: i32,
     pub last_hour: i32,
     pub covered: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct SpendBalanceRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    #[doc = " Recorded currency balance, fixed5; none when the balance or Countries table was not recorded."]
+    pub value_raw: Option<String>,
     pub reason: Option<String>,
 }
 
@@ -191,6 +204,10 @@ pub struct PowerSpendingReply {
     pub gains: Vec<SpendGain>,
     #[doc = " The span's hours the tag was held, in order; an hour of the span in none was not recorded."]
     pub coverage: Vec<SpendCoverage>,
+    #[doc = " The span's hours where instant power changes were read completely."]
+    pub gain_coverage: Vec<SpendCoverage>,
+    #[doc = " Recorded currency balances over the span and its baseline hour, in order."]
+    pub balances: Vec<SpendBalanceRun>,
     pub icons: Vec<EquipmentIcon>,
     #[doc = " None where no item is an idea or an advisor."]
     pub idea_tooltips: Option<SpendIdeaTooltips>,
@@ -220,6 +237,7 @@ impl Product for PowerSpending {
             SpendDay::decl(),
             SpendGain::decl(),
             SpendCoverage::decl(),
+            SpendBalanceRun::decl(),
             SpendIdeaTooltips::decl(),
         ]
     }
@@ -250,6 +268,8 @@ pub(super) fn recurring(row: &PowerItemRow) -> bool {
 pub(super) struct Piece {
     pub run: u32,
     pub slot: u32,
+    pub id: u32,
+    pub run_first: i32,
     pub first: i32,
     pub last: i32,
     pub baseline: Option<i32>,
@@ -277,7 +297,7 @@ pub(super) fn pieces(query: &Query<'_>, tag: &Country, first: i32, last: i32) ->
             } else {
                 Some(stretch.first)
             };
-            out.push(Piece { run: stretch.run, slot: holding.slot, first: from, last: to, baseline });
+            out.push(Piece { run: stretch.run, slot: holding.slot, id: holding.id, run_first, first: from, last: to, baseline });
         }
     }
     out.sort_by_key(|piece| piece.first);
@@ -417,6 +437,7 @@ pub(super) fn listed(change: &Change<'_>, item: u32, include_days: bool) -> (Opt
 
 pub(super) fn gained(change: &Change<'_>) -> Option<SpendGain> {
     let gain = SpendGain {
+        hour: None,
         read: change.hour,
         gained_raw: raw(delta(change, "gained")),
         capped_raw: raw(delta(change, "capped")),
@@ -626,6 +647,306 @@ fn coverage(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, out: &mut
     Ok(())
 }
 
+struct GainBucket {
+    gained: Option<i128>,
+    capped: Option<i128>,
+    days: u32,
+    unknown_days: u32,
+    unmatched: u32,
+}
+
+impl Default for GainBucket {
+    fn default() -> Self {
+        Self { gained: Some(0), capped: Some(0), days: 0, unknown_days: 0, unmatched: 0 }
+    }
+}
+
+impl GainBucket {
+    fn add_amount(target: &mut Option<i128>, value: Option<i128>) {
+        *target = match (*target, value) {
+            (Some(held), Some(add)) => held.checked_add(add),
+            _ => None,
+        };
+    }
+
+    fn push(&mut self, gained: Option<i128>, capped: Option<i128>, days: u32, unknown_days: u32, unmatched: u32) {
+        Self::add_amount(&mut self.gained, gained);
+        Self::add_amount(&mut self.capped, capped);
+        self.days = self.days.saturating_add(days);
+        self.unknown_days = self.unknown_days.saturating_add(unknown_days);
+        self.unmatched = self.unmatched.saturating_add(unmatched);
+    }
+}
+
+const CHANGE_COLS: [&str; 9] = [
+    "epoch",
+    "hour",
+    "currency",
+    "operation",
+    "balance_before_raw",
+    "balance_after_raw",
+    "requested_delta_raw",
+    "cause",
+    "site",
+];
+
+fn is_hold(currency: PowerCurrency, site: PowerSite, cause: PowerCause) -> bool {
+    currency == PowerCurrency::Command
+        && (matches!(site, PowerSite::AllocateCommandPower | PowerSite::ReleaseCommandPower | PowerSite::GroundCrew) || cause == PowerCause::AllocationRefund)
+}
+
+fn status_reason(status: Status, label: &str) -> Option<String> {
+    match status {
+        Status::Complete => None,
+        Status::Unavailable { .. } => Some(format!("{label} unavailable")),
+        Status::NotRecorded => Some(format!("{label} was not recorded")),
+        Status::Truncated { missing } => Some(format!("{label} was read in part: {missing} missing")),
+    }
+}
+
+fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i32, label: &str) -> io::Result<Vec<(i32, i32, Option<String>)>> {
+    if first > last {
+        return Ok(Vec::new());
+    }
+    let recording = query.replay.recording();
+    if recording.predates(table.index()).is_some() {
+        return Ok(vec![(first, last, Some(format!("{label} was not recorded in this format")))]);
+    }
+    let runs = dashboard_query::cost::storage(|| lanes::statuses(recording, run, table, first, last))?;
+    let mut out: Vec<(i32, i32, Option<String>)> = Vec::new();
+    let mut push = |a: i32, b: i32, reason: Option<String>| {
+        if a > b {
+            return;
+        }
+        match out.last_mut() {
+            Some((_, end, held)) if end.checked_add(1) == Some(a) && *held == reason => *end = b,
+            _ => out.push((a, b, reason)),
+        }
+    };
+    let mut cursor = first;
+    for run in runs {
+        let (a, b) = (run.first.max(first), run.last.min(last));
+        if a > b {
+            continue;
+        }
+        if cursor < a {
+            push(cursor, a - 1, Some(format!("{label} was not recorded")));
+        }
+        push(a, b, status_reason(run.status, label));
+        cursor = b.saturating_add(1);
+    }
+    if cursor <= last {
+        push(cursor, last, Some(format!("{label} was not recorded")));
+    }
+    Ok(out)
+}
+
+fn maps_to_slot(steps: &[(i32, Option<u32>)], hour: i32, slot: u32) -> bool {
+    let at = steps.partition_point(|&(step_hour, _)| step_hour <= hour);
+    at > 0 && steps[at - 1].1 == Some(slot)
+}
+
+fn instant_gains(
+    query: &Query<'_>,
+    piece: &Piece,
+    currency: SpendCurrency,
+    gain_coverage: &mut Vec<SpendCoverage>,
+    buckets: &mut BTreeMap<(i32, Option<i32>), GainBucket>,
+) -> io::Result<()> {
+    let statuses = status_runs(query, piece.run, TableId::CountryPowerChanges, piece.first, piece.last, "Power changes")?;
+    for (first_hour, last_hour, reason) in statuses {
+        push_coverage(gain_coverage, SpendCoverage { first_hour, last_hour, covered: reason.is_none(), reason });
+    }
+    let recording = query.replay.recording();
+    if recording.predates(TableId::CountryPowerChanges.index()).is_some() {
+        return Ok(());
+    }
+    let start = piece.baseline.unwrap_or(piece.first);
+    let link_col = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
+    let link_history = dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::CountryLinks, &[link_col], Keys::All, start, piece.last))?;
+    let link_at = link_history.columns.binary_search(&link_col).map_err(|_| dashboard_core::invalid("CountryLinks canonical_slot column was not read"))?;
+    let mut links_by_raw: HashMap<u32, Vec<(i32, Option<u32>)>> = HashMap::new();
+    for (key, steps) in &link_history.keys {
+        let slot_steps: Vec<(i32, Option<u32>)> = steps
+            .iter()
+            .map(|step| (step.hour, step.cells.as_ref().and_then(|cells| Value::of(cells[link_at]).number()).map(|value| value as u32)))
+            .collect();
+        let active_for_slot = slot_steps.iter().enumerate().any(|(at, &(hour, slot))| {
+            slot == Some(piece.slot) && hour <= piece.last && slot_steps.get(at + 1).map_or(piece.last, |&(next, _)| next - 1) >= piece.first
+        });
+        if active_for_slot {
+            links_by_raw.insert(*key as u32, slot_steps);
+        }
+    }
+    let mut raws: Vec<u32> = links_by_raw.keys().copied().collect();
+    raws.sort_unstable();
+    let ranges: Vec<(u128, u128)> = raws
+        .iter()
+        .map(|&raw| {
+            let low = u128::from(raw) << 64;
+            (low, low | u128::from(u64::MAX))
+        })
+        .collect();
+    if ranges.is_empty() {
+        return Ok(());
+    }
+    let columns: Vec<usize> = CHANGE_COLS.iter().map(|name| dashboard_declare::field(TableId::CountryPowerChanges, name)).collect::<io::Result<_>>()?;
+    let history = dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::CountryPowerChanges, &columns, Keys::Ranges(&ranges), start, piece.last))?;
+    let order: Vec<usize> = columns.iter().map(|column| history.columns.binary_search(column).map_err(|_| dashboard_core::invalid("A power change column was not read"))).collect::<io::Result<_>>()?;
+    let wanted_currency = match currency {
+        SpendCurrency::Political => PowerCurrency::Political,
+        SpendCurrency::Command => PowerCurrency::Command,
+    };
+    for (key, steps) in &history.keys {
+        let raw = (*key >> 64) as u32;
+        let Some(link_steps) = links_by_raw.get(&raw) else { continue };
+        let mut seen_epoch: Option<u64> = None;
+        for step in steps {
+            let Some(cells) = &step.cells else {
+                seen_epoch = None;
+                continue;
+            };
+            let epoch = Value::of(cells[order[0]]).number().map(|value| value as u64);
+            if piece.baseline == Some(step.hour) || step.hour < piece.first || step.hour <= piece.run_first {
+                seen_epoch = epoch;
+                continue;
+            }
+            if epoch.is_some() && seen_epoch == epoch {
+                continue;
+            }
+            seen_epoch = epoch;
+            if !maps_to_slot(link_steps, step.hour, piece.slot) {
+                continue;
+            }
+            let Some(row_currency) = Value::of(cells[order[2]]).number().and_then(|value| u8::try_from(value).ok()).and_then(|value| PowerCurrency::try_from(value).ok()) else {
+                continue;
+            };
+            if row_currency != wanted_currency {
+                continue;
+            }
+            let Some(operation) = Value::of(cells[order[3]]).number().and_then(|value| u8::try_from(value).ok()).and_then(|value| PowerOperation::try_from(value).ok()) else {
+                continue;
+            };
+            let Some(cause) = Value::of(cells[order[7]]).number().and_then(|value| u16::try_from(value).ok()).and_then(|value| PowerCause::try_from(value).ok()) else {
+                continue;
+            };
+            let Some(site) = Value::of(cells[order[8]]).number().and_then(|value| u16::try_from(value).ok()).and_then(|value| PowerSite::try_from(value).ok()) else {
+                continue;
+            };
+            if is_hold(row_currency, site, cause) || matches!(cause, PowerCause::DailyGain | PowerCause::CapCorrection | PowerCause::ResetSetup | PowerCause::Console) {
+                continue;
+            }
+            let event_hour = Value::of(cells[order[1]]).number().map(|value| value as i32);
+            let before = Value::of(cells[order[4]]).number();
+            let after = Value::of(cells[order[5]]).number();
+            let requested = Value::of(cells[order[6]]).number();
+            let entry = match operation {
+                PowerOperation::Grant | PowerOperation::Refund | PowerOperation::Add => match requested {
+                    Some(req) if req > 0 => {
+                        let req = i128::from(req);
+                        let capped = before.zip(after).map(|(b, a)| {
+                            let realized = i128::from(a) - i128::from(b);
+                            if realized < req { req - realized } else { 0 }
+                        });
+                        Some((Some(req), capped, u32::from(capped.is_none())))
+                    }
+                    Some(_) => None,
+                    None => Some((None, None, 1)),
+                },
+                PowerOperation::Set => match requested {
+                    Some(req) if req > 0 => {
+                        let req = i128::from(req);
+                        let capped = before.zip(after).map(|(b, a)| {
+                            let realized = i128::from(a) - i128::from(b);
+                            if realized < req { req - realized } else { 0 }
+                        });
+                        Some((Some(req), capped, u32::from(capped.is_none())))
+                    }
+                    Some(_) => None,
+                    None if before.zip(after).is_some_and(|(b, a)| a <= b) => None,
+                    None => Some((None, None, 1)),
+                },
+                PowerOperation::Subtract | PowerOperation::Reset | PowerOperation::AllocationClamp | PowerOperation::Clamp => None,
+            };
+            if let Some((gained, capped, unknown)) = entry {
+                buckets.entry((step.hour, event_hour)).or_default().push(gained, capped, 0, unknown, 0);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn push_balance_run(out: &mut Vec<SpendBalanceRun>, mut run: SpendBalanceRun) {
+    if let Some(last) = out.last() {
+        if run.first_hour <= last.last_hour {
+            run.first_hour = last.last_hour.saturating_add(1);
+        }
+    }
+    if run.first_hour > run.last_hour {
+        return;
+    }
+    match out.last_mut() {
+        Some(last) if last.last_hour.checked_add(1) == Some(run.first_hour) && last.value_raw == run.value_raw && last.reason == run.reason => {
+            last.last_hour = run.last_hour;
+        }
+        _ => out.push(run),
+    }
+}
+
+fn balances(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, out: &mut Vec<SpendBalanceRun>) -> io::Result<()> {
+    let start = piece.baseline.unwrap_or(piece.first);
+    let end = piece.last;
+    if start > end {
+        return Ok(());
+    }
+    let statuses = status_runs(query, piece.run, TableId::Countries, start, end, "Country balances")?;
+    let col_name = if currency == SpendCurrency::Political { "political_power_raw" } else { "command_power_raw" };
+    let column = dashboard_declare::field(TableId::Countries, col_name)?;
+    let keys = [u128::from(piece.id)];
+    let history = dashboard_query::cost::storage(|| lanes::history(query.replay.recording(), piece.run, TableId::Countries, &[column], Keys::These(&keys), start, end))?;
+    let at = history.columns.binary_search(&column).map_err(|_| dashboard_core::invalid("Countries power balance column was not read"))?;
+    let steps = history.keys.iter().find(|(key, _)| *key == keys[0]).map(|(_, steps)| steps.as_slice()).unwrap_or_default();
+    let mut values: Vec<(i32, i32, Option<i64>)> = Vec::new();
+    if steps.is_empty() {
+        values.push((start, end, None));
+    } else {
+        if steps[0].hour > start {
+            values.push((start, steps[0].hour - 1, None));
+        }
+        for (index, step) in steps.iter().enumerate() {
+            let until = steps.get(index + 1).map_or(end, |next| next.hour - 1).min(end);
+            if step.hour <= until {
+                let value = step.cells.as_ref().and_then(|cells| Value::of(cells[at]).number());
+                values.push((step.hour, until, value));
+            }
+        }
+    }
+    let (mut si, mut vi) = (0usize, 0usize);
+    while si < statuses.len() && vi < values.len() {
+        let (sa, sb, ref status_why) = statuses[si];
+        let (va, vb, val) = values[vi];
+        let a = sa.max(va);
+        let b = sb.min(vb);
+        if a <= b {
+            let (value_raw, reason) = match (status_why, val) {
+                (Some(why), _) => (None, Some(why.clone())),
+                (None, Some(raw)) => (Some(raw.to_string()), None),
+                (None, None) => (None, Some("Balance was not recorded".into())),
+            };
+            push_balance_run(out, SpendBalanceRun { first_hour: a, last_hour: b, value_raw, reason });
+        }
+        if sb < vb {
+            si += 1;
+        } else if vb < sb {
+            vi += 1;
+        } else {
+            si += 1;
+            vi += 1;
+        }
+    }
+    Ok(())
+}
+
 fn items_at(query: &Query<'_>, slot: u32, hour: i32) -> io::Result<BTreeMap<u32, PowerItemRow>> {
     let low = u128::from(slot) << 32;
     let reads = [at_hour::Read { table: TableId::PowerItems, keys: at_hour::Keys::Range(low, low | u128::from(u32::MAX)) }];
@@ -648,6 +969,8 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         days: Vec::new(),
         gains: Vec::new(),
         coverage: Vec::new(),
+        gain_coverage: Vec::new(),
+        balances: Vec::new(),
         icons: Vec::new(),
         idea_tooltips: None,
         warnings: Vec::new(),
@@ -656,12 +979,15 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut index: HashMap<(u32, u32, u32), u32> = HashMap::new();
     let mut credits: BTreeMap<u32, u32> = BTreeMap::new();
     let mut day_gap_hours: BTreeMap<String, u64> = BTreeMap::new();
+    let mut gain_buckets: BTreeMap<(i32, Option<i32>), GainBucket> = BTreeMap::new();
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     for piece in pieces(query, &params.country, params.from, params.to)? {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
         coverage(query, &piece, currency, &mut reply.coverage)?;
+        balances(query, &piece, currency, &mut reply.balances)?;
+        instant_gains(query, &piece, currency, &mut reply.gain_coverage, &mut gain_buckets)?;
         let items = items_at(query, piece.slot, piece.last)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let mut missing = 0_u64;
@@ -669,7 +995,9 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             if change.ordinal == PowerSpendTotalRow::GAINS {
                 if let Some(gain) = gained(&change) {
                     unmatched += u64::from(gain.unmatched);
-                    reply.gains.push(gain);
+                    let gained_val = gain.gained_raw.as_deref().and_then(|value| value.parse::<i128>().ok());
+                    let capped_val = gain.capped_raw.as_deref().and_then(|value| value.parse::<i128>().ok());
+                    gain_buckets.entry((gain.read, None)).or_default().push(gained_val, capped_val, gain.days, gain.unknown_days, gain.unmatched);
                 }
                 return;
             }
@@ -722,7 +1050,18 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     }
     reply.payments.sort_by_key(|payment| (payment.read, payment.hour, payment.item));
     reply.days.sort_by_key(|day| (day.read, day.day, day.item));
-    reply.gains.sort_by_key(|gain| gain.read);
+    reply.gains = gain_buckets
+        .into_iter()
+        .map(|((read, hour), bucket)| SpendGain {
+            hour,
+            read,
+            gained_raw: bucket.gained.map(|value| value.to_string()),
+            capped_raw: bucket.capped.map(|value| value.to_string()),
+            days: bucket.days,
+            unknown_days: bucket.unknown_days,
+            unmatched: bucket.unmatched,
+        })
+        .collect();
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let mut icons = BTreeMap::new();
     let named = naming::name(query, &rows, naming, &mut icons, cancelled)?;

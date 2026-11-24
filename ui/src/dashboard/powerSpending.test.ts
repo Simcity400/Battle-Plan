@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { engineHour } from './calendar.ts';
-import { groupAt, ledgerOf, monthFigures, powerGain, spendingGaps, spendingGroups, spendingItems, spendingTableRows, stableSpendingRows, validatePowerSpending } from './powerSpending.ts';
+import { groupAt, ledgerOf, monthFigures, powerGain, powerReconciliation, spendingGaps, spendingGroups, spendingItems, spendingTableRows, stableSpendingRows, validatePowerSpending } from './powerSpending.ts';
 import { spendingChunks, structureAt, structureHours, SPENDING_CHUNK_HOURS } from './powerSpending.ts';
 import { namesCovered, spendingCountryRequests, spendingRowsAhead } from './powerSpending.ts';
 import type { PowerSpendingReply } from '../generated/dashboard';
@@ -17,15 +17,19 @@ function chunks(): PowerSpendingReply[] {
     items: [item('7:0:1', 'decisions', false, 'Recorded decision'), item('7:1:1', 'dailyCosts', true, 'Advisor cost')], categories, icons: [], ideaTooltips: null, warnings: [],
     payments: [{ item: 0, hour: day(1, 1) + 5, read: day(1, 1) + 6, sequence: '4', ordinal: 0, knownRaw: '5000000', payments: 1, unknown: 0, uncovered: false }],
     days: [{ item: 1, day: day(1, 1), read: day(1, 2), days: 1, chargeRaw: '200000', payments: 1, unknown: 0, uncovered: 0, realizedRaw: '-200000', credits: 0 }],
-    gains: [{ read: day(1, 2), gainedRaw: '300000', cappedRaw: '0', days: 1, unknownDays: 0, unmatched: 0 }],
+    gains: [{ hour: null, read: day(1, 2), gainedRaw: '300000', cappedRaw: '0', days: 1, unknownDays: 0, unmatched: 0 }],
     coverage: [{ firstHour: day(1, 1), lastHour: day(1, 1) + 1, covered: false, reason: 'Spending events were not recorded at this read' },
-      { firstHour: day(1, 1) + 2, lastHour: day(1, 3) - 1, covered: true, reason: null }] };
+      { firstHour: day(1, 1) + 2, lastHour: day(1, 3) - 1, covered: true, reason: null }],
+    gainCoverage: [{ firstHour: day(1, 1), lastHour: day(1, 3) - 1, covered: true, reason: null }],
+    balances: [{ firstHour: day(1, 1), lastHour: day(1, 3) - 1, valueRaw: '10000000', reason: null }] };
   const second: PowerSpendingReply = { ...first, from: day(1, 3), to: day(4, 1),
     items: [item('7:1:1', 'dailyCosts', true, 'Advisor cost'), item('7:0:1', 'decisions', false, 'Recorded decision')],
     payments: [{ item: 1, hour: day(3, 2), read: day(3, 2), sequence: '9', ordinal: 0, knownRaw: '7000000', payments: 2, unknown: 1, uncovered: false }],
     days: [{ item: 0, day: day(1, 2), read: day(1, 3), days: 1, chargeRaw: '250000', payments: 1, unknown: 0, uncovered: 0, realizedRaw: null, credits: 0 }],
-    gains: [{ read: day(1, 3), gainedRaw: '300000', cappedRaw: '100000', days: 1, unknownDays: 1, unmatched: 0 }],
-    coverage: [{ firstHour: day(1, 3), lastHour: day(4, 1), covered: true, reason: null }] };
+    gains: [{ hour: null, read: day(1, 3), gainedRaw: '300000', cappedRaw: '100000', days: 1, unknownDays: 1, unmatched: 0 }],
+    coverage: [{ firstHour: day(1, 3), lastHour: day(4, 1), covered: true, reason: null }],
+    gainCoverage: [{ firstHour: day(1, 3), lastHour: day(4, 1), covered: true, reason: null }],
+    balances: [{ firstHour: day(1, 3) - 1, lastHour: day(4, 1), valueRaw: '10000000', reason: null }] };
   return [second, first].map(validatePowerSpending);
 }
 
@@ -98,4 +102,78 @@ test('the rows a block draws ahead are asked their names with it, and rows repor
   assert.deepEqual([...new Set(spendingCountryRequests([month], true, [target]).wanted.map(item => item.tag))].sort(), ['GER', 'POL']);
   assert.ok(namesCovered(ahead.wanted, spendingCountryRequests([target], false).wanted), 'the names asked with a block cover its rows once mounted');
   assert.ok(!namesCovered(ahead.wanted, spendingCountryRequests([target], true).wanted), 'a country compared at its row is another name');
+});
+
+test('powerReconciliation omits exact zero, reports signed remainder when complete, and withholds with reason on any gap or unknown operand', () => {
+  const first = day(1, 1);
+  const last = day(1, 3);
+  const base = (extra: Partial<PowerSpendingReply> = {}): PowerSpendingReply => validatePowerSpending({
+    branchId: '1', tag: 'GER', currency: 'Political', from: first, to: last, decimals: 5,
+    items: [item('7:0:1', 'decisions', false, 'Decision')], categories, icons: [], ideaTooltips: null, warnings: [],
+    payments: [{ item: 0, hour: first + 5, read: first + 6, sequence: '4', ordinal: 0, knownRaw: '3000000', payments: 1, unknown: 0, uncovered: false }],
+    days: [],
+    gains: [
+      { hour: first + 2, read: first + 3, gainedRaw: '5000000', cappedRaw: '1000000', days: 0, unknownDays: 0, unmatched: 0 },
+    ],
+    coverage: [
+      { firstHour: first, lastHour: first, covered: false, reason: 'Initial backlog' },
+      { firstHour: first + 1, lastHour: last, covered: true, reason: null },
+    ],
+    gainCoverage: [{ firstHour: first, lastHour: last, covered: true, reason: null }],
+    balances: [
+      { firstHour: first, lastHour: first + 2, valueRaw: '10000000', reason: null },
+      { firstHour: first + 3, lastHour: first + 5, valueRaw: '14000000', reason: null },
+      { firstHour: first + 6, lastHour: last, valueRaw: '11000000', reason: null },
+    ],
+    ...extra,
+  });
+
+  const exactLedger = [ledgerOf('GER', 'Political', [base()])];
+  assert.deepEqual(powerReconciliation(exactLedger, { from: null, hour: last }, first), { kind: 'zero' });
+
+  const plusLedger = [ledgerOf('GER', 'Political', [base({
+    balances: [
+      { firstHour: first, lastHour: first + 2, valueRaw: '10000000', reason: null },
+      { firstHour: first + 3, lastHour: last, valueRaw: '12900000', reason: null },
+    ],
+  })])];
+  assert.deepEqual(powerReconciliation(plusLedger, { from: null, hour: last }, first), { kind: 'value', other: 1900000n });
+
+  const minusLedger = [ledgerOf('GER', 'Political', [base({
+    payments: [], gains: [],
+    balances: [
+      { firstHour: first, lastHour: first + 4, valueRaw: '12000000', reason: null },
+      { firstHour: first + 5, lastHour: last, valueRaw: '10000000', reason: null },
+    ],
+  })])];
+  assert.deepEqual(powerReconciliation(minusLedger, { from: null, hour: last }, first), { kind: 'value', other: -2000000n });
+
+  const nativeHourLedger = [ledgerOf('GER', 'Political', [base()])];
+  assert.equal(powerGain(nativeHourLedger, { from: first + 3, hour: last }), null, 'instant gain with native hour before range start is excluded by native hour');
+  assert.deepEqual(powerGain(nativeHourLedger, { from: first + 2, hour: first + 2 }), null, 'instant gain is not exposed before its read hour');
+  assert.deepEqual(powerGain(nativeHourLedger, { from: first + 2, hour: first + 3 }), { gained: 5000000n, lost: 1000000n, complete: true });
+
+  const missingGainCov = [ledgerOf('GER', 'Political', [base({
+    gainCoverage: [
+      { firstHour: first, lastHour: first + 4, covered: true, reason: null },
+      { firstHour: first + 5, lastHour: first + 5, covered: false, reason: 'Power changes unavailable' },
+      { firstHour: first + 6, lastHour: last, covered: true, reason: null },
+    ],
+  })])];
+  assert.deepEqual(powerReconciliation(missingGainCov, { from: null, hour: last }, first), { kind: 'unrecorded', reason: 'Power changes unavailable' });
+
+  const missingBalance = [ledgerOf('GER', 'Political', [base({
+    balances: [
+      { firstHour: first, lastHour: first + 4, valueRaw: '10000000', reason: null },
+      { firstHour: first + 5, lastHour: first + 5, valueRaw: null, reason: 'Country balances unavailable' },
+      { firstHour: first + 6, lastHour: last, valueRaw: '11000000', reason: null },
+    ],
+  })])];
+  assert.deepEqual(powerReconciliation(missingBalance, { from: null, hour: last }, first), { kind: 'unrecorded', reason: 'Country balances unavailable' });
+
+  const unknownCap = [ledgerOf('GER', 'Political', [base({
+    gains: [{ hour: first + 2, read: first + 3, gainedRaw: '5000000', cappedRaw: null, days: 0, unknownDays: 0, unmatched: 0 }],
+  })])];
+  const capRes = powerReconciliation(unknownCap, { from: null, hour: last }, first);
+  assert.equal(capRes.kind, 'unrecorded');
 });

@@ -24,11 +24,11 @@ import { useIdeaTooltips } from './useIdeaTooltips';
 import { resolveWindow } from './model';
 import { contentSet, resolveOptions, setToken, toggleContentSet } from './options';
 import { usePlaybackMotion } from './playback';
-import { categoryChoices, groupSummary, mergedIdeaTooltips, monthFigures, monthItems, monthLabel, namesCovered, powerGains, spendingCostNotes, spendingCountryRequests,
+import { OTHER_CHANGES_HINT, categoryChoices, groupSummary, mergedIdeaTooltips, monthFigures, monthItems, monthLabel, namesCovered, powerGains, powerReconciler, spendingCostNotes, spendingCountryRequests,
   spendingGapNote, spendingGaps, spendingGroups, spendingRowsAhead, spendingTableRows, stableSpendingRows } from './powerSpending.ts';
 import type { PowerCurrency, SpendingTableRow, SpendingWindow } from './powerSpending';
 import { NO_SPENDING_CATEGORIES, normalizePowerSpendingOptions, POWER_SPENDING_OPTIONS, spendingSort } from './powerSpendingOptions';
-import { formatPower, formatSpent, powerDecimals } from './powerDecimals';
+import { formatPower, formatPowerChange, formatSpent, powerDecimals } from './powerDecimals';
 import { structureAt, structureParts, usePowerSpending } from './usePowerSpending.ts';
 import { useShownHour } from './widgetPerf.ts';
 import './powerSpending.css';
@@ -93,6 +93,7 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
   const byKey = useMemo(() => new Map(rows.map(row => [row.key, row])), [rows]);
   const groups = useMemo(() => ledgers ? spendingGroups(ledgers, from, selection) : null, [ledgers, from, selection]);
   const gains = useMemo(() => ledgers ? powerGains(ledgers, from, selection) : null, [ledgers, from, selection]);
+  const reconciler = useMemo(() => ledgers && groups && track ? powerReconciler(ledgers, groups, from, track.branch.firstHour, selection) : null, [ledgers, groups, from, track, selection]);
   const shown = useShownHour();
   const paintedHour = useCallback(() => {
     const at = following ? hourAt(runtime.clock.getHour()) : hour;
@@ -113,14 +114,19 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
   }), [runtime.clock, following, hourAt, hour, byKey, from, ledgers, shown]);
   const texts = useMemo(() => liveTexts(runtime.clock, paintedHour, at => {
     const values = new Map<string, string>();
-    if (!ledgers || !groups || !gains || Number.isNaN(at)) return values;
+    if (!ledgers || !groups || !gains || !reconciler || Number.isNaN(at)) return values;
     const summary = groupSummary(groups, at);
     values.set('spent', `${formatPower(summary.spent, digits)} ${unit}`);
     values.set('notes', [spendingGapNote(spendingGaps(ledgers, { from, hour: at }, selection)), ...spendingCostNotes(summary)].filter(Boolean).join(' '));
     const gain = gains(at);
     values.set('gained', gain ? `${formatPower(gain.gained, digits)} ${unit}` : NOT_RECORDED);
-    values.set('lost', gain && gain.lost > 0n ? `Lost at the cap ${formatPower(gain.lost, digits)} ${unit}` : '');
-    values.set('gainNote', gain && !gain.complete ? 'Gain wasn’t recorded on some days.' : '');
+    values.set('lost', gain && gain.lost > 0n ? `${formatPower(gain.lost, digits)} ${unit}` : '');
+    const other = reconciler(at);
+    values.set('other', other.kind === 'value' ? `${formatPowerChange(other.other, digits)} ${unit}` : other.kind === 'unrecorded' ? NOT_RECORDED : '');
+    values.set('gainNote', [
+      gain && !gain.complete ? 'Gain wasn’t recorded on some days.' : '',
+      other.kind === 'unrecorded' ? `Other changes not recorded: ${/[.!?]$/.test(other.reason) ? other.reason : `${other.reason}.`}` : '',
+    ].filter(Boolean).join(' '));
     if (chosen.length) {
       let shownSpent = 0n;
       for (const row of rows) if (!row.payment || row.payment.read <= at) shownSpent += (row.month === null ? row.amount : monthFigures(row, at, from).amount) ?? 0n;
@@ -131,7 +137,7 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
       values.set(row.key, days === 1 ? '1 day' : `${days} days`);
     }
     return values;
-  }), [runtime.clock, paintedHour, ledgers, groups, gains, from, selection, digits, unit, chosen.length, rows]);
+  }), [runtime.clock, paintedHour, ledgers, groups, gains, reconciler, from, selection, digits, unit, chosen.length, rows]);
   const tokens = useChartTokens();
   const colours = useMemo(() => {
     let index = 0;
@@ -257,7 +263,8 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
       <span>Spent <b><LiveText live={texts} at="spent" /></b></span>
       {chosen.length > 0 && <span>Shown <b><LiveText live={texts} at="shown" /></b></span>}
       <span>Gained <b><LiveText live={texts} at="gained" /></b></span>
-      <span><LiveText live={texts} at="lost" /></span>
+      <span>Lost at cap <b><LiveText live={texts} at="lost" /></b></span>
+      <span title={OTHER_CHANGES_HINT}>Other changes <b><LiveText live={texts} at="other" /></b></span>
     </p>}
     <p className="politics-spending-note"><LiveText live={texts} at="notes" /> {options.totals !== false && <LiveText live={texts} at="gainNote" />}</p>
     {rows.length ? <div className="politics-spending-table">

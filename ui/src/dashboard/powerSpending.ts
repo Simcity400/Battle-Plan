@@ -1,4 +1,4 @@
-import type { HourSpan, PowerSpendingReply, SpendCategory, SpendCoverage, SpendIdeaTooltips, SpendItem } from '../generated/dashboard';
+import type { HourSpan, PowerSpendingReply, SpendBalanceRun, SpendCategory, SpendCoverage, SpendIdeaTooltips, SpendItem } from '../generated/dashboard';
 import { validateIdeaTooltipData } from './ideaHistoryReply.ts';
 import type { BoundTrack, WidgetSpec } from './model';
 import { resolveWindow } from './model.ts';
@@ -43,10 +43,14 @@ export function validatePowerSpending(data: unknown): PowerSpendingReply {
     && list(reply.days, entry => object(entry) && index(entry.item) && (entry.day === null || integer(entry.day)) && integer(entry.read)
       && count(entry.days) && optionalRaw(entry.chargeRaw) && count(entry.payments) && count(entry.unknown) && count(entry.uncovered)
       && optionalRaw(entry.realizedRaw) && count(entry.credits))
-    && list(reply.gains, entry => object(entry) && integer(entry.read) && optionalRaw(entry.gainedRaw) && optionalRaw(entry.cappedRaw)
+    && list(reply.gains, entry => object(entry) && (entry.hour === null || integer(entry.hour)) && integer(entry.read) && optionalRaw(entry.gainedRaw) && optionalRaw(entry.cappedRaw)
       && count(entry.days) && count(entry.unknownDays) && count(entry.unmatched))
     && list(reply.coverage, entry => object(entry) && integer(entry.firstHour) && integer(entry.lastHour) && entry.firstHour <= entry.lastHour
       && typeof entry.covered === 'boolean' && text(entry.reason))
+    && list(reply.gainCoverage, entry => object(entry) && integer(entry.firstHour) && integer(entry.lastHour) && entry.firstHour <= entry.lastHour
+      && typeof entry.covered === 'boolean' && text(entry.reason))
+    && list(reply.balances, entry => object(entry) && integer(entry.firstHour) && integer(entry.lastHour) && entry.firstHour <= entry.lastHour
+      && optionalRaw(entry.valueRaw) && text(entry.reason))
     && list(reply.icons, icon => object(icon) && typeof icon.key === 'string' && typeof icon.image === 'string');
   if (!ok) throw new Error('The power spending reply is malformed.');
   if (reply.ideaTooltips !== null) validateIdeaTooltipData(reply.ideaTooltips);
@@ -65,8 +69,9 @@ export interface DayEntry {
   hour: number; read: number; days: number; charge: bigint | null; payments: number; unknown: number; uncovered: number;
   realized: bigint | null; credits: number;
 }
-export interface GainEntry { tag: string; read: number; gained: bigint | null; capped: bigint | null; days: number; unknownDays: number; unmatched: number }
+export interface GainEntry { tag: string; hour: number; read: number; gained: bigint | null; capped: bigint | null; days: number; unknownDays: number; unmatched: number }
 export interface CoverageRun extends SpendCoverage { tag: string }
+export interface BalanceRun { tag: string; firstHour: number; lastHour: number; value: bigint | null; reason: string | null }
 
 export interface PowerLedger {
   tag: string;
@@ -75,6 +80,8 @@ export interface PowerLedger {
   days: readonly DayEntry[];
   gains: readonly GainEntry[];
   coverage: readonly CoverageRun[];
+  gainCoverage: readonly CoverageRun[];
+  balances: readonly BalanceRun[];
   icons: ReadonlyMap<string, string>;
   categories: ReadonlyMap<string, SpendCategory>;
   items: ReadonlyMap<string, SpendItem>;
@@ -90,7 +97,7 @@ export function ledgerOf(tag: string, currency: PowerCurrency, chunks: readonly 
   const items = new Map<string, SpendItem>();
   const categories = new Map<string, SpendCategory>();
   const icons = new Map<string, string>();
-  const payments: PaymentEntry[] = [], days: DayEntry[] = [], gains: GainEntry[] = [], coverage: CoverageRun[] = [];
+  const payments: PaymentEntry[] = [], days: DayEntry[] = [], gains: GainEntry[] = [], coverage: CoverageRun[] = [], gainCoverage: CoverageRun[] = [], balances: BalanceRun[] = [];
   const warnings = new Set<string>();
   for (const chunk of [...chunks].sort((a, b) => a.from - b.from)) {
     for (const category of chunk.categories) categories.set(category.id, category);
@@ -114,15 +121,35 @@ export function ledgerOf(tag: string, currency: PowerCurrency, chunks: readonly 
         charge: big(entry.chargeRaw), payments: entry.payments, unknown: entry.unknown, uncovered: entry.uncovered,
         realized: big(entry.realizedRaw), credits: entry.credits });
     }
-    for (const entry of chunk.gains) gains.push({ tag, read: entry.read, gained: big(entry.gainedRaw), capped: big(entry.cappedRaw),
+    for (const entry of chunk.gains) gains.push({ tag, hour: entry.hour ?? entry.read, read: entry.read, gained: big(entry.gainedRaw), capped: big(entry.cappedRaw),
       days: entry.days, unknownDays: entry.unknownDays, unmatched: entry.unmatched });
     for (const run of chunk.coverage) coverage.push({ ...run, tag });
+    for (const run of chunk.gainCoverage) gainCoverage.push({ ...run, tag });
+    for (const run of chunk.balances) balances.push(balanceEntry(tag, run));
     for (const warning of chunk.warnings) warnings.add(warning);
   }
   const ideaTooltips = mergeTips(chunks.map(chunk => chunk.ideaTooltips)) ?? null;
   const byRead = <T extends { read: number }>(rows: T[]) => rows.sort((a, b) => a.read - b.read);
   return { tag, currency, payments: byRead(payments), days: byRead(days), gains: byRead(gains),
-    coverage: joinCoverage(coverage), icons, categories, items, ideaTooltips, warnings: [...warnings] };
+    coverage: joinCoverage(coverage), gainCoverage: joinCoverage(gainCoverage), balances: joinBalances(balances),
+    icons, categories, items, ideaTooltips, warnings: [...warnings] };
+}
+
+const balanceEntry = (tag: string, run: SpendBalanceRun): BalanceRun => ({
+  tag, firstHour: run.firstHour, lastHour: run.lastHour, value: big(run.valueRaw), reason: run.reason,
+});
+
+function joinBalances(runs: BalanceRun[]): BalanceRun[] {
+  const out: BalanceRun[] = [];
+  for (const run of [...runs].sort((a, b) => a.firstHour - b.firstHour)) {
+    let firstHour = run.firstHour;
+    const last = out.at(-1);
+    if (last && firstHour <= last.lastHour) firstHour = last.lastHour + 1;
+    if (firstHour > run.lastHour) continue;
+    if (last && last.lastHour + 1 === firstHour && last.value === run.value && last.reason === run.reason) last.lastHour = run.lastHour;
+    else out.push({ ...run, firstHour });
+  }
+  return out;
 }
 
 function joinCoverage(runs: CoverageRun[]): CoverageRun[] {
@@ -220,13 +247,15 @@ export function spendingGapNote(gaps: readonly SpendGap[]): string | null {
   return `Spending wasn’t recorded for ${duration(hours)} (${shown}); anything spent then isn’t counted.`;
 }
 
+export const OTHER_CHANGES_HINT = 'Balance change the recording does not attribute to a gain or a spend';
+
 export interface PowerGain { gained: bigint; lost: bigint; complete: boolean }
 export function powerGain(ledgers: readonly PowerLedger[], window: SpendingWindow, selection?: Pick<SpendingSelection, 'matches'>): PowerGain | null {
   let gained = 0n, lost = 0n, complete = true, any = false;
   for (const ledger of ledgers) for (const entry of ledger.gains.slice(0, readThrough(ledger.gains, window.hour))) {
-    if ((window.from !== null && entry.read < window.from) || (selection && !selection.matches(ledger.tag, entry.read))) continue;
+    if ((window.from !== null && entry.hour < window.from) || (selection && !selection.matches(ledger.tag, entry.hour))) continue;
     any = true;
-    if (entry.gained === null || entry.unknownDays) complete = false;
+    if (entry.gained === null || entry.capped === null || entry.unknownDays || entry.unmatched) complete = false;
     gained += entry.gained ?? 0n;
     lost += entry.capped ?? 0n;
   }
@@ -234,19 +263,191 @@ export function powerGain(ledgers: readonly PowerLedger[], window: SpendingWindo
 }
 
 export function powerGains(ledgers: readonly PowerLedger[], from: number | null, selection?: Pick<SpendingSelection, 'matches'>): (hour: number) => PowerGain | null {
-  const entries = ledgers.flatMap(ledger => ledger.gains.filter(entry => (from === null || entry.read >= from) && (!selection || selection.matches(ledger.tag, entry.read))))
+  const entries = ledgers.flatMap(ledger => ledger.gains.filter(entry => (from === null || entry.hour >= from) && (!selection || selection.matches(ledger.tag, entry.hour))))
     .sort((a, b) => a.read - b.read);
   const reads: number[] = [], gained: bigint[] = [], lost: bigint[] = [], incomplete: number[] = [];
   let sumGained = 0n, sumLost = 0n, unknown = 0;
   for (const entry of entries) {
     sumGained += entry.gained ?? 0n; sumLost += entry.capped ?? 0n;
-    if (entry.gained === null || entry.unknownDays) unknown++;
+    if (entry.gained === null || entry.capped === null || entry.unknownDays || entry.unmatched) unknown++;
     reads.push(entry.read); gained.push(sumGained); lost.push(sumLost); incomplete.push(unknown);
   }
   return hour => {
     const at = countThrough(reads, hour) - 1;
     return at < 0 ? null : { gained: gained[at], lost: lost[at], complete: incomplete[at] === 0 };
   };
+}
+
+export type PowerReconciliation =
+  | { kind: 'zero' }
+  | { kind: 'value'; other: bigint }
+  | { kind: 'unrecorded'; reason: string };
+
+interface IndexedCoverage {
+  runs: readonly CoverageRun[];
+  badPrefix: number[];
+  gapPrefix: number[];
+}
+
+function indexCoverage(runs: readonly CoverageRun[]): IndexedCoverage {
+  const badPrefix: number[] = [], gapPrefix: number[] = [];
+  let bad = 0, gaps = 0;
+  for (let i = 0; i < runs.length; i++) {
+    if (!runs[i].covered) bad++;
+    if (i > 0 && runs[i - 1].lastHour + 1 !== runs[i].firstHour) gaps++;
+    badPrefix.push(bad);
+    gapPrefix.push(gaps);
+  }
+  return { runs, badPrefix, gapPrefix };
+}
+
+function findRunAt<T extends { firstHour: number; lastHour: number }>(runs: readonly T[], hour: number): number {
+  let low = 0, high = runs.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (hour < runs[mid].firstHour) high = mid - 1;
+    else if (hour > runs[mid].lastHour) low = mid + 1;
+    else return mid;
+  }
+  return -1;
+}
+
+function checkCoverage(indexed: IndexedCoverage, first: number, last: number, fallback: string): string | null {
+  if (first > last) return null;
+  const a = findRunAt(indexed.runs, first), b = findRunAt(indexed.runs, last);
+  if (a < 0 || b < 0) return fallback;
+  const badCount = indexed.badPrefix[b] - (a > 0 ? indexed.badPrefix[a - 1] : 0);
+  if (badCount > 0) {
+    for (let i = a; i <= b; i++) if (!indexed.runs[i].covered) return indexed.runs[i].reason ?? fallback;
+  }
+  if (indexed.gapPrefix[b] - indexed.gapPrefix[a] > 0) return fallback;
+  return null;
+}
+
+interface IndexedBalances {
+  runs: readonly BalanceRun[];
+  missingPrefix: number[];
+  gapPrefix: number[];
+}
+
+function indexBalances(runs: readonly BalanceRun[]): IndexedBalances {
+  const missingPrefix: number[] = [], gapPrefix: number[] = [];
+  let missing = 0, gaps = 0;
+  for (let i = 0; i < runs.length; i++) {
+    if (runs[i].value === null) missing++;
+    if (i > 0 && runs[i - 1].lastHour + 1 !== runs[i].firstHour) gaps++;
+    missingPrefix.push(missing);
+    gapPrefix.push(gaps);
+  }
+  return { runs, missingPrefix, gapPrefix };
+}
+
+function balanceChange(indexed: IndexedBalances, first: number, last: number): { delta: bigint } | { reason: string } {
+  const a = findRunAt(indexed.runs, first), b = findRunAt(indexed.runs, last);
+  if (a < 0 || b < 0) return { reason: 'Balance was not recorded.' };
+  const missingCount = indexed.missingPrefix[b] - (a > 0 ? indexed.missingPrefix[a - 1] : 0);
+  if (missingCount > 0) {
+    for (let i = a; i <= b; i++) if (indexed.runs[i].value === null) return { reason: indexed.runs[i].reason ?? 'Balance was not recorded.' };
+  }
+  if (indexed.gapPrefix[b] - indexed.gapPrefix[a] > 0) return { reason: 'Balance was not recorded for part of this period.' };
+  return { delta: indexed.runs[b].value! - indexed.runs[a].value! };
+}
+
+function spansCover(spans: readonly HourSpan[], first: number, last: number): boolean {
+  if (first > last) return true;
+  let cursor = first;
+  for (const span of spans) {
+    if (span.lastHour < cursor) continue;
+    if (span.firstHour > cursor) return false;
+    cursor = span.lastHour + 1;
+    if (cursor > last) return true;
+  }
+  return cursor > last;
+}
+
+export function powerReconciler(
+  ledgers: readonly PowerLedger[],
+  groups: ReadonlyMap<string, SpendingGroup>,
+  from: number | null,
+  branchFirstHour: number,
+  selection?: SpendingSelection,
+): (hour: number) => PowerReconciliation {
+  const openingHour = from === null || from <= branchFirstHour ? branchFirstHour : from - 1;
+  const interiorStart = openingHour + 1;
+  const indexed = ledgers.map(ledger => ({
+    tag: ledger.tag,
+    coverage: indexCoverage(ledger.coverage),
+    gainCoverage: indexCoverage(ledger.gainCoverage),
+    balances: indexBalances(ledger.balances),
+  }));
+  const gainEntries = ledgers.flatMap(ledger => ledger.gains.filter(entry => (from === null || entry.hour >= from) && (!selection || selection.matches(ledger.tag, entry.hour))))
+    .sort((a, b) => a.read - b.read);
+  const reads: number[] = [], gained: bigint[] = [], lost: bigint[] = [], gainMiss: number[] = [], capMiss: number[] = [], unmatched: number[] = [];
+  let sumGained = 0n, sumLost = 0n, gMiss = 0, cMiss = 0, unm = 0;
+  for (const entry of gainEntries) {
+    sumGained += entry.gained ?? 0n;
+    sumLost += entry.capped ?? 0n;
+    if (entry.gained === null || entry.unknownDays > 0) gMiss++;
+    if (entry.capped === null) cMiss++;
+    if (entry.unmatched > 0) unm++;
+    reads.push(entry.read);
+    gained.push(sumGained);
+    lost.push(sumLost);
+    gainMiss.push(gMiss);
+    capMiss.push(cMiss);
+    unmatched.push(unm);
+  }
+  return hour => {
+    if (!indexed.length) return { kind: 'unrecorded', reason: 'No country selected.' };
+    if (hour < openingHour) return { kind: 'unrecorded', reason: 'Outside recording span.' };
+    if (selection?.membership) {
+      for (const span of selection.unobserved) {
+        if (span.firstHour <= hour && span.lastHour >= openingHour) {
+          return { kind: 'unrecorded', reason: 'Group membership was not recorded for part of this period.' };
+        }
+      }
+      const checkStart = interiorStart <= hour ? interiorStart : openingHour;
+      for (const entry of indexed) {
+        if (!spansCover(selection.membership.get(entry.tag) ?? [], checkStart, hour)) {
+          return { kind: 'unrecorded', reason: 'Group membership changed during this period.' };
+        }
+      }
+    }
+    let balanceDelta = 0n;
+    for (const entry of indexed) {
+      const bal = balanceChange(entry.balances, openingHour, hour);
+      if ('reason' in bal) return { kind: 'unrecorded', reason: bal.reason };
+      balanceDelta += bal.delta;
+      const covErr = checkCoverage(entry.coverage, interiorStart, hour, 'Spending coverage was not recorded.');
+      if (covErr) return { kind: 'unrecorded', reason: covErr };
+      const gainCovErr = checkCoverage(entry.gainCoverage, interiorStart, hour, 'Power changes were not recorded.');
+      if (gainCovErr) return { kind: 'unrecorded', reason: gainCovErr };
+    }
+    const at = countThrough(reads, hour) - 1;
+    let totalGained = 0n, totalLost = 0n;
+    if (at >= 0) {
+      if (gainMiss[at] > 0) return { kind: 'unrecorded', reason: 'Gain was not recorded for part of this period.' };
+      if (capMiss[at] > 0) return { kind: 'unrecorded', reason: 'Amount lost at cap was not recorded for part of this period.' };
+      if (unmatched[at] > 0) return { kind: 'unrecorded', reason: 'Daily costs could not be matched to daily gain.' };
+      totalGained = gained[at];
+      totalLost = lost[at];
+    }
+    const summary = groupSummary(groups, hour);
+    if (summary.unknownCosts > 0) return { kind: 'unrecorded', reason: 'Some spending costs were not recorded.' };
+    if (summary.uncovered) return { kind: 'unrecorded', reason: 'Some payments were read without full coverage.' };
+    const other = balanceDelta - (totalGained - totalLost - summary.spent);
+    return other === 0n ? { kind: 'zero' } : { kind: 'value', other };
+  };
+}
+
+export function powerReconciliation(
+  ledgers: readonly PowerLedger[],
+  window: SpendingWindow,
+  branchFirstHour: number,
+  selection?: SpendingSelection,
+): PowerReconciliation {
+  const groups = spendingGroups(ledgers, window.from, selection);
+  return powerReconciler(ledgers, groups, window.from, branchFirstHour, selection)(window.hour);
 }
 
 export function groupCostNotes(groups: ReadonlyMap<string, SpendingGroup>, hour: number): string[] {

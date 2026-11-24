@@ -660,3 +660,153 @@ fn daily_credit_carries_its_native_date_separately_from_debits() {
     );
     assert!(reply.warnings.iter().any(|warning| warning.contains("recorded credit is not included in spending")));
 }
+
+#[test]
+fn instant_gains_and_balances_reconcile_across_aliases_epochs_caps_and_unknown_operands() {
+    const GER2: u32 = 9002;
+    let grant = |country: u32, sequence: u64, epoch: u64, hour: i32, currency: PowerCurrency, operation: PowerOperation, before: i64, after: i64, requested: Option<i64>, cause: PowerCause| {
+        CountryPowerChangeRow {
+            country,
+            sequence,
+            epoch,
+            hour,
+            currency,
+            operation,
+            balance_before_raw: before,
+            balance_after_raw: after,
+            requested_delta_raw: requested,
+            cause,
+            site: if currency == PowerCurrency::Political { PowerSite::AddPoliticalPower } else { PowerSite::AddCommandPower },
+            ..Default::default()
+        }
+    };
+    let make_frame = |hour: i32| {
+        let mut frame = source(1, hour, Some(1_000));
+        let pp = match hour {
+            ..=103 => 100 * PP,
+            104..=105 => 220 * PP,
+            106..=107 => 250 * PP,
+            108..=109 => 200 * PP,
+            _ => 260 * PP,
+        };
+        let cp = match hour {
+            ..=104 => 120 * PP,
+            _ => 100 * PP,
+        };
+        set(
+            &mut frame,
+            TableId::Countries,
+            TableRows::Countries(vec![CountryRow {
+                id: GER,
+                canonical_slot: SLOT,
+                tag: b"GER".to_vec(),
+                political_power_raw: Some(pp),
+                command_power_raw: cp,
+                border_land_doctrine_level: Recorded::Value(None),
+                ..Default::default()
+            }]),
+        );
+        let links = if hour >= 106 {
+            vec![CountryLinkRow { id: GER, canonical_slot: SLOT }, CountryLinkRow { id: GER2, canonical_slot: SLOT }]
+        } else {
+            vec![CountryLinkRow { id: GER, canonical_slot: SLOT }]
+        };
+        set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(links));
+        let changes = match hour {
+            104 => vec![grant(GER, 1, 1, 103, PowerCurrency::Political, PowerOperation::Add, 100 * PP, 220 * PP, Some(120 * PP), PowerCause::Focus)],
+            105 => vec![
+                grant(GER, 1, 1, 103, PowerCurrency::Political, PowerOperation::Add, 100 * PP, 220 * PP, Some(120 * PP), PowerCause::Focus),
+                grant(GER, 2, 1, 105, PowerCurrency::Command, PowerOperation::Grant, 120 * PP, 100 * PP, Some(10 * PP), PowerCause::ScriptEffect),
+            ],
+            106 => vec![grant(GER2, 3, 1, 106, PowerCurrency::Political, PowerOperation::Refund, 220 * PP, 250 * PP, Some(30 * PP), PowerCause::FocusRefund)],
+            108 => vec![grant(GER, 4, 1, 108, PowerCurrency::Political, PowerOperation::Set, 250 * PP, 200 * PP, Some(-50 * PP), PowerCause::ScriptEffect)],
+            110 => vec![grant(GER, 1, 2, 110, PowerCurrency::Political, PowerOperation::Set, 200 * PP, 260 * PP, Some(60 * PP), PowerCause::ScriptEffect)],
+            112 => vec![grant(GER, 5, 2, 112, PowerCurrency::Political, PowerOperation::Add, 260 * PP, 260 * PP, None, PowerCause::ScriptEffect)],
+            _ => Vec::new(),
+        };
+        set(&mut frame, TableId::CountryPowerChanges, TableRows::CountryPowerChanges(changes));
+        set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(Vec::new()));
+        set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(Vec::new()));
+        let capture = PoliticsCaptureCoverageRow { country: GER, epoch: 1, since_hour: FIRST, through_hour: hour, streams: PoliticsCaptureCoverageRow::ALL_STREAMS, ..Default::default() };
+        set(&mut frame, TableId::PoliticsCaptureCoverage, TableRows::PoliticsCaptureCoverage(vec![capture]));
+        frame
+    };
+    let frames = (FIRST..=114).map(make_frame).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-instant".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let pp_reply = asked(&source, FIRST, 114);
+    let gains: Vec<_> = pp_reply.gains.iter().map(|gain| (gain.read, gain.hour, gain.gained_raw.as_deref(), gain.capped_raw.as_deref(), gain.unknown_days)).collect();
+    assert_eq!(
+        gains,
+        [
+            (104, Some(103), Some("12000000"), Some("0"), 0),
+            (106, Some(106), Some("3000000"), Some("0"), 0),
+            (110, Some(110), Some("6000000"), Some("0"), 0),
+            (112, Some(112), None, None, 1),
+        ],
+        "instant gains deduplicate same epoch, attribute aliases, skip downward Set, process new epoch on reused sequence, and withhold unknown requested delta"
+    );
+    assert_eq!(pp_reply.gain_coverage, [SpendCoverage { first_hour: FIRST, last_hour: 114, covered: true, reason: None }]);
+    assert_eq!(pp_reply.balances.first().and_then(|run| run.value_raw.as_deref()), Some("10000000"));
+    assert_eq!(pp_reply.balances.last().and_then(|run| run.value_raw.as_deref()), Some("26000000"));
+
+    let range_reply = asked(&source, 105, 111);
+    assert_eq!(
+        range_reply.balances.first().map(|run| (run.first_hour, run.value_raw.as_deref())),
+        Some((104, Some("22000000"))),
+        "range query includes baseline hour balance at from - 1"
+    );
+
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
+    let cp_reply = spending(&source, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: FIRST, to: 114 }, &naming, &AtomicBool::new(false)).unwrap();
+    let cp_gains: Vec<_> = cp_reply.gains.iter().map(|gain| (gain.read, gain.hour, gain.gained_raw.as_deref(), gain.capped_raw.as_deref())).collect();
+    assert_eq!(
+        cp_gains,
+        [(105, Some(105), Some("1000000"), Some("3000000"))],
+        "over-cap CP grant +10 moving 120 -> 100 computes full signed cap loss 30, not 10"
+    );
+}
+
+#[test]
+fn unavailable_power_changes_or_countries_withholds_gain_coverage_and_balance_runs() {
+    let make_frame = |hour: i32| {
+        let mut frame = source_frame(hour);
+        if hour == 105 {
+            frame.tables[TableId::CountryPowerChanges.index()] = TableView::Unavailable { reason: "changes gap".into() }.into();
+        }
+        if hour == 107 {
+            frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "countries gap".into() }.into();
+        } else {
+            set(
+                &mut frame,
+                TableId::Countries,
+                TableRows::Countries(vec![CountryRow {
+                    id: GER,
+                    canonical_slot: SLOT,
+                    tag: b"GER".to_vec(),
+                    political_power_raw: Some(50 * PP),
+                    border_land_doctrine_level: Recorded::Value(None),
+                    ..Default::default()
+                }]),
+            );
+        }
+        set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(Vec::new()));
+        set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(Vec::new()));
+        frame
+    };
+    let frames = (FIRST..=110).map(make_frame).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-gaps".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = asked(&source, FIRST, 110);
+    assert!(
+        reply.gain_coverage.iter().any(|run| run.first_hour == 105 && run.last_hour == 105 && !run.covered && run.reason.is_some()),
+        "unavailable CountryPowerChanges marks hour 105 uncovered in gain_coverage: {:?}",
+        reply.gain_coverage
+    );
+    assert!(
+        reply.balances.iter().any(|run| run.first_hour == 107 && run.last_hour == 107 && run.value_raw.is_none() && run.reason.is_some()),
+        "unavailable Countries marks hour 107 missing in balances: {:?}",
+        reply.balances
+    );
+}
