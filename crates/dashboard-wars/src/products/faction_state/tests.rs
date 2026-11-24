@@ -1,7 +1,7 @@
-use super::{country_goals, details, history, rewards};
+use super::{country_goals, details, history};
 use dashboard_follow::live::{CellValue, Cells};
 use replay_data::rows::{
-    CountryCounterInputRow, CountryLinkRow, CountryRow, FactionGoalEntryRow, FactionGoalStatusRow, FactionManpowerRow, FactionMemberRow, LexicalTokenRow, ReservedCountryNamingRow,
+    CountryLinkRow, FactionGoalEntryRow, FactionGoalStatusRow, FactionManpowerRow, FactionMemberRow, LexicalTokenRow, ReservedCountryNamingRow,
     TableId, TableRows,
 };
 use replay_frame::frame::{DecodedFrame, Metrics, TableView, not_selected};
@@ -123,62 +123,6 @@ fn a_lane_joins_a_held_selection_and_starts_a_segment_at_a_break_or_a_gap() {
         lane.push(first, last, value, starts);
     }
     assert_eq!(lane.runs, [(10, 29, 5, true), (30, 39, 6, false), (40, 49, 6, true), (60, 69, 6, true)]);
-}
-
-#[test]
-fn a_goals_completion_reward_is_described_for_the_factions_leader_and_said_missing_by_name() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
-    let (cat, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
-        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}"),
-        (
-            "common/factions/goals/test.txt",
-            "mod_goal={ category=short_term complete_effect={ add_political_power=2 } }\nmod_quiet={ category=short_term }\n\
-             mod_oil={ category=short_term complete_effect={ every_faction_member={ limit={ has_resources_in_country={ resource=oil amount=1 } } add_political_power=1 } } }\n",
-        ),
-        ("localisation/test_l_english.yml", "\u{feff}l_english:\n POLITICS_ADD_POLITICAL_POWER:0 \"PP$VAL|0$\"\n"),
-    ]);
-    let cat = dashboard_base::catalogue::tests::with_effect_describer(cat, dashboard_effects::effect_describer);
-    cat.scripted_content().unwrap().set_synthetic_environment(Default::default());
-    let mut frame = frame();
-    for table in rewards::tables() {
-        set(&mut frame, table, TableRows::empty(table));
-    }
-    set(
-        &mut frame,
-        TableId::FactionMembers,
-        TableRows::FactionMembers(vec![
-            FactionMemberRow { country: 7, faction: FACTION, ordinal: 0 },
-            FactionMemberRow { country: 8, faction: FACTION, ordinal: 1 },
-            FactionMemberRow { country: 9, faction: OTHER, ordinal: 1 },
-        ]),
-    );
-    set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: 7, canonical_slot: 3 }, CountryLinkRow { id: 8, canonical_slot: 4 }]));
-    let country = |id, canonical_slot, tag: &[u8]| CountryRow { id, canonical_slot, tag: tag.to_vec(), ..Default::default() };
-    set(&mut frame, TableId::Countries, TableRows::Countries(vec![country(7, 3, b"AAA"), country(8, 4, b"BBB")]));
-    let owns_a_state = |country| CountryCounterInputRow { country, owned_state_count: 1, ..Default::default() };
-    set(&mut frame, TableId::CountryCounterInputs, TableRows::CountryCounterInputs(vec![owns_a_state(7), owns_a_state(8)]));
-
-    let reply = rewards::rewards(&frame, FACTION, "mod_goal", &cat).unwrap();
-    assert_eq!(reply.reason, None, "{:?}", reply.warnings);
-    assert!(reply.text.as_deref().is_some_and(|text| text.contains("PP2")), "{:?} {:?}", reply.text, reply.warnings);
-
-    let quiet = rewards::rewards(&frame, FACTION, "mod_quiet", &cat).unwrap();
-    assert_eq!((quiet.text, quiet.reason), (None, None), "no completion effect: nothing to describe, nothing missing");
-
-    let leaderless = rewards::rewards(&frame, OTHER, "mod_goal", &cat).unwrap();
-    assert_eq!(leaderless.text, None);
-    assert_eq!(leaderless.reason.as_deref(), Some("The faction has no leader at this hour"));
-
-    let oil = rewards::rewards(&frame, FACTION, "mod_oil", &cat).unwrap();
-    assert!(
-        oil.text.is_some() || oil.reason.as_deref().is_some_and(|reason| reason.contains("has_resources_in_country")),
-        "a reward with nothing describable says why, never nothing: {:?} {:?}",
-        oil.reason,
-        oil.warnings
-    );
-
-    let gone = rewards::rewards(&frame, FACTION, "gone_goal", &cat).unwrap_err();
-    assert_eq!(dashboard_core::refusal(&gone), Some("Faction goal \"gone_goal\" is absent from recorded content"));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateFocusArtworkReply, validateFocusReply } from './focusData.ts';
+import { validateFocusReply } from './focusData.ts';
 import type { FocusReply } from '../../generated/dashboard';
 
 const first = { completed: [{ ordinal: 0, token: 'one', completedByHour: null }], current: 'two', continuous: null, paused: false };
@@ -38,26 +38,7 @@ test('focus histories reject overlap, future completion bounds and invalid artwo
   }
 });
 
-test('dated focus artwork authenticates the read, retains empty text and refuses omitted tokens', () => {
-  const params = { branchId: '1', hour: 10, country: 'synthetic', database: 'national' as const, tokens: ['focus'] };
-  const art = { token: 'focus', name: '', description: '', baseDurationDays: 10, icon: null as string | null };
-  const dated = { branchId: '1', hour: 10, tag: 'synthetic', database: 'national', items: [{ artwork: art, reason: 'focus-window mode is not recorded' as string | null }], warnings: ['Named content warning'] };
-  assert.equal(validateFocusArtworkReply(dated, params).items[0].reason, 'focus-window mode is not recorded');
-  assert.equal(dated.items[0].artwork.name, '');
-  for (const bad of [{ ...dated, hour: 11 }, { ...dated, tag: 'other' }, { ...dated, branchId: '2' }, { ...dated, database: 'continuous' }, { ...dated, items: [] },
-    { ...dated, items: [...dated.items, ...dated.items] }, { ...dated, warnings: [null] }]) {
-    assert.throws(() => validateFocusArtworkReply(bad, params));
-  }
-  const unreadable = structuredClone(dated); unreadable.items[0].artwork.icon = 'https://invalid.example/icon';
-  unreadable.items[0].reason = null;
-  assert.equal(validateFocusArtworkReply(unreadable, params).items[0].artwork.icon, null);
-  assert.equal(unreadable.items[0].reason, 'The returned icon could not be displayed.');
-});
-
-test('duration metadata and dated requests retain 5000 modded tokens without a chosen cap', () => {
+test('duration metadata retains 5000 modded tokens without a chosen cap', () => {
   const artwork = Array.from({ length: 5000 }, (_, index) => ({ token: `synthetic_focus_${index}`, name: null, description: null, baseDurationDays: 10, icon: null }));
   assert.equal(validateFocusReply({ ...reply, artwork }).artwork.length, artwork.length);
-  const params = { branchId: '1', hour: 10, country: 'synthetic', database: 'continuous' as const, tokens: artwork.map(art => art.token) };
-  assert.equal(validateFocusArtworkReply({ branchId: params.branchId, hour: params.hour, tag: params.country, database: params.database,
-    items: artwork.map(art => ({ artwork: art, reason: null })), warnings: [] }, params).items.length, 5000);
 });

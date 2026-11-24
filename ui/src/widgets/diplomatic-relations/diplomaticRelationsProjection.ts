@@ -5,7 +5,7 @@ import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDecl
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { labelsAtReadings, resolveEntityFromReadView, signedRampColour } from '../../families/heat/scale.ts';
 import type { DiplomaticRelationsReply, OpinionOrder } from '../../generated/dashboard';
-import { mix } from '../../shell/appearance/color.ts';
+import { surfaceMix } from '../../shell/appearance/color.ts';
 import { OPTIONS } from './definition.ts';
 
 export const RELATIONS_TOP_DEFAULT = 12;
@@ -33,7 +33,7 @@ export function projectDiplomaticRelations(readView: BoundedReadView, options: D
   if (owners.length < 2) {
     return emptyModel(hour, { empty: 'Fewer than two countries are shown at this date.', warnings: reply.warnings });
   }
-  const grey = mix(options.surface, '#f5f5f5', 0.08);
+  const grey = surfaceMix(options.surface, 0.08);
   const negative = readableColour(CHART_MEASURE_COLOURS.opinionNegative, options.surface);
   const positive = readableColour(CHART_MEASURE_COLOURS.opinionPositive, options.surface);
   const resolvedOwners = owners.map(owner => resolveEntityFromReadView(readView, 'country', owner.tag, hour, owner.name ?? owner.tag, owner.nameMissing ?? null, options.surface));

@@ -56,11 +56,10 @@ test('history lanes sort by gained, ended or name, and can hide ended spirits', 
   const blitz = list.find(spirit => spirit.token === 'blitz')!;
   assert.equal(endedBy(blitz, 650), 600);
   assert.equal(endedBy(blitz, 750), null);
-  const gained = spiritsShown(list, 650, 'gained', true);
+  const gained = spiritsShown(list, 650, true);
   assert.deepEqual(gained.map(spirit => [spirit.token, describeRun(spirit.spans, 650, describe)]), [['heer', 'since 0'], ['mefo', 'ended 400'], ['blitz', 'ended 600']]);
-  assert.deepEqual(spiritsShown(list, 650, 'ended', true).map(spirit => spirit.token), ['mefo', 'blitz', 'heer']);
-  assert.deepEqual(spiritsShown(list, 650, 'name', false).map(spirit => spirit.token), ['heer']);
-  assert.deepEqual(spiritsShown(list, 50, 'gained', true).map(spirit => spirit.token), ['heer']);
+  assert.deepEqual(spiritsShown(list, 650, false).map(spirit => spirit.token), ['heer']);
+  assert.deepEqual(spiritsShown(list, 50, true).map(spirit => spirit.token), ['heer']);
 });
 
 test('a spirit whose next hours were not recorded is unknown, not ended', () => {
@@ -69,7 +68,7 @@ test('a spirit whose next hours were not recorded is unknown, not ended', () => 
   const gap = [{ firstHour: 400, lastHour: 450 }];
   assert.deepEqual(spiritState(mefo, 420, gap), { kind: 'unknown', lastSeen: 399 });
   assert.equal(endedBy(mefo, 420, gap), null);
-  assert.deepEqual(spiritsShown(list, 420, 'gained', false, gap).map(spirit => [spirit.token, describeRun(spirit.spans, 420, describe, gap)]), [['heer', 'since 0'], ['mefo', 'last 399']]);
+  assert.deepEqual(spiritsShown(list, 420, false, gap).map(spirit => [spirit.token, describeRun(spirit.spans, 420, describe, gap)]), [['heer', 'since 0'], ['mefo', 'last 399']]);
 });
 
 test('the grid orders spirits by their latest acquisition', () => {
@@ -86,8 +85,8 @@ test('a spirit already held when recording began, or after an unrecorded stretch
   assert.equal(startUnseen(0, 0), true);
   assert.equal(startUnseen(700, 0), false);
   assert.equal(startUnseen(700, 0, [{ firstHour: 650, lastHour: 699 }]), true);
-  assert.deepEqual(spiritsShown(list, 750, 'gained', false, []).map(spirit => [spirit.token, describeRun(spirit.spans, 750, describe, [], 0)]), [['heer', 'before 0'], ['blitz', 'since 700']]);
-  assert.deepEqual(spiritsShown(list, 750, 'gained', false, [{ firstHour: 650, lastHour: 699 }]).map(spirit => describeRun(spirit.spans, 750, describe, [{ firstHour: 650, lastHour: 699 }], 0)), ['before 0', 'before 700']);
+  assert.deepEqual(spiritsShown(list, 750, false, []).map(spirit => [spirit.token, describeRun(spirit.spans, 750, describe, [], 0)]), [['heer', 'before 0'], ['blitz', 'since 700']]);
+  assert.deepEqual(spiritsShown(list, 750, false, [{ firstHour: 650, lastHour: 699 }]).map(spirit => describeRun(spirit.spans, 750, describe, [{ firstHour: 650, lastHour: 699 }], 0)), ['before 0', 'before 700']);
 });
 
 test('a spirit gone at the first recorded hour after a gap ended by then, at an unknown time', () => {
@@ -97,6 +96,6 @@ test('a spirit gone at the first recorded hour after a gap ended by then, at an 
   assert.deepEqual(spiritState(mefo, 440, gap), { kind: 'unknown', lastSeen: 399 });
   assert.deepEqual(spiritState(mefo, 460, gap), { kind: 'ended', at: 451, lastSeen: 399 });
   assert.equal(endedBy(mefo, 460, gap), 451);
-  assert.deepEqual(spiritsShown(list, 460, 'gained', true, gap).map(spirit => [spirit.token, describeRun(spirit.spans, 460, describe, gap)]), [['heer', 'since 0'], ['mefo', 'ended by 451']]);
-  assert.deepEqual(spiritsShown(list, 460, 'gained', false, gap).map(spirit => spirit.token), ['heer']);
+  assert.deepEqual(spiritsShown(list, 460, true, gap).map(spirit => [spirit.token, describeRun(spirit.spans, 460, describe, gap)]), [['heer', 'since 0'], ['mefo', 'ended by 451']]);
+  assert.deepEqual(spiritsShown(list, 460, false, gap).map(spirit => spirit.token), ['heer']);
 });

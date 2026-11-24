@@ -21,7 +21,7 @@ import type {
   RegionalWeatherReply,
   WeatherReadout,
 } from '../../generated/dashboard';
-import { mix } from '../../shell/appearance/color.ts';
+import { surfaceMix } from '../../shell/appearance/color.ts';
 import { OPTIONS, type WeatherShow } from './definition.ts';
 
 export const WEATHER_WINDOW_HOURS = 7 * 24;
@@ -62,7 +62,7 @@ function palette(reply: RegionalWeatherReply, surface: string): Palette {
   reply.flags.forEach((item, ordinal) => flag.set(item.id, colour(surface, ordinal)));
   return {
     flag,
-    track: mix(surface, '#f5f5f5', 0.04),
+    track: surfaceMix(surface, 0.04),
     cold: readableColour(CHART_MEASURE_COLOURS.temperatureCold, surface),
     warm: readableColour(CHART_MEASURE_COLOURS.temperatureWarm, surface),
     ramp: readableColour(CHART_MEASURE_COLOURS.weatherModifier, surface),

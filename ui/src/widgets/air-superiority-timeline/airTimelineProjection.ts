@@ -20,11 +20,10 @@ import { regionIds } from '../../families/regionTokens.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
-import { mix } from '../../shell/appearance/color.ts';
+import { mix, surfaceMix } from '../../shell/appearance/color.ts';
 import { OPTIONS } from './definition.ts';
 
 export const AIR_TOP_DEFAULT = 7;
-const LANE_FILL = '#f5f5f5';
 
 export interface AirTimelineProjectionOptions {
   readonly viewpointCountry: string | null;
@@ -249,10 +248,10 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
   const noViewer = readableColour(CHART_MEASURE_COLOURS.bopRight, surface);
   const viewpointCountry = options.viewpointCountry;
   const look: Look = {
-    track: mix(surface, LANE_FILL, 0.04),
+    track: surfaceMix(surface, 0.04),
     contested: reservedGrey(surface, reply.sides.flatMap(side => (side.color ? [readableColour(authoredHex(side.color), surface)] : []))),
     enemy: readableColour(CHART_MEASURE_COLOURS.short, surface),
-    unknownSide: mix(surface, LANE_FILL, 0.45),
+    unknownSide: surfaceMix(surface, 0.45),
     viewer: viewpointCountry ? at => countryColourAt(readView, viewpointCountry, at, surface, noViewer) : null,
     noViewer,
   };

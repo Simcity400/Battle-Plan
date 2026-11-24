@@ -1,6 +1,6 @@
 import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
-import { mix, toHex } from '../../shell/appearance/color.ts';
+import { tintColour } from '../../shell/appearance/color.ts';
 import type { AuditRow } from '../../draw/notifications';
 import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
@@ -93,18 +93,6 @@ export function partColour(part: BreakdownPart, theme: FamilyTheme): string {
   if (part.color) return part.color;
   if (part.neutral) return theme.grey;
   return colour(theme.surface, part.ordinal);
-}
-
-export function tintColour(hex: string, amount: number): string {
-  return mix(hex, '#ffffff', amount);
-}
-
-export function shadeColour(hex: string, amount: number): string {
-  return mix(hex, '#000000', amount);
-}
-
-export function rgbHex(r: number, g: number, b: number): string {
-  return toHex({ r, g, b });
 }
 
 export function breakdownLevel(model: BreakdownModel): ResolvedBreakdownLevel {

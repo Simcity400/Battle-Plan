@@ -1,5 +1,5 @@
 import { mix } from '../../shell/appearance/color.ts';
-import { authoredHex, colour, readableColour } from '../../charts/palette.ts';
+import { readableColour } from '../../charts/palette.ts';
 import type { ArtHandle, BoundedReadView, EntityKind } from '../contract.ts';
 import { flagArtHandle } from '../art/provider.ts';
 
@@ -65,19 +65,6 @@ export function splitStripes(
     used += share;
   }
   return out;
-}
-
-export function resolveOrdinalColour(surface: string, ordinal: number): string {
-  return colour(surface, ordinal);
-}
-
-export function resolveRecordedColour(
-  rgb: readonly [number, number, number] | null | undefined,
-  surface: string,
-  fallbackOrdinal: number,
-): string {
-  const hex = rgb ? authoredHex(rgb) : null;
-  return hex ? readableColour(hex, surface) : colour(surface, fallbackOrdinal);
 }
 
 export interface ResolvedEntityPresentation {

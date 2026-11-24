@@ -140,7 +140,7 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
       warnings: reply.warnings,
     };
   },
-});
+}, 'matrix');
 
 export const whoReadsWhomDeclaration: HeatMatrixWidgetDeclaration<DecryptionFilterOptions> = {
   family: 'heat-matrix',

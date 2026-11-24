@@ -58,6 +58,24 @@ export function mix(from: string, to: string, amount: number): string {
   return toHex(mixRgb(parseColor(from) ?? { r: 0, g: 0, b: 0 }, parseColor(to) ?? { r: 0, g: 0, b: 0 }, amount));
 }
 
+export function rgbaColor(color: string, alpha: number, fallback: string): string {
+  const rgb = parseColor(color);
+  if (!rgb) return fallback;
+  return `rgba(${Math.round(rgb.r)}, ${Math.round(rgb.g)}, ${Math.round(rgb.b)}, ${alpha})`;
+}
+
+export function tintColour(color: string, amount: number): string {
+  return mix(color, '#ffffff', amount);
+}
+
+export function shadeColour(color: string, amount: number): string {
+  return mix(color, '#000000', amount);
+}
+
+export function surfaceMix(surface: string, amount: number): string {
+  return mix(surface, '#f5f5f5', amount);
+}
+
 const toLinear = (channel: number) => { const value = channel / 255; return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; };
 const fromLinear = (value: number) => 255 * (value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055);
 

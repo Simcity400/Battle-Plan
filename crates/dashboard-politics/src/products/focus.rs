@@ -1,13 +1,11 @@
 
-use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::{CountryParams, LoadContext, Product, check_reply_budget, at_hour::{At, AtHour, Keys as AtKeys, Read as AtRead}};
+use dashboard_base::products::Country;
 use crate::products::focus_dto::{FocusEntry, FocusHistory, FocusOrder, FocusProgress, FocusSegment};
 use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use dashboard_query::{Query, cost, identity::Holder};
 use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{FocusRow, TableId, tables};
-use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -17,7 +15,6 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-pub const PAGE_ROWS: u64 = 128;
 const TOKEN_BYTES: usize = 512;
 
 pub(crate) const NOT_HELD: &str = "No country held this tag";
@@ -517,40 +514,6 @@ pub(crate) fn fold(source: &Source, branch: u64, tag: &Country, cancelled: &Atom
     Ok(fold)
 }
 
-fn branch_of(id: &str) -> io::Result<u64> {
-    id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FocusPages {
-    #[doc = " The order's place among the country's orders."]
-    #[serde(with = "decimal")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
-    pub first: u64,
-    #[serde(with = "decimal")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
-    pub count: u64,
-    #[serde(with = "decimal")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
-    pub rows: u64,
-}
-
-mod decimal {
-    use serde::{Deserialize, Deserializer, Serializer};
-    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&value.to_string())
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
-        String::deserialize(deserializer)?.parse().map_err(serde::de::Error::custom)
-    }
-}
-
-fn pages(first: usize, rows: usize) -> FocusPages {
-    FocusPages { first: first as u64, count: (rows as u64).div_ceil(PAGE_ROWS), rows: rows as u64 }
-}
-
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -558,261 +521,6 @@ pub struct FocusHourParams {
     pub branch_id: String,
     pub country: Country,
     pub hour: i32,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FocusHour {
-    pub slot: u32,
-    pub country_id: u32,
-    pub hour: i32,
-    pub last_hour: i32,
-    pub order_first_hour: Option<i32>,
-    pub current: Option<String>,
-    pub continuous: Option<String>,
-    pub paused: bool,
-    pub completed: FocusPages,
-    pub at: i32,
-    pub progress_raw: String,
-    pub daily_gain_raw: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FocusHourReply {
-    pub focus: Option<FocusHour>,
-    pub missing: Option<FocusMissing>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FocusOrderPageParams {
-    pub branch_id: String,
-    pub country: Country,
-    pub hour: i32,
-    #[doc = " The pages `focus-hour` gave for the hour."]
-    pub pages: FocusPages,
-    #[serde(with = "decimal")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
-    pub page: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FocusOrderPage {
-    pub entries: Option<Vec<FocusEntry>>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FocusCompletions {
-    pub completions: Vec<FocusEntry>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(FocusHourReply, FocusOrderPage, FocusCompletions, FocusUnavailable);
-
-pub(crate) fn hour_reply(fold: &Fold, hour: i32) -> FocusHourReply {
-    let focus = fold.segment_at(hour).and_then(|(index, segment)| {
-        let (raw, gain) = fold.progress(hour)?;
-        Some(FocusHour {
-            slot: segment.slot,
-            country_id: segment.id,
-            hour: segment.first,
-            last_hour: segment.last,
-            order_first_hour: Some(segment.first),
-            current: segment.order.current.clone(),
-            continuous: segment.order.continuous.clone(),
-            paused: segment.order.paused,
-            completed: pages(index, segment.order.completed.len()),
-            at: hour,
-            progress_raw: raw.to_string(),
-            daily_gain_raw: gain.map(|gain| gain.to_string()),
-        })
-    });
-    let missing = if focus.is_some() {
-        None
-    } else {
-        let at = fold.missing.partition_point(|missing| missing.last_hour < hour);
-        fold.missing.get(at).filter(|missing| missing.first_hour <= hour).cloned()
-    };
-    FocusHourReply { focus, missing, warnings: Vec::new() }
-}
-
-pub(crate) fn order_page(fold: &Fold, hour: i32, asked: &FocusPages, page: u64) -> io::Result<FocusOrderPage> {
-    let (index, segment) = fold.segment_at(hour).ok_or_else(|| dashboard_core::refused("The country's focus was not recorded at this hour"))?;
-    let completed = &segment.order.completed;
-    if pages(index, completed.len()) != *asked {
-        return Err(dashboard_core::invalid("The focus order at this hour changed. Refresh this view."));
-    }
-    let first = page.saturating_mul(PAGE_ROWS);
-    let entries = (page < asked.count).then(|| completed.iter().skip(first as usize).take(PAGE_ROWS as usize).cloned().collect());
-    Ok(FocusOrderPage { entries, warnings: Vec::new() })
-}
-
-pub struct FocusHourProduct;
-
-impl Product for FocusHourProduct {
-    const KEY: &'static str = "focus-hour";
-    const CONTENT_DEPENDENT: bool = false;
-    type Params = FocusHourParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
-    type Reply = FocusHourReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![FocusHourParams::decl(), FocusHourReply::decl(), FocusHour::decl(), FocusPages::decl(), FocusMissing::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_country(&params.country)
-    }
-
-    fn load(source: &Source, params: &Self::Params, _: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let fold = fold(source, branch_of(&params.branch_id)?, &params.country, cancelled)?;
-        Ok(hour_reply(&fold, params.hour))
-    }
-}
-
-pub struct FocusOrderPageProduct;
-
-impl Product for FocusOrderPageProduct {
-    const KEY: &'static str = "focus-order-page";
-    const CONTENT_DEPENDENT: bool = false;
-    type Params = FocusOrderPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read, pages, page];
-    type Reply = FocusOrderPage;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![FocusOrderPageParams::decl(), FocusOrderPage::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_country(&params.country)
-    }
-
-    fn load(source: &Source, params: &Self::Params, _: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let fold = fold(source, branch_of(&params.branch_id)?, &params.country, cancelled)?;
-        order_page(&fold, params.hour, &params.pages, params.page)
-    }
-}
-
-pub struct FocusCompletionsProduct;
-
-impl Product for FocusCompletionsProduct {
-    const KEY: &'static str = "focus-completions";
-    const CONTENT_DEPENDENT: bool = false;
-    type Params = CountryParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
-    type Reply = FocusCompletions;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![FocusCompletions::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.validate()
-    }
-
-    fn load(source: &Source, params: &Self::Params, _: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let fold = fold(source, params.branch(), &params.country, cancelled)?;
-        let reply = FocusCompletions { completions: fold.completions.clone(), warnings: Vec::new() };
-        check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
-
-const FOCUS_TABLES: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::Focus, TableId::CompletedFocuses];
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FocusUnavailableParams {
-    pub branch_id: String,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FocusTableRefusal {
-    pub table: String,
-    pub reason: Option<String>,
-    pub missing_rows: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct FocusUnavailable {
-    pub hour: i32,
-    pub reasons: Vec<FocusTableRefusal>,
-    pub warnings: Vec<String>,
-}
-
-pub(crate) fn refusals(frame: &DecodedFrame) -> Vec<FocusTableRefusal> {
-    FOCUS_TABLES
-        .iter()
-        .filter_map(|table| {
-            let name = format!("{table:?}");
-            match &*frame.tables[table.index()] {
-                TableView::Complete(_) => None,
-                TableView::Truncated { missing, .. } => Some(FocusTableRefusal { table: name, reason: None, missing_rows: Some(missing.to_string()) }),
-                TableView::Unavailable { reason } => Some(FocusTableRefusal { table: name, reason: Some(reason.clone()), missing_rows: None }),
-                TableView::NotRecorded { .. } => Some(FocusTableRefusal { table: name, reason: Some("Not recorded in this capture mode".into()), missing_rows: None }),
-            }
-        })
-        .collect()
-}
-
-pub struct FocusUnavailableAt;
-
-impl AtHour for FocusUnavailableAt {
-    const KEY: &'static str = "focus-unavailable";
-    const TITLE: &'static str = "Focus";
-    const CONTENT_DEPENDENT: bool = false;
-    type Params = FocusUnavailableParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
-    type Reply = FocusUnavailable;
-    type Context = ();
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![FocusUnavailableParams::decl(), FocusUnavailable::decl(), FocusTableRefusal::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
-    }
-
-    fn tables(_: &Self::Params) -> Vec<TableId> {
-        FOCUS_TABLES.to_vec()
-    }
-
-    fn reads(_: &Self::Params, _: Option<dashboard_base::products::at_hour::Owner>, step: usize, _: &DecodedFrame) -> Vec<AtRead> {
-        if step > 0 {
-            return Vec::new();
-        }
-        FOCUS_TABLES.iter().map(|&table| AtRead { table, keys: AtKeys::These(Vec::new()) }).collect()
-    }
-
-    fn context(_: &Source, _: &LoadContext) -> io::Result<Self::Context> {
-        Ok(())
-    }
-
-    fn reply(frame: &DecodedFrame, _: &Self::Params, _: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        Ok(FocusUnavailable { hour: frame.hour, reasons: refusals(frame), warnings: Vec::new() })
-    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 import type { WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
-import type { OptionField, WidgetOptions } from '../dashboard/options';
+import { scopedOptionKey, type OptionField, type WidgetOptions } from '../dashboard/options.ts';
 import type { LaneView } from '../draw/lane.ts';
 import type { AuditRow } from '../draw/notifications';
 import type { FamilyProjection } from './contract.ts';
@@ -22,7 +22,7 @@ export function viewOwnedFields(fields: readonly OptionField[], view: string | u
   if (active === DEFAULT_VIEW) return fields;
   return fields.map(field => (field.kind === 'choice' && field.choices.some(choice => choice.value === active)
     ? field
-    : { ...field, storeAs: `${field.key}@${active}` }));
+    : { ...field, storeAs: scopedOptionKey(field.key, active) }));
 }
 
 export type FamilyAuditProjection<TModel = unknown, TOptions = unknown> = (
