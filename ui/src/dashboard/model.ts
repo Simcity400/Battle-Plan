@@ -15,7 +15,7 @@ export type WidgetKind = string;
 export interface HourWindow { firstHour: number; lastHour: number }
 export interface OffsetWindow { firstOffset: number; lastOffset: number }
 export type CountryGroup = { type: 'humans' } | { type: 'faction'; id: string } | { type: 'war'; tag: string } | { type: 'top'; count: number };
-export type GroupMembership = 'hour' | 'end' | 'ever';
+export type GroupMembership = 'hour' | 'ever';
 export type CountrySelection = { kind: 'selected' } | { kind: 'all' } | { kind: 'tags'; tags: string[] }
   | { kind: 'group'; group: CountryGroup; membership: GroupMembership; aggregate: boolean }
   | { kind: 'factions'; count: number; membership: GroupMembership };

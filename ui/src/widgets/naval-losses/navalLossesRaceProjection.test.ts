@@ -75,7 +75,7 @@ test('naval-losses race splits ships and convoys from naval-losses-at and surfac
   assert.equal(missingModel.empty, 'Tables unread');
 });
 
-test('a group is sent to naval-losses-at and the chosen views key each row by its recorded slot', async () => {
+test('every race and mix view sends a group whole, and naval losses keys each row by its recorded slot', async () => {
   const ctx = (view: string) => ({
     track: { source: { id: 's', revision: 1 }, axisOffset: 0 },
     branch: { id: '1' },
@@ -83,7 +83,7 @@ test('a group is sent to naval-losses-at and the chosen views key each row by it
     countries: { top: null, all: false, every: ['GER', 'ITA'], tags: ['GER', 'ITA'], membership: { GER: [[0, 1000]], ITA: [[600, 1000]] }, holders: null, unobserved: [] },
     widget: { countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false } },
   }) as unknown as Parameters<typeof navalLossesRaceDeclaration.sources>[0];
-  for (const [kind, view] of [['naval-losses', 'race'], ['naval-losses', 'mix'], ['army-size', 'race'], ['army-size', 'mix'], ['navy-size', 'mix'], ['air-force-size', 'mix']] as const) {
+  for (const [kind, view] of [['naval-losses', 'race'], ['naval-losses', 'mix'], ['army-size', 'race'], ['army-size', 'mix'], ['navy-size', 'mix'], ['air-force-size', 'mix'], ['nuclear-arsenal', 'race'], ['nuclear-arsenal', 'mix'], ['occupation-reserve-manpower', 'main'], ['game-score', 'race']] as const) {
     const spec = await BARS_VIEWS.find(entry => entry.kind === kind && entry.view === view)!.loadSpec();
     const declaration = spec.declaration as unknown as typeof navalLossesRaceDeclaration;
     const plan = declaration.sources(ctx(view), { following: true, staticSpan: null });

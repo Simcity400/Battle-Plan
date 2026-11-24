@@ -125,7 +125,7 @@ pub(super) fn index(reply: &PowerSpendingReply, unread: Vec<(i32, i32, String)>)
 pub(super) fn build(source: &Source, query: &Query<'_>, span: &PowerSpendingParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<SpendMarkers> {
     let naming = naming::context(source, context)?;
     let whole = spending(source, query, span, &naming, cancelled)?;
-    let unread = unrecorded(query, &span.country, &whole.coverage, whole.from, whole.to);
+    let unread = unrecorded(&query.timeline, &query.holders, &span.country, &whole.coverage, whole.from, whole.to);
     Ok(index(&whole, unread))
 }
 

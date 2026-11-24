@@ -36,9 +36,8 @@ import { useFamilyPlan } from './useFamilyPlan.ts';
 import { Popover, usePopover } from '../../components/Popover';
 import RegionChooser from '../regions/RegionChooser.tsx';
 import { addRegion, AUTOMATIC_REGIONS, isAutomatic, moveRegion, readRegionChoice, removeRegion, writeRegionChoice, type RegionChoice } from '../regions/regionChoice.ts';
-import { keyboardMove, type RegionCommand, type RegionInChart } from '../regions/regionRows.ts';
+import { chooserFor, keyboardMove, type ChooserOpening, type RegionCommand } from '../regions/regionRows.ts';
 import { useRegionList } from '../regions/useRegionList.ts';
-import type { ActiveRegions } from '../../generated/dashboard';
 
 const SERIES_PLOT_INSET_PX = 60;
 
@@ -233,16 +232,21 @@ export default function DeclaredFamilyWidget<
   const regionField = optionFields?.find((field): field is Extract<OptionField, { kind: 'regions' }> => field.kind === 'regions');
   const regionChoice = regionField ? readRegionChoice(plan.options[regionField.key]) : AUTOMATIC_REGIONS;
   const chooser = usePopover('start');
-  const [inChart, setInChart] = useState<{ readonly rows: readonly RegionInChart[]; readonly active: ActiveRegions | null }>(NOTHING_IN_CHART);
-  const regionList = useRegionList(runtime.client, plan.track, !!regionField && chooser.open);
+  const ownerKey = view === DEFAULT_VIEW ? plan.owner : JSON.stringify([plan.owner, view]);
+  const [opening, setOpening] = useState<ChooserOpening | null>(null);
+  const opened = chooserFor(opening, ownerKey);
+  useEffect(() => {
+    if (opening && !opened) chooser.close();
+  }, [opening, opened, chooser.close]);
+  const regionList = useRegionList(runtime.client, plan.track, !!regionField && chooser.open && !!opened, opened?.hour ?? null);
   const storeRegions = useCallback((next: RegionChoice) => {
     if (regionField && setOption) setOption(regionField.key, writeRegionChoice(next));
   }, [regionField, setOption]);
   const onRegions = useCallback((command: RegionCommand): string | null => {
     switch (command.op) {
       case 'open':
-        setInChart({ rows: command.rows.map(row => ({ id: row.id, label: row.label, active: row.active })), active: command.active ?? null });
-        chooser.openAt({ left: command.x, right: command.x, top: command.y, bottom: command.y });
+        setOpening({ owner: ownerKey, hour: plan.staticBundle?.hour ?? plan.moment, rows: command.rows.map(row => ({ id: row.id, label: row.label, active: row.active })), active: command.active ?? null });
+        chooser.openAt({ left: command.x, right: command.x, top: command.y, bottom: command.y, ...(command.aside !== undefined ? { aside: command.aside } : {}) });
         return null;
       case 'remove':
         storeRegions(removeRegion(regionChoice, command.row.id));
@@ -257,7 +261,7 @@ export default function DeclaredFamilyWidget<
         storeRegions(moveRegion(regionChoice, command.row.id, command.to));
         return `${command.row.label} moved to position ${command.to + 1} of your regions.`;
     }
-  }, [chooser, regionChoice, storeRegions]);
+  }, [chooser, regionChoice, storeRegions, ownerKey, plan.staticBundle?.hour, plan.moment]);
   const regionsEditable = !!regionField && !!setOption;
   const emptyAction = regionsEditable
     ? (openRegions: (anchor: { readonly x: number; readonly y: number }) => void) => <>
@@ -267,7 +271,7 @@ export default function DeclaredFamilyWidget<
     : undefined;
   const regionChooser = regionsEditable
     ? <Popover menu={chooser} className="region-chooser-popover" aria-label="Add region">
-      {chooser.open && <RegionChooser list={regionList} inChart={inChart.rows} active={inChart.active} seaOnly={regionField.sea === true} automatic={isAutomatic(regionChoice)}
+      {chooser.open && opened && <RegionChooser list={regionList} inChart={opened.rows} active={opened.active} seaOnly={regionField.sea === true} automatic={isAutomatic(regionChoice)}
         onChoose={(id, charted) => { storeRegions(charted ? removeRegion(regionChoice, id) : addRegion(regionChoice, id)); chooser.close(); }}
         onReset={() => { storeRegions(AUTOMATIC_REGIONS); chooser.close(); }} />}
     </Popover>
@@ -329,7 +333,7 @@ export default function DeclaredFamilyWidget<
       active={active}
       subscriptions={plan.subscriptions}
       allowEmptyFollow={plan.allowEmptyFollow}
-      owner={view === DEFAULT_VIEW ? plan.owner : JSON.stringify([plan.owner, view])}
+      owner={ownerKey}
       staticSources={staticSources}
       staticProof={plan.staticProof}
       pagedRows={plan.pagedRows}
@@ -372,8 +376,6 @@ export default function DeclaredFamilyWidget<
     </div>
   );
 }
-
-const NOTHING_IN_CHART = { rows: [], active: null } as const;
 
 function anchorBelow(element: HTMLElement): { readonly x: number; readonly y: number } {
   const box = element.getBoundingClientRect();

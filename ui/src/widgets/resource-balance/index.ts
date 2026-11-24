@@ -5,7 +5,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useProduct } from '../../dashboard/products';
 import ResourceBalanceWidget from './ResourceBalanceWidget';
-import { RESOURCE_BALANCE, resourceName, validateResourceBalance } from './resourceData';
+import { RESOURCE_BALANCE, resourceName, validateResourceBalance } from './resourceReply.ts';
 import { productRequest } from '../../dashboard/request.ts';
 
 function useResourceChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
