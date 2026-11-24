@@ -277,6 +277,33 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     return;
   }
 
+  if (kind === 'shaded') {
+    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
+      return;
+    }
+    const signed = paintModel.value.kind === 'known' || paintModel.value.kind === 'partial' ? Number(paintModel.value.value) : 0;
+    if (signed !== 0 && fraction !== null) {
+      ctx.save();
+      ctx.fillStyle = signed > 0 ? theme.accent : tokens.shortage;
+      ctx.globalAlpha = 0.18 + 0.5 * Math.max(0, Math.min(1, fraction));
+      ctx.beginPath();
+      ctx.roundRect(left, middle - Math.min(rowHeight - 4, 18) / 2, Math.max(0, right - left), Math.min(rowHeight - 4, 18), 3);
+      ctx.fill();
+      ctx.restore();
+    }
+    if (formatted.kind === 'zero') return;
+    const font = fontOf(theme, 13, 500);
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = item.row.muted ? theme.muted : theme.text;
+    ctx.fillText(fit(signedText(formatted.text, signed), font, Math.max(0, right - left - 6)), right - 4, middle);
+    ctx.restore();
+    return;
+  }
+
   if (kind === 'stockpileSum') {
     const sp = cell?.stockpile;
     if (!sp) {
