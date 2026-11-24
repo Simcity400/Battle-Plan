@@ -1,4 +1,4 @@
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, raceViewVariants } from '../../charts/race/options.ts';
+import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, raceViewVariants } from '../../charts/race/options.ts';
 import { END_LABELS_OPTION } from '../../dashboard/lineChartOptions.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
@@ -13,7 +13,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'collaboration', section: 'options', label: 'Show collaboration', kind: 'toggle', default: false },
   { key: 'digits', section: 'options', label: 'Decimals in chart labels', kind: 'number', min: 0, max: 5, step: 1, default: 2 },
   { ...END_LABELS_OPTION, visibleWhen: options => options.view !== 'race' },
-  DATE_OVERLAY_OPTION, ...RACE_TIME_OPTIONS, ...RACE_AXIS_OPTIONS,
+  ...RACE_TIME_OPTIONS, ...RACE_AXIS_OPTIONS,
 ];
 
 export const definition = {

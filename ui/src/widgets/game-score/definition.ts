@@ -2,7 +2,7 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { TABLE_OPTIONS } from '../../charts/table/options.ts';
 import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS } from '../../charts/race/options.ts';
+import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS } from '../../charts/race/options.ts';
 import { choiceVariants } from '../../dashboard/options.ts';
 import { SCORE_LABELS, SCORE_PARTS } from './gameScoreData.ts';
 
@@ -23,7 +23,6 @@ export const OPTIONS: readonly OptionField[] = [
   ...tableFamilyOptions(COLUMN_DEFAULTS, TABLE_BASE).map(field => ({ ...field, visibleWhen: inTable })),
   { key: 'split', section: 'options', label: 'Show score parts', kind: 'toggle', default: true,
     hint: 'Split Total into Army, Navy and Air.', visibleWhen: options => options.view === 'race' && (options.topMeasure ?? 'total') === 'total' },
-  { ...DATE_OVERLAY_OPTION, visibleWhen: options => options.view === 'race' },
   { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => options.view === 'lines' },
   ...RACE_TIME_OPTIONS,
   ...RACE_AXIS_OPTIONS,

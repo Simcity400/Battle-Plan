@@ -1,4 +1,5 @@
 import { VALUE_WEIGHT } from '../../charts/draw.ts';
+import { DATE_COLUMN_WIDTH } from '../../draw/kit.ts';
 import {
   CELL_INSET,
   displayExtra,
@@ -104,10 +105,12 @@ export function measureFixedColumnWidths(
   theme: Pick<TableTheme, 'font' | 'fontSize'>,
   measure: MeasureText,
   initialSamples?: Readonly<Record<string, readonly string[]>>,
+  options?: { readonly hideHeader?: boolean },
 ): Record<string, number> {
   const bodyFont = fontString(theme, 13.5, VALUE_WEIGHT);
   const headFont = fontString(theme, 13, 600);
   const unitFont = fontString(theme, 11.5, 500);
+  const hideHeader = options?.hideHeader === true;
   const out: Record<string, number> = {};
   for (const column of columns) {
     const userWidth = settings.columns[column.key]?.width;
@@ -136,13 +139,32 @@ export function measureFixedColumnWidths(
       continue;
     }
     if (column.cellKind === 'skill') {
-      const hw = measure(column.label, headFont) + SORT_ARROW_WIDTH + CELL_INSET * 2;
+      const hw = hideHeader ? 0 : measure(column.label, headFont) + SORT_ARROW_WIDTH + CELL_INSET * 2;
       out[column.key] = Math.max(column.minWidth ?? 64, Math.ceil(hw));
       continue;
     }
-    const labelW = measure(column.label, headFont) + (column.notRecordedReason ? 15 : 0);
-    const unitW = column.unit ? measure(column.unit, unitFont) : 0;
-    const headerWidth = Math.max(labelW, unitW) + (column.sortable === false ? 0 : SORT_ARROW_WIDTH) + CELL_INSET * 2;
+    const labelW = hideHeader ? 0 : measure(column.label, headFont) + (column.notRecordedReason ? 15 : 0);
+    const unitW = hideHeader || !column.unit ? 0 : measure(column.unit, unitFont);
+    const headerWidth = hideHeader ? 0 : Math.max(labelW, unitW) + (column.sortable === false ? 0 : SORT_ARROW_WIDTH) + CELL_INSET * 2;
+    if (column.cellKind === 'date') {
+      let widestDate = 0;
+      if (column.widest?.length) {
+        const dateFont = fontString(theme, 12.5, 500);
+        for (const sample of column.widest) widestDate = Math.max(widestDate, measure(sample, dateFont));
+      }
+      const dateW = Math.max(column.minWidth ?? DATE_COLUMN_WIDTH + CELL_INSET * 2, widestDate > 0 ? widestDate + CELL_INSET * 2 : 0, headerWidth);
+      out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, dateW) : dateW);
+      continue;
+    }
+    if (column.cellKind === 'status') {
+      const statusFont = fontString(theme, theme.fontSize.small, 400);
+      const statusSamples = column.widest?.length ? column.widest : ['Succeeded'];
+      let widestStatus = 0;
+      for (const sample of statusSamples) widestStatus = Math.max(widestStatus, measure(sample, statusFont));
+      const statusW = Math.max(column.minWidth ?? 88, widestStatus + 12 + CELL_INSET * 2, headerWidth);
+      out[column.key] = Math.ceil(column.maxWidth !== undefined ? Math.min(column.maxWidth, statusW) : statusW);
+      continue;
+    }
     if (column.display === 'flag') {
       out[column.key] = Math.ceil(Math.max(column.minWidth ?? 48, headerWidth));
       continue;
@@ -182,7 +204,7 @@ function withEdgeInsets(shown: readonly FamilyColumnLayout[]): FamilyColumnLayou
 export function growWeight(column: FamilyColumnLayout): number {
   if (column.grow !== undefined) return Math.max(0, column.grow);
   if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill'
-    || column.cellKind === 'kind' || column.cellKind === 'twoWay') return 0;
+    || column.cellKind === 'kind' || column.cellKind === 'twoWay' || column.cellKind === 'date' || column.cellKind === 'status') return 0;
   return column.width;
 }
 

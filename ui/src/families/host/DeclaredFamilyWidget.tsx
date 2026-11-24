@@ -7,7 +7,6 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
-import type { ArtResolution } from '../art/types.ts';
 import { useArtHandleResolutions } from '../art/react.ts';
 import type {
   AuxProductSpec,
@@ -85,7 +84,6 @@ export interface DeclaredFamilyWidgetProps<
   readonly onHoverHour?: (hour: number | null) => void;
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
   readonly extraWarnings?: readonly string[];
-  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
 }
 
 export default function DeclaredFamilyWidget<
@@ -114,7 +112,6 @@ export default function DeclaredFamilyWidget<
   onHoverHour: externalHoverHour,
   onArtDemands: externalArtDemands,
   extraWarnings,
-  artResolutions,
 }: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
 
@@ -155,11 +152,7 @@ export default function DeclaredFamilyWidget<
 
   const { theme } = useFamilyTheme(undefined, plan.displayedCountryLooks);
 
-  const { resolutions: demandedResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
-  const shownArtResolutions = useMemo(
-    () => (artResolutions ? { ...artResolutions, ...demandedResolutions } : demandedResolutions),
-    [artResolutions, demandedResolutions],
-  );
+  const { resolutions: shownArtResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
 
   const extent = useMemo<readonly [number, number]>(() => {
     const span = plan.displayedCtx?.staticSpan;

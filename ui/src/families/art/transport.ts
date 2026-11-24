@@ -1,13 +1,13 @@
 import type { ProductRequest } from '../../dashboard/client';
-import { drawableIcon } from '../../dashboard/artwork.ts';
+import { artworkEntry, drawableIcon } from '../../dashboard/artwork.ts';
 import type { BoundTrack } from '../../dashboard/model';
 import { asFailure } from '../../dashboard/queryError.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import type { ArtResolution, LeaderPortraitsReply, SpriteFrame, SpriteImage } from '../../generated/dashboard';
+import type { ArtResolution, LeaderPortraitsReply, SpriteFrame, SpriteImage, TechnologyArtworkReply } from '../../generated/dashboard';
 import type { ArtHandle } from '../plan.ts';
 import { spriteImageToArt } from './adapters.ts';
-import { artHandleKey } from './types.ts';
+import { artHandleKey, missingArt, readyArt } from './types.ts';
 
 export type { SpriteFrame };
 
@@ -75,6 +75,20 @@ function portraitResolutions(reply: LeaderPortraitsReply, hour: number): Map<str
   return new Map(reply.portraits.map(portrait => [artHandleKey({ kind: 'portrait', leader: portrait.reference, hour }), portrait.resolution]));
 }
 
+export function technologyResolutions(reply: TechnologyArtworkReply, handles: readonly ArtHandle[]): Map<string, ArtResolution> {
+  if (!reply || !Array.isArray(reply.items) || !reply.items.every(artworkEntry)) throw new Error('The technology artwork reply is malformed.');
+  const byToken = new Map(reply.items.map(item => [item.token, drawableIcon(item.icon)]));
+  const out = new Map<string, ArtResolution>();
+  for (const handle of handles) {
+    if (handle.kind !== 'technology') continue;
+    const icon = byToken.get(handle.token);
+    out.set(artHandleKey(handle), icon === undefined
+      ? missingArt('Technology artwork was not returned for this technology')
+      : icon ? readyArt(icon, { assetId: `technology:${handle.token}` }) : missingArt('Art missing from the current installation'));
+  }
+  return out;
+}
+
 export async function fetchArtHandles(
   load: (request: ProductRequest, signal: AbortSignal) => Promise<unknown>,
   track: Pick<BoundTrack, 'source' | 'branch'>,
@@ -84,6 +98,7 @@ export async function fetchArtHandles(
   const sprites: SpriteFrame[] = [];
   const textures: { path: string; frame: number; frames: number }[] = [];
   const portraits = new Map<number, string[]>();
+  const technologies = new Map<string, Set<number>>();
   for (const handle of handles) {
     if (handle.kind === 'sprite') {
       sprites.push({ key: handle.key, frame: handle.frame ?? 0, ...(handle.recorded !== undefined ? { recorded: handle.recorded } : {}), ...(handle.text ? { text: true } : {}) });
@@ -93,6 +108,10 @@ export async function fetchArtHandles(
       const list = portraits.get(handle.hour);
       if (list) list.push(handle.leader);
       else portraits.set(handle.hour, [handle.leader]);
+    } else if (handle.kind === 'technology') {
+      const indices = technologies.get(handle.token) ?? new Set<number>();
+      if (handle.databaseIndex !== null && handle.databaseIndex > 0) indices.add(handle.databaseIndex);
+      technologies.set(handle.token, indices);
     }
   }
   const replies: Promise<ReadonlyMap<string, ArtResolution>>[] = [];
@@ -107,6 +126,14 @@ export async function fetchArtHandles(
       productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'unit-leader-portraits', params: { branchId: track.branch.id, hour: hour as GatedHour, references, edge: PORTRAIT_EDGE } }),
       signal,
     ).then(reply => portraitResolutions(reply as LeaderPortraitsReply, hour)));
+  }
+  if (technologies.size) {
+    const tokens = [...technologies.keys()].sort();
+    const recorded = Object.fromEntries(tokens.filter(token => technologies.get(token)!.size).map(token => [token, [...technologies.get(token)!].sort((a, b) => a - b)]));
+    replies.push(load(
+      productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'technology-artwork', params: Object.keys(recorded).length ? { tokens, recorded } : { tokens } }),
+      signal,
+    ).then(reply => technologyResolutions(reply as TechnologyArtworkReply, handles)));
   }
   const merged = new Map<string, ArtResolution>();
   for (const reply of await Promise.all(replies)) for (const [id, resolution] of reply) merged.set(id, resolution);

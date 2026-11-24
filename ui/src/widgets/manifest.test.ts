@@ -60,7 +60,8 @@ test('multi-view widget routes each (kind, view) to its own family or legacy ent
   assert.equal(isFamilyWidgetView('game-score'), true);
   assert.equal(activeFamilyView('game-score')?.family, 'table');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'race' }), 'race');
-  assert.equal(isFamilyWidgetView('game-score', { view: 'race' }), false);
+  assert.equal(isFamilyWidgetView('game-score', { view: 'race' }), true);
+  assert.equal(activeFamilyView('game-score', { view: 'race' })?.family, 'bars');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'lines' }), 'lines');
   assert.equal(isFamilyWidgetView('game-score', { view: 'lines' }), false);
 
