@@ -17,7 +17,7 @@ import {
 } from '../../families/table/declaration.ts';
 import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import {
   knownValue,
@@ -170,7 +170,7 @@ function sameRankedEntries(
   return true;
 }
 
-export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> = registerTableProjection({
+export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> = registerFamilyProjection({
   kind: 'scoreboard',
   family: 'table',
   nextChange(readView, options) {

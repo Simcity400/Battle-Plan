@@ -12,7 +12,7 @@ import {
   type TableRow,
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue } from '../../families/value.ts';
 import { MARKET_TABS, marketColumns, marketTableBase } from './definition.ts';
 
@@ -102,7 +102,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
             { label: 'Price level', value: row.level === null ? notRecorded('Price level not recorded') : knownValue(levelText(row.level)) },
           ],
           tooltipAction: 'Click for market details',
-          meta: { title: `${seller.name}: market`, tags: row.seller ? [row.seller] : [], selected: `offer:${row.offer.country}` },
+          meta: { title: `${seller.name}: market`, tags: row.seller ? [row.seller] : [], selected: `offer:${row.offer.country}:${row.variant}` },
         };
       });
       return { columns, rows, hour, warnings: reply.warnings };
@@ -213,7 +213,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
   },
 };
 
-for (const view of MARKET_TABS) registerTableProjection(internationalMarketProjection, view);
+for (const view of MARKET_TABS) registerFamilyProjection(internationalMarketProjection, view);
 
 function marketSources(ctx: FamilyPlanContext<unknown>, view: MarketTab): SourcePlan {
   const only = view === 'inventory' ? 'offers' : 'contracts';

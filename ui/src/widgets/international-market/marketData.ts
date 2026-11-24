@@ -1,7 +1,7 @@
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { equipmentOf, fixedText, priceLevel } from '../../dashboard/market.ts';
 import type { MarketAt } from '../../dashboard/market';
-import type { MarketItem, MarketOffer, MarketTerms } from '../../generated/dashboard';
+import type { MarketGrant, MarketItem, MarketLendLeaseReply, MarketOffer, MarketTerms } from '../../generated/dashboard';
 
 export type MarketTab = 'contracts' | 'requests' | 'inventory';
 
@@ -70,3 +70,53 @@ export const levelText = (level: number | null) => priceLevel(level);
 export const firstWithMore = (list: readonly unknown[]) => list.length > 1 ? `+${list.length - 1}` : null;
 
 export const collectedText = (value: number) => cicLabel(BigInt(Math.trunc(value)));
+
+export interface MarketDetailLine { readonly label: string; readonly value: string; readonly marked?: boolean }
+export interface MarketDetailSection { readonly title: string; readonly lines: readonly MarketDetailLine[]; readonly empty: string }
+export interface MarketDetail { readonly missing: string | null; readonly sections: readonly MarketDetailSection[] }
+
+const NAME_MISSING = 'Equipment name unavailable';
+
+function grantLines(grants: readonly MarketGrant[]): MarketDetailLine[] {
+  return grants.map(grant => ({
+    label: grant.archetype ?? 'Archetype not named',
+    value: `${cic(BigInt(grant.cicRaw))} · ${grant.trigger !== null ? 'Conditional eligibility' : grant.targets.length ? grant.targets.join(', ') : 'No eligible countries'}`,
+  }));
+}
+
+export function marketDetail(reply: MarketLendLeaseReply, selected: string): MarketDetail {
+  const equipment = equipmentOf(reply);
+  const name = (item: { variant: string; name: string | null }) => item.name ?? equipment(item.variant).name ?? NAME_MISSING;
+  const [kind, first, second] = selected.split(':');
+  if (kind === 'offer') {
+    if (reply.offers === null) return { missing: 'Market inventory was not recorded at this date.', sections: [] };
+    const offer = reply.offers.find(row => String(row.country) === first);
+    if (!offer) return { missing: 'This seller lists nothing on the market at this date.', sections: [] };
+    const levels = new Map(offer.prices.map(level => [level.variant, level.level]));
+    return { missing: null, sections: [
+      { title: 'Listed inventory', empty: 'Nothing listed.', lines: offer.inventory.map(item => ({
+        label: name(item), value: `${units(BigInt(item.amountRaw))} · ${levels.has(item.variant) ? levelText(levels.get(item.variant)!) : 'Price level not recorded'}`, marked: item.variant === second })) },
+      { title: 'Subsidies', empty: 'No subsidies.', lines: [...grantLines(offer.subsidies), { label: 'Subsidy balance', value: cic(BigInt(offer.subsidyTotalRaw)) }] },
+      { title: 'Market access', empty: '', lines: [{ label: 'Automatically send market access', value: offer.autoSendMarketAccess ? 'Yes' : 'No' }] },
+    ] };
+  }
+  if (reply.contracts === null) return { missing: 'Market contract terms were not recorded at this date.', sections: [] };
+  const terms = reply.contracts.find(row => String(row.request) === first && row.id === second);
+  if (!terms) return { missing: 'This request or contract is not on the market at this date.', sections: [] };
+  const price = new Map(terms.prices.map(item => [item.variant, BigInt(item.amountRaw)]));
+  const level = new Map(terms.levels.map(item => [item.variant, item.level]));
+  return { missing: null, sections: [
+    { title: 'Terms', empty: '', lines: [
+      { label: 'Seller', value: terms.seller ?? 'Country not recorded' },
+      { label: 'Buyer', value: terms.buyer ?? 'Country not recorded' },
+      { label: 'Kind', value: terms.request ? 'Request' : 'Contract' },
+      { label: 'Factory assignment', value: String(terms.speed) },
+    ] },
+    { title: 'Equipment', empty: 'None', lines: terms.equipment.map(item => {
+      const agreed = price.get(item.variant);
+      const asked = level.get(item.variant);
+      return { label: name(item), value: [units(BigInt(item.amountRaw)), ...(agreed !== undefined ? [cic(agreed)] : []), ...(asked !== undefined ? [levelText(asked)] : [])].join(' · ') };
+    }) },
+    { title: 'Subsidies', empty: 'No subsidies.', lines: grantLines(terms.subsidies) },
+  ] };
+}
