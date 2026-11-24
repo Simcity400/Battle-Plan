@@ -172,24 +172,20 @@ pub(crate) fn resolve_all(query: &Query<'_>, events: &[&FeedEvent]) -> io::Resul
 
 pub(crate) fn enforce_same_incarnation(events: &[&FeedEvent], rows: &mut [Option<EventFeedRow>]) {
     let mut seen: Option<u32> = None;
-    let mut same_incarnation = true;
-    for event in events {
+    let mut mismatched = false;
+    for (event, row) in events.iter().zip(rows.iter_mut()) {
         if let Some(instance) = event.instance {
             match seen {
                 None => seen = Some(instance),
-                Some(first) if first != instance => {
-                    same_incarnation = false;
-                    break;
-                }
+                Some(first) if first != instance => mismatched = true,
                 Some(_) => {}
             }
         }
-    }
-    if !same_incarnation {
-        for row in rows.iter_mut().flatten() {
-            if row.decision_state.is_some() {
-                row.decision_state = Some(not_recorded());
-            }
+        if mismatched
+            && let Some(row) = row.as_mut()
+            && row.decision_state.is_some()
+        {
+            row.decision_state = Some(not_recorded());
         }
     }
 }

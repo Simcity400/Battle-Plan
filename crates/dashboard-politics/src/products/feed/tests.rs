@@ -610,6 +610,11 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
     ];
     enforce_same_incarnation(&[&opener, &timed_fail], &mut rows);
     assert_eq!(
+        rows[0].as_ref().and_then(|row| row.decision_state.as_ref()),
+        Some(&DecisionLifecycleState::Active),
+        "earlier same-incarnation edge stays unaffected before a later mismatch"
+    );
+    assert_eq!(
         rows[1].as_ref().and_then(|row| row.decision_state.as_ref()),
         Some(&DecisionLifecycleState::NotRecorded { reason: MISSION_FAILURE_NOT_RECORDED.to_owned() })
     );

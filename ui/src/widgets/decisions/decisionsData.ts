@@ -132,9 +132,9 @@ export function lifecycleLine(at: DecisionAt): string {
   const missing = at.failureMissing ? ` · ${at.failureMissing}` : '';
   switch (at.status) {
     case 'active': {
-      if (!at.timer) return `${started ?? 'Running'}${missing}`;
+      if (!at.timer) return started ?? 'Running';
       const left = daysLeft(at);
-      return `${at.timer.days.toLocaleString()}-day timer${left === null ? '' : ` · ${daysText(left)} left`}${missing}`;
+      return `${at.timer.days.toLocaleString()}-day timer${left === null ? '' : ` · ${daysText(left)} left`}`;
     }
     case 'taken': return started ?? 'Taken';
     case 'completed': return `${started ? `${started} → completed ${dayOf(at.end!.row.hour)}` : `Completed ${dayOf(at.end!.row.hour)}`}${missing}`;
