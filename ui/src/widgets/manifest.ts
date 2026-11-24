@@ -44,6 +44,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'production-lines': { load: () => import('./production-lines') },
   'scoreboard': { load: () => import('./scoreboard') },
+  'special-projects': { load: () => import('./special-projects/current.ts') },
   'stability': { load: () => import('./stability') },
   'war-goals': { load: () => import('./war-goals') },
   'convoy-health': { load: () => import('./convoy-health'), slots: ['render', 'countryChip'] },

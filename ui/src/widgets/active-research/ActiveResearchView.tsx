@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import type { WidgetProps } from '../../dashboard/definitions';
+import type { WidgetSpec } from '../../dashboard/model';
 import { openedOn } from '../../dashboard/gameWindows';
 import { useGate } from '../../dashboard/regionGate';
 import { artHandleKey, failedArt, missingArt, readyArt, type ArtResolution } from '../../families/art/types.ts';
@@ -65,6 +66,11 @@ export default function ActiveResearchView(props: WidgetProps) {
   }, [track, tag]);
 
   const shown = track && tag && opened?.on === openedOn(track, tag) ? opened : null;
+  const detailWidget = useMemo<WidgetSpec>(() => {
+    if (!shown || !track) return widget;
+    const offset = shown.hour - track.branch.firstHour;
+    return { ...widget, time: { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } };
+  }, [shown, track, widget]);
   const gate = useGate(runtime, widget);
   const detailSlots = useMemo(
     () => (shown && data ? researchAt(data.history, shown.hour) : []),
@@ -105,7 +111,7 @@ export default function ActiveResearchView(props: WidgetProps) {
           <div className="dossier-body">
             <TechnologyEffects
               runtime={runtime}
-              widget={widget}
+              widget={detailWidget}
               tag={tag}
               token={shown.meta.token}
               databaseIndex={shown.meta.databaseIndex}

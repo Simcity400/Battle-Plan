@@ -1398,6 +1398,7 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
 
     const tableView = familyTableLaneView(() => {}, {
       artMaxEntries: 40,
+      artMaxConcurrent: 20,
       fetchBitmap: (url, signal) => new Promise<ImageBitmap>((resolve, reject) => {
         requestedArt.push(url);
         signal.addEventListener('abort', () => {
