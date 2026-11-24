@@ -344,7 +344,7 @@ fn an_assignment_is_drawn_only_where_its_holder_and_slot_were_read_and_kept_with
     assert_eq!((reply.slots[1].index, reply.slots[1].availability.len(), reply.slots[1].items.len()), (3, 0, 1), "an assignment whose slot has no availability row is kept");
     assert_eq!(reply.slots[1].items[0].start.kind, history::BoundKind::By);
     assert_eq!(reply.partial.as_deref(), Some(history::UNREAD), "hours 121 to 149 were not read");
-    let mut counted = reply.clone();
+    let mut counted = reply;
     history::count(&mut counted, &[], true);
     assert_eq!(counted.completed, 1);
     let mut whole = history::answer(&index, &asked(110)).reply;
