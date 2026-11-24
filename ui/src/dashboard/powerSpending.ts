@@ -2,7 +2,7 @@ import type { HourSpan, PowerSpendingReply, SpendCategory, SpendCoverage, SpendI
 import { validateIdeaTooltipData } from './ideaHistoryReply.ts';
 import type { BoundTrack, WidgetSpec } from './model';
 import { resolveWindow } from './model.ts';
-import type { SunburstItem } from '../charts/sunburst/layout';
+import type { BreakdownLeafItem as SunburstItem } from '../families/breakdown/tree';
 import { dayLabel } from '../charts/draw.ts';
 import { drawableIcon } from './artwork.ts';
 import { gameDate, monthAt, monthIndex, monthNames } from './calendar.ts';

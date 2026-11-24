@@ -1,4 +1,4 @@
-import type { SunburstItem, SunburstKey } from '../../charts/sunburst/layout';
+import type { BreakdownLeafItem as SunburstItem, BreakdownLeafKey as SunburstKey } from '../../families/breakdown/tree';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { CAP_HEADROOM, columnAt, drawPreparedColumns, prepareColumn } from '../../charts/columns.ts';
 import type { ColumnPeriod, PreparedColumn } from '../../charts/columns';

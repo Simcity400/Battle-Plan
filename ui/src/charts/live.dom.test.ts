@@ -88,35 +88,6 @@ test('the shared charts paint live values without a commit, draw a value the sou
       assert.equal(await since(act, 'timeline', plain), 0);
     }));
 
-    await t.test('sunburst: centre and legend amounts move without a commit, a missing whole shows as not recorded, a new part is one commit', () => page.stage('sunburst', async () => {
-      await act('mountSunburst(true)');
-      await act('pushSunburst({ items: window.liveCharts.items(10, 20) })');
-      assert.ok((await act<{ canvas: string[] }>('sunburst()')).canvas.includes('A30'));
-      const before = await act<Commits>('commits()');
-      await act('pushSunburst({ items: window.liveCharts.items(15, 45) })');
-      const moved = await act<{ canvas: string[]; legend: string[][] }>('sunburst()');
-      assert.ok(moved.canvas.includes('A60'), `the centre's amount: ${moved.canvas.join(' | ')}`);
-      assert.deepEqual(moved.legend.map(row => row.slice(0, 2)), [['Beta', 'A45'], ['Alpha', 'A15']]);
-      assert.equal(await since(act, 'sunburst', before), 0, 'values moved and nothing committed');
-      await act('pushSunburst({ items: [], unavailableReason: "Not recorded at this hour" })');
-      assert.ok((await act<{ canvas: string[] }>('sunburst()')).canvas.includes('Not recorded'), 'a whole the source cannot tell is not recorded, never zero');
-
-      await act('pushSunburst({ items: window.liveCharts.items(10, 20) })');
-      await act('mountSunburst(true)');
-      const fresh = await act<Commits>('commits()');
-      await act('pushSunburst({ items: window.liveCharts.items(15, 45, 5) })');
-      assert.deepEqual((await act<{ legend: string[][] }>('sunburst()')).legend.map(row => row[0]), ['Beta', 'Alpha', 'Gamma'], 'a part that appears joins the legend');
-      assert.ok(await since(act, 'sunburst', fresh) >= 1);
-
-      await act('mountSunburst(false)');
-      const plain = await act<Commits>('commits()');
-      await act('pushSunburst({ items: window.liveCharts.items(100, 100) })');
-      const unchanged = await act<{ canvas: string[]; legend: string[][] }>('sunburst()');
-      assert.ok(unchanged.canvas.includes('A30'));
-      assert.deepEqual(unchanged.legend.map(row => row.slice(0, 2)), [['Beta', 'A20'], ['Alpha', 'A10']]);
-      assert.equal(await since(act, 'sunburst', plain), 0);
-    }));
-
     await t.test('drill parts: amounts move without a commit, a missing part is not known and its row re-orders once', () => page.stage('drill', async () => {
       await act('mountDrill(true)');
       const before = await act<Commits>('commits()');

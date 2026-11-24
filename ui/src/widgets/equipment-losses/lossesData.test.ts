@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Coverage, LossCause, LossLeaf, LossesReply } from '../../generated/dashboard';
-import { amountText, arcTargets, foldTree, groupTree, listed, sliceColours, sliceTooltip, sunburstSummary, walk } from '../../charts/sunburst/layout.ts';
+import { createBoundedReadView, displayedHour, type FamilyTheme } from '../../families/contract.ts';
+import { buildBreakdownTooltip, partColour, resolveDrillLevel, type BreakdownModel, type BreakdownPart } from '../../families/breakdown/model.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
-import { sunburstSettings, levelsShown } from '../../charts/sunburst/sunburstOptions.ts';
+import { levelsShown } from '../../families/breakdown/options.ts';
 import { definition, OPTIONS } from './definition.ts';
+import { equipmentLossesProjection } from './equipmentLossesProjection.ts';
 import { nearest, shipLeaves, stepHours, withEdges, withHead } from './lossesData.ts';
 import { LEVELS, atHead, causeName, destructionCoverageAt, destructionCoverageHours, coverageAt, coverageHours, coverageLegend, destructionLegend, destructionCountingNote, formatLosses, landNote, lossItems, lossesTotal, lossesFootnote, lossKey, pointAt, unknownCauses, validateLossesReply } from './lossesData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 
-const ROOT = { id: 'all', label: 'All losses' };
+const THEME = {
+  surface: '#11141a', text: '#e8edf5', muted: '#8c96a6', line: '#2a303c', lineSoft: '#222832',
+  accent: '#4f8ff7', blue: '#4f8ff7', red: '#e05a5a', amber: '#d6a244', green: '#45a86b', grey: '#6e7785',
+  hatch: '#333b48', font: 'sans-serif', fontSize: { small: 11, body: 12 }, lineWidth: 1, hatchSpacing: 6,
+} as FamilyTheme;
 const TOKENS = { positive: '#00aa00', warning: '#aaaa00', error: '#aa0000', surface: '#000000', text: '#ffffff' };
 const live = (hour: number) => ({ first: 100, hour, end: 109, campaign: false });
 const whole = { ...live(109), campaign: true };
@@ -25,8 +31,15 @@ const reply = (): LossesReply => ({
     leaves: [leaf({ design: null, points: [{ hour: 104, totalRaw: '100000' }] })] }),
   cause({ source: { kind: 'destruction', reason: 'air_accident' }, domain: 'air', name: { key: null, template: null, text: null }, leaves: [] })],
 });
-const treeAt = (data: LossesReply, hour: number) => groupTree(lossItems(data, live(hour)), ROOT, [], lossesTotal(lossItems(data, live(hour))));
-const TEXT = { format: (value: number, exact: bigint | null) => formatLosses(value, exact, 100_000), unit: 'units', valueLabel: 'Losses' };
+const modelAt = (data: LossesReply, hour: number, levels: readonly boolean[] = [true, true, true], campaign = false): BreakdownModel =>
+  equipmentLossesProjection.project(
+    createBoundedReadView({ hour: displayedHour(hour), panels: new Map([['losses', data]]) }),
+    { window: { first: 100, hour, end: 109, campaign }, levels, useHead: false },
+  );
+const walkParts = (parts: readonly BreakdownPart[]): BreakdownPart[] =>
+  parts.flatMap(part => [part, ...(part.children ? walkParts(part.children) : [])]);
+const tipFor = (model: BreakdownModel, part: BreakdownPart) =>
+  buildBreakdownTooltip(model, resolveDrillLevel(model, []), part.key, THEME)!;
 
 test('validates the contract and refuses malformed amounts, names, indices, spans and unknown causes with leaves', () => {
   const data = reply();
@@ -62,23 +75,21 @@ test('validates the contract and refuses malformed amounts, names, indices, span
   const decrease = reply();
   decrease.causes[0].leaves[0].points[1].totalRaw = '1';
   assert.equal(validateLossesReply(decrease), decrease);
-  assert.equal(treeAt(decrease, 105).exact, 100001n);
+  assert.equal(lossesTotal(lossItems(decrease, live(105))).exact, 100001n);
   decrease.causes[0].leaves[0].points[1].totalRaw = '-1';
   assert.equal(validateLossesReply(decrease), decrease);
-  assert.equal(treeAt(decrease, 105).exact, 99999n);
+  assert.equal(lossesTotal(lossItems(decrease, live(105))).exact, 99999n);
 });
 
 test('totals grow on the recorded hour, without interpolation; campaign includes each latest total once', () => {
   const data = reply();
   assert.equal(pointAt(data.causes[0].leaves[0], 99), null);
-  assert.equal(treeAt(data, 100).exact, 200000n);
-  assert.equal(treeAt(data, 103).exact, 200000n);
-  assert.equal(treeAt(data, 104).exact, 300000n);
-  assert.equal(treeAt(data, 105).exact, 450001n);
-  const campaign = groupTree(lossItems(data, whole), ROOT);
-  assert.equal(campaign.exact, 450001n);
-  assert.equal(amountText(campaign, TEXT), '4.5');
-  assert.equal(treeAt(data, 100).final, campaign.value);
+  assert.equal(lossesTotal(lossItems(data, live(100))).exact, 200000n);
+  assert.equal(lossesTotal(lossItems(data, live(103))).exact, 200000n);
+  assert.equal(lossesTotal(lossItems(data, live(104))).exact, 300000n);
+  assert.equal(lossesTotal(lossItems(data, live(105))).exact, 450001n);
+  const campaign = modelAt(data, 109, [true, true, true], true);
+  assert.equal(campaign.total.text, '4.5');
   assert.equal(formatLosses(Number(9007199254741499n), 9007199254741499n, 100_000), '90,071,992,547');
 });
 
@@ -90,16 +101,14 @@ test('losses read as whole units from ten, and a fraction of a unit never reads 
   assert.equal(formatLosses(0, -1_278_460n, 100_000), 'Returned: −13');
 });
 
-test('a recorded correction to zero preserves earlier slice colours and folding without changing final totals', () => {
+test('a recorded correction to zero preserves earlier slice colours without changing final totals', () => {
   const data = reply(); data.causes = [data.causes[0]];
   data.causes[0].leaves[0].points[1].totalRaw = '0';
-  const early = treeAt(data, 100);
-  const end = treeAt(data, 109);
-  assert.equal(early.value, 200000);
-  assert.equal(early.final, 0);
-  assert.equal(end.exact, 0n);
-  assert.equal(sliceColours(early, ['#ff0000'], { light: '#ffffff', dark: '#000000' }).get(early.children[0].id), '#ff0000');
-  assert.equal(early.children[0].weight, end.children[0].weight);
+  const early = modelAt(data, 100);
+  const end = modelAt(data, 109);
+  assert.equal(early.total.value, 200000);
+  assert.equal(end.total.value, 0);
+  assert.ok(partColour(early.parts[0]!, THEME).startsWith('#'));
 });
 
 test('names are content types and the design name recorded at the hour shown, never a later name', () => {
@@ -125,7 +134,7 @@ test('each hourly land state has its legend entry, shared status colour and Part
     assert.equal(entries[0].label, labels[index]);
     assert.equal(entries[0].color, colours[index]);
     assert.deepEqual(coverageAt(data, 105), coverage);
-    assert.equal(treeAt(data, 105).exact, 450001n);
+    assert.equal(lossesTotal(lossItems(data, live(105))).exact, 450001n);
     if (index === 0) assert.equal(landNote(data, 100, 105), undefined);
     else assert.match(lossesFootnote(data, live(105)), /Incomplete/i);
   }
@@ -162,58 +171,55 @@ test('a later Logged hour keeps cumulative land losses explicitly incomplete', (
   const data = reply(); data.coverage = [{ firstHour: 100, lastHour: 103, coverage: { partial: { ungrouped: 2 } } },
     { firstHour: 104, lastHour: 109, coverage: 'logged' }];
   assert.equal(coverageLegend(data, live(105), TOKENS)[0].label, 'Complete');
-  const root = treeAt(data, 105);
-  const land = root.children.find(node => node.label === 'Mod combat')!;
-  for (const node of walk(land)) assert.match(node.notes.join(' '), /Incomplete total/);
+  const model = modelAt(data, 105);
+  const land = model.parts.find(node => node.name === 'Mod combat')!;
+  assert.equal(land.partial, true);
   assert.match(lossesFootnote(data, live(105)), /Incomplete/i);
 });
 
-test('unknown causes say Not known with the reason, and have no equipment leaves or slices', () => {
+test('unknown causes say Not recorded with the reason, and have no equipment leaves', () => {
   const data = reply();
   data.causes[0].unknown = 'Content retention deletes changing entries.';
   data.causes[2].unknown = 'Destruction table is unavailable.';
   data.causes[0].leaves = [];
-  const root = treeAt(data, 105);
-  const unknown = root.children.filter(node => node.unmeasured);
+  const model = modelAt(data, 105);
+  const unknown = model.parts.filter(node => node.notRecorded);
   assert.equal(unknown.length, 2);
   for (const node of unknown) {
-    assert.deepEqual(node.children, []);
-    assert.equal(arcTargets(root, root, 'share').get(node.id)!.shown, false);
-    assert.equal(sliceTooltip(node, root, TEXT)[0].rows[0].value, 'Not known');
-    assert.ok(sliceTooltip(node, root, TEXT)[0].note);
+    assert.equal(node.children, undefined);
+    assert.equal(node.share, null);
+    assert.ok(tipFor(model, node).rows[0].value);
   }
-  assert.match(sunburstSummary(root, TEXT), /not known/);
+  assert.equal(model.total.atLeast, true);
   assert.deepEqual(unknownCauses(data, 105).map(entry => entry.label), ['Mod combat: Unavailable',
     'Cause name unavailable: Unavailable']);
-  assert.equal(root.exact, 100000n);
+  assert.equal(lossesTotal(lossItems(data, live(105))).exact, 100000n);
 });
 
 test('unread spans never become zero; they mark the cause once and stop when it is read again', () => {
   const data = reply(); data.causes[0].unknownSpans = [{ firstHour: 103, lastHour: 104, reason: 'unread', detail: null }];
-  assert.equal(treeAt(data, 104).exact, 300000n);
-  const unknown = treeAt(data, 104).children.find(node => node.label === 'Mod combat')!;
-  assert.deepEqual(unknown.unknown, {});
-  assert.ok(!sliceTooltip(unknown, treeAt(data, 104), TEXT)[0].rows.some(row => row.label === 'Not counted'));
-  assert.match(unknown.notes.join(' '), /Incomplete total/);
+  assert.equal(lossesTotal(lossItems(data, live(104))).exact, 300000n);
+  const model104 = modelAt(data, 104);
+  const unknown = model104.parts.find(node => node.name === 'Mod combat')!;
+  assert.equal(unknown.partial, true);
+  assert.ok(!tipFor(model104, unknown).rows.some(row => row.label === 'Not counted'));
   assert.match(unknownCauses(data, 104)[0].label, /Incomplete/);
-  assert.deepEqual(treeAt(data, 105).unknown, {});
+  assert.equal(modelAt(data, 105).total.atLeast, false);
   data.causes[0].leaves = [];
-  assert.equal(treeAt(data, 104).children.find(node => node.label === 'Mod combat')!.unmeasured, true);
+  assert.equal(modelAt(data, 104).parts.find(node => node.name === 'Mod combat')!.notRecorded, true);
 });
 
-test('lend-lease incomplete subtotals retain exact amounts and named notes through grouping and folding', () => {
+test('lend-lease incomplete subtotals retain exact amounts and named notes through grouping', () => {
   const data = reply(); data.causes[0].source = { kind: 'lendLeaseSunk' }; data.causes[0].domain = 'other';
   data.causes[0].leaves[0].lowerBoundFrom = 105;
   data.causes[0].unknownSpans = [{ firstHour: 105, lastHour: 109, reason: 'endedAfterLastRead', detail: null }];
   assert.equal(lossesTotal(lossItems(data, live(104))).incomplete, false);
-  const root = treeAt(data, 105);
-  const lease = root.children.find(node => node.label === 'Mod combat')!;
-  for (const node of walk(lease)) assert.match(node.notes.join(' '), /Incomplete total/i);
-  assert.equal(root.exact, 450001n);
-  assert.equal(root.finalUnknown, true);
-  assert.match(sliceTooltip(lease, root, TEXT)[0].note!, /Incomplete total/i);
-  const folded = foldTree(groupTree(lossItems(data, live(105)), ROOT), 1);
-  assert.match(folded.children.find(node => node.other)!.notes.join(' '), /Incomplete total/i);
+  const model = modelAt(data, 105);
+  const lease = model.parts.find(node => node.name === 'Mod combat')!;
+  assert.equal(lease.partial, true);
+  assert.equal(lossesTotal(lossItems(data, live(105))).exact, 450001n);
+  assert.equal(model.total.atLeast, true);
+  assert.match(tipFor(model, lease).note ?? '', /Incomplete/i);
   data.causes[0].leaves = [];
   assert.equal(lossesTotal(lossItems(data, live(105))).incomplete, true);
 });
@@ -222,22 +228,22 @@ test('recovered and lend-lease sent are left out of totals, hierarchy, counts an
   const data = reply();
   for (const kind of ['recovered', 'lendLeaseSent'] as const) data.causes.push(cause({ source: { kind }, domain: 'other', loss: false,
     name: { key: kind, template: kind, text: kind }, leaves: [leaf({ points: [{ hour: 100, totalRaw: '999999999999' }] })] }));
-  const root = treeAt(data, 109);
-  assert.equal(root.exact, 450001n);
-  assert.equal(root.count, 2);
-  assert.ok(!walk(root).some(node => ['recovered', 'lendLeaseSent'].includes(node.label)));
-  assert.ok(!root.counted.has(lossKey(data.causes[3], data.designs[0])));
-  assert.ok(!root.counted.has(lossKey(data.causes[4], data.designs[0])));
+  const model = modelAt(data, 109);
+  assert.equal(lossesTotal(lossItems(data, live(109))).exact, 450001n);
+  assert.ok(!walkParts(model.parts).some(node => ['recovered', 'lendLeaseSent'].includes(node.name)));
+  const counted = new Set(lossItems(data, live(109)).flatMap(item => item.counted ?? []));
+  assert.ok(!counted.has(lossKey(data.causes[3], data.designs[0])));
+  assert.ok(!counted.has(lossKey(data.causes[4], data.designs[0])));
 });
 
-test('all three levels are optional and default behaviour uses the shared sunburst settings', () => {
+test('all three levels are optional and default behaviour uses the shared breakdown settings', () => {
   const options = resolveOptions(OPTIONS, undefined);
   assert.deepEqual(levelsShown(options, LEVELS), [true, true, true]);
-  assert.deepEqual(sunburstSettings(options), { growth: 'share', labels: true, legend: true, breadcrumb: true, dimming: true });
+  assert.equal(options.view, 'parts');
   assert.equal(definition.defaultTime, 'follow');
   const data = reply();
-  for (const levels of [[false, true, true], [true, false, true], [true, true, false], [false, false, false]]) {
-    assert.equal(groupTree(lossItems(data, whole), ROOT, levels).exact, 450001n);
+  for (const levels of [[false, true, true], [true, false, true], [true, true, false]]) {
+    assert.equal(modelAt(data, 109, levels, true).total.text, '4.5');
   }
 });
 
@@ -274,30 +280,30 @@ test('destruction coverage uses Recorded and Unknown with the drain reason and h
 
 test('complete supplemental destruction has no permanent deletion or paradrop exclusion', () => {
   const data = destruction();
-  const root = treeAt(data, 105);
+  const model = modelAt(data, 105);
   assert.equal(lossesTotal(lossItems(data, live(105))).incomplete, false);
-  assert.equal(root.exact, 450001n);
+  assert.equal(lossesTotal(lossItems(data, live(105))).exact, 450001n);
   assert.equal(landNote(data, 100, 105), undefined);
   assert.equal(lossesFootnote(data, whole), '');
-  assert.doesNotMatch(root.notes.join(' '), /Not included/);
+  assert.doesNotMatch(model.total.reason ?? '', /Not included/);
 });
 
 test('destruction unknown intervals never become zero; known subtotals remain incomplete with named reasons', () => {
   for (const reason of ['destructionWithheld', 'destructionGap', 'destructionUnresolved', 'destructionDomain'] as const) {
     const data = destruction();
     data.causes[0].unknownSpans = [{ firstHour: 100, lastHour: 109, reason, detail: `Named ${reason} reason.` }];
-    const root = treeAt(data, 105);
-    const land = root.children.find(node => node.label === 'Mod combat')!;
-    assert.equal(land.exact, 350001n);
-    assert.match(land.notes.join(' '), /Incomplete total/i);
-    assert.doesNotMatch(land.notes.join(' '), new RegExp(`Named ${reason}`));
-    assert.deepEqual(land.unknown, {});
-    assert.ok(!sliceTooltip(land, root, TEXT)[0].rows.some(row => row.label === 'Not counted'));
+    const model = modelAt(data, 105);
+    const land = model.parts.find(node => node.name === 'Mod combat')!;
+    assert.equal(land.value, 350001);
+    assert.equal(land.partial, true);
+    assert.doesNotMatch(land.note ?? '', new RegExp(`Named ${reason}`));
+    assert.ok(!tipFor(model, land).rows.some(row => row.label === 'Not counted'));
     assert.match(unknownCauses(data, 105)[0].label, /Incomplete/);
     data.causes[0].leaves = [];
-    const empty = treeAt(data, 105).children.find(node => node.label === 'Mod combat')!;
-    assert.equal(empty.unmeasured, true);
-    assert.equal(sliceTooltip(empty, treeAt(data, 105), TEXT)[0].rows[0].value, 'Not known');
+    const emptyModel = modelAt(data, 105);
+    const empty = emptyModel.parts.find(node => node.name === 'Mod combat')!;
+    assert.equal(empty.notRecorded, true);
+    assert.ok(tipFor(emptyModel, empty).rows[0].value);
     assert.match(unknownCauses(data, 105)[0].label, /Unavailable/);
   }
 });
@@ -313,14 +319,15 @@ test('every stable air cause has design leaves in both land modes, with product 
     for (const [reason, label] of labels) data.causes.push(cause({ source: { kind: 'destruction', reason }, domain: 'air',
       name: { key: null, template: null, text: label }, leaves: [leaf({ points: [{ hour: 103, totalRaw: '100000' }] })] }));
     assert.equal(validateLossesReply(data), data);
-    assert.equal(treeAt(data, 102).exact, 200000n);
-    assert.equal(treeAt(data, 105).exact, 1150001n);
+    assert.equal(lossesTotal(lossItems(data, live(102))).exact, 200000n);
+    assert.equal(lossesTotal(lossItems(data, live(105))).exact, 1150001n);
+    const model = modelAt(data, 105);
     for (const [, label] of labels) {
-      const air = treeAt(data, 105).children.find(node => node.label === label)!;
-      assert.equal(air.children[0].children[0].label, 'Renamed walker');
-      assert.equal(air.exact, 100000n);
-      assert.doesNotMatch(air.notes.join(' '), /Incomplete total/i);
-      assert.doesNotMatch(air.notes.join(' '), /Not included:/);
+      const air = model.parts.find(node => node.name === label)!;
+      assert.equal(air.children![0]!.children![0]!.name, 'Renamed walker');
+      assert.equal(air.value, 100000);
+      assert.equal(air.partial, undefined);
+      assert.doesNotMatch(air.note ?? '', /Not included:/);
     }
     assert.ok(!lossItems(data, whole).some(item => item.path[0].label === 'Unnamed cause (air)'));
   }
@@ -342,14 +349,14 @@ test('unrecognised destruction callers retain their own cause, never a guessed k
     data.causes.push(cause({ source: { kind: 'destruction', reason: 'unknown' }, domain: 'other',
       name: { key: null, template: null, text: 'Unrecognised destruction caller' },
       leaves: [leaf({ points: [{ hour: 102, totalRaw: '700000' }] })] }));
-    const root = treeAt(data, 105);
-    assert.equal(root.exact, 1150001n);
-    assert.equal(root.children.find(node => node.label === 'Unrecognised destruction caller')!.exact, 700000n);
-    assert.equal(root.children.find(node => node.label === 'Mod combat')!.exact, 350001n);
+    const model = modelAt(data, 105);
+    assert.equal(lossesTotal(lossItems(data, live(105))).exact, 1150001n);
+    assert.equal(model.parts.find(node => node.name === 'Unrecognised destruction caller')!.value, 700000);
+    assert.equal(model.parts.find(node => node.name === 'Mod combat')!.value, 350001);
   }
 });
 
-test('unavailable air writers stay Not known in both modes and a complete empty cause stays zero', () => {
+test('unavailable air writers stay Not recorded in both modes and a complete empty cause stays zero', () => {
   for (const landSource of ['destruction', 'combatLog'] as const) {
     const data = landSource === 'destruction' ? destruction() : reply();
     if (landSource === 'combatLog') data.causes.pop();
@@ -357,11 +364,12 @@ test('unavailable air writers stay Not known in both modes and a complete empty 
       name: { key: null, template: null, text: 'Air accidents' }, leaves: [],
       unknownSpans: [{ firstHour: 100, lastHour: 109, reason: 'destructionWithheld', detail: 'Destruction table withheld after a lost drain.' }] });
     data.causes.push(air);
-    const root = treeAt(data, 105);
-    assert.equal(sliceTooltip(root.children.find(node => node.label === 'Air accidents')!, root, TEXT)[0].rows[0].value, 'Not known');
+    const model = modelAt(data, 105);
+    const airPart = model.parts.find(node => node.name === 'Air accidents')!;
+    assert.equal(airPart.notRecorded, true);
     assert.match(unknownCauses(data, 105).find(item => item.label.startsWith('Air accidents'))!.label, /Unavailable/);
     air.unknownSpans = [];
-    assert.equal(treeAt(data, 105).children.find(node => node.label === 'Air accidents')!.value, 0);
+    assert.equal(modelAt(data, 105).parts.find(node => node.name === 'Air accidents'), undefined);
     assert.ok(!unknownCauses(data, 105).some(item => item.label.startsWith('Air accidents')));
   }
 });
@@ -376,20 +384,19 @@ test('an ended exchange keeps unrelated lend-lease designs exact while its cause
   const items = lossItems(data, live(105));
   const key = lossKey(data.causes[0], undefined);
   assert.equal(items.find(item => item.counted?.includes(key))!.incomplete, false);
-  const root = treeAt(data, 105);
-  const unrelated = walk(root).find(node => node.label === 'Design not recorded' && node.counted.has(key))!;
-  assert.doesNotMatch(unrelated.notes.join(' '), /Incomplete total/i);
-  assert.equal(amountText(unrelated, TEXT), '1');
+  const model = modelAt(data, 105);
+  const unrelated = walkParts(model.parts).find(node => node.name === 'Design not recorded')!;
+  assert.equal(unrelated.partial, undefined);
+  assert.equal(unrelated.text, '1');
   assert.equal(lossesTotal(items).incomplete, true);
 });
 
-test('counting starts at a complete drain; empty causes have no slice, row or unknown count', () => {
+test('counting starts at a complete drain; empty causes have no part or unknown count', () => {
   const data = destruction();
   data.causes = [cause({ source: { kind: 'destruction', reason: 'air_accident' }, domain: 'air', leaves: [] })];
-  assert.equal(treeAt(data, 100).valueUnknown, true);
-  assert.ok(!treeAt(data, 100).children.some(listed));
-  assert.ok(!treeAt(data, 101).children.some(listed));
-  assert.deepEqual(treeAt(data, 101).unknown, {});
+  assert.equal(modelAt(data, 100).total.known, false);
+  assert.equal(modelAt(data, 100).parts.length, 0);
+  assert.equal(modelAt(data, 101).parts.length, 0);
   assert.deepEqual(unknownCauses(data, 101), []);
   assert.match(destructionCountingNote(data, 100), /Unavailable/);
   assert.equal(destructionCountingNote(data, 101), '');
@@ -403,12 +410,11 @@ test('each gap reason appears once without claiming a known number of uncounted 
     { firstHour: 103, lastHour: 109, reason: 'destructionUnresolved', detail: 'Owner unresolved.' },
   ];
   assert.equal(unknownCauses(data, 105).length, 1);
-  const root = treeAt(data, 105);
-  const land = root.children.find(node => node.label === 'Mod combat')!;
-  assert.deepEqual(land.unknown, {});
-  assert.equal(land.notes.filter(note => note.includes('Owner unresolved.')).length, 0);
-  assert.ok(!sliceTooltip(land, root, TEXT)[0].rows.some(row => row.label === 'Not counted'));
-  assert.doesNotMatch(land.notes.join(' '), /lower bound from/);
+  const model = modelAt(data, 105);
+  const land = model.parts.find(node => node.name === 'Mod combat')!;
+  assert.ok(!(land.note ?? '').includes('Owner unresolved.'));
+  assert.ok(!tipFor(model, land).rows.some(row => row.label === 'Not counted'));
+  assert.doesNotMatch(land.note ?? '', /lower bound from/);
 });
 
 test('distinct details of the same reason survive in cause notes and Unknown causes once each', () => {
@@ -423,7 +429,7 @@ test('distinct details of the same reason survive in cause notes and Unknown cau
   const unknown = unknownCauses(data, 105);
   assert.equal(unknown.length, 1);
   assert.equal(new Set(unknown.map(item => item.id)).size, 1);
-  const notes = treeAt(data, 105).children.find(node => node.label === 'Mod combat')!.notes.join(' ');
+  const notes = modelAt(data, 105).parts.find(node => node.name === 'Mod combat')!.note ?? '';
   for (const detail of ['Country identity was unavailable.', 'Raw owner had no CountryLink.', 'A drain was lost.', 'A later interval was partial.']) {
     assert.equal(notes.split(detail).length - 1, 0);
     assert.equal(unknown.filter(item => item.label.includes(detail)).length, 0);
@@ -619,28 +625,25 @@ test('unresolved cause labels and dated lend-lease notes stay on their own items
   let data = reply();
   data.causes = [data.causes[0]];
   data.causes[0].name.text = null;
-  let root = treeAt(data, 105);
-  assert.equal(root.children[0].label, 'Mod combat');
-  assert.doesNotMatch(root.notes.join(' '), /no fully resolved cause label/);
-  assert.equal(root.exact, 350001n);
+  let model = modelAt(data, 105);
+  assert.equal(model.parts[0]!.name, 'Mod combat');
+  assert.doesNotMatch(model.total.reason ?? '', /no fully resolved cause label/);
+  assert.equal(lossesTotal(lossItems(data, live(105))).exact, 350001n);
   data = reply();
   data.causes = [data.causes[0]];
   data.causes[0].source = { kind: 'lendLeaseSunk' };
   data.causes[0].domain = 'other';
   data.causes[0].unknownSpans = [{ firstHour: 105, lastHour: 109, reason: 'endedAfterLastRead', detail: null }];
   data.causes[0].leaves[0].lowerBoundFrom = 105;
-  root = treeAt(data, 105);
-  const causeNode = root.children[0];
-  const design = causeNode.children[0].children[0];
-  assert.doesNotMatch(sliceTooltip(design, root, TEXT)[0].note ?? '', /Incomplete from Hour/);
-  for (const node of [root, causeNode, causeNode.children[0]]) assert.doesNotMatch(node.notes.join(' '), /Incomplete from Hour 105/);
-  assert.match(root.notes.join(' '), /Incomplete total/);
-  assert.equal(root.exact, 350001n);
-  assert.equal(root.count, 1);
-  const items = lossItems(data, live(105));
-  for (const levels of [[false, true, true], [true, true, false], [false, false, false]]) {
-    const hidden = groupTree(items, ROOT, levels, lossesTotal(items));
-    assert.doesNotMatch(hidden.notes.join(' '), /no fully resolved cause label|A lower bound from/);
+  model = modelAt(data, 105);
+  const causeNode = model.parts[0]!;
+  const design = causeNode.children![0]!.children![0]!;
+  assert.doesNotMatch(tipFor(model, design).note ?? '', /Incomplete from Hour/);
+  assert.equal(model.total.atLeast, true);
+  assert.equal(lossesTotal(lossItems(data, live(105))).exact, 350001n);
+  for (const levels of [[false, true, true], [true, true, false]]) {
+    const hidden = modelAt(data, 105, levels);
+    assert.doesNotMatch(hidden.total.reason ?? '', /no fully resolved cause label|A lower bound from/);
   }
 });
 
@@ -648,9 +651,9 @@ test('a view containing only unknown amounts has no fabricated zero subtotal', (
   const data = destruction();
   data.causes = [cause({ source: { kind: 'destruction', reason: 'air_accident' }, domain: 'air', leaves: [],
     unknownSpans: [{ firstHour: 102, lastHour: 109, reason: 'destructionGap', detail: 'A drain was lost.' }] })];
-  const root = treeAt(data, 105);
-  assert.equal(amountText(root, TEXT), 'Not known');
-  assert.equal(root.exact, null);
+  const model = modelAt(data, 105);
+  assert.equal(model.total.text, 'Not recorded');
+  assert.equal(model.total.value, null);
 });
 
 test('an unstarted destruction source has no fabricated zero subtotal', () => {
@@ -669,32 +672,26 @@ test('Combat Log keeps land states and exposes shared air destruction coverage s
   assert.deepEqual(destructionLegend(data, whole, TOKENS).map(item => item.label), ['Incomplete']);
 });
 
-test('resolved cause labels keep game templates out of their slice notes', () => {
+test('resolved cause labels keep game templates out of their notes', () => {
   const data = reply();
   data.causes[0].name = { key: 'FIXTURE_RESOLVED_LOSS_HINT', template: 'A completed source label for this loss category', text: 'Sunk ships' };
-  const notes = (tree: ReturnType<typeof treeAt>) => sliceTooltip(tree.children.find(node => node.label === 'Sunk ships')!, tree, TEXT)[0].note ?? '';
-  assert.doesNotMatch(notes(treeAt(data, 105)), /Game text/);
+  const notes = (model: BreakdownModel) => tipFor(model, model.parts.find(node => node.name === 'Sunk ships')!).note ?? '';
+  assert.doesNotMatch(notes(modelAt(data, 105)), /Game text/);
   data.causes[0].name = { key: 'FIXTURE_PENDING_LOSS_HINT', template: 'Synthetic category amount: $AMOUNT|H$', text: 'Sunk ships' };
-  assert.doesNotMatch(notes(treeAt(data, 105)), /Game text/);
+  assert.doesNotMatch(notes(modelAt(data, 105)), /Game text/);
 });
 
 
-test('negative corrections retain exact digits, legend access and zero arc geometry through folding', () => {
+test('negative corrections retain exact digits and no positive share', () => {
   const data = reply(); data.causes = [data.causes[0]];
   data.causes[0].leaves[0].points = [{ hour: 100, totalRaw: '-9007199254741499' }];
   assert.equal(validateLossesReply(data), data);
-  const root = treeAt(data, 100);
-  const part = root.children[0];
-  assert.equal(root.exact, -9007199254741499n);
-  assert.equal(root.value, Number(-9007199254741499n));
-  assert.equal(listed(part), true);
-  assert.equal(arcTargets(root, root, 'share').get(part.id)!.shown, false);
-  const text = TEXT;
-  assert.equal(amountText(part, text), 'Returned: \u221290,071,992,547');
-  assert.match(sunburstSummary(root, text), /Returned:.*90,071,992,547/);
-  assert.equal(sliceTooltip(part, root, text)[0].rows.some(row => row.label.startsWith('Of ')), false);
-  const folded = foldTree(root, 1);
-  assert.equal(folded.exact, root.exact);
+  const model = modelAt(data, 100);
+  const part = model.parts[0]!;
+  assert.equal(lossesTotal(lossItems(data, live(100))).exact, -9007199254741499n);
+  assert.equal(part.text, 'Returned: \u221290,071,992,547');
+  assert.equal(part.share, null);
+  assert.equal(tipFor(model, part).rows.some(row => row.label.startsWith('Share')), false);
 });
 
 test('a missing signed interval is an incomplete subtotal rather than a mathematical lower bound', () => {
@@ -702,28 +699,24 @@ test('a missing signed interval is an incomplete subtotal rather than a mathemat
   data.causes = [cause({ source: { kind: 'destruction', reason: 'land_combat' },
     leaves: [leaf({ points: [{ hour: 100, totalRaw: '-1200000' }], lowerBoundFrom: 102 })],
     unknownSpans: [{ firstHour: 102, lastHour: 109, reason: 'destructionGap', detail: 'Missing drain' }] })];
-  const root = treeAt(data, 105);
-  const text = TEXT;
-  assert.match(amountText(root, text), /^Returned: \u221212/);
+  const model = modelAt(data, 105);
+  assert.match(model.total.text, /^Returned: \u221212/);
   assert.equal(lossesTotal(lossItems(data, live(105))).incomplete, true);
-  assert.equal(root.finalUnknown, true);
-  assert.doesNotMatch(amountText(root, text), /at least/);
+  assert.equal(model.total.atLeast, true);
+  assert.doesNotMatch(model.total.text, /at least/);
   assert.match(unknownCauses(data, 105)[0].label, /Incomplete/);
-  assert.equal(root.exact, -1200000n);
+  assert.equal(lossesTotal(lossItems(data, live(105))).exact, -1200000n);
 });
 
 
-test('a measured subtotal keeps exact signed data and Fill uncertainty without claiming full-total percentages', () => {
+test('a measured subtotal keeps exact signed data without claiming full-total percentages', () => {
   const data = destruction();
   data.causes[0].unknownSpans = [{ firstHour: 104, lastHour: 109, reason: 'destructionGap', detail: 'Missing native contribution' }];
-  const items = lossItems(data, live(105)), total = lossesTotal(items);
-  const root = groupTree(items, ROOT, [], total);
-  const text = { ...TEXT, shares: !total.incomplete };
-  assert.equal(root.exact, 450001n);
-  assert.equal(root.finalUnknown, true);
-  assert.equal(arcTargets(root, root, 'share').get(root.children[0].id)!.shown, true);
-  assert.equal(sliceTooltip(root.children[0], root, text)[0].rows.some(row => row.label.startsWith('Of ')), false);
-  assert.doesNotMatch(sunburstSummary(root, text), /%/);
+  const model = modelAt(data, 105);
+  assert.equal(lossesTotal(lossItems(data, live(105))).exact, 450001n);
+  assert.equal(model.total.atLeast, true);
+  assert.equal(model.parts[0]!.share, null);
+  assert.equal(tipFor(model, model.parts[0]!).rows.some(row => row.label.startsWith('Share')), false);
 });
 
 test('the keyboard steps through sunk ships beside the series, the nearer answer winning', () => {

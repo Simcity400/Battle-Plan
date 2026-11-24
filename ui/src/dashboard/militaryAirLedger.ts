@@ -13,7 +13,6 @@ import { formatDateTime } from './calendar.ts';
 import { formatRatio } from '../charts/butterfly/layout.ts';
 import type { LabelAt } from '../charts/race/lines';
 import type { TooltipContent } from '../charts/tooltip';
-import type { SunburstText } from '../charts/sunburst/layout';
 
 export type MilitaryAirLedger = Omit<MilitaryAirReply, 'window' | 'notes' | 'countedFrom' | 'openings'>
   & { countedFrom?: number | null; openings?: MilitaryAirOpening[] };
@@ -304,7 +303,6 @@ export function ledgerLabel(raw: bigint | null, family: MilitaryAirLedger['famil
   const text = formatAmount(raw, ledgerDigits(family));
   return text === '0' && raw !== 0n ? formatRate(raw, ledgerDigits(family)) : text;
 }
-export const BOMBING_SUNBURST_TEXT: SunburstText = { format: (_value, exact) => ledgerLabel(exact, 'bombing'), unit: 'building levels', valueLabel: 'Damage', countLabel: 'Locations' };
 export const AIR_LEDGER_NOTE = 'Loss totals include corrections.';
 export const LEDGER_GAP_NOTE = 'Some losses may be missing.';
 export const BOMBING_GAP_NOTE = 'Some damage may be missing.';

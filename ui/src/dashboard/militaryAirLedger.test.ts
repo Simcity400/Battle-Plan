@@ -1,7 +1,7 @@
 import { countryKey } from './countryKey.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BOMBING_SUNBURST_TEXT, airLossParts, partAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerHeaderTag, ledgerPinnedIdentity, ledgerRuns, ledgerTotals, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
+import { airLossParts, ledgerLabel, partAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerHeaderTag, ledgerPinnedIdentity, ledgerRuns, ledgerTotals, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
 import type { MilitaryAirPart } from '../generated/dashboard';
 import type { MilitaryAirLedger } from './militaryAirLedger';
 
@@ -187,8 +187,7 @@ test('line hover uses exact wide signed values, native/read dates, dated labels 
 });
 
 test('the bombing breakdown writes building levels to two decimals, and a sliver of damage never as none', () => {
-  assert.equal(BOMBING_SUNBURST_TEXT.format(77.2204602, 772204602n), '77.22');
-  assert.equal(BOMBING_SUNBURST_TEXT.format(108.3804602, 1083804602n), '108.38');
-  assert.equal(BOMBING_SUNBURST_TEXT.format(0.0001, 1000n), '0.0001');
-  assert.equal(BOMBING_SUNBURST_TEXT.format(0, null), 'Not recorded');
+  assert.equal(ledgerLabel(772204602n, 'bombing'), '77.22');
+  assert.equal(ledgerLabel(1083804602n, 'bombing'), '108.38');
+  assert.equal(ledgerLabel(1000n, 'bombing'), '0.0001');
 });

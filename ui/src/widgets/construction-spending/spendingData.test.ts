@@ -1,12 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { arcTargets, foldTree, groupTree, listed, sliceTooltip, unknownTotal } from '../../charts/sunburst/layout.ts';
 import { tooltipText } from '../../charts/tooltip.ts';
+import { createBoundedReadView, displayedHour, type FamilyTheme } from '../../families/contract.ts';
+import { buildBreakdownTooltip, resolveDrillLevel, type BreakdownPart } from '../../families/breakdown/model.ts';
+import { constructionSpendingProjection } from './constructionSpendingProjection.ts';
 import { footnote, formatSpent, hasConstruction, presentKey, spendingItems, validateSpendingReply } from './spendingData.ts';
 import { OPTIONS } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { icDecimals } from '../../dashboard/icDecimals.ts';
 import type { ConstructionSpendingReply, SpendingLeaf } from '../../generated/dashboard';
+
+const THEME = {
+  surface: '#11141a', text: '#e8edf5', muted: '#8c96a6', line: '#2a303c', lineSoft: '#222832',
+  accent: '#4f8ff7', blue: '#4f8ff7', red: '#e05a5a', amber: '#d6a244', green: '#45a86b', grey: '#6e7785',
+  hatch: '#333b48', font: 'sans-serif', fontSize: { small: 11, body: 12 }, lineWidth: 1, hatchSpacing: 6,
+} as FamilyTheme;
+const project = (data: ConstructionSpendingReply, hour: number, extra: { from?: number | null; digits?: number; levels?: readonly boolean[] } = {}) =>
+  constructionSpendingProjection.project(
+    createBoundedReadView({ hour: displayedHour(hour), panels: new Map([['spending', data]]) }),
+    { from: extra.from ?? null, firstHour: 100, digits: extra.digits ?? 0, levels: extra.levels ?? [true, true, true] },
+  );
 
 const leaf = (patch: Partial<SpendingLeaf> = {}): SpendingLeaf => ({
   repair: false, kind: 'building', building: 777, state: 5, toState: null,
@@ -17,7 +30,6 @@ const reply = (leaves: SpendingLeaf[] = []): ConstructionSpendingReply => ({
   types: [{ id: 777, token: 'synthetic_mod_building', name: 'Synthetic building', icon: null }], states: [{ id: 5, name: 'Synthetic state' }],
 });
 const WHOLE = { from: null, hour: 148, end: 148 };
-const text = (digits: number) => ({ format: (value: number, exact: bigint | null) => formatSpent(value, exact, 100000, digits), unit: 'IC', valueLabel: 'Spent' });
 
 test('spending names both railway endpoints from the reply, and a state the content does not name keeps its id and amount', () => {
   const data = reply([leaf({ kind: 'railway', toState: 6, spent: [{ knownAt: 124, totalRaw: '99' }] })]);
@@ -32,17 +44,16 @@ test('spending names both railway endpoints from the reply, and a state the cont
   assert.equal(missing.exact, known.exact);
   const note = 'State 5: no name in the recorded content State 6: not named by the reply';
   assert.equal(missing.note, note);
-  for (const levels of [[true, true, true], [false, true, false], [false, false, false]]) {
-    const root = groupTree([missing], { id: 'all', label: 'All construction' }, levels);
-    let node = root;
-    while (node.children.length) node = node.children[0];
-    assert.equal(node.exact, 99n);
-    assert.equal(node.valueUnknown, false);
-    for (const tip of sliceTooltip(node, root, text(5))) {
-      assert.equal(tip.rows[0].value, '0.00099 IC');
-      assert.equal(tip.note, note);
-      assert.ok(tooltipText(tip).endsWith(`; ${note}`));
-    }
+  for (const levels of [[true, true, true], [false, true, false]]) {
+    const model = project(data, 124, { digits: 5, levels });
+    let node: BreakdownPart = model.parts[0]!;
+    while (node.children?.length) node = node.children[0]!;
+    assert.equal(node.text, '0.00099');
+    assert.equal(node.notRecorded, undefined);
+    const tip = buildBreakdownTooltip(model, resolveDrillLevel(model, []), node.key, THEME)!;
+    assert.equal(tip.rows[0].value, '0.00099 IC');
+    assert.equal(tip.note, note);
+    assert.ok(tooltipText(tip).endsWith(`; ${note}`));
   }
 });
 
@@ -69,7 +80,8 @@ test('a total the recording does not hold is not measured, never zero, and its e
   const after = spendingItems(data, { from: null, hour: 148, end: 148 })[0];
   assert.deepEqual([after.exact, after.value, after.unknownValue], [null, null, true]);
   assert.deepEqual(after.unknown, { notRecorded: 1 });
-  assert.equal(groupTree([after], { id: 'all', label: 'All' }).valueUnknown, true);
+  assert.equal(project(data, 148).total.atLeast, true);
+  assert.equal(project(data, 148).parts[0]!.notRecorded, true);
   assert.equal(footnote(data, [after], WHOLE), 'Partial amounts leave out output that wasn’t recorded exactly.');
 });
 
@@ -90,14 +102,11 @@ test('output not recorded for a stretch leaves the counted amount partial until 
 test('linked output keeps what was counted and makes the whole partial, including a later range', () => {
   const data = reply([leaf({ spent: [{ knownAt: 100, totalRaw: '90' }],
     unknown: [{ knownAt: 124, reason: 'linkedOutput', project: 'p', until: null }] })]);
-  const whole = groupTree(spendingItems(data, WHOLE), { id: 'all', label: 'All' });
-  assert.equal(whole.valueUnknown, false);
-  assert.equal(whole.exact, 90n);
-  assert.deepEqual(whole.unknown, { linkedOutput: 1 });
-  assert.equal(whole.finalUnknown, true);
-  const later = groupTree(spendingItems(data, { from: 130, hour: 148, end: 148 }), { id: 'all', label: 'All' });
-  assert.equal(later.exact, 0n);
-  assert.deepEqual(later.unknown, { linkedOutput: 1 });
+  const whole = project(data, 148, { digits: 5 });
+  assert.equal(whole.total.text, '0.0009');
+  assert.equal(whole.total.partial, true);
+  const later = project(data, 148, { from: 130, digits: 5 });
+  assert.equal(later.total.partial, true);
 });
 
 test('ownerless output makes only the whole partial, in ranges that include it', () => {
@@ -109,11 +118,10 @@ test('ownerless output makes only the whole partial, in ranges that include it',
   const whole = spendingItems(data, WHOLE);
   assert.deepEqual(whole.at(-1)?.path, []);
   assert.deepEqual(whole.at(-1)?.unknown, { ownerUnknown: 1 });
-  const tree = groupTree(whole, { id: 'all', label: 'All' });
-  assert.equal(tree.valueUnknown, false);
-  assert.equal(tree.exact, 70n);
-  assert.deepEqual(tree.unknown, { ownerUnknown: 1 });
-  assert.deepEqual(tree.children.map(child => child.label), ['New buildings']);
+  const model = project(data, 148, { digits: 5 });
+  assert.equal(model.total.text, '0.0007');
+  assert.equal(model.total.partial, true);
+  assert.deepEqual(model.parts.map(child => child.name), ['New buildings']);
   assert.equal(footnote(data, whole, WHOLE), 'Output of 1 project not traced to a country isn’t counted.');
   const window = { from: 125, hour: 148, end: 148 };
   const later = spendingItems(data, window);
@@ -134,15 +142,14 @@ test('known amounts stay drawn and listed when output elsewhere is not counted',
   data.beforeFirstRead = 15;
   const items = spendingItems(data, WHOLE);
   assert.ok(hasConstruction(items));
-  const root = groupTree(items, { id: 'all', label: 'All construction' });
-  assert.equal(root.valueUnknown, false);
-  assert.equal(root.exact, 23049375000n + 100000n + 916375000n);
-  assert.equal(unknownTotal(root), 2);
-  assert.deepEqual(root.children.filter(listed).map(child => child.label), ['New buildings', 'Repairs']);
-  assert.ok(root.children.every(child => !child.valueUnknown));
-  const targets = arcTargets(root, root, 'share');
-  for (const child of root.children) assert.equal(targets.get(child.id)?.shown, true, child.label);
-  assert.equal(sliceTooltip(root.children[0], root, text(0))[0].rows[0].value, '230,495 IC · partial');
+  const model = project(data, 148);
+  assert.equal(model.total.partial, true);
+  assert.equal(model.total.value, Number(23049375000n + 100000n + 916375000n));
+  assert.deepEqual(model.parts.map(child => child.name), ['New buildings', 'Repairs']);
+  assert.ok(model.parts.every(child => !child.notRecorded));
+  const tip = buildBreakdownTooltip(model, resolveDrillLevel(model, []), model.parts[0]!.key, THEME)!;
+  assert.equal(tip.rows[0].value, '230,495 IC');
+  assert.equal(model.parts[0]!.partial, true);
   assert.equal(footnote(data, items, WHOLE), 'Earlier spending on 15 projects isn’t counted. Partial amounts leave out output that wasn’t recorded exactly. '
     + 'Output of 1 project not traced to a country isn’t counted. Output in hours that weren’t recorded isn’t counted.');
   const owned = { ...data, beforeFirstRead: 0, unattributed: [] };
@@ -179,9 +186,9 @@ test('hiding the kind level joins totals without duplicating a project', () => {
     leaf({ spent: [{ knownAt: 124, totalRaw: '90' }] }),
     leaf({ repair: true, spent: [{ knownAt: 124, totalRaw: '10' }] }),
   ]);
-  const tree = groupTree(spendingItems(data, { from: null, hour: 124, end: 148 }), { id: 'all', label: 'All' }, [false, true, false]);
-  assert.equal(tree.children[0].exact, 100n);
-  assert.equal(tree.children[0].count, 1);
+  const model = project(data, 124, { digits: 5, levels: [false, true, false] });
+  assert.equal(model.parts[0]!.text, '0.001');
+  assert.equal(model.parts[0]!.value, 100);
 });
 
 test('the output contract refuses malformed steps, dates and reasons the recording does not give', () => {
@@ -200,23 +207,20 @@ test('the output contract refuses malformed steps, dates and reasons the recordi
   assert.equal(footnote({ ...data, beforeFirstRead: 2 }, [], WHOLE), 'Earlier spending on 2 projects isn’t counted.');
 });
 
-test('folded state rows retain name reasons beside exact recorded output', () => {
+test('state rows retain name reasons beside exact recorded output', () => {
   const data = reply([5, 6, 7].map((state, index) => leaf({ state,
     spent: [{ knownAt: 124, totalRaw: String((index + 1) * 100) }],
     projects: [{ project: `p${state}`, firstRead: 100, until: null }],
   })));
   data.states = [{ id: 5, name: null }, { id: 6, name: null }, { id: 7, name: null }];
-  const items = spendingItems(data, { from: null, hour: 124, end: 148 });
-  const root = foldTree(groupTree(items, { id: 'all', label: 'All construction' }), 2);
-  const states = root.children[0].children[0].children;
-  const other = states.find(node => node.other)!;
-  assert.equal(root.exact, 600n);
-  assert.equal(root.valueUnknown, false);
-  assert.equal(other.exact, 300n);
-  for (const tip of sliceTooltip(other, root, text(5))) {
-    assert.equal(tip.rows[0].value, '0.003 IC');
-    const note = 'State 6: no name in the recorded content State 5: no name in the recorded content';
-    assert.equal(tip.note, note);
-    assert.ok(tooltipText(tip).endsWith(`; ${note}`));
-  }
+  const model = project(data, 124, { digits: 5 });
+  const states = model.parts[0]!.children![0]!.children!;
+  assert.equal(model.total.text, '0.006');
+  assert.equal(model.total.known, true);
+  assert.equal(states.length, 3);
+  const state6 = states.find(node => node.name === 'State 6')!;
+  const tip = buildBreakdownTooltip(model, resolveDrillLevel(model, []), state6.key, THEME)!;
+  assert.equal(tip.rows[0].value, '0.002 IC');
+  assert.equal(tip.note, 'State 6: no name in the recorded content');
+  assert.ok(tooltipText(tip).endsWith('; State 6: no name in the recorded content'));
 });

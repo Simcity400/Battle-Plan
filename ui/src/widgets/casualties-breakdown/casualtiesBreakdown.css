@@ -1,5 +1,4 @@
 .casualty-breakdown, .casualty-breakdown-main, .casualty-breakdown-details { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.casualty-breakdown-main > .sunburst-host { flex: 1; min-height: 0; }
 .casualty-breakdown-total { margin: 4px 10px; font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .casualty-breakdown-total b { color: var(--text); }
 .casualty-breakdown-main > .button { align-self: flex-start; margin: 4px 10px; }

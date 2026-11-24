@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
-import { sunburstTree } from '../../charts/sunburst/layout.ts';
+import { createBoundedReadView, displayedHour } from '../../families/contract.ts';
+import { productionSpendingProjection } from './productionSpendingProjection.ts';
 import { amountIn, createWindowTracker, designAmount, displayedSpendingWindows, kindAmount, mergeSpending, noProductionAt, productionSpendingItems, selectSpendingState, spendingDesigns, spendingEmptyLabel, spendingFinals,
   spendingRecorded, spendingTotal, spendingWidgetGate, validateProductionSpendingReply, validateSpendingData } from './spendingData.ts';
 
@@ -258,7 +259,7 @@ test('a design already classified by archetype keeps its recorded type even when
     { exact: 1000000n, reason: null });
 });
 
-test('withholding a future final keeps large designs sorted ahead of smaller ones instead of folding them into Other', () => {
+test('large designs stay sorted ahead of smaller ones without folding', () => {
   const leaves: ProductionSpendingLeaf[] = Array.from({ length: 9 }, (_, index) => {
     const id = String(index + 1);
     const raw = index === 8 ? '100000000' : '100000';
@@ -270,13 +271,13 @@ test('withholding a future final keeps large designs sorted ahead of smaller one
     total: [known(100, 171, totalRaw)], totalWithoutRefits: [known(100, 171, totalRaw)],
     equipmentTotal: [known(100, 171, totalRaw)], equipmentTotalWithoutRefits: [known(100, 171, totalRaw)],
   });
-  const designs = spendingDesigns(data, true, 'military');
-  const window = { from: null, hour: 130, end: 171 };
-  const items = productionSpendingItems(data, window, designs, spendingFinals(data, designs, window.from, window.end, window.hour), 'military', true);
-  const tree = sunburstTree(items, { id: 'all', label: 'All military production' });
-  const land = tree.children.find(child => child.key === 'land')!;
-  assert.ok(land.children.some(child => child.key === 'mod_t9' && !child.other), '1,000 IC design stays shown individually');
-  assert.equal(land.children.find(child => child.key === 'mod_t9')?.finalUnknown, true);
+  const model = productionSpendingProjection.project(
+    createBoundedReadView({ hour: displayedHour(130), panels: new Map([['spending', data]]) }),
+    { kind: 'military', refits: true, from: null, firstHour: 100, digits: 0, levels: [true, true, true] },
+  );
+  const land = model.parts.find(child => child.key === 'land')!;
+  assert.equal(land.children![0]!.name, 'Type 9', '1,000 IC design stays shown first');
+  assert.equal(land.children!.length, 9);
 });
 
 test('an unread displayed window with lostOutput stays recorded so its reason is exposed instead of not-recorded', () => {

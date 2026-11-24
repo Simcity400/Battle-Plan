@@ -4,7 +4,7 @@ import { isOrderedSpans, runAt, spansCovered } from '../../charts/series.ts';
 import { CATEGORY_LIMIT } from '../../charts/palette.ts';
 import { stackEdges } from '../../charts/stack.ts';
 import type { StackModel } from '../../charts/stack';
-import type { SunburstItem } from '../../charts/sunburst/Sunburst';
+import type { BreakdownLeafItem as SunburstItem } from '../../families/breakdown/tree';
 import { int, object, opaqueTag, signed32, signed64, unsigned64 } from '../../dashboard/validation.ts';
 import type { HourSpan } from '../../generated/dashboard';
 import type { CasualtyBreakdownReply } from '../../generated/dashboard';

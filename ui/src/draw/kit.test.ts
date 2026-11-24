@@ -80,6 +80,7 @@ function makeFakeCtx() {
       if (prev) Object.assign(this, prev);
     },
     beginPath() {},
+    closePath() {},
     clip() {},
     moveTo(x: number, y: number) { ops.push({ op: 'moveTo', args: [x, y], alpha: this.globalAlpha, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
     lineTo(x: number, y: number) { ops.push({ op: 'lineTo', args: [x, y], alpha: this.globalAlpha, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
@@ -246,4 +247,13 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   assert.equal(tokens.shortage, '#ff6b6f');
   assert.equal(tokens.dateTabBg, THEME.raised);
   assert.equal(tokens.hoverTabBg, THEME.text);
+
+  const chevCtx = makeFakeCtx();
+  drawChevron(chevCtx.ctx, 4, 12, false, THEME);
+  drawChevron(chevCtx.ctx, 20, 12, true, THEME);
+  assert.equal(chevCtx.ops.filter(op => op.op === 'fill').length, 2);
+
+  const hatchCtx = makeFakeCtx();
+  drawHatchClip(hatchCtx.ctx, 0, 0, 40, 20, THEME);
+  assert.ok(hatchCtx.ops.some(op => op.op === 'stroke' && op.strokeStyle === THEME.hatch));
 });

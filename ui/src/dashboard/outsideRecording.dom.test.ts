@@ -34,7 +34,7 @@ const STUBS: Record<string, string> = {
   '/widgets/equipment-losses/lossesSource.ts': `export const stretchWindow = (_reply, window) => ({ ...window, since: null }); export const exactLossHour = () => true;
     export const useLossHistory = () => ({ data: globalThis.__fixture.losses, retry() {}, onSummaryView() {}, onHover() {}, navigate() {}, exactAt: async () => undefined });`,
   '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__fixture.groups, complete: true, retry() {} });',
-  '/charts/sunburst/Sunburst.tsx': 'export default () => null;',
+  '/families/breakdown/FamilyBreakdownHost.tsx': `import { createElement } from 'react'; export default props => props.blockedState ?? createElement('p', null, 'Losses: ' + props.label);`,
   '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
   '/widgets/trade-flows/useTradeFlows.ts': `export const tradeFlowsRequest = () => null; export const useTradeWindows = () => ({ data: undefined, retry() {} });
     export const useTradeFlows = (_widget, runtime) => ({ track: runtime.tracks[0], all: true, resolved: null, groups: {}, scope: null, data: globalThis.__fixture.trade, error: undefined, retry() {}, extent: [100, 109] });`,

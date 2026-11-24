@@ -870,6 +870,58 @@ export function drawPartialTab(
   return { width: PARTIAL_TAB_WIDTH, height: PARTIAL_TAB_HEIGHT };
 }
 
+export function drawHatchClip(
+  ctx: Canvas2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  theme: Pick<FamilyTheme, 'hatch' | 'hatchSpacing'>,
+  options?: { readonly alpha?: number; readonly spacing?: number; readonly lineWidth?: number },
+): void {
+  if (width <= 0 || height <= 0) return;
+  const step = Math.max(3, options?.spacing ?? theme.hatchSpacing);
+  ctx.save();
+  ctx.strokeStyle = theme.hatch;
+  ctx.globalAlpha = options?.alpha ?? 0.55;
+  ctx.lineWidth = options?.lineWidth ?? 1.2;
+  for (let at = x - height; at < x + width; at += step) {
+    ctx.beginPath();
+    ctx.moveTo(at, y + height);
+    ctx.lineTo(at + height, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+export function drawChevron(
+  ctx: Canvas2D,
+  x: number,
+  middleY: number,
+  expanded: boolean,
+  theme: Pick<FamilyTheme, 'muted'>,
+  options?: { readonly size?: number; readonly color?: string },
+): void {
+  const size = options?.size ?? 6;
+  const half = size / 2;
+  const cx = x + half;
+  ctx.save();
+  ctx.fillStyle = options?.color ?? theme.muted;
+  ctx.beginPath();
+  if (expanded) {
+    ctx.moveTo(cx - half, middleY - half * 0.55);
+    ctx.lineTo(cx + half, middleY - half * 0.55);
+    ctx.lineTo(cx, middleY + half * 0.75);
+  } else {
+    ctx.moveTo(cx - half * 0.45, middleY - half);
+    ctx.lineTo(cx + half * 0.75, middleY);
+    ctx.lineTo(cx - half * 0.45, middleY + half);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
 export function drawGapBand(
   ctx: Canvas2D,
   x: number,

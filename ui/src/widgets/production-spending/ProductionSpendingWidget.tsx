@@ -1,73 +1,96 @@
-import { useEffect, useMemo, useRef } from 'react';
-import type { ReactNode } from 'react';
+import { useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
-import Sunburst from '../../charts/sunburst/Sunburst';
-import type { SunburstText, SunburstValues } from '../../charts/sunburst/Sunburst';
-import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions';
-import { liveAt } from '../../charts/live';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { icDecimals } from '../../dashboard/icDecimals';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackMotion } from '../../dashboard/playback';
-import { OPTIONS } from './definition';
-import type { FactoryKind } from './definition';
-import { LEVELS, UNIT, formatAppliedIc, noProductionAt, productionSpendingItems, spendingDesigns, spendingEmptyLabel, spendingFinals, spendingTotal,
-  spendingRecorded, spendingWidgetGate, validateProductionSpendingReply } from './spendingData';
+import FamilyBreakdownHost from '../../families/breakdown/FamilyBreakdownHost.tsx';
+import { breakdownViewOf, levelsShown } from '../../families/breakdown/options.ts';
+import { OPTIONS, type FactoryKind } from './definition';
+import { productionSpendingProjection, type ProductionSpendingProjectionOptions } from './productionSpendingProjection.ts';
+import { LEVELS, spendingRecorded, spendingWidgetGate, validateProductionSpendingReply } from './spendingData';
 import { useSpending } from './useSpending';
-import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { trackHourOf } from '../../dashboard/settledHour';
 
-const NO_WARNINGS: string[] = [];
-const ROOTS: Record<FactoryKind, { id: string; label: string }> = {
-  military: { id: 'all', label: 'All military production' }, dockyards: { id: 'all', label: 'All naval production' },
-};
+const EMPTY_SUBS = [] as const;
 
-export default function ProductionSpendingWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+export default function ProductionSpendingWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
-  const settings = sunburstSettings(options);
+  const view = breakdownViewOf(options);
+  const namesInRing = options.namesInRing !== false;
   const kind: FactoryKind = options.factories === 'dockyards' ? 'dockyards' : 'military';
   const refits = options.refits === true;
-  const headKey = useRef<(hour: number) => string>(() => '');
-  const spending = useSpending(widget, runtime, active, false, validateProductionSpendingReply, hour => headKey.current(hour));
-  useShownEachFrame(runtime.clock, () => spending.data && spending.track ? trackHourOf(widget, spending.track, runtime.tracks, runtime.clock.getHour()) : null);
-  const { track, tag, data, error, retry, hour, from, end, headAt } = spending;
-  const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const designs = useMemo(() => data ? spendingDesigns(data, refits, kind) : [], [data, refits, kind]);
-  const empty = (at: number) => !!data && end != null && noProductionAt(data, at, refits) && spendingTotal(data, designs, { from, hour: at, end }, kind, refits).exact === 0n;
-  const emptyLabel = (at: number) => data ? spendingEmptyLabel(data, designs, at, from, kind, refits) : 'Loading production spending…';
-  headKey.current = at => JSON.stringify([empty(at), emptyLabel(at)]);
-  const valuesAt = (at: number): SunburstValues => !data || end == null ? { items: [] } : {
-    items: productionSpendingItems(data, { from, hour: at, end }, designs, spendingFinals(data, designs, from, end, at), kind, refits),
-    authoritativeTotal: spendingTotal(data, designs, { from, hour: at, end }, kind, refits),
-  };
-  const build = useRef(valuesAt);
-  build.current = valuesAt;
-  const values = useMemo(() => hour == null ? { items: [] } : valuesAt(hour), [data, designs, kind, refits, from, hour, end]);
-  const live = useMemo(() => headAt && data && hour != null ? liveAt(runtime.clock, position => Math.floor(headAt(position) ?? hour), at => build.current(at)) : undefined,
-    [headAt, runtime.clock, data, designs, kind, refits, from, end]);
+  const spending = useSpending(widget, runtime, active, false, validateProductionSpendingReply, () => '');
+  const { track, tag, data, error, retry, hour, from, end } = spending;
+  const following = widget.time.mode === 'follow';
   const levelKey = LEVELS.map(level => options[level] !== false).join();
   const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]);
   const decimals = data?.decimals ?? 5;
   const digits = icDecimals(options, decimals);
-  const label = hour == null ? 'Loading production spending…' : emptyLabel(hour);
-  const text = useMemo<SunburstText>(() => ({
-    format: (value, exact) => formatAppliedIc(value, exact, decimals, digits), unit: UNIT, valueLabel: 'IC spent', countLabel: 'Designs',
-    emptyLabel: label,
-  }), [decimals, digits, label]);
-  useEffect(() => {
-    onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, onDiagnostics]);
 
-  const gate = spendingWidgetGate({ hasTarget: Boolean(track && tag), hasError: Boolean(error), branch: track?.branch, hour, end, hasData: Boolean(data), recorded: Boolean(data && spendingRecorded(data)) });
-  let body: ReactNode;
-  if (gate === 'empty') body = <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its production spending." />;
-  else if (gate === 'error') body = <WidgetState kind="error" failure={error!} onRetry={retry} />;
-  else if (gate === 'outside') body = <WidgetState kind="outside" />;
-  else if (gate === 'loading') body = <WidgetState kind="loading" label="Loading production spending…" />;
-  else if (gate === 'unavailable') body = <WidgetState kind="unavailable" message="Production spending wasn’t recorded." />;
-  else if (empty(hour!)) body = <WidgetState kind="empty" icon="sunburst" message="No military production yet." />;
-  else body = <Sunburst label={widget.title} items={values.items} root={ROOTS[kind]} levels={levels} text={text} settings={settings}
-    authoritativeTotal={values.authoritativeTotal} live={live} hoursPerSecond={hoursPerSecond} active={active} />;
-  return body;
+  const projectionOptions = useMemo<ProductionSpendingProjectionOptions>(() => ({
+    kind,
+    refits,
+    from,
+    firstHour: track?.branch.firstHour ?? 0,
+    digits,
+    levels,
+  }), [kind, refits, from, track?.branch.firstHour, digits, levels]);
+
+  const staticSources = useMemo(() => {
+    if (!data || !track) return null;
+    return {
+      panels: { spending: data },
+      hour: track.branch.firstHour,
+      endHour: track.branch.lastHour,
+    };
+  }, [data, track]);
+
+  const bounds = useMemo<readonly [number, number] | null>(
+    () => track ? [track.branch.firstHour, track.branch.lastHour] : null,
+    [track],
+  );
+
+  const gate = spendingWidgetGate({
+    hasTarget: Boolean(track && tag),
+    hasError: Boolean(error),
+    branch: track?.branch,
+    hour,
+    end,
+    hasData: Boolean(data),
+    recorded: Boolean(data && spendingRecorded(data)),
+  });
+
+  const blocked = gate === 'empty'
+    ? <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its production spending." />
+    : gate === 'error'
+      ? <WidgetState kind="error" failure={error!} onRetry={retry} />
+      : gate === 'outside'
+        ? <WidgetState kind="outside" />
+        : gate === 'loading'
+          ? <WidgetState kind="loading" label="Loading production spending…" />
+          : gate === 'unavailable'
+            ? <WidgetState kind="unavailable" message="Production spending was not recorded." />
+            : null;
+
+  return (
+    <FamilyBreakdownHost
+      declaration={productionSpendingProjection}
+      options={projectionOptions}
+      view={view}
+      namesInRing={namesInRing}
+      label={widget.title}
+      subject="production spending"
+      widget={widget}
+      runtime={runtime}
+      active={active}
+      subscriptions={EMPTY_SUBS}
+      staticSources={staticSources}
+      offset={track?.axisOffset ?? 0}
+      pin={!following && hour != null ? Math.floor(hour) : null}
+      bounds={bounds}
+      onSetOption={setOption}
+      onDiagnostics={onDiagnostics}
+      blockedState={blocked}
+      loadingLabel="Loading production spending…"
+    />
+  );
 }

@@ -1,5 +1,6 @@
 import '../../widgets/familyManifest.ts';
 import { familyBarsLaneView } from '../../families/bars/laneView.ts';
+import { familyBreakdownLaneView } from '../../families/breakdown/laneView.ts';
 import { familyHeatLanesLaneView } from '../../families/heat/lanesLaneView.ts';
 import { familyHeatMatrixLaneView } from '../../families/heat/matrixLaneView.ts';
 import type { LaneView, Painted, PaintInput, Scene } from '../lane.ts';
@@ -91,6 +92,7 @@ export function drawnViews(kind: string, wake: (widget: number) => void): LaneVi
   if (kind === 'panel') return panelTexts();
   if (kind === 'table') return tableView(readingStructure, wake);
   if (kind === 'bars') return familyBarsLaneView(wake);
+  if (kind === 'breakdown') return familyBreakdownLaneView(wake);
   if (kind === 'heat-matrix') return familyHeatMatrixLaneView(wake);
   if (kind === 'heat-lanes') return familyHeatLanesLaneView(wake);
   if (kind === 'race') return race(wake);

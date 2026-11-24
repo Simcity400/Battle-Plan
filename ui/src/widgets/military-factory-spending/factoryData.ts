@@ -1,4 +1,4 @@
-import type { SunburstItem } from '../../charts/sunburst/layout';
+import type { BreakdownLeafItem as SunburstItem } from '../../families/breakdown/tree';
 import type { SpendingWindow } from '../production-spending/spendingData';
 import { REMAINDER_BANDS, colouredSplit, domainLeaves, monthNote, monthTotal, purposeItems, spentMonth } from '../dockyard-spending/dockyardData.ts';
 import type { Exact, PurposeMonth, PurposeSplit, SpentMonth } from '../dockyard-spending/dockyardData';

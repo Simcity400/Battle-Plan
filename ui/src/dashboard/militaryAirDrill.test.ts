@@ -19,7 +19,9 @@ import { persistedSpec, type PinnedSpec } from './regionTime.ts';
 import { gatedHour } from '../test-support/gated.ts';
 import type BombingDrill from './BombingDrill.tsx';
 import type AirLossDrill from './AirLossDrill.tsx';
-import type { SunburstProps } from '../charts/sunburst/Sunburst';
+import type { FamilyBreakdownHostProps } from '../families/breakdown/FamilyBreakdownHost';
+import type { BombingBreakdownProjectionOptions } from '../widgets/bombing-damage-breakdown/bombingBreakdownProjection.ts';
+import { createBoundedReadView } from '../families/boundedView.ts';
 import { militaryAirIndex, validateMilitaryAirReply } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/air-kills-losses/definition.ts';
 import { partOf } from './militaryAirParts.fixture.ts';
@@ -89,33 +91,37 @@ const common = {
 
 test('bombing breakdown keeps damage amounts and uses readable missing-content labels', async () => {
   const state = fixture();
-  const host = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture>; __bombingBreakdown?: SunburstProps };
+  const host = globalThis as typeof globalThis & { __airDrill?: ReturnType<typeof fixture>; __bombingBreakdown?: FamilyBreakdownHostProps<BombingBreakdownProjectionOptions> };
   host.__airDrill = state;
   const reply = data(); reply.family = 'bombing';
   reply.buildings = [{id: 'synthetic-private-token', name: null, missing: 'Synthetic raw building lookup refusal'}];
   reply.parts = reply.parts.map(part => ({...part, opponentKnown: null, buildingToken: 'synthetic-private-token', buildingId: 1, state: 0}));
   const vite = await server({...common,
     '/dashboard/products.ts': 'export const useProduct = (client, request) => request ? {error: new Error("Synthetic raw place-name failure")} : {}; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/charts/sunburst/Sunburst.tsx': 'export default props => {globalThis.__bombingBreakdown = props; return null;};',
+    '/families/breakdown/FamilyBreakdownHost.tsx': 'export default props => {globalThis.__bombingBreakdown = props; return null;};',
   });
   try {
     const {default: Breakdown} = await vite.ssrLoadModule('/ui/src/widgets/bombing-damage-breakdown/BombingBreakdown.tsx') as typeof import('../widgets/bombing-damage-breakdown/BombingBreakdown.tsx');
     renderToStaticMarkup(createElement(Breakdown, {data: reply, runtime: {client: {}, clock: {}} as never, track: state.track as unknown as BoundTrack,
       tag: 'B', identity: '1:9', namedAt: gatedHour(20), from: 10, hour: 19, end: 20, dealt: false, options: {}, active: true}));
     const chart = host.__bombingBreakdown!;
-    assert.equal(chart.text.valueLabel, 'Damage'); assert.equal(chart.text.countLabel, 'Locations');
-    assert.equal(chart.text.unit, 'building levels'); assert.match(chart.footnote as string, /Some damage may be missing/);
-    assert.ok(chart.items.length > 0);
-    for (const item of chart.items) {
-      assert.equal(item.path[0].label, 'Building name unavailable'); assert.equal(item.path[1].label, 'State unknown');
-      assert.doesNotMatch(item.note ?? '', /refus|absent|request/i, 'no backend reason in the hover'); assert.equal(typeof item.exact, 'bigint');
-      assert.equal(item.unknownValue, true, 'incomplete intervals remain unknown');
+    const rv = createBoundedReadView({ hour: 19, panels: new Map([['bombing', chart.staticSources!.panels!.bombing]]) });
+    const model = chart.declaration.project(rv, chart.options);
+    assert.equal(model.total.unit, 'levels');
+    assert.equal(model.total.atLeast, true);
+    assert.ok(model.parts.length > 0);
+    for (const part of model.parts) {
+      assert.equal(part.name, 'Building name unavailable');
+      assert.equal(part.children?.[0]?.name, 'State unknown');
+      assert.doesNotMatch(part.note ?? '', /refus|absent|request/i, 'no backend reason in the hover');
     }
-    assert.equal(chart.authoritativeTotal!.unknownValue, true);
     renderToStaticMarkup(createElement(Breakdown, {data: {...reply, parts: reply.parts.map(part => ({...part, state: 7}))}, runtime: {client: {}, clock: {}} as never,
       track: state.track as unknown as BoundTrack, tag: 'B', identity: '1:9', namedAt: null, from: 10, hour: 19, end: 20, dealt: false, options: {}, active: true}));
-    assert.ok(host.__bombingBreakdown!.items.length > 0);
-    for (const item of host.__bombingBreakdown!.items) assert.equal(item.path[1].label, 'State name not recorded', 'a state name the gate withholds is not recorded, never pending');
+    const chart2 = host.__bombingBreakdown!;
+    const rv2 = createBoundedReadView({ hour: 19, panels: new Map([['bombing', chart2.staticSources!.panels!.bombing]]) });
+    const model2 = chart2.declaration.project(rv2, chart2.options);
+    assert.ok(model2.parts.length > 0);
+    for (const part of model2.parts) assert.equal(part.children?.[0]?.name, 'State name not recorded', 'a state name the gate withholds is not recorded, never pending');
   } finally {await vite.close(); delete host.__airDrill; delete host.__bombingBreakdown;}
 });
 
@@ -403,45 +409,49 @@ test('bombing Drill follows the shared clock from a campaign view and rejects re
   } finally { await vite.close(); delete globals.__airDrill; }
 });
 
-test('bombing sunburst uses content titles and hover keys while exact recorded damage remains independent', async () => {
+test('bombing breakdown uses content titles and hover keys while exact recorded damage remains independent', async () => {
   const state: { data?: { states: { stateId: number; name: string | null; missing: string | null }[] }; error?: Error;
-    sunburst?: import('../charts/sunburst/Sunburst').SunburstProps } = { data: { states: [{ stateId: 7, name: 'Dated mod state', missing: null }] } };
+    host?: import('../families/breakdown/FamilyBreakdownHost').FamilyBreakdownHostProps<unknown> } = { data: { states: [{ stateId: 7, name: 'Dated mod state', missing: null }] } };
   const globals = globalThis as typeof globalThis & { __bombingTitles?: typeof state };
   globals.__bombingTitles = state;
   const vite = await server({ ...common,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/dashboard/products.ts': 'export const useProduct = () => globalThis.__bombingTitles; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/charts/sunburst/Sunburst.tsx': 'export default props => { globalThis.__bombingTitles.sunburst = props; return null; };',
+    '/families/breakdown/FamilyBreakdownHost.tsx': 'export function FamilyBreakdownHost(props) { globalThis.__bombingTitles.host = props; return null; }',
   });
   try {
     const View = (await vite.ssrLoadModule('/ui/src/widgets/bombing-damage-breakdown/BombingBreakdown.tsx')).default;
+    const { bombingBreakdownProjection } = await vite.ssrLoadModule('/ui/src/widgets/bombing-damage-breakdown/bombingBreakdownProjection.ts');
+    const { createBoundedReadView, displayedHour } = await vite.ssrLoadModule('/ui/src/families/contract.ts');
     const data = validateMilitaryAirReply(bombingData());
     const props = { data, track: fixture().track, runtime: { client: {}, clock: {} }, tag: 'B', identity: '1:9',
       from: 10, hour: 16, end: 20, dealt: false, active: true, options: {} };
     const render = () => renderToStaticMarkup(createElement(View, props));
-    render();
-    const parts = () => state.sunburst!.items;
-    const factory = () => parts().find(item => item.path[0].id === 'building:factory')!;
-    assert.equal(factory().path[0].label, 'Factory');
-    assert.equal(factory().path[1].label, 'Dated mod state');
-    const exact = factory().exact;
+    const project = () => {
+      render();
+      const readView = createBoundedReadView({
+        hour: displayedHour(props.hour),
+        panels: new Map(Object.entries(state.host!.staticSources!.panels)),
+      });
+      return bombingBreakdownProjection.project(readView, state.host!.projectionOptions);
+    };
+    const factory = () => project().parts.find((item: { key: string }) => item.key === 'building:factory')!;
+    assert.equal(factory().name, 'Factory');
+    assert.equal(factory().children![0].name, 'Dated mod state');
+    const exact = factory().text;
     props.data = { ...data, buildings: [{ id: 'factory', name: null, missing: 'Synthetic absent localization' },
       { id: 'correction', name: '', missing: null }] };
-    render();
-    assert.equal(factory().path[0].label, 'Building name unavailable');
-    assert.equal(factory().exact, exact, 'missing content text does not change recorded damage');
+    assert.equal(factory().name, 'Building name unavailable');
+    assert.equal(factory().text, exact, 'missing content text does not change recorded damage');
     assert.match(factory().note!, /Key: factory/);
     assert.doesNotMatch(factory().note!, /Synthetic absent localization/, 'the lookup key, not the localization diagnostic');
-    assert.equal(parts().find(item => item.path[0].id === 'building:correction')!.path[0].label, '');
+    assert.equal(project().parts.find((item: { key: string }) => item.key === 'building:correction')!.name, '');
     props.data = { ...data, buildings: [{ id: 'factory', name: 'factory', missing: null }] };
-    render();
-    assert.equal(factory().path[0].label, 'factory', 'an authored title identical to its key remains authoritative');
+    assert.equal(factory().name, 'factory', 'an authored title identical to its key remains authoritative');
     state.data = { states: [{ stateId: 7, name: '', missing: null }] };
-    render();
-    assert.equal(factory().path[1].label, '');
+    assert.equal(factory().children![0].name, '');
     state.data = undefined;
-    render();
-    assert.equal(factory().path[1].label, 'Loading name…', 'a state name still loading is not called unrecorded');
-    assert.equal(factory().exact, exact);
+    assert.equal(factory().children![0].name, 'Loading name…', 'a state name still loading is not called unrecorded');
+    assert.equal(factory().text, exact);
   } finally { await vite.close(); delete globals.__bombingTitles; }
 });
