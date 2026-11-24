@@ -34,7 +34,6 @@ import type { AxisSettings, PlaybackMode, Range, ViewAction, ViewState } from '.
 import type { Live } from './live';
 import { canvasMeasureText } from './textWidth';
 import {
-  NO_VALUE_TICKS,
   TIME_CHART_MIN_SPAN,
   drawTimeChartScene,
   fitTimeChartFrame,
@@ -240,7 +239,6 @@ export default function TimeChart(props: TimeChartProps) {
         y[0] = targetY.range[0]; y[1] = targetY.range[1];
       }
       eased = { x, y };
-      const valueTicks = p.valueTicks ?? (targetY.measured ? undefined : NO_VALUE_TICKS);
       frame = fitTimeChartFrame({
         layoutWidth,
         layoutHeight,
@@ -251,7 +249,7 @@ export default function TimeChart(props: TimeChartProps) {
         stripHeight: strip,
         hasRows: !!p.rows,
         hasExplicitLeftPadding: p.padding?.left != null,
-        valueTicks,
+        valueTicks: p.valueTicks,
         tokens,
         formatValue: p.formatValue,
         measure,
@@ -260,7 +258,7 @@ export default function TimeChart(props: TimeChartProps) {
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
       const summaries = marks.filter(summary => markSummaryMatches(summary, frame!, until));
       const baseKey = [size.width, size.height, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
-        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, valueTicks, p.gaps,
+        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, p.gaps,
         ...(p.data?.revision() ?? []), ...summaries];
       pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
       if (!painted || painted.length !== baseKey.length || !painted.every((value, index) => Object.is(value, baseKey[index]))) {

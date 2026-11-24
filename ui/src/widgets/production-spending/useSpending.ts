@@ -8,9 +8,19 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { useFrameWindows } from '../army-size/frameWindows.ts';
 import { useHeadHour } from '../army-size/headHour.ts';
 import type { ProductionSpendingReply } from '../../generated/dashboard';
-import { createWindowTracker, displayedSpendingWindows, prefetchSpendingWindows, selectSpendingState } from './spendingData';
+import { classificationTransitions, createWindowTracker, displayedSpendingWindows, prefetchSpendingWindows, selectSpendingState } from './spendingData';
 import type { SpendingData } from './spendingData';
 import { productRequest } from '../../dashboard/request.ts';
+
+function transitionStep(hours: readonly number[], at: number): number {
+  let low = 0, high = hours.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (hours[mid] <= at) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
 
 export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, repairs: boolean,
   validate: (data: unknown) => ProductionSpendingReply, key: (hour: number) => string, whole = false) {
@@ -20,21 +30,23 @@ export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: 
     const at = resolveWindow(widget, track, runtime.tracks, position)?.lastHour;
     return at === undefined || at < track.branch.firstHour || at > track.branch.lastHour ? null : at;
   } : null, [following, widget, track, runtime.tracks]);
+  const transitionsRef = useRef<readonly number[]>([]);
   const keys = useRef({ key, headAt });
   keys.current = { key, headAt };
   const playbackHour = useHeadHour(runtime.clock, following, position => {
     const at = keys.current.headAt?.(position);
-    return at == null ? 'outside' : `${windowOf(Math.floor(at))}:${keys.current.key(at)}`;
+    if (at == null) return 'outside';
+    const floored = Math.floor(at);
+    return `${windowOf(floored)}:${transitionStep(transitionsRef.current, floored)}:${keys.current.key(at)}`;
   });
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const range = widget.time.mode === 'range';
   const from = range ? window?.firstHour ?? null : null;
-  const end = hour;
+  const end = range ? hour : track?.branch.lastHour;
   const wantedTracker = useMemo(() => createWindowTracker(prefetchSpendingWindows), []);
-  const neededTracker = useMemo(() => createWindowTracker((branch, at, spanFrom, spanWhole, spanRepairs) =>
-    displayedSpendingWindows(branch, at, spanFrom, spanWhole, spanRepairs)), []);
+  const neededTracker = useMemo(() => createWindowTracker(displayedSpendingWindows), []);
   const atFor = (position: number): number | null => {
     if (!track || hour == null) return null;
     return keys.current.headAt?.(position) ?? hour;
@@ -70,8 +82,9 @@ export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: 
   const held = useFrameWindows<ProductionSpendingReply>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
     product: 'production-spending', params: { branchId: track!.branch.id, country: countryFromKey(tag!), repairs, window: index } })),
   () => wantedAt(runtime.clock.getSnapshot().position), subscribeClock, active, validate, track?.source);
+  transitionsRef.current = useMemo(() => classificationTransitions(held.data.values()), [held.data]);
   const needed = neededAt(runtime.clock.getSnapshot().position);
-  const selected = useMemo(() => selectSpendingState(needed, held.data, held.errors), [needed, held.data, held.errors]);
+  const selected = useMemo(() => selectSpendingState(needed, held.data, held.errors, hour), [needed, held.data, held.errors, hour]);
   const data: SpendingData | undefined = selected.data;
   const error = selected.error;
   const retry = held.retry;

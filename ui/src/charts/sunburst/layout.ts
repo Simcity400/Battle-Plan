@@ -34,7 +34,7 @@ export interface SunburstItem {
   count?: number;
 }
 
-export type SunburstTotal = Pick<SunburstItem, 'value' | 'exact' | 'exactDenominator' | 'unknownValue' | 'final' | 'finalUnknown' | 'unknown' | 'note'>;
+export type SunburstTotal = Pick<SunburstItem, 'value' | 'exact' | 'exactDenominator' | 'unknownValue' | 'final' | 'finalUnknown' | 'note'>;
 
 export interface SunburstNode {
   id: string;
@@ -166,7 +166,6 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
     top.final = authoritativeTotal.final ?? top.final;
     top.finalUnknown = authoritativeTotal.finalUnknown === true || authoritativeTotal.final === null;
     top.corrections ||= top.value < 0 || top.final < 0 || top.exact != null && top.exact < 0n;
-    add(top.unknown, authoritativeTotal.unknown);
     recoverGeometry(top);
     if (authoritativeTotal.note && !top.notes.includes(authoritativeTotal.note)) top.notes.push(authoritativeTotal.note);
   }

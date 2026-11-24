@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BANDS, dockyardItems, dockyardMonth, dockyardTotal, formatExactIc, monthColumns, monthsOf, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, shownMonthBands, validateDockyardSpendingReply, visibleMonths } from './dockyardData.ts';
-import { sunburstTree, unknownTotal } from '../../charts/sunburst/layout.ts';
+import { BANDS, TYPE_NOTE, dockyardItems, dockyardMonth, formatExactIc, headMonthLayer, monthColumns, monthsOf, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, repairsSince, shownMonthBands, validateDockyardSpendingReply, visibleMonths } from './dockyardData.ts';
+import { plotFrame } from '../../charts/frame.ts';
+import { tokensFromValues } from '../../charts/tokens.ts';
+import { sunburstTree } from '../../charts/sunburst/layout.ts';
 import { mergeSpending } from '../production-spending/spendingData.ts';
 import { firstHourOfMonth } from '../../dashboard/calendar.ts';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
@@ -160,7 +162,7 @@ test('a future repair reading never turns an unread past into zero', () => {
   assert.deepEqual(repairAmount(both, both.repairs!.total, { from: null, hour: 500, end: 500 }, 500), { exact: null, reason: 'notRecorded' });
 });
 
-test('by-month visible bands use completed past months plus the current month through the playhead', () => {
+test('by-month visible bands and amounts use completed past months plus the current month through the playhead', () => {
   const data = validateDockyardSpendingReply({
     ...reply(),
     leaves: [
@@ -174,44 +176,137 @@ test('by-month visible bands use completed past months plus the current month th
   const through = (_index: number, hour: number) => dockyardMonth(data, 100, hour, 100);
   const atMid = visibleMonths([fullMonth], 135, through);
   assert.ok(shownMonthBands(BANDS, atMid).some(entry => entry.band.id === 'other-purpose'), '5 IC at playhead stays shown even when month-end corrects back to 0');
+  assert.deepEqual(atMid[0].bands[0], { exact: 1000000n, reason: null });
+  assert.deepEqual(atMid[0].bands[4], { exact: 500000n, reason: null });
+  assert.equal(atMid[0].total.exact, (1000000n + 500000n) * 24n + 36n * 240000n);
   const atEarly = visibleMonths([fullMonth], 110, through);
   assert.ok(!shownMonthBands(BANDS, atEarly).some(entry => entry.band.id === 'other-purpose'), 'purpose appearing only after playhead stays hidden');
+  assert.deepEqual(atEarly[0].bands[4], { exact: 0n, reason: null });
+  assert.equal(atEarly[0].total.exact, 1000000n * 24n + 11n * 240000n);
 });
 
-test('partial repair coverage around an unread window gives the root a partial recorded total rather than hiding 240 IC', () => {
+test('a window-end design definition or future repair date never leaks before the hour it appears', () => {
   const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
-  const mkWin = (window: number, firstHour: number, lastHour: number, leaves: ProductionSpendingLeaf[], repairRate: string | null): ProductionSpendingReply =>
-    validateDockyardSpendingReply({
-      ...reply(), window, firstHour, lastHour, reads: [firstHour], observations: [0], equipmentReads: [firstHour], rocketReads: [firstHour],
-      equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(firstHour, lastHour, '0')],
-      production: [{ firstHour, lastHour, present: true, emptyCensusHour: null }], leaves,
-      total: [known(firstHour, lastHour, '3000000')], totalWithoutRefits: [known(firstHour, lastHour, '3000000')],
-      equipmentTotal: [known(firstHour, lastHour, '3000000')], equipmentTotalWithoutRefits: [known(firstHour, lastHour, '3000000')],
-      repairs: {
-        denominator: 24,
-        total: [repairRate == null ? notRec(firstHour, lastHour) : known(firstHour, lastHour, repairRate)],
-        parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [repairRate == null ? notRec(firstHour, lastHour) : known(firstHour, lastHour, repairRate)] }],
-      },
-    });
-  const shipA = (firstHour: number, lastHour: number) => leaf({ variant: 'A', typeKey: 'mod_hull_a', name: 'Hull A', domain: 'naval', purpose: 'new', runs: [known(firstHour, lastHour, '3000000')] });
-  const shipB = (firstHour: number, lastHour: number) => leaf({ variant: 'B', typeKey: 'mod_hull_b', name: 'Hull B', domain: 'naval', purpose: 'new', runs: [known(firstHour, lastHour, '500000')] });
-  const rateFor120Ic = String(100_000);
-  const windows = new Map([
-    [0, mkWin(0, 0, 2879, [shipA(0, 2879)], rateFor120Ic)],
-    [1, mkWin(1, 2880, 5759, [shipA(2880, 5759)], null)],
-    [2, mkWin(2, 5760, 8639, [shipA(5760, 8639)], rateFor120Ic)],
-    [4, mkWin(4, 11520, 14399, [shipA(11520, 14399), shipB(11520, 14399)], rateFor120Ic)],
-  ]);
-  const merged = mergeSpending(windows, 8639)!;
-  assert.ok(!merged.leaves.some(item => item.variant === 'B'), 'future window 4 is excluded at hour 8639');
-  const win = { from: null, hour: 8639, end: 8639 };
-  const items = dockyardItems(merged, win);
-  const total = dockyardTotal(merged, win);
-  assert.equal(total.unknownValue, false);
-  assert.equal(total.exact, (30n + 240n) * 100_000n * 24n);
-  assert.equal(total.exactDenominator, 24n);
-  assert.ok(total.unknown && Object.values(total.unknown).reduce((a, b) => a + b, 0) > 0);
-  const tree = sunburstTree(items, { id: 'all', label: 'All dockyard IC' }, undefined, { authoritativeTotal: total });
-  assert.equal(tree.valueUnknown, false);
-  assert.ok(unknownTotal(tree) > 0, 'root carries the partial flag');
+  const base = reply();
+  const win0 = validateDockyardSpendingReply({
+    ...base, window: 0, firstHour: 0, lastHour: 2879, reads: [0], observations: [0], equipmentReads: [0], rocketReads: [0],
+    equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(0, 2879, '0')],
+    production: [{ firstHour: 0, lastHour: 2879, present: true, emptyCensusHour: null }],
+    leaves: [leaf({ variant: '7', typeKey: ':variant/7', name: null, domain: null, purpose: 'new',
+      names: [{ firstHour: 0, name: null, design: null, known: false }], runs: [known(0, 2879, '1000000')] })],
+    total: [known(0, 2879, '1000000')], totalWithoutRefits: [known(0, 2879, '1000000')],
+    equipmentTotal: [known(0, 2879, '1000000')], equipmentTotalWithoutRefits: [known(0, 2879, '1000000')],
+    repairs: { denominator: 24, total: [notRec(0, 2879)], parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(0, 2879)] }] },
+  });
+  const win1 = validateDockyardSpendingReply({
+    ...win0, window: 1, firstHour: 2880, lastHour: 5759, reads: [2880, 3000], equipmentReads: [2880, 3000], rocketReads: [2880],
+    leaves: [leaf({ variant: '7', typeKey: 'mod_hull', name: 'Hulls', domain: 'naval', purpose: 'new',
+      names: [{ firstHour: 3000, name: 'Type 34', design: null, known: true }], runs: [known(2880, 5759, '1000000')] })],
+    total: [known(2880, 5759, '1000000')], totalWithoutRefits: [known(2880, 5759, '1000000')],
+    equipmentTotal: [known(2880, 5759, '1000000')], equipmentTotalWithoutRefits: [known(2880, 5759, '1000000')],
+    repairs: {
+      denominator: 24,
+      total: [notRec(2880, 2999), known(3000, 5759, '24000')],
+      parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(2880, 2999), known(3000, 5759, '24000')] }],
+    },
+  });
+  const windows = new Map([[0, win0], [1, win1]]);
+
+  const at2890 = mergeSpending(windows, 2890)!;
+  assert.equal(repairsSince(at2890, 2890), null);
+  assert.equal(repairsRead(at2890, 2890), false);
+  const items2890 = dockyardItems(at2890, { from: null, hour: 2890, end: 5759 });
+  const tree2890 = sunburstTree(items2890, { id: 'all', label: 'All dockyard IC' });
+  const new2890 = tree2890.children.find(child => child.key === 'new')!;
+  assert.equal(new2890.valueUnknown, true);
+  assert.equal(new2890.exact, null);
+  assert.ok(new2890.notes.includes(TYPE_NOTE));
+  const repair2890 = tree2890.children.find(child => child.key === 'repair')!;
+  assert.equal(repair2890.valueUnknown, true);
+  assert.ok(!repair2890.notes.some(note => note.includes('since ')), 'future repair start date must not appear at hour 2890');
+  assert.ok(repair2890.notes.some(note => note.includes('Spending not recorded.')));
+  assert.equal(tree2890.finalUnknown, true, 'Fill stays unknown while campaign end is in the future');
+
+  const at3000 = mergeSpending(windows, 3000)!;
+  assert.equal(repairsSince(at3000, 3000), 3000);
+  assert.equal(repairsRead(at3000, 3000), true);
+  const items3000 = dockyardItems(at3000, { from: null, hour: 3000, end: 5759 });
+  const tree3000 = sunburstTree(items3000, { id: 'all', label: 'All dockyard IC' });
+  const new3000 = tree3000.children.find(child => child.key === 'new')!;
+  assert.equal(new3000.valueUnknown, false);
+  assert.equal(new3000.exact, 1000000n);
+  const repair3000 = tree3000.children.find(child => child.key === 'repair')!;
+  assert.equal(repair3000.valueUnknown, false);
+  assert.equal(repair3000.exact, 1000n);
+  assert.equal(repair3000.exactDenominator ?? 1n, 1n);
+  assert.ok(repair3000.notes.some(note => note.includes('since ')));
+});
+
+test('a repair gap withholds the incomplete repair total as on main so Breakdown and By month agree', () => {
+  const data = validateDockyardSpendingReply({
+    ...reply(),
+    leaves: [leaf({ variant: '11', purpose: 'new', runs: [known(100, 102, '3000000')] })],
+    total: [known(100, 102, '3000000')],
+    equipmentTotal: [known(100, 102, '3000000')],
+    repairs: {
+      denominator: 24,
+      total: [known(100, 100, '2400000'), unknown(101, 101), known(102, 102, '2400000')],
+      parts: [
+        { variant: 'A', typeKey: 'mod_hull_a', name: 'Hull A', domain: 'naval', names: [], runs: [known(100, 100, '2400000'), unknown(101, 101), known(102, 102, '2400000')] },
+        { variant: null, typeKey: '', name: null, domain: null, names: [], runs: [known(100, 100, '0'), unknown(101, 101), known(102, 102, '0')] },
+      ],
+    },
+    firstHour: 100, lastHour: 102,
+  });
+  const items = dockyardItems(data, { from: null, hour: 102, end: 102 });
+  const repairs = items.filter(item => item.path[0].id === 'repair');
+  assert.equal(repairs.find(item => item.path.at(-1)?.id === 'A')?.exact, null);
+  assert.equal(repairs.find(item => item.path.at(-1)?.id === 'unattributed')?.exact, null);
+  const month = dockyardMonth(data, 100, 102, 100);
+  assert.equal(month.bands[0].exact, 3000000n);
+  assert.equal(month.bands[2].exact, null);
+  assert.equal(month.total.exact, null);
+});
+
+test('headMonthLayer computes extent and drawing from the same playhead-clipped column without scanning history each frame', () => {
+  const columns = Array.from({ length: 12 }, (_, index) => ({
+    firstHour: index * 720, lastHour: (index + 1) * 720 - 1, values: [index === 11 ? 1 : 2],
+  }));
+  let historicalReads = 0;
+  const tracked = columns.map((column, index) => index < 11 ? new Proxy(column, {
+    get(target, prop, receiver) {
+      if (prop === 'values') historicalReads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  }) : column);
+  let head = 11 * 720 + 10;
+  const layer = headMonthLayer(tracked, ['#000'], (_index, hour) => ({
+    firstHour: 11 * 720, lastHour: 12 * 720 - 1, values: [hour >= 11 * 720 + 50 ? 10 : 1],
+  }), () => head);
+  assert.deepEqual(layer.extent!([0, 12 * 720 - 1]), [0, 2]);
+  const readsAfterInit = historicalReads;
+  for (let h = 11 * 720 + 11; h <= 11 * 720 + 60; h++) {
+    head = h;
+    const ext = layer.extent!([0, 12 * 720 - 1]);
+    assert.deepEqual(ext, [0, h >= 11 * 720 + 50 ? 10 : 2]);
+  }
+  assert.equal(historicalReads, readsAfterInit, 'advancing hours inside the live month must not rescan completed months');
+  const single = [{ firstHour: 0, lastHour: 719, values: [1] }];
+  let firstHead = 10;
+  const growing = headMonthLayer(single, ['#000'], (_index, hour) => ({
+    firstHour: 0, lastHour: 719, values: [hour >= 50 ? 10 : 1],
+  }), () => firstHead);
+  assert.deepEqual(growing.extent!([0, 719]), [0, 1]);
+  firstHead = 100;
+  const grown = growing.extent!([0, 719])!;
+  assert.deepEqual(grown, [0, 10], 'current month bar growth updates extent from the same clipped column');
+  const frame = plotFrame(200, 120, { left: 40, right: 10, top: 10, bottom: 20 }, [0, 720], grown, false);
+  const drawnHeights: number[] = [];
+  const fakeCtx = {
+    fillStyle: '', strokeStyle: '', lineWidth: 0,
+    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, rect() {}, clip() {},
+    fillRect(_x: number, _y: number, _w: number, h: number) { drawnHeights.push(h); },
+  } as unknown as CanvasRenderingContext2D;
+  growing.draw(fakeCtx, frame, tokensFromValues(() => '#888888', 'sans-serif'), { playhead: firstHead });
+  assert.equal(drawnHeights[0], frame.plotHeight, 'drawn 10 IC bar fits inside the updated [0, 10] axis');
 });

@@ -1,8 +1,7 @@
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
-import { dayLabel } from '../../charts/draw.ts';
 import { runAt, sameStretch } from '../../charts/series.ts';
 import { formatIc } from '../../dashboard/icDecimals.ts';
-import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
+import { DOMAINS, UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
 import { windowOf, windowsOf } from '../../dashboard/heldWindows.ts';
 import type { FactoryKind } from './definition.ts';
@@ -179,7 +178,8 @@ export function spendingEmptyLabel(reply: SpendingData, designs: readonly Spendi
 
 export interface SpendingFinal { exact: bigint | null; geometry: number }
 
-export function spendingFinals(reply: SpendingData, designs: readonly SpendingDesign[], from: number | null, end: number): SpendingFinal[] {
+export function spendingFinals(reply: SpendingData, designs: readonly SpendingDesign[], from: number | null, end: number, hour = end): SpendingFinal[] {
+  if (end > hour) return designs.map(() => ({ exact: null, geometry: 0 }));
   return designs.map(design => {
     const amount = designAmount(reply, design, from, end);
     if (amount.exact != null) return { exact: amount.exact, geometry: Number(amount.exact) };
@@ -202,11 +202,12 @@ export function spendingFinals(reply: SpendingData, designs: readonly SpendingDe
 
 export function productionSpendingItems(reply: SpendingData, window: SpendingWindow, designs: readonly SpendingDesign[],
   finals: readonly SpendingFinal[], kind: FactoryKind | undefined, refits: boolean): SunburstItem[] {
+  const futureEnd = window.end > window.hour;
   const amounts = designs.map(design => designAmount(reply, design, window.from, window.hour));
   const unresolved = designs.some((design, index) => !design.rocket && design.domain == null && amounts[index].exact !== 0n);
-  const unresolvedAtEnd = designs.some((design, index) => !design.rocket && design.domain == null && finals[index].exact !== 0n);
+  const unresolvedAtEnd = !futureEnd && designs.some((design, index) => !design.rocket && design.domain == null && finals[index].exact !== 0n);
   const unresolvedRocket = designs.some((design, index) => design.rocket && design.domain == null && amounts[index].exact !== 0n);
-  const unresolvedRocketAtEnd = designs.some((design, index) => design.rocket && design.domain == null && finals[index].exact !== 0n);
+  const unresolvedRocketAtEnd = !futureEnd && designs.some((design, index) => design.rocket && design.domain == null && finals[index].exact !== 0n);
   const items: SunburstItem[] = designs.map((design, index) => {
     const amount = amounts[index];
     const final = finals[index];
@@ -226,16 +227,16 @@ export function productionSpendingItems(reply: SpendingData, window: SpendingWin
       unknownValue: amount.exact == null, unknownLevels: [attribution, attribution, false],
       localUnknownLevels: [false, design.rocket && typeAttribution, false],
       note: amount.reason ? unknownLabel(amount.reason) : typeAttribution ? ATTRIBUTION_NOTE : undefined,
-      final: final.geometry, finalUnknown: final.exact == null,
+      final: futureEnd ? 0 : final.geometry, finalUnknown: futureEnd || final.exact == null,
       finalUnknownLevels: [finalAttribution, finalAttribution, false],
       localFinalUnknownLevels: [false, design.rocket && unresolvedRocketAtEnd && design.domain != null, false],
       present: observed || typeAttribution, counted: observed ? [identity] : [],
     };
   });
   const total = kindAmount(reply, designs, window.from, window.hour, kind, refits);
-  const finalTotal = kindAmount(reply, designs, window.from, window.end, kind, refits);
+  const finalTotal = futureEnd ? { exact: null, reason: null } : kindAmount(reply, designs, window.from, window.end, kind, refits);
   const hasParts = items.some(item => item.present);
-  if (total.exact == null || !hasParts || finalTotal.exact == null) items.push({
+  if (total.exact == null || !hasParts || (!futureEnd && finalTotal.exact == null)) items.push({
     path: [], value: total.exact == null ? null : hasParts ? 0 : Number(total.exact), exact: total.exact == null ? null : hasParts ? 0n : total.exact,
     unknownValue: total.exact == null, note: total.reason ? unknownLabel(total.reason) : undefined,
     final: 0, finalUnknown: finalTotal.exact == null,
@@ -243,23 +244,12 @@ export function productionSpendingItems(reply: SpendingData, window: SpendingWin
   return items;
 }
 
-export function equipmentPeriodNote(reply: SpendingData, window: SpendingWindow, observations: readonly number[] = reply.equipmentObservations): string | undefined {
-  if (window.from != null) return undefined;
-  const current = readAt(observations, window.hour);
-  const first = observations[0];
-  if (current == null || first == null || current <= first) return undefined;
-  return `Equipment spending since ${dayLabel(current)}.`;
-}
-
 export function spendingTotal(reply: SpendingData, designs: readonly SpendingDesign[], window: SpendingWindow, kind: FactoryKind | undefined, refits: boolean): SunburstTotal {
-  const whole = wholeOf(reply, kind, refits);
   const amount = kindAmount(reply, designs, window.from, window.hour, kind, refits);
-  const final = kindAmount(reply, designs, window.from, window.end, kind, refits);
-  const periodNote = equipmentPeriodNote(reply, window, whole.observations);
-  const note = [amount.reason ? unknownLabel(amount.reason) : undefined, periodNote].filter(Boolean).join(' ') || undefined;
+  const final = window.end > window.hour ? { exact: null, reason: null } : kindAmount(reply, designs, window.from, window.end, kind, refits);
   return {
     value: amount.exact == null ? null : Number(amount.exact), exact: amount.exact,
-    unknownValue: amount.exact == null, note,
+    unknownValue: amount.exact == null, note: amount.reason ? unknownLabel(amount.reason) : undefined,
     final: final.exact == null ? 0 : Number(final.exact), finalUnknown: final.exact == null,
   };
 }
@@ -321,7 +311,9 @@ export function createWindowTracker(build: SpendingWindowBuilder = prefetchSpend
     firstHour: number; lastHour: number; atWindow: number; from: number | null;
     whole: boolean; repairs: boolean; ahead: boolean; windows: number[];
   } | null = null;
+  let recomputations = 0;
   return {
+    get recomputations() { return recomputations; },
     get(branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
       whole: boolean, repairs: boolean, ahead: boolean): number[] {
       const clamped = Math.min(branch.lastHour, Math.floor(at));
@@ -329,11 +321,34 @@ export function createWindowTracker(build: SpendingWindowBuilder = prefetchSpend
       if (cached && cached.firstHour === branch.firstHour && cached.lastHour === branch.lastHour
         && cached.atWindow === atWindow && cached.from === from && cached.whole === whole
         && cached.repairs === repairs && cached.ahead === ahead) return cached.windows;
+      recomputations++;
       const windows = build(branch, at, from, whole, repairs, ahead);
       cached = { firstHour: branch.firstHour, lastHour: branch.lastHour, atWindow, from, whole, repairs, ahead, windows };
       return windows;
     },
   };
+}
+
+export function classificationTransitions(replies: Iterable<ProductionSpendingReply>): number[] {
+  const hours = new Set<number>();
+  for (const reply of replies) {
+    for (const leaf of reply.leaves) {
+      for (const name of leaf.names) if (name.known && name.firstHour > reply.firstHour) hours.add(name.firstHour);
+    }
+    for (const part of reply.repairs?.parts ?? []) {
+      for (const name of part.names) if (name.known && name.firstHour > reply.firstHour) hours.add(name.firstHour);
+    }
+    const firstRepair = reply.repairs?.total.find(run => run.totalRaw != null)?.firstHour;
+    if (firstRepair != null && firstRepair > reply.firstHour) hours.add(firstRepair);
+  }
+  return [...hours].sort((a, b) => a - b);
+}
+
+function classificationSupportedAt(names: readonly StockVariantName[], reply: ProductionSpendingReply, cutoff: number, hadUnresolved: boolean): boolean {
+  if (cutoff >= reply.lastHour) return true;
+  const known = names.filter(name => name.known);
+  if (known.length) return known.some(name => name.firstHour <= cutoff);
+  return !hadUnresolved;
 }
 
 export function selectSpendingState<E>(needed: readonly number[], data: ReadonlyMap<number, ProductionSpendingReply>,
@@ -362,14 +377,26 @@ export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingRep
     for (const leaf of reply.leaves) {
       const key = leafKey(leaf);
       const heldLeaf = leaves.get(key);
-      if (!heldLeaf) leaves.set(key, { ...leaf, runs: [], unproven: [], names: [] });
-      else { heldLeaf.typeKey = leaf.typeKey; heldLeaf.name = leaf.name; heldLeaf.domain = leaf.domain; }
+      const supported = classificationSupportedAt(leaf.names, reply, cutoff, heldLeaf != null && heldLeaf.domain == null);
+      if (!heldLeaf) {
+        leaves.set(key, supported
+          ? { ...leaf, runs: [], unproven: [], names: [] }
+          : { ...leaf, typeKey: `${UNRESOLVED_MARK}variant/${leaf.variant}`, name: null, domain: null, runs: [], unproven: [], names: [] });
+      } else if (supported) {
+        heldLeaf.typeKey = leaf.typeKey; heldLeaf.name = leaf.name; heldLeaf.domain = leaf.domain;
+      }
       if (leaf.unproven.length) hasUnproven.add(key);
     }
     for (const part of reply.repairs?.parts ?? []) {
       const heldPart = parts.get(part.variant);
-      if (!heldPart) parts.set(part.variant, { ...part, runs: [], names: [] });
-      else { heldPart.typeKey = part.typeKey; heldPart.name = part.name; heldPart.domain = part.domain; }
+      const supported = part.variant === null || classificationSupportedAt(part.names, reply, cutoff, heldPart != null && heldPart.domain == null);
+      if (!heldPart) {
+        parts.set(part.variant, supported
+          ? { ...part, runs: [], names: [] }
+          : { ...part, typeKey: `${UNRESOLVED_MARK}variant/${part.variant}`, name: null, domain: null, runs: [], names: [] });
+      } else if (supported) {
+        heldPart.typeKey = part.typeKey; heldPart.name = part.name; heldPart.domain = part.domain;
+      }
     }
   }
   for (const reply of held) {

@@ -33,12 +33,12 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const { track, tag, data, error, retry, hour, from, end, headAt } = spending;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const designs = useMemo(() => data ? spendingDesigns(data, refits, kind) : [], [data, refits, kind]);
-  const empty = (at: number) => !!data && noProductionAt(data, at, refits) && spendingTotal(data, designs, { from, hour: at, end: at }, kind, refits).exact === 0n;
+  const empty = (at: number) => !!data && end != null && noProductionAt(data, at, refits) && spendingTotal(data, designs, { from, hour: at, end }, kind, refits).exact === 0n;
   const emptyLabel = (at: number) => data ? spendingEmptyLabel(data, designs, at, from, kind, refits) : 'Loading production spending…';
   headKey.current = at => JSON.stringify([empty(at), emptyLabel(at)]);
   const valuesAt = (at: number): SunburstValues => !data || end == null ? { items: [] } : {
-    items: productionSpendingItems(data, { from, hour: at, end: at }, designs, spendingFinals(data, designs, from, at), kind, refits),
-    authoritativeTotal: spendingTotal(data, designs, { from, hour: at, end: at }, kind, refits),
+    items: productionSpendingItems(data, { from, hour: at, end }, designs, spendingFinals(data, designs, from, end, at), kind, refits),
+    authoritativeTotal: spendingTotal(data, designs, { from, hour: at, end }, kind, refits),
   };
   const build = useRef(valuesAt);
   build.current = valuesAt;

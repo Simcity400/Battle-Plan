@@ -1,11 +1,14 @@
-import type { SunburstItem, SunburstKey, SunburstTotal } from '../../charts/sunburst/layout';
+import type { SunburstItem, SunburstKey } from '../../charts/sunburst/layout';
+import type { ChartLayer } from '../../charts/TimeChart';
+import { CAP_HEADROOM, columnAt, columnEdges, columnsLayer } from '../../charts/columns.ts';
 import type { ColumnPeriod } from '../../charts/columns';
+import type { Range } from '../../charts/view';
 import { runAt } from '../../charts/series.ts';
 import { UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { dayLabel } from '../../charts/draw.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, gameDate, monthIndex, monthNames } from '../../dashboard/calendar.ts';
-import { amountIn, equipmentPeriodNote, spendingFinals, unknownLabel, validateProductionSpendingReply } from '../production-spending/spendingData.ts';
+import { amountIn, spendingFinals, unknownLabel, validateProductionSpendingReply } from '../production-spending/spendingData.ts';
 import type { SpendingData } from '../production-spending/spendingData';
 import type { SpendingAmount, SpendingDesign, SpendingWindow } from '../production-spending/spendingData';
 import type { Domain, ProductionPurpose, ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun, ProductionSpendingUnknown } from '../../generated/dashboard';
@@ -47,7 +50,7 @@ export const unresolvedLeaf = (leaf: ProductionSpendingLeaf) => leaf.typeKey.sta
 export const domainLeaves = (reply: SpendingData, domain: Domain) =>
   reply.leaves.filter(leaf => !leaf.rocket && (leaf.domain === domain || unresolvedLeaf(leaf)));
 
-interface RateIndex { runs: readonly ProductionSpendingRun[]; through: bigint[]; unknown: number[] }
+interface RateIndex { runs: readonly ProductionSpendingRun[]; through: bigint[]; unknown: number[]; nextMissing: number[] }
 const indexes = new WeakMap<readonly ProductionSpendingRun[], RateIndex>();
 
 function rateIndex(runs: readonly ProductionSpendingRun[]): RateIndex {
@@ -62,7 +65,13 @@ function rateIndex(runs: readonly ProductionSpendingRun[]): RateIndex {
     through.push(sum);
     unknown.push(missing);
   });
-  const index = { runs, through, unknown };
+  const nextMissing = new Array<number>(runs.length);
+  let next = -1;
+  for (let i = runs.length - 1; i >= 0; i--) {
+    if (runs[i].totalRaw == null) next = i;
+    nextMissing[i] = next;
+  }
+  const index = { runs, through, unknown, nextMissing };
   indexes.set(runs, index);
   return index;
 }
@@ -85,37 +94,17 @@ export function rateSum(runs: readonly ProductionSpendingRun[], first: number, l
   if (a < 0 || b < 0) return { exact: null, reason: 'outsideRead' };
   const index = rateIndex(runs);
   if (index.unknown[b] - index.unknown[a] > 0 || runs[a].totalRaw == null) {
-    const missing = runs.slice(a, b + 1).find(run => run.totalRaw == null);
-    return { exact: null, reason: missing?.reason ?? 'outsideRead' };
+    const miss = index.nextMissing[a];
+    const reason = miss >= 0 && miss <= b ? runs[miss].reason : null;
+    return { exact: null, reason: reason ?? 'outsideRead' };
   }
   const at = (run: number, hour: number) => index.through[run] - BigInt(runs[run].totalRaw!) * BigInt(runs[run].lastHour - hour);
   const before = at(a, first) - BigInt(runs[a].totalRaw!);
   return { exact: at(b, last) - before, reason: null, denominator: over };
 }
 
-export interface PartialExact extends Exact { recorded: bigint | null }
-
-export function rateRecordedSum(runs: readonly ProductionSpendingRun[], first: number, last: number, denominator: number): PartialExact {
-  const full = rateSum(runs, first, last, denominator);
-  if (full.exact != null) return { ...full, recorded: full.exact };
-  const over = BigInt(denominator);
-  let recorded = 0n;
-  let any = false;
-  for (const run of runs) {
-    if (run.lastHour < first) continue;
-    if (run.firstHour > last) break;
-    if (run.totalRaw == null) continue;
-    const lo = Math.max(run.firstHour, first);
-    const hi = Math.min(run.lastHour, last);
-    if (hi >= lo) {
-      recorded += BigInt(run.totalRaw) * BigInt(hi - lo + 1);
-      any = true;
-    }
-  }
-  return { exact: null, recorded: any ? recorded : null, reason: full.reason, denominator: over };
-}
-
-export const repairsSince = (reply: SpendingData) => reply.repairs?.total.find(run => run.totalRaw != null)?.firstHour ?? null;
+export const repairsSince = (reply: SpendingData, atHour = Infinity) =>
+  reply.repairs?.total.find(run => run.totalRaw != null && run.firstHour <= Math.floor(atHour))?.firstHour ?? null;
 
 function repairSplit(total: Exact, parts: readonly Exact[], unattributed: number): { values: Exact[]; incomplete: boolean } {
   if (total.exact == null || parts.every(part => part.exact != null)) return { values: [...parts], incomplete: false };
@@ -128,19 +117,11 @@ function repairSplit(total: Exact, parts: readonly Exact[], unattributed: number
 }
 
 export function repairAmount(reply: SpendingData, runs: readonly ProductionSpendingRun[], window: SpendingWindow, until: number): Exact {
-  const since = window.from ?? repairsSince(reply);
-  if (since == null || !reply.repairs) return { exact: null, reason: 'notRecorded' };
   const at = Math.floor(until);
+  const since = window.from ?? repairsSince(reply, at);
+  if (since == null || !reply.repairs) return { exact: null, reason: runAt(runs, at)?.reason ?? 'notRecorded' };
   if (window.from == null && at < since) return { exact: null, reason: runAt(runs, at)?.reason ?? 'notRecorded' };
   return rateSum(runs, since, at, reply.repairs.denominator);
-}
-
-function repairRecordedAmount(reply: SpendingData, runs: readonly ProductionSpendingRun[], window: SpendingWindow, until: number): PartialExact {
-  const since = window.from ?? repairsSince(reply);
-  if (since == null || !reply.repairs) return { exact: null, recorded: null, reason: 'notRecorded' };
-  const at = Math.floor(until);
-  if (window.from == null && at < since) return { exact: null, recorded: null, reason: runAt(runs, at)?.reason ?? 'notRecorded', denominator: BigInt(reply.repairs.denominator) };
-  return rateRecordedSum(runs, since, at, reply.repairs.denominator);
 }
 
 export function repairItems(reply: SpendingData, window: SpendingWindow, purpose: SunburstKey = PURPOSES[2]): SunburstItem[] {
@@ -150,35 +131,20 @@ export function repairItems(reply: SpendingData, window: SpendingWindow, purpose
   const parts = [...repairs.parts.filter(part => part.variant != null), repairs.parts.find(part => part.variant == null) ?? whole];
   const rest = parts.length - 1;
   const denominator = BigInt(repairs.denominator);
-  const totalNow = repairRecordedAmount(reply, repairs.total, window, window.hour);
-  const totalEnd = repairRecordedAmount(reply, repairs.total, window, window.end);
+  const futureEnd = window.end > window.hour;
+  const totalNow = repairAmount(reply, repairs.total, window, window.hour);
   const now = repairSplit(totalNow, parts.map(part => repairAmount(reply, part.runs, window, window.hour)), rest);
-  const end = repairSplit(totalEnd, parts.map(part => repairAmount(reply, part.runs, window, window.end)), rest);
-  const since = repairsSince(reply);
+  const end = futureEnd
+    ? { values: parts.map(() => ({ exact: null, reason: null } as Exact)), incomplete: false }
+    : repairSplit(repairAmount(reply, repairs.total, window, window.end), parts.map(part => repairAmount(reply, part.runs, window, window.end)), rest);
+  const since = repairsSince(reply, window.hour);
   const noted = window.from == null && since != null ? `${REPAIR_NOTE.slice(0, -1)} since ${dayLabel(since)}.` : REPAIR_NOTE;
   const totalReason = totalNow.reason;
-  const partialTotal = totalNow.exact == null && totalNow.recorded != null;
-  const partialEnd = totalEnd.exact == null && totalEnd.recorded != null;
   return parts.map((part, index) => {
+    const value = now.values[index], final = end.values[index];
     const path: SunburstKey[] = part.variant == null ? [purpose, UNATTRIBUTED] : [purpose,
       { id: part.typeKey, label: part.name ?? unresolvedTypeName(part.typeKey) },
       { id: part.variant, label: variantNameAt(part.names, window.hour, part.variant) }];
-    if (partialTotal) {
-      if (index !== rest) return {
-        path, value: null, exact: null, exactDenominator: denominator,
-        unknownValue: false, final: 0, finalUnknown: false, present: false, counted: [],
-      };
-      const reason = totalReason ?? 'notRecorded';
-      return {
-        path, value: Number(totalNow.recorded!) / Number(denominator), exact: totalNow.recorded!, exactDenominator: denominator,
-        unknownValue: false, unknown: { [reason]: 1 },
-        note: `${noted} ${unknownLabel(reason)}`,
-        final: partialEnd ? Number(totalEnd.recorded!) / Number(denominator) : totalEnd.exact == null ? 0 : Number(totalEnd.exact) / Number(denominator),
-        finalUnknown: totalEnd.exact == null && !partialEnd,
-        present: true, counted: [],
-      };
-    }
-    const value = now.values[index], final = end.values[index];
     const withdrawn = now.incomplete && value.exact == null;
     const observed = !withdrawn && (value.exact == null || value.exact !== 0n);
     const reason = value.reason ?? totalReason;
@@ -186,9 +152,9 @@ export function repairItems(reply: SpendingData, window: SpendingWindow, purpose
       path, value: value.exact == null ? null : Number(value.exact) / Number(denominator), exact: value.exact, exactDenominator: denominator,
       unknownValue: value.exact == null && !withdrawn,
       localUnknownLevels: [false, now.incomplete && part.variant != null, false],
-      localFinalUnknownLevels: [false, end.incomplete && part.variant != null, false],
+      localFinalUnknownLevels: [false, !futureEnd && end.incomplete && part.variant != null, false],
       note: now.incomplete ? `${noted} ${SPLIT_NOTE}` : reason ? `${noted} ${unknownLabel(reason)}` : noted,
-      final: final.exact == null ? 0 : Number(final.exact) / Number(denominator), finalUnknown: final.exact == null && !end.incomplete,
+      final: final.exact == null ? 0 : Number(final.exact) / Number(denominator), finalUnknown: futureEnd || (final.exact == null && !end.incomplete),
       present: observed, counted: observed && part.variant != null ? [part.variant] : [],
     };
   });
@@ -211,14 +177,15 @@ const single = (leaf: ProductionSpendingLeaf): SpendingDesign =>
 
 export function purposeItems(reply: SpendingData, leaves: readonly ProductionSpendingLeaf[], window: SpendingWindow, split: PurposeSplit): SunburstItem[] {
   const observations = reply.equipmentObservations;
-  const finals = spendingFinals(reply, leaves.map(single), window.from, window.end);
+  const futureEnd = window.end > window.hour;
+  const finals = spendingFinals(reply, leaves.map(single), window.from, window.end, window.hour);
   const amounts = leaves.map(leaf => amountIn(leaf.runs, window.from, window.hour, observations));
-  const missing = (at: 'now' | 'end', key: SunburstKey) => leaves.some((leaf, index) => unresolvedLeaf(leaf)
+  const missing = (at: 'now' | 'end', key: SunburstKey) => (at === 'end' && futureEnd) ? false : leaves.some((leaf, index) => unresolvedLeaf(leaf)
     && purposeOf(split, leaf.purpose) === key && (at === 'now' ? amounts[index].exact : finals[index].exact) !== 0n);
   const unprovenIn = (leaf: ProductionSpendingLeaf, until: number) => leaf.unproven.length > 0
     && amountIn(leaf.unproven, window.from, until, observations).exact !== 0n;
   const purposeNow = leaves.some(leaf => unprovenIn(leaf, window.hour));
-  const purposeEnd = leaves.some(leaf => unprovenIn(leaf, window.end));
+  const purposeEnd = !futureEnd && leaves.some(leaf => unprovenIn(leaf, window.end));
   const shown = new Set(split.purposes.map(purpose => purpose.key));
   const local = (key: SunburstKey, uncertain: boolean) => key.id === UNRECORDED.id ? [uncertain, uncertain, uncertain]
     : [uncertain && shown.has(key), false, false];
@@ -243,15 +210,18 @@ export function purposeItems(reply: SpendingData, leaves: readonly ProductionSpe
       localFinalUnknownLevels: local(key, purposeEnd),
       note: value.reason ? unknownLabel(value.reason) : key.id === UNRECORDED.id ? UNRECORDED_NOTE : key.id === OTHER.id ? OTHER_NOTE
         : purposeNow ? split.note : typeNow ? TYPE_NOTE : undefined,
-      final: final.geometry, finalUnknown: final.exact == null,
+      final: futureEnd ? 0 : final.geometry, finalUnknown: futureEnd || final.exact == null,
       present: observed, counted: observed ? [`${leaf.variant}`] : [],
     });
   });
   const equipment = (until: number) => amountIn(reply.equipmentTotal, window.from, until, observations);
-  const unreadNow = equipment(window.hour), unreadEnd = equipment(window.end);
+  const unreadNow = equipment(window.hour);
+  const unreadEnd = futureEnd ? { exact: null, reason: null } : equipment(window.end);
   if (unreadNow.exact == null || unreadEnd.exact == null) for (const { key } of split.purposes) items.push({
     path: [key, UNREAD_KEY], value: null, exact: null, unknownValue: unreadNow.exact == null,
-    note: unknownLabel(unreadNow.reason ?? unreadEnd.reason ?? 'outsideRead'), final: 0, finalUnknown: unreadEnd.exact == null,
+    note: unreadNow.exact == null ? unknownLabel(unreadNow.reason ?? 'outsideRead')
+      : unreadEnd.reason ? unknownLabel(unreadEnd.reason) : undefined,
+    final: 0, finalUnknown: unreadEnd.exact == null,
     present: unreadNow.exact == null,
   });
   for (const key of [...shown, purposeOf(split, 'unknown'), purposeOf(split, null)]) {
@@ -259,7 +229,7 @@ export function purposeItems(reply: SpendingData, leaves: readonly ProductionSpe
     items.push({
       path: [key, UNRESOLVED_KEY], value: 0, exact: 0n,
       unknownLevels: [missing('now', key), true, false], finalUnknownLevels: [missing('end', key), true, false],
-      note: TYPE_NOTE, final: 0, present: missing('now', key),
+      note: TYPE_NOTE, final: 0, finalUnknown: futureEnd, present: missing('now', key),
     });
   }
   return items;
@@ -273,67 +243,6 @@ export function colouredSplit(split: PurposeSplit, colours: readonly string[], s
     remainders: [coloured(UNRECORDED, colours[after]), coloured(OTHER, colours[after + 1])] };
 }
 
-export function domainEquipmentTotal(reply: SpendingData, domain: Domain, window: SpendingWindow): {
-  exact: bigint | null; recorded: bigint | null; reason: string | null;
-} {
-  const leaves = domainLeaves(reply, domain);
-  const whole = amountIn(reply.equipmentTotal, window.from, window.hour, reply.equipmentObservations);
-  let sum = 0n;
-  let any = false;
-  let reason: string | null = whole.exact == null ? whole.reason ?? 'outsideRead' : null;
-  for (const leaf of leaves) {
-    const amount = amountIn(leaf.runs, window.from, window.hour, reply.equipmentObservations);
-    if (unresolvedLeaf(leaf)) {
-      if (amount.exact !== 0n) reason ??= UNRESOLVED_REASON;
-      continue;
-    }
-    if (amount.exact == null) reason ??= amount.reason ?? 'outsideRead';
-    else { sum += amount.exact; if (amount.exact !== 0n) any = true; }
-  }
-  return reason == null ? { exact: sum, recorded: sum, reason: null }
-    : { exact: null, recorded: any ? sum : null, reason };
-}
-
-export function dockyardTotal(reply: SpendingData, window: SpendingWindow): SunburstTotal {
-  const equip = domainEquipmentTotal(reply, 'naval', window);
-  const denom = BigInt(reply.repairs?.denominator ?? 1);
-  const repNow = reply.repairs ? repairRecordedAmount(reply, reply.repairs.total, window, window.hour)
-    : { exact: null, recorded: null, reason: 'notRecorded', denominator: denom };
-  const periodNote = equipmentPeriodNote(reply, window);
-  const since = repairsSince(reply);
-  const repairPeriodNote = window.from == null && since != null ? `${REPAIR_NOTE.slice(0, -1)} since ${dayLabel(since)}.` : undefined;
-  const combine = (equipAmt: typeof equip, repAmt: typeof repNow) => {
-    if (equipAmt.exact != null && repAmt.exact != null) {
-      const exact = equipAmt.exact * denom + repAmt.exact;
-      return { exact, unknown: undefined as Record<string, number> | undefined, reason: null as string | null };
-    }
-    const hasRecorded = (equipAmt.exact != null && equipAmt.exact !== 0n)
-      || (equipAmt.exact == null && equipAmt.recorded != null)
-      || repAmt.recorded != null;
-    if (hasRecorded) {
-      const exact = (equipAmt.recorded ?? 0n) * denom + (repAmt.recorded ?? 0n);
-      const reason = equipAmt.reason ?? repAmt.reason ?? 'notRecorded';
-      return { exact, unknown: { [reason]: 1 }, reason };
-    }
-    return { exact: null, unknown: undefined, reason: equipAmt.reason ?? repAmt.reason ?? 'notRecorded' };
-  };
-  const now = combine(equip, repNow);
-  const endWindow = { ...window, hour: window.end };
-  const end = combine(domainEquipmentTotal(reply, 'naval', endWindow),
-    reply.repairs ? repairRecordedAmount(reply, reply.repairs.total, endWindow, window.end) : { exact: null, recorded: null, reason: 'notRecorded', denominator: denom });
-  const note = [now.reason ? reasonLabel(now.reason) : undefined, periodNote, repairPeriodNote].filter(Boolean).join(' ') || undefined;
-  return {
-    value: now.exact == null ? null : Number(now.exact) / Number(denom),
-    exact: now.exact,
-    exactDenominator: denom,
-    unknownValue: now.exact == null,
-    unknown: now.unknown,
-    note,
-    final: end.exact == null ? 0 : Number(end.exact) / Number(denom),
-    finalUnknown: end.exact == null,
-  };
-}
-
 export function dockyardItems(reply: SpendingData, window: SpendingWindow, colours: readonly string[] = []): SunburstItem[] {
   return [...purposeItems(reply, domainLeaves(reply, 'naval'), window, colouredSplit(DOCKYARD_SPLIT, colours, 1)),
     ...repairItems(reply, window, coloured(PURPOSES[2], colours[2]))];
@@ -341,7 +250,111 @@ export function dockyardItems(reply: SpendingData, window: SpendingWindow, colou
 
 export const BANDS = [...PURPOSES, ...REMAINDER_BANDS];
 
-export const repairsRead = (reply: SpendingData) => repairsSince(reply) != null;
+export const repairsRead = (reply: SpendingData, atHour = Infinity) => repairsSince(reply, atHour) != null;
+
+interface ColumnSummary { low: number; high: number; any: boolean; unknown: boolean }
+
+function columnSummary(period: ColumnPeriod): ColumnSummary {
+  if (period.unknown || (period.values.length > 0 && period.values.every(value => value == null))) {
+    return { low: 0, high: 0, any: false, unknown: false };
+  }
+  let low = 0, high = 0;
+  const unknown = period.values.some(value => value == null) || period.uncertain?.some(Boolean) === true;
+  for (const edge of columnEdges(period)) {
+    if (!edge) continue;
+    low = Math.min(low, edge.low); high = Math.max(high, edge.high);
+  }
+  return { low, high, any: true, unknown };
+}
+
+function combineSummary(a: ColumnSummary, b: ColumnSummary): ColumnSummary {
+  if (!a.any) return b;
+  if (!b.any) return a;
+  return { low: Math.min(a.low, b.low), high: Math.max(a.high, b.high), any: true, unknown: a.unknown || b.unknown };
+}
+
+function summaryRange(summary: ColumnSummary): Range | null {
+  if (!summary.any) return null;
+  if (!summary.unknown) return [summary.low, summary.high];
+  const span = summary.high - summary.low;
+  return [summary.low, span > 0 ? summary.high + span * CAP_HEADROOM : summary.high + 1];
+}
+
+export function headMonthLayer(columns: readonly ColumnPeriod[], colours: readonly string[],
+  through: (index: number, hour: number) => ColumnPeriod, headRead: () => number | null): ChartLayer {
+  const drawn = [...columns];
+  const base = columnsLayer(drawn, colours);
+  const summaries = columns.map(columnSummary);
+  let patched = -1;
+  let held: { hour: number; index: number; column: ColumnPeriod; summary: ColumnSummary } | null = null;
+  let rangeCache: { start: number; end: number; skip: number; summary: ColumnSummary } | null = null;
+
+  const firstOverlap = (x0: number): number => {
+    let low = 0, high = columns.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (columns[mid].lastHour < x0) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  };
+
+  const lastOverlap = (x1: number): number => {
+    let low = 0, high = columns.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (columns[mid].firstHour <= x1) low = mid + 1;
+      else high = mid;
+    }
+    return low - 1;
+  };
+
+  const sync = (rawHead: number | null) => {
+    const head = rawHead == null ? null : Math.floor(rawHead);
+    const index = head == null ? -1 : columnAt(columns, head);
+    if (head == null || index < 0 || (head >= columns[index].lastHour && index < columns.length - 1)) {
+      if (patched >= 0) {
+        drawn[patched] = columns[patched];
+        patched = -1;
+      }
+      return null;
+    }
+    if (!held || held.hour !== head || held.index !== index) {
+      const column = through(index, Math.min(head, columns[index].lastHour));
+      held = { hour: head, index, column, summary: columnSummary(column) };
+    }
+    if (patched >= 0 && patched !== index) drawn[patched] = columns[patched];
+    drawn[index] = held.column;
+    patched = index;
+    return held;
+  };
+
+  return {
+    draw(ctx, frame, tokens, state) {
+      sync(state.playhead ?? headRead());
+      base.draw(ctx, frame, tokens, state);
+    },
+    extent(x) {
+      const rawHead = headRead();
+      const active = sync(rawHead);
+      const until = rawHead == null ? x[1] : Math.min(x[1], Math.floor(rawHead));
+      const start = firstOverlap(x[0]);
+      const end = lastOverlap(until);
+      if (start > end) return null;
+      const skip = active && active.index >= start && active.index <= end ? active.index : -1;
+      if (!rangeCache || rangeCache.start !== start || rangeCache.end !== end || rangeCache.skip !== skip) {
+        let completed: ColumnSummary = { low: 0, high: 0, any: false, unknown: false };
+        for (let i = start; i <= end; i++) {
+          if (i === skip) continue;
+          completed = combineSummary(completed, summaries[i]);
+        }
+        rangeCache = { start, end, skip, summary: completed };
+      }
+      const total = skip >= 0 && active ? combineSummary(rangeCache.summary, active.summary) : rangeCache.summary;
+      return summaryRange(total);
+    },
+  };
+}
 
 export function monthsOf(first: number, last: number): { firstHour: number; lastHour: number }[] {
   const out: { firstHour: number; lastHour: number }[] = [];
