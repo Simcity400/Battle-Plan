@@ -149,6 +149,15 @@ pub fn at_each(
 
 pub type Runs = Vec<(i32, i32, Option<i64>)>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoveredValue {
+    Value(i64),
+    Unvalued,
+    Uncovered,
+}
+
+pub type CoveredRuns = Vec<(i32, i32, CoveredValue)>;
+
 pub fn runs(recording: &Recording, run: u32, table: TableId, column: usize, from: i32, to: i32) -> io::Result<Vec<(u128, Runs)>> {
     let held = keyed_runs(recording, run, table, summary::Source::Cell(column), None, from, to)?;
     let mut out: Vec<(u128, Runs)> = held.into_iter().collect();
@@ -169,6 +178,41 @@ pub fn keyed_runs(
     crate::points::points(recording, run, table, &inputs(source), Some(source), keys.map_or(Keys::All, Keys::These), from, to, &mut |point| {
         let runs = held.entry(point.key).or_default();
         let value = if point.covered { point.value } else { None };
+        match runs.last_mut() {
+            Some((_, _, now)) if *now == value => {}
+            Some((_, last, _)) => {
+                *last = point.hour - 1;
+                runs.push((point.hour, point.hour, value));
+            }
+            None => runs.push((point.hour, point.hour, value)),
+        }
+        true
+    })?;
+    for runs in held.values_mut() {
+        if let Some((_, last, _)) = runs.last_mut() {
+            *last = to;
+        }
+    }
+    Ok(held)
+}
+
+pub fn keyed_covered_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+) -> io::Result<HashMap<u128, CoveredRuns, foldhash::fast::RandomState>> {
+    let mut held: HashMap<u128, CoveredRuns, foldhash::fast::RandomState> = HashMap::default();
+    crate::points::points(recording, run, table, &inputs(source), Some(source), keys.map_or(Keys::All, Keys::These), from, to, &mut |point| {
+        let runs = held.entry(point.key).or_default();
+        let value = match (point.covered, point.value) {
+            (true, Some(value)) => CoveredValue::Value(value),
+            (true, None) => CoveredValue::Unvalued,
+            (false, _) => CoveredValue::Uncovered,
+        };
         match runs.last_mut() {
             Some((_, _, now)) if *now == value => {}
             Some((_, last, _)) => {

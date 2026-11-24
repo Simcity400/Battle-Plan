@@ -60,6 +60,7 @@ pub fn text<'a>(view: &TableView<'a>, column: usize, slot: u32) -> Option<&'a [u
 }
 
 pub type Runs = replay_lanes::lanes::Runs;
+pub use replay_lanes::lanes::{CoveredRuns, CoveredValue};
 
 pub fn runs(
     recording: &Recording,
@@ -71,6 +72,19 @@ pub fn runs(
     to: i32,
 ) -> io::Result<HashMap<u128, Runs>> {
     let held = crate::cost::storage(|| replay_lanes::lanes::keyed_runs(recording, run, table, source, keys, from, to))?;
+    Ok(held.into_iter().collect())
+}
+
+pub fn covered_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+) -> io::Result<HashMap<u128, CoveredRuns>> {
+    let held = crate::cost::storage(|| replay_lanes::lanes::keyed_covered_runs(recording, run, table, source, keys, from, to))?;
     Ok(held.into_iter().collect())
 }
 

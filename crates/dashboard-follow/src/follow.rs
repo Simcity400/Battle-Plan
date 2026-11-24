@@ -1101,16 +1101,24 @@ impl Engine {
             }
             stats.evaluated += 1;
             if let Query::Cells { columns, rows: Rows::Live(keys), .. } = &followed.query {
-                if let Some(reason) = self.reasons.table_unrecorded(lane) {
+                if let dashboard_query::coverage::Coverage::NotRecorded(reason) = self.reasons.row_coverage(lane, true) {
                     followed.live.unrecorded();
                     self.body.clear();
                     answer::not_recorded(&reason, &mut self.body);
                     stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
                     continue;
                 }
-                let trunc_reason = self.reasons.truncated_reason(lane);
-                let absent_reason = trunc_reason.as_deref().unwrap_or(crate::live::NO_ROW);
-                let (answer, read) = followed.live.evaluate(keys, columns, lane.cells(), &*index, lane.read_rows(), absent_reason, &mut self.delta, &mut self.body);
+                let reasons = &self.reasons;
+                let (answer, read) = followed.live.evaluate(
+                    keys,
+                    columns,
+                    lane.cells(),
+                    &*index,
+                    lane.read_rows(),
+                    |witnessed| reasons.row_coverage(lane, witnessed),
+                    &mut self.delta,
+                    &mut self.body,
+                );
                 stats.cells += read as u32;
                 match answer {
                     live_rows::Answer::Same => followed.has_pending = false,

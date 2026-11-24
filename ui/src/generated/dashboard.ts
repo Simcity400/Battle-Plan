@@ -426,7 +426,7 @@ missing: string | null,
  * True when the inputs were recorded and the measure is not applicable (e.g. a share with a zero denominator).
  */
 notApplicable?: boolean, };
-export type SeriesStateReply = { branchId: string, measure: string, decimals: number, states: Array<SeriesState>, missing?: string, };
+export type SeriesStateReply = { branchId: string, measure: string, decimals: number, states: Array<SeriesState>, };
 export type SeriesKeyReply = { hour: number | null, };
 export type SeriesEvent = { country: CountryRef, hour: number, ordinal: string, row: SeriesDrop, };
 export type SeriesEventPage = { firstOrdinal: string, total: string, rows: Array<SeriesEvent>, cursor: string | null, };
@@ -502,7 +502,7 @@ export type SeriesRankedLine = { tag: string,
  * Its holders over the view.
  */
 parts: Array<TilePart>, summary: ChartSummary, membership: Array<RankedSpan>, missing: Array<MissingSpan>, };
-export type SeriesRankedReply = { branchId: string, measure: string, decimals: number, lines: Array<SeriesRankedLine>, missing?: Array<MissingSpan>, };
+export type SeriesRankedReply = { branchId: string, measure: string, decimals: number, lines: Array<SeriesRankedLine>, };
 export type ArmyChartLine = { country: CountryRef, identities: Array<ArmyIdentityRun>, summary: ChartSummary, membership: Array<ArmySpan> | null, missing: Array<MissingSpan>, };
 export type ArmyChartReply = { series: Array<ArmyChartLine>, };
 export type CampaignClockParams = { branchId: string, firstHour: number, lastHour: number, };

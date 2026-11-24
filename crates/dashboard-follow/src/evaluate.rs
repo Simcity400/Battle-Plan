@@ -5,7 +5,7 @@ use crate::{
     query::{Query, Rows, TagRow, Tags, tags_at},
     table_name, table_words,
 };
-use dashboard_query::{coverage::row_coverage, series::board::measure_unrecorded};
+use dashboard_query::{coverage::{Coverage, row_coverage}, series::board::measure_unrecorded};
 use playhead::lane::Lane;
 use replay_columnar::{
     manifest::Status,
@@ -44,20 +44,25 @@ impl Find for Scan {
     }
 }
 
-pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
+pub(crate) fn coverage_of(table: usize, status: Status, reason: Option<&str>, witnessed: bool) -> Coverage {
     if let Some(&id) = TableId::ALL.get(table) {
-        return row_coverage(id, status, reason, false).into_missing();
+        return row_coverage(id, status, reason, witnessed);
     }
     let name = table_words(table);
     match status {
-        Status::Complete => None,
-        Status::NotRecorded => Some(format!("{name} not recorded at this hour")),
-        Status::Truncated { missing } => Some(format!("{name} read only in part at this hour ({missing} rows not read)")),
-        Status::Unavailable { .. } => Some(match reason.filter(|reason| !reason.is_empty()) {
+        Status::Complete => Coverage::Recorded,
+        Status::Truncated { .. } if witnessed => Coverage::Recorded,
+        Status::NotRecorded => Coverage::NotRecorded(format!("{name} not recorded at this hour")),
+        Status::Truncated { missing } => Coverage::NotRecorded(format!("{name} read only in part at this hour ({missing} rows not read)")),
+        Status::Unavailable { .. } => Coverage::NotRecorded(match reason.filter(|reason| !reason.is_empty()) {
             Some(reason) => format!("{name} not available at this hour: {reason}"),
             None => format!("{name} not available at this hour"),
         }),
     }
+}
+
+pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
+    coverage_of(table, status, reason, false).into_missing()
 }
 
 #[derive(Default)]
@@ -73,36 +78,20 @@ impl Reasons {
         }
     }
 
+    pub(crate) fn row_coverage(&self, lane: &Lane, witnessed: bool) -> Coverage {
+        if let Some(reason) = lane.withheld() {
+            return Coverage::NotRecorded(reason.to_owned());
+        }
+        let status = lane.status().0;
+        let text = match status {
+            Status::Unavailable { reason } => self.0.get(&(lane.run(), reason)).map(|text| &**text),
+            _ => None,
+        };
+        coverage_of(lane.table(), status, text, witnessed)
+    }
+
     pub(crate) fn unrecorded(&self, lane: &Lane) -> Option<String> {
-        if let Some(reason) = lane.withheld() {
-            return Some(reason.to_owned());
-        }
-        let status = lane.status().0;
-        let text = match status {
-            Status::Unavailable { reason } => self.0.get(&(lane.run(), reason)).map(|text| &**text),
-            _ => None,
-        };
-        unrecorded(lane.table(), status, text)
-    }
-
-    pub(crate) fn table_unrecorded(&self, lane: &Lane) -> Option<String> {
-        if let Some(reason) = lane.withheld() {
-            return Some(reason.to_owned());
-        }
-        let status = lane.status().0;
-        if matches!(status, Status::Complete | Status::Truncated { .. }) {
-            return None;
-        }
-        let text = match status {
-            Status::Unavailable { reason } => self.0.get(&(lane.run(), reason)).map(|text| &**text),
-            _ => None,
-        };
-        unrecorded(lane.table(), status, text)
-    }
-
-    pub(crate) fn truncated_reason(&self, lane: &Lane) -> Option<String> {
-        let status = lane.status().0;
-        matches!(status, Status::Truncated { .. }).then(|| unrecorded(lane.table(), status, None)).flatten()
+        self.row_coverage(lane, false).into_missing()
     }
 }
 
@@ -268,13 +257,11 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
         query,
         Query::Cells { rows: Rows::Keys(_) | Rows::Live(_), .. } | Query::Series { top: None, parts: false, .. }
     );
-    let whole_unrecorded = if keyed { reasons.table_unrecorded(lane) } else { reasons.unrecorded(lane) };
-    if let Some(reason) = whole_unrecorded {
+    if let Coverage::NotRecorded(reason) = reasons.row_coverage(lane, keyed) {
         answer::not_recorded(&reason, out);
         return;
     }
     let read_rows = lane.read_rows();
-    let trunc_reason = keyed.then(|| reasons.truncated_reason(lane)).flatten();
     let slot_of = |key: u128| find.slot(key).filter(|slot| read_rows.is_none_or(|read| read.binary_search(slot).is_ok()));
     let cells = lane.cells();
     let Scratch { table, ranked } = scratch;
@@ -294,14 +281,20 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             };
             match rows {
                 Rows::Keys(keys) | Rows::Live(keys) => {
-                    let absent_reason = trunc_reason.as_deref().unwrap_or(crate::live::NO_ROW);
                     for &key in keys {
-                        match slot_of(key) {
-                            Some(slot) => row(table, key, slot),
-                            None => {
+                        let slot = slot_of(key);
+                        match reasons.row_coverage(lane, slot.is_some()) {
+                            Coverage::NotRecorded(reason) => {
                                 table.row(key);
-                                table.absent(absent_reason);
+                                table.absent(&reason);
                             }
+                            Coverage::Recorded => match slot {
+                                Some(slot) => row(table, key, slot),
+                                None => {
+                                    table.row(key);
+                                    table.absent(crate::live::NO_ROW);
+                                }
+                            },
                         }
                     }
                 }
@@ -425,20 +418,23 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 };
                 table.row(key);
                 table.name(&names[at].key());
-                match slot_of(key) {
-                    None if trunc_reason.is_some() => table.absent(trunc_reason.as_deref().expect("truncated reason")),
-                    None if series.absent_none => table.cell(0, State::Value),
-                    None => table.absent(&unread(at)),
-                    Some(slot) => {
-                        let (value, state, reason) = series_value(&source, cells, slot);
-                        table.cell(value, state);
-                        if state != State::Value {
-                            match reason {
-                                Some(reason) => table.explain(reason),
-                                None => table.explain(&unread(at)),
+                let slot = slot_of(key);
+                match reasons.row_coverage(lane, slot.is_some()) {
+                    Coverage::NotRecorded(reason) => table.absent(&reason),
+                    Coverage::Recorded => match slot {
+                        None if series.absent_none => table.cell(0, State::Value),
+                        None => table.absent(&unread(at)),
+                        Some(slot) => {
+                            let (value, state, reason) = series_value(&source, cells, slot);
+                            table.cell(value, state);
+                            if state != State::Value {
+                                match reason {
+                                    Some(reason) => table.explain(reason),
+                                    None => table.explain(&unread(at)),
+                                }
                             }
                         }
-                    }
+                    },
                 }
             }
         }

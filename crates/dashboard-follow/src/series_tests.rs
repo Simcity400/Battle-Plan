@@ -905,7 +905,11 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
             assert_eq!(a_keys.states, [State::Value, State::Value, State::NoRow]);
             assert_eq!(a_keys.reason(2), Some(NO_ROW));
         }
-        let _ = &line_zero;
+        if hour == T1 {
+            let exact_zero = line_zero.states(&[read("GER", hour), read("ITA", hour), read("FRA", hour)], None).unwrap();
+            assert_eq!(exact_zero[0].run.as_ref().map(|r| r.value_raw.as_str()), Some("100"));
+            assert_eq!(exact_zero[2].missing.as_deref(), Some(EXP_TRUNC));
+        }
     }
 
     let cells = LiveCells::default();

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesStateReply } from '../../generated/dashboard';
-import { casualtyRaceEntries, casualtyRatio, casualtyRows, formatCasualties, rankCasualties, stateHeld, heldCasualties, retainedLive } from './casualtiesData.ts';
+import { answerHeld, answerReasons, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, formatCasualties, rankCasualties, stateHeld, heldCasualties, retainedLive } from './casualtiesData.ts';
+import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
+import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { HeldMeasures } from './casualtiesData';
 
 const state = (measure: string, values: Record<string, string | null>): SeriesStateReply => ({ branchId: '1', measure, decimals: 0,
@@ -74,4 +76,23 @@ test('review 10: on the render that changes membership, answers still from the p
   const before = heldCasualties<string>(null, ['a', 'b'], ['GER', 'SOV'], true, null);
   const mixed = heldCasualties<string>(before.held, ['a', 'b'], ['GER', 'ITA'], true, null, false);
   assert.deepEqual([mixed.members, mixed.lives, mixed.held], [['GER', 'SOV'], ['a', 'b'], before.held], 'the previous membership and values stay together');
+});
+
+test('explicitly requested unread keyed rows keep their row and truncation reason through to the tooltip', () => {
+  const trunc = 'Casualty totals read only in part at this hour (1 rows not read)';
+  const followAnswer = (vals: [string, bigint, number, string | null][]) => parseFollowed(message(128, [{ id: 1, answer: {
+    keys: vals.map((_, i) => BigInt(i + 1)), columns: 1, values: vals.map(([, v]) => v),
+    states: vals.map(([, , s]) => s), names: vals.map(([t]) => t), reasons: vals.map(([, , , r]) => r),
+  } }])).answers[0]!.answer;
+  const dealt = followAnswer([['GER', 50n, CELL.value, null], ['ITA', 0n, CELL.noRow, trunc], ['AUS', 0n, CELL.noRow, 'AUS is held by no country']]);
+  const taken = followAnswer([['GER', 20n, CELL.value, null], ['ITA', 0n, CELL.noRow, trunc], ['AUS', 0n, CELL.noRow, 'AUS is held by no country']]);
+  const asked = ['GER', 'ITA', 'AUS'];
+  const measures: HeldMeasures = { dealt: answerHeld(dealt, asked), taken: answerHeld(taken, asked), unknown: null, partial: null };
+  const reasons = answerReasons([dealt, taken], asked);
+  const rows = casualtyRows(asked, measures, 128, false, reasons);
+  assert.deepEqual(rows.map(row => [row.tag, row.dealt, row.taken, row.reason ?? null]), [
+    ['GER', 50n, 20n, null],
+    ['ITA', null, null, trunc],
+  ]);
+  assert.equal(casualtyTooltip(rows[1]!, 'Italy', 'Unknown attacker').note, trunc);
 });

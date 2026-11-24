@@ -188,20 +188,6 @@ pub fn tile(
         }
         false => vec![None; asks.len()],
     };
-    let mut lines = Vec::with_capacity(asks.len());
-    for (at, ask) in asks.iter().enumerate() {
-        let parts = line.held(ask, first, last);
-        lines.push(TileLine {
-            country: ask.country.clone(),
-            part: line.part_text(ask),
-            missing: line.missing(&ask.country, first, last, &parts)?,
-            parts: parts
-                .iter()
-                .map(|part| TilePart { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id, segment_first_hour: part.segment_first })
-                .collect(),
-            marks: marks[at].take(),
-        });
-    }
     let (immutable, filled) = closure(first, last, query.timeline.last);
     let (bins, raw_values, hour_bytes) = match bin_hours {
         1 => {
@@ -218,6 +204,20 @@ pub fn tile(
             encode(&buckets, first, bin_hours, scale)
         }
     };
+    let mut lines = Vec::with_capacity(asks.len());
+    for (at, ask) in asks.iter().enumerate() {
+        let parts = line.held(ask, first, last);
+        lines.push(TileLine {
+            country: ask.country.clone(),
+            part: line.part_text(ask),
+            missing: line.missing(&ask.country, first, last, &parts)?,
+            parts: parts
+                .iter()
+                .map(|part| TilePart { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id, segment_first_hour: part.segment_first })
+                .collect(),
+            marks: marks[at].take(),
+        });
+    }
     Ok(SeriesTileReply {
         branch_id: branch_id.to_owned(),
         measure: line.measure_name().to_owned(),

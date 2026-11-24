@@ -1,7 +1,7 @@
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { ChartSummary } from '../chartSummary';
 import type { CountryRaceEntry } from './countryRace';
-import { CELL, cellNumber, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
+import { CELL, cellNumber, cellState, cellValue, rowName, rowReason } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { CountryGroupReply, FactionGroup, FactionRostersReply, HourSpan, SeriesStateReply } from '../../generated/dashboard';
 import type { FactionLines } from '../../dashboard/territoryReplies';
@@ -39,6 +39,19 @@ export const membersPushed = (status: 'off' | 'pending' | 'followed' | 'unavaila
   status === 'followed' && answer !== undefined;
 
 export const answerShape = (answer: FollowedAnswer | undefined) => answer === undefined ? '' : answer.kind === 'notRecorded' ? `refused:${answer.reason}` : 'rows';
+
+export function answerTableRefusal(answer: FollowedAnswer | undefined, asked: readonly string[], members?: ReadonlySet<string>): string | null {
+  if (!answer) return null;
+  if (answer.kind === 'notRecorded') return answer.reason;
+  for (let row = 0; row < answer.rows; row++) {
+    const tag = rowName(answer, row) ?? asked[row];
+    if (members && (!tag || !members.has(tag))) continue;
+    if (cellState(answer, row * answer.columns) !== CELL.noRow) continue;
+    const reason = rowReason(answer, row);
+    if (reason && reason.includes('read only in part')) return reason;
+  }
+  return null;
+}
 
 export function stateValues(reply: SeriesStateReply | undefined, hour: number): Map<string, number> {
   const out = new Map<string, number>();

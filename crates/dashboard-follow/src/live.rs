@@ -3,7 +3,7 @@ use crate::{
     query::{Query, Rows},
     table_name,
 };
-use dashboard_query::coverage::row_coverage;
+use dashboard_query::coverage::{Coverage, row_coverage};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{Field, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -168,25 +168,25 @@ impl Live {
 
 fn group_values(group: &Group, view: &TableView) -> Vec<CellValue> {
     let width = group.columns.len();
-    let (rows, absent_reason) = match view {
-        TableView::Complete(rows) => (rows, NO_ROW.to_owned()),
-        TableView::Truncated { rows, missing } => (
-            rows,
-            row_coverage(group.table, Status::Truncated { missing: *missing }, None, false).into_missing().unwrap_or_default(),
-        ),
-        TableView::NotRecorded { .. } => {
-            let reason = row_coverage(group.table, Status::NotRecorded, None, false).into_missing().unwrap_or_default();
-            return vec![CellValue::Missing(reason); group.keys.len() * width];
-        }
-        TableView::Unavailable { reason } => {
-            let reason = row_coverage(group.table, Status::Unavailable { reason: 0 }, Some(reason), false).into_missing().unwrap_or_default();
-            return vec![CellValue::Missing(reason); group.keys.len() * width];
-        }
+    let (status, reason, rows) = match view {
+        TableView::Complete(rows) => (Status::Complete, None, Some(rows)),
+        TableView::Truncated { rows, missing } => (Status::Truncated { missing: *missing }, None, Some(rows)),
+        TableView::NotRecorded { .. } => (Status::NotRecorded, None, None),
+        TableView::Unavailable { reason } => (Status::Unavailable { reason: 0 }, Some(reason.as_str()), None),
     };
+    if let Coverage::NotRecorded(reason) = row_coverage(group.table, status, reason, rows.is_some()) {
+        return vec![CellValue::Missing(reason); group.keys.len() * width];
+    }
+    let rows = rows.expect("a readable table view");
     let mut out = Vec::with_capacity(group.keys.len() * width);
     for &key in &group.keys {
-        let Some(row) = find(rows, key) else {
-            out.extend(std::iter::repeat_n(CellValue::Missing(absent_reason.clone()), width));
+        let row = find(rows, key);
+        if let Coverage::NotRecorded(reason) = row_coverage(group.table, status, reason, row.is_some()) {
+            out.extend(std::iter::repeat_n(CellValue::Missing(reason), width));
+            continue;
+        }
+        let Some(row) = row else {
+            out.extend(std::iter::repeat_n(CellValue::Missing(NO_ROW.to_owned()), width));
             continue;
         };
         let start = out.len();

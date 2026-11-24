@@ -39,8 +39,8 @@ import { useGate } from '../../dashboard/regionGate';
 import { SPEC } from '../../dashboard/regionTime';
 import GateState from '../../dashboard/GateState';
 import type { CasualtyLabelsReply, SeriesStateReply } from '../../generated/dashboard';
-import { answerHeld, heldCasualties, retainedLive, casualtyBarStretch, casualtyBarValue, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, FAMILY, formatCasualties,
-  MEASURES, RANK, rankCasualties, rankedTags, stateHeld, SUBTOTAL_NOTE } from './casualtiesData.ts';
+import { answerHeld, answerReasons, heldCasualties, retainedLive, casualtyBarStretch, casualtyBarValue, casualtyRaceEntries, casualtyRatio, casualtyRows, casualtyTooltip, FAMILY, formatCasualties,
+  MEASURES, RANK, rankCasualties, rankedTags, stateHeld, stateReasons, SUBTOTAL_NOTE } from './casualtiesData.ts';
 import type { CasualtyMeasure, CountryCasualties, HeldCasualties, HeldMeasures } from './casualtiesData';
 import { OPTIONS } from './definition';
 import './casualties.css';
@@ -195,14 +195,15 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const heldOf = (answers: readonly (FollowedAnswer | undefined)[]) =>
     Object.fromEntries(MEASURES.map((measure, at) => [measure, answerHeld(answers[at], shownMembers)])) as unknown as HeldMeasures;
   const liveItems = useMemo(() => followedHead && !race ? liveRows(followed.map(item => item.live), answers => {
-    return toItems.current(casualtyRows(shownMembers, heldOf(answers), headHour(), includeUnknown));
+    return toItems.current(casualtyRows(shownMembers, heldOf(answers), headHour(), includeUnknown, answerReasons(answers, shownMembers)));
   }) : undefined,
   [followedHead, race, dealt.live, taken.live, unknown.live, partial.live, shownKey, includeUnknown, looks, colour, headHour]);
   const rowsAt = useRef((_hour: number): CountryCasualties[] => []);
   rowsAt.current = hour => {
     const lives = followed.map(item => item.live);
     if (lives.some(live => !live)) return [];
-    const rows = casualtyRows(shownMembers, heldOf(lives.map(live => live!.read().answer)), hour, includeUnknown);
+    const answers = lives.map(live => live!.read().answer);
+    const rows = casualtyRows(shownMembers, heldOf(answers), hour, includeUnknown, answerReasons(answers, shownMembers));
     return rankCasualties(rows.filter(row => member(row.tag, row.hour)), limit, positive);
   };
   const liveRanked = useMemo<LiveRaceEntries | undefined>(() => {
@@ -217,8 +218,10 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   }, [followedHead, race, dealt.live, taken.live, unknown.live, partial.live, shownKey, includeUnknown, runtime.clock, track?.axisOffset]);
   const askedHeld = useMemo(() => Object.fromEntries(MEASURES.map((measure, at) => [measure, stateHeld(states[at].data)])) as unknown as HeldMeasures,
     [states[0].data, states[1].data, states[2].data, states[3].data]);
-  const askedRows = useMemo(() => followedHead || moment === null ? [] : rankCasualties(casualtyRows(askedTags, askedHeld, moment, includeUnknown).filter(row => member(row.tag, row.hour)), limit, positive),
-    [followedHead, askedTags, askedHeld, moment, includeUnknown, member, limit, positive]);
+  const askedReasons = useMemo(() => stateReasons([states[0].data, states[1].data, states[2].data, states[3].data]),
+    [states[0].data, states[1].data, states[2].data, states[3].data]);
+  const askedRows = useMemo(() => followedHead || moment === null ? [] : rankCasualties(casualtyRows(askedTags, askedHeld, moment, includeUnknown, askedReasons).filter(row => member(row.tag, row.hour)), limit, positive),
+    [followedHead, askedTags, askedHeld, askedReasons, moment, includeUnknown, member, limit, positive]);
   const items = useMemo(() => race ? [] : followedHead ? liveItems?.read() ?? [] : toItems.current(askedRows),
     [race, followedHead, liveItems, askedRows, looks, colour]);
   const raceRows = useMemo(() => race ? followedHead ? rowsAt.current(headHour()) : askedRows : [],
