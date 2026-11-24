@@ -1,4 +1,3 @@
-import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
@@ -17,8 +16,11 @@ import {
   missingSpansOf,
   rankEntry,
   rankedOrder,
-  seriesHeadAt,
   spendMarkersOf,
+  auditReading,
+  headReading,
+  headValueOf,
+  type HeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
 
 export interface PoliticalPowerOptions {
@@ -48,9 +50,11 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
 
     const headByTag = new Map<string, number | null>();
-    for (let i = 0; i < tags.length; i++) {
-      const tag = tags[i]!;
-      headByTag.set(tag, memberAt(options.membership, tag, hour) ? seriesHeadAt(readView, 'main', tag, i, 5) : null);
+    const readingByTag = new Map<string, HeadReading | null>();
+    for (const tag of tags) {
+      const reading = memberAt(options.membership, tag, hour) ? headReading(readView, 'main', { tag }, 5) : undefined;
+      if (reading !== undefined) readingByTag.set(tag, reading);
+      headByTag.set(tag, headValueOf(reading));
     }
     const exact = exactHoverReadings(readView, 'hover', seriesMap?.get(tags[0] ?? '')?.decimals ?? 5);
 
@@ -109,9 +113,9 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       series,
       markers: markers.length > 0 ? markers : undefined,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      auditRows: ordered.slice(0, 8).flatMap(tag => {
-        const v = headByTag.get(tag);
-        return v === null || v === undefined ? [] : [auditRow(tag, formatEndAmount(v))];
+      auditRows: ordered.flatMap(tag => {
+        const reading = readingByTag.get(tag);
+        return reading === undefined ? [] : [auditReading(tag, reading, formatEndAmount)];
       }),
     };
   },

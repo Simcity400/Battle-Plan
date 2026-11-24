@@ -59,17 +59,17 @@ function groupRaidRows(rows: readonly LogRow<RaidAt>[]): ReadonlyArray<RaidLogGr
   });
 }
 
-export function raidLogGroups(data: Pick<RaidLogReply, 'episodes'>, hour: number, types: readonly string[], matches: (tag: string | null, hour: number) => boolean,
+export function raidLogGroups(data: Pick<RaidLogReply, 'episodes' | 'outcomeNone' | 'outcomeFailure' | 'outcomeCanceled'>, hour: number, types: readonly string[], matches: (tag: string | null, hour: number) => boolean,
   from: number | null): ReadonlyArray<RaidLogGroup> {
   const selected = new Set(types);
   return groupRaidRows(data.episodes.slice(0, startedBy(data.episodes, hour)).flatMap(episode => {
-    const at = raidAt(episode, hour);
-    if (!at || (selected.size && !selected.has(episode.raidType ?? '')) || !matches(at.raider, at.since) || (from !== null && at.since < from)) return [];
+    const at = raidAt(data, episode, hour);
+    if (!at || (selected.size && !selected.has(at.episode.raidType ?? '')) || !matches(at.raider, at.since) || (from !== null && at.since < from)) return [];
     return [{ id: episode.id, key: JSON.stringify([episode.id, at.since]), hour: at.since, by: !at.sinceExact, item: at }];
   }));
 }
 
-export function raidLogRows(data: Pick<RaidLogReply, 'episodes'>, hour: number, types: readonly string[], matches: (tag: string | null, hour: number) => boolean,
+export function raidLogRows(data: Pick<RaidLogReply, 'episodes' | 'outcomeNone' | 'outcomeFailure' | 'outcomeCanceled'>, hour: number, types: readonly string[], matches: (tag: string | null, hour: number) => boolean,
   from: number | null): ReadonlyArray<LogRow<RaidAt>> {
   return raidLogGroups(data, hour, types, matches, from).flatMap(group => group.rows);
 }
@@ -134,12 +134,12 @@ export function raidDescription(data: RaidLogReply, at: RaidAt, raider: string, 
 
 export function raidTooltip(data: RaidLogReply, at: RaidAt, raider: string, victim: string, target: string, hour: number): TooltipContent {
   const preparation = raidPreparationText(data, at, hour);
-  const shownEnded = (at.current ?? at.latest).phase === data.phaseEnded && at.episode.endedHour !== null;
-  const endedLabel = at.episode.endedSource === 'nativeEndDate'
+  const end = (at.current ?? at.latest).phase === data.phaseEnded ? at.end : null;
+  const endedLabel = end?.source === 'nativeEndDate'
     ? 'Ended (recorded)'
-    : at.episode.endedExact ? 'Ended (observed)' : 'Ended by (observed)';
-  const endedRow = shownEnded
-    ? [{ label: endedLabel, value: formatDateTime(at.episode.endedHour!) }]
+    : end?.exact ? 'Ended (observed)' : 'Ended by (observed)';
+  const endedRow = end !== null
+    ? [{ label: endedLabel, value: formatDateTime(end.endedHour) }]
     : at.disappeared && at.episode.disappearedHour !== null
       ? [{ label: at.episode.disappearedExact ? 'No longer seen' : 'No longer seen by', value: formatDateTime(at.episode.disappearedHour) }]
       : [];
