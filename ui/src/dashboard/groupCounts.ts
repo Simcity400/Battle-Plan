@@ -1,5 +1,5 @@
 import type { BranchToHourSourceRead } from '../families/plan.ts';
-import type { GroupCount, GroupCountsReply, GroupKind } from '../generated/dashboard';
+import type { GroupCount, GroupCountsReply, CountedGroup } from '../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => value != null && typeof value === 'object';
 const nullableText = (value: unknown) => value === null || typeof value === 'string';
@@ -20,7 +20,7 @@ export function groupCountsProof(data: unknown, _requested: readonly [number, nu
   return reply.hour <= hour && hour <= last ? [reply.hour, last] : null;
 }
 
-export function groupCountsRead(branchId: string, of: GroupKind): BranchToHourSourceRead {
+export function groupCountsRead(branchId: string, of: CountedGroup): BranchToHourSourceRead {
   return {
     shape: 'branch-to-hour',
     coverage: { mode: 'population', form: 'all' },
