@@ -45,6 +45,12 @@ fn copy<R: RowCodec>(row: &R) -> Result<R, &'static str> {
     row.try_clone_validated()
         .map_err(|_| "certified row allocation failed")
 }
+fn refresh<R: RowCodec>(n: &mut Node<R>) {
+    n.height = 1 + height(&n.left).max(height(&n.right));
+    n.len = 1 + len(&n.left) + len(&n.right);
+    n.bytes =
+        std::mem::size_of::<Node<R>>() + n.row.heap_bytes() + bytes(&n.left) + bytes(&n.right);
+}
 fn balance<R: RowCodec>(
     row: R,
     mut left: Link<R>,
@@ -86,48 +92,197 @@ fn balance<R: RowCodec>(
     }
     Ok(node(row, left, right))
 }
-fn put<R: RowCodec>(root: &Link<R>, row: R) -> Result<Arc<Node<R>>, &'static str> {
-    let Some(n) = root else {
-        return Ok(node(row, None, None));
-    };
-    Ok(match row.key().cmp(&n.row.key()) {
-        std::cmp::Ordering::Less => {
-            balance(copy(&n.row)?, Some(put(&n.left, row)?), n.right.clone())?
+fn rotate_right_mut<R: RowCodec>(link: &mut Link<R>) -> Result<(), &'static str> {
+    let left_unique = Arc::strong_count(link.as_ref().unwrap().left.as_ref().unwrap()) == 1;
+    if left_unique {
+        let mut root = link.take().unwrap();
+        let mut left = Arc::get_mut(&mut root).unwrap().left.take().unwrap();
+        let lr = Arc::get_mut(&mut left).unwrap().right.take();
+        {
+            let r = Arc::get_mut(&mut root).unwrap();
+            r.left = lr;
+            refresh(r);
         }
-        std::cmp::Ordering::Greater => {
-            balance(copy(&n.row)?, n.left.clone(), Some(put(&n.right, row)?))?
+        {
+            let l = Arc::get_mut(&mut left).unwrap();
+            l.right = Some(root);
+            refresh(l);
         }
-        std::cmp::Ordering::Equal => node(row, n.left.clone(), n.right.clone()),
-    })
-}
-fn replace<R: RowCodec>(root: &mut Link<R>, row: R) -> Result<(), &'static str> {
-    let Some(n) = root.as_mut().and_then(Arc::get_mut) else {
-        *root = Some(put(root, row)?);
+        *link = Some(left);
         return Ok(());
-    };
-    match row.key().cmp(&n.row.key()) {
-        std::cmp::Ordering::Less => replace(&mut n.left, row)?,
-        std::cmp::Ordering::Greater => replace(&mut n.right, row)?,
-        std::cmp::Ordering::Equal => n.row = row,
     }
-    n.bytes =
-        std::mem::size_of::<Node<R>>() + n.row.heap_bytes() + bytes(&n.left) + bytes(&n.right);
+    let (copied, ll, lr) = {
+        let l = link.as_ref().unwrap().left.as_ref().unwrap();
+        (copy(&l.row)?, l.left.clone(), l.right.clone())
+    };
+    let mut root = link.take().unwrap();
+    {
+        let r = Arc::get_mut(&mut root).unwrap();
+        r.left = lr;
+        refresh(r);
+    }
+    *link = Some(node(copied, ll, Some(root)));
     Ok(())
 }
-fn remove<R: RowCodec>(root: &Link<R>, key: u128) -> Result<Link<R>, &'static str> {
+fn rotate_left_mut<R: RowCodec>(link: &mut Link<R>) -> Result<(), &'static str> {
+    let right_unique = Arc::strong_count(link.as_ref().unwrap().right.as_ref().unwrap()) == 1;
+    if right_unique {
+        let mut root = link.take().unwrap();
+        let mut right = Arc::get_mut(&mut root).unwrap().right.take().unwrap();
+        let rl = Arc::get_mut(&mut right).unwrap().left.take();
+        {
+            let r = Arc::get_mut(&mut root).unwrap();
+            r.right = rl;
+            refresh(r);
+        }
+        {
+            let right_node = Arc::get_mut(&mut right).unwrap();
+            right_node.left = Some(root);
+            refresh(right_node);
+        }
+        *link = Some(right);
+        return Ok(());
+    }
+    let (copied, rl, rr) = {
+        let r = link.as_ref().unwrap().right.as_ref().unwrap();
+        (copy(&r.row)?, r.left.clone(), r.right.clone())
+    };
+    let mut root = link.take().unwrap();
+    {
+        let n = Arc::get_mut(&mut root).unwrap();
+        n.right = rl;
+        refresh(n);
+    }
+    *link = Some(node(copied, Some(root), rr));
+    Ok(())
+}
+fn balance_mut<R: RowCodec>(link: &mut Link<R>) -> Result<(), &'static str> {
+    let (lh, rh) = {
+        let n = link.as_ref().unwrap();
+        (height(&n.left), height(&n.right))
+    };
+    if lh > rh + 1 {
+        let need_lr = {
+            let l = link.as_ref().unwrap().left.as_ref().unwrap();
+            height(&l.right) > height(&l.left)
+        };
+        if need_lr {
+            let l_unique = Arc::strong_count(link.as_ref().unwrap().left.as_ref().unwrap()) == 1;
+            if l_unique {
+                rotate_left_mut(&mut Arc::get_mut(link.as_mut().unwrap()).unwrap().left)?;
+            } else {
+                let rebuilt = {
+                    let l = link.as_ref().unwrap().left.as_ref().unwrap();
+                    let r = l.right.as_ref().unwrap();
+                    node(
+                        copy(&r.row)?,
+                        Some(node(copy(&l.row)?, l.left.clone(), r.left.clone())),
+                        r.right.clone(),
+                    )
+                };
+                Arc::get_mut(link.as_mut().unwrap()).unwrap().left = Some(rebuilt);
+            }
+        }
+        return rotate_right_mut(link);
+    }
+    if rh > lh + 1 {
+        let need_rl = {
+            let r = link.as_ref().unwrap().right.as_ref().unwrap();
+            height(&r.left) > height(&r.right)
+        };
+        if need_rl {
+            let r_unique = Arc::strong_count(link.as_ref().unwrap().right.as_ref().unwrap()) == 1;
+            if r_unique {
+                rotate_right_mut(&mut Arc::get_mut(link.as_mut().unwrap()).unwrap().right)?;
+            } else {
+                let rebuilt = {
+                    let r = link.as_ref().unwrap().right.as_ref().unwrap();
+                    let l = r.left.as_ref().unwrap();
+                    node(
+                        copy(&l.row)?,
+                        l.left.clone(),
+                        Some(node(copy(&r.row)?, l.right.clone(), r.right.clone())),
+                    )
+                };
+                Arc::get_mut(link.as_mut().unwrap()).unwrap().right = Some(rebuilt);
+            }
+        }
+        return rotate_left_mut(link);
+    }
+    refresh(Arc::get_mut(link.as_mut().unwrap()).unwrap());
+    Ok(())
+}
+fn put_shared<R: RowCodec>(
+    root: &Link<R>,
+    row: &R,
+) -> Result<Option<Arc<Node<R>>>, &'static str> {
+    let Some(n) = root else {
+        return Ok(Some(node(copy(row)?, None, None)));
+    };
+    match row.key().cmp(&n.row.key()) {
+        std::cmp::Ordering::Less => {
+            let Some(left) = put_shared(&n.left, row)? else {
+                return Ok(None);
+            };
+            Ok(Some(balance(copy(&n.row)?, Some(left), n.right.clone())?))
+        }
+        std::cmp::Ordering::Greater => {
+            let Some(right) = put_shared(&n.right, row)? else {
+                return Ok(None);
+            };
+            Ok(Some(balance(copy(&n.row)?, n.left.clone(), Some(right))?))
+        }
+        std::cmp::Ordering::Equal => {
+            if &n.row == row {
+                return Ok(None);
+            }
+            Ok(Some(node(copy(row)?, n.left.clone(), n.right.clone())))
+        }
+    }
+}
+fn put_mut<R: RowCodec>(link: &mut Link<R>, row: &R) -> Result<bool, &'static str> {
+    if link.is_none() {
+        *link = Some(node(copy(row)?, None, None));
+        return Ok(true);
+    }
+    if let Some(n) = link.as_mut().and_then(Arc::get_mut) {
+        let changed = match row.key().cmp(&n.row.key()) {
+            std::cmp::Ordering::Less => put_mut(&mut n.left, row)?,
+            std::cmp::Ordering::Greater => put_mut(&mut n.right, row)?,
+            std::cmp::Ordering::Equal => {
+                if &n.row == row {
+                    return Ok(false);
+                }
+                n.row = copy(row)?;
+                refresh(n);
+                return Ok(true);
+            }
+        };
+        if changed {
+            balance_mut(link)?;
+        }
+        return Ok(changed);
+    }
+    let Some(updated) = put_shared(link, row)? else {
+        return Ok(false);
+    };
+    *link = Some(updated);
+    Ok(true)
+}
+fn remove_shared<R: RowCodec>(root: &Link<R>, key: u128) -> Result<Link<R>, &'static str> {
     let Some(n) = root else {
         return Ok(None);
     };
     Ok(match key.cmp(&n.row.key()) {
         std::cmp::Ordering::Less => Some(balance(
             copy(&n.row)?,
-            remove(&n.left, key)?,
+            remove_shared(&n.left, key)?,
             n.right.clone(),
         )?),
         std::cmp::Ordering::Greater => Some(balance(
             copy(&n.row)?,
             n.left.clone(),
-            remove(&n.right, key)?,
+            remove_shared(&n.right, key)?,
         )?),
         std::cmp::Ordering::Equal => match (&n.left, &n.right) {
             (None, _) => n.right.clone(),
@@ -140,11 +295,82 @@ fn remove<R: RowCodec>(root: &Link<R>, key: u128) -> Result<Link<R>, &'static st
                 Some(balance(
                     copy(&successor.row)?,
                     n.left.clone(),
-                    remove(&n.right, successor.row.key())?,
+                    remove_shared(&n.right, successor.row.key())?,
                 )?)
             }
         },
     })
+}
+fn take_min_mut<R: RowCodec>(link: &mut Link<R>) -> Result<R, &'static str> {
+    if link.as_ref().unwrap().left.is_none() {
+        if Arc::strong_count(link.as_ref().unwrap()) == 1 {
+            let node_arc = link.take().unwrap();
+            let node = Arc::into_inner(node_arc).unwrap();
+            *link = node.right;
+            return Ok(node.row);
+        }
+        let copied = copy(&link.as_ref().unwrap().row)?;
+        let right = link.as_ref().unwrap().right.clone();
+        *link = right;
+        return Ok(copied);
+    }
+    if let Some(n) = link.as_mut().and_then(Arc::get_mut) {
+        let min = take_min_mut(&mut n.left)?;
+        balance_mut(link)?;
+        return Ok(min);
+    }
+    let mut successor = link.as_deref().unwrap();
+    while let Some(left) = &successor.left {
+        successor = left;
+    }
+    let copied = copy(&successor.row)?;
+    let key = copied.key();
+    *link = remove_shared(link, key)?;
+    Ok(copied)
+}
+fn remove_mut<R: RowCodec>(link: &mut Link<R>, key: u128) -> Result<(), &'static str> {
+    if link.is_none() {
+        return Ok(());
+    }
+    if Arc::strong_count(link.as_ref().unwrap()) > 1 {
+        *link = remove_shared(link, key)?;
+        return Ok(());
+    }
+    let cmp = key.cmp(&link.as_ref().unwrap().row.key());
+    match cmp {
+        std::cmp::Ordering::Less => {
+            remove_mut(&mut Arc::get_mut(link.as_mut().unwrap()).unwrap().left, key)?;
+            balance_mut(link)?;
+        }
+        std::cmp::Ordering::Greater => {
+            remove_mut(
+                &mut Arc::get_mut(link.as_mut().unwrap()).unwrap().right,
+                key,
+            )?;
+            balance_mut(link)?;
+        }
+        std::cmp::Ordering::Equal => {
+            let has_left = link.as_ref().unwrap().left.is_some();
+            let has_right = link.as_ref().unwrap().right.is_some();
+            match (has_left, has_right) {
+                (false, _) => {
+                    let right = Arc::get_mut(link.as_mut().unwrap()).unwrap().right.take();
+                    *link = right;
+                }
+                (_, false) => {
+                    let left = Arc::get_mut(link.as_mut().unwrap()).unwrap().left.take();
+                    *link = left;
+                }
+                (true, true) => {
+                    let successor =
+                        take_min_mut(&mut Arc::get_mut(link.as_mut().unwrap()).unwrap().right)?;
+                    Arc::get_mut(link.as_mut().unwrap()).unwrap().row = successor;
+                    balance_mut(link)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 fn visit<R>(root: &Link<R>, range: &Range<u128>, f: &mut impl FnMut(&R))
 where
@@ -255,10 +481,8 @@ impl<R: RowCodec> Store<R> {
         None
     }
     pub fn insert(&mut self, row: R) -> Result<(), &'static str> {
-        match self.get(row.key()) {
-            Some(held) if held == &row => return Ok(()),
-            Some(_) => replace(&mut self.root, copy(&row)?)?,
-            None => self.root = Some(put(&self.root, copy(&row)?)?),
+        if !put_mut(&mut self.root, &row)? {
+            return Ok(());
         }
         self.edits.insert(row.key(), Some(row));
         Ok(())
@@ -277,7 +501,7 @@ impl<R: RowCodec> Store<R> {
             return Err("certified deletion allocation failed");
         }
         for key in keys {
-            self.root = remove(&self.root, key)?;
+            remove_mut(&mut self.root, key)?;
             self.edits.insert(key, None);
         }
         Ok(())
@@ -472,14 +696,20 @@ mod tests {
             expected.insert(value.key(), value.clone());
             store.insert(value).unwrap();
         }
+        for number in (0..1000u32).step_by(11) {
+            let key = row(1, number).key();
+            store.remove_range(key..key + 1).unwrap();
+            expected.remove(&key);
+        }
         let before = store.finish().unwrap();
+        let before_expected: Vec<_> = expected.values().cloned().collect();
         for number in (0..1000u32).step_by(3) {
             let key = row(1, number).key();
             store.remove_range(key..key + 1).unwrap();
             expected.remove(&key);
         }
         for pass in 0..2 {
-            for number in (0..1000u32).step_by(7).filter(|number| number % 3 != 0) {
+            for number in (0..1000u32).step_by(7).filter(|number| number % 3 != 0 && number % 11 != 0) {
                 let mut value = (*row(1, number)).clone();
                 value.name = format!("replacement {number}/{pass}").into_bytes();
                 let value = Arc::new(value);
@@ -488,11 +718,16 @@ mod tests {
             }
         }
         let after = store.finish().unwrap();
+        let replay_data::rows::TableRows::DivisionHistory(actual_before) =
+            before.complete::<tables::DivisionHistory>().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(actual_before, before_expected);
         let all = after.complete::<tables::DivisionHistory>().unwrap();
         let replay_data::rows::TableRows::DivisionHistory(actual) = all else {
             panic!()
         };
         assert_eq!(actual, expected.into_values().collect::<Vec<_>>());
-        assert_eq!(before.len(), 1000);
     }
 }

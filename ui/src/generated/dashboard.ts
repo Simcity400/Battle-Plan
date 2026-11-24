@@ -107,6 +107,10 @@ export type Artwork = { token: string, name: string | null, description: string 
  * The artwork URL of the first authored sprite frame.
  */
 icon: string | null, };
+export type ArtOrigin = { "kind": "baseGame" } | { "kind": "dlc", id: string, name: string, } | { "kind": "mod", id: string, name: string, } | { "kind": "visualMod", id: string, name: string, } | { "kind": "builtin", id: string, };
+export type ArtFrame = { frameIndex: number, frameCount: number, frameWidth: number, frameHeight: number, textureWidth: number, textureHeight: number, outputWidth: number, outputHeight: number, };
+export type ArtProvenance = { fromCurrentInstall: boolean, label: string, scopeKey: string, };
+export type ArtResolution = { "status": "noArtExpected" } | { "status": "pending" } | { "status": "ready", assetId: string, url: string, origin: ArtOrigin, file: string, frame: ArtFrame, provenance: ArtProvenance, } | { "status": "confirmedMissing", reason: string, origin?: ArtOrigin, file?: string, } | { "status": "refused", reason: string, construct: string, origin?: ArtOrigin, file?: string, } | { "status": "failed", reason: string, retryable: boolean, };
 export type FocusDatabase = "national" | "continuous";
 export type FocusEntry = { ordinal: number, token: string,
 /**
@@ -572,7 +576,7 @@ key: string, width: number, height: number,
 /**
  * The flag as its artwork URL, at most 128 pixels on the longer side.
  */
-png: string, };
+png: string, resolution?: ArtResolution, };
 export type CountryFlagUnavailable = {
 /**
  * The choice: its index in the request's `flags`.
@@ -699,7 +703,7 @@ text?: boolean,
 /**
  * An artwork URL, or null with a named, counted refusal.
  */
-icon: string | null, };
+icon: string | null, resolution?: ArtResolution, };
 export type ArmyMeasure = "manpower" | "divisions" | "strength" | "battalions";
 export type ArmyAttribution = "owner" | "host";
 export type ArmySizeParams = { branchId: string, countries: Array<CountryRef>, top: number | null, measure: ArmyMeasure, countFor: ArmyAttribution, byType: boolean,
@@ -3070,7 +3074,7 @@ reason: string | null,
  * The native operands that change what the event means.
  */
 notes: Array<string>, };
-export type DecisionLifecycleState = { "kind": "active" } | { "kind": "available" } | { "kind": "completed" } | { "kind": "failed", observedHour: number, } | { "kind": "aborted" } | { "kind": "reEnableCooldown" } | { "kind": "unsupported", raw: number, } | { "kind": "notRecorded", reason: string, };
+export type DecisionLifecycleState = { "kind": "active" } | { "kind": "available" } | { "kind": "completed" } | { "kind": "failed", observedHour: number, } | { "kind": "aborted" } | { "kind": "reEnableCooldown" } | { "kind": "unsupported", raw: number, } | { "kind": "notApplicable", reason: string, } | { "kind": "notRecorded", reason: string, };
 export type EventFeedRow = { id: string, hour: number,
 /**
  * The read supplying this fact; the head never shows it before this hour.

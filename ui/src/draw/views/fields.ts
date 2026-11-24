@@ -1,6 +1,7 @@
 ﻿import { liveKey } from '../../charts/live.ts';
-import { CellGroup, sectionGroups, sectionOf, sectionValues, valuedGroup, type GroupValues } from '../../dashboard/follow/liveCells.ts';
-import { serializeAnswer } from '../../dashboard/follow/tables.ts';
+import type { LiveValues } from '../../charts/live';
+import { answerGroup, CellGroup, sectionGroups, sectionOf, sectionValues, valuedGroup, type GroupValues, type LiveSection } from '../../dashboard/follow/liveCells.ts';
+import { changedAnswerRows, serializeAnswer } from '../../dashboard/follow/tables.ts';
 import { parseAnswer, type FollowedPanel } from '../../dashboard/follow/message.ts';
 import type { Picture } from '../../dashboard/follow/facts';
 import type { LaneView, Painted, Scene, Value } from '../lane.ts';
@@ -11,16 +12,101 @@ export type LiveMap = Map<string, number | bigint | string>;
 export interface ModelField { bytes: Uint8Array | null; data?: unknown; refused: string | null; structure?: string }
 
 const groups = new WeakMap<object, GroupValues>();
+const pictureLiveCache = new WeakMap<Picture<Value>, LiveValues<number> | null>();
+const liveMeta = new WeakMap<object, { readonly picture: Picture<Value>; readonly section: LiveSection }>();
+const sectionRevIndex = new WeakMap<LiveSection, readonly (readonly (readonly string[] | undefined)[])[]>();
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set();
+
+function reverseRowIndex(section: LiveSection): readonly (readonly (readonly string[] | undefined)[])[] {
+  let held = sectionRevIndex.get(section);
+  if (held) return held;
+  const byGroup: (string[] | undefined)[][] = section.groups.map(() => []);
+  const { cells, rows } = section;
+  for (let at = 0; at < cells.length;) {
+    const rowId = rows[cells[at]!]!;
+    const count = cells[at + 2]!;
+    for (let s = 0; s < count; s++) {
+      const base = at + 3 + s * 3;
+      const g = cells[base]!;
+      const k = cells[base + 1]!;
+      let bucket = byGroup[g]![k];
+      if (!bucket) byGroup[g]![k] = bucket = [rowId];
+      else if (!bucket.includes(rowId)) bucket.push(rowId);
+    }
+    at += 3 + count * 3;
+  }
+  sectionRevIndex.set(section, held = byGroup);
+  return held;
+}
+
+export function changedLiveRows(
+  prev: LiveValues<number | bigint | string> | null | undefined,
+  next: LiveValues<number | bigint | string> | null | undefined,
+): ReadonlySet<string> | null {
+  if (prev === next) return EMPTY_STRING_SET;
+  if (!prev || !next) return null;
+  const metaA = liveMeta.get(prev);
+  const metaB = liveMeta.get(next);
+  if (!metaA || !metaB || metaA.section !== metaB.section) return null;
+  const picA = metaA.picture;
+  const picB = metaB.picture;
+  if (picA.parts[0] !== picB.parts[0] || picA.parts.length !== picB.parts.length) return null;
+  const cells = picB.parts[0]!.cells;
+  const rev = reverseRowIndex(metaB.section);
+  const out = new Set<string>();
+  for (let g = 0; g < metaB.section.groups.length; g++) {
+    const followId = metaB.section.groups[g]!.follow;
+    if (followId === undefined) continue;
+    const at = cells.indexOf(followId);
+    const pA = at < 0 ? undefined : picA.parts[at + 1]?.value;
+    const pB = at < 0 ? undefined : picB.parts[at + 1]?.value;
+    if (pA === pB) continue;
+    if (!pA || !pB || pA.kind !== 'answer' || pB.kind !== 'answer' || pA.answer.kind !== 'rows' || pB.answer.kind !== 'rows') {
+      return null;
+    }
+    const diff = changedAnswerRows(pA.answer, pB.answer);
+    if (diff === null) return null;
+    const groupRev = rev[g]!;
+    for (let i = 0; i < diff.length; i++) {
+      const ids = groupRev[diff[i]!];
+      if (!ids) continue;
+      for (let j = 0; j < ids.length; j++) out.add(ids[j]!);
+    }
+  }
+  return out;
+}
 
 function groupOf(value: Value, spec: Parameters<typeof valuedGroup>[0]): GroupValues {
   if (value.kind === 'seed') return valuedGroup(spec, value.values);
   let held = groups.get(value);
   if (!held) {
-    const group = new CellGroup();
-    if (value.kind === 'answer') group.land(value.answer);
-    groups.set(value, held = group);
+    held = value.kind === 'answer' ? answerGroup(value.answer) : new CellGroup();
+    groups.set(value, held);
   }
   return held;
+}
+
+export function sectionLiveValues(picture: Picture<Value>): LiveValues<number> | null {
+  if (pictureLiveCache.has(picture)) return pictureLiveCache.get(picture)!;
+  const head = picture.parts[0]!.value;
+  if (head.kind !== 'panel' || head.refused !== null) {
+    pictureLiveCache.set(picture, null);
+    return null;
+  }
+  const section = sectionOf(head.data);
+  if (!section) {
+    pictureLiveCache.set(picture, null);
+    return null;
+  }
+  const cells = picture.parts[0]!.cells;
+  const live = sectionValues(section, sectionGroups(section, id => {
+    const at = cells.indexOf(id), part = at < 0 ? undefined : picture.parts[at + 1];
+    const spec = section.groups.find(group => group.follow === id);
+    return part && spec ? groupOf(part.value, spec) : undefined;
+  }));
+  liveMeta.set(live, { picture, section });
+  pictureLiveCache.set(picture, live);
+  return live;
 }
 
 export function liveValues(picture: Picture<Value>): LiveMap | null {
@@ -28,17 +114,23 @@ export function liveValues(picture: Picture<Value>): LiveMap | null {
   if (head.kind !== 'panel' || head.refused !== null) return null;
   const section = sectionOf(head.data);
   if (!section) return null;
-  const cells = picture.parts[0]!.cells;
-  const live = sectionValues(section, sectionGroups(section, id => {
-    const at = cells.indexOf(id), part = at < 0 ? undefined : picture.parts[at + 1];
-    const spec = section.groups.find(group => group.follow === id);
-    return part && spec ? groupOf(part.value, spec) : undefined;
-  }));
+  const live = sectionLiveValues(picture);
+  if (!live) return null;
   const out: LiveMap = new Map();
   for (let i = 0; i < section.cells.length; i += 3 + section.cells[i + 2]! * 3) {
     const key = liveKey(section.rows[section.cells[i]!]!, section.kinds[section.cells[i + 1]!]!.id);
-    const raw = live.raw?.(key);
-    out.set(key, raw !== undefined && !Number.isSafeInteger(Number(raw)) ? raw : live.get(key) ?? live.missing(key));
+    const num = live.get(key);
+    if (num !== undefined) {
+      if (Math.abs(num) >= 9_007_199_254_740_991) {
+        const raw = live.raw?.(key);
+        out.set(key, raw !== undefined && !Number.isSafeInteger(Number(raw)) ? raw : num);
+      } else {
+        out.set(key, num);
+      }
+    } else {
+      const raw = live.raw?.(key);
+      out.set(key, raw !== undefined ? raw : live.missing(key));
+    }
   }
   return out;
 }

@@ -11,7 +11,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"H4KEPT\0\x01";
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 const KEY: usize = 32;
 const CHECKSUM: usize = 32;
 const PIECE: usize = 1 << 20;
@@ -59,16 +59,18 @@ impl Part for SpriteSet {
 }
 
 fn encode_sprite(sprite: &SpriteType) -> Result<Vec<u8>, String> {
-    rmp_serde::to_vec(&(&sprite.texture, sprite.frames, &sprite.facts))
+    rmp_serde::to_vec(&(&sprite.texture, sprite.frames, &sprite.source_file, &sprite.facts))
         .map_err(|error| error.to_string())
 }
 
 fn decode_sprite(name: &str, body: &[u8]) -> Result<SpriteType, String> {
-    let (texture, frames, facts) = rmp_serde::from_slice(body).map_err(|error| error.to_string())?;
+    let (texture, frames, source_file, facts) =
+        rmp_serde::from_slice(body).map_err(|error| error.to_string())?;
     Ok(SpriteType {
         name: name.to_owned(),
         texture,
         frames,
+        source_file,
         facts,
     })
 }
@@ -118,13 +120,20 @@ pub(crate) fn place<P: Part>(source: &Source, cache_dir: &Path, inputs: &[u8]) -
     key.update(&facts.digest);
     key.update(&facts.raw.to_le_bytes());
     key.update(&facts.stored.to_le_bytes());
-    Some(Place {
-        path: cache_dir.join("catalogue").join(format!(
-            "{}-{}-{program}.bin",
+    let digest = *key.finalize().as_bytes();
+    let file_name = if inputs.is_empty() {
+        format!("{}-{}-{program}.bin", hex(&facts.digest), P::NAME)
+    } else {
+        format!(
+            "{}-{}-{}-{program}.bin",
             hex(&facts.digest),
+            hex(&digest[..8]),
             P::NAME
-        )),
-        key: *key.finalize().as_bytes(),
+        )
+    };
+    Some(Place {
+        path: cache_dir.join("catalogue").join(file_name),
+        key: digest,
     })
 }
 

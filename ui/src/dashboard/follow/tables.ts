@@ -201,6 +201,84 @@ export function serializeAnswer(answer: FollowedRows): Uint8Array {
   return out;
 }
 
+function rowChangedInChunk(
+  prev: FollowedRows,
+  next: FollowedRows,
+  ca: RowChunk | undefined,
+  cb: RowChunk | undefined,
+  start: number,
+  offset: number,
+): boolean {
+  const cols = next.columns;
+  const chunkCell = offset * cols;
+  const baseCell = (start + offset) * cols;
+  for (let c = 0; c < cols; c++) {
+    const stA = ca ? ca.states[chunkCell + c]! : prev.views.u8[prev.states + baseCell + c]!;
+    const stB = cb ? cb.states[chunkCell + c]! : next.views.u8[next.states + baseCell + c]!;
+    if (stA !== stB) return true;
+    const valA = ca ? ca.values[chunkCell + c]! : prev.views.i64[prev.values + baseCell + c]!;
+    const valB = cb ? cb.values[chunkCell + c]! : next.views.i64[next.values + baseCell + c]!;
+    if (valA !== valB) return true;
+  }
+  const rA = ca
+    ? ca.reasons[offset]!
+    : (prev.views.u32[prev.reasons + start + offset]! === NO_TEXT ? null : textAt(prev, prev.views.u32[prev.reasons + start + offset]!));
+  const rB = cb
+    ? cb.reasons[offset]!
+    : (next.views.u32[next.reasons + start + offset]! === NO_TEXT ? null : textAt(next, next.views.u32[next.reasons + start + offset]!));
+  return rA !== rB;
+}
+
+function diffPatchNodes(
+  prev: FollowedRows,
+  next: FollowedRows,
+  a: PatchNode | undefined,
+  b: PatchNode | undefined,
+  shift: number,
+  baseChunk: number,
+  out: number[],
+): void {
+  if (a === b) return;
+  for (let i = 0; i < BRANCH; i++) {
+    const ca = a?.[i];
+    const cb = b?.[i];
+    if (ca === cb) continue;
+    const at = baseChunk + (i << shift);
+    if (shift === 0) {
+      const start = at * CHUNK_ROWS;
+      const len = Math.min(CHUNK_ROWS, next.rows - start);
+      const chunkA = ca as RowChunk | undefined;
+      const chunkB = cb as RowChunk | undefined;
+      for (let offset = 0; offset < len; offset++) {
+        if (rowChangedInChunk(prev, next, chunkA, chunkB, start, offset)) {
+          out.push(start + offset);
+        }
+      }
+    } else {
+      diffPatchNodes(prev, next, ca as PatchNode | undefined, cb as PatchNode | undefined, shift - 3, at, out);
+    }
+  }
+}
+
+export function changedAnswerRows(prev: FollowedRows, next: FollowedRows): number[] | null {
+  if (prev === next) return [];
+  if (
+    prev.views.u8 !== next.views.u8
+    || prev.values !== next.values
+    || prev.states !== next.states
+    || prev.rows !== next.rows
+    || prev.columns !== next.columns
+  ) return null;
+  const pa = prev.patches;
+  const pb = next.patches;
+  if (pa === pb) return [];
+  if (pa && pb && pa.shift !== pb.shift) return null;
+  const shift = pb ? pb.shift : pa!.shift;
+  const out: number[] = [];
+  diffPatchNodes(prev, next, pa?.root, pb?.root, shift, 0, out);
+  return out;
+}
+
 export function mergeChanged(base: FollowedAnswer, changed: FollowedRows, _held = Infinity): Uint8Array {
   return serializeAnswer(patchAnswer(base, changed));
 }

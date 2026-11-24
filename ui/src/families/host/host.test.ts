@@ -4,7 +4,7 @@ import { AuditSnapshotStore } from '../audit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
 import { handleFamilyKeyDown, type FamilyNavTuple } from './keyboard.ts';
-import { optionElementId, reconcileFocusedKey, syncListboxMirror } from './mirror.ts';
+import { optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
 import { parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
@@ -378,5 +378,108 @@ test('window placement clamps and centres within viewport bounds and sameFamilyT
     hatchSpacing: 6,
   };
   assert.equal(sameFamilyTheme(base, { ...base, shortage: '#e5484d' }), false);
+});
+
+test('syncTableMirror updates existing table rows and cells in place without recreating nodes', () => {
+  const prevDoc = (globalThis as { document?: unknown }).document;
+  try {
+    let createdElements = 0;
+    interface MockCell {
+      textContent: string;
+      tabIndex: number;
+      dataset: Record<string, string>;
+      attrs: Map<string, string>;
+      children: MockCell[];
+      readonly lastElementChild: MockCell | null;
+      getAttribute(name: string): string | null;
+      hasAttribute(name: string): boolean;
+      setAttribute(name: string, value: string): void;
+      removeAttribute(name: string): void;
+      appendChild(node: MockCell): MockCell;
+      append(...nodes: MockCell[]): void;
+      replaceChildren(...nodes: MockCell[]): void;
+      contains(node: unknown): boolean;
+      remove(): void;
+    }
+    const makeNode = (isFrag = false): MockCell => {
+      if (!isFrag) createdElements++;
+      const node: MockCell = {
+        textContent: '',
+        tabIndex: -1,
+        dataset: {},
+        attrs: new Map(),
+        children: [],
+        get lastElementChild() { return this.children[this.children.length - 1] ?? null; },
+        getAttribute(name) { return this.attrs.get(name) ?? null; },
+        hasAttribute(name) { return this.attrs.has(name); },
+        setAttribute(name, value) { this.attrs.set(name, value); },
+        removeAttribute(name) { this.attrs.delete(name); },
+        appendChild(child) {
+          const items = child.attrs.get('__frag') === '1' ? child.children : [child];
+          for (const item of items) {
+            this.children.push(item);
+            item.remove = () => {
+              const idx = this.children.indexOf(item);
+              if (idx >= 0) this.children.splice(idx, 1);
+            };
+          }
+          return child;
+        },
+        append(...nodes) { for (const n of nodes) this.appendChild(n); },
+        replaceChildren(...nodes) { this.children = []; for (const n of nodes) this.appendChild(n); },
+        contains() { return false; },
+        remove() {},
+      };
+      if (isFrag) node.attrs.set('__frag', '1');
+      return node;
+    };
+    (globalThis as { document: unknown }).document = {
+      createElement: () => makeNode(false),
+      createDocumentFragment: () => makeNode(true),
+      activeElement: null,
+    };
+    const body = makeNode();
+    const opts = {
+      selectedKey: null,
+      focusedKeyRef: { current: null },
+      focusInsideRef: { current: false },
+      restoringFocusRef: { current: false },
+      lastMirrorKeyRef: { current: '' },
+    };
+    syncTableMirror(body as unknown as HTMLTableSectionElement, {
+      first: 0,
+      total: 2,
+      rows: [
+        { key: 'GER', name: 'Germany', rowIndex: 0, rank: 1, cells: [{ column: 'name', spoken: 'Germany' }, { column: 'val', spoken: '100' }] },
+        { key: 'FRA', name: 'France', rowIndex: 1, rank: 2, cells: [{ column: 'name', spoken: 'France' }, { column: 'val', spoken: '80' }] },
+      ],
+    }, opts);
+    const createdFirst = createdElements;
+    const tr0 = body.children[0]!;
+    const td2 = tr0.children[2]!;
+    assert.equal(td2.textContent, '100');
+
+    syncTableMirror(body as unknown as HTMLTableSectionElement, {
+      first: 0,
+      total: 2,
+      rows: [
+        { key: 'GER', name: 'Germany', rowIndex: 0, rank: 1, cells: [{ column: 'name', spoken: 'Germany' }, { column: 'val', spoken: '105' }] },
+        { key: 'FRA', name: 'France', rowIndex: 1, rank: 2, cells: [{ column: 'name', spoken: 'France' }, { column: 'val', spoken: '80' }] },
+      ],
+    }, opts);
+    assert.equal(createdElements, createdFirst, 'updating values reuses all existing tr and td nodes');
+    assert.equal(body.children[0], tr0);
+    assert.equal(tr0.children[2], td2);
+    assert.equal(td2.textContent, '105');
+
+    syncTableMirror(body as unknown as HTMLTableSectionElement, {
+      first: 0,
+      total: 1,
+      rows: [{ key: 'GER', name: 'Germany', rowIndex: 0, rank: 1, cells: [{ column: 'name', spoken: 'Germany' }, { column: 'val', spoken: '105' }] }],
+    }, opts);
+    assert.equal(body.children.length, 1, 'shrinking rows trims trailing tr nodes');
+  } finally {
+    (globalThis as { document: unknown }).document = prevDoc;
+  }
 });
 
