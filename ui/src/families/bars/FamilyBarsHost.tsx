@@ -302,6 +302,9 @@ export default function FamilyBarsHost<TOptions>({
           : undefined)
       : undefined;
 
+    mounted.canvas.style.width = `${w}px`;
+    mounted.canvas.style.height = `${h}px`;
+    pipeline.present(pipe, 'bars');
     pipeline.bind(
       pipe,
       [mounted.surface],

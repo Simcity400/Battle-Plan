@@ -469,7 +469,7 @@ function airSuperioritySources(ctx: FamilyPlanContext<AirSuperiorityAux>): Sourc
         channel: 'panel',
         coverage: { mode: 'population', form: 'all' },
         product: 'air-superiority',
-        followQuery: { product: 'air-superiority', params },
+        followQuery: { panel: 'air-superiority', ...params },
         params,
         validate: validateAirSuperiority,
       },

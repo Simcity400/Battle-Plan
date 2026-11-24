@@ -229,7 +229,7 @@ function minefieldsSources(ctx: FamilyPlanContext): SourcePlan {
         channel: 'panel',
         coverage: { mode: 'population', form: 'all' },
         product: 'minefields',
-        followQuery: { product: 'minefields', params },
+        followQuery: { panel: 'minefields', ...params },
         params,
         validate: validateMinefields,
       },

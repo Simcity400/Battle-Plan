@@ -13,6 +13,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
+use dashboard_base::span::HourSpan;
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub use replay_derive::air_superiority::{assignment, compose};

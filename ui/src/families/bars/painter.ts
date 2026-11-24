@@ -376,7 +376,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         Math.max(12, layout.nameWidth - reserveRemove),
         rowH,
         theme,
-        { color: nameColor, weight: model.form === 'net' ? 500 : LABEL_WEIGHT },
+        { color: nameColor, weight: model.form === 'net' ? 500 : 400 },
       );
       if (fitted.truncated) truncatedKeys.push(row.key);
       if (row.removable && (isHovered || isFocused)) {
