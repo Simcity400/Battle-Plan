@@ -23,7 +23,7 @@ export const navySizeMixProjection: BarsProjection<NavySizeMixOptions> = registe
   kind: 'navy-size',
   family: 'bars',
   nextChange(readView, options) {
-    return nextSeriesRaceChange(readView.hour, { ...options, candidates: [] });
+    return nextSeriesRaceChange(readView.hour, options);
   },
   project(readView: BoundedReadView, options: NavySizeMixOptions): BarsModel {
     const hour = readView.hour;

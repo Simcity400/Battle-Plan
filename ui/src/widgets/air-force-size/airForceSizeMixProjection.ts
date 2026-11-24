@@ -21,7 +21,7 @@ export const airForceSizeMixProjection: BarsProjection<AirForceSizeMixOptions> =
   kind: 'air-force-size',
   family: 'bars',
   nextChange(readView, options) {
-    return nextSeriesRaceChange(readView.hour, { ...options, candidates: [] });
+    return nextSeriesRaceChange(readView.hour, options);
   },
   project(readView: BoundedReadView, options: AirForceSizeMixOptions): BarsModel {
     const hour = readView.hour;
