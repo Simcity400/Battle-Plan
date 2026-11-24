@@ -4,6 +4,7 @@ import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { BarsDataRow } from '../../families/bars/model.ts';
 import type { CasualtyMatrixReply } from '../../generated/dashboard';
 import { projectCasualtyMatrix, projectCasualtyOpponents } from './casualtiesBetweenProjection.ts';
+import { matrixCellAt } from '../../families/heat/matrixModel.ts';
 
 const HOUR = 60_810_000;
 const country = (tag: string, dealt: string | null, taken: string | null) => ({
@@ -33,13 +34,13 @@ const view = (data: unknown) => createBoundedReadView({ hour: HOUR, panels: new 
 
 test('casualty matrix: not recorded pairs and totals are hatched, a recorded zero is empty, never a guess', () => {
   const model = projectCasualtyMatrix(view(reply));
-  assert.deepEqual(model.cell(0, 0), { kind: 'diagonal', text: '—' });
-  const big = model.cell(0, 1);
+  assert.deepEqual(matrixCellAt(model, 0, 0), { kind: 'diagonal', text: '—' });
+  const big = matrixCellAt(model, 0, 1);
   assert.equal(big.kind === 'value' && big.text, '900');
   assert.equal(big.kind === 'value' && big.intensity, 1);
-  assert.equal(model.cell(0, 2).kind, 'missing');
-  assert.deepEqual(model.cell(2, 0), { kind: 'empty', label: '0 casualties', audit: '0' });
-  assert.equal(model.cell(1, 2).kind, 'empty');
+  assert.equal(matrixCellAt(model, 0, 2).kind, 'missing');
+  assert.deepEqual(matrixCellAt(model, 2, 0), { kind: 'empty', label: '0 casualties', audit: '0' });
+  assert.equal(matrixCellAt(model, 1, 2).kind, 'empty');
   assert.equal(model.margin!.cell(0).kind, 'missing');
   const total = model.margin!.cell(1);
   assert.equal(total.kind === 'value' && total.fraction, 1);

@@ -196,7 +196,7 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
     if !wanted(EventFeedKind::WarStarted) && !wanted(EventFeedKind::FactionJoined) {
         return Ok((Vec::new(), Vec::new()));
     }
-    let reply = groups::groups(source, query, "", context, cancelled)?;
+    let reply = groups::shared(source, query, context, cancelled)?;
     let within = |hour: i32| from <= hour && hour <= to;
     let mut rows = Vec::new();
     if wanted(EventFeedKind::WarStarted) {
@@ -235,7 +235,7 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
             }
         }
     }
-    Ok((rows, reply.warnings))
+    Ok((rows, reply.warnings.clone()))
 }
 
 fn native_war_ends(query: &Query<'_>, ends: &[(i32, String, String)], cancelled: &AtomicBool) -> io::Result<BTreeSet<(i32, String, String)>> {

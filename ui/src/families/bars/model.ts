@@ -187,6 +187,7 @@ export interface BarsModel {
   readonly twoSidedLayout?: BarsTwoSidedLayout;
   readonly leftHeader?: string;
   readonly rightHeader?: string;
+  readonly readoutHeader?: string;
   readonly caption?: string;
   readonly captionRight?: string;
   readonly legend?: readonly BarsLegendItem[];

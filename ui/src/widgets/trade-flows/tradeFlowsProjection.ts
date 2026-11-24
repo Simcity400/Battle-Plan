@@ -4,10 +4,11 @@ import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPla
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
-import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell } from '../../families/heat/matrixModel.ts';
+import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { resolveCountryFromReadView, type TableColumnSpec, type TableModel, type TableProjection, type TableRow } from '../../families/table/model.ts';
+import { countryRowPresentation } from '../../families/bars/model.ts';
+import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatCompactScalar, formatScalar, type ValueFormat } from '../../families/valueFormat.ts';
 import type { CountryFlowReply } from '../../generated/dashboard';
@@ -81,12 +82,14 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
     sortable: false,
     hideable: true,
   } satisfies TableColumnSpec] : []);
-  const subject = resolveCountryFromReadView(readView, reply.countries[reply.subject]);
+  const subject = countryRowPresentation(readView, reply.countries[reply.subject]!);
   const rows: TableRow[] = reply.table.map(row => {
     const tag = reply.countries[row.country]!;
-    const partner = resolveCountryFromReadView(readView, tag);
+    const partner = countryRowPresentation(readView, tag);
+    const name: Value = partner.labelMissing ? notRecorded('Country name not recorded at this date') : knownValue(partner.label);
+    const icon = partner.media.iconUrl;
     const cells: Record<string, TableRow['cells'][string]> = {
-      partner: { value: partner.value, flags: [{ tag, ...(partner.icon ? { icon: partner.icon } : {}), ...(partner.iconPending ? { pending: true } : {}) }] },
+      partner: { value: name, flags: [{ tag, ...(icon ? { icon } : {}), ...(partner.media.art.status === 'pending' ? { pending: true } : {}) }] },
       net: { value: signed(row.net, reply.decimals, 'An amount with this partner was not recorded'), format: SIGNED },
     };
     reply.parts.forEach((part, at) => {
@@ -97,14 +100,14 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
         ? { value, blank: true }
         : { value, format: SIGNED };
     });
-    return { key: tag, name: partner.name, cells, tooltipTitle: `${partner.name} and ${subject.name}` };
+    return { key: tag, name: partner.label, cells, tooltipTitle: `${partner.label} and ${subject.label}` };
   });
   return {
     hour,
     columns: [PARTNER, ...partColumns, NET],
     rows,
     unsorted: true,
-    titleSummary: `Per day · + imports into ${subject.name}, − exports from it`,
+    titleSummary: `Per day · + imports into ${subject.label}, − exports from it`,
     ...(reply.partial ? { notes: [reply.partial] } : {}),
     warnings: reply.warnings,
   };
@@ -127,14 +130,14 @@ export const tradeTableDeclaration: TableWidgetDeclaration = {
   sources: ctx => countryFlowPlan(ctx, 'trade-flow', { table: true }),
   projection: tradeTableProjection,
   columns: [PARTNER],
-  settings: { kind: 'fixed', base: { density: 'compact', overflow: 'scroll', sort: { column: 'net', direction: 'descending' } } },
+  settings: { kind: 'fixed', base: { density: 'compact', sort: { column: 'net', direction: 'descending' } } },
   projectionOptions: () => EMPTY_OPTIONS,
   jumpToDate: true,
 };
 
 export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
   const hour = readView.hour;
-  const blank = (extra: Partial<HeatMatrixModel>): HeatMatrixModel => ({ hour, rows: [], columns: [], cell: () => ({ kind: 'empty' }), ...extra });
+  const blank = (extra: Partial<HeatMatrixModel>): HeatMatrixModel => ({ hour, rows: [], columns: [], cells: NO_CELLS, ...extra });
   const refused = readView.refused('main');
   if (refused) return blank({ refused });
   const reply = readView.panel<CountryFlowReply>('main');
@@ -168,19 +171,20 @@ export function projectTradeMatrix(readView: BoundedReadView): HeatMatrixModel {
     if (r !== undefined && c !== undefined) cells.set(r * width + c, link);
   }
   const most = Math.max(1e-9, scaledAmount(reply.largestLink, reply.decimals));
-  const cell = (r: number, c: number): MatrixCell => {
-    if (rows[r]!.id === columns[c]!.id) return { kind: 'diagonal', text: '—' };
-    const link = cells.get(r * width + c);
-    if (!link) return { kind: 'empty', label: 'No trade', audit: '0' };
-    if (link.total === null) return { kind: 'missing', reason: link.missing ?? NOT_RECORDED };
+  const present = new Map<number, MatrixCell>();
+  for (const [at, link] of cells) {
+    if (link.total === null) {
+      present.set(at, { kind: 'missing', reason: link.missing ?? NOT_RECORDED });
+      continue;
+    }
     const value = scaledAmount(link.total, reply.decimals);
-    return { kind: 'value', intensity: value / most, text: formatCompactScalar(value, AMOUNT).text, audit: formatScalar(value, AMOUNT), value, selectable: true };
-  };
+    present.set(at, { kind: 'value', intensity: value / most, text: formatCompactScalar(value, AMOUNT).text, audit: formatScalar(value, AMOUNT), value, selectable: true });
+  }
   return {
     hour,
     rows,
     columns,
-    cell,
+    cells: { present, absent: { kind: 'empty', label: 'No trade', audit: '0' }, self: { kind: 'diagonal', text: '—' } },
     shape: 'wide',
     ramp: 'accent',
     corner: 'Exporter ↓ · importer →',

@@ -2,6 +2,7 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
+  contrastInkForFill,
   drawBar,
   drawFlagSlot,
   drawGradientLegend,
@@ -15,7 +16,7 @@ import {
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { mix, parseColor, readableText } from '../../shell/appearance/color.ts';
+import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle } from '../art/provider.ts';
@@ -24,7 +25,7 @@ import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import type { HeatMatrixLayout } from './matrixLayout.ts';
 import { MATRIX_COLUMN_NAME_ANGLE, MATRIX_COLUMN_NAME_HEIGHT, MATRIX_PAD, MATRIX_TRAILING_GAP } from './matrixLayout.ts';
-import type { HeatMatrixModel, MatrixAxisEntity, MatrixRamp } from './matrixModel.ts';
+import { matrixCellAt, type HeatMatrixModel, type MatrixAxisEntity, type MatrixRamp } from './matrixModel.ts';
 
 const MARK_SQUARE_PX = 14;
 const MARK_RING_RADIUS_PX = 6.2;
@@ -311,7 +312,7 @@ export function drawHeatMatrix(
     const y = layout.gridTop + r * ch - scrollTop;
     for (let c = layout.firstCol; c < layout.endCol; c++) {
       const x = layout.gridLeft + c * cw - scrollLeft;
-      const item = model.cell(r, c);
+      const item = matrixCellAt(model, r, c);
       const cx = x + 1;
       const cy = y + 1;
       if (item.kind === 'diagonal') {
@@ -369,8 +370,7 @@ export function drawHeatMatrix(
         ctx.roundRect(cx, cy, innerW, innerH, radius);
         ctx.fill();
         if (item.text) {
-          const rgb = parseColor(fill);
-          drawCellText(ctx, item.text, cx, cy, innerW, innerH, rgb ? readableText(rgb) : theme.text, theme);
+          drawCellText(ctx, item.text, cx, cy, innerW, innerH, contrastInkForFill(fill, theme), theme);
         }
       }
 

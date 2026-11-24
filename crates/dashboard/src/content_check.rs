@@ -423,11 +423,11 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.push(Finding::new(Kind::Offline, key, "seller and buyer flows and their quantities need the recorded TradeFlows rows; unavailable offline"));
             Ok("Resource names and icons are read through the shared resource naming of the recorded content stack.".into())
         }
-        key if key == <economy::market::MarketLendLease as AtHour>::KEY || key == economy::market::history::LendLeaseHistory::KEY || key == economy::market::ledger::MarketLedger::KEY => {
+        key if key == <economy::market::MarketLendLease as AtHour>::KEY || key == economy::market::ledger::MarketLedger::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "market listings, contracts, agreements and occurrences need the recorded market tables; unavailable offline"));
             Ok("Equipment names and icons need the recorded variant operands through the content stack; subsidy archetypes are localised from it.".into())
         }
-        construction::log::ConstructionLogManifest::KEY | construction::log::ConstructionLog::KEY | construction::spending::ConstructionSpending::KEY => {
+        construction::log::ConstructionLogManifest::KEY | construction::log::ConstructionLog::KEY | construction::breakdown::ConstructionBreakdown::KEY => {
             content.catalogue()?;
             Ok("Building type names localise the token spellings recorded in LexicalTokens through the recorded buildings; icons and the repair marker are the construction queue's line entry art; state names are the recorded states' name keys. Lines, totals and endings are the recorded ConstructionProjects and ConstructionSpend rows.".into())
         }
@@ -441,7 +441,13 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             dashboard_base::content::strategic_regions(&catalogue.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes resolve recorded class tokens through the sub-unit database, sea zones through the strategic regions; ship, cause and fleet names are the text the game stored, shown in its recorded language.".into())
         }
-        feed::EventFeed::KEY | feed::EventChoices::KEY | feed::Decisions::KEY | feed::EventFeedSpan::KEY => {
+        feed::EventFeed::KEY
+        | feed::EventFeedTail::KEY
+        | feed::EventChoices::KEY
+        | feed::EventChoicesTail::KEY
+        | feed::Decisions::KEY
+        | feed::DecisionsTail::KEY
+        | feed::EventFeedSpan::KEY => {
             let catalogue = content.catalogue()?;
             catalogue.scripted_content()?.effects()?;
             take(catalogue, "event feed text", findings);

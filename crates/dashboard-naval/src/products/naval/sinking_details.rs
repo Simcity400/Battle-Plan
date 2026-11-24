@@ -388,11 +388,11 @@ impl BattleIndex {
                 if inc.first_hour > result_hour {
                     return battle_not_recorded();
                 }
-                let res_id = format!("result:{result_id}");
+                let live_id = battle_id(combat, inc.first_hour);
                 ShipSinkingBattle::Linked {
-                    id: res_id.clone(),
-                    live_id: Some(battle_id(combat, inc.first_hour)),
-                    result_id: Some(res_id),
+                    id: live_id.clone(),
+                    live_id: Some(live_id),
+                    result_id: Some(format!("result:{result_id}")),
                     first_hour: Some(inc.first_hour),
                     result_hour: Some(result_hour),
                 }
