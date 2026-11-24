@@ -23,7 +23,8 @@ test('an ace shows its wing, when it became an ace, and its portrait as missing 
   const [first, second] = model.rows;
   assert.deepEqual(first!.cells.wing!.value, knownValue('Jagdgeschwader 52'));
   assert.equal(first!.cells.since!.value.kind, 'known');
-  assert.deepEqual([first!.cells.ace!.artShape, first!.cells.ace!.subtext, first!.cells.ace!.icon], ['portrait', '“Bubi”', undefined]);
+  assert.deepEqual([first!.cells.portrait!.artShape, first!.cells.portrait!.icon, first!.cells.ace!.subtext], ['portrait', undefined, '“Bubi”']);
+  assert.deepEqual(first!.cells.portrait!.value, notRecorded('Ace portrait culture not recorded'));
   assert.deepEqual(second!.cells.wing!.value, knownValue('No wing'));
   assert.deepEqual(second!.cells.since!.value, notRecorded('First sighting not recorded'));
 });

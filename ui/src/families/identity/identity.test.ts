@@ -7,10 +7,17 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyleReply,
+  PlaceNamesReply,
+  StrategicRegionsReply,
+  UnitLeadersReply,
 } from '../../generated/dashboard';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { artUrlForHandle, flagArtHandle, mergeArtDemands } from '../art/provider.ts';
+import { artHandleKey } from '../art/types.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import type { ArtHandle } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
-import { createBrokerIdentityProvider, createSnapshotIdentityProvider } from './provider.ts';
+import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
 import { readIdentityAtHeadHour, subscribeIdentityAtHead } from './react.ts';
 import {
   IdentityIndex,
@@ -18,6 +25,7 @@ import {
   countryTagKey,
   designKey,
   factionKey,
+  flagChoiceKey,
   leaderKey,
   regionKey,
   stateKey,
@@ -112,6 +120,12 @@ function sampleGroups(): CountryGroupReply {
   };
 }
 
+const UNUSED_ENTITY_READS: Pick<IdentityTransport, 'loadRegions' | 'loadPlaceNames' | 'loadLeaders'> = {
+  loadRegions: () => deferred<StrategicRegionsReply>().promise,
+  loadPlaceNames: () => deferred<PlaceNamesReply>().promise,
+  loadLeaders: () => deferred<UnitLeadersReply>().promise,
+};
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -178,6 +192,7 @@ test('point style answer without interval proves only its point; interval style 
   let includeValid = false;
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -239,6 +254,7 @@ test('picker opened at hour 100 stays pending rather than borrowing hour 300, an
   const flagHoldB = deferred<CountryFlagReply>();
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -382,6 +398,7 @@ test('1,500 countries use one facts request, batched flags, zero requests advanc
   };
 
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: async () => { factsCalls++; return factsReply; },
     loadIdentities: async () => ({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] }),
     loadGroups: async () => sampleGroups(),
@@ -446,7 +463,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
   assert.deepEqual(ger150.name, { status: 'ready', value: 'Later Empire' });
   assert.deepEqual(ger150.validInterval, [150, 500]);
 
-  const annexed = view.who('country', 'slot:2', 160);
+  const annexed = view.who('country', countryKey(2), 160);
   assert.equal(annexed.holder.status, 'absent');
   assert.deepEqual(annexed.validInterval, [150, 500]);
 
@@ -460,6 +477,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
   const factsHold = deferred<CountryFactsReply>();
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: () => factsHold.promise,
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -492,6 +510,7 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
 
 test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots when scope is null or keys are empty', async () => {
   const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
     loadFacts: async () => sampleFacts(),
     loadIdentities: async () => sampleIdentities(),
     loadGroups: async () => sampleGroups(),
@@ -539,6 +558,86 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
   broker.dispose();
 });
 
+test('an identity key and an art handle keep their whole identity from demand to the drawn picture', () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  index.setFacts(sampleFacts(), true);
+  index.setIdentities(sampleIdentities());
+  index.setDrawnFlag('panel', FLAG_A, { url: 'flag://panel' });
+  index.setDrawnFlag('shield', FLAG_A, { url: 'flag://shield' });
+  const worker = IdentityIndex.fromSnapshot(structuredClone(index.exportSnapshot()));
+
+  const view = createBoundedReadView({ hour: 200, identity: createSnapshotIdentityProvider(worker) });
+  const selected = view.who('country', countryKey(1), 100);
+  assert.equal(worker.resolve(countrySlotKey(1), 100).kind, 'known');
+  assert.deepEqual(selected.tag, { status: 'ready', value: 'GER' });
+  assert.deepEqual(selected.name, { status: 'ready', value: 'Early Republic' });
+
+  const choice = flagChoiceKey(FLAG_A);
+  assert.equal(artUrlForHandle(flagArtHandle(choice, 'panel'), worker), 'flag://panel');
+  assert.equal(artUrlForHandle(flagArtHandle(choice, 'shield'), worker), 'flag://shield');
+
+  const plain: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0 };
+  const asText: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
+  const asRecorded: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, recorded: 'GFX_y' };
+  assert.equal(artHandleKey({ kind: 'sprite', key: 'GFX_x' }), artHandleKey(plain));
+  assert.deepEqual(mergeArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
+  assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
+});
+
+test('leader, state, province and region asks each start their product read and answer with its validity', async () => {
+  const calls: string[] = [];
+  const transport: IdentityTransport = {
+    loadFacts: () => deferred<CountryFactsReply>().promise,
+    loadIdentities: () => deferred<CountryIdentitiesReply>().promise,
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: () => deferred<CountryFlagReply>().promise,
+    loadRegions: async () => {
+      calls.push('regions');
+      return { regions: [{ id: 3, name: 'Coral Reach', nameMissing: null, land: false, sea: true }], warnings: [] };
+    },
+    loadPlaceNames: async (_scope, hour, states, provinces) => {
+      calls.push(`places ${hour} ${states.join(',')} ${provinces.join(',')}`);
+      return {
+        states: states.map(stateId => ({ stateId, hour, name: `State ${stateId}`, missing: null })),
+        places: provinces.map(provinceId => ({ provinceId, hour, name: null, missing: 'Province unnamed in this map' })),
+        warnings: [],
+      };
+    },
+    loadLeaders: async (_scope, owner, hour) => {
+      calls.push(`leaders ${owner} ${hour}`);
+      return {
+        leaders: [{ reference: 'L1', name: 'Ada Vance', role: { owner: 'ALP', kind: 0, category: 0, rank: null, attributeNames: [null, null, null, null], maximumSkill: null }, skill: 3, components: [1, 1, 1, 0], traits: null, traitDates: [], firstSeenHour: 0, fought: 0, won: 0, lost: 0 }],
+        traits: [], withheld: [], missing: null, battlesPartialFrom: null, resultsMissing: '', warnings: [],
+      };
+    },
+  };
+  const broker = new IdentityBroker({ transport });
+  const provider = createBrokerIdentityProvider(broker, SCOPE, {}, { branchBounds: [0, 500], needFlags: false });
+  const view = createBoundedReadView({ hour: 200, identity: provider });
+  const ask = () => [
+    view.who('region', '3', 150), view.who('region', '9', 150),
+    view.who('state', '64', 150), view.who('province', '7', 150), view.who('leader', 'ALP:L1', 150), view.who('leader', 'ALP:L2', 150),
+  ];
+  assert.ok(ask().every(result => result.name.status === 'pending'));
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  ask();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.deepEqual([...calls].sort(), ['leaders ALP 150', 'places 150 64 7', 'regions']);
+
+  const [region, unknownRegion, state, province, leader, otherLeader] = ask();
+  assert.deepEqual(region!.name, { status: 'ready', value: 'Coral Reach' });
+  assert.deepEqual(region!.validInterval, [0, 500]);
+  assert.equal(unknownRegion!.name.status, 'absent');
+  assert.deepEqual(state!.name, { status: 'ready', value: 'State 64' });
+  assert.deepEqual(state!.validInterval, [150, 150]);
+  assert.deepEqual(province!.name, { status: 'absent', reason: 'Province unnamed in this map' });
+  assert.deepEqual(leader!.name, { status: 'ready', value: 'Ada Vance' });
+  assert.equal(otherLeader!.holder.status, 'absent');
+  assert.equal(calls.length, 3, 'answers inside their validity ask nothing again');
+  broker.dispose();
+});
+
 test('coalesced sparse identity runs stay missing on unrecorded gaps outside known spans', () => {
   const index = new IdentityIndex(SCOPE, [0, 40]);
   index.setFacts({ ...sampleFacts(), known: [[10, 10], [30, 30]] }, true);
@@ -579,4 +678,43 @@ test('coalesced sparse identity runs stay missing on unrecorded gaps outside kno
   assert.equal(at30.kind, 'known');
   assert.deepEqual(at30.tag, { kind: 'known', value: 'GER' });
   assert.deepEqual(at30.valid, [30, 30]);
+});
+
+test('a country the lane asks for and the snapshot lacks becomes a broker demand and returns in the next snapshot', async () => {
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: () => deferred<CountryIdentitiesReply>().promise,
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, choices) => ({
+      size,
+      flags: choices.map((choice, flag) => ({ flag, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${choice.keys[0]}` })),
+      unavailable: [],
+      warnings: [],
+    }),
+  };
+  const broker = new IdentityBroker({ transport });
+  const owner = {};
+  const laneView = (snapshot: ReturnType<IdentityBroker['snapshotOf']>, demands: [string, string, number][]) => createBoundedReadView({
+    hour: 200,
+    identity: createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(snapshot))),
+    onIdentityDemand: (kind, key, atHour) => { demands.push([kind, key, atHour]); },
+  });
+
+  const demands: [string, string, number][] = [];
+  const first = laneView(broker.snapshotOf(SCOPE, undefined, [0, 500]), demands);
+  assert.equal(first.who('country', 'ALP', 120).name.status, 'pending');
+  assert.deepEqual(demands, [['country', 'ALP', 120]]);
+
+  broker.setDemand(owner, SCOPE, { asks: demands.map(([kind, key, hour]) => ({ key: parseEntityKey(kind as 'country', key), hour })), needFlags: true, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+
+  const after: [string, string, number][] = [];
+  const second = laneView(broker.snapshotOf(SCOPE, undefined, [0, 500]), after);
+  const alp = second.who('country', 'ALP', 120);
+  assert.deepEqual(alp.name, { status: 'ready', value: 'Alpha' });
+  assert.equal(alp.flagChoice?.status, 'ready');
+  assert.equal(artUrlForHandle(flagArtHandle(alp.flagChoice!.status === 'ready' ? alp.flagChoice!.value : '', 'panel'), IdentityIndex.fromSnapshot(broker.snapshotOf(SCOPE))), 'flag://GER_a');
+  broker.dispose();
 });

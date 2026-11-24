@@ -45,6 +45,10 @@ const summary = (reply: DivisionEquipmentReply): string | null => reply.division
   ? null
   : `${reply.divisionsShort.toLocaleString('en-US')} ${reply.divisionsShort === 1 ? 'division' : 'divisions'} short`;
 
+const partial = (reply: DivisionEquipmentReply): string | null => reply.unknownDivisions === null
+  ? 'Divisions not recorded'
+  : reply.unknownDivisions > 0 ? `${reply.unknownDivisions.toLocaleString('en-US')} ${reply.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : null;
+
 function bodyState(reply: DivisionEquipmentReply): { readonly empty?: string; readonly emptyKind?: 'empty' | 'unavailable' } | null {
   if (reply.missing !== null) return { empty: reply.missing, emptyKind: 'unavailable' };
   if (reply.divisions === 0) return { empty: 'No divisions at this date', emptyKind: 'empty' };
@@ -61,7 +65,7 @@ const TYPE_SPEC: readonly DeclarativeColumnSpec<EquipmentType, Record<string, ne
   { ...HELD!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.heldRaw, 'Holdings not recorded') },
   { ...NEEDED!, priority: 2, numeric: true, format: 'integer', widest: ['999,999'], value: row => amount(row.neededRaw, 'Need not recorded') },
   { ...MISSING!, priority: 1, numeric: true, format: 'integer', widest: ['−999,999'], value: row => missingValue(row.missingRaw),
-    cellExtra: row => (row.missingRaw !== null && BigInt(row.missingRaw) / FIXED > 0n ? { shortage: true } : undefined),
+    extra: row => (row.missingRaw !== null && BigInt(row.missingRaw) / FIXED > 0n ? { shortage: true } : {}),
     sortValue: row => row.missingRaw === null ? notRecorded('Shortfall not recorded') : knownValue(BigInt(row.missingRaw)) },
   { ...TYPE_FILL!, priority: 4, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => share(row.filledRaw, row.neededRaw, 'Fill not recorded'),
@@ -91,7 +95,7 @@ const typeProjection: TableProjection<Record<string, never>> = declareTableProje
     rows: reply => {
       const blocked = bodyState(reply);
       if (blocked) return { rows: [], ...blocked, warnings: reply.warnings };
-      return { rows: reply.types, summaryPill: summary(reply), warnings: reply.warnings };
+      return { rows: reply.types, titleSummary: summary(reply), titleSummaryPartial: partial(reply), warnings: reply.warnings };
     },
     rowKey: row => JSON.stringify([row.archetype]),
     rowName: row => row.name ?? 'Equipment name unavailable',
@@ -107,11 +111,12 @@ function templateIcon(template: EquipmentTemplate, readView: BoundedReadView): P
   return art.status === 'ready' ? { icon: art.url, pending: false } : { icon: undefined, pending: art.status === 'pending' };
 }
 
-const [TEMPLATE, DIVISIONS, MANPOWER, STRENGTH, FILL, TYPES_SHORT] = TEMPLATE_COLUMNS;
+const [KIND, TEMPLATE, DIVISIONS, MANPOWER, STRENGTH, FILL, TYPES_SHORT] = TEMPLATE_COLUMNS;
 
 const TEMPLATE_SPEC: readonly DeclarativeColumnSpec<TemplateRow, Record<string, never>>[] = [
-  { ...TEMPLATE!, priority: 0, text: true, hideable: false, widest: ['Infantry Division 1941'], iconSlot: true,
-    icon: row => row.icon, iconPending: row => row.pending,
+  { ...KIND!, priority: 6, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.icon, iconPending: row => row.pending,
+    extra: () => ({ artShape: 'counter' }), value: row => textValue(row.template.name, row.template.nameMissing ?? 'Template name unavailable') },
+  { ...TEMPLATE!, priority: 0, text: true, hideable: false, widest: ['Infantry Division 1941'],
     value: row => textValue(row.template.name, row.template.nameMissing ?? 'Template name unavailable') },
   { ...DIVISIONS!, priority: 1, numeric: true, format: 'integer', widest: ['999'], value: row => count(row.template.divisions, 'Divisions not recorded') },
   { ...MANPOWER!, priority: 3, numeric: true, format: PERCENT, widest: ['100%'],
@@ -135,7 +140,8 @@ const templateProjection: TableProjection<Record<string, never>> = declareTableP
       if (blocked) return { rows: [], ...blocked, warnings: reply.warnings };
       return {
         rows: reply.templates.map(template => ({ template, ...templateIcon(template, readView) })),
-        summaryPill: summary(reply),
+        titleSummary: summary(reply),
+        titleSummaryPartial: partial(reply),
         warnings: reply.warnings,
       };
     },

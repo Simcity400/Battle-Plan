@@ -31,7 +31,7 @@ test('by equipment: whole items from the product, the shortfall as a red negativ
   assert.deepEqual(infantry!.cells.fill!.value, knownValue(98.43));
   assert.deepEqual([unclassified!.cells.type!.value, unclassified!.cells.missing!.value], [knownValue('Unclassified equipment'), zeroValue(0)]);
   assert.equal(unclassified!.cells.fill!.value.kind, 'notRecorded');
-  assert.equal(model.summaryPill, '213 divisions short');
+  assert.equal(model.titleSummary, '213 divisions short');
 });
 
 test('by template: shares of the product’s own figures; a figure it does not hold is missing; unrecorded equipment is the body state', () => {

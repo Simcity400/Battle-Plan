@@ -33,7 +33,8 @@ const REFIT_COLUMNS: readonly DeclarativeColumnSpec<RefitRow, Record<string, nev
   { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'],
     value: row => row.kind === 'line'
       ? valueFromNullable(row.line.dockyards, { kind: 'notRecorded', reason: 'Refit dockyards not recorded' })
-      : notApplicable(ON_LINE) },
+      : notApplicable(ON_LINE),
+    extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
 ];
 
 export const refitsProjection: TableProjection<Record<string, never>> = registerTableProjection(
@@ -43,8 +44,10 @@ export const refitsProjection: TableProjection<Record<string, never>> = register
     columns: (reply, _options) => [
       REFIT_COLUMNS[0]!,
       { ...REFIT_COLUMNS[1]!, value: (row, live) => row.kind === 'line' ? refitProgress(reply, row.line, live) : notApplicable(ON_LINE),
+        extra: row => (row.kind === 'ship' ? { blank: true } : {}),
         bar: (row, live) => row.kind === 'line' ? { fraction: fraction(refitProgress(reply, row.line, live)) } : null },
       { ...REFIT_COLUMNS[2]!, value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
+        extra: row => (row.kind === 'line' ? { blank: true } : {}),
         bar: (row, live) => row.kind === 'ship' ? { fraction: fraction(shipStrength(row.ship, live)) } : null },
       REFIT_COLUMNS[3]!,
     ],
@@ -63,7 +66,7 @@ export const refitsProjection: TableProjection<Record<string, never>> = register
             ? { empty: 'No refits at this date', emptyKind: 'empty' as const }
             : { empty: 'Refits were not fully recorded at this date', emptyKind: 'unavailable' as const }
           : {}),
-        summaryPill: reply.dockyards === null ? null : `${reply.dockyards.toLocaleString('en-US')} ${reply.dockyards === 1 ? 'dockyard' : 'dockyards'}`,
+        titleSummary: reply.dockyards === null ? null : `${reply.dockyards.toLocaleString('en-US')} ${reply.dockyards === 1 ? 'dockyard' : 'dockyards'}`,
         warnings: reply.warnings,
       };
     },

@@ -17,7 +17,8 @@ export const TYPE_COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'short', label: 'Divisions short', as: 'faint', tone: 'grey', offered: OFFERED.number },
 ];
 export const TEMPLATE_COLUMNS: readonly TableColumnDefaults[] = [
-  { key: 'template', label: 'Template', as: 'icon', offered: ['icon', 'plain'] },
+  { key: 'kind', label: 'Division type', as: 'plain', offered: ['plain'] },
+  { key: 'template', label: 'Template', as: 'plain', offered: OFFERED.text },
   { key: 'divisions', label: 'Divisions', as: 'faint', tone: 'grey', offered: OFFERED.number },
   { key: 'manpower', label: 'Manpower', as: 'meterBefore', tone: 'grey', offered: OFFERED.number },
   { key: 'strength', label: 'Strength', as: 'meterBefore', tone: 'grey', offered: OFFERED.number },

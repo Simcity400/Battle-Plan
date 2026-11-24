@@ -64,19 +64,21 @@ const [DIVISION, TRAINING, EQUIPMENT, MANPOWER] = COLUMNS;
 const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, never>>[] = [
   { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
     icon: row => row.kind === 'order' ? row.icon : undefined,
-    cellExtra: row => row.kind === 'order' ? { subtext: orderLine(row.order) } : undefined,
+    extra: row => (row.kind === 'order' ? { subtext: orderLine(row.order) } : {}),
     value: row => row.kind === 'order'
       ? textValue(row.order.templateName, row.order.templateMissing ?? 'Template name unavailable')
       : textValue(row.division.name, row.division.nameMissing ?? 'Division name unavailable') },
   { ...TRAINING!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => row.kind === 'division' ? trainingShare(row.division) : notApplicable(ON_DIVISION),
+    extra: row => (row.kind === 'order' ? { blank: true } : {}),
     bar: row => row.kind === 'division' ? { fraction: fraction(trainingShare(row.division)) } : null },
   { ...EQUIPMENT!, priority: 2, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => row.kind === 'division' ? equipmentShare(row.division) : notApplicable(ON_DIVISION),
+    extra: row => (row.kind === 'order' ? { blank: true } : {}),
     bar: row => row.kind === 'division' ? { fraction: fraction(equipmentShare(row.division)) } : null },
   { ...MANPOWER!, priority: 3, numeric: true, cellKind: 'outOf', format: 'integer', widest: ['999,999 / 999,999'],
     value: row => manpower(row.kind === 'order' ? row.order.manpower : row.division.manpower),
-    cellExtra: row => ({ secondaryValue: knownValue(count(row.kind === 'order' ? row.order.manpowerNeeded : row.division.manpowerNeeded)) }) },
+    extra: row => ({ secondaryValue: knownValue(count(row.kind === 'order' ? row.order.manpowerNeeded : row.division.manpowerNeeded)) }) },
 ];
 
 function orderIcon(order: TrainingOrder, readView: BoundedReadView): string | undefined {
@@ -128,7 +130,7 @@ export const trainingQueueProjection: TableProjection<Record<string, never>> = r
       return {
         rows,
         ...(!rows.length ? { empty: 'No divisions in training', emptyKind: 'empty' as const } : {}),
-        summaryPill: reply.inTraining === null ? null : `${count(reply.inTraining)} in training`,
+        titleSummary: reply.inTraining === null ? null : `${count(reply.inTraining)} in training`,
         warnings: reply.warnings,
       };
     },

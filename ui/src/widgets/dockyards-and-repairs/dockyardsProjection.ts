@@ -26,15 +26,18 @@ const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never
     value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name) },
   { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
+    extra: row => (row.kind === 'port' ? { blank: true } : {}),
     bar: (row, live) => row.kind === 'ship' ? { fraction: fraction(shipStrength(row.ship, live)) } : null },
   { ...PRIORITY!, priority: 2, numeric: true, format: 'integer', widest: ['9'],
     value: row => row.kind === 'port'
       ? valueFromNullable(row.port.priority, { kind: 'notRecorded', reason: 'Repair priority not recorded' })
-      : notApplicable(ON_PORT) },
+      : notApplicable(ON_PORT),
+    extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
   { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'], unit: 'repairing',
     value: row => row.kind === 'port'
       ? valueFromNullable(row.port.dockyards, { kind: 'notRecorded', reason: 'Dockyards repairing not recorded' })
-      : notApplicable(ON_PORT) },
+      : notApplicable(ON_PORT),
+    extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
 ];
 
 function summary(reply: NavalRepairsReply): string | null {
@@ -65,7 +68,7 @@ export const dockyardsProjection: TableProjection<Record<string, never>> = regis
             ? { empty: 'No repair ports at this date', emptyKind: 'empty' as const }
             : { empty: 'Repair ports were not fully recorded at this date', emptyKind: 'unavailable' as const }
           : {}),
-        summaryPill: summary(reply),
+        titleSummary: summary(reply),
         warnings: reply.warnings,
       };
     },

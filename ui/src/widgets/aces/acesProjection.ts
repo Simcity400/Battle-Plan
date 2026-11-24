@@ -51,7 +51,7 @@ function aircraftValue(ace: AirAce): Value<string> {
   return knownValue(ace.aircraft.map(plane => plane.name ?? 'Aircraft name unavailable').join(' · '));
 }
 
-const [COUNTRY, ACE, WING, SINCE] = COLUMNS;
+const [PORTRAIT, COUNTRY, ACE, WING, SINCE] = COLUMNS;
 
 const nickname = (ace: AirAce): string | undefined => ace.callsign?.trim() ? `“${ace.callsign}”` : undefined;
 
@@ -61,13 +61,15 @@ function aircraftLine(ace: AirAce): string | undefined {
 }
 
 const ACE_COLUMNS: readonly DeclarativeColumnSpec<AceRow, AcesOptions>[] = [
+  { ...PORTRAIT!, priority: 4, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.portrait.icon, iconPending: row => row.portrait.pending,
+    extra: row => ({ artShape: 'portrait', ...(row.ace.name ? { artName: row.ace.name } : {}) }),
+    value: row => row.ace.portrait === null ? notRecorded(row.ace.portraitMissing ?? 'Portrait not recorded') : textValue(row.ace.name, 'Ace name not recorded') },
   { ...COUNTRY!, priority: 1, iconSlot: true, icon: row => row.flag.icon, iconPending: row => row.flag.pending, country: row => row.ace.tag, value: row => row.country },
   { ...ACE!, priority: 0, text: true, hideable: false, cellKind: 'item', widest: ['The Blond Knight of Germany'],
-    iconSlot: true, icon: row => row.portrait.icon, iconPending: row => row.portrait.pending,
-    cellExtra: row => ({ artShape: 'portrait', ...(row.ace.name ? { artName: row.ace.name } : {}), ...(nickname(row.ace) ? { subtext: nickname(row.ace) } : {}) }),
+    extra: row => (nickname(row.ace) ? { subtext: nickname(row.ace) } : {}),
     value: row => textValue(row.ace.name, 'Ace name not recorded') },
   { ...WING!, priority: 2, text: true, widest: ['Sturzkampfgeschwader 2'], value: row => wingValue(row.ace),
-    cellExtra: row => (aircraftLine(row.ace) ? { subtext: aircraftLine(row.ace) } : undefined) },
+    extra: row => (aircraftLine(row.ace) ? { subtext: aircraftLine(row.ace) } : {}) },
   { ...SINCE!, priority: 3, numeric: true, cellKind: 'date', widest: ['30 Sep 1941'],
     value: row => row.ace.firstSeen === null ? notRecorded('First sighting not recorded') : knownValue(row.ace.firstSeen) },
 ];

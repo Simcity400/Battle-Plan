@@ -79,14 +79,16 @@ function goalRows(detail: FactionDetailReply, readView: BoundedReadView, filter:
   return filter === 'all' ? rows : rows.filter(item => filter === 'completed' ? item.state === 'completed' : item.state === 'inProgress');
 }
 
-const [GOAL, PROGRESS, STATE] = COLUMNS;
+const [ICON, GOAL, PROGRESS, STATE] = COLUMNS;
 
 const GOAL_COLUMNS: readonly DeclarativeColumnSpec<GoalRow, FactionGoalsOptions>[] = [
-  { ...GOAL!, priority: 0, text: true, hideable: false, widest: ['Conquest and Domination'], iconSlot: true, icon: row => row.icon, value: row => goalName(row.definition) },
+  { ...ICON!, priority: 3, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.icon, extra: row => ({ artShape: 'square', ...(row.definition.name ? { artName: row.definition.name } : {}) }),
+    value: row => goalName(row.definition) },
+  { ...GOAL!, priority: 0, text: true, hideable: false, widest: ['Conquest and Domination'], value: row => goalName(row.definition) },
   { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],
     value: (row, live) => goalProgress(live, row.ordinal, row.state),
     bar: (row, live) => ({ fraction: fraction(goalProgress(live, row.ordinal, row.state)) }) },
-  { ...STATE!, priority: 2, text: true, widest: ['In progress'], tone: 'blue', status: () => 'dot', cellTone: row => STATE_TONE[row.state], cellKind: 'status', cellExtra: row => ({ statusKind: STATE_MARK[row.state] }), value: row => knownValue(row.stateText) },
+  { ...STATE!, priority: 2, text: true, widest: ['In progress'], tone: 'blue', status: () => 'dot', cellTone: row => STATE_TONE[row.state], cellKind: 'status', extra: row => ({ statusKind: STATE_MARK[row.state] }), value: row => knownValue(row.stateText) },
 ];
 
 export const factionGoalsProjection: TableProjection<FactionGoalsOptions> = registerTableProjection(

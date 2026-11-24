@@ -66,19 +66,19 @@ const [KIND, COUNTRY, DIVISION, MEDALS, EXPERIENCE, CASUALTIES] = COLUMNS;
 export const CASUALTIES_TAKEN_NOTE = 'The game’s own count of the men this division has lost, as shown on its history tab in the game. It leaves out the men lost when a division is destroyed and losses from paradrop landings.';
 
 const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedOptions>[] = [
-  { ...KIND!, priority: 5, sortable: false, iconSlot: true, icon: item => item.kind.icon, iconPending: item => item.kind.pending,
+  { ...KIND!, priority: 5, sortable: false, cellKind: 'kind', extra: () => ({ artShape: 'counter' }), iconSlot: true, icon: item => item.kind.icon, iconPending: item => item.kind.pending,
     value: item => textValue(item.template?.name ?? null, 'Template name unavailable') },
   { ...COUNTRY!, priority: 1, iconSlot: true, icon: item => item.flag.icon, iconPending: item => item.flag.pending, country: item => item.row.tag, value: item => item.country },
   { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['175 Guangxi Juntuán'],
     value: item => textValue(item.row.name, item.row.nameMissing ?? 'Division name unavailable') },
   { ...MEDALS!, priority: 2, numeric: true, cellKind: 'icons', format: 'integer', widest: ['■ ■ ■ ■'],
-    cellExtra: item => ({ iconStripKind: 'medals', icons: item.strip }),
+    extra: item => ({ iconStripKind: 'medals', icons: item.strip }),
     value: item => count(item.row.facts.medals, item.row.facts.historyMissing ?? 'Medals not recorded') },
   { ...EXPERIENCE!, priority: 4, text: true, widest: ['Veterans'],
     value: item => textValue(item.row.facts.levelName, 'Experience not recorded'),
     sortValue: item => item.row.facts.experienceRaw === null ? notRecorded('Experience not recorded') : knownValue(BigInt(item.row.facts.experienceRaw)) },
   { ...CASUALTIES!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'], hint: CASUALTIES_TAKEN_NOTE,
-    value: item => count(item.row.facts.kills, 'Casualties taken not recorded') },
+    value: item => count(item.row.facts.casualtiesTaken, 'Casualties taken not recorded') },
 ];
 
 export const mostDecoratedProjection: TableProjection<DecoratedOptions> = registerTableProjection(
