@@ -1335,6 +1335,9 @@ struct WindowLoadRequest<'a> {
     extra_assets: &'a Assets,
     expected_gen: (u64, u64),
 }
+
+#[derive(Default)]
+pub struct Service {
     cache: Mutex<CacheState>,
     gpu: Mutex<Option<GpuContext>>,
 }
