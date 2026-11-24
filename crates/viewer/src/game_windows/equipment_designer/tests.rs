@@ -236,46 +236,49 @@ fn designer_classification_respects_dlc_masks_refuses_missing_features_and_falls
     let plane = db.named("small_plane_airframe_1").unwrap();
     let car = db.named("armored_car_equipment_1").unwrap();
 
-    let all_dlc = SHIP_DLC_BIT | TANK_DLC_BIT | PLANE_DLC_BIT;
+    let all_dlc = Ok(u32::MAX);
+    assert_eq!(classify_designer(&db, ship, all_dlc).unwrap(), DesignerKind::Ship);
+    assert_eq!(classify_designer(&db, tank, all_dlc).unwrap(), DesignerKind::Tank);
+    assert_eq!(classify_designer(&db, plane, all_dlc).unwrap(), DesignerKind::Plane);
     assert_eq!(
-        classify_designer(&db, ship, Some(all_dlc), None).unwrap(),
-        DesignerKind::Ship
-    );
-    assert_eq!(
-        classify_designer(&db, tank, Some(all_dlc), None).unwrap(),
-        DesignerKind::Tank
-    );
-    assert_eq!(
-        classify_designer(&db, plane, Some(all_dlc), None).unwrap(),
-        DesignerKind::Plane
-    );
-    assert_eq!(
-        classify_designer(&db, car, Some(all_dlc), None).unwrap(),
+        classify_designer(&db, car, all_dlc).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Land)
     );
 
     assert_eq!(
-        classify_designer(&db, ship, Some(0), None).unwrap(),
+        classify_designer(&db, ship, Ok(0)).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Naval)
     );
     assert_eq!(
-        classify_designer(&db, tank, Some(0), None).unwrap(),
+        classify_designer(&db, tank, Ok(0)).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Land)
     );
     assert_eq!(
-        classify_designer(&db, plane, Some(0), None).unwrap(),
+        classify_designer(&db, plane, Ok(0)).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Air)
     );
 
-    let refused = classify_designer(&db, ship, None, Some("SimulationFeatures unavailable"))
-        .unwrap_err();
+    let refused = classify_designer(&db, ship, Err("SimulationFeatures unavailable")).unwrap_err();
     assert!(refused.contains("SimulationFeatures unavailable"));
-    assert!(classify_designer(&db, tank, None, None).is_err());
-    assert!(classify_designer(&db, plane, None, None).is_err());
+    assert!(classify_designer(&db, tank, Err("absent")).is_err());
+    assert!(classify_designer(&db, plane, Err("absent")).is_err());
     assert_eq!(
-        classify_designer(&db, car, None, None).unwrap(),
+        classify_designer(&db, car, Err("absent")).unwrap(),
         DesignerKind::Upgrade(UpgradeDomain::Land)
     );
+
+    content_reader_script::test_game::with(|game| {
+        game.auxiliary(|tables| {
+            tables.category_names = Err(engine_executable::availability::Withheld::new(
+                "equipment categories",
+                "not decoded from this build",
+            ));
+        })
+    });
+    let withheld = classify_designer(&db, tank, all_dlc).unwrap_err();
+    assert!(withheld.contains("does not hold the game's equipment categories"), "{withheld}");
+    assert!(withheld.contains("not decoded from this build"), "{withheld}");
+    content_reader_script::test_game::enter();
 }
 
 #[test]

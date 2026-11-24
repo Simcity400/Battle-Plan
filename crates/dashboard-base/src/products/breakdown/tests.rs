@@ -5,7 +5,7 @@ fn node(key: &str, ordinal: u32) -> Node {
 }
 
 fn leaf(path: &[Node], amount: Amount) -> Leaf {
-    Leaf { path: path.to_vec(), amount, count: None }
+    Leaf { path: path.to_vec(), amount, count: None, last: None }
 }
 
 fn keys(parts: &[BreakdownPart]) -> Vec<&str> {
@@ -90,9 +90,26 @@ fn corrections_below_zero_follow_the_positive_parts_without_a_share() {
 fn counts_add_up_the_levels() {
     let a = node("a", 0);
     let leaves = [
-        Leaf { path: vec![a.clone(), node("x", 0)], amount: Amount::Known(1), count: Some(2) },
-        Leaf { path: vec![a, node("y", 1)], amount: Amount::Known(1), count: Some(3) },
+        Leaf { path: vec![a.clone(), node("x", 0)], amount: Amount::Known(1), count: Some(2), last: None },
+        Leaf { path: vec![a, node("y", 1)], amount: Amount::Known(1), count: Some(3), last: None },
     ];
     let reply = breakdown(0, &leaves, &Unrecorded::default());
     assert_eq!(reply.parts[0].count, Some(5));
+}
+
+#[test]
+fn a_part_is_dated_by_the_latest_read_among_its_amounts() {
+    let decisions = node("decisions", 0);
+    let dated = |path: &[Node], amount: Amount, last: i32| Leaf { path: path.to_vec(), amount, count: None, last: Some(last) };
+    let leaves = [
+        dated(&[decisions.clone(), node("war", 0)], Amount::Known(640), 30),
+        dated(&[decisions.clone(), node("economy", 1)], Amount::NotRecorded("The cost of 1 payment was not recorded.".into()), 90),
+        dated(&[decisions, node("war", 0)], Amount::Known(5), 12),
+        leaf(&[node("laws", 1)], Amount::Known(410)),
+    ];
+    let reply = breakdown(0, &leaves, &Unrecorded::default());
+    let decisions = reply.parts.iter().find(|part| part.key == "decisions").expect("decisions");
+    assert_eq!(decisions.last, Some(90), "a group is dated by its latest child, a payment of unknown cost included");
+    assert_eq!(decisions.children.iter().find(|part| part.key == "war").and_then(|part| part.last), Some(30));
+    assert_eq!(reply.parts.iter().find(|part| part.key == "laws").and_then(|part| part.last), None, "an undated amount gives no date");
 }
