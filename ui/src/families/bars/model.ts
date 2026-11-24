@@ -1,11 +1,11 @@
-import type { AuditRow } from '../../draw/notifications.ts';
-import { flagArtHandle } from '../art/provider.ts';
-import { failedArt, missingArt, PENDING_ART, type ArtResult } from '../art/types.ts';
+import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
+import { flagChoiceArt } from '../art/provider.ts';
+import type { ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
 import { assertValue, hasMeasuredValue, type Value } from '../value.ts';
-import { formatValueState, notRecordedLabel, type ValueFormat } from '../valueFormat.ts';
+import { formatShare, formatValueState, notRecordedLabel, type ValueFormat } from '../valueFormat.ts';
 
 export type BarsForm = 'ordered' | 'two-sided' | 'share' | 'net' | 'stacked';
 
@@ -37,16 +37,7 @@ export function countryRowPresentation(
   const labelMissing = identity.name.status === 'absent' || identity.name.status === 'failed';
   const label = identity.name.status === 'ready' ? identity.name.value : tag;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
-  let art: ArtResult;
-  if (identity.flagChoice?.status === 'ready') {
-    art = readView.art(flagArtHandle(identity.flagChoice.value));
-  } else if (identity.flagChoice?.status === 'absent') {
-    art = missingArt(identity.flagChoice.reason);
-  } else if (identity.flagChoice?.status === 'failed') {
-    art = failedArt(identity.flagChoice.reason, identity.flagChoice.retryable);
-  } else {
-    art = PENDING_ART;
-  }
+  const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
   const iconUrl = art.status === 'ready' ? art.url : undefined;
   return {
     label,
@@ -390,13 +381,13 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
       const segFmt = formatValueState(seg.value, seg.format);
       items.push(segFmt.kind === 'notRecorded' || segFmt.kind === 'notApplicable'
         ? { label: seg.label, swatch: seg.color, missingReason: segFmt.reason }
-        : { label: seg.label, swatch: seg.color, value: `${segFmt.text} (${Math.round(seg.share * 100)}%)` });
+        : { label: seg.label, swatch: seg.color, value: `${segFmt.text} (${formatShare(seg.share)})` });
     }
   }
   if (row.readout?.primary && !items.length && !missingReason) {
     items.push({ label: row.readout.secondary ?? 'Count', value: row.readout.primary });
   }
-  if (row.media?.art.status === 'confirmedMissing') {
+  if (row.media?.art.status === 'confirmedMissing' || row.media?.art.status === 'unavailable') {
     items.push({ label: 'Artwork', missingReason: row.media.art.reason });
   }
 
@@ -441,7 +432,7 @@ export function deriveBarsMirror(
     if (item.segments?.length) {
       cells.push({
         column: 'segments',
-        spoken: item.segments.map(seg => `${seg.label} ${Math.round(seg.share * 100)}%`).join(', '),
+        spoken: item.segments.map(seg => `${seg.label} ${formatShare(seg.share)}`).join(', '),
       });
     }
     if (item.readout?.primary) {
@@ -464,11 +455,11 @@ export function deriveBarsMirror(
 export function deriveBarsAudit(
   model: BarsModel,
   options?: { readonly window?: { readonly first: number; readonly count: number } },
-): AuditRow[] {
-  const rows: AuditRow[] = [];
+): FamilyAuditRow[] {
+  const rows: FamilyAuditRow[] = [];
   if (model.empty !== undefined && model.rows.length === 0) {
     const key = model.emptyKind ?? 'empty';
-    rows.push({ row: key, key, value: model.empty });
+    rows.push(auditRow(key, model.empty));
     return rows;
   }
   const first = options?.window ? Math.max(0, options.window.first) : 0;
@@ -477,7 +468,7 @@ export function deriveBarsAudit(
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
     const label = item.labelMissing ? notRecordedLabel('Name') : item.label;
-    const cell = (row: string, name: string, value: string) => rows.push({ row, key: `${row}:${name}`, value });
+    const cell = (row: string, name: string, value: string) => rows.push(auditCell(row, name, value));
     cell(item.key, 'label', label);
     if (item.value) cell(item.key, 'value', canonicalAuditValue(item.value.value));
     if (item.left) cell(item.key, 'left', canonicalAuditValue(item.left.value.value));

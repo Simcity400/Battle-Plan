@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications';
+import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 
@@ -228,8 +228,8 @@ export function cellAuditValue(cell: MatrixCell): string {
 export function deriveMatrixAudit(
   model: HeatMatrixModel,
   window: { readonly firstRow: number; readonly endRow: number; readonly firstCol: number; readonly endCol: number },
-): readonly AuditRow[] {
-  const out: AuditRow[] = [];
+): readonly FamilyAuditRow[] {
+  const out: FamilyAuditRow[] = [];
   const firstRow = Math.max(0, window.firstRow);
   const endRow = Math.min(model.rows.length, window.endRow);
   const firstCol = Math.max(0, window.firstCol);
@@ -239,9 +239,9 @@ export function deriveMatrixAudit(
     for (let c = firstCol; c < endCol; c++) {
       const cell = matrixCellAt(model, r, c);
       if (cell.kind === 'diagonal' && cell.text === undefined) continue;
-      out.push({ key: `${row.id}:${model.columns[c]!.id}`, row: row.id, value: cellAuditValue(cell) });
+      out.push(auditCell(row.id, model.columns[c]!.id, cellAuditValue(cell)));
     }
-    if (model.margin) out.push({ key: `${row.id}:margin`, row: row.id, value: marginAuditValue(model.margin.cell(r)) });
+    if (model.margin) out.push(auditCell(row.id, 'margin', marginAuditValue(model.margin.cell(r))));
   }
   return out;
 }

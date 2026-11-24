@@ -53,7 +53,7 @@ function filterNext(filter: DeclaredCountryFilter, hour: number): number {
 }
 
 const whole = (value: number): Value => (value === 0 ? zeroValue(0) : knownValue(value));
-const observed = (value: number, partial: string | null): Value => (partial === null ? whole(value) : partialValue(value, partial, { atLeast: true }));
+const observed = (value: number, partial: string | null): Value => (partial === null ? whole(value) : partialValue(value, partial));
 
 export const transfersProjection: TableProjection<TransfersProjectionOptions> = registerTableProjection({
   kind: 'territory-transfers',
@@ -89,7 +89,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
       hour,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      titleSummary: `${reply.partial === null ? '' : 'At least '}${formatScalar(reply.transfers, 'integer')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
+      titleSummary: `${formatScalar(reply.transfers, 'integer')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
       ...(reply.partial !== null ? { titleSummaryPartial: reply.partial } : {}),
       ...(rows.length === 0
         ? reply.partial === null

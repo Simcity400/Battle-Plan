@@ -444,6 +444,22 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/families/heat/heatFamily.test.ts": "for (const t of texts) { w = ctx.measureText(t).width; }\n",
         })[0], 0)
 
+    def test_family_hand_percent_is_refused_in_families_and_projections(self):
+        code, out = check({}, {
+            "ui/src/families/bars/painter.ts": "const pct = `${Math.round(share * 100)}%`;\n",
+            "ui/src/widgets/foo/fooProjection.ts": "const a = `${val.toFixed(1)}%`;\nconst b = Math.floor(share * 100) + '%';\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("family-hand-percent", out)
+        self.assertIn("formatShare", out)
+        self.assertIn("formatProgress", out)
+        self.assertIn("formatRecordedPercent", out)
+        self.assertEqual(check({}, {
+            "ui/src/families/valueFormat.ts": "const pct = `${Math.round(share * 100)}%`;\n",
+            "ui/src/families/heat/matrixModel.ts": "if (Math.floor(at / width) === at % width) continue;\n",
+            "ui/src/families/bars/barsFamily.test.ts": "const pct = `${Math.round(share * 100)}%`;\n",
+        })[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

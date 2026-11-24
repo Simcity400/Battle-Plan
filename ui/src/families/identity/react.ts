@@ -5,7 +5,7 @@ import type { PlaybackController } from '../../dashboard/playback';
 import type { CountryFlagChoice, CountryFlagSize } from '../../generated/dashboard';
 import { flagEntryToArt } from '../art/adapters.ts';
 import type { ArtResolution } from '../art/types.ts';
-import { PENDING_ART, missingArt } from '../art/types.ts';
+import { NO_ART, PENDING_ART, unavailableArt } from '../art/types.ts';
 import { identityBrokerFor } from './broker.ts';
 import { IdentityIndex } from './index.ts';
 import {
@@ -102,12 +102,12 @@ export function useIdentity<K extends IdentityKey>(
           flag = broker.flagFor(scope, flagSize, country.flagChoice.value);
           flagArt = flagEntryToArt(flag);
         } else if (country.flagChoice.kind === 'missing') {
-          flagArt = missingArt(country.flagChoice.reason);
+          flagArt = unavailableArt(country.flagChoice.reason);
         } else if (country.flagChoice.kind === 'failed') {
           flagArt = { status: 'failed', reason: country.flagChoice.failure.message, retryable: true };
         }
       } else if (country.kind === 'absent') {
-        flagArt = missingArt(country.reason);
+        flagArt = NO_ART;
       } else if (country.kind === 'failed') {
         flagArt = { status: 'failed', reason: country.failure.message, retryable: true };
       }

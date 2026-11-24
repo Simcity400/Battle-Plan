@@ -1455,7 +1455,7 @@ async function runCheckAtCommit(root, sha) {
       ],
       { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] },
     );
-    execFileSync('tar', ['-xf', tarPath, '-C', baseDir], { stdio: ['ignore', 'ignore', 'pipe'] });
+    execFileSync('tar', ['-xf', '__base.tar'], { cwd: baseDir, stdio: ['ignore', 'ignore', 'pipe'] });
     rmSync(tarPath, { force: true });
     if (existsSync(repoNodeModules)) {
       symlinkSync(repoNodeModules, nodeModulesLink, 'junction');

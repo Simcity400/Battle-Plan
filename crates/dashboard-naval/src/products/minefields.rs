@@ -218,6 +218,7 @@ impl AtHour for Minefields {
     const KEY: &'static str = "minefields";
     const TITLE: &'static str = "Minefields";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = MinefieldsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", pinnedRegions, "pinnedRegions[]", hiddenRegions, "hiddenRegions[]", order];
     type Reply = MinefieldsReply;

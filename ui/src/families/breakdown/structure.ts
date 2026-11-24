@@ -1,4 +1,4 @@
-import type { AuditRow } from '../../draw/notifications';
+import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { layoutBreakdown, type BreakdownLayout, type DrawnItem } from './layout.ts';
@@ -48,15 +48,15 @@ function drawn(item: DrawnItem): string {
   return `${part.atLeast ? 'atLeast:' : part.partial ? 'partial:' : ''}${text}${item.shareText ? `|${item.shareText}` : ''}`;
 }
 
-export function deriveBreakdownAudit(model: BreakdownModel, layout: BreakdownLayout | null): readonly AuditRow[] {
-  const rows: AuditRow[] = [{ row: '__total__', key: '__total__', value: stated(model.total) }];
-  if (model.periodLabel) rows.push({ row: '__period__', key: '__period__', value: model.periodLabel });
+export function deriveBreakdownAudit(model: BreakdownModel, layout: BreakdownLayout | null): readonly FamilyAuditRow[] {
+  const rows: FamilyAuditRow[] = [auditRow('__total__', stated(model.total))];
+  if (model.periodLabel) rows.push(auditRow('__period__', model.periodLabel));
   if (model.comparison) {
     const { label, value, note, partial } = model.comparison;
-    rows.push({ row: COMPARISON_KEY, key: COMPARISON_KEY, value: `${label}:${partial ? 'partial:' : ''}${value}${note ? `:${note}` : ''}` });
+    rows.push(auditRow(COMPARISON_KEY, `${label}:${partial ? 'partial:' : ''}${value}${note ? `:${note}` : ''}`));
   }
-  if (model.empty) rows.push({ row: '__empty__', key: '__empty__', value: `${model.empty}${model.emptyDetail ? `:${model.emptyDetail}` : ''}` });
-  for (const item of layout?.items ?? []) rows.push({ row: item.key, key: item.key, value: drawn(item) });
+  if (model.empty) rows.push(auditRow('__empty__', `${model.empty}${model.emptyDetail ? `:${model.emptyDetail}` : ''}`));
+  for (const item of layout?.items ?? []) rows.push(auditRow(item.key, drawn(item)));
   return rows;
 }
 
