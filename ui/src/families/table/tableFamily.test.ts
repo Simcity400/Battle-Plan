@@ -21,7 +21,7 @@ import { TABLE_BASE as SCOREBOARD_BASE } from '../../widgets/scoreboard/definiti
 import { RANK_SOURCE, scoreboardColumnsSpec, scoreboardProjection } from '../../widgets/scoreboard/scoreboardProjection.ts';
 import { AuditSnapshotStore, canonicalAuditData, canonicalAuditValue } from '../audit.ts';
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
-import type { FamilySources } from '../contract.ts';
+import { createBoundedReadView } from '../boundedView.ts';
 import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
 import { effectiveCountryUnobserved, resolveDisplayedStaticSnapshot, resolveRetainedHeadSpan, selectionUnobservedReason } from '../sources.ts';
 import { SlotTags } from '../../dashboard/countrySlots.ts';
@@ -156,12 +156,10 @@ test('declarative table projection refuses bare null where a 5-state value is re
     rowKey: row => row.id,
     rowName: row => row.id,
   });
-  const sources: FamilySources = {
-    answers: new Map(),
+  const model = broken.project(createBoundedReadView({
+    hour: 10,
     panels: new Map([['main', { items: [{ id: 'a', count: 1 }] }]]),
-    live: new Map(),
-  };
-  const model = broken.project(sources, 10, {});
+  }), {});
   const settings = tableSettingsOf(undefined, model.columns, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'count', direction: 'descending' } });
   assert.throws(() => resolveTableRows(model, settings), InvalidFamilyValueError);
 });
@@ -183,8 +181,8 @@ test('campaign-clock projection produces identical audit output for followed wir
   };
   const settings = tableSettingsOf(undefined, CLOCK_COLUMNS, CLOCK_TABLE_BASE);
   const clockLayouts = buildColumnLayouts(CLOCK_COLUMNS, settings);
-  const followedModel = campaignClockProjection.project({ answers: new Map([['main', wire]]), panels: new Map(), live: new Map() }, 50, {});
-  const exactModel = campaignClockProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 50, {});
+  const followedModel = campaignClockProjection.project(createBoundedReadView({ hour: 50, answers: new Map([['main', wire]]) }), {});
+  const exactModel = campaignClockProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['main', reply]]) }), {});
   const followedAudit = deriveTableAudit({ model: followedModel, flatRows: resolveTableRows(followedModel, settings), visibleColumns: clockLayouts });
   const exactAudit = deriveTableAudit({ model: exactModel, flatRows: resolveTableRows(exactModel, settings), visibleColumns: clockLayouts });
   assert.equal(pictureError('table', followedAudit, { values: new Map(exactAudit.map(r => [r.key, r.value!])), ordered: true }), null);
@@ -243,16 +241,14 @@ test('scoreboard projection matches followed and exact audits with missing, part
 
   for (const direction of ['descending', 'ascending'] as const) {
     const settings: TableSettings = { ...tableSettingsOf(undefined, specs, SCOREBOARD_BASE), order: specs.map(s => s.key), sort: { column: 'factories', direction } };
-    const followedModel = scoreboardProjection.project({
+    const followedModel = scoreboardProjection.project(createBoundedReadView({
+      hour: 40,
       answers: new Map([[RANK_SOURCE, rankAns], ['factories', facAns], ['casualties', casAns], ['casualties:partial', partAns]]),
-      panels: new Map(),
-      live: new Map(),
-    }, 40, options);
-    const exactModel = scoreboardProjection.project({
-      answers: new Map(),
+    }), options);
+    const exactModel = scoreboardProjection.project(createBoundedReadView({
+      hour: 40,
       panels: new Map([['main', exactReply]]),
-      live: new Map(),
-    }, 40, options);
+    }), options);
 
     const followedFlat = resolveTableRows(followedModel, settings);
     const exactFlat = resolveTableRows(exactModel, settings);
@@ -293,8 +289,8 @@ test('apm-table projection matches followed wire answers and exact replies, incl
   const cols = apmTableColumns(false, true, true);
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } });
   const apmLayouts = buildColumnLayouts(cols, settings);
-  const fModel = apmTableProjection.project({ answers: new Map([['main', wire]]), panels: new Map(), live: new Map() }, 100, opts);
-  const eModel = apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 100, opts);
+  const fModel = apmTableProjection.project(createBoundedReadView({ hour: 100, answers: new Map([['main', wire]]) }), opts);
+  const eModel = apmTableProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', reply]]) }), opts);
   const fAudit = deriveTableAudit({ model: fModel, flatRows: resolveTableRows(fModel, settings), visibleColumns: apmLayouts });
   const eAudit = deriveTableAudit({ model: eModel, flatRows: resolveTableRows(eModel, settings), visibleColumns: apmLayouts });
   assert.equal(pictureError('table', fAudit, { values: new Map(eAudit.map(r => [r.key, r.value!])), ordered: true }), null);
@@ -314,11 +310,11 @@ test('occupied-states, game-score (with faction groups), and division-template (
     garrisonRedRaw: '30000',
     warnings: [],
   };
-  const occModel = occupiedStatesProjection.project({
-    answers: new Map(),
+  const occModel = occupiedStatesProjection.project(createBoundedReadView({
+    hour: 50,
     panels: new Map([['main', occReply]]),
     live: new Map([['main', { get: k => (k.endsWith('resistance') ? 2_500_000 : k.endsWith('compliance') ? 1_000_000 : k.endsWith('garrison') ? 500_000 : 100_000), missing: () => 'Not recorded' }]]),
-  }, 50, {
+  }), {
     filter: { passing: null, unrecorded: [], bounds: [] },
     role: 'occupier',
     labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] },
@@ -341,11 +337,11 @@ test('occupied-states, game-score (with faction groups), and division-template (
       { tag: 'ENG', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } },
     ],
   };
-  const gsModel = gameScoreProjection.project({
-    answers: new Map(),
+  const gsModel = gameScoreProjection.project(createBoundedReadView({
+    hour: 50,
     panels: new Map([['main', gsReply]]),
     live: new Map([['main', { get: k => (k.startsWith('GER') ? 300 : 200), missing: () => 'Not recorded' }]]),
-  }, 50, {
+  }), {
     all: true,
     holders: null,
     membership: null,
@@ -376,7 +372,7 @@ test('occupied-states, game-score (with faction groups), and division-template (
   };
   const dtCols = divisionTemplateColumns(true);
   const dtSettings = tableSettingsOf(undefined, dtCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'template', direction: 'ascending' } });
-  const dtModel = divisionTemplateProjection.project({ answers: new Map(), panels: new Map([['main', dtReply]]), live: new Map([['main', repliedCells(dtReply).read()]]) }, 50, {
+  const dtModel = divisionTemplateProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['main', dtReply]]), live: new Map([['main', repliedCells(dtReply).read()]]) }), {
     countryName: 'Germany',
     cellBars: true,
     canOpenDesigner: true,
@@ -470,8 +466,8 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
   const options = { shown: columns, candidates: tags, top: null, rankMarkers: false, looks };
   const specs = scoreboardColumnsSpec(columns, null);
   const settings: TableSettings = { ...tableSettingsOf(undefined, specs, SCOREBOARD_BASE), order: specs.map(s => s.key), sort: { column: 'factories', direction: 'descending' } };
-  const followedModel = scoreboardProjection.project({ answers: new Map([['factories', wire]]), panels: new Map(), live: new Map() }, 200, options);
-  const exactModel = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 200, options);
+  const followedModel = scoreboardProjection.project(createBoundedReadView({ hour: 200, answers: new Map([['factories', wire]]) }), options);
+  const exactModel = scoreboardProjection.project(createBoundedReadView({ hour: 200, panels: new Map([['main', reply]]) }), options);
   const followedRows = resolveTableRows(followedModel, settings);
   const exactRows = resolveTableRows(exactModel, settings);
   assert.equal(followedRows.length, count);
@@ -518,8 +514,7 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
     [liveKey('1', 'garrisonStrength'), 87_500],
   ]), NOT_NAMED);
   const run = (hour: number) => occupiedStatesProjection.project(
-    { answers: new Map(), panels: new Map([['main', reply]]), live: new Map([['main', live]]) },
-    hour,
+    createBoundedReadView({ hour, panels: new Map([['main', reply]]), live: new Map([['main', live]]) }),
     { filter, role: 'occupier', labels, lawAs: 'dot', filterAll: false },
   );
   const at15 = run(15);
@@ -847,8 +842,8 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   assert.equal(gate.due(115, 0, 'w'), true, 'pause flushes immediately');
   flusher.cancel();
 
-  const occMissingLaw = occupiedStatesProjection.project({
-    answers: new Map(),
+  const occMissingLaw = occupiedStatesProjection.project(createBoundedReadView({
+    hour: 50,
     panels: new Map([['main', {
       states: [{ state: 1, name: 'Warsaw', nameMissing: null, owner: 'POL', occupier: 'GER', occupied: 'POL', garrisonRequiredSign: 0, garrisonAlert: false, assignedKnown: true, garrisonMissing: null, law: 'custom_law', lawMissing: null }],
       complete: true,
@@ -859,7 +854,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
       warnings: [],
     }]]),
     live: new Map([['main', { get: () => 0, missing: () => 'Not recorded' }]]),
-  }, 50, { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true });
+  }), { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true });
   assert.deepEqual(occMissingLaw.rows[0]!.cells.law!.value, { kind: 'notRecorded', reason: 'Law localization absent' });
 
   const manyRows = Array.from({ length: 15 }, (_, i) => ({
@@ -1066,16 +1061,16 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
   assert.equal(snap2?.context, ctxA, 'S1: updated snapshot carries the new selection context');
   assert.equal(snap2?.extra, surfaceA, 'S1: updated snapshot carries the new settings and looks');
 
-  const emptyGsA = gameScoreProjection.project({
-    answers: new Map(),
+  const emptyGsA = gameScoreProjection.project(createBoundedReadView({
+    hour: 10,
     panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
     live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
-  }, 10, { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
-  const emptyGsB = gameScoreProjection.project({
-    answers: new Map(),
+  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  const emptyGsB = gameScoreProjection.project(createBoundedReadView({
+    hour: 250,
     panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
     live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
-  }, 250, { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
   assert.equal(emptyGsA.empty, 'No country’s scores recorded at this time.', 'M5: dateless empty message');
   assert.equal(emptyGsA.empty, emptyGsB.empty, 'M5: empty message does not depend on advancing hour');
 
@@ -1304,10 +1299,10 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   registerTableProjection({
     kind: 'test-r5-reveal',
     family: 'table',
-    project(_sources, hour) {
+    project(readView) {
       return {
         columns: cols,
-        hour,
+        hour: readView.hour,
         unsorted: true,
         rows: [
           {
@@ -1328,10 +1323,10 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   registerTableProjection({
     kind: 'test-r5-art-1500',
     family: 'table',
-    project(_sources, hour) {
+    project(readView) {
       return {
         columns: cols,
-        hour,
+        hour: readView.hour,
         unsorted: true,
         rows: Array.from({ length: 1500 }, (_, i) => {
           const tag = `C${String(i).padStart(4, '0')}`;
@@ -1361,11 +1356,11 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   registerTableProjection({
     kind: 'test-r5-local-fail',
     family: 'table',
-    project(_sources, hour) {
+    project(readView) {
       if (throwLocalPaint) throw new Error('local projection crash');
       return {
         columns: cols,
-        hour,
+        hour: readView.hour,
         rows: [{ key: 'ok', name: 'Ok', cells: { name: { value: knownValue('Ok') }, val: { value: knownValue(7) } } }],
       };
     },

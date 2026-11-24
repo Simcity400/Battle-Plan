@@ -241,7 +241,7 @@ function renderApp() {
               columns={SPECS}
               settings={SETTINGS}
               subscriptions={subs}
-              exactSources={NO_EXACT}
+              exactReadView={NO_EXACT}
               offset={0}
               pin={null}
               bounds={BOUNDS}
@@ -261,7 +261,7 @@ function renderApp() {
                 columns={SPECS}
                 settings={SETTINGS}
                 subscriptions={subs}
-                exactSources={NO_EXACT}
+                exactReadView={NO_EXACT}
                 offset={0}
                 pin={null}
                 bounds={BOUNDS}
