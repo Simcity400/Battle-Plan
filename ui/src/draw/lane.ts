@@ -3,6 +3,7 @@ import { SAME, type Ack, type Bitmap, type Entry, type FailureOrigin, type Frame
 import { parseAnswer, parseDatedPanelRecord, parseFollowedFrame, type FollowedAnswer } from '../dashboard/follow/message.ts';
 import { patchAnswer } from '../dashboard/follow/tables.ts';
 import { sectionOf } from '../dashboard/follow/liveCells.ts';
+import type { InstalledViewport } from '../families/plan.ts';
 
 export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null }
 export interface AnswerValue { kind: 'answer'; body?: Uint8Array; answer: FollowedAnswer }
@@ -13,7 +14,7 @@ export interface Sub { id: number; channel: Channel; product?: string; route: nu
 
 export interface Surface { width: number; height: number; dpr: number }
 export interface Binding {
-  generation: number; surfaces: readonly Surface[]; offset: number; pin: number | null; settings?: unknown; dated?: { h: number; c: number };
+  generation: number; owner?: string; surfaces: readonly Surface[]; offset: number; pin: number | null; settings?: unknown; dated?: { h: number; c: number };
 }
 export interface Bitmapped { readonly width: number; readonly height: number }
 
@@ -34,6 +35,7 @@ export interface Painted {
   mode?: 'picture' | 'refused';
   reason?: string;
   nextChangeAt?: number;
+  viewport?: InstalledViewport;
   hit?: (point: readonly [number, number]) => string | null;
 }
 
@@ -64,7 +66,7 @@ export interface LaneHost<B extends Bitmap> {
   failWidget?(widget: number, reason: string): void;
   later(run: () => void): void;
   schedule?(run: () => void): void;
-  hit?(widget: number, key: string | null): void;
+  hit?(widget: number, key: string | null, installedId?: number, owner?: string): void;
   served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; costs?: [widget: number, cost: number][] }): void;
   budget?: number;
   earlyBuffer?: number;
@@ -73,9 +75,9 @@ export interface LaneHost<B extends Bitmap> {
 }
 
 interface Sent {
-  id: number; request: number; pictures: Picture<Value>[]; h: number; c: number; lo: number; hi: number; binding: number;
+  id: number; owner?: string; request: number; pictures: Picture<Value>[]; h: number; c: number; lo: number; hi: number; binding: number;
   contents: Record<string, string>; fieldKeys: string[]; surfaceCount: number; mode: Entry['mode']; reason?: string;
-  open?: 'followed' | 'panel'; inspect: string | null; hit?: Painted['hit'];
+  open?: 'followed' | 'panel'; viewport?: InstalledViewport; inspect: string | null; hit?: Painted['hit'];
 }
 
 interface Widget {
@@ -556,11 +558,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   bind(widget: number, binding: Binding, model?: unknown, retry = false) {
     const held = this.widgets.get(widget);
     if (!held) return;
+    const ownerChanged = binding.owner !== undefined && held.binding.owner !== undefined && binding.owner !== held.binding.owner;
     held.binding = binding;
     if (model !== undefined) held.model = model;
     held.sent = {};
     held.forceFull = false;
     held.inflight = null;
+    if (ownerChanged) {
+      held.installed = null;
+      held.parked = null;
+      this.parkedWidgets.delete(widget);
+    }
     if (retry) {
       this.failedWidgets.delete(widget);
       held.halted = null;
@@ -584,8 +592,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   pointer(widget: number, _surface: number, point: [number, number] | null) {
     const held = this.widgets.get(widget);
     if (!held) return;
-    const hit = held.installed?.hit;
-    this.host.hit?.(widget, point && hit ? hit(point) : null);
+    const inst = held.installed;
+    const hit = inst?.hit;
+    this.host.hit?.(widget, point && hit ? hit(point) : null, inst?.id, inst?.owner);
   }
 
   exact(sub: number, hour: number, data: unknown, refused: string | null) {
@@ -1746,15 +1755,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const key of base.fieldKeys) fields[key] = SAME;
     const route = this.routeOf(widget);
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
-    const sent: Sent = { id, request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
-      binding: widget.binding.generation, contents, fieldKeys: base.fieldKeys, surfaceCount: base.surfaceCount, mode: base.mode, reason: base.reason, open, inspect: widget.inspect, hit: base.hit };
+    const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
+      binding: widget.binding.generation, contents, fieldKeys: base.fieldKeys, surfaceCount: base.surfaceCount, mode: base.mode, reason: base.reason, open, ...(base.viewport ? { viewport: base.viewport } : {}), inspect: widget.inspect, hit: base.hit };
     widget.sent = { ...contents };
     widget.inflight = sent;
     this.presented.set(id, { widget: widget.id, sent });
     this.syncWindowTracking(widget);
-    return Object.freeze({ widget: widget.id, binding: widget.binding.generation, id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
+    return Object.freeze({ widget: widget.id, binding: widget.binding.generation, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode: base.mode, ...base.reason !== undefined ? { reason: base.reason } : {},
-      ...open ? { open } : {}, surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0 });
+      ...open ? { open } : {}, ...(base.viewport ? { viewport: base.viewport } : {}), surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0 });
   }
 
   private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel', failureOrigin?: FailureOrigin): Entry<B> {
@@ -1775,15 +1784,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     const route = this.routeOf(widget);
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };
-    const sent: Sent = { id, request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
-      binding: widget.binding.generation, contents, fieldKeys, surfaceCount: painted.surfaces.length, mode, reason, open, inspect: widget.inspect, hit: painted.hit };
+    const primarySurface = widget.binding.surfaces[0];
+    const viewport = painted.viewport ?? (primarySurface ? { width: primarySurface.width, height: primarySurface.height, dpr: primarySurface.dpr, scrollLeft: 0, scrollTop: 0 } : undefined);
+    const sent: Sent = { id, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), request: this.requests, pictures: selected.pictures, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
+      binding: widget.binding.generation, contents, fieldKeys, surfaceCount: painted.surfaces.length, mode, reason, open, ...(viewport ? { viewport } : {}), inspect: widget.inspect, hit: painted.hit };
     widget.sent = { ...contents };
     widget.inflight = sent;
     this.presented.set(id, { widget: widget.id, sent });
     this.syncWindowTracking(widget);
-    return Object.freeze({ widget: widget.id, binding: widget.binding.generation, id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
+    return Object.freeze({ widget: widget.id, binding: widget.binding.generation, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...reason !== undefined ? { reason } : {},
-      ...open ? { open } : {}, ...failureOrigin !== undefined ? { failureOrigin } : {},
+      ...open ? { open } : {}, ...failureOrigin !== undefined ? { failureOrigin } : {}, ...(viewport ? { viewport } : {}),
       surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms });
   }
 

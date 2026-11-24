@@ -57,11 +57,11 @@ export function useFollowedWidget(pipeline: Pipeline | null, key: string | null,
     return () => { pipeline.drop(key); };
   }, [pipeline, key]);
   const id = heldFor(held, key);
-  const { offset, pin, bounds } = options;
+  const { offset, pin, bounds, owner } = options;
   const boundsKey = bounds === undefined ? 'kept' : bounds ? `${bounds[0]}:${bounds[1]}` : '';
   useLayoutEffect(() => {
-    if (id !== null) pipeline?.retime(id, { offset, pin, ...bounds !== undefined ? { bounds } : {} });
-  }, [pipeline, id, offset, pin, boundsKey]);
+    if (id !== null) pipeline?.retime(id, { offset, pin, ...(owner !== undefined ? { owner } : {}), ...bounds !== undefined ? { bounds } : {} });
+  }, [pipeline, id, offset, pin, owner, boundsKey]);
   return id;
 }
 

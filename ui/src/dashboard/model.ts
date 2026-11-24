@@ -138,9 +138,33 @@ export function widgetTracks(widget: WidgetSpec, tracks: BoundTrack[]): BoundTra
   });
 }
 
+export function lastRecordedBranchHour(
+  branch: { readonly firstHour: number; readonly lastHour: number; readonly gaps?: readonly { readonly firstHour: number; readonly lastHour: number }[] },
+): number | null {
+  const { firstHour, lastHour, gaps } = branch;
+  if (!Number.isSafeInteger(firstHour) || !Number.isSafeInteger(lastHour) || firstHour > lastHour) return null;
+  if (!gaps?.length) return lastHour;
+  let at = lastHour;
+  while (at >= firstHour) {
+    let hit: { readonly firstHour: number; readonly lastHour: number } | null = null;
+    for (let i = 0; i < gaps.length; i++) {
+      const gap = gaps[i]!;
+      if (gap.firstHour <= at && at <= gap.lastHour) {
+        if (!hit || gap.firstHour < hit.firstHour) hit = gap;
+      }
+    }
+    if (!hit) return at;
+    at = hit.firstHour - 1;
+  }
+  return null;
+}
+
 export function resolveWindow(widget: WidgetSpec, track: BoundTrack, tracks: BoundTrack[], position: number): HourWindow | null {
   const time = widget.time;
-  if (time.mode === 'campaign') return { firstHour: widgetDefinition(widget.kind)?.scope === 'moment' ? track.branch.lastHour : track.branch.firstHour, lastHour: track.branch.lastHour };
+  if (time.mode === 'campaign') {
+    const end = lastRecordedBranchHour(track.branch) ?? track.branch.lastHour;
+    return { firstHour: widgetDefinition(widget.kind)?.scope === 'moment' ? end : track.branch.firstHour, lastHour: end };
+  }
   if (time.mode === 'pin') {
     const window = time.windows[track.id];
     return window ? { firstHour: track.branch.firstHour + window.firstOffset, lastHour: track.branch.firstHour + window.lastOffset } : null;
@@ -156,12 +180,13 @@ export function resolveWindow(widget: WidgetSpec, track: BoundTrack, tracks: Bou
 }
 
 export function recordingEndTime(meta: { timeModes: readonly WidgetTime['mode'][]; scope: 'moment' | 'history' },
-  tracks: readonly { id: string; branch: HourWindow }[]): WidgetTime | null {
+  tracks: readonly { id: string; branch: HourWindow & { gaps?: readonly { firstHour: number; lastHour: number }[] } }[]): WidgetTime | null {
   if (meta.timeModes.includes('campaign')) return { mode: 'campaign' };
   if (!meta.timeModes.includes('pin')) return null;
   const windows: Record<string, OffsetWindow> = {};
   for (const track of tracks) {
-    const end = track.branch.lastHour - track.branch.firstHour;
+    const endHour = lastRecordedBranchHour(track.branch) ?? track.branch.lastHour;
+    const end = endHour - track.branch.firstHour;
     windows[track.id] = { firstOffset: meta.scope === 'history' ? 0 : end, lastOffset: end };
   }
   return { mode: 'pin', windows };
