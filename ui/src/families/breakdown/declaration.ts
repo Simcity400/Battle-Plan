@@ -2,7 +2,7 @@ import type { IconName } from '../../components/Icons';
 import type { OptionField } from '../../dashboard/options';
 import type { CountryPolicy, FamilyPlanContext, FamilyViewportRequest, SourcePlan } from '../plan.ts';
 import type { BreakdownProjection } from './model.ts';
-import type { BreakdownViewMode } from './options.ts';
+import { breakdownView, type BreakdownViewMode } from './options.ts';
 
 export interface BreakdownViewOptions {
   readonly view: BreakdownViewMode;
@@ -28,13 +28,10 @@ export interface BreakdownWidgetDeclaration<TOptions> extends Omit<BreakdownWidg
   readonly projectionOptions: (ctx: FamilyPlanContext) => TOptions & BreakdownViewOptions;
 }
 
-export function breakdownDeclaration<TOptions>(
-  spec: BreakdownWidgetSpec<TOptions>,
-  view: BreakdownViewMode,
-): BreakdownWidgetDeclaration<TOptions> {
+export function breakdownDeclaration<TOptions>(spec: BreakdownWidgetSpec<TOptions>): BreakdownWidgetDeclaration<TOptions> {
   return {
     ...spec,
     family: 'breakdown',
-    projectionOptions: ctx => ({ ...spec.projectionOptions(ctx), view, namesInRing: ctx.options.namesInRing !== false }),
+    projectionOptions: ctx => ({ ...spec.projectionOptions(ctx), view: breakdownView(ctx.options), namesInRing: ctx.options.namesInRing !== false }),
   };
 }

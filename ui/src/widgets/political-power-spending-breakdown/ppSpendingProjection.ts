@@ -20,7 +20,7 @@ function validate(raw: unknown): PowerSpendingBreakdownReply {
 }
 
 function words(digits: number): BreakdownWords {
-  return { unit: 'PP', verb: 'Spent', format: raw => formatPower(raw, digits) };
+  return { unit: 'PP', verb: 'Spent', format: (raw, decimals) => formatPower(raw, digits, decimals) };
 }
 
 export const ppSpendingProjection: BreakdownProjection<PoliticalPowerSpendingOptions> = {
@@ -40,17 +40,17 @@ export const ppSpendingProjection: BreakdownProjection<PoliticalPowerSpendingOpt
       periodLabel: `Spent since ${formatDateOnly(reply.from)}`,
       comparison: {
         label: 'Gained',
-        value: reply.gainedRaw === null ? 'Not recorded' : `${formatPower(BigInt(reply.gainedRaw), options.digits)} PP`,
+        value: reply.gainedRaw === null ? 'Not recorded' : `${formatPower(BigInt(reply.gainedRaw), options.digits, reply.breakdown.decimals)} PP`,
         ...(reply.gainedRaw === null && reply.gainedReason
           ? { note: reply.gainedReason }
-          : lost !== null && lost > 0n ? { note: `${formatPower(lost, options.digits)} PP lost at the cap.` } : {}),
+          : lost !== null && lost > 0n ? { note: `${formatPower(lost, options.digits, reply.breakdown.decimals)} PP lost at the cap.` } : {}),
       },
       total,
       parts,
       ...(reply.warnings.length ? { warnings: reply.warnings } : {}),
     };
     if (parts.length) return model;
-    if (reply.breakdown.total.state === 'NotRecorded') {
+    if (reply.breakdown.total.state === 'notRecorded') {
       return { ...model, empty: 'Not recorded at this time.', emptyDetail: total.reason ?? 'Political power spending was not recorded.', emptyKind: 'unavailable' };
     }
     return { ...model, empty: 'No spending at this date.' };

@@ -35,7 +35,7 @@ const THEME: FamilyTheme = {
 };
 
 const START = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
-const WORDS: BreakdownWords = { unit: 'PP', verb: 'Spent', format: raw => (raw / 100000n).toLocaleString('en-US') };
+const WORDS: BreakdownWords = { unit: 'PP', verb: 'Spent', format: raw => raw.toLocaleString('en-US') };
 const measure = (text: string) => text.length * 7;
 
 function wire(key: string, ordinal: number, raw: string | null, extra: Partial<WirePart> = {}): WirePart {
@@ -45,7 +45,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
     ordinal,
     other: false,
     raw,
-    state: raw === null ? 'NotRecorded' : 'Known',
+    state: raw === null ? 'notRecorded' : 'known',
     reason: raw === null ? `${key} was not recorded` : null,
     share: null,
     count: null,
@@ -56,24 +56,24 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
 
 function partlyKnown(): Breakdown {
   return {
-    decimals: 5,
-    total: { raw: '21100000', state: 'AtLeast', reason: 'New ships were not recorded' },
-    parts: [wire('Repairs', 2, '21100000'), wire('New ships', 0, null), wire('Refits', 1, null)],
+    decimals: 0,
+    total: { raw: '211', state: 'atLeast', reason: 'New ships were not recorded' },
+    parts: [wire('Repairs', 2, '211'), wire('New ships', 0, null), wire('Refits', 1, null)],
     unrecordedHours: 0,
   };
 }
 
 function spent(): Breakdown {
   return {
-    decimals: 5,
-    total: { raw: '597200000', state: 'Partial', reason: 'Spending was not recorded' },
+    decimals: 0,
+    total: { raw: '5972', state: 'partial', reason: 'Spending was not recorded' },
     parts: [
-      wire('Daily costs', 3, '207100000', { share: 0.35 }),
-      wire('Decisions', 0, '141500000', {
+      wire('Daily costs', 3, '2071', { share: 0.35 }),
+      wire('Decisions', 0, '1415', {
         share: 0.24,
-        children: [wire('War measures', 0, '64000000', { share: 0.11 }), wire('Economy', 1, '35200000', { share: 0.059 })],
+        children: [wire('War measures', 0, '640', { share: 0.11 }), wire('Economy', 1, '352', { share: 0.059 })],
       }),
-      wire('Other', 1, '6300000', { share: 0.01, other: true }),
+      wire('Other', 1, '63', { share: 0.01, other: true }),
     ],
     unrecordedHours: 2,
   };
@@ -161,12 +161,12 @@ test('drill, open and expand are the family state; back returns', () => {
 });
 
 function reply(breakdown: Breakdown, extra: Partial<PowerSpendingBreakdownReply> = {}): PowerSpendingBreakdownReply {
-  return { from: START, hour: START + 10, through: START + 30, breakdown, gainedRaw: '530600000', lostAtCapRaw: '100000', gainedReason: null, warnings: [], ...extra };
+  return { from: START, hour: START + 10, through: START + 30, breakdown, gainedRaw: '5306', lostAtCapRaw: '1', gainedReason: null, warnings: [], ...extra };
 }
 
 function project(data: PowerSpendingBreakdownReply | null) {
   const readView = createBoundedReadView({ hour: START + 10, panels: new Map(data ? [['main', data]] : []), validInterval: [START + 10, START + 30] });
-  return ppSpendingProjection.project(readView, { digits: 0, view: 'parts', namesInRing: true });
+  return ppSpendingProjection.project(readView, { digits: 0 });
 }
 
 test('political power spending reads the product at the displayed hour', () => {
@@ -179,12 +179,12 @@ test('political power spending reads the product at the displayed hour', () => {
   const ungained = project(reply(spent(), { gainedRaw: null, gainedReason: 'Some gains were not recorded.' }));
   assert.deepEqual(ungained.comparison, { label: 'Gained', value: 'Not recorded', note: 'Some gains were not recorded.' });
 
-  const none = project(reply({ decimals: 5, total: { raw: null, state: 'NotRecorded', reason: 'Spending was not recorded' }, parts: [], unrecordedHours: 10 }));
+  const none = project(reply({ decimals: 0, total: { raw: null, state: 'notRecorded', reason: 'Spending was not recorded' }, parts: [], unrecordedHours: 10 }));
   assert.equal(none.empty, 'Not recorded at this time.');
   assert.equal(none.emptyKind, 'unavailable');
   assert.equal(none.emptyDetail, 'Spending was not recorded');
 
-  const zero = project(reply({ decimals: 5, total: { raw: '0', state: 'Known', reason: null }, parts: [], unrecordedHours: 0 }));
+  const zero = project(reply({ decimals: 0, total: { raw: '0', state: 'known', reason: null }, parts: [], unrecordedHours: 0 }));
   assert.equal(zero.empty, 'No spending at this date.');
   assert.equal(zero.total.text, '0', 'a known zero is 0');
 });

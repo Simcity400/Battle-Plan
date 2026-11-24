@@ -222,7 +222,7 @@ export function familyBreakdownLaneView(
     next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyBreakdownBinding(bound)) return Infinity;
-      const projection = ensureBreakdownProjection(bound.kind, bound.options.view, () => wake(scene.widget));
+      const projection = ensureBreakdownProjection(bound.kind, () => wake(scene.widget));
       if (projection === 'loading') return hour + 1;
       if (projection === 'unknown') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
@@ -250,7 +250,7 @@ export function familyBreakdownLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyBreakdownBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = ensureBreakdownProjection(bound.kind, bound.options.view, () => wake(input.widget));
+      const projection = ensureBreakdownProjection(bound.kind, () => wake(input.widget));
       if (projection === 'loading') {
         return { surfaces: [], fields: {}, motion: false, nextChangeAt: input.hour + 1 };
       }

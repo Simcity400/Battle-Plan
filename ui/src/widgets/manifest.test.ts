@@ -49,7 +49,7 @@ test('manifest accounts for every widget kind once across family views and legac
     const pair = `${entry.kind}:${normalizeView(entry.view)}`;
     assert.equal(familyPairs.has(pair), false, `${pair} must not appear in both lists`);
   }
-  assert.equal(FAMILY_VIEWS.length, 7);
+  assert.equal(FAMILY_VIEWS.length, 8);
 });
 
 test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {
@@ -212,9 +212,9 @@ test('worker projection registry loads table and bars projections lazily on dema
 
   assert.deepEqual(
     FAMILY_MANIFESTS.map(entry => entry.family),
-    ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart'],
+    ['bars', 'breakdown', 'heat-lanes', 'heat-matrix', 'table', 'time-chart'],
   );
-  for (const family of ['bars', 'heat-lanes', 'heat-matrix', 'table', 'time-chart']) {
+  for (const family of ['bars', 'breakdown', 'heat-lanes', 'heat-matrix', 'table', 'time-chart']) {
     assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
   }
 });

@@ -22,9 +22,9 @@ function part(wire: WirePart, decimals: number, words: BreakdownWords): Breakdow
     text: raw === null ? '' : words.format(raw, decimals),
     share: wire.share,
     ...(wire.other ? { neutral: true } : {}),
-    ...(wire.state === 'NotRecorded' ? { notRecorded: true, missingReason: reason ?? 'Not recorded' } : {}),
-    ...(wire.state === 'Partial' || wire.state === 'AtLeast' ? { partial: true, ...(reason ? { partialReason: reason } : {}) } : {}),
-    ...(wire.state === 'AtLeast' ? { atLeast: true } : {}),
+    ...(wire.state === 'notRecorded' ? { notRecorded: true, missingReason: reason ?? 'Not recorded' } : {}),
+    ...(wire.state === 'partial' || wire.state === 'atLeast' ? { partial: true, ...(reason ? { partialReason: reason } : {}) } : {}),
+    ...(wire.state === 'atLeast' ? { atLeast: true } : {}),
     ...(wire.count !== null ? { count: Number(wire.count) } : {}),
     ...(wire.children.length ? { children: wire.children.map(child => part(child, decimals, words)) } : {}),
   };
@@ -45,9 +45,9 @@ export function breakdownTotal(breakdown: Breakdown, words: BreakdownWords): Bre
   const raw = total.raw === null ? null : BigInt(total.raw);
   const reason = total.reason ?? undefined;
   return {
-    known: total.state === 'Known',
-    ...(total.state === 'AtLeast' ? { atLeast: true } : {}),
-    ...(total.state === 'Partial' || total.state === 'AtLeast' ? { partial: true } : {}),
+    known: total.state === 'known',
+    ...(total.state === 'atLeast' ? { atLeast: true } : {}),
+    ...(total.state === 'partial' || total.state === 'atLeast' ? { partial: true } : {}),
     value: raw === null ? null : scaled(raw, decimals),
     text: raw === null ? 'Not recorded' : words.format(raw, decimals),
     unit: words.unit,

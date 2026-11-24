@@ -1,28 +1,25 @@
 import { breakdownDeclaration, type BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import { breakdownHostAdapter } from '../../families/breakdown/hostAdapter.ts';
 import { familyBreakdownLaneView } from '../../families/breakdown/laneView.ts';
-import { BREAKDOWN_VIEWS } from '../../families/breakdown/options.ts';
-import type { FamilyManifestModule, FamilyViewEntry } from '../../families/manifest.ts';
+import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 
-function breakdownViews(kind: string, load: () => Promise<BreakdownWidgetSpec<any>>): readonly FamilyViewEntry[] {
-  return BREAKDOWN_VIEWS.map(({ value: view, label }) => ({
+function breakdownView(kind: string, load: () => Promise<BreakdownWidgetSpec<any>>): FamilyViewEntry {
+  return {
     kind,
-    view,
-    label,
+    view: DEFAULT_VIEW,
     family: 'breakdown',
-    viewOption: 'view',
     loadSpec: () => load().then(spec => ({
       family: 'breakdown',
       kind,
-      view,
+      view: DEFAULT_VIEW,
       projection: spec.projection,
-      declaration: breakdownDeclaration(spec, view),
+      declaration: breakdownDeclaration(spec),
     })),
-  }));
+  };
 }
 
 export const BREAKDOWN_FAMILY_VIEWS: readonly FamilyViewEntry[] = [
-  ...breakdownViews(
+  breakdownView(
     'political-power-spending-breakdown',
     () => import('../political-power-spending-breakdown/ppSpendingProjection.ts').then(mod => mod.ppSpendingBreakdown),
   ),
