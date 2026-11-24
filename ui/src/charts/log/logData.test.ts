@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import { anchoredScrollTop, cardHeightsAt, cardPageTarget, hasLogPartTip, keyTarget, logItems, logOffsets, monthLabel, newCardKeys, newestFirst, rowId, scrollToShow, shownMotion, tipRow, updateCardHeights, visibleRange } from './logData.ts';
+import { anchoredScrollTop, cardHeightsAt, cardPageTarget, hasLogPartTip, keyTarget, logItems, logOffsets, monthLabel, newCardKeys, newestFirst, rowId, scrollToShow, shownMotion, updateCardHeights, visibleRange } from './logData.ts';
 import type { CardMeasurements, LogRow } from './logData';
 import type { MovingRow } from '../rowMotion';
 import { commitRows, EMPTY_HISTORY, shownRows } from '../rowMotion.ts';
@@ -83,16 +83,10 @@ test('without animation a row that is gone goes at once, never left over its rep
   assert.deepEqual(keys(shownMotion(rows, 0, 10, false, item => item.key === 'far' || item.key === 'old')), ['new', 'b', 'far']);
 });
 
-test('a tooltip follows what its row is about across the row’s keys, and goes with it', () => {
+test('rowId uses the row id when present and falls back to its key', () => {
   const stage = (key: string, id?: string): LogRow<string> => ({ key, id, hour: 1, item: key });
   assert.equal(rowId(stage('p:0', 'p')), 'p');
   assert.equal(rowId(stage('plain')), 'plain');
-  const before = new Map([stage('p:0', 'p')].map(row => [rowId(row), row]));
-  const after = new Map([stage('p:1', 'p')].map(row => [rowId(row), row]));
-  assert.equal(tipRow({ id: 'p' }, before)?.key, 'p:0');
-  assert.equal(tipRow({ id: 'p' }, after)?.key, 'p:1');
-  assert.equal(tipRow({ id: 'p' }, new Map()), null);
-  assert.equal(tipRow(null, after), null);
 });
 
 

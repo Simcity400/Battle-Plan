@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LedgerJoin, joinMilitaryAir, ledgerWindows } from './militaryAirJoin.ts';
-import { ledgerDifference, militaryAirAt, militaryAirIndex, validateMilitaryAirReply, validateMilitaryAirWindow } from './militaryAirLedger.ts';
+import { LedgerJoin, ledgerWindows } from './militaryAirJoin.ts';
+import { ledgerDifference, militaryAirAt, militaryAirIndex, validateMilitaryAirWindow } from './militaryAirLedger.ts';
 import { WINDOW_HOURS } from './heldWindows.ts';
 import type { MilitaryAirPart, MilitaryAirReply } from '../generated/dashboard';
+
+const joinMilitaryAir = (windows: readonly MilitaryAirReply[]) => {
+  if (!windows.length) return null;
+  const join = new LedgerJoin('test', windows[0]!.window);
+  for (const item of windows) join.append(item);
+  return join.ledger();
+};
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
 const part = (tag: string | null, dealt: boolean, points: [number, number, string][], cause = 1): MilitaryAirPart => ({ tag, identity: tag && `${tag.length}:${tag}`,
@@ -23,7 +30,7 @@ test('windows join end to end: each part carries its total on, spans and holders
     parts: [part('GER', false, [[18, 21, '7']]), part(null, true, [[22, 22, '-3']]), part('ITA', true, [])],
     regions: [{ id: '9', name: 'Nine', missing: null }, { id: '2', name: null, missing: 'not named' }],
     notes: [{ reason: 'a', events: 3 }], warnings: ['content', 'other'] });
-  const joined = validateMilitaryAirReply(joinMilitaryAir([one, two]));
+  const joined = joinMilitaryAir([one, two])!;
   assert.deepEqual(joined.observed, [span(10, 24)]);
   assert.deepEqual(joined.incomplete, [span(21)]);
   assert.deepEqual([joined.firstHour, joined.lastHour, joined.countedFrom], [10, 29, 10]);
@@ -60,7 +67,7 @@ test('a window shows every holder\'s totals since the first hour counted from wh
   assert.deepEqual(ledgerDifference(index.unknown, 10, 45), { readHour: 45, nativeHour: null, dealt: 2n, taken: 0n });
   const row = militaryAirAt(index, 10, 45).find(item => item.tag === 'GER')!;
   assert.equal(row.series.openings.length, 2);
-  const again = militaryAirIndex(validateMilitaryAirReply(JSON.parse(JSON.stringify(joinMilitaryAir([opened])))));
+  const again = militaryAirIndex(JSON.parse(JSON.stringify(joinMilitaryAir([opened]))));
   assert.deepEqual(militaryAirAt(again, 10, 45).map(item => [item.tag, item.taken, item.dealt]), militaryAirAt(index, 10, 45).map(item => [item.tag, item.taken, item.dealt]),
     'the totals a join keeps are those an index sums from the ledger itself');
 });
@@ -89,7 +96,7 @@ test('a join appends each window as it lands and its totals are those of every w
   join.append(windows[1]!); join.append(windows[2]!);
   assert.equal(join.last, 2);
   const late = join.ledger()!;
-  const whole = militaryAirIndex(validateMilitaryAirReply(JSON.parse(JSON.stringify(joinMilitaryAir(windows)))));
+  const whole = militaryAirIndex(JSON.parse(JSON.stringify(joinMilitaryAir(windows))));
   for (const hour of [11, 19, 21, 35, 39]) {
     assert.deepEqual(militaryAirAt(militaryAirIndex(late), 10, hour).map(row => [row.tag, row.taken, row.dealt]), militaryAirAt(whole, 10, hour).map(row => [row.tag, row.taken, row.dealt]), `at ${hour}`);
   }

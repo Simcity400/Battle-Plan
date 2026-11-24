@@ -49,21 +49,11 @@ const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => s
   'market-ledger-tail': logTailStructure,
 };
 
-export function panelStructure(product: string, raw: unknown, hour: number): string {
-  return panelViews[product]?.structure?.(raw, hour) ?? tableStructures[product]?.(raw, hour) ?? 'present';
-}
-
 export function readingStructure(product: string | undefined): Structure | undefined {
   const view = product === undefined ? undefined : panelViews[product]?.structure, table = product === undefined ? undefined : tableStructures[product];
   if (view) return (panel, hour) => panel.data === undefined ? undefined : view(panel.data, hour);
   if (table) return (panel, hour) => panel.data === undefined ? undefined : table(panel.data, hour);
   return undefined;
-}
-
-export function panelValues(product: string, raw: unknown, live: LiveValues<number> | null, hour: number, structure: string) {
-  const view = panelViews[product];
-  if (!view) return null;
-  return view.values(raw, live, hour, view.structure?.(raw, hour) ?? structure);
 }
 
 export function recordedPanelRows(product: string, raw: unknown): string[] {

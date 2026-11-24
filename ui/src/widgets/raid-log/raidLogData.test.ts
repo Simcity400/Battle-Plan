@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { raidDescription, raidLogGroups, raidLogRows, raidLogSections, raidLogTypes, raidTooltip, targetNameRequest, targetNames, targetText } from './raidLogData.ts';
+import { raidDescription, raidLogGroups, raidLogSections, raidLogTypes, raidTooltip, targetNameRequest, targetNames, targetText } from './raidLogData.ts';
 import { raidAt } from '../../dashboard/raids.ts';
 import { observedEnd, phaseRun, syntheticEpisode, syntheticRaidLog } from '../../dashboard/raids.fixtures.ts';
+
+const raidLogRows = (...args: Parameters<typeof raidLogGroups>) => raidLogGroups(...args).flatMap(group => group.rows);
 
 const CODES = syntheticRaidLog([]);
 

@@ -33,7 +33,6 @@ export function validateNavalBattleDetails(v: unknown): NavalBattleDetailsReply 
   }
   return v as unknown as NavalBattleDetailsReply;
 }
-export const navalDetailKey = (id: string, hour: number) => JSON.stringify([id, hour]);
 export function navalFleetDescription(detail: NavalBattleDetail | undefined, read: { pending: boolean; error?: Failure | undefined }): string {
   if (!detail) return read.error ? failureText(read.error, 'Fleets couldn’t load') : read.pending ? 'Loading fleets…' : 'Fleets not read for this battle';
   return detail.fleets.map(side => side.names.length ? side.names.join(', ') + (side.unknown ? ' + unavailable' : '')

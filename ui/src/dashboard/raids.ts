@@ -5,12 +5,9 @@ import { SPEC, UNRECORDED_MESSAGE } from './regionTime.ts';
 import { useProduct } from './products.ts';
 import { contentTitle } from './contentTitles.ts';
 import { drawableIcon } from './artwork.ts';
-import { compareTags } from './tagOrder.ts';
-import { isOrderedSpans, runAt } from '../charts/series.ts';
-import type { Span } from '../charts/series';
+import { isOrderedSpans } from '../charts/series.ts';
 import type { RaidEndAt, RaidEpisode, RaidLogReply, RaidPhaseRun, RaidPreparationRun, RaidTypeInfo, RaidVictimAt, RaidVictimSource } from '../generated/dashboard';
 import { productRequest } from './request.ts';
-import { countryKey } from './countryKey.ts';
 import { gatedRead, readData } from './gatedRead.ts';
 
 export const RAIDS_AVAILABILITY = { product: 'raid-log', params: { catalogue: true } } as const;
@@ -260,142 +257,8 @@ export function raidPlaceId(episode: RaidEpisode): string {
   return episode.province !== null ? `Province ${episode.province}` : episode.state !== null ? `State ${episode.state}` : 'Target not known';
 }
 
-export type RaidMetric = 'both' | 'launched' | 'succeeded';
-export interface RaidTallyRun { firstHour: number; lastHour: number; readHour: number; launched: number; succeeded: number; partial: string | null }
-export const RAID_GAP_REASON = 'Raids during an unrecorded stretch before this date are not counted.';
-export interface RaidTallySeries { tag: string; runs: RaidTallyRun[]; segments: Span[]; membership: Span[] | null; identities?: undefined }
-export interface RaidTally { series: RaidTallySeries[]; hours: number[]; unattributed: [hour: number, count: number][] }
-
-export function recordedSpans(span: Span, missing: readonly Span[]): Span[] {
-  const out: Span[] = [];
-  let at = span.firstHour;
-  for (const gap of [...missing].sort((a, b) => a.firstHour - b.firstHour)) {
-    if (gap.lastHour < at || gap.firstHour > span.lastHour) continue;
-    if (gap.firstHour > at) out.push({ firstHour: at, lastHour: gap.firstHour - 1 });
-    at = Math.max(at, gap.lastHour + 1);
-  }
-  if (at <= span.lastHour) out.push({ firstHour: at, lastHour: span.lastHour });
-  return out;
-}
-
-type TallyEvent = [number, 0 | 1, 1 | -1];
-
-export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing: readonly Span[], chosen: readonly string[],
-  top: { count: number; metric: RaidMetric } | null): RaidTally {
-  const events = new Map<string, TallyEvent[]>();
-  const chosenKeys = new Set(chosen);
-  const count = (key: string, hour: number, kind: 0 | 1, delta: 1 | -1) => {
-    const list = events.get(key) ?? [];
-    list.push([hour, kind, delta]);
-    events.set(key, list);
-  };
-  const unnamed: [number, 1 | -1][] = [];
-  for (const episode of episodes) {
-    const slot = episode.raiderSlot === null ? null : countryKey(episode.raiderSlot);
-    const owner = (tag: string | null) => slot !== null && chosenKeys.has(slot) ? slot : tag;
-    let launchUnnamed: number | null = null;
-    const success: [number, boolean][] = [];
-    if (episode.launchedHour !== null) {
-      const key = owner(episode.launchedRaider);
-      if (key === null) launchUnnamed = episode.launchedHour; else count(key, episode.launchedHour, 0, 1);
-    }
-    if (episode.succeededHour !== null) {
-      const succeeded = episode.succeededHour;
-      const known = episode.ends.filter(end => end.hour <= succeeded);
-      let held = owner(known[known.length - 1]?.raider ?? null);
-      if (held !== null) count(held, succeeded, 1, 1);
-      success.push([succeeded, held === null]);
-      for (const end of episode.ends) {
-        if (end.hour <= succeeded) continue;
-        const key = owner(end.raider);
-        if (key === held) continue;
-        if (held !== null) count(held, end.hour, 1, -1);
-        if (key !== null) count(key, end.hour, 1, 1);
-        held = key;
-        success.push([end.hour, held === null]);
-      }
-    }
-    const hours = [...new Set([...launchUnnamed === null ? [] : [launchUnnamed], ...success.map(([hour]) => hour)])].sort((a, b) => a - b);
-    let shown = false, missing = false, next = 0;
-    for (const hour of hours) {
-      while (next < success.length && success[next][0] <= hour) missing = success[next++][1];
-      const now = missing || (launchUnnamed !== null && launchUnnamed <= hour);
-      if (now !== shown) unnamed.push([hour, now ? 1 : -1]);
-      shown = now;
-    }
-  }
-  for (const list of events.values()) list.sort((a, b) => a[0] - b[0]);
-  const hours = [...new Set([...events.values()].flatMap(list => list.map(([hour]) => hour)))].sort((a, b) => a - b);
-  const segments = recordedSpans(span, missing);
-  const membership = top ? topMembership(events, hours, span, top) : null;
-  const tags = top ? [...membership!.keys()] : [...new Set(chosen)];
-  const series = tags.sort(compareTags).map(tag => ({ tag, runs: tallyRuns(events.get(tag) ?? [], segments), segments,
-    membership: membership ? membership.get(tag) ?? [] : null }));
-  return { series, hours, unattributed: steps(unnamed) };
-}
-
-function steps(changes: [number, 1 | -1][]): [number, number][] {
-  const out: [number, number][] = [];
-  let held = 0;
-  for (const [hour, delta] of changes.sort((a, b) => a[0] - b[0])) {
-    held += delta;
-    if (out.length && out[out.length - 1][0] === hour) out[out.length - 1][1] = held; else out.push([hour, held]);
-  }
-  return out;
-}
-
-export function unattributedAt(tally: Pick<RaidTally, 'unattributed'>, hour: number): number {
-  let lo = 0, hi = tally.unattributed.length;
-  while (lo < hi) { const mid = (lo + hi) >>> 1; if (tally.unattributed[mid][0] <= hour) lo = mid + 1; else hi = mid; }
-  return lo === 0 ? 0 : tally.unattributed[lo - 1][1];
-}
-
-function tallyRuns(events: readonly TallyEvent[], segments: readonly Span[]): RaidTallyRun[] {
-  const runs: RaidTallyRun[] = [];
-  let launched = 0, succeeded = 0, next = 0;
-  segments.forEach((segment, index) => {
-    const partial = index > 0 ? RAID_GAP_REASON : null;
-    let first = segment.firstHour;
-    const take = (through: number) => { while (next < events.length && events[next][0] <= through) { if (events[next][1] === 0) launched += events[next][2]; else succeeded += events[next][2]; next++; } };
-    take(first);
-    while (first <= segment.lastHour) {
-      const change = next < events.length ? events[next][0] : Infinity;
-      const last = Math.min(segment.lastHour, change - 1);
-      runs.push({ firstHour: first, lastHour: last, readHour: first, launched, succeeded, partial });
-      first = last + 1;
-      take(first);
-    }
-  });
-  return runs;
-}
-
-function topMembership(events: ReadonlyMap<string, readonly TallyEvent[]>, hours: readonly number[], span: Span,
-  top: { count: number; metric: RaidMetric }): Map<string, Span[]> {
-  const counts = new Map<string, [number, number]>();
-  const by = new Map<number, [string, 0 | 1, 1 | -1][]>();
-  for (const [tag, list] of events) for (const [hour, kind, delta] of list) by.set(hour, [...by.get(hour) ?? [], [tag, kind, delta]]);
-  const out = new Map<string, Span[]>();
-  let members: string[] = [];
-  const close = (tag: string, last: number) => { const spans = out.get(tag)!; spans[spans.length - 1].lastHour = last; };
-  for (const hour of hours) {
-    for (const [tag, kind, delta] of by.get(hour)!) { const count = counts.get(tag) ?? [0, 0]; count[kind] += delta; counts.set(tag, count); }
-    if (hour > span.lastHour) break;
-    const value = ([launched, succeeded]: [number, number]) => top.metric === 'succeeded' ? succeeded : launched;
-    const next = [...counts].filter(([, count]) => value(count) !== 0 || (top.metric === 'both' && count[1] !== 0))
-      .sort((a, b) => value(b[1]) - value(a[1]) || compareTags(a[0], b[0])).slice(0, Math.max(0, top.count)).map(([tag]) => tag);
-    const start = Math.max(hour, span.firstHour);
-    for (const tag of members) if (!next.includes(tag)) close(tag, start - 1);
-    for (const tag of next) if (!members.includes(tag)) out.set(tag, [...out.get(tag) ?? [], { firstHour: start, lastHour: span.lastHour }]);
-    members = next;
-  }
-  for (const spans of out.values()) for (let at = spans.length - 1; at >= 0; at--) if (spans[at].lastHour < spans[at].firstHour) spans.splice(at, 1);
-  return out;
-}
-
 export function eventsThrough(hours: readonly number[], hour: number): number {
   let lo = 0, hi = hours.length;
   while (lo < hi) { const mid = (lo + hi) >>> 1; if (hours[mid] <= hour) lo = mid + 1; else hi = mid; }
   return lo;
 }
-
-export const tallyRunAt = (series: RaidTallySeries | undefined, hour: number) => runAt(series?.runs ?? [], Math.floor(hour));

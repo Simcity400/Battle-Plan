@@ -582,8 +582,8 @@ export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {
   if (!primary) return NO_ENTRIES;
   const out: SourceEntry[] = [primary];
   for (const entry of plan.entries) {
-    if (entry === primary || entry.name === primary.name || !readsWithoutFollow(entry.read)) continue;
-    out.push(entry);
+    if (entry === primary || entry.name === primary.name) continue;
+    if (readsWithoutFollow(entry.read) || (entry.read.shape === 'pixel-binned' && entry.read.exactProduct)) out.push(entry);
   }
   return out;
 }

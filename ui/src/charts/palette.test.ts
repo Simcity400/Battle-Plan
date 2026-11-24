@@ -13,14 +13,12 @@ import {
   authoredHex,
   categoricalPalette,
   colour,
-  colours,
   distance,
   GREY_CHROMA,
   lineStyle,
   lineStyles,
   MARK_CONTRAST,
   nudgeApart,
-  resolveColour,
 } from './palette.ts';
 import { NearestColours } from './paletteDistance.ts';
 
@@ -180,15 +178,7 @@ test('all 5000 fixed country colours stay present without quadratic gap scans', 
   }
 });
 
-test('ordinal colours are stable under filtering and reordering, and extend lazily', () => {
-  const surface = '#16181d';
-  const full = colours(surface, [0, 1, 2, 3, 4, 5, 12, 40]);
-  const reordered = colours(surface, [40, 2, 12, 0]);
-  assert.equal(reordered.get(40), full.get(40));
-  assert.equal(reordered.get(2), full.get(2));
-  assert.equal(reordered.get(12), full.get(12));
-  assert.equal(reordered.get(0), full.get(0));
-  assert.equal(colour(surface, 0), full.get(0));
+test('ordinal colours are stable and extend lazily', () => {
   const firstOnly = colour('#12151a', 0);
   const later = colour('#12151a', 80);
   assert.equal(colour('#12151a', 0), firstOnly);
@@ -232,14 +222,11 @@ test('ordinal palette stays unique and >= 3:1 up to 1,500 across every built-in 
   assert.equal(midGreySeen.size, count);
 });
 
-test('authored colours stay byte-exact, handle collisions explicitly, and secondary lines pair dash patterns', () => {
+test('authored colours stay byte-exact and secondary lines pair dash patterns', () => {
   const surface = '#16181d';
   const exact = '#4f86f7';
   assert.equal(authoredHex(exact), exact);
   assert.equal(authoredHex([79, 134, 247]), '#4f86f7');
-  assert.equal(resolveColour(surface, 0, exact), exact);
-  const generated0 = colour(surface, 0);
-  assert.notEqual(resolveColour(surface, 0, null, { avoid: [generated0] }), generated0);
   assert.deepEqual(lineStyle(surface, 0), { color: colour(surface, 0), primary: [], secondary: SECONDARY_DASH });
   assert.ok(lineStyle(surface, CATEGORY_LIMIT).primary.length > 0);
   const styles = lineStyles([

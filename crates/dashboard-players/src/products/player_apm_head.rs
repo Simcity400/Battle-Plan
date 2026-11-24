@@ -1,5 +1,5 @@
 
-use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
+use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, Minutes, compare_apm_desc, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
 use dashboard_base::Source;
 use crate::products::campaign_clock;
 use dashboard_follow::head::{Head, HeadRows, HeadValue};
@@ -65,7 +65,7 @@ struct Piece {
 #[derive(Clone, Default)]
 struct HourSlice {
     counts: Counts,
-    minutes: f64,
+    minutes: Minutes,
     incomplete: bool,
     paused_incomplete: bool,
     shown: Option<(u64, u64)>,
@@ -85,7 +85,7 @@ struct Played {
 
 type Laid = BTreeMap<(String, String), Part>;
 
-pub const APM_COLUMNS: [&str; 11] = [
+pub const APM_COLUMNS: [&str; 14] = [
     "apm",
     "confirmedApm",
     "orders",
@@ -97,6 +97,9 @@ pub const APM_COLUMNS: [&str; 11] = [
     "hour",
     "name",
     "nameMissing",
+    "confirmedOrders",
+    "unpausedMinutesNum",
+    "unpausedMinutesDen",
 ];
 
 pub struct ApmHead {
@@ -336,7 +339,7 @@ impl ApmHead {
                 for &(from, to) in &part.ranges {
                     visits += 1;
                     if let Some(measured) = timeline.measure(hour, hour, from, to) {
-                        slice.minutes += measured.minutes;
+                        slice.minutes.add_ticks(measured.ticks, measured.frequency);
                         slice.incomplete |= !measured.complete;
                         slice.paused_incomplete |= timeline.paused_unknown_hours.range(hour..=hour).next().is_some();
                     }
@@ -361,7 +364,7 @@ impl ApmHead {
             let mut played = Played::default();
             for &(h, ref slice) in deque {
                 played.amount.counts.add(slice.counts);
-                played.amount.minutes += slice.minutes;
+                played.amount.minutes.add_rational(slice.minutes.num, slice.minutes.den);
                 played.amount.incomplete |= slice.incomplete;
                 played.amount.paused_incomplete |= slice.paused_incomplete;
                 played.amount.first_hour = Some(played.amount.first_hour.map_or(h, |f| f.min(h)));
@@ -382,13 +385,7 @@ impl ApmHead {
             }
         }
         entries.sort_by(|(a_series, _, a), (b_series, _, b)| {
-            match (a.apm, b.apm) {
-                (Some(x), Some(y)) => y.total_cmp(&x),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-            .then_with(|| self.ids[*a_series].cmp(&self.ids[*b_series]))
+            compare_apm_desc(a, b).then_with(|| self.ids[*a_series].cmp(&self.ids[*b_series]))
         });
         self.cached_entries = entries;
     }
@@ -487,6 +484,9 @@ impl HeadValue for ApmHead {
             rows.number(amount.last_hour.map(i64::from));
             rows.text(name.as_deref());
             rows.text(name_missing.as_deref());
+            rows.text(value.confirmed_orders.as_deref());
+            rows.text(value.unpaused_minutes_num.as_deref());
+            rows.text(value.unpaused_minutes_den.as_deref());
         }
         Ok(())
     }
@@ -495,7 +495,7 @@ impl HeadValue for ApmHead {
 fn unknown_rate(value: &ApmValue) -> String {
     if !value.complete {
         "Player orders or unpaused time were not fully recorded for this period; the rate is unknown.".into()
-    } else if value.unpaused_minutes == Some(0.0) {
+    } else if value.unpaused_minutes_num.as_deref() == Some("0") || value.unpaused_minutes == Some(0.0) {
         "No unpaused time was observed in this period.".into()
     } else {
         "It is unclear whether some orders count toward eAPM; the rate is unknown.".into()
@@ -709,7 +709,7 @@ fn tile_from_index(
                                 (fh, fv, h, rate, minh, minv, maxh, maxv)
                             }
                         });
-                    } else if val.complete && val.unpaused_minutes == Some(0.0) {
+                    } else if val.complete && (val.unpaused_minutes_num.as_deref() == Some("0") || val.unpaused_minutes == Some(0.0)) {
                         paused_span = Some(match paused_span {
                             None => (h, h),
                             Some((lo, hi)) => (lo.min(h), hi.max(h)),
