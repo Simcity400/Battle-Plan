@@ -59,7 +59,7 @@ test('a lend-lease route stays a status in the lane, the readout and the tooltip
     known: [[], [], [{ firstHour: 0, lastHour: 50 }]],
     leases: [{ handle: '7', giver: [{ firstHour: 0, lastHour: 50, tag: 'USA', name: 'United States' }], bad: [[0, 19, 1], [20, 50, 0]], convoys: [] }],
   };
-  const model = projectConvoyHealth(view(50, data), { view: 'trade', surface: SURFACE });
+  const model = projectConvoyHealth(view(50, data), { view: 'trade', surface: SURFACE, country: null });
   const [bad, clear] = model.rows[0]!.runs;
   assert.equal(bad!.cell.kind === 'solid' && bad!.cell.label, 'Route bad');
   assert.deepEqual(clear!.cell, { kind: 'clear', label: 'Route clear' });
