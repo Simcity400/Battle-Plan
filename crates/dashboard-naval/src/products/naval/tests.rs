@@ -629,6 +629,7 @@ mod details {
         let e_merged = make_entry(103, b"Ship Merged", b"CV Mod", 0, 0, 888, 202, b"mod_carrier", 12);
         let e_transient = make_entry(104, b"Ship Transient", b"Fast Ship", 0, 0, 0, 201, b"mod_dd", 13);
         let e_gap_del = make_entry(103, b"Ship Gap", b"Gap Killer", 0, 0, 0, 201, b"mod_dd", 14);
+        let e_restarted = make_entry(101, b"Ship Restarted", b"First Killer", 0, 0, 0, 201, b"mod_dd", 20);
 
         let b1_frames: Vec<_> = (100..=106)
             .map(|hour| {
@@ -651,6 +652,7 @@ mod details {
                     combats.push(NavalCombatRow { id: 9, province: 500, ..NavalCombatRow::default() });
                     parts.push(NavalCombatParticipantRow { combat: 9, side: 0, battle_slot: 0, ship: 12, owner: 9001, state: 0 });
                 }
+                combats.push(NavalCombatRow { id: 20, province: if hour <= 102 { 600 } else { 601 }, ..NavalCombatRow::default() });
                 if (101..=102).contains(&hour) {
                     combats.push(NavalCombatRow { id: 14, province: 501, ..NavalCombatRow::default() });
                     parts.push(NavalCombatParticipantRow { combat: 14, side: 0, battle_slot: 0, ship: 14, owner: 9001, state: 0 });
@@ -678,6 +680,9 @@ mod details {
                     );
                 }
                 let mut entries = vec![e_live_a.clone(), e_live_dup.clone(), e_no_battle.clone(), e_no_cause.clone()];
+                if hour >= 101 {
+                    entries.push(e_restarted.clone());
+                }
                 if hour >= 102 {
                     entries.push(e_del.clone());
                 }
@@ -729,7 +734,7 @@ mod details {
         assert_eq!(
             dups[0].battle,
             ShipSinkingBattle::Linked {
-                id: "result:50".into(),
+                id: "combat:9:100".into(),
                 live_id: Some("combat:9:100".into()),
                 result_id: Some("result:50".into()),
                 first_hour: Some(100),
@@ -745,7 +750,7 @@ mod details {
         assert_eq!(
             del.battle,
             ShipSinkingBattle::Linked {
-                id: "result:50".into(),
+                id: "combat:9:100".into(),
                 live_id: Some("combat:9:100".into()),
                 result_id: Some("result:50".into()),
                 first_hour: Some(100),
@@ -759,7 +764,20 @@ mod details {
 
         let no_cause = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Blank")).unwrap();
         assert_eq!(no_cause.sinking_cause, ShipSinkingAttribution::NotRecorded { reason: SINKING_CAUSE_NOT_RECORDED.to_owned() });
-        assert!(matches!(no_cause.battle, ShipSinkingBattle::Linked { ref id, .. } if id == "result:50"));
+        assert!(matches!(no_cause.battle, ShipSinkingBattle::Linked { ref id, .. } if id == "combat:9:100"), "a sinking in a live battle is that battle's, its later result attached");
+
+        let restarted = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Restarted")).unwrap();
+        assert_eq!(
+            restarted.battle,
+            ShipSinkingBattle::Linked {
+                id: "combat:20:100".into(),
+                live_id: Some("combat:20:100".into()),
+                result_id: None,
+                first_hour: Some(100),
+                result_hour: None,
+            },
+            "a battle restarted under the same handle without deletion keeps its first battle's sinkings"
+        );
 
         let reused = b1.rows.iter().find(|row| row.name.as_deref() == Some("Ship Reused")).unwrap();
         assert_eq!(
