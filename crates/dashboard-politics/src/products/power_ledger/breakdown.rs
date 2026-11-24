@@ -34,10 +34,12 @@ pub struct PowerSpendingBreakdownReply {
     #[doc = " Everything in the reply stands unchanged from `hour` through this hour."]
     pub through: i32,
     pub breakdown: Breakdown,
-    #[doc = " Gained over the same period before the cap, scaled by the breakdown's decimals; none when not"]
-    #[doc = " recorded whole."]
+    #[doc = " Gained over the same period before the cap, scaled by the breakdown's decimals; none when an"]
+    #[doc = " amount gained was read without its value. With `gained_reason`, hours of the period whose gains"]
+    #[doc = " were not read are left out: the figure is partial."]
     pub gained_raw: Option<String>,
     pub lost_at_cap_raw: Option<String>,
+    #[doc = " Why the gain is not known, or (with `gained_raw`) why it is partial."]
     pub gained_reason: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -218,17 +220,19 @@ fn gains(reply: &PowerSpendingReply, unread: &[(i32, i32, String)]) -> Dated<Gai
     events.extend(unread.iter().map(|(first, _, reason)| ((*first).max(reply.from), None, Some(reason.as_str()))));
     events.sort_by_key(|event| event.0);
     for (hour, gain, unread) in events {
-        if let Some(reason) = unread {
-            held.gained = None;
-            held.lost = None;
-            held.reason.get_or_insert_with(|| format!("Power changes were not recorded: {reason}"));
+        if let Some(reason) = unread
+            && held.gained.is_some()
+        {
+            held.reason.get_or_insert_with(|| format!("Gains in hours when power changes were not read are not counted: {reason}."));
         }
         if let Some(gain) = gain {
             match parse(gain.gained_raw.as_deref()) {
                 Some(value) if gain.unknown_days == 0 && gain.unmatched == 0 => held.gained = held.gained.map(|sum| sum.saturating_add(value)),
                 _ => {
+                    if held.gained.is_some() {
+                        held.reason = Some("Some gains were not recorded.".to_owned());
+                    }
                     held.gained = None;
-                    held.reason.get_or_insert_with(|| "Some gains were not recorded.".to_owned());
                 }
             }
             held.lost = match (held.lost, parse(gain.capped_raw.as_deref())) {

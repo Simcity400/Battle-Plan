@@ -105,8 +105,8 @@ fn hours_between_coverage_runs_are_not_claimed_and_gains_need_their_own_coverage
     let at = index(&reply(), &gap, &[]).at(25);
     assert_eq!((at.breakdown.total.state, at.breakdown.unrecorded_hours), (BreakdownState::Partial, 10));
     let unread_gains = index(&reply(), &[], &[(0, 100, "Power changes were not read".to_owned())]).at(20);
-    assert_eq!(unread_gains.gained_raw, None, "gains are exact only where their own reads cover the period");
-    assert!(unread_gains.gained_reason.is_some());
+    assert_eq!(unread_gains.gained_raw.as_deref(), Some("530600000"), "what was read is the figure");
+    assert!(unread_gains.gained_reason.is_some(), "hours whose gains were not read make it partial, never exact");
     let mut unmatched = reply();
     unmatched.gains[0].unmatched = 1;
     assert_eq!(index(&unmatched, &[], &[]).at(20).gained_raw, None, "a daily cost whose application was not recorded leaves the gain unknown");

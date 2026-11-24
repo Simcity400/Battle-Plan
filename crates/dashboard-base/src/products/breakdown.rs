@@ -263,6 +263,7 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
         .into_iter()
         .map(|branch| {
             let own_whole = branch.sum.whole().filter(|_| whole.is_some());
+            let children = parts(branch.children, whole, own_whole);
             BreakdownPart {
                 share: share_of(&branch.sum, whole),
                 parent_share: share_of(&branch.sum, parent),
@@ -274,7 +275,7 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
                 state: branch.sum.state(),
                 reason: branch.sum.reason(),
                 count: branch.sum.count,
-                children: parts(branch.children, whole, own_whole),
+                children,
             }
         })
         .collect()

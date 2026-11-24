@@ -62,7 +62,8 @@ function flagStateOf(
 }
 
 function drawComparison(ctx: Canvas2D, comparison: BreakdownComparison, box: Rect, cy: number, theme: FamilyTheme): void {
-  const right = box.x + box.width;
+  const right = box.x + box.width - (comparison.partial ? 12 : 0);
+  if (comparison.partial) drawPartialTab(ctx, right + 6, cy, theme);
   ctx.save();
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'right';

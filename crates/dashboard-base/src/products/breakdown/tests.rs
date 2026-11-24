@@ -164,3 +164,4 @@ fn a_dated_value_is_the_last_one_read_by_the_hour() {
     assert_eq!(dated.hours().collect::<Vec<_>>(), [10, 20]);
     assert_eq!((counted(&[3, 7, 7, 9], 7), counted(&[3, 7, 7, 9], 2)), (3, 0));
 }
+

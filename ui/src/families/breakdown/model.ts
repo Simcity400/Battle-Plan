@@ -51,6 +51,7 @@ export interface BreakdownTotal {
 export interface BreakdownComparison {
   readonly label: string;
   readonly value: string;
+  readonly partial?: boolean;
   readonly note?: string;
 }
 
@@ -100,10 +101,17 @@ export function breakdownLevel(model: BreakdownModel): ResolvedBreakdownLevel {
   return { parts: model.parts, total: model.total };
 }
 
+export function drawnChildren(part: BreakdownPart): readonly BreakdownPart[] {
+  const children = part.notRecorded ? undefined : part.children;
+  if (!children?.length) return [];
+  const [only] = children;
+  const repeats = children.length === 1 && !only!.children?.length && only!.value === part.value && !only!.notRecorded === !part.notRecorded && !only!.partial === !part.partial;
+  return repeats ? [] : children;
+}
+
 export function rowsBelow(part: BreakdownPart): number {
-  if (part.notRecorded || !part.children) return 0;
   let rows = 0;
-  for (const child of part.children) rows += 1 + (child.notRecorded ? 0 : child.children?.length ?? 0);
+  for (const child of drawnChildren(part)) rows += 1 + drawnChildren(child).length;
   return rows;
 }
 

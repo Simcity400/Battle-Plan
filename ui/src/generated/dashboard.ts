@@ -3810,10 +3810,15 @@ export type PowerSpendingBreakdownReply = { from: number, hour: number,
  */
 through: number, breakdown: Breakdown,
 /**
- * Gained over the same period before the cap, scaled by the breakdown's decimals; none when not
- * recorded whole.
+ * Gained over the same period before the cap, scaled by the breakdown's decimals; none when an
+ * amount gained was read without its value. With `gained_reason`, hours of the period whose gains
+ * were not read are left out: the figure is partial.
  */
-gainedRaw: string | null, lostAtCapRaw: string | null, gainedReason: string | null, warnings: Array<string>, };
+gainedRaw: string | null, lostAtCapRaw: string | null,
+/**
+ * Why the gain is not known, or (with `gained_raw`) why it is partial.
+ */
+gainedReason: string | null, warnings: Array<string>, };
 export type Breakdown = { decimals: number, total: BreakdownTotal,
 /**
  * In display order: the largest known part first, then parts at zero or below, then other,

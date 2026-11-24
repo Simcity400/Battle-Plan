@@ -1,10 +1,11 @@
 import { contrastInkForFill } from '../../draw/kit.ts';
-import { shadeColour } from '../../shell/appearance/color.ts';
+import { shadeColour, tintColour } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { formatShare } from '../valueFormat.ts';
 import type { BreakdownViewMode } from './options.ts';
 import {
   childTint,
+  drawnChildren,
   COMPARISON_KEY,
   PARTIAL_KEY,
   partColour,
@@ -272,7 +273,7 @@ function comparisonBox(
   measure: MeasureTextFn,
 ): Rect | undefined {
   if (!comparison) return undefined;
-  const width = measure(comparison.label, `400 12px ${theme.font}`) + 6 + measure(comparison.value, `500 12px ${theme.font}`);
+  const width = measure(comparison.label, `400 12px ${theme.font}`) + 6 + measure(comparison.value, `500 12px ${theme.font}`) + (comparison.partial ? 12 : 0);
   return right - width > left + 16 ? { x: right - width, y, width, height } : undefined;
 }
 
@@ -381,8 +382,8 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
     const isExpanded = hasChildren && expanded[part.key] === true;
     const barFillWidth = fill(part);
     const segments: PartsSegment[] = [];
-    if (part.children?.length && !isExpanded && barFillWidth > 0) {
-      const shown = part.children.filter(positive);
+    if (drawnChildren(part).length && !isExpanded && barFillWidth > 0) {
+      const shown = drawnChildren(part).filter(positive);
       const usable = Math.max(0, barFillWidth - Math.max(0, shown.length - 1));
       let segX = barX;
       for (const child of shown) {
@@ -401,10 +402,10 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
       }
     }
     row(part, null, 0, PARTS_ROW_HEIGHT, color, { hasChildren, expanded: isExpanded, segments });
-    if (!isExpanded || !part.children) continue;
-    const children = part.children;
+    if (!isExpanded) continue;
+    const children = drawnChildren(part);
     children.forEach((child, at) => {
-      const grand = child.notRecorded ? [] : child.children ?? [];
+      const grand = drawnChildren(child);
       row(child, part.key, 1, PARTS_CHILD_HEIGHT, childTint(color, child, theme, SEGMENT_TINTS), { isLastChild: at === children.length - 1 && grand.length === 0 });
       grand.forEach((item, index) => {
         row(item, child.key, 2, PARTS_ITEM_HEIGHT, childTint(color, child, theme, SEGMENT_TINTS), { isLastChild: at === children.length - 1 && index === grand.length - 1 });
@@ -598,8 +599,12 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     }
     innerSlices.push({ key: part.key, part, a0, a1, color, hatched: hatchedRing, label });
 
-    const children = (part.children ?? []).filter(positive);
-    if (!children.length || w2 < 6) continue;
+    const children = drawnChildren(part).filter(positive);
+    if (w2 < 6) continue;
+    if (!children.length) {
+      outerSlices.push({ key: part.key, parentKey: part.key, part, a0, a1, color: part.neutral ? color : tintColour(color, OUTER_TINTS[0]), hatched: hatchedRing, arcLabel: null });
+      continue;
+    }
     const childGap = children.length > 1 ? 1 / Math.max(1, r2o) : 0;
     const childUsable = Math.max(0.001, span - childGap * (children.length - 1));
     let bAngle = a0;
@@ -659,10 +664,10 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
       const isExpanded = hasChildren && part.key === openKey;
       push(part, null, 0, RING_SIDE_ROW_HEIGHT, color, hasChildren, isExpanded);
       if (!isExpanded) continue;
-      for (const child of part.children ?? []) {
+      for (const child of drawnChildren(part)) {
         const tint = childTint(color, child, theme, OUTER_TINTS);
         push(child, part.key, 1, RING_SIDE_ROW_HEIGHT - 1, tint, false, false);
-        for (const item of child.notRecorded ? [] : child.children ?? []) push(item, child.key, 2, RING_SIDE_ROW_HEIGHT - 2, tint, false, false);
+        for (const item of drawnChildren(child)) push(item, child.key, 2, RING_SIDE_ROW_HEIGHT - 2, tint, false, false);
       }
     }
     sideList = { x: listX, top: listTop, width: listW, height: listH, rows, contentHeight: ry + 8 };
@@ -670,7 +675,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     for (const slice of innerSlices) {
       items.push({ key: slice.key, parentKey: null, depth: 0, part: slice.part, open: -1, shareText: shareOf(slice.part, level.total) });
       for (const outer of outerSlices) {
-        if (outer.parentKey === slice.key) items.push({ key: outer.key, parentKey: slice.key, depth: 1, part: outer.part, open: -1, shareText: shareOf(outer.part, level.total) });
+        if (outer.parentKey === slice.key && outer.key !== slice.key) items.push({ key: outer.key, parentKey: slice.key, depth: 1, part: outer.part, open: -1, shareText: shareOf(outer.part, level.total) });
       }
     }
   }
@@ -831,7 +836,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
     const part = rect.item.part;
     const baseColor = partColour(part, theme);
     const shareText = hatchedAll ? '' : formatShare(part.share);
-    const children = (part.children ?? []).filter(positive);
+    const children = drawnChildren(part).filter(positive);
     const showGroup = children.length > 0 && rect.width > 70 && rect.height > 60;
     items.push({ key: part.key, parentKey: null, depth: 0, part, open: -1, shareText });
 

@@ -173,6 +173,9 @@ test('political power spending reads the product at the displayed hour', () => {
   assert.equal(read.total.text, '5,972');
   assert.deepEqual(read.parts.map(part => part.name), ['Daily costs', 'Decisions', 'Other']);
 
+  const partly = project(reply(spent(), { gainedReason: 'Gains in hours when power changes were not read are not counted.' }));
+  assert.deepEqual(partly.comparison, { label: 'Gained', value: '5,306 PP', partial: true, note: 'Gains in hours when power changes were not read are not counted. 1 PP lost at the cap.' });
+
   const ungained = project(reply(spent(), { gainedRaw: null, gainedReason: 'Some gains were not recorded.' }));
   assert.deepEqual(ungained.comparison, { label: 'Gained', value: 'Not recorded', note: 'Some gains were not recorded.' });
 
@@ -313,4 +316,14 @@ test('the audit lists what the installed view draws: shares, open children and t
   const moved = nested();
   moved.parts[0] = { ...moved.parts[0]!, children: [{ ...moved.parts[0]!.children[0]!, raw: '700' }, { ...moved.parts[0]!.children[1]!, raw: '292' }] };
   assert.notDeepEqual(deriveBreakdownAudit(model(moved), layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(moved)), view: 'parts', userExpanded: { New: true } })), deriveBreakdownAudit(model(nested()), layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(nested())), view: 'parts', userExpanded: { New: true } })), 'moving spending between children under a fixed part changes the audit');
+});
+
+test('a lone sub-part that repeats its part is not drawn as a split, but its name stays in the tooltip', () => {
+  const lone: Breakdown = { decimals: 0, total: { raw: '20', state: 'known', reason: null }, unrecordedHours: 0,
+    parts: [wire('Daily', 0, '20', { share: 1, parentShare: 1, children: [wire('One daily cost', 0, '20', { share: 1, parentShare: 1 })] })] };
+  const read = model(lone);
+  const parts = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(read), view: 'parts', userExpanded: {} }) as PartsViewLayout;
+  assert.deepEqual(parts.rows.map(row => row.key), ['Daily']);
+  assert.equal(parts.rows[0]!.segments.length, 0);
+  assert.ok(JSON.stringify(buildBreakdownTooltip(read, breakdownLevel(read), 'Daily', THEME)).includes('One daily cost'));
 });
