@@ -1111,7 +1111,7 @@ test('FieldStatus failed distinguishes retryable transport errors and non-retrya
 
   const absentIndex = new IdentityIndex(scope, [0, 500]);
   absentIndex.setFacts({ branchId: '1', known: [[0, 500]], names: [], reasons: [], flags: [], countries: [], warnings: [] }, true);
-  absentIndex.setIdentities({ branchId: '1', countries: [], unknown: [], warnings: [] });
+  absentIndex.setIdentities({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] });
   const absentRes = identityResultFromIndex(absentIndex, 'country', 'ZZZ', displayedHour(100));
   assert.equal(absentRes.name.status, 'absent');
 });

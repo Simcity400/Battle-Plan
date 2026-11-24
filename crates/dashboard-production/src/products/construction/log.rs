@@ -242,7 +242,7 @@ impl Product for ConstructionLogManifest {
         let named = Content::load(source, context).name(source, &tokens, &BTreeSet::new(), &mut warnings);
         let reply = ConstructionLogManifestReply {
             cost_scale: COST_SCALE,
-            windows: windows.into_iter().map(|(_, window)| window).collect(),
+            windows,
             recorded: super::recorded(&query)?,
             types: named.types,
             repair_icon: named.repair_icon,
@@ -251,6 +251,97 @@ impl Product for ConstructionLogManifest {
         };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
+    }
+}
+
+fn join_runs<T>(
+    mut a: Vec<T>,
+    b: Vec<T>,
+    first: impl Fn(&T) -> i32,
+    last: impl Fn(&T) -> i32,
+    same: impl Fn(&T, &T) -> bool,
+    extend: impl Fn(&mut T, &T),
+) -> Vec<T> {
+    for item in b {
+        match a.last_mut() {
+            Some(held) if i64::from(last(held)) + 1 == i64::from(first(&item)) && same(held, &item) => extend(held, &item),
+            Some(held) if last(held) < first(&item) => a.push(item),
+            None => a.push(item),
+            _ => {}
+        }
+    }
+    a
+}
+
+fn join_levels(mut x: Vec<LevelsBuilt>, y: Vec<LevelsBuilt>) -> Vec<LevelsBuilt> {
+    let mut prior = [0u32; 2];
+    for levels in &x {
+        prior[usize::from(levels.repair)] = prior[usize::from(levels.repair)].saturating_add(levels.count);
+    }
+    for mut levels in y {
+        let side = usize::from(levels.repair);
+        if !levels.carried {
+            prior[side] = prior[side].saturating_add(levels.count);
+            x.push(levels);
+            continue;
+        }
+        let delta = levels.count.saturating_sub(prior[side]);
+        if delta > 0 {
+            prior[side] = prior[side].saturating_add(delta);
+            if prior[side] != delta {
+                levels.count = delta;
+                levels.carried = false;
+            }
+            x.push(levels);
+        }
+    }
+    x
+}
+
+fn join_unread(a: Option<Vec<(i32, i32)>>, b: Option<Vec<(i32, i32)>>) -> Option<Vec<(i32, i32)>> {
+    let merged = join_runs(a.unwrap_or_default(), b.unwrap_or_default(), |s| s.0, |s| s.1, |_, _| true, |x, y| x.1 = y.1);
+    (!merged.is_empty()).then_some(merged)
+}
+
+fn join_project(a: ConstructionProject, b: ConstructionProject) -> ConstructionProject {
+    let output_origin = a.output_origin.or_else(|| {
+        if a.source == ProjectSource::OutputAlone && b.source == ProjectSource::Census {
+            Some(OutputOrigin { tag: a.tag, building: a.building, state: a.state, to_state: a.to_state, province: a.province })
+        } else {
+            b.output_origin
+        }
+    });
+    let runs = join_runs(
+        a.runs,
+        b.runs,
+        |r| r.first_hour,
+        |r| r.last_hour,
+        |x, y| x.factories == y.factories && x.remaining == y.remaining && x.repair_levels == y.repair_levels,
+        |x, y| x.last_hour = y.last_hour,
+    );
+    let outputs = join_runs(
+        a.outputs,
+        b.outputs,
+        |r| r.from,
+        |r| r.to,
+        |x, y| x.construction_raw == y.construction_raw && x.repair_raw == y.repair_raw && x.reason == y.reason && x.before_observation == y.before_observation,
+        |x, y| x.to = y.to,
+    );
+    ConstructionProject {
+        kind: if b.kind == ProjectKind::Unknown { a.kind } else { b.kind },
+        source: if b.source == ProjectSource::Unknown { a.source } else { b.source },
+        output_origin,
+        repair: a.repair.or(b.repair),
+        built_unread: join_unread(a.built_unread, b.built_unread),
+        repaired_unread: join_unread(a.repaired_unread, b.repaired_unread),
+        runs,
+        outputs,
+        built: join_levels(a.built, b.built),
+        unaccounted: join_levels(a.unaccounted, b.unaccounted),
+        possible: join_levels(a.possible, b.possible),
+        added: join_levels(a.added, b.added),
+        end: b.end.or(a.end),
+        ..b
     }
 }
 
@@ -289,12 +380,30 @@ impl Product for ConstructionLog {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let windows = super::windows(&query)?;
-        let (run, interval) = windows.get(params.window).map(|(run, window)| (*run, window.clone())).ok_or_else(|| dashboard_core::invalid("No such construction log window"))?;
-        let lines = crate::products::construction::cached_construction(source, run)?;
-        let links = dashboard_base::queries::links(source, run)?;
+        let interval = windows.get(params.window).cloned().ok_or_else(|| dashboard_core::invalid("No such construction log window"))?;
         let names = Names::new(&query.holders);
         let mut warnings = Vec::new();
-        let projects = window(source, run, interval.first_hour, interval.last_hour, &lines, &names, &links, &mut warnings)?;
+        let mut by_id: HashMap<String, ConstructionProject> = HashMap::new();
+        for stretch in query.timeline.within(interval.first_hour, interval.last_hour) {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let lines = crate::products::construction::cached_construction(source, stretch.run)?;
+            let links = dashboard_base::queries::links(source, stretch.run)?;
+            for project in window(source, stretch.run, stretch.first, stretch.last, &lines, &names, &links, &mut warnings)? {
+                match by_id.remove(&project.id) {
+                    Some(before) => {
+                        let merged = join_project(before, project);
+                        by_id.insert(merged.id.clone(), merged);
+                    }
+                    None => {
+                        by_id.insert(project.id.clone(), project);
+                    }
+                }
+            }
+        }
+        let mut projects: Vec<ConstructionProject> = by_id.into_values().collect();
+        projects.sort_by(|a, b| (a.first_read, a.kind, a.id.len(), &a.id).cmp(&(b.first_read, b.kind, b.id.len(), &b.id)));
+        let mut seen_warnings = BTreeSet::new();
+        warnings.retain(|warning| seen_warnings.insert(warning.clone()));
         let states: BTreeSet<u32> = projects
             .iter()
             .flat_map(|project| [project.state, project.to_state, project.output_origin.as_ref().and_then(|origin| origin.state), project.output_origin.as_ref().and_then(|origin| origin.to_state)])
