@@ -243,6 +243,7 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
 
   let wakes = 0;
   const laneCache = new LaneArtCache<ArtBitmap>({
+    maxEntries: 1,
     onSettle: () => { wakes++; },
     fetchBitmap: () => Promise.resolve(fakeBitmap()),
   });
@@ -268,7 +269,17 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
   assert.equal(ready.status, 'ready');
   assert.equal(ready.url, 'art://ger-flag');
   assert.equal(ready.provenance.label, 'Current installation');
-  assert.ok(ready.bitmap);
+  assert.equal('bitmap' in ready, false, 'a projection holds the address, never a decoded bitmap the cache may close under it');
+  assert.deepEqual(demanded, ['art://ger-flag', 'art://ger-flag'], 'art a projection holds stays demanded after it decodes');
+  const painted = resolveCachedArt(ready, laneCache as unknown as LaneArtCache<ImageBitmap>);
+  assert.ok(painted.status === 'ready' && painted.bitmap, 'the painter draws it from the cache');
+  const decoded = painted.bitmap as unknown as ReturnType<typeof fakeBitmap>;
+
+  laneCache.requestVisible(['art://other']);
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+  assert.equal(decoded.closed, true, 'art scrolled away is evicted and closed');
+  const repainted = resolveCachedArt(ready, laneCache as unknown as LaneArtCache<ImageBitmap>);
+  assert.ok(repainted.status === 'ready' && repainted.bitmap === undefined, 'a cached model painted again after the eviction draws its art as loading, never the closed bitmap');
 
   const domCache = new DomArtCache<DomArtImage>({
     createImage: () => ({ complete: true, naturalWidth: 41, naturalHeight: 26, src: '', onload: null, onerror: null }),

@@ -223,9 +223,15 @@ export function createLaneArtProvider(
   return {
     demandOwner: 'view',
     resolve(handle: ArtHandle): ArtResult {
-      return cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolutions));
+      return withoutBitmap(cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolutions)));
     },
   };
+}
+
+function withoutBitmap(result: ArtResult): ArtResult {
+  if (result.status !== 'ready' || result.bitmap === undefined) return result;
+  const { bitmap: _decoded, ...address } = result;
+  return address;
 }
 
 export interface DomArtProviderOptions {
@@ -252,12 +258,7 @@ export function createDomArtProvider(
   return {
     demandOwner: 'view',
     resolve(handle: ArtHandle): ArtResult {
-      const result = cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolutions));
-      if (result.status === 'ready') {
-        const { bitmap: _domImage, ...withoutBitmap } = result;
-        return withoutBitmap;
-      }
-      return result;
+      return withoutBitmap(cache.resolve(resolutionFromHandle(handle, lookupFlag, options.resolutions)));
     },
   };
 }
