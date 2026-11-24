@@ -10,9 +10,10 @@ import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { resolvePlaybackProvenInterval } from '../broker.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
-import { familyBreakdownLaneView } from './laneView.ts';
+import { breakdownLane } from './laneView.ts';
 import { hitTestBreakdown, layoutBreakdown, type PartsViewLayout, type RingViewLayout, type MosaicViewLayout } from './layout.ts';
 import { buildBreakdownTooltip, partColour, breakdownLevel, PATH, type BreakdownModel } from './model.ts';
 import { deriveBreakdownAudit, deriveBreakdownNavAndMirror } from './structure.ts';
@@ -203,8 +204,8 @@ test('political power spending reads the product at the displayed hour', () => {
   });
   const held = lane(reply(spent()));
   const surface = { width: 600, height: 300, dpr: 1 };
-  assertQuietFrames(() => familyBreakdownLaneView(() => {}), { label: 'spending', binding: held, hour: START + 10 }, 24, surface);
-  assertFreshPaint(() => familyBreakdownLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(breakdownLane, () => {}), { label: 'spending', binding: held, hour: START + 10 }, 24, surface);
+  assertFreshPaint(() => createLaneView(breakdownLane, () => {}), [
     { label: 'spent', binding: held, hour: START + 10, check: true },
     { label: 'later', binding: lane(reply(partlyKnown(), { hour: START + 20 })), hour: START + 20, speed: 24 },
     { label: 'seek back', binding: held, hour: START + 10, check: true },

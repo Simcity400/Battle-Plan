@@ -1,7 +1,6 @@
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { AnyTimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { timelineHostAdapter } from '../../families/timeline/hostAdapter.ts';
-import { familyTimelineLaneView } from '../../families/timeline/laneView.ts';
 import type { TimelineProjection } from '../../families/timeline/model.ts';
 
 function timelineView<TModule>(
@@ -37,7 +36,7 @@ export const TIMELINE_VIEWS: readonly FamilyViewEntry[] = [
 
 export const timelineFamilyManifest: FamilyManifestModule = {
   family: 'timeline',
-  laneView: familyTimelineLaneView,
+  lane: () => import('../../families/timeline/laneView.ts').then(m => m.timelineLane),
   views: TIMELINE_VIEWS,
   hostAdapter: timelineHostAdapter,
 };

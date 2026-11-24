@@ -1,5 +1,4 @@
 import { cardHostAdapter } from '../../families/card/hostAdapter.ts';
-import { familyCardLaneView } from '../../families/card/laneView.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 
 export const CARD_VIEWS: readonly FamilyViewEntry[] = [
@@ -45,7 +44,7 @@ export const CARD_VIEWS: readonly FamilyViewEntry[] = [
 
 export const cardFamilyManifest: FamilyManifestModule = {
   family: 'card',
-  laneView: familyCardLaneView,
+  lane: () => import('../../families/card/laneView.ts').then(m => m.cardLane),
   views: CARD_VIEWS,
   hostAdapter: cardHostAdapter,
 };

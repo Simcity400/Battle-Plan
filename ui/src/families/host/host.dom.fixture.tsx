@@ -17,7 +17,8 @@ import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { laneDispatch } from '../../draw/laneDispatch.ts';
 import { measureWith, PerfRecorder } from '../../shell/perf.ts';
 import type { InstalledAction } from '../contract.ts';
-import { familyTableLaneView } from '../table/laneView.ts';
+import { createLaneView } from '../laneRuntime.ts';
+import { tableLane } from '../table/laneView.ts';
 import { tableSettingsOf } from '../table/settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from '../table/tableFamilyDom.fixture.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
@@ -107,7 +108,7 @@ function createLane(): LaneWorker {
     },
     {
       views: (_kind, wake) => {
-        const view = familyTableLaneView(wake);
+        const view = createLaneView(tableLane, wake);
         const paint = view.paint.bind(view);
         view.paint = (input, state, content) => {
           paintsByWidget.set(input.widget, (paintsByWidget.get(input.widget) ?? 0) + 1);

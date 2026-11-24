@@ -1,7 +1,6 @@
 import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { textWidth } from '../../charts/textWidth.ts';
-import type { LaneView } from '../../draw/lane.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneFrame, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
 import { barsAuditWindow, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import { assertBarsModelValid, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, type BarsModel } from './model.ts';
@@ -56,7 +55,7 @@ function inspected(inspect: string | null): { readonly key: string; readonly sid
   return null;
 }
 
-const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
+export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   family: 'bars',
   boundary(model, hour) {
     assertBarsModelValid(model, hour);
@@ -153,7 +152,3 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   audit: frame => [...(frame.model.pickList ? pickAudit(frame.model.pickList) : []), ...deriveBarsAudit(frame.model, { window: barsAuditWindow(frame.layout, frame.binding.scrollTop) })],
   visibleArt: frame => collectVisibleBarsIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };
-
-export function familyBarsLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(barsLane, wake, options);
-}

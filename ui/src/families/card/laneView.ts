@@ -1,5 +1,4 @@
-import type { LaneView } from '../../draw/lane.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { layoutCards, type CardLayout } from './layout.ts';
 import { assertCardModelValid, cardRowHours, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel } from './model.ts';
 import { drawCards, hitCards, visibleCardIcons } from './painter.ts';
@@ -13,7 +12,7 @@ export interface FamilyCardBinding<TOptions = unknown> extends LaneBinding<TOpti
 
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
-const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
+export const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
   family: 'card',
   boundary(model, hour) {
     assertCardModelValid(model, hour);
@@ -66,7 +65,3 @@ const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
   audit: frame => deriveCardAudit(frame.model),
   visibleArt: frame => visibleCardIcons(frame.model, frame.layout, frame.binding.scrollTop),
 };
-
-export function familyCardLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(cardLane, wake, options);
-}

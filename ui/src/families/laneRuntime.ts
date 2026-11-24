@@ -231,6 +231,66 @@ function backing(surface: Surface): readonly [number, number, number] {
   return [Math.max(1, Math.round(surface.width * dpr)), Math.max(1, Math.round(surface.height * dpr)), dpr];
 }
 
+function retryOrThrow(failed: Map<number, number>, input: PaintInput, reason: string, retry: () => void): void {
+  const failedAt = failed.get(input.widget);
+  if (failedAt !== undefined && failedAt !== input.binding.generation) {
+    failed.delete(input.widget);
+    retry();
+    return;
+  }
+  failed.set(input.widget, input.binding.generation);
+  throw new Error(reason);
+}
+
+export type LaneFamilyLoad = () => Promise<LaneFamily<any, any, any>>;
+
+export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
+  let view: LaneView | null = null;
+  let loading = false;
+  let failure: string | null = null;
+  const waiting = new Set<number>();
+  const failedGenerations = new Map<number, number>();
+  const ready = (widget: number): LaneView | null => {
+    if (view || failure !== null) return view;
+    waiting.add(widget);
+    if (!loading) {
+      loading = true;
+      load().then(
+        lane => { view = createLaneView(lane, wake, options); },
+        (error: unknown) => { failure = error instanceof Error ? error.message : String(error); },
+      ).finally(() => {
+        loading = false;
+        const woken = [...waiting];
+        waiting.clear();
+        for (const widget of woken) wake(widget);
+      });
+    }
+    return null;
+  };
+  return {
+    next(scene, hour, state) {
+      const loaded = ready(scene.widget);
+      return loaded?.next ? loaded.next(scene, hour, state) : null;
+    },
+    unmount(widget, state) {
+      waiting.delete(widget);
+      failedGenerations.delete(widget);
+      view?.unmount?.(widget, state);
+    },
+    paint(input, state, content) {
+      const loaded = ready(input.widget);
+      if (loaded) return loaded.paint(input, state, content);
+      if (failure !== null) {
+        retryOrThrow(failedGenerations, input, `The ${family} lane did not load: ${failure}`, () => {
+          failure = null;
+          ready(input.widget);
+        });
+      }
+      return { ...EMPTY, nextChangeAt: input.hour + 1 };
+    },
+  };
+}
+
 export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   family: LaneFamily<TBinding, TModel, TLayout>,
   wake: (widget: number) => void,
@@ -340,15 +400,11 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (projection === 'unknown') {
         const failure = familyProjectionFailure(family.family, binding.kind, binding.view);
         if (!failure) return { ...EMPTY, mode: 'refused', reason: unknownProjectionReason(binding) };
-        const failedAt = failedGenerations.get(input.widget);
-        if (failedAt !== undefined && failedAt !== input.binding.generation) {
-          failedGenerations.delete(input.widget);
+        retryOrThrow(failedGenerations, input, unknownProjectionReason(binding), () => {
           retryFamilyProjection(family.family, binding.kind, binding.view);
           projectionOf(binding, input.widget);
-          return waiting;
-        }
-        failedGenerations.set(input.widget, input.binding.generation);
-        throw new Error(unknownProjectionReason(binding));
+        });
+        return waiting;
       }
 
       let held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;

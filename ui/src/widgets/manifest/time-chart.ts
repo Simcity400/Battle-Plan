@@ -1,7 +1,6 @@
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
-import { timeChartLaneView } from '../../families/time-chart/laneView.ts';
 import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts';
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS, TENSION_CHART_OPTIONS } from '../world-tension/definition.ts';
@@ -259,7 +258,7 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
 
 export const timeChartFamilyManifest: FamilyManifestModule = {
   family: 'time-chart',
-  laneView: timeChartLaneView,
+  lane: () => import('../../families/time-chart/laneView.ts').then(m => m.timeChartLane),
   views: TIME_CHART_VIEWS,
   hostAdapter: timeChartHostAdapter,
 };

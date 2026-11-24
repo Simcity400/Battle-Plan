@@ -3,7 +3,7 @@ import test from 'node:test';
 import { Page, type Bitmap, type PageMessage } from '../dashboard/follow/page.ts';
 import { Lane } from '../draw/lane.ts';
 import type { BoundedReadView, FamilyProjection } from './contract.ts';
-import { createLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
+import { createLaneView, lazyLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
 import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME } from './laneRuntime.fixture.ts';
 import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
 import { IdentityIndex } from './identity/index.ts';
@@ -185,7 +185,7 @@ test('the shared quiet-frame check: no drawing or new field between boundaries, 
 
 const settle = async () => { for (let i = 0; i < 8; i++) await null; };
 
-test('a cold projection load walks no history, keeps one waiter per placement, and a failed import fails by name until the host’s retry re-binds it', async () => {
+test('a cold projection or lane code load walks no history, keeps one waiter per placement, and a failed import fails by name until the host’s retry re-binds it', async () => {
   let release: (value: unknown) => void = () => {};
   let loads = 0;
   bindFamilyManifest([
@@ -213,6 +213,29 @@ test('a cold projection load walks no history, keeps one waiter per placement, a
     assert.equal(view.next!({ widget: 1, subs: [], pictures: [], model: broken }, 10, lane.state), null);
     assert.equal(lane.paint({ label: 'retried', binding: broken, hour: 10, generation: 2 }).surfaces.length, 0, 'a re-bind clears the failure and loads again');
     assert.equal(loads, 3);
+
+    let releaseLane: (lane: LaneFamily<Binding, Model, Layout>) => void = () => {};
+    let laneLoads = 0;
+    const laneWakes: number[] = [];
+    const lazy = lazyLaneView('test-lane', () => { laneLoads++; return new Promise(resolve => { releaseLane = resolve; }); }, widget => laneWakes.push(widget));
+    const lazyLane = driveLane(lazy, recording.canvases);
+    const shown = binding(rowsAt([{ key: 'A', v: 1 }]));
+    for (const widget of [1, 2]) assert.equal(lazy.next!({ widget, subs: [], pictures: [], model: shown }, 10, lazyLane.state), null, 'loading lane code locates no change');
+    for (let i = 0; i < 3; i++) assert.equal(lazyLane.paint({ label: 'lane loading', binding: shown, hour: 10 }).nextChangeAt, 11, 'the waiting picture holds only for the displayed hour');
+    releaseLane(family);
+    await settle();
+    assert.deepEqual([laneLoads, laneWakes], [1, [1, 2]], 'one import, and each waiting placement woken once');
+    assert.ok(lazyLane.paint({ label: 'lane loaded', binding: shown, hour: 10 }).surfaces.length > 0);
+    assert.deepEqual(lazyLane.picture(), ['t:0:0=#eef1f6|A 1  1']);
+
+    const failing = lazyLaneView('test-lane', () => { laneLoads++; return Promise.reject(new Error('lane chunk missing')); }, () => {});
+    const failed = driveLane(failing, recording.canvases);
+    failed.paint({ label: 'lane broken', binding: shown, hour: 10 });
+    await settle();
+    for (let i = 0; i < 3; i++) assert.throws(() => failed.paint({ label: 'lane broken', binding: shown, hour: 10 }), /The test-lane lane did not load: lane chunk missing/);
+    assert.equal(laneLoads, 2, 'a failed lane import is not retried on every paint');
+    assert.equal(failed.paint({ label: 'lane retried', binding: shown, hour: 10, generation: 2 }).surfaces.length, 0, 'a re-bind clears the failure and loads the lane code again');
+    assert.equal(laneLoads, 3);
   } finally {
     recording.restore();
   }

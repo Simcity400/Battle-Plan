@@ -19,9 +19,10 @@ import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour,
 import { hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
 import { drawHeatLanes } from './lanesPainter.ts';
 import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
-import { familyHeatLanesLaneView } from './lanesLaneView.ts';
-import { familyHeatMatrixLaneView } from './matrixLaneView.ts';
+import { heatLanesLane } from './lanesLaneView.ts';
+import { heatMatrixLane } from './matrixLaneView.ts';
 
 function gridCells(grid: readonly (readonly MatrixCell[])[], width: number) {
   return { present: new Map(grid.flatMap((row, r) => row.map((cell, c) => [r * width + c, cell] as const))), absent: { kind: 'empty' } as MatrixCell };
@@ -194,8 +195,8 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
   const surface = { width: 520, height: 300, dpr: 1 };
   const renamed: HeatMatrixModel = { ...model, rows: model.rows.map((row, index) => (index === 0 ? { ...row, label: `${row.label} (renamed)` } : row)) };
   const reordered: HeatMatrixModel = { ...renamed, columns: [...renamed.columns].reverse() };
-  assertQuietFrames(() => familyHeatMatrixLaneView(() => {}), { label: 'matrix', binding: lane(model), hour: model.hour }, 24, surface);
-  assertFreshPaint(() => familyHeatMatrixLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(heatMatrixLane, () => {}), { label: 'matrix', binding: lane(model), hour: model.hour }, 24, surface);
+  assertFreshPaint(() => createLaneView(heatMatrixLane, () => {}), [
     { label: 'held', binding: lane(model), hour: model.hour, check: true },
     { label: 'correction', binding: lane(renamed), hour: model.hour, check: true },
     { label: 'reorder', binding: lane(reordered), hour: model.hour, check: true },
@@ -419,8 +420,8 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   const renamed = { ...model, rows: model.rows.map(row => (row.id === '11' ? { ...row, label: 'Normandy' } : row)) };
   const reordered = { ...renamed, rows: [...renamed.rows].reverse() };
   const surface = { width: 720, height: 220, dpr: 1 };
-  assertQuietFrames(() => familyHeatLanesLaneView(() => {}), { label: 'lanes', binding: held, hour: 119 }, 24, surface);
-  assertFreshPaint(() => familyHeatLanesLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(heatLanesLane, () => {}), { label: 'lanes', binding: held, hour: 119 }, 24, surface);
+  assertFreshPaint(() => createLaneView(heatLanesLane, () => {}), [
     { label: 'held', binding: held, hour: 119, check: true },
     { label: 'later', binding: held, hour: 140, speed: 24 },
     { label: 'seek back', binding: held, hour: 119, check: true },
