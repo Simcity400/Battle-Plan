@@ -13,7 +13,7 @@ import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrec
 import { resolveWindow, type WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, type OptionField, type OptionValue } from '../../dashboard/options';
 import { prepareGate, preparing } from '../../dashboard/prepare.ts';
-import { useFollowedProduct, useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useFollowedProducts, useProduct } from '../../dashboard/products';
 import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useGate } from '../../dashboard/regionGate';
@@ -29,6 +29,7 @@ import { sharedDomArtCache } from '../art/domCache.ts';
 import { createDomArtProvider } from '../art/provider.ts';
 import { boundedUnrecorded, createBoundedReadView, displayedHour, type UnrecordedLine } from '../boundedView.ts';
 import {
+  boundedEntries,
   buildPlaybackBoundedRequest,
   buildStaticRequest,
   compileFollowPlan,
@@ -36,7 +37,6 @@ import {
   FamilySourceBroker,
   hoverAsks,
   type HeldHover,
-  needsPlaybackBoundedRead,
   planSignature,
   playbackIdleInterval,
   primaryStaticEntry,
@@ -44,6 +44,7 @@ import {
   resolvePlaybackProvenInterval,
   stabilizeCanvasDimension,
   type PlaybackBoundedSpec,
+  type StaticRequestSpec,
 } from '../broker.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -71,6 +72,7 @@ import type {
   FamilyPlanContext,
   FamilyViewportRequest,
   IdentityProvider,
+  SourceEntry,
   SourcePlan,
 } from '../plan.ts';
 import {
@@ -116,6 +118,25 @@ function buildFilterTimeline(
     }
   }
   return { passing, unrecorded, bounds };
+}
+
+interface BoundRead {
+  readonly entry: SourceEntry;
+  readonly span: readonly [number, number] | null;
+  readonly data: unknown;
+}
+
+interface BoundBatch {
+  readonly anchorHour: number | null;
+  readonly reads: readonly BoundRead[];
+  readonly failure: Failure | null;
+}
+
+const NO_SPECS: readonly (StaticRequestSpec | null)[] = [];
+
+function playbackSpecAnchor(specs: readonly (StaticRequestSpec | PlaybackBoundedSpec | null)[]): number | null {
+  for (const spec of specs) if (spec && 'anchorHour' in spec) return spec.anchorHour;
+  return null;
 }
 
 export interface StaticBundle {
@@ -773,7 +794,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     );
   }, [following, active, runtime.clock, trackOffset, tileLo, tileHi]);
 
-  const playbackBounded = following && needsPlaybackBoundedRead(plan, compiledFollow.subscriptions);
+  const bounded = useMemo(
+    () => boundedEntries(plan, following, compiledFollow.subscriptions),
+    [plan, following, compiledFollow.subscriptions],
+  );
+  const singleEntry = bounded[0] ?? null;
+  const batchEntries = useMemo(() => bounded.slice(1), [bounded]);
+  const playbackBounded = following && bounded.length > 0;
   const usesStatic = !following || playbackBounded;
   const frozenGate = useMemo(
     () => freezeGate(gate, track ? (hour: number) => coverageSpan(track, hour) : undefined),
@@ -782,29 +809,68 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const [playbackAnchorHour, setPlaybackAnchorHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
 
-  const playbackSpec = useMemo<PlaybackBoundedSpec | null>(() => {
-    if (!playbackBounded || !plan || !ctx) return null;
-    return buildPlaybackBoundedRequest(plan, {
-      branch: ctx.branch,
-      effectiveEndHour,
-      currentHour: playbackAnchorHour,
-      gate: frozenGate,
-      countriesKnown: countriesState.known,
-    });
-  }, [playbackBounded, plan, ctx, effectiveEndHour, playbackAnchorHour, frozenGate, countriesState.known]);
+  const playbackOptions = useMemo(
+    () => (ctx ? { branch: ctx.branch, effectiveEndHour, currentHour: playbackAnchorHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
+    [ctx, effectiveEndHour, playbackAnchorHour, frozenGate, countriesState.known],
+  );
+  const pinnedOptions = useMemo(
+    () => (ctx ? { timeMode: widget.time.mode, branch: ctx.branch, window, pinHour, gate: frozenGate, countriesKnown: countriesState.known } : null),
+    [ctx, widget.time.mode, window, pinHour, frozenGate, countriesState.known],
+  );
 
-  const staticSpec = useMemo(() => {
+  const playbackSpec = useMemo<PlaybackBoundedSpec | null>(
+    () => (playbackBounded && playbackOptions ? buildPlaybackBoundedRequest(singleEntry, playbackOptions) : null),
+    [playbackBounded, playbackOptions, singleEntry],
+  );
+
+  const staticSpec = useMemo<StaticRequestSpec | null>(() => {
     if (!plan || !ctx) return null;
     if (following) return playbackSpec;
-    return buildStaticRequest(plan, {
-      timeMode: widget.time.mode,
-      branch: ctx.branch,
-      window,
-      pinHour,
-      gate: frozenGate,
-      countriesKnown: countriesState.known,
+    return pinnedOptions ? buildStaticRequest(singleEntry, pinnedOptions) : null;
+  }, [following, playbackSpec, plan, ctx, pinnedOptions, singleEntry]);
+
+  const batchSpecs = useMemo<readonly (StaticRequestSpec | PlaybackBoundedSpec | null)[]>(() => {
+    if (!batchEntries.length) return NO_SPECS;
+    if (following) return playbackBounded && playbackOptions ? batchEntries.map(entry => buildPlaybackBoundedRequest(entry, playbackOptions)) : NO_SPECS;
+    return pinnedOptions ? batchEntries.map(entry => buildStaticRequest(entry, pinnedOptions)) : NO_SPECS;
+  }, [batchEntries, following, playbackBounded, playbackOptions, pinnedOptions]);
+  const batchLive = useMemo(() => batchSpecs.filter((spec): spec is StaticRequestSpec => spec !== null), [batchSpecs]);
+  const batchRequests = useMemo(() => batchLive.map(spec => spec.request), [batchLive]);
+  const batchMoving = useMemo(() => [...new Set(batchLive.flatMap(spec => spec.dynamicKeys))], [batchLive]);
+  const batchProduct = useFollowedProducts<unknown>(
+    runtime.client,
+    batchRequests,
+    batchMoving,
+    active && usesStatic && batchLive.length > 0,
+    undefined,
+    track?.source,
+  );
+  const batchAskedRef = useRef(new Map<string, { readonly anchorHour: number | null; readonly specs: readonly StaticRequestSpec[] }>());
+  if (usesStatic && batchLive.length) {
+    batchAskedRef.current.set(JSON.stringify(batchRequests), {
+      anchorHour: following ? ((batchLive[0] as PlaybackBoundedSpec).anchorHour ?? null) : null,
+      specs: batchLive,
     });
-  }, [following, playbackSpec, plan, ctx, widget.time.mode, window, pinHour, frozenGate, countriesState.known]);
+    if (batchAskedRef.current.size > 32) batchAskedRef.current.delete(batchAskedRef.current.keys().next().value!);
+  }
+  const displayedBatch = useMemo<BoundBatch | null>(() => {
+    if (!usesStatic || !batchLive.length || !batchProduct.data || !batchProduct.requests) return null;
+    const asked = batchAskedRef.current.get(JSON.stringify(batchProduct.requests));
+    if (!asked || asked.specs.length !== batchProduct.data.length) return null;
+    try {
+      return {
+        anchorHour: asked.anchorHour,
+        reads: asked.specs.map((spec, index) => ({
+          entry: spec.entry,
+          span: spec.span,
+          data: spec.validate ? spec.validate(batchProduct.data![index]) : batchProduct.data![index],
+        })),
+        failure: null,
+      };
+    } catch (error) {
+      return { anchorHour: asked.anchorHour, reads: [], failure: asFailure(error) };
+    }
+  }, [usesStatic, batchLive.length, batchProduct.data, batchProduct.requests]);
 
   const staticValidate = useCallback((raw: unknown) => {
     return staticSpec?.validate ? staticSpec.validate(raw) : raw;
@@ -842,13 +908,14 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   interface FrozenPlanExtra {
     readonly plan: SourcePlan | null;
+    readonly entry: SourceEntry | null;
     readonly countryLooks: CountryLooksMap | undefined;
     readonly extra: TExtra | undefined;
   }
 
   const currentFrozenExtra = useMemo<FrozenPlanExtra>(
-    () => ({ plan, countryLooks: currentCountryLooks, extra: currentExtra }),
-    [plan, currentCountryLooks, currentExtra],
+    () => ({ plan, entry: staticSpec?.entry ?? null, countryLooks: currentCountryLooks, extra: currentExtra }),
+    [plan, staticSpec?.entry, currentCountryLooks, currentExtra],
   );
 
   const pendingStaticByMomentRef = useRef(
@@ -896,22 +963,56 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return next;
   }, [usesStatic, staticSpec, staticReqKey, staticHeld, staticProduct.data, staticProduct.moment, ctxWithStaticSpan, frozenGate, currentFrozenExtra, playbackSpec]);
 
-  const boundAnchor = playbackBounded ? (displayedStatic?.anchorHour ?? null) : null;
+  const singleRead = useMemo<BoundRead | null>(() => {
+    if (!displayedStatic) return null;
+    const entry = displayedStatic.extra.entry;
+    return entry ? { entry, span: displayedStatic.span, data: displayedStatic.data } : null;
+  }, [displayedStatic]);
+
+  const boundReads = useMemo<{ readonly anchorHour: number | null; readonly reads: readonly BoundRead[] } | null>(() => {
+    if (!usesStatic) return null;
+    const wantSingle = staticSpec !== null;
+    const wantBatch = batchLive.length > 0;
+    if (!wantSingle && !wantBatch) return null;
+    if (wantSingle && !singleRead) return null;
+    if (wantBatch && (!displayedBatch || displayedBatch.failure)) return null;
+    const singleAnchor = displayedStatic?.anchorHour ?? null;
+    if (playbackBounded && wantSingle && wantBatch && singleAnchor !== displayedBatch!.anchorHour) return null;
+    return {
+      anchorHour: wantSingle ? singleAnchor : displayedBatch!.anchorHour,
+      reads: [...(wantSingle ? [singleRead!] : []), ...(wantBatch ? displayedBatch!.reads : [])],
+    };
+  }, [usesStatic, staticSpec, batchLive.length, singleRead, displayedBatch, displayedStatic, playbackBounded]);
+
+  const boundAnchor = playbackBounded ? (boundReads?.anchorHour ?? null) : null;
   const boundProof = useMemo<readonly [number, number] | null>(() => {
-    if (boundAnchor === null || !displayedStatic) return null;
-    const frozenPlan = displayedStatic.extra.plan ?? plan;
-    const entry = frozenPlan ? primaryStaticEntry(frozenPlan) : null;
-    if (!entry) return null;
-    return resolvePlaybackProvenInterval(entry.read, displayedStatic.data, { anchorHour: boundAnchor, span: displayedStatic.span }, effectiveEndHour);
-  }, [boundAnchor, displayedStatic, plan, effectiveEndHour]);
+    if (boundAnchor === null || !boundReads) return null;
+    let hi = Infinity;
+    for (const read of boundReads.reads) {
+      hi = Math.min(hi, resolvePlaybackProvenInterval(read.entry.read, read.data, { anchorHour: boundAnchor, span: read.span }, effectiveEndHour)[1]);
+    }
+    return [boundAnchor, hi];
+  }, [boundAnchor, boundReads, effectiveEndHour]);
 
   const playbackWatch = useMemo<readonly [number, number] | null>(() => {
-    if (!playbackBounded || !plan || !ctx) return null;
-    if (!playbackSpec) {
-      return playbackIdleInterval(plan, { branch: ctx.branch, effectiveEndHour, currentHour: playbackAnchorHour, gate: frozenGate, countriesKnown: countriesState.known });
+    if (!playbackBounded || !playbackOptions) return null;
+    const specs = [playbackSpec, ...batchSpecs];
+    let lo = -Infinity;
+    let hi = Infinity;
+    const asked = specs.filter(spec => spec !== null).length;
+    specs.forEach((spec, index) => {
+      if (spec !== null) return;
+      const idle = playbackIdleInterval(bounded[index] ?? null, playbackOptions);
+      lo = Math.max(lo, idle[0]);
+      hi = Math.min(hi, idle[1]);
+    });
+    if (asked > 0) {
+      if (!boundProof || boundAnchor !== playbackSpecAnchor(specs)) return null;
+      lo = Math.max(lo, boundProof[0]);
+      hi = Math.min(hi, boundProof[1]);
     }
-    return boundAnchor === playbackSpec.anchorHour ? boundProof : null;
-  }, [playbackBounded, plan, ctx, playbackSpec, effectiveEndHour, playbackAnchorHour, frozenGate, countriesState.known, boundAnchor, boundProof]);
+    return lo <= hi ? [lo, hi] : null;
+  }, [playbackBounded, playbackOptions, playbackSpec, batchSpecs, bounded, boundProof, boundAnchor]);
   const watchLo = playbackWatch?.[0];
   const watchHi = playbackWatch?.[1];
 
@@ -933,44 +1034,51 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     );
   }, [active, track, trackOffset, runtime.clock, watchLo, watchHi]);
 
+  const heldBundleRef = useRef<{ readonly sig: string; readonly bundle: StaticBundle } | null>(null);
   const staticBundle = useMemo<StaticBundle | null>(() => {
-    if (!usesStatic || !displayedStatic) return null;
-    if (playbackBounded && (boundAnchor === null || !boundProof)) return null;
-    const frozenPlan = displayedStatic.extra.plan ?? plan;
-    const entry = frozenPlan ? primaryStaticEntry(frozenPlan) : null;
-    const read = entry?.read;
-    const entryName = entry?.name ?? 'main';
-    let shownHour = playbackBounded && boundAnchor !== null ? boundAnchor : (pinHour ?? effectiveEndHour);
+    const held = heldBundleRef.current?.sig === sig ? heldBundleRef.current.bundle : null;
+    if (!usesStatic) return null;
+    if (!boundReads) return held;
+    if (playbackBounded && (boundAnchor === null || !boundProof)) return held;
+    const first = boundReads.reads[0]!;
+    const read = first.entry.read;
+    let shownHour = playbackBounded && boundAnchor !== null ? boundAnchor : (pinHour ?? Math.floor(window?.lastHour ?? effectiveEndHour));
     let shownSpan: readonly [number, number] | null = null;
     if (!playbackBounded) {
-      if (read?.shape === 'point') {
-        if (read.channel === 'panel' && !read.exactProduct && displayedStatic.moment) {
+      if (read.shape === 'point') {
+        if (read.channel === 'panel' && !read.exactProduct && displayedStatic?.moment && first === singleRead) {
           try {
             const parsed = JSON.parse(displayedStatic.moment) as number[];
             if (typeof parsed[0] === 'number') shownHour = parsed[0];
           } catch {
           }
-        } else if (typeof (displayedStatic.data as { hour?: unknown }).hour === 'number') {
-          shownHour = (displayedStatic.data as { hour: number }).hour;
+        } else if (typeof (first.data as { hour?: unknown } | null)?.hour === 'number') {
+          shownHour = (first.data as { hour: number }).hour;
         }
-      } else if (read?.shape === 'branch-to-hour' || read?.shape === 'trailing-window' || read?.shape === 'range') {
-        shownSpan = displayedStatic.span;
-        if (shownSpan) shownHour = shownSpan[1];
+      } else if (first.span) {
+        shownSpan = first.span;
+        shownHour = first.span[1];
       }
     } else {
-      shownSpan = displayedStatic.span;
+      shownSpan = first.span;
     }
-    const isLivePanel = read?.shape === 'point' && read.channel === 'panel' && !read.exactProduct;
-    const live = isLivePanel
-      ? new Map([[entryName, repliedCells(displayedStatic.data).read()]])
-      : new Map();
-    const panelsMap = new Map([[entryName, displayedStatic.data]]);
-    return {
+    const panels: Record<string, unknown> = {};
+    const panelsMap = new Map<string, unknown>();
+    const live = new Map<string, ReturnType<ReturnType<typeof repliedCells>['read']>>();
+    for (const bound of boundReads.reads) {
+      panels[bound.entry.name] = bound.data;
+      panelsMap.set(bound.entry.name, bound.data);
+      const boundShape = bound.entry.read;
+      if (boundShape.shape === 'point' && boundShape.channel === 'panel' && !boundShape.exactProduct) {
+        live.set(bound.entry.name, repliedCells(bound.data).read());
+      }
+    }
+    const bundle: StaticBundle = {
       hour: shownHour,
       span: shownSpan,
       ...(boundProof ? { provenInterval: boundProof } : {}),
       ...(playbackBounded ? { follows: true } : {}),
-      panels: { [entryName]: displayedStatic.data },
+      panels,
       readView: createBoundedReadView({
         hour: displayedHour(shownHour),
         ...(boundProof ? { validInterval: boundProof } : {}),
@@ -980,7 +1088,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         art: artProvider,
       }),
     };
-  }, [usesStatic, playbackBounded, displayedStatic, boundAnchor, boundProof, plan, effectiveEndHour, pinHour, identityProvider, artProvider]);
+    heldBundleRef.current = { sig, bundle };
+    return bundle;
+  }, [usesStatic, playbackBounded, boundReads, displayedStatic, singleRead, boundAnchor, boundProof, sig, effectiveEndHour, pinHour, window, identityProvider, artProvider]);
 
   const retainedStaticSpan = staticBundle?.span ?? null;
   const displayedCtx = useMemo<FamilyPlanContext<TAux> | null>(() => {
@@ -1019,6 +1129,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const loadingLabel = `Loading ${subject}…`;
   const hasStaticBundle = staticBundle !== null;
+  const batchFailure = displayedBatch?.failure ?? batchProduct.error ?? null;
 
   const bodyStatus = useMemo<FamilyBodyStatus>(() => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };
@@ -1096,10 +1207,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (following) {
       if (compiledFollow.unavailable) return { kind: 'refused', reason: compiledFollow.unavailable };
       if (!playbackBounded) return { kind: 'ready' };
-      if (!staticSpec) return { kind: 'outside' };
+      if (!staticSpec && !batchLive.length) return { kind: 'outside' };
       if (staticProduct.error) {
         return { kind: 'failed', failure: staticProduct.error, origin: 'local', onRetry: staticProduct.retry };
       }
+      if (batchFailure) return { kind: 'failed', failure: batchFailure, origin: 'local', onRetry: batchProduct.retry };
       if (!hasStaticBundle) return { kind: 'loading', label: loadingLabel };
       return { kind: 'ready' };
     }
@@ -1111,14 +1223,15 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       return { kind: 'ready' };
     }
     if (staticEntry && (staticEntry.read.shape === 'branch-to-hour' || staticEntry.read.shape === 'trailing-window' || staticEntry.read.shape === 'range')) {
-      if (!window || !staticSpec) return { kind: 'outside' };
+      if (!window || (!staticSpec && !batchLive.length)) return { kind: 'outside' };
     } else if (pinHour === null) {
       return { kind: 'outside' };
     }
     if (staticProduct.error) {
       return { kind: 'failed', failure: staticProduct.error, origin: 'local', onRetry: staticProduct.retry };
     }
-    if (staticProduct.data === undefined) return { kind: 'loading', label: loadingLabel };
+    if (batchFailure) return { kind: 'failed', failure: batchFailure, origin: 'local', onRetry: batchProduct.retry };
+    if (!hasStaticBundle) return { kind: 'loading', label: loadingLabel };
     return { kind: 'ready' };
   }, [
     track,
@@ -1168,6 +1281,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     tileUnrecorded,
     retryTiles,
     hasStaticBundle,
+    batchLive.length,
+    batchFailure,
+    batchProduct.retry,
   ]);
 
   const bannerFailure: BannerFailureInfo | null = (isSingle && singleCountry?.chosen && singleCountry.error && singleCountry.historyHeld)
