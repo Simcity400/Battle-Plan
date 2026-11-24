@@ -494,27 +494,3 @@ test('a stable row id is never read as a row position, and a reorder refreshes t
   const a = { id: 'A', label: 'A' }, b = { id: 'B', label: 'B' };
   assert.notEqual(matrixExtentSignature(grid, { rows: [a, b], columns: [a, b] }), matrixExtentSignature(grid, { rows: [b, a], columns: [b, a] }));
 });
-
-test('a who miss inside a projection comes back as a demand from the same projection, and art it asked for as a URL', async () => {
-  const { projectFromScene } = await import('./sceneReadView.ts');
-  const pending = { status: 'pending' } as const;
-  const identity = {
-    demandOwner: 'view' as const,
-    resolve: (kind: 'country', key: string, atHour: number) => ({
-      kind, key, atHour, holder: pending, tag: pending, name: pending, colour: pending, flagChoice: pending,
-      validInterval: [atHour, atHour] as const, nextChangeAt: Infinity,
-    }),
-  };
-  const scene = { widget: 1, subs: [], pictures: [], model: null };
-  const projected = projectFromScene(scene, { sources: {}, staticPanels: { main: { partner: 'BUL' } } }, 120, {
-    identity: identity as never,
-    artUrl: handle => (handle.kind === 'url' ? handle.url : null),
-  }, view => {
-    const reply = view.panel<{ partner: string }>('main')!;
-    view.art({ kind: 'url', url: 'asset://flag.png' });
-    return view.who('country', reply.partner, 120).name.status;
-  });
-  assert.equal(projected.model, 'pending');
-  assert.deepEqual(projected.identityDemands, [['country', 'BUL', 120]]);
-  assert.deepEqual(projected.artUrls, ['asset://flag.png']);
-});

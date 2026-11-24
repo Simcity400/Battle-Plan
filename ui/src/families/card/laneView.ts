@@ -1,14 +1,13 @@
-import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
-import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
+import type { LaneView, Painted, PaintInput, Scene } from '../../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
-import { barsReadViewFromScene } from '../bars/laneView.ts';
+import { createLaneArtProvider } from '../art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
-import type { ArtProvider, EntityKind, FamilyTheme, IdentityProvider } from '../contract.ts';
+import type { ArtProvider, FamilyTheme, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures } from '../scene.ts';
 import { layoutCards, type CardLayout } from './layout.ts';
 import { assertCardModelValid, deriveCardAudit, deriveCardMirror, deriveCardTooltip, type CardModel } from './model.ts';
 import { drawCards, hitCards, visibleCardIcons } from './painter.ts';
@@ -87,17 +86,6 @@ function cachedField(held: HeldCards, slot: string, text: string, content: () =>
   const tag = content();
   held.kept.set(slot, { text, content: tag });
   return tag;
-}
-
-function samePictures(prev: readonly (readonly unknown[])[], pictures: readonly Picture<LaneValue>[]): boolean {
-  if (prev.length !== pictures.length) return false;
-  for (let i = 0; i < pictures.length; i++) {
-    const a = prev[i]!;
-    const b = pictures[i]!.parts;
-    if (a.length !== b.length) return false;
-    for (let j = 0; j < b.length; j++) if (a[j] !== b[j]) return false;
-  }
-  return true;
 }
 
 function intervalOf(scene: Scene, binding: FamilyCardBinding): readonly [number, number] {
@@ -185,7 +173,7 @@ export function familyCardLaneView(wake: (widget: number) => void, options?: Fam
       if (proj === 'loading') return hour + 1;
       if (proj === 'unknown' || !proj.nextChange) return Infinity;
       const index = bound.identitySnapshot ? IdentityIndex.fromSnapshot(bound.identitySnapshot) : null;
-      return proj.nextChange(barsReadViewFromScene(scene, bound, hour, index ? { identity: createSnapshotIdentityProvider(index) } : undefined), bound.options);
+      return proj.nextChange(sceneReadView(scene, bound, hour, index ? { identity: createSnapshotIdentityProvider(index) } : undefined), bound.options);
     },
 
     paint(input: PaintInput, state, content): Painted {
@@ -239,26 +227,20 @@ export function familyCardLaneView(wake: (widget: number) => void, options?: Fam
       if (reuse && held.model) {
         model = held.model;
       } else {
-        const demands = new Map<string, readonly [EntityKind, string, number]>();
-        const demandedArt = new Set<string>();
-        const target = held;
-        const readView = barsReadViewFromScene(input, bound, hour, {
+        const projected = projectScene(input, bound, hour, {
           identity: held.identityProvider,
-          onIdentityDemand: (kind, key, atHour) => { demands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]); },
           art: held.artProvider,
-          onArtDemand: handle => {
-            const url = artUrlForHandle(handle, target.identityIndex);
-            if (url) demandedArt.add(url);
-          },
-        });
-        model = proj.project(readView, bound.options);
+          index: held.identityIndex,
+        }, view => proj.project(view, bound.options));
+        model = projected.model;
+        const readView = projected.view;
         assertCardModelValid(model, hour);
-        held.demandedArtUrls = [...demandedArt];
-        const list = [...demands.values()];
+        held.demandedArtUrls = [...projected.artUrls];
+        const list = projected.identityDemands;
         held.identityDemandsField = list.length ? { value: list, content: cachedField(held, 'identityDemands', JSON.stringify(list), content) } : null;
         held.model = model;
         held.modelKind = bound.kind;
-        held.prevParts = input.pictures.map(picture => picture.parts.slice());
+        held.prevParts = snapshotPictures(input.pictures);
         held.prevOptions = bound.options;
         held.prevStaticPanels = bound.staticPanels;
         held.prevStaticAnswers = bound.staticAnswers;
