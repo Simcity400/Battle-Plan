@@ -649,7 +649,7 @@ fn stretch_boundary_windows_within_six_hours_cross_gaps_with_exact_bins_and_page
     let run0_last = 10_203;
     let run1_first = 10_401;
     let last = 11_200;
-    let fixture = Fixture::with_gap(Data::Market, first..=last, (run0_last + 1)..=(run1_first - 1));
+    let fixture = Fixture::with_runs(Data::Market, &[first..=run0_last, run1_first..=last]);
     let query = fixture.query();
     let reader = market(&query);
 
