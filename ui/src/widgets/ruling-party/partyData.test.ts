@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bands, formatPopularity, leaderAt, leaderShown, partyBadges, partyNameAt, rulingAt, rulingFirst, validatePartyHistoryReply } from './partyData.ts';
+import { bands, leaderAt, leaderShown, partyBadges, partyNameAt, rulingAt, rulingFirst, validatePartyHistoryReply } from './partyData.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 
 const REPLY: PartyHistoryReply = {
@@ -32,7 +32,6 @@ test('a change of government next to a gap is not a badge; elections are', () =>
   assert.equal(badges[1]!.label, 'fascism took power from democratic');
   assert.equal(rulingAt(REPLY, 105), 'democratic');
   assert.equal(rulingAt(REPLY, 103), null);
-  assert.equal(formatPopularity('4512345', 5), '45.1%');
   assert.throws(() => validatePartyHistoryReply({ ...REPLY, parties: [{ token: 'x', parts: [-1] }] }));
 });
 

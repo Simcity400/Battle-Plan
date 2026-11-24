@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, colour, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, identityColour, readableColour } from '../../charts/palette.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
@@ -11,11 +11,12 @@ import {
   type HeatLanesModel,
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
+import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { regionLanes } from '../../families/regions/regionRows.ts';
-import { formatDateOnly, formatDateParts, formatScalar } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatDateParts, formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
 import type {
   RegionalWeatherColumn,
   RegionalWeatherColumnRegion,
@@ -45,7 +46,7 @@ export function temperatureText(raw: number): string {
 }
 
 export function modifierText(raw: number): string {
-  return formatScalar((raw / FIXED) * 100, { decimals: 0, maxDecimals: 1, percent: true, signed: true });
+  return formatRecordedPercent((raw / FIXED) * 100, { signed: true });
 }
 
 interface Palette {
@@ -58,7 +59,7 @@ interface Palette {
 
 function palette(reply: RegionalWeatherReply, surface: string): Palette {
   const flag = new Map<string, string>();
-  reply.flags.forEach((item, ordinal) => flag.set(item.id, colour(surface, ordinal)));
+  reply.flags.forEach((item, ordinal) => flag.set(item.id, identityColour(surface, 'weather', item.id, ordinal)));
   return {
     flag,
     track: surfaceMix(surface, 0.04),
@@ -259,6 +260,7 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    ...(options.show === 'conditions' ? { readoutWidth: LANE_READOUT_MAX_WIDTH } : {}),
     regions: regionLanes(null, 'Most active this week'),
     inspect: (rowIndex, at) => {
       const region = regions[rowIndex];

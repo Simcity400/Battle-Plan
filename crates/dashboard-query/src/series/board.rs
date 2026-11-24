@@ -76,7 +76,7 @@ pub fn at(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32) -> io::Result<B
             (held, read.into_iter())
         }
         Rows::Top { by, n, least } => {
-            let held: Vec<Country> = match columns.get(by).ok_or_else(|| invalid("A board ranks by a column it does not hold"))?.line.rank_at_by_checked(hour, n, least)? {
+            let held: Vec<Country> = match columns.get(by).ok_or_else(|| invalid("A board ranks by a column it does not hold"))?.line.rank_at(hour, n, least)? {
                 Ok(ranked) => ranked.into_iter().map(Country::from).collect(),
                 Err(reason) => return Ok(Board { rows: Vec::new(), missing: Some(reason) }),
             };
@@ -258,7 +258,7 @@ mod tests {
         let fixture = Fixture::new(Data::Power, hour - 1..=hour + 1);
         let query = fixture.query();
         let columns = [power_column(&query), Column { line: line(&query, "commandPower"), partial: Some(line(&query, "politicalPower")) }];
-        assert_eq!(columns[0].line.rank_at_by(query.timeline.first, 2, false).unwrap(), ["GER"]);
+        assert_eq!(columns[0].line.rank_at(query.timeline.first, 2, false).unwrap().unwrap(), ["GER"]);
         let board = at(&columns, Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
         let mut wanted: Vec<(i64, u32)> = [9001, 9002].into_iter().map(|id| (power(id, hour).unwrap(), id)).collect();
         wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));

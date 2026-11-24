@@ -744,6 +744,8 @@ export function drawTimeChart(
         ctx.lineTo(cx + 5, layout.axisY - 4);
         ctx.stroke();
         ctx.restore();
+      } else if (col.month?.status === 'recorded' && col.month.missingParts && col.month.missingParts.length > 0) {
+        drawSeriesMissingStrip(ctx, col.barX, layout.axisY + 1, col.barWidth, theme.hatch, theme, 4);
       }
       if (col.label && Math.abs(cx - layout.dateTabX) > layout.dateTabWidth / 2 + 10) {
         ctx.save();

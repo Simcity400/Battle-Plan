@@ -1,5 +1,5 @@
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { formatFixed, rescale } from '../../charts/valueAxis.ts';
+import { formatShare as formatDerivedShare } from '../../families/valueFormat.ts';
 import type { SeriesState } from '../../generated/dashboard';
 
 export const STATES = ['noSupply', 'strained', 'inSupply'] as const;
@@ -13,7 +13,7 @@ export type SupplyAt = { counts: SupplyCounts } | { missing: string } | undefine
 
 export const totalDivisions = (counts: SupplyCounts) => STATES.reduce((sum, state) => sum + counts[state], 0);
 export const formatShare = (count: number, total: number) =>
-  total ? `${formatFixed(rescale(BigInt(count) * 100n, total, 2), 2, 2)}%` : 'Not known';
+  total ? formatDerivedShare(count / total) : 'Not known';
 
 export function supplyAt(replies: readonly (readonly SeriesState[])[] | undefined, tag: string, hour: number): SupplyAt {
   if (!replies || replies.length !== STATES.length) return undefined;
