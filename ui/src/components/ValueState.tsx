@@ -1,23 +1,7 @@
-import type { CSSProperties } from 'react';
-import { valueStateText, type ValueStateKind, type ValueStateProps } from './valueStateText.ts';
+import { valueStateText, type ValueStateProps } from './valueStateText.ts';
 import './ValueState.css';
 
-export { valueStateText };
-export type { ValueStateKind, ValueStateProps };
-
-export interface MissingPictureProps {
-  kind?: 'flag' | 'picture';
-  reason?: string;
-  width?: number | string;
-  height?: number | string;
-  className?: string;
-  decorative?: boolean;
-}
-
-export interface MissingNameProps {
-  reason?: string;
-  className?: string;
-}
+export type { ValueStateProps };
 
 export function ValueState({ kind, text, unit, reason, narrow = false, className = '' }: ValueStateProps) {
   const extra = className ? ` ${className}` : '';
@@ -54,19 +38,4 @@ export function ValueState({ kind, text, unit, reason, narrow = false, className
       </span>;
     }
   }
-}
-
-export function MissingPicture({ kind = 'picture', reason, width, height, className = '', decorative = false }: MissingPictureProps) {
-  const label = reason ? `${kind === 'flag' ? 'Flag' : 'Picture'} not recorded: ${reason}` : `${kind === 'flag' ? 'Flag' : 'Picture'} not recorded`;
-  const style: CSSProperties | undefined = width !== undefined || height !== undefined
-    ? { ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}) } : undefined;
-  return <span className={`val-picture-missing${kind === 'flag' ? ' is-flag' : ''}${className ? ` ${className}` : ''}`}
-    style={style} data-value-state="missing-picture" data-tooltip={label}
-    {...(decorative ? { 'aria-hidden': true } : { role: 'img', 'aria-label': label })} />;
-}
-
-export function MissingName({ reason, className = '' }: MissingNameProps) {
-  const label = reason ? `Name not recorded: ${reason}` : 'Name not recorded';
-  return <span className={`val-name-missing${className ? ` ${className}` : ''}`} data-value-state="missing-name"
-    data-tooltip={reason} aria-label={label}>Name not recorded</span>;
 }
