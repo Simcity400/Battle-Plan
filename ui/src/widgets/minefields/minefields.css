@@ -1,16 +1,3 @@
-.minefields { display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box; padding: var(--space-1) var(--space-3) var(--space-2); container-type: inline-size; }
-.minefields-rows { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
-.minefields-rows .chart-legend { max-height: calc(var(--type-sm) * 6); overflow-y: auto; flex-shrink: 0; }
-.minefields-scroll { flex: 1; min-height: 0; overflow: auto; padding-inline: var(--space-3); }
-.minefields-row { height: 100%; display: grid; grid-template-columns: minmax(80px, 24%) minmax(40px, 1fr) auto; align-items: center; gap: 12px; font-size: var(--type-sm); cursor: pointer; }
-.minefields-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.minefields-total { color: var(--muted); font-size: var(--type-xs); text-align: right; min-width: 48px; font-variant-numeric: tabular-nums; }
-.minefields-bar { height: 16px; border-radius: 4px; overflow: hidden; display: flex; align-items: stretch; }
-.minefields-segment { flex-shrink: 0; box-sizing: border-box; }
 .minefields-drill { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; }
 .minefields-history { flex: 1 1 50%; min-height: 140px; display: flex; }
 .minefields-reports { flex: 1 1 50%; min-height: 0; display: flex; }
-@container (max-width: 420px) {
-  .minefields .minefields-total { display: none; }
-  .minefields .minefields-row { grid-template-columns: minmax(60px, 34%) minmax(40px, 1fr); gap: 8px; }
-}
