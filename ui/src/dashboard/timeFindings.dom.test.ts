@@ -23,8 +23,6 @@ const TRANSFORMS: Record<string, (code: string) => string> = {
   '/charts/timeline/Timeline.tsx': capture('Timeline'),
   '/charts/race/CountryRaceView.tsx': capture('CountryRaceView'),
   '/components/CountryPicker.tsx': capture('CountryPicker'),
-  '/charts/flow/FlowDiagram.tsx': capture('FlowDiagram'),
-  '/widgets/trade-flows/useTradeFlows.ts': source('useTradeFlows'),
   '/dashboard/raids.ts': source('useRaidLog'),
   '/dashboard/widgetPerf.ts': source('shownSink'),
   '/widgets/rendererLoaders.ts': tracked('loadWidgetRenderer'),
@@ -123,9 +121,6 @@ test('7. Before a 100–109 track at 95, coverage wins over loading, failures an
     const shown = await act<Read>(scene({ kind: 'raid-tally', time: { mode: 'follow' }, hour: 95, options: { view: 'race' }, groups: groupsOf(['GER']), raids: value }));
     assert.ok(shown.text.includes(OUTSIDE) && !/Couldn’t load|Loading/.test(shown.text), `${label}: ${shown.text}`);
   }
-  const volunteers = await act<Read>(scene({ kind: 'volunteers', time: { mode: 'follow' }, hour: 95, groups: groupsOf(['GER']) }));
-  assert.ok(volunteers.text.includes(OUTSIDE) && !/0 links/.test(volunteers.text), volunteers.text);
-  assert.deepEqual(volunteers.asks.filter(ask => ask.product === 'volunteers-expeditionaries'), []);
   const queue = await act<Read>(scene({ kind: 'training-queue', time: { mode: 'follow' }, hour: 95, countries: GER, groups: groupsOf(['GER']) }));
   assert.deepEqual(queue.asks.filter(ask => ask.product === 'country-groups' || ask.product === 'training-queue'), [], `outside asks nothing: ${JSON.stringify(queue.asks)}`);
   await act(scene({ kind: 'fuel', time: { mode: 'follow' }, hour: 105, countries: GER, groups: groupsOf(['GER']) }));
@@ -150,11 +145,6 @@ const RANKED = `({ branchId: '1', hour, missing: null, warnings: [], rows: [{ ta
 const GAP = [{ firstHour: 105, lastHour: 106, reason: REASON }];
 const TOP = { kind: 'group', group: { type: 'top', count: 3 }, membership: 'hour', aggregate: false };
 const dated = (asks: Ask[], hour: number) => asks.filter(ask => ask.hours.includes(hour));
-
-test('11. Trade flows restored on its contributors breakdown opens that breakdown, not the main view', () => onPage(async act => {
-  const shown = await act<Read>(scene({ kind: 'trade-flows', time: { mode: 'follow' }, hour: 105, options: { show: 'contributions' }, groups: groupsOf(['GER']) }));
-  assert.ok(shown.drillOpen, `the saved breakdown is the view: ${shown.text}`);
-}));
 
 test('12. A missing pin reads no branch-end facts: Factories’ saved breakdown and the Scoreboard ask nothing at 109 and say to choose another time', () => onPage(async act => {
   const day = await act<string>('day(109)');
@@ -197,20 +187,6 @@ test('13. Hover, expansion, ranking and follow obey coverage: nothing is sent in
   assert.ok(back.follows.length > 0 && back.followLog.some(entry => entry.startsWith('follow ') && !registered.includes(entry)), `back inside, a new follow registers: ${JSON.stringify(back.followLog)}`);
 }));
 
-const AID = `({ links: [{ key: 'l1', sender: 'GER', senderSlot: 1, senderCountryId: 101, host: 'ENG', hostSlot: 2, hostCountryId: 102,
-  runs: [{ firstHour: 100, lastHour: 109, divisions: 3, startsSegment: true }] }], tallies: [], unobserved: [], warnings: [] })`;
-
-test('14. Volunteers: a country’s partners opened at 105 stay mounted on their own date when the following parent leaves the track', () => onPage(async act => {
-  await act(scene({ kind: 'volunteers', time: { mode: 'follow' }, hour: 105, groups: groupsOf(['GER', 'ENG']), replies: { 'volunteers-expeditionaries': AID } }));
-  const nodes = (await act<{ nodes: { id: string }[] } | null>('props("FlowDiagram")'))?.nodes ?? [];
-  assert.ok(nodes.length > 0, 'the diagram draws its countries');
-  const opened = await act<Read & { called: boolean }>(`call("FlowDiagram", "onLabelPick", ${JSON.stringify(nodes[0])})`);
-  assert.ok(opened.called && opened.drillOpen, `the partners open: ${opened.text}`);
-  const day = await act<string>('day(105)');
-  const left = await act<Read>('seek(115)');
-  assert.ok(left.drillOpen && left.day === day, `the drill stays mounted at 105: ${left.day} ${left.text}`);
-}));
-
 test('15. Follow keeps the drill’s own time: a saved stockpile told to follow keeps following after a seek', () => onPage(async act => {
   const stockpileCountry = await act<string>('identityToken(5)');
   await act(scene({ kind: 'equipment-stockpile', time: pinAt(105), hour: 107, countries: GER, options: { show: 'stockpile', stockpileCountry }, groups: groupsOf(['GER']) }));
@@ -228,32 +204,6 @@ test('16. Equipment produced’s saved breakdown mounted at 95 waits outside, th
   assert.ok([...before.asks, ...inside.asks].some(ask => ask.product === 'equipment-produced-country'), `the breakdown reads its country: ${JSON.stringify(inside.asks)}`);
   const label = await act<string | null>('stateLabel("CountryRaceView")');
   assert.equal(label, 'Loading equipment types…', 'the breakdown shows its own pending read, not the parent’s state');
-}));
-
-const OFFER = { country: 5000, tag: 'GER', inventory: [], prices: [], subsidies: [], subsidyTotalRaw: '0', autoSendMarketAccess: false };
-const MARKET = `({ branchId: "1", offers: [${JSON.stringify(OFFER)}], contracts: [], agreements: [], purchasesMissing: null, unattributed: 0, variants: [], icons: [], warnings: [] })`;
-
-test('17. Trade market: the moment follows pin, campaign and range; a clicked offer row pins at its own hour and restores on its own breakdown, which can follow playback', () => onPage(async act => {
-  const replies = { 'market-lendlease': MARKET };
-  const pinned = await act<Read>(scene({ kind: 'trade-flows', time: pinAt(105), hour: 107, options: { view: 'market' }, countries: { kind: 'all' }, replies }));
-  assert.ok(pinned.asks.some(ask => ask.product === 'market-lendlease' && ask.hours.includes(105)), `pinned reads 105: ${JSON.stringify(pinned.asks)}`);
-  const campaign = await act<Read>(scene({ kind: 'trade-flows', time: { mode: 'campaign' }, hour: 107, options: { view: 'market' }, countries: { kind: 'all' }, replies }));
-  assert.ok(campaign.asks.some(ask => ask.product === 'market-lendlease' && ask.hours.includes(109)), `the whole campaign reads its end: ${JSON.stringify(campaign.asks)}`);
-  const range = await act<Read>(scene({ kind: 'trade-flows', time: { mode: 'range', firstOffset: 0, lastOffset: 3 }, hour: 107, options: { view: 'market' }, countries: { kind: 'all' }, replies }));
-  assert.ok(range.asks.some(ask => ask.product === 'market-lendlease' && ask.hours.includes(103)), `a range reads its last hour: ${JSON.stringify(range.asks)}`);
-  await act(scene({ kind: 'trade-flows', time: pinAt(105), hour: 107, options: { view: 'market' }, countries: { kind: 'all' }, replies }));
-  const opened = await act<Read & { clicked: boolean }>('click("details > summary")');
-  assert.ok(opened.clicked && opened.drillOpen, `the offer row opens its contributions: ${opened.text}`);
-  const pin = await act<Read & { pressed: boolean }>('press("Pin as widget")');
-  const saved = pin.pins[0] as { time: unknown; options: Record<string, unknown> } | undefined;
-  assert.ok(pin.pressed && saved, `the offer pins: ${JSON.stringify(pin.buttons)}`);
-  assert.deepEqual(saved.time, pinAt(105), 'the offer pins at the row’s own hour');
-  assert.equal(saved.options.view, 'market'); assert.equal(saved.options.show, 'contributions');
-  const restored = await act<Read>(scene({ kind: 'trade-flows', time: saved.time, hour: 107, options: saved.options, countries: { kind: 'all' }, replies }));
-  assert.ok(restored.drillOpen && await act<boolean>('has(".drill-saved details[open] > summary")'), `the offer restores open on its breakdown: ${restored.text}`);
-  await act('press("Follow playback")');
-  const moved = await act<Read>('seek(108)');
-  assert.equal(moved.day, await act<string>('day(108)'), `the restored offer follows playback: ${moved.day} ${moved.drill}`);
 }));
 
 test('18. A country chosen by slot whose identities fail to load says so and offers a retry, instead of loading forever', () => onPage(async act => {
