@@ -246,6 +246,7 @@ struct Params {
     cursor: Option<String>,
     page_size: Option<u32>,
     top: Option<u32>,
+    least: Option<bool>,
     hour: Option<f64>,
     width: Option<u32>,
     #[serde(default)]
@@ -356,7 +357,7 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
             decimals: measure.decimals,
             states: match ranking {
                 Some(n) if params.reads.is_empty() => ranked::states(&line, params.hour, n)?,
-                Some(_) => return Err(invalid(format!("A ranked {} state names an hour, not reads", series.kind))),
+                Some(n) => ranked::among(&line, &params.reads, n, params.least == Some(true))?,
                 None => line.states(&params.reads, params.top.map(|top| top as usize))?,
             },
         })?,
