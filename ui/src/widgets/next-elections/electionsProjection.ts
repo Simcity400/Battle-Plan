@@ -1,6 +1,8 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { filterCandidates } from '../../families/holders.ts';
 import { identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
@@ -60,7 +62,7 @@ function termCell(entry: ElectionEntry, hour: number): TableCell {
   if (entry.next === null || entry.last === null || entry.next <= entry.last) {
     return { value: notRecorded('The term’s start or the next election is not recorded'), bar: null };
   }
-  const share = Math.max(0, Math.min(1, (hour - entry.last) / (entry.next - entry.last)));
+  const share = Math.max(0, Math.min(1, (day(hour) * HOURS_A_DAY - entry.last) / (entry.next - entry.last)));
   return {
     value: knownValue(`${Math.floor(share * 100)}%`),
     sortValue: share === 0 ? zeroValue(0) : knownValue(share),
@@ -110,11 +112,12 @@ export const electionsProjection: TableProjection<ElectionsProjectionOptions> = 
       });
     }
     const membership = unrecordedAt(options.filter, hour);
-    const warnings = reply.unknown ? [...reply.warnings, `${reply.unknown} countries' election eligibility was not recorded at this date`] : reply.warnings;
+    const unknown = reply.unknown ? `${reply.unknown} countries' election schedule or eligibility was not recorded at this date` : null;
     return {
       columns: ELECTION_COLUMNS,
       rows,
       hour,
+      ...(unknown !== null ? { populationPartial: unknown } : {}),
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
       ...(rows.length === 0
@@ -124,7 +127,7 @@ export const electionsProjection: TableProjection<ElectionsProjectionOptions> = 
             ? { empty: 'Not recorded', emptyDetail: 'Election eligibility is not in this recording at this date', emptyKind: 'unavailable' as const }
             : { empty: 'No elections due', emptyKind: 'empty' as const }
         : {}),
-      warnings,
+      warnings: unknown !== null ? [...reply.warnings, unknown] : reply.warnings,
     };
   },
 });
@@ -137,24 +140,28 @@ export const electionsDeclaration: TableWidgetDeclaration<ElectionsProjectionOpt
   emptyCampaign: 'Load a campaign to see elections.',
   icon: 'ballot',
   countries: { mode: 'filter' },
-  sources: ctx => ({
-    owner: `next-elections:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage: { mode: 'population', form: 'all' },
-        product: 'next-elections',
-        followQuery: { panel: 'next-elections', branchId: ctx.branch.id },
-        params: { branchId: ctx.branch.id },
-        validate: validateElections,
-      },
-    }],
-  }),
+  sources: ctx => {
+    const chosen = filterCandidates(ctx.countries.filter.passing);
+    const params = { branchId: ctx.branch.id, ...(chosen !== null ? { countries: chosen.map(countryFromKey) } : {}) };
+    return {
+      owner: `next-elections:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+      entries: [{
+        name: 'main',
+        source: ctx.track.source,
+        branch: ctx.branch.id,
+        offset: ctx.track.axisOffset,
+        read: {
+          shape: 'point',
+          channel: 'panel',
+          coverage: chosen !== null ? { mode: 'keyed', keys: chosen } : { mode: 'population', form: 'all' },
+          product: 'next-elections',
+          followQuery: { panel: 'next-elections', ...params },
+          params,
+          validate: validateElections,
+        },
+      }],
+    };
+  },
   projection: electionsProjection,
   columns: ELECTION_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
