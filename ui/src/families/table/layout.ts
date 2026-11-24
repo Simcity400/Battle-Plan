@@ -145,12 +145,8 @@ export function measureFixedColumnWidths(
       out[column.key] = Math.ceil(Math.max(column.minWidth ?? 160, hideHeader ? 0 : measure(column.label, headFont) + CELL_INSET * 2));
       continue;
     }
-    if (column.cellKind === 'stockpileSum') {
-      out[column.key] = column.minWidth ?? 210;
-      continue;
-    }
-    if (column.cellKind === 'stockpileParts') {
-      out[column.key] = column.minWidth ?? 250;
+    if (column.cellKind === 'stockpileNet' || column.cellKind === 'stockpileSum' || column.cellKind === 'stockpileBalance') {
+      out[column.key] = column.minWidth ?? 174;
       continue;
     }
     if (column.cellKind === 'winRate') {

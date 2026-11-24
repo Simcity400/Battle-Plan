@@ -36,7 +36,7 @@ import {
   drawSkillFigure,
   drawSplitBar,
   drawStatusMark,
-  drawStockpileSumCell,
+  drawNetBar,
   drawThresholdMeter,
   drawTrackBar,
   drawTwoWayBar,
@@ -383,8 +383,15 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.ok(act.ops.some(op => op.op === 'fillText' && op.args[0] === 'View'));
 
   const stock = makeFakeCtx();
-  drawStockpileSumCell(stock.ctx, 0, 200, 0, 48, -120, 400, '-120', THEME);
-  assert.ok(stock.ops.some(op => op.op === 'fillText' && op.args[0] === '-120'));
+  drawNetBar(stock.ctx, 0, 200, 0, 48, -0.25, THEME);
+  const short = stock.ops.find(op => op.op === 'roundRect');
+  assert.deepEqual(short?.args.slice(0, 4), [100.5 - 25, 18, 25, 12], 'a quarter short of need draws a quarter of the half width, left of the centre, 12 px tall');
+  const over = makeFakeCtx();
+  drawNetBar(over.ctx, 0, 200, 0, 48, 3, THEME);
+  assert.equal(over.ops.find(op => op.op === 'roundRect')?.args[2], 98, 'a surplus is capped at the whole half width');
+  const none = makeFakeCtx();
+  drawNetBar(none.ctx, 0, 200, 0, 48, null, THEME);
+  assert.equal(none.ops.some(op => op.op === 'roundRect'), false, 'no share, no bar; the centre line stays');
 
   const clock = makeFakeCtx();
   drawClockSummary(clock.ctx, 320, 180, {

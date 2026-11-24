@@ -67,8 +67,6 @@ export interface FamilyTablePicture {
   maximaHour?: number;
   maximaCols?: string;
   maxima?: Map<string, number>;
-  stockpileRows?: readonly FlatTableRow[];
-  stockpileMaxAbs?: number;
   lastMaximaSig?: string;
   lastIconVersion?: number;
   lastHour?: number;
@@ -339,10 +337,8 @@ export function drawFamilyTable(
 
   let maximaCols = '';
   let hasMeasuredCols = false;
-  let hasStockpileSum = false;
   for (let c = 0; c < layout.columns.length; c++) {
     const col = layout.columns[c]!;
-    if (col.cellKind === 'stockpileSum') hasStockpileSum = true;
     if (col.numeric && measuresColumn(col)) {
       hasMeasuredCols = true;
       maximaCols += `${col.key}:${col.display}|`;
@@ -379,29 +375,6 @@ export function drawFamilyTable(
   let maximaSig = '';
   if (maxima.size > 0) {
     for (const [k, v] of maxima) maximaSig += `${k}=${v};`;
-  }
-
-  let stockpileMaxAbs = 0;
-  if (hasStockpileSum) {
-    if (picture && picture.stockpileRows === rows && picture.stockpileMaxAbs !== undefined) {
-      stockpileMaxAbs = picture.stockpileMaxAbs;
-    } else {
-      for (let i = 0; i < rows.length; i++) {
-        const item = rows[i]!;
-        if (item.kind !== 'data') continue;
-        for (let c = 0; c < layout.columns.length; c++) {
-          const col = layout.columns[c]!;
-          if (col.cellKind !== 'stockpileSum') continue;
-          const b = item.row.cells[col.key]?.stockpile?.balance;
-          if (b != null) stockpileMaxAbs = Math.max(stockpileMaxAbs, Math.abs(b));
-        }
-      }
-      if (picture) {
-        picture.stockpileRows = rows;
-        picture.stockpileMaxAbs = stockpileMaxAbs;
-      }
-    }
-    maximaSig += `__sp=${stockpileMaxAbs};`;
   }
 
   let frameKey: string | null = null;
@@ -616,7 +589,6 @@ export function drawFamilyTable(
         fill: look.fill,
         rowHovered: inspected,
         rowFocused: focused,
-        stockpileMaxAbs,
       });
       px += col.width;
     }
@@ -704,7 +676,6 @@ export function drawFamilyTable(
           fill: look.fill,
           rowHovered: inspected,
           rowFocused: focused,
-          stockpileMaxAbs,
         });
         drawn[index] = `${look.key}\u0001${mark}`;
         paintedCells++;
@@ -747,7 +718,6 @@ export function drawFamilyTable(
           fill: look.fill,
           rowHovered: false,
           rowFocused: false,
-          stockpileMaxAbs,
         });
         drawn[index] = cellSig;
         dirtyRows.add(index);
@@ -899,7 +869,6 @@ export function drawFamilyTable(
           fill: look.fill,
           rowHovered: inspected,
           rowFocused: focused,
-          stockpileMaxAbs,
         });
         if (!pinnedOnly) {
           paintedCells++;

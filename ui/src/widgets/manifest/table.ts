@@ -8,6 +8,7 @@ import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import * as DIVISION_EQUIPMENT from '../division-equipment/definition.ts';
 import { MARKET_TABS, VIEWS, marketTableOptions } from '../international-market/definition.ts';
 import { EVENTS_TABLE_OPTIONS, OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
+import { OPTIONS as STOCKPILE_OPTIONS } from '../equipment-stockpile/definition.ts';
 
 const WORLD_TENSION_EVENTS_SCOPED_OPTIONS = [
   ...WORLD_TENSION_OPTIONS.filter(field => field.key === 'view'),
@@ -29,6 +30,8 @@ function tableSpec<TModule>(
 const DIVISION_EQUIPMENT_SHARED = DIVISION_EQUIPMENT.OPTIONS.filter(field => field.key === 'country' || field.key === 'view' || field.key === 'countFor');
 const GAME_SCORE_TABLE_OPTION_KEYS = new Set(['view', 'factions', 'topMeasure', 'rankMarkers', TABLE_SETTINGS_KEY]);
 const GAME_SCORE_TABLE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_TABLE_OPTION_KEYS.has(field.key));
+const STOCKPILE_TABLE_OPTION_KEYS = new Set(['view', 'layout', TABLE_SETTINGS_KEY]);
+const STOCKPILE_TABLE_OPTIONS = STOCKPILE_OPTIONS.filter(field => STOCKPILE_TABLE_OPTION_KEYS.has(field.key));
 
 export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
   {
@@ -170,6 +173,20 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
         : { projection: mod.commandSpendingProjection, declaration: mod.commandSpendingDeclaration }),
     ),
   })),
+  {
+    kind: 'equipment-stockpile',
+    view: 'bars',
+    label: 'Table',
+    family: 'table',
+    viewOption: 'view',
+    options: STOCKPILE_TABLE_OPTIONS,
+    loadSpec: tableSpec(
+      'equipment-stockpile',
+      'bars',
+      () => import('../equipment-stockpile/stockpileProjection.ts'),
+      mod => ({ projection: mod.stockpileProjection, declaration: mod.stockpileDeclaration }),
+    ),
+  },
   {
     kind: 'production-lines',
     view: DEFAULT_VIEW,

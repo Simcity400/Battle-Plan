@@ -2,6 +2,7 @@
 pub mod artwork;
 pub mod at;
 pub mod catalogue;
+pub mod types;
 mod history;
 #[cfg(test)]
 mod tests;
@@ -9,6 +10,7 @@ mod tests;
 pub use artwork::StockpileArtwork;
 pub use at::EquipmentStockpileAt;
 pub use catalogue::{EquipmentStockpileCatalogue, EquipmentStockpileChart};
+pub use types::EquipmentStockpileTypes;
 
 use dashboard_base::products::LoadContext;
 use dashboard_base::{Source, catalogue::{self as loaded, Catalogue}};
@@ -193,12 +195,13 @@ pub struct Named {
     pub token: String,
     pub name: Option<String>,
     pub design: Option<String>,
+    pub origin: Option<String>,
 }
 
 pub const NAME_TABLES: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens];
 
 pub fn named_in(frame: &DecodedFrame, variants: &[u64], tokens: &BTreeSet<u32>, content: &Content, refused: &mut BTreeMap<String, usize>) -> (BTreeMap<u64, Named>, BTreeMap<u32, String>) {
-    let unknown = || Named { known: false, token: String::new(), name: None, design: None };
+    let unknown = || Named { known: false, token: String::new(), name: None, design: None, origin: None };
     let tables = (frame.complete::<tables::Countries>(), frame.complete::<tables::CountryLinks>(), frame.complete::<tables::LexicalTokens>(), frame.complete::<tables::VariantDefinitions>());
     let (Ok(countries), Ok(links), Ok(lexical), Ok(definitions)) = tables else {
         *refused.entry("Design definitions or their names were not read at this hour".to_owned()).or_default() += variants.len();
@@ -228,7 +231,8 @@ pub fn named_in(frame: &DecodedFrame, variants: &[u64], tokens: &BTreeSet<u32>, 
         .iter()
         .map(|&id| {
             let Ok(at) = definitions.binary_search_by_key(&id, |row| row.id) else { return (id, unknown()) };
-            let mut raw = raw_variant(&definitions[at], frame.hour, &tags, lexical);
+            let definition = &definitions[at];
+            let mut raw = raw_variant(definition, frame.hour, &tags, lexical);
             for (_, why) in &raw.refusals {
                 *refused.entry(why.clone()).or_default() += 1;
             }
@@ -238,7 +242,8 @@ pub fn named_in(frame: &DecodedFrame, variants: &[u64], tokens: &BTreeSet<u32>, 
                 variant_names::with_design(&mut raw, &own, &upgraded, &spell);
             }
             let name = variant_names(&raw, texts).0;
-            (id, Named { known: true, design: raw.design, name, token: raw.token })
+            let origin = tags.tag_of(if (1..0x8000_0000).contains(&definition.origin_link) { definition.origin_link } else { definition.creator_link });
+            (id, Named { known: true, design: raw.design, name, token: raw.token, origin })
         })
         .collect();
     (named, spelled)

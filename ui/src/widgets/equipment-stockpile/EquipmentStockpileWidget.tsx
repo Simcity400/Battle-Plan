@@ -1,7 +1,6 @@
 import { useGate, useHeldEdges, type Gate } from '../../dashboard/regionGate';
 import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
-import { narrowTableOf } from '../../charts/table/options.ts';
 import { Select } from '../../components/Select';
 import { createPortal } from 'react-dom';
 import ContentSetPicker from '../../components/ContentSetPicker';
@@ -38,20 +37,16 @@ import type { BoundTrack } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import type { EquipmentStockpileReply, StockpileCatalogueReply } from './types';
 import type { LiveHead } from '../../charts/TimeChart';
-import type { LiveValues } from '../../charts/live';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { atReply } from './stockpileAt.ts';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, labelAt,
   SAVED_DESIGN_UNAVAILABLE, overTimeTooltip, shareModeOf, shareOf, stockAt, stockChoices, stockGroups, dailyAt, chartDrawable } from './stockpileData.ts';
 import { useStockpileChart } from './useStockpileChart';
-import { groupIn, stockpileGroupKey, stockpileView } from './stockpileCatalogue';
+import { groupIn, stockpileGroupKey } from './stockpileCatalogue';
 import type { PreparedStockpileReply } from './stockpileCatalogue';
 import type { Grouping, StockGroup } from './stockpileData';
 import { useEquipmentStockpile, useStockpileCountry } from './useEquipmentStockpile';
 import StockpileDrill from './StockpileDrill.tsx';
-import StockpileTable from './StockpileTable';
-import type { StockCount } from './stockpileView';
 import { pinnedGrouping, pinStockpileDrill, stockpileDrillGroup } from './stockpileDrill';
 import type { StockpileMode } from './stockpileDrill';
 import './equipmentStockpile.css';
@@ -89,7 +84,6 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const gate = useGate(runtime, widget, SPEC, active);
   const menu = useContextMenu('Stockpile actions');
   const grouping = pinnedGrouping(widget.options);
-  const count: StockCount = options.count === 'ic' ? 'ic' : 'units';
   const includedText = typeof options.included === 'string' ? options.included : '';
   const included = useMemo(() => contentSet(includedText).map(contentKey), [includedText]);
   const anchor = useRef<HTMLDivElement | null>(null);
@@ -170,15 +164,9 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     act({ type: 'open', breakdown: BREAKDOWN.id, hour, follow: drillControl.followsAt(hour) });
   };
   const main = !saved && data && viewHour !== null ? <div className="equipment-stockpile">
-    {options.view === 'time'
-      ? <OverTime data={data} catalogue={catalogue} holders={holders} included={included} tokens={tokens} viewport={viewport} options={options} runtime={runtime} gate={gate} track={track}
-        extent={extent} playhead={playhead} liveHead={liveHead} shownHour={viewHour} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
-        onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
-      : <StockpileTable data={data} hour={viewHour} widget={widget} live={stock.live} shownAt={stock.shownAt}
-        at={(values: LiveValues<number>) => catalogue && stock.data ? clipped(stockpileView(catalogue, atReply(stock.data, values, viewHour, track.branch.id), viewHour), within) : undefined}
-        included={included} count={count} narrow={narrowTableOf(options)}
-        active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
-        runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
+    <OverTime data={data} catalogue={catalogue} holders={holders} included={included} tokens={tokens} viewport={viewport} options={options} runtime={runtime} gate={gate} track={track}
+      extent={extent} playhead={playhead} liveHead={liveHead} shownHour={viewHour} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
+      onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
   </div> : null;
   const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" failure={actor.identityError} onRetry={actor.identityRetry} /> : null;
   const detail = at === null ? <WidgetState kind="outside" read={detailCoverage} />
@@ -204,7 +192,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
         onClick={() => act({ type: 'follow' })}>Follow playback</button>}{identityNotice}{detail}
     </div> : <DrillHost drill={drillControl} runtime={runtime} subject={shownDrill.breakdown !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
       title={picked && at !== null ? labelAt(picked, grouping, at) : BREAKDOWN.label} day={at === null ? '' : dayLabel(at)}
-      returnFocus={options.view === 'time' ? '.stockpile-chart canvas' : '.stockpile-table-rows tr'}
+      returnFocus=".stockpile-chart canvas"
       canFollow onClose={() => act({ type: 'close' })} main={main}
       pinRefused={pinTimed.refused ?? pinHeld.refused ?? null} onPin={picked && selectedCountry && !actor.reason && at !== null && pinTime && pinCountry && choiceKey(picked, at) !== null ? () => {
         if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return;

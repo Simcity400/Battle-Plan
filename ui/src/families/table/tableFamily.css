@@ -240,9 +240,14 @@
 .tf-th-parts {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.tf-th-operator {
+  color: var(--muted);
+  font-weight: 400;
+  margin-right: 2px;
 }
 
 .tf-th-part {
