@@ -1,5 +1,5 @@
 import { projectCountryFlow } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, FLOW_PER_SIDE } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 
@@ -29,7 +29,7 @@ export const volunteersDeclaration: FlowWidgetDeclaration = {
   emptyCampaign: 'Load a campaign to see its volunteers and expeditionary forces.',
   icon: 'flows',
   countries: { mode: 'multi', labels: false, colours: false },
-  sources: ctx => countryFlowPlan(ctx, 'volunteer-flow', { limit: FLOW_PER_SIDE }),
+  sources: (ctx, view) => countryFlowPlan(ctx, 'volunteer-flow', { limit: flowPerSide(view) }),
   projection: volunteersProjection,
   projectionOptions: () => EMPTY_OPTIONS,
   jumpToDate: true,

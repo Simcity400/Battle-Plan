@@ -1,8 +1,15 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { SourcePlan } from '../contract.ts';
-import type { FamilyPlanContext } from '../plan.ts';
+import type { FamilyPlanContext, FamilyViewportRequest } from '../plan.ts';
 
 export const FLOW_PER_SIDE = 6;
+const FLOW_ROW_PITCH = 24;
+const FLOW_CHROME = 70;
+
+export function flowPerSide(view: FamilyViewportRequest): number {
+  if (view.height === undefined) return FLOW_PER_SIDE;
+  return Math.max(2, Math.min(FLOW_PER_SIDE, Math.floor((view.height - FLOW_CHROME) / FLOW_ROW_PITCH) - 1));
+}
 
 export function flowSubject(ctx: FamilyPlanContext): string | null {
   if (ctx.countryTag) return ctx.countryTag;

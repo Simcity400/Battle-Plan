@@ -44,6 +44,7 @@ export type TableCellKind =
   | 'status'
   | 'action'
   | 'twoWay'
+  | 'shaded'
   | 'kind';
 
 export type TableHeaderGroup =
@@ -625,11 +626,11 @@ export interface CellPaintModel {
 }
 
 const scaledColumn = (column: Pick<FamilyColumnLayout, 'display' | 'tone' | 'barEligible' | 'cellKind'>): boolean =>
-  column.cellKind === 'twoWay' || measuresColumn(column);
+  column.cellKind === 'twoWay' || column.cellKind === 'shaded' || measuresColumn(column);
 
 function scaleNumber(column: Pick<FamilyColumnLayout, 'cellKind'>, value: Value): number | undefined {
   const num = valueNumber(value);
-  return num !== undefined && column.cellKind === 'twoWay' ? Math.abs(num) : num;
+  return num !== undefined && (column.cellKind === 'twoWay' || column.cellKind === 'shaded') ? Math.abs(num) : num;
 }
 
 export function updateColumnMaximaIncremental(
@@ -723,6 +724,7 @@ export function barFractionOf(
   cell: TableCell,
   value: Value,
   top: number | undefined,
+  magnitude = false,
 ): { readonly fraction: number | null; readonly alert: boolean } {
   if (cell.bar === null) return { fraction: null, alert: false };
   if (cell.bar !== undefined) {
@@ -731,14 +733,15 @@ export function barFractionOf(
     return { fraction: Math.max(0, Math.min(1, raw)), alert: cell.bar.alert === true };
   }
   if (value.kind === 'zero') return { fraction: null, alert: false };
-  const num = valueNumber(value);
+  const raw = valueNumber(value);
+  const num = raw !== undefined && magnitude ? Math.abs(raw) : raw;
   if (num === undefined || top === undefined || top <= 0 || num <= 0) return { fraction: null, alert: false };
   return { fraction: Math.max(0, Math.min(1, num / top)), alert: false };
 }
 
 export function resolveCellPaintModel(
   cell: TableCell | undefined,
-  column: Pick<FamilyColumnLayout, 'key' | 'display' | 'tone' | 'numeric' | 'valueFormat'>,
+  column: Pick<FamilyColumnLayout, 'key' | 'display' | 'tone' | 'numeric' | 'valueFormat'> & { readonly cellKind?: TableCellKind },
   hour: number,
   maxima: ReadonlyMap<string, number>,
   countryColors?: CountryColorSource,
@@ -747,7 +750,7 @@ export function resolveCellPaintModel(
     ? resolveCellAtHour(cell, hour)
     : { value: notRecorded('Not recorded'), icon: undefined, iconPending: undefined, missingName: false };
   const bar = cell
-    ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key))
+    ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key), column.cellKind === 'twoWay' || column.cellKind === 'shaded')
     : { fraction: null, alert: false };
   const tone = cell?.tone ?? column.tone ?? null;
   const country = cell?.country ?? null;

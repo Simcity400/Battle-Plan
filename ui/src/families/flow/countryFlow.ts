@@ -53,7 +53,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
 
   const node = (index: number | null, side: FlowSide, link: FlowLink | null, total: string | null, others?: number): FlowNode => {
     const missing = link ? link.total === null : total === null;
-    if (missing) notRecordedKey = true;
+    if (missing && side !== 'centre') notRecordedKey = true;
     const amount = link ? link.total : total;
     if (index === null) {
       const label = text.others(others ?? 0);
@@ -100,7 +100,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
 
   if (reply.subject !== null) {
     if (!reply.incoming.length && !reply.outgoing.length) return blank(hour, { empty: text.none, warnings: reply.warnings, notes: reply.partial ? [reply.partial] : undefined });
-    const centre = node(reply.subject, 'centre', null, null);
+    const centre = node(reply.subject, 'centre', null, reply.largest);
     const left = reply.incoming.map(link => node(link.from, 'left', link, null, link.others ?? undefined));
     const right = reply.outgoing.map(link => node(link.to, 'right', link, null, link.others ?? undefined));
     const ribbons = [

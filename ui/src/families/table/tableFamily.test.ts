@@ -1883,6 +1883,15 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   ] }, kindSettings);
   assert.equal(computeColumnMaxima(signedRows, grown.columns, 1).get('net'), 30, 'a two-way column scales by the largest magnitude');
 
+  const shadedColumns: TableColumnSpec[] = [kinds[1]!, { key: 'oil', label: 'Oil', as: 'plain', offered: ['plain'], priority: 1, numeric: true, cellKind: 'shaded' }];
+  const shadedSettings = tableSettingsOf(undefined, shadedColumns, { density: 'compact', overflow: 'scroll', sort: { column: 'oil', direction: 'descending' } });
+  const shadedLayout = layoutFamilyTable(buildColumnLayouts(shadedColumns, shadedSettings, { name: 128, oil: 60 }), 400, 'scroll');
+  const shadedRows = resolveTableRows({ hour: 1, columns: shadedColumns, rows: [
+    { key: 'A', name: 'A', cells: { name: { value: knownValue('A') }, oil: { value: knownValue(-40) } } },
+    { key: 'B', name: 'B', cells: { name: { value: knownValue('B') }, oil: { value: knownValue(12) } } },
+  ] }, shadedSettings);
+  assert.equal(computeColumnMaxima(shadedRows, shadedLayout.columns, 1).get('oil'), 40, 'a shaded column scales imports and exports by the largest magnitude');
+
   const extraProjection = declareTableProjection<{ rows: { id: string; group: boolean }[] }, { id: string; group: boolean }, Record<string, never>>({
     kind: 'test-cell-extras',
     columns: [

@@ -1,6 +1,6 @@
 import type { BoundedReadView } from '../../families/contract.ts';
 import { projectCountryFlow, scaledAmount } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, FLOW_PER_SIDE } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
@@ -42,14 +42,14 @@ export const tradeFlowDeclaration: FlowWidgetDeclaration = {
   emptyCampaign: 'Load a campaign to see its trade.',
   icon: 'flows',
   countries: { mode: 'multi', labels: false, colours: false },
-  sources: ctx => countryFlowPlan(ctx, 'trade-flow', { limit: FLOW_PER_SIDE }),
+  sources: (ctx, view) => countryFlowPlan(ctx, 'trade-flow', { limit: flowPerSide(view) }),
   projection: tradeFlowProjection,
   projectionOptions: () => EMPTY_OPTIONS,
   jumpToDate: true,
 };
 
 const PARTNER: TableColumnSpec = { key: 'partner', label: 'Partner', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item', pinned: true, sortable: false };
-const NET: TableColumnSpec = { key: 'net', label: 'Net', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: SIGNED, widest: ['+999.9'], sortable: false, hideable: false };
+const NET: TableColumnSpec = { key: 'net', label: 'Net', as: 'plain', offered: ['plain'], priority: 1000, numeric: true, format: SIGNED, widest: ['+999.9'], sortable: false, hideable: false };
 
 function signed(amount: string | null, decimals: number, reason: string): Value {
   if (amount === null) return notRecorded(reason);
@@ -75,6 +75,7 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
     offered: ['plain'],
     priority: 2 + at,
     numeric: true,
+    cellKind: 'shaded',
     format: SIGNED,
     widest: ['+999.9'],
     sortable: false,
@@ -94,7 +95,7 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
       const value = signed(cell, reply.decimals, 'This deal\'s daily delivery was not recorded');
       cells[`part:${part.key}`] = cell === '0'
         ? { value, blank: true }
-        : { value, format: SIGNED, ...(value.kind === 'known' ? { tone: (value.value as number) > 0 ? 'blue' : 'red' } : {}) };
+        : { value, format: SIGNED };
     });
     return { key: tag, name: partner.name, cells, tooltipTitle: `${partner.name} and ${subject.name}` };
   });
@@ -125,8 +126,8 @@ export const tradeTableDeclaration: TableWidgetDeclaration = {
   countries: { mode: 'single', choose: 'Choose one country to see its trade by partner and resource.' },
   sources: ctx => countryFlowPlan(ctx, 'trade-flow', { table: true }),
   projection: tradeTableProjection,
-  columns: [PARTNER, NET],
-  settings: { kind: 'fixed', base: { density: 'normal', overflow: 'scroll', sort: { column: 'net', direction: 'descending' } } },
+  columns: [PARTNER],
+  settings: { kind: 'fixed', base: { density: 'compact', overflow: 'scroll', sort: { column: 'net', direction: 'descending' } } },
   projectionOptions: () => EMPTY_OPTIONS,
   jumpToDate: true,
 };

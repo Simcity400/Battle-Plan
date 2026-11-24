@@ -1,5 +1,5 @@
 import { projectCountryFlow } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, FLOW_PER_SIDE } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 
@@ -28,7 +28,7 @@ export const licencesDeclaration: FlowWidgetDeclaration = {
   emptyCampaign: 'Load a campaign to see its production licences.',
   icon: 'factory',
   countries: { mode: 'multi', labels: false, colours: false },
-  sources: ctx => countryFlowPlan(ctx, 'production-licences', { limit: FLOW_PER_SIDE }),
+  sources: (ctx, view) => countryFlowPlan(ctx, 'production-licences', { limit: flowPerSide(view) }),
   projection: licencesProjection,
   projectionOptions: () => EMPTY_OPTIONS,
   jumpToDate: true,
