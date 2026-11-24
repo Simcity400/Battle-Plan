@@ -501,6 +501,9 @@ test('decryptionProjection renders Ciphers and Who reads whom views via readView
   assert.equal(hitMeterModel(layout, firstHit.x + 2, firstHit.y + 2, 0, 0), `row:${firstHit.key}`);
   assert.ok(findMeterTooltip(ciphers, firstHit.key) !== null);
   assert.equal(deriveMeterNav(ciphers).length, 3);
+  const measured = deriveMeterNav(ciphers, layout.itemBands);
+  assert.deepEqual(measured.map(entry => [entry[6], entry[7]]), measured.map(entry => [...layout.itemBands.get(entry[0])!]), 'navigation scrolls to each item’s measured band');
+  assert.equal(measured[0]![7], 23, 'a cipher row is 23 px, not an assumed 32');
   assert.equal(deriveMeterMirror(ciphers).total, 3);
   const audit = deriveMeterAudit(ciphers);
   assert.equal(audit.length, 7, 'the summary, each section header and each item');

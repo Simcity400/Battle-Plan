@@ -415,25 +415,18 @@ export function familyMeterLaneView(
       }
       fields.meta = held.metaField!;
 
-      if (modelChanged || !held.navField) {
-        const nav = deriveMeterNav(model);
+      if (modelChanged || layoutChanged || !held.navField) {
+        const nav = deriveMeterNav(model, layout?.itemBands);
         const navText = JSON.stringify(nav);
         held.navField = { value: nav, content: cachedField(held, 'nav', navText, content) };
       }
       fields.nav = held.navField;
 
       if (layout) {
-        const bands: Record<string, readonly [number, number]> = {};
-        for (const [k, v] of layout.itemBands) bands[k] = v;
-        const extPayload = {
-          width: layout.contentWidth,
-          height: layout.contentHeight,
-          bands,
-        };
-        const extSig = JSON.stringify([layout.contentWidth, layout.contentHeight, Object.keys(bands).length]);
+        const extSig = `${layout.contentWidth}\u0000${layout.contentHeight}`;
         if (extSig !== held.extentSig || !held.extentField) {
           held.extentSig = extSig;
-          held.extentField = { value: extPayload, content: content() };
+          held.extentField = { value: { width: layout.contentWidth, height: layout.contentHeight }, content: content() };
         }
         fields.extent = held.extentField;
       }
