@@ -39,6 +39,8 @@ pub struct NameRun {
     pub last_hour: i32,
     pub name: Option<String>,
     pub missing: Option<String>,
+    #[doc = " True when the subject is proven not to exist (for its owner) across the run."]
+    pub absent: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -66,16 +68,61 @@ pub struct PlaceNameRunsReply {
 
 dashboard_base::reply_warnings!(PlaceNameRunsReply);
 
-pub(crate) fn extend_runs(runs: &mut Vec<NameRun>, first: i32, last: i32, name: &Name, unknown: &[RecordingGap]) {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answer {
+    pub name: Option<String>,
+    pub missing: Option<String>,
+    pub absent: bool,
+}
+
+impl From<Name> for Answer {
+    fn from(name: Name) -> Self {
+        Self { name: name.name, missing: name.missing, absent: false }
+    }
+}
+
+pub fn extend_runs(runs: &mut Vec<NameRun>, first: i32, last: i32, answer: &Answer, unknown: &[RecordingGap]) {
     if let Some(held) = runs.last_mut()
-        && held.name == name.name
-        && held.missing == name.missing
+        && held.name == answer.name
+        && held.missing == answer.missing
+        && held.absent == answer.absent
         && unknown_between(unknown, held.last_hour + 1, first - 1)
     {
         held.last_hour = held.last_hour.max(last);
         return;
     }
-    runs.push(NameRun { first_hour: first, last_hour: last, name: name.name.clone(), missing: name.missing.clone() });
+    runs.push(NameRun { first_hour: first, last_hour: last, name: answer.name.clone(), missing: answer.missing.clone(), absent: answer.absent });
+}
+
+pub struct RunBook<K> {
+    held: HashMap<K, (Answer, i32)>,
+    pub runs: BTreeMap<K, Vec<NameRun>>,
+}
+
+impl<K: Copy + Ord + std::hash::Hash> RunBook<K> {
+    pub fn new(keys: impl IntoIterator<Item = K>) -> Self {
+        Self { held: HashMap::new(), runs: keys.into_iter().map(|key| (key, Vec::new())).collect() }
+    }
+
+    pub fn settle(&mut self, key: K, answer: Answer, hour: i32, unknown: &[RecordingGap]) {
+        match self.held.get_mut(&key) {
+            Some((current, _)) if *current == answer => {}
+            Some((current, since)) => {
+                extend_runs(self.runs.entry(key).or_default(), *since, hour - 1, current, unknown);
+                *current = answer;
+                *since = hour;
+            }
+            None => {
+                self.held.insert(key, (answer, hour));
+            }
+        }
+    }
+
+    pub fn close(&mut self, last: i32, unknown: &[RecordingGap]) {
+        for (key, (answer, since)) in self.held.drain() {
+            extend_runs(self.runs.entry(key).or_default(), since, last, &answer, unknown);
+        }
+    }
 }
 
 fn unknown_between(unknown: &[RecordingGap], first: i32, last: i32) -> bool {
@@ -99,11 +146,6 @@ const STATES: usize = 0;
 const PROVINCES: usize = 1;
 const PROVINCE_NAMES: usize = 2;
 const COUNTRY_TABLES: std::ops::Range<usize> = 3..7;
-
-struct Held {
-    name: Name,
-    since: i32,
-}
 
 pub struct PlaceNameRuns;
 
@@ -150,8 +192,8 @@ impl Product for PlaceNameRuns {
             .filter(|gap| gap.first <= to && gap.last >= from)
             .map(|gap| RecordingGap { first_hour: gap.first.max(from), last_hour: gap.last.min(to), reason: format!("Not in this recording: {}", gap.reason) })
             .collect();
-        let mut state_runs: BTreeMap<u32, Vec<NameRun>> = states.iter().map(|&id| (id, Vec::new())).collect();
-        let mut province_runs: BTreeMap<u32, Vec<NameRun>> = provinces.iter().map(|&id| (id, Vec::new())).collect();
+        let mut state_book = RunBook::new(states.iter().copied());
+        let mut province_book = RunBook::new(provinces.iter().copied());
         let recording = query.replay.recording();
         let format = recording.format();
         let mut frames = at_hour::Frames::new(&query)?;
@@ -166,8 +208,6 @@ impl Product for PlaceNameRuns {
         ];
         for stretch in query.timeline.stretches.iter().filter(|stretch| stretch.first <= to && stretch.last >= from) {
             let (first, last) = (stretch.first.max(from), stretch.last.min(to));
-            let mut held_states: HashMap<u32, Held> = HashMap::new();
-            let mut held_provinces: HashMap<u32, Held> = HashMap::new();
             let mut province_state: HashMap<u32, u32> = HashMap::new();
             read::walk(recording, stretch.run, &tables, first, last, |hour, readers: &[TableReader]| {
                 check_cancel(cancelled)?;
@@ -197,20 +237,16 @@ impl Product for PlaceNameRuns {
                 let answer = |name: Option<Name>| name.unwrap_or_else(|| Name { name: None, missing: named.as_ref().err().cloned() });
                 for &id in &dirty_states {
                     let name = answer(places.as_ref().map(|places| places.state(&content, id)));
-                    settle(&mut held_states, &mut state_runs, id, name, hour, &unknown);
+                    state_book.settle(id, name.into(), hour, &unknown);
                 }
                 for &id in &dirty_provinces {
                     let name = answer(places.as_ref().map(|places| places.province(&content, id, params.land)));
-                    settle(&mut held_provinces, &mut province_runs, id, name, hour, &unknown);
+                    province_book.settle(id, name.into(), hour, &unknown);
                 }
                 Ok(())
             })?;
-            for (id, held) in held_states {
-                extend_runs(state_runs.entry(id).or_default(), held.since, last, &held.name, &unknown);
-            }
-            for (id, held) in held_provinces {
-                extend_runs(province_runs.entry(id).or_default(), held.since, last, &held.name, &unknown);
-            }
+            state_book.close(last, &unknown);
+            province_book.close(last, &unknown);
         }
         let mut refused = Refusals::default();
         let mut collect = |runs: BTreeMap<u32, Vec<NameRun>>, what: &str| -> Vec<PlaceRuns> {
@@ -225,8 +261,8 @@ impl Product for PlaceNameRuns {
                 })
                 .collect()
         };
-        let states = collect(state_runs, "state");
-        let provinces = collect(province_runs, "province");
+        let states = collect(state_book.runs, "state");
+        let provinces = collect(province_book.runs, "province");
         let mut warnings = content.warnings();
         warnings.extend(content.cat.refusal_lines());
         warnings.extend(refused.lines("place names"));
@@ -238,25 +274,12 @@ impl Product for PlaceNameRuns {
     }
 }
 
-fn settle(held: &mut HashMap<u32, Held>, runs: &mut BTreeMap<u32, Vec<NameRun>>, id: u32, name: Name, hour: i32, unknown: &[RecordingGap]) {
-    match held.get_mut(&id) {
-        Some(current) if current.name == name => {}
-        Some(current) => {
-            extend_runs(runs.entry(id).or_default(), current.since, hour - 1, &current.name, unknown);
-            *current = Held { name, since: hour };
-        }
-        None => {
-            held.insert(id, Held { name, since: hour });
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn name(text: &str) -> Name {
-        Name { name: Some(text.to_owned()), missing: None }
+    fn name(text: &str) -> Answer {
+        Answer { name: Some(text.to_owned()), missing: None, absent: false }
     }
 
     #[test]
@@ -284,7 +307,7 @@ mod tests {
         assert_eq!(contiguous.len(), 2, "hours between that are neither recorded runs nor unknown never join");
 
         let mut missing = Vec::new();
-        extend_runs(&mut missing, 0, 9, &Name { name: None, missing: Some("Not in this recording: state 7 at this hour".into()) }, &[]);
+        extend_runs(&mut missing, 0, 9, &Answer { name: None, missing: Some("Not in this recording: state 7 at this hour".into()), absent: false }, &[]);
         extend_runs(&mut missing, 10, 19, &name("Sample State"), &[]);
         assert_eq!(missing.len(), 2, "an absent stretch is its own run with its reason");
     }

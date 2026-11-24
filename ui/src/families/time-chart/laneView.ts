@@ -19,12 +19,14 @@ import {
   type SerializedTiledLine,
   type TimeChartBinding,
 } from './declaration.ts';
+import { answerRowOf } from './seriesHelpers.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
 import { layoutTimeChart, type TimeChartLayout } from './layout.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import type { TimeChartModel } from './model.ts';
 import { collectVisibleChartArt, drawTimeChart } from './painter.ts';
+import { unknownProjectionReason } from '../registry.ts';
 
 function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
   return {
@@ -155,8 +157,10 @@ function chartSeries(
         if (headCfg.keys && headCfg.partBits !== undefined) {
           const matched = headCfg.keys.find(key => keyId(key) === tag);
           if (matched) tagIdx = followedRow(headAnswer, matched, headCfg.partBits);
-        } else {
+        } else if (headCfg.tags.length) {
           tagIdx = rowIndexOf(headCfg.tags).get(tag) ?? -1;
+        } else {
+          tagIdx = answerRowOf(headAnswer, tag);
         }
         if (tagIdx >= 0) {
           const val = rowAmount(headAnswer, tagIdx, headCfg.decimals ?? line.decimals);
@@ -289,12 +293,12 @@ export function timeChartLaneView(
       if (binding.directModel) {
         model = binding.directModel;
       } else {
-        const proj = ensureTimeChartProjection(binding.kind, binding.viewId, () => wake?.(input.widget));
+        const proj = ensureTimeChartProjection(binding, () => wake?.(input.widget));
         if (proj === 'loading') {
           return { surfaces: [], fields: {}, motion: false };
         }
         if (proj === 'unknown') {
-          return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown time-chart kind: ${binding.kind}` };
+          return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: unknownProjectionReason(binding) };
         }
         const sources: SceneSources = {
           sources: binding.sources,
@@ -315,7 +319,7 @@ export function timeChartLaneView(
         for (const url of projected.artUrls) demandedArtUrls.add(url);
         contentSig = contentKey(binding, projected.view.revisions);
       }
-      if (binding.view?.x && model.view?.x !== binding.view.x) model = { ...model, view: { ...model.view, x: binding.view.x } };
+      if (binding.zoom?.x && model.view?.x !== binding.zoom.x) model = { ...model, view: { ...model.view, x: binding.zoom.x } };
 
       const fields: Record<string, { value: unknown; content: string }> = {};
       if (identityDemands.length > 0) {

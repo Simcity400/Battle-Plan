@@ -5,7 +5,7 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
 import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { TrainingDivision, TrainingOrder, TrainingQueueReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
@@ -49,7 +49,7 @@ export function equipmentShare(division: TrainingDivision): Value<number> {
 }
 
 const fraction = (value: Value<number>): Value<number> => value.kind === 'known' ? knownValue(value.value / 100) : value;
-const count = (value: number) => value.toLocaleString('en-US');
+const count = (value: number) => formatScalar(value, 'integer');
 const manpower = (have: number): Value<number> => have === 0 ? zeroValue(0) : knownValue(have);
 
 function orderLine(order: TrainingOrder): string {
@@ -62,9 +62,9 @@ function orderLine(order: TrainingOrder): string {
 const [DIVISION, TRAINING, EQUIPMENT, MANPOWER] = COLUMNS;
 
 const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, never>>[] = [
-  { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
+  { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Motorized Infantry Division 1941 B'],
     icon: row => row.kind === 'order' ? row.icon : undefined,
-    extra: row => (row.kind === 'order' ? { subtext: orderLine(row.order) } : {}),
+    extra: row => (row.kind === 'order' ? { iconSlot: true, subtext: orderLine(row.order) } : {}),
     value: row => row.kind === 'order'
       ? textValue(row.order.templateName, row.order.templateMissing ?? 'Template name unavailable')
       : textValue(row.division.name, row.division.nameMissing ?? 'Division name unavailable') },
