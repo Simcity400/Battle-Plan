@@ -3,6 +3,7 @@ import type { Picture } from '../dashboard/follow/facts.ts';
 import { PayloadSender, PayloadStore } from '../dashboard/follow/payloads.ts';
 import type { LaneView, Painted, Sub, Value } from '../draw/lane.ts';
 import type { FamilyTheme } from './contract.ts';
+import type { FamilyTooltipField } from './host/tooltips.ts';
 
 export const LANE_THEME: FamilyTheme = {
   surface: '#16181d', raised: '#1e2128', dark: true, text: '#eef1f6', muted: '#8c95a6', line: '#2e3440', lineSoft: '#222630',
@@ -283,6 +284,28 @@ export function assertContinuity(makeView: () => LaneView, change: LaneTransitio
     if (change.refused) {
       const { lane } = play(true);
       assert.deepEqual(lane.picture(), fresh({ ...change.to, speed: 24, seek: 1, now: started + 10 }), `${change.to.label}: a refused frame between leaves no older placement to glide from`);
+    }
+  } finally {
+    recording.restore();
+  }
+}
+
+export const firstRow = (painted: Painted): string => `row:${String((painted.fields.nav?.value as readonly (readonly unknown[])[] | undefined)?.[0]?.[0])}`;
+
+export function assertTooltipDated(makeView: () => LaneView, step: LaneStep, hovered: string | ((painted: Painted) => string), later = 5, surface?: { width: number; height: number; dpr: number }): void {
+  const recording = installRecordingCanvas();
+  const tip = (painted: Painted) => (painted.fields.tooltip?.value as FamilyTooltipField | undefined)?.text ?? null;
+  try {
+    const lane = driveLane(makeView(), recording.canvases, surface);
+    const drawn = lane.paint({ ...step, inspect: null });
+    const inspect = typeof hovered === 'string' ? hovered : hovered(drawn);
+    for (const at of [step.hour + later, step.hour + later + 1]) {
+      assert.ok(at < (drawn.nextChangeAt ?? Infinity), `${step.label}: the picture drawn at ${step.hour} stands through hour ${at}`);
+      const shown = tip(lane.paint({ ...step, hour: at, inspect }));
+      const fresh = tip(driveLane(makeView(), recording.canvases, surface).paint({ ...step, hour: at, inspect }));
+      assert.ok(fresh, `${step.label}: ${inspect} has a tooltip`);
+      assert.equal(shown?.hour, at, `${step.label}: a hover at hour ${at} on a picture drawn at ${step.hour} is dated ${at}`);
+      assert.deepEqual(shown, fresh, `${step.label}: the tooltip at hour ${at} equals a fresh paint's`);
     }
   } finally {
     recording.restore();
