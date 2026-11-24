@@ -1036,6 +1036,13 @@ export function familyTableLaneView(
       return {
         ...(handledPicture ? { mode: 'picture' as const } : {}),
         ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),
+        viewport: {
+          width: bound.width,
+          height: bound.height,
+          dpr: input.binding.surfaces[0]?.dpr ?? 1,
+          scrollLeft: bound.scrollLeft,
+          scrollTop: bound.scrollTop,
+        },
         surfaces: [{ source: held.canvas, content: held.content }],
         fields,
         motion: moving,

@@ -455,6 +455,7 @@ fn module_field(field: &Field<'_>, keyword: Option<&[u8]>) -> Shape<Node> {
 pub struct ModuleSlot {
     pub required: bool,
     pub categories: Vec<Vec<u8>>,
+    pub gfx: Vec<u8>,
 }
 impl ModuleSlot {
     fn read(fields: &[Item]) -> Self {
@@ -463,6 +464,10 @@ impl ModuleSlot {
             if field.keyword_is("required") {
                 if let Some(value) = field.value.scalar().and_then(content_reader_parser::parser::read_bool) {
                     result.required = value;
+                }
+            } else if field.keyword_is("gfx") {
+                if let Some(value) = field.value.scalar() {
+                    result.gfx = c_string(value).to_vec();
                 }
             } else if field.keyword_is("allowed_module_categories") {
                 for category in field

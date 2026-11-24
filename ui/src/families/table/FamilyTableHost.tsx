@@ -12,7 +12,8 @@ import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { auditIdOf } from '../audit.ts';
-import type { BoundedReadView, EntityKind, FamilySourceSubscription, MirrorModel } from '../contract.ts';
+import { displayedHour } from '../boundedView.ts';
+import type { BoundedReadView, DisplayedHour, EntityKind, FamilySourceSubscription, InstalledAction, InstalledActionTarget, InstalledPicture, MirrorModel } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import {
   attachAuditWatch,
@@ -41,6 +42,57 @@ import { deriveTableAudit, resolveTableRows, type CountryColorSource, type Table
 import { ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 import './tableFamily.css';
+
+const navActionIndexCache = new WeakMap<readonly FamilyNavTuple[], Map<string, FamilyNavTuple>>();
+
+function lazyActionKeys(
+  nav: readonly FamilyNavTuple[],
+  hour: DisplayedHour,
+): ReadonlyMap<string, InstalledActionTarget> {
+  let materialized: Map<string, InstalledActionTarget> | null = null;
+  const toTarget = (entry: FamilyNavTuple): InstalledActionTarget => ({
+    subject: entry[0],
+    hour,
+    ...(entry[3] >= 0 ? { toggle: true } : {}),
+    label: entry[1],
+    meta: entry[5],
+  });
+  const index = () => {
+    let idx = navActionIndexCache.get(nav);
+    if (!idx) {
+      idx = new Map();
+      for (let i = 0; i < nav.length; i++) {
+        const e = nav[i]!;
+        idx.set(e[0], e);
+      }
+      navActionIndexCache.set(nav, idx);
+    }
+    return idx;
+  };
+  const ensureAll = () => {
+    if (!materialized) {
+      materialized = new Map();
+      for (let i = 0; i < nav.length; i++) {
+        const e = nav[i]!;
+        materialized.set(e[0], toTarget(e));
+      }
+    }
+    return materialized;
+  };
+  return {
+    get size() { return nav.length; },
+    has(key: string) { return index().has(key); },
+    get(key: string) {
+      const entry = index().get(key);
+      return entry ? toTarget(entry) : undefined;
+    },
+    forEach(cb, thisArg) { ensureAll().forEach(cb, thisArg); },
+    entries() { return ensureAll().entries(); },
+    keys() { return ensureAll().keys(); },
+    values() { return ensureAll().values(); },
+    [Symbol.iterator]() { return ensureAll()[Symbol.iterator](); },
+  };
+}
 
 export type { FamilySourceSubscription };
 
@@ -212,7 +264,6 @@ export default function FamilyTableHost<TOptions>({
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const heldRef = useRef(held);
   heldRef.current = held;
-  const dimRef = useRef(false);
   const pauseFlushRef = useRef(0);
   const lastAuditRef = useRef<{
     id: number;
@@ -231,7 +282,7 @@ export default function FamilyTableHost<TOptions>({
   const lastMirrorKeyRef = useRef('');
   const lastExtentRef = useRef({ height: -1, width: -1, count: -1 });
   const navRef = useRef<readonly FamilyNavTuple[]>([]);
-  const lastHourRef = useRef(staticSources?.hour ?? 0);
+  const installedPictureRef = useRef<InstalledPicture | null>(null);
   const typeaheadRef = useRef<{ query: string; until: number }>({ query: '', until: 0 });
   const viewWindowRef = useRef({ first: 0, count: 24 });
 
@@ -276,12 +327,13 @@ export default function FamilyTableHost<TOptions>({
 
   const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || allowEmptyFollow);
   const auditable = !!exactReadView;
+  const resolvedOwner = owner ?? `${widget.id}:${declaration.kind}:${subject}`;
   const placement = useFamilyPlacement({
     family: 'table',
     declarationKind: declaration.kind,
     widgetId: widget.id,
     widgetKind: widget.kind,
-    owner,
+    owner: resolvedOwner,
     subject,
     widgetTrackIds: widget.trackIds,
     runtime,
@@ -546,23 +598,22 @@ export default function FamilyTableHost<TOptions>({
       bindNow: () => bindRef.current(),
     });
 
-    const activateHit = (rowKey: string, isToggle: boolean) => {
-      const entry = navRef.current.find(item => item[0] === rowKey);
-      if (isToggle || (entry && entry[3] >= 0)) {
+    const activateHit = (rowKey: string, isToggle: boolean, action?: InstalledAction) => {
+      const installed = installedPictureRef.current;
+      if (!installed) return;
+      if (action && (action.installedId !== installed.id || action.owner !== installed.owner)) return;
+      const target = installed.actionKeys.get(rowKey);
+      if (isToggle || target?.toggle) {
         toggleTreeKeyRef.current(rowKey);
         return;
       }
-      latestRef.current.onActivate?.(rowKey, entry?.[5], lastHourRef.current);
+      latestRef.current.onActivate?.(target?.subject ?? rowKey, target?.meta, target?.hour ?? installed.hour);
     };
 
     const install = () => {
       const shown = pipeline.view(pipe);
       const frameNode = frameRef.current;
-      const nextDim = !!shown?.dim;
-      if (dimRef.current !== nextDim) {
-        dimRef.current = nextDim;
-        holdElement(frameNode, nextDim);
-      }
+      holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
       if (lastVisibleRef.current !== visible) {
         lastVisibleRef.current = visible;
@@ -574,7 +625,6 @@ export default function FamilyTableHost<TOptions>({
       const reason = shown?.reason ?? null;
       const failureOrigin: FailureOrigin = shown?.failureOrigin ?? 'local';
       const shownHour = reportFamilyShownHour(reportShownRef.current, visible, shown);
-      if (shownHour !== null) lastHourRef.current = shownHour;
 
       auditWatch.settleIfReady(visible, mode, shown?.installedBinding, shown?.fields);
 
@@ -630,12 +680,49 @@ export default function FamilyTableHost<TOptions>({
         latestRef.current.onIdentityDemands(demandsField);
       }
 
-      if (!visible || !shown?.fields) {
+      if (!visible || !shown?.fields || shown.id === undefined) {
+        installedPictureRef.current = null;
         lastMirrorObjRef.current = null;
         paintMirrorRef.current(null);
         tooltips.hideIfUnpinned();
         return;
       }
+
+      const navField = shown.fields.nav as readonly FamilyNavTuple[] | undefined;
+      if (navField && navField !== lastNavFieldRef.current) {
+        lastNavFieldRef.current = navField;
+        navRef.current = navField;
+      }
+      const activeNav = navRef.current;
+      const installedHour = displayedHour(shownHour ?? shown.painted ?? shown.h ?? 0);
+      const actionKeys = lazyActionKeys(activeNav, installedHour);
+      const installedViewport = shown.viewport ?? {
+        width: viewportRef.current.width,
+        height: viewportRef.current.height,
+        dpr: typeof devicePixelRatio === 'number' ? devicePixelRatio : 1,
+        scrollLeft: viewportRef.current.scrollLeft,
+        scrollTop: viewportRef.current.scrollTop,
+      };
+      const installedAuditId = auditIdOf(shown.fields.audit);
+      installedPictureRef.current = {
+        id: shown.id,
+        owner: shown.installedOwner ?? shown.owner ?? '',
+        generation: {
+          seek: shown.gen?.seek ?? 0,
+          reset: shown.gen?.reset ?? 0,
+          binding: shown.installedBinding ?? shown.binding ?? 0,
+        },
+        factRevisions: {},
+        validInterval: shown.validInterval ?? [installedHour, installedHour],
+        through: shown.through ?? installedHour,
+        hour: installedHour,
+        viewport: installedViewport,
+        optionsRevision: '',
+        themeRevision: '',
+        actionKeys,
+        accessibleDescription: null,
+        ...(installedAuditId !== undefined ? { auditId: installedAuditId } : {}),
+      };
 
       const widths = shown.fields.widths as Omit<WidthsState, 'signature'> | undefined;
       if (widths && widths !== lastWidthsRef.current) {
@@ -653,7 +740,6 @@ export default function FamilyTableHost<TOptions>({
         setWidthsState(prev => prev.signature === sig ? prev : { ...widths, signature: sig });
       }
 
-      const installedAuditId = auditIdOf(shown.fields.audit);
       if (perfLog && installedAuditId !== undefined && widths) {
         const prevUpdated = lastAuditUpdatedRef.current;
         if (!prevUpdated || prevUpdated.id !== installedAuditId || prevUpdated.widths !== widths.widths) {
@@ -662,11 +748,6 @@ export default function FamilyTableHost<TOptions>({
         }
       }
 
-      const navField = shown.fields.nav as readonly FamilyNavTuple[] | undefined;
-      if (navField && navField !== lastNavFieldRef.current) {
-        lastNavFieldRef.current = navField;
-        navRef.current = navField;
-      }
       const tableInfo = shown.fields.table as { count: number; focusedIndex: number; inspectedPresent: boolean } | undefined;
       if (tableInfo && (tableInfo !== lastTableInfoRef.current || focusInsideRef.current || inspectedKeyRef.current)) {
         lastTableInfoRef.current = tableInfo;
@@ -721,7 +802,10 @@ export default function FamilyTableHost<TOptions>({
       const focusTipField = activeFocusInside ? (shown.fields.focusTooltip as FamilyTooltipField | undefined) : undefined;
       if (activeFocusInside && focusedKeyRef.current && focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
         const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(focusedKeyRef.current)}"]`);
-        if (tr) tr.setAttribute('aria-description', tooltips.describeFocused(focusTipField.text, lastHourRef.current, latestRef.current.viewportHeight));
+        if (tr) {
+          const desc = tooltips.describeFocused(focusTipField.text, installedHour, latestRef.current.viewportHeight);
+          tr.setAttribute('aria-description', desc);
+        }
       }
       tooltips.syncFromInstall({
         dim: !!shown.dim,
@@ -752,14 +836,16 @@ export default function FamilyTableHost<TOptions>({
       focusedKeyRef,
       focusAnchorRef,
       accessibleRef,
-      isBlocked: () => heldRef.current || dimRef.current,
+      isBlocked: () => heldRef.current || !installedPictureRef.current,
+      getInstalled: () => installedPictureRef.current,
       getViewportHeight: () => latestRef.current.viewportHeight,
       onActivate: activateHit,
       onContextMenu: (key, clientX, clientY) => {
+        const installed = installedPictureRef.current;
         const builder = latestRef.current.contextMenuItems;
-        if (!builder) return false;
-        const entry = key ? navRef.current.find(item => item[0] === key) : undefined;
-        const items = builder(key, key ? (entry?.[1] ?? key) : null, lastHourRef.current);
+        if (!installed || !builder) return false;
+        const target = key ? installed.actionKeys.get(key) : undefined;
+        const items = builder(key, key ? (target?.label ?? key) : null, target?.hour ?? installed.hour);
         if (!items.length) return false;
         contextMenuRef.current.open(clientX, clientY, items);
         return true;
@@ -809,6 +895,7 @@ export default function FamilyTableHost<TOptions>({
       auditWatch.dispose();
       stopInstall();
       stopPointer();
+      installedPictureRef.current = null;
       resizeObserver.disconnect();
       node.removeEventListener('scroll', onScroll);
       mounted.unmount();
@@ -849,32 +936,41 @@ export default function FamilyTableHost<TOptions>({
   }, [onDiagnostics, extraWarnings, meta.warnings]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
+    const installed = installedPictureRef.current;
     const pageStep = Math.max(1, Math.floor((viewportRef.current.height || 200) / latestRef.current.rowHeight) - 1);
     handleFamilyKeyDown(event, {
       nav: navRef.current,
       focusedKey: focusedKeyRef.current,
       pageStep,
-      blocked: heldRef.current || dimRef.current,
+      blocked: heldRef.current || !installed,
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),
       onFocusKey: focusRowByKey,
-      onActivate: entry => latestRef.current.onActivate?.(entry[0], entry[5], lastHourRef.current),
+      onActivate: entry => {
+        const cur = installedPictureRef.current;
+        if (!cur) return;
+        const target = cur.actionKeys.get(entry[0]);
+        latestRef.current.onActivate?.(target?.subject ?? entry[0], target?.meta ?? entry[5], target?.hour ?? cur.hour);
+      },
       onToggleTree: toggleTreeKey,
       onContextMenu: entry => {
+        const cur = installedPictureRef.current;
         const builder = latestRef.current.contextMenuItems;
-        if (!builder) return false;
-        const items = builder(entry ? entry[0] : null, entry ? entry[1] : null, lastHourRef.current);
+        if (!cur || !builder) return false;
+        const target = entry ? cur.actionKeys.get(entry[0]) : undefined;
+        const items = builder(entry ? entry[0] : null, entry ? (target?.label ?? entry[1]) : null, target?.hour ?? cur.hour);
         if (!items.length) return false;
         refreshFocusAnchor();
         contextMenuRef.current.open(focusAnchorRef.current.x, focusAnchorRef.current.y, items);
         return true;
       },
       onTogglePinTooltip: currentKey => {
-        if (!pipeline || pipe === null || heldRef.current || dimRef.current || !currentKey) return;
+        const cur = installedPictureRef.current;
+        if (!pipeline || pipe === null || heldRef.current || !cur || !currentKey) return;
         const focusTipField = pipeline.view(pipe)?.fields?.focusTooltip as FamilyTooltipField | undefined;
         if (focusTipField?.text && focusTipField.text.rowKey === currentKey) {
           refreshFocusAnchor();
-          tooltips.pinFocused(focusTipField.text, lastHourRef.current, focusAnchorRef.current, latestRef.current.viewportHeight, announce);
+          tooltips.pinFocused(focusTipField.text, cur.hour, focusAnchorRef.current, latestRef.current.viewportHeight, announce);
         }
       },
       onUnpinTooltip: () => tooltips.unpin(announce),

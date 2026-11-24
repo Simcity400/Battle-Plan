@@ -45,7 +45,12 @@ interface WidgetState {
   held: Map<string, unknown>; error?: Failure;
 }
 
-export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string; kind?: string }
+export interface MountOptions { offset: number; pin: number | null; owner?: string; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string; kind?: string }
+
+export interface PointerHitMeta {
+  readonly installedId?: number;
+  readonly owner?: string;
+}
 
 const NO_CHANNEL = 'This connection has no channel for pushed answers';
 const DEFAULT_COST = 0.5;
@@ -285,8 +290,18 @@ export class Pipeline {
     }
     if (message.type === 'hit') {
       const told = this.hits.get(message.widget)?.shift();
-      this.page.inspect(message.widget, message.key); this.flush();
-      told?.(message.key);
+      const pageWidget = this.page.widgets.get(message.widget);
+      const staleOwner = message.owner !== undefined && pageWidget?.owner !== undefined && message.owner !== pageWidget.owner;
+      const staleInstall = message.installedId !== undefined && pageWidget?.installed !== undefined && pageWidget.installed !== null && message.installedId !== pageWidget.installed.id;
+      const acceptedKey = staleOwner || staleInstall ? null : message.key;
+      if (!staleOwner && !staleInstall) {
+        this.page.inspect(message.widget, acceptedKey);
+        this.flush();
+      }
+      told?.(acceptedKey, {
+        ...(message.installedId !== undefined ? { installedId: message.installedId } : {}),
+        ...(message.owner !== undefined ? { owner: message.owner } : {}),
+      });
       return;
     }
     if (message.type === 'served') {
@@ -338,9 +353,9 @@ export class Pipeline {
     this.loads[lane]!++;
     this.costLoads[lane]! += cost;
     const widget: WidgetState = { id, lane, kind, cost, subs: new Map(), view: options.view ?? 'fields', model: options.model, mounted: false, route: null,
-      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map() };
+      installListeners: new Set(), dateListeners: new Set(), binding: { generation: 1, ...(options.owner !== undefined ? { owner: options.owner } : {}), surfaces: [], offset: options.offset, pin: options.pin }, surfaces: [], held: new Map() };
     this.widgets.set(id, widget);
-    this.page.mount(id, { route: 0, lane, offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget),
+    this.page.mount(id, { route: 0, lane, ...(options.owner !== undefined ? { owner: options.owner } : {}), offset: options.offset, pin: options.pin, bounds: options.bounds, surfaces: [], changed: () => this.changed.add(widget),
       dated: () => this.redated.add(widget) });
     return id;
   }
@@ -508,7 +523,7 @@ export class Pipeline {
 
   private timed(widget: WidgetState, binding: Omit<Binding, 'generation' | 'offset' | 'pin'>): Binding {
     const shown = this.page.widgets.get(widget.id);
-    return { ...binding, generation: shown?.binding ?? 1, offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
+    return { ...binding, generation: shown?.binding ?? 1, ...(shown?.owner !== undefined ? { owner: shown.owner } : {}), offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
   }
 
   bind(id: number, surfaces: readonly PageSurface<ImageBitmap>[], binding: Omit<Binding, 'generation' | 'offset' | 'pin'>, change: RebindChange = {}, model?: unknown) {
@@ -566,9 +581,9 @@ export class Pipeline {
 
   inspecting(id: number) { return this.page.widgets.get(id)?.inspect ?? null; }
 
-  private readonly hits = new Map<number, (((key: string | null) => void) | undefined)[]>();
+  private readonly hits = new Map<number, (((key: string | null, meta?: PointerHitMeta) => void) | undefined)[]>();
 
-  pointer(id: number, surface: number, point: [number, number] | null, hit?: (key: string | null) => void) {
+  pointer(id: number, surface: number, point: [number, number] | null, hit?: (key: string | null, meta?: PointerHitMeta) => void) {
     if (this.closed) return;
     const widget = this.widgets.get(id);
     if (!widget) return;
