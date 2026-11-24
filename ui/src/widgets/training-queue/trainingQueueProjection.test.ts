@@ -7,7 +7,7 @@ import { trainingQueueProjection, validateTrainingQueue } from './trainingQueueP
 
 const division = (line: string, extra: Partial<TrainingDivision> = {}): TrainingDivision => ({
   line, ordinal: 0, name: `${line}. Infanterie-Division`, nameMissing: null, trainingRaw: '92000', maxTrainingRaw: '100000',
-  manpower: 11760, manpowerNeeded: 11760, maxManpower: 11760, contributors: [], equipment: [], need: [], needMissing: null,
+  manpower: 11760, manpowerNeeded: 11760, manpowerMissing: null, maxManpower: 11760, contributors: [], equipment: [], need: [], needMissing: null,
   comparisonMissing: null, equipmentFillRaw: '100000', halted: false, ...extra,
 });
 
@@ -44,4 +44,20 @@ test('a queue not read near the hour is unavailable with the reason, and an old 
   assert.deepEqual([missing.rows.length, missing.emptyKind, missing.titleSummary], [0, 'unavailable', undefined]);
   const { inTraining: _total, ...old } = reply();
   assert.throws(() => validateTrainingQueue(old));
+});
+
+test('a division’s name and training survive unread manpower, and held amounts are not printed while the held equipment cannot be compared', () => {
+  const unread = 'Training manpower not read whole: Deployment manpower not available at this hour';
+  const model = project(reply({ orders: [{ ...reply().orders[0]!, manpower: null, manpowerNeeded: null, divisions: [
+    division('197', { manpower: null, manpowerNeeded: null, manpowerMissing: unread,
+      need: [{ archetype: 'infantry_equipment', name: 'Infantry equipment', needRaw: '100000000', heldRaw: '40000000' }],
+      equipmentFillRaw: null, comparisonMissing: 'Held equipment not read whole' }),
+  ] }] }));
+  const [order] = model.rows;
+  const [first] = order!.children!;
+  assert.deepEqual([first!.cells.division!.value, first!.cells.training!.value], [knownValue('197. Infanterie-Division'), knownValue(92)], 'witnessed name and progress stay');
+  assert.deepEqual([first!.cells.manpower!.value, first!.cells.manpower!.secondaryValue], [notRecorded(unread), notRecorded(unread)]);
+  assert.equal(order!.cells.manpower!.value.kind, 'notRecorded', 'an order total over an unknown division is not a sum');
+  const tip = typeof first!.tooltipExtra === 'function' ? first!.tooltipExtra() : first!.tooltipExtra;
+  assert.deepEqual(tip?.[0]?.value, notRecorded('Held equipment not read whole'), 'no exact held figure that leaves out what was not read');
 });

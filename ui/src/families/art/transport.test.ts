@@ -117,7 +117,7 @@ test('failed sprite batches record errors without marking sprites as missing and
   caches.request('err', [spriteHandle({ key: 'GFX_fail', frame: 0 })], failing);
   for (let i = 0; i < 6; i++) await Promise.resolve();
   const id = spriteId({ key: 'GFX_fail', frame: 0 });
-  assert.equal(caches.errors('err').get(id), 'disk offline');
+  assert.deepEqual(caches.failures('err').get(id), { reason: 'disk offline', retryable: false, count: 1, at: Infinity });
   assert.equal(caches.resolutions('err').has(id), false);
   assert.equal(notified, 1);
   stop();

@@ -5,6 +5,7 @@ import {
   computeTimeAxisTicks,
   drawChevron,
   drawGapBand,
+  drawLegendStrip,
   drawRowFocusRing,
   drawRowHairline,
   drawRowHover,
@@ -152,6 +153,31 @@ function laneHasIcons(lane: TimelineLane): boolean {
   return lane.spans.some(span => span.icon || span.iconMissing);
 }
 
+function drawOpenedMarker(ctx: Canvas2D, lane: TimelineLane, mid: number, input: TimelinePaintInput): void {
+  const marker = lane.openedMarker;
+  if (!marker) return;
+  const { layout, theme } = input;
+  if (marker.hour <= layout.startHour || marker.hour > layout.endHour) return;
+  const x = hourToX(layout, marker.hour);
+  ctx.save();
+  ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+  ctx.fillStyle = theme.muted;
+  ctx.textBaseline = 'middle';
+  const w = textWidth(ctx, marker.label);
+  if (x - 4 - w >= layout.plotLeft) {
+    ctx.textAlign = 'right';
+    ctx.fillText(marker.label, x - 4, mid);
+  } else {
+    const firstSpan = lane.spans[0];
+    const barLeft = firstSpan ? hourToX(layout, firstSpan.firstHour) : layout.plotRight;
+    if (x + 4 + w <= Math.min(barLeft - 4, layout.plotRight)) {
+      ctx.textAlign = 'left';
+      ctx.fillText(marker.label, x + 4, mid);
+    }
+  }
+  ctx.restore();
+}
+
 function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: TimelinePaintInput): void {
   const { layout, model, theme, readView } = input;
   const icons = model.iconsOnBars && laneHasIcons(lane);
@@ -182,20 +208,24 @@ export function drawTimeline(ctx: Canvas2D, input: TimelinePaintInput): readonly
   ctx.fillRect(0, 0, layout.width, layout.height);
   const ticks = computeTimeAxisTicks(layout.startHour, layout.endHour, layout.plotRight - layout.plotLeft);
 
+  if (model.legend?.length && layout.bodyTop > 0) {
+    drawLegendStrip(ctx, 0, 0, layout.width, layout.bodyTop, { entries: model.legend, padX: LABEL_PAD }, theme);
+  }
+
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, 0, layout.width, layout.bodyHeight);
+  ctx.rect(0, layout.bodyTop, layout.width, layout.bodyHeight);
   ctx.clip();
-  drawTimeAxisGrid(ctx, ticks, layout, 0, layout.bodyHeight, theme);
+  drawTimeAxisGrid(ctx, ticks, layout, layout.bodyTop, layout.axisTop, theme);
   for (const gap of coalescedGaps(input.resolution)) {
     const x0 = Math.max(layout.plotLeft, hourToX(layout, gap.firstHour));
     const x1 = gap.lastHour >= model.hour ? layout.plotRight : Math.min(layout.plotRight, hourToX(layout, gap.lastHour + 1));
-    if (x1 > x0) drawGapBand(ctx, x0, 0, x1 - x0, layout.bodyHeight, theme);
+    if (x1 > x0) drawGapBand(ctx, x0, layout.bodyTop, x1 - x0, layout.bodyHeight, theme);
   }
   const [first, end] = visibleRange(layout, scrollTop);
   for (let index = first; index < end; index++) {
     const placed = layout.lanes[index]!;
-    const y = placed.y - scrollTop;
+    const y = layout.bodyTop + placed.y - scrollTop;
     const { lane } = placed;
     if (lane.kind === 'group' && placed.ordinal > 0) drawRowHairline(ctx, LABEL_PAD, layout.width - LABEL_PAD, y, theme, 'strong');
     if (input.selectedKey === lane.key) drawRowSelected(ctx, 0, y, layout.width, placed.height, theme);
@@ -204,10 +234,13 @@ export function drawTimeline(ctx: Canvas2D, input: TimelinePaintInput): readonly
     drawLabel(ctx, placed, y, input);
     const mid = y + placed.height / 2;
     if (lane.kind === 'group') drawGroupRule(ctx, lane, mid, input);
-    else if (lane.kind === 'item') drawBars(ctx, lane, mid, input);
+    else if (lane.kind === 'item') {
+      drawOpenedMarker(ctx, lane, mid, input);
+      drawBars(ctx, lane, mid, input);
+    }
   }
   if (scrollTop + layout.bodyHeight < layout.contentHeight - 1) {
-    drawScrollFade(ctx, 0, layout.bodyHeight - 24, layout.width, 24, theme, 'bottom');
+    drawScrollFade(ctx, 0, layout.axisTop - 24, layout.width, 24, theme, 'bottom');
   }
   ctx.restore();
 
@@ -225,8 +258,8 @@ export function drawTimeline(ctx: Canvas2D, input: TimelinePaintInput): readonly
 }
 
 export function hitTimeline(layout: TimelineLayout, resolution: TimelineResolution, x: number, y: number, scrollTop: number): TimelineHit | null {
-  if (y < 0 || y >= layout.bodyHeight) return null;
-  const placed = placedLaneAt(layout, y + scrollTop);
+  if (y < layout.bodyTop || y >= layout.axisTop) return null;
+  const placed = placedLaneAt(layout, y - layout.bodyTop + scrollTop);
   if (!placed) return null;
   const { lane } = placed;
   if (lane.kind === 'heading') return null;

@@ -146,7 +146,18 @@ impl AtHour for ProductionLinesAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![ProductionLinesAtParams::decl(), ProductionLinesAtReply::decl(), LineOrder::decl(), OutputPartNow::decl(), OutputNow::decl(), LineNow::decl()]
+        vec![
+            ProductionLinesAtParams::decl(),
+            ProductionLinesAtReply::decl(),
+            LineOrder::decl(),
+            LineKind::decl(),
+            OutputPartNow::decl(),
+            OutputNow::decl(),
+            LineNow::decl(),
+            VariantName::decl(),
+            OrganisationName::decl(),
+            EquipmentIcon::decl(),
+        ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

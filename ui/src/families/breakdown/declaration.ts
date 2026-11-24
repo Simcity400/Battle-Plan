@@ -26,8 +26,14 @@ export interface BreakdownWidgetDeclaration<TOptions> extends Omit<BreakdownWidg
   readonly projectionOptions: (ctx: FamilyPlanContext) => TOptions & BreakdownViewOptions;
 }
 
+const drawn = new WeakMap<object, BreakdownProjection<never>>();
+
 function drawnAs<TOptions>(projection: BreakdownProjection<TOptions & BreakdownViewOptions>): BreakdownProjection<TOptions & BreakdownViewOptions> {
-  return { ...projection, project: (readView, options) => ({ ...projection.project(readView, options), view: options.view }) };
+  const held = drawn.get(projection) as BreakdownProjection<TOptions & BreakdownViewOptions> | undefined;
+  if (held) return held;
+  const made: BreakdownProjection<TOptions & BreakdownViewOptions> = { ...projection, project: (readView, options) => ({ ...projection.project(readView, options), view: options.view }) };
+  drawn.set(projection, made as BreakdownProjection<never>);
+  return made;
 }
 
 export function breakdownDeclaration<TOptions>(spec: BreakdownWidgetSpec<TOptions>): BreakdownWidgetDeclaration<TOptions> {

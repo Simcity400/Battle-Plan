@@ -24,7 +24,6 @@ import type {
   FamilyContextHit,
   FamilyHostAdapter,
   FamilyStaticSources,
-  FamilyRowWindow,
   FamilyViewportChange,
 } from './adapter.ts';
 import { familyViewOptionFields } from '../../widgets/manifest.ts';
@@ -79,7 +78,6 @@ export interface DeclaredFamilyWidgetProps<
 > extends WidgetProps {
   readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding, TSettings>;
   readonly chrome?: ComponentType<FamilyChromeProps<TSettings>>;
-  readonly onWindowChange?: (window: FamilyRowWindow, hour: number | null) => void;
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
   readonly view?: string;
   readonly selectedKey?: string | null;
@@ -101,7 +99,6 @@ export default function DeclaredFamilyWidget<
 >({
   adapter,
   chrome,
-  onWindowChange,
   declaration,
   view = DEFAULT_VIEW,
   widget,
@@ -301,12 +298,6 @@ export default function DeclaredFamilyWidget<
     };
   }, [plan.staticBundle]);
 
-  const onRowWindow = plan.onRowWindow;
-  const handleWindowChange = useCallback((win: FamilyRowWindow, hour: number | null) => {
-    onRowWindow(win, hour);
-    onWindowChange?.(win, hour);
-  }, [onRowWindow, onWindowChange]);
-
   const host = (
     <FamilyHost
       key={branchKey}
@@ -315,7 +306,7 @@ export default function DeclaredFamilyWidget<
       {...(editableSettings ? { onSettings } : {})}
       editableSettings={editableSettings}
       {...(chrome ? { chrome } : {})}
-      onWindowChange={handleWindowChange}
+      onWindowChange={plan.onRowWindow}
       declaration={declaration.projection}
       view={view}
       options={projectionOptions}

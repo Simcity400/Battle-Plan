@@ -1,7 +1,7 @@
 use dashboard_world::products::equipment_names as names;
 use super::{
     catalogue::{EquipmentDesigns, IndustrialOrganisations, ProductionLicences},
-    lines::{ProductionLinesParams, lines_reply},
+    breakdown::{ProductionBreakdownParams, ProductionLineBreakdown},
     live::ProductionLinesAt,
     *,
 };
@@ -102,59 +102,21 @@ fn moved_recording() -> Source {
     Source::from_replay(dashboard_base::SourceKey { source_id: "production-moved".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
-#[test]
-fn a_scoped_reply_holds_only_what_its_identity_owned_inside_the_scope() {
-    let source = moved_recording();
-    let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let params = ProductionLinesParams { branch_id: "1".into(), country: "GER".into(), within: Some(vec![dashboard_base::span::HourSpan { first_hour: FIRST, last_hour: 1_205 }]) };
-    let reply = lines_reply(&source, &query, &params, &no_content(), &AtomicBool::new(false)).unwrap();
-    let moved = reply.lines.iter().find(|line| line.key == "1#1").expect("raw country 11's line is GER's while 11 links to GER's slot");
-    assert_eq!(moved.steps, [step(1_000, 1_099, true, "100", 2), step(1_100, 1_149, false, "101", 2)], "the line leaves GER at the hour its raw country's link moves");
-    assert_eq!((moved.ended_by, moved.final_output.is_none()), (None, true), "a line whose country moves on did not end for GER, so it takes none of the next holder's output");
-    let ended = reply.lines.iter().find(|line| line.key == "2#1").and_then(|line| line.final_output.as_ref()).expect("GER's ended line keeps its final count");
-    assert!(ended.last_hour <= 1_205, "ended output is read only inside the scope, not through {}", ended.last_hour);
-}
-
-fn no_content() -> names::Context {
-    Err("no content in the fixture".to_owned())
-}
-
-fn step(first: i32, last: i32, starts: bool, variant: &str, active: i32) -> lines::LineStep {
-    lines::LineStep { first_hour: first, last_hour: last, starts_segment: starts, variant: variant.into(), active_factories: active, requested_factories: 3 }
+fn breakdown(source: &Source, handle: &str, hour: i32) -> std::io::Result<breakdown::ProductionLineBreakdownReply> {
+    let params = ProductionBreakdownParams { branch_id: "1".into(), country: "GER".into(), handle: handle.into(), group: "efficiency".into(), hour, within: None };
+    <ProductionLineBreakdown as dashboard_base::products::Product>::load(source, &params, &load(), &AtomicBool::new(false))
 }
 
 #[test]
-fn a_countrys_lines_follow_its_holder_through_aliases_and_end_with_their_published_count() {
+fn a_breakdown_opens_for_the_line_the_country_holds_at_the_clicked_hour() {
     let source = recording();
-    let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let params = ProductionLinesParams { branch_id: "1".into(), country: "GER".into(), within: None };
-    let reply = lines_reply(&source, &query, &params, &no_content(), &AtomicBool::new(false)).unwrap();
-    let keys: Vec<&str> = reply.lines.iter().map(|line| line.key.as_str()).collect();
-    assert_eq!(keys, ["1#1", "2#1"], "ITA's line is not GER's; a line the alias produced is");
-    let first = &reply.lines[0];
-    assert!(first.before_recording);
-    assert_eq!(first.ended_by, None, "hours the lines were not read neither end a line nor start another appearance");
-    assert_eq!(first.kind, Some(LineKind::Military));
-    assert_eq!(
-        first.steps,
-        [step(1_000, 1_099, true, "100", 2), step(1_100, 1_149, false, "101", 2), step(1_150, 1_239, false, "101", 3), step(1_251, 1_300, true, "101", 3)]
-    );
-    let second = &reply.lines[1];
-    assert!(!second.before_recording);
-    assert_eq!(second.steps, [step(1_050, 1_199, true, "200", 1)]);
-    assert_eq!(second.ended_by, Some(1_200));
-    let ended = second.final_output.as_ref().expect("its ended rows are its final count");
-    assert_eq!((ended.first_hour, ended.last_hour, ended.whole_life), (1_200, 1_223, true));
-    assert_eq!(ended.parts, [OutputPart { variant: "200".into(), mio: "0".into(), units: "7".into(), exact: true }]);
-    assert_eq!(reply.line_hours, [dashboard_base::span::HourSpan { first_hour: FIRST, last_hour: LAST }]);
-    let variants: Vec<&str> = reply.variants.iter().map(|variant| variant.id.as_str()).collect();
-    assert_eq!(variants, ["100", "101", "200"]);
-    assert!(reply.variants.iter().all(|variant| variant.name.is_none() && variant.name_unknown.is_some()), "a name not known says why, never blank");
-    let held = ProductionLinesParams { within: Some(vec![dashboard_base::span::HourSpan { first_hour: 1_000, last_hour: 1_099 }]), ..params };
-    let within = lines_reply(&source, &query, &held, &no_content(), &AtomicBool::new(false)).unwrap();
-    assert_eq!(within.lines[0].steps, [step(1_000, 1_099, true, "100", 2)], "a held identity's lines are read only within its own runs");
-    assert_eq!(within.lines[0].key, reply.lines[0].key, "a line keeps its key whatever scope asks for it");
-    assert_eq!(within.line_hours, [dashboard_base::span::HourSpan { first_hour: 1_000, last_hour: 1_099 }], "the scoped reply's hours are the held identity's");
+    let alias = breakdown(&source, "1", 1_120).expect("raw country 11's line is GER's: GER's slot holds it");
+    assert_eq!(alias.key, "1#1");
+    assert!(breakdown(&source, "3", 1_120).is_err(), "ITA's line is not GER's");
+    assert!(breakdown(&source, "2", 1_210).is_err(), "a line that ended at 1200 is not the country's after it");
+    let moved = moved_recording();
+    assert!(breakdown(&moved, "1", 1_120).is_ok());
+    assert!(breakdown(&moved, "1", 1_160).is_err(), "the line leaves GER at the hour its raw country's link moves");
 }
 
 fn load() -> LoadContext {

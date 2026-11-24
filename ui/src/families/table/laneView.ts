@@ -970,7 +970,7 @@ export function familyTableLaneView(
             return collectVisibleCellIcons(pane.rows, layout.columns, model.hour, first, last);
           })
         : collectVisibleCellIcons(flatRows, layout.columns, model.hour, visibleFirst, visibleLast);
-      held.art.requestVisible(held.demandedArtUrls.length ? [...visibleIcons, ...held.demandedArtUrls] : visibleIcons);
+      held.art.requestVisible(visibleIcons, held.demandedArtUrls);
 
       let painted = false;
       if (bound.theme && panes && paneGeom) {

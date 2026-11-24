@@ -1,10 +1,10 @@
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
 import { airCauseName } from '../air-kills-losses/lossCauses.ts';
-import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsLegendItem, type BarsModel, type BarsReadout, type BarsSegment } from '../../families/bars/model.ts';
+import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsLegendItem, type BarsValueField, type BarsModel, type BarsReadout, type BarsSegment } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
-import { formatCompactScalar } from '../../families/valueFormat.ts';
+import { formatCompactScalar, formatShare } from '../../families/valueFormat.ts';
 import type { MilitaryAirAtReply, MilitaryAirAtRow, MilitaryAirFamily, MilitaryAirMetric } from '../../generated/dashboard';
 
 export const MILITARY_AIR_AT = 'military-air-at';
@@ -34,6 +34,7 @@ export interface MilitaryAirAtOptions {
   readonly unit: string;
   readonly ratio: boolean;
   readonly chosen: readonly string[] | null;
+  readonly none: string;
   readonly paired?: { readonly solid: string; readonly outline: string };
 }
 
@@ -80,7 +81,20 @@ export function militaryAirSources(owner: string, ctx: FamilyPlanContext, params
   };
 }
 
-function amount(raw: string, complete: boolean, options: MilitaryAirAtOptions): { readonly value: Value; readonly format: { readonly decimals: number }; readonly numeric: number } {
+export interface MilitaryAirRowMeta {
+  readonly tag: string;
+  readonly identity: string;
+  readonly countedFrom: number | null;
+}
+
+export const AIR_LOSSES_AT = { scale: 100_000, digits: 5 } as const;
+
+export function militaryAirAmount(raw: string, complete: boolean, options: Pick<MilitaryAirAtOptions, 'scale' | 'digits'>): BarsValueField {
+  const held = amount(raw, complete, options);
+  return { value: held.value, format: held.format };
+}
+
+function amount(raw: string, complete: boolean, options: Pick<MilitaryAirAtOptions, 'scale' | 'digits'>): { readonly value: Value; readonly format: { readonly decimals: number }; readonly numeric: number } {
   const big = BigInt(raw);
   const hundredths = big / BigInt(options.scale / 100);
   const [shown, format] = big !== 0n && hundredths === 0n ? [big, { decimals: options.digits }] : [hundredths, { decimals: 2 }];
@@ -163,13 +177,14 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
       kind: 'data', key: `${row.tag}\u0000${row.identity}`, subject: row.tag, label: pres.label, labelMissing: pres.labelMissing, media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       segments,
+      meta: { tag: row.tag, identity: row.identity, countedFrom: reply.countedFrom } satisfies MilitaryAirRowMeta,
       readout: { primary: `${wholeCompact(row.taken, options)} lost` },
       tooltip: {
         title: pres.labelMissing ? 'Name not recorded' : pres.label,
         hour: readView.hour,
         items: [
           { label: options.leftHeader, value: formatBarsValueField({ value: total.value, format: total.format }).text },
-          ...segments.map(segment => ({ label: segment.label, swatch: segment.color, value: `${formatBarsValueField({ value: segment.value, format: segment.format }).text} (${Math.round(segment.share * 100)}%)` })),
+          ...segments.map(segment => ({ label: segment.label, swatch: segment.color, value: `${formatBarsValueField({ value: segment.value, format: segment.format }).text} (${formatShare(segment.share)})` })),
         ],
       },
     });
@@ -186,7 +201,7 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
     ...base,
     rows,
     legend,
-    ...(rows.length ? {} : { empty: 'Nothing recorded at this date.', emptyKind: 'empty' as const }),
+    ...(rows.length ? {} : { empty: options.none, emptyKind: 'empty' as const }),
     ...(reply.rankMissing ? { notes: [reply.rankMissing] } : {}),
     warnings: reply.warnings,
   };
@@ -218,6 +233,7 @@ export function militaryAirModel(readView: BoundedReadView, options: MilitaryAir
       ...(pres.color ? { color: pres.color } : {}),
       left: { value: { value: taken.value, format: taken.format }, numeric: taken.numeric },
       right: { value: { value: dealt.value, format: dealt.format }, numeric: dealt.numeric },
+      meta: { tag: row.tag, identity: row.identity, countedFrom: reply.countedFrom } satisfies MilitaryAirRowMeta,
       ...(readout ? { readout } : {}),
     });
   }
@@ -229,7 +245,7 @@ export function militaryAirModel(readView: BoundedReadView, options: MilitaryAir
   return {
     ...base,
     rows,
-    ...(rows.length ? {} : { empty: 'Nothing recorded at this date.', emptyKind: 'empty' as const }),
+    ...(rows.length ? {} : { empty: options.none, emptyKind: 'empty' as const }),
     ...(reply.rankMissing ? { notes: [reply.rankMissing] } : {}),
     warnings: reply.warnings,
   };

@@ -419,7 +419,7 @@ class FamilyKitPatterns(unittest.TestCase):
 
     def test_family_locale_string_is_refused_in_families_and_projections(self):
         code, out = check({}, {
-            "ui/src/families/table/cellPainters.ts": "const s = count.toLocaleString('en-US');\n",
+            "ui/src/families/table/cellPainters.ts": "const s = count.toLocaleString('en-US');\nconst d = x.toFixed(1);\n",
             "ui/src/widgets/foo/fooProjection.ts": "import { usNumber } from '../../charts/numberFormat.ts';\nconst f = new Intl.NumberFormat('en-US');\n",
         })
         self.assertEqual(code, 1)
