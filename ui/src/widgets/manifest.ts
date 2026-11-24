@@ -1,4 +1,4 @@
-import type { WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
+import { widgetDefinition, type WidgetMeta, type WidgetRenderer, type WidgetViewSwitch } from '../dashboard/definitions.ts';
 import type { OptionField, WidgetOptions } from '../dashboard/options';
 import {
   DEFAULT_VIEW,
@@ -11,7 +11,6 @@ import {
   type FamilyViewModule,
   type LegacyWidgetEntry,
 } from '../families/manifest.ts';
-import { widgetMetas } from './definitions.ts';
 import { FAMILY_VIEWS } from './familyManifest.ts';
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
 
@@ -29,7 +28,6 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'scoreboard': { load: () => import('./scoreboard') },
 };
 
-const metaByKind = new Map<string, WidgetMeta>(widgetMetas.map(meta => [meta.kind, meta]));
 const familyByKind = new Map<string, FamilyViewEntry[]>();
 const familyByPair = new Map<string, FamilyViewEntry>();
 const legacyByKind = new Map<string, LegacyWidgetEntry[]>();
@@ -73,7 +71,7 @@ export function resolveWidgetActiveView(
   storedOptions?: WidgetOptions,
   metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options'>,
 ): string {
-  const meta = metaOverride ?? metaByKind.get(kind);
+  const meta = metaOverride ?? widgetDefinition(kind);
   return resolveActiveView(storedOptions, meta, familyViewsForKind(kind), legacyEntriesForKind(kind));
 }
 
@@ -111,7 +109,7 @@ export function resolveWidgetScopedOptions(
   storedOptions?: WidgetOptions,
   metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options'>,
 ): readonly OptionField[] {
-  const meta = metaOverride ?? metaByKind.get(kind);
+  const meta = metaOverride ?? widgetDefinition(kind);
   const familyEntries = familyViewsForKind(kind);
   const legacyEntries = legacyEntriesForKind(kind);
   const activeView = resolveActiveView(storedOptions, meta, familyEntries, legacyEntries);
@@ -122,17 +120,23 @@ export function resolveWidgetViewSwitch(
   kind: string,
   metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options' | 'title'>,
 ): WidgetViewSwitch | undefined {
-  const meta = metaOverride ?? metaByKind.get(kind);
+  const meta = metaOverride ?? widgetDefinition(kind);
   return manifestViewSwitch(meta, familyViewsForKind(kind), legacyEntriesForKind(kind));
 }
 
 export function manifestKinds(): readonly string[] {
   const seen = new Set<string>();
   const kinds: string[] = [];
-  for (const meta of widgetMetas) {
-    if (!seen.has(meta.kind)) {
-      seen.add(meta.kind);
-      kinds.push(meta.kind);
+  for (const entry of FAMILY_VIEWS) {
+    if (!seen.has(entry.kind)) {
+      seen.add(entry.kind);
+      kinds.push(entry.kind);
+    }
+  }
+  for (const entry of LEGACY_WIDGETS) {
+    if (!seen.has(entry.kind)) {
+      seen.add(entry.kind);
+      kinds.push(entry.kind);
     }
   }
   return kinds;

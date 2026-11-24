@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { WidgetMeta } from '../dashboard/definitions';
 import { addOrderedToken, contentSet, moveOrderedToken, removeOrderedToken, resolveOptions, setOption } from '../dashboard/options.ts';
 import {
   DEFAULT_VIEW,
@@ -78,14 +79,15 @@ test('multi-view widget routes each (kind, view) to its own family or legacy ent
 });
 
 test('playback placeholder gate uses the manifest as its single switch', () => {
+  const metaOf = (kind: string): WidgetMeta | undefined => widgetMetas.find(item => item.kind === kind);
   for (const entry of FAMILY_VIEWS) {
-    const meta = widgetMetas.find(item => item.kind === entry.kind);
+    const meta = metaOf(entry.kind);
     assert.equal(meta?.playsBackDated, undefined, `${entry.kind} drops playsBackDated once ported`);
     const opts = entry.view && entry.view !== DEFAULT_VIEW ? { [entry.viewOption ?? 'view']: entry.view } : undefined;
     assert.equal(isPlaybackDatedView(entry.kind, opts, meta), true, `(${entry.kind}, ${entry.view ?? DEFAULT_VIEW}) plays back live`);
   }
-  assert.equal(isPlaybackDatedView('research', undefined, widgetMetas.find(item => item.kind === 'research')), true);
-  assert.equal(isPlaybackDatedView('casualties', undefined, widgetMetas.find(item => item.kind === 'casualties')), false);
+  assert.equal(isPlaybackDatedView('research', undefined, metaOf('research')), true);
+  assert.equal(isPlaybackDatedView('casualties', undefined, metaOf('casualties')), false);
   assert.equal(isPlaybackDatedView('game-score', { view: 'table' }), true);
   assert.equal(isPlaybackDatedView('game-score', { view: 'race' }), true);
 });

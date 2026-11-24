@@ -50,6 +50,8 @@ export function artUrlForHandle(handle: ArtHandle, index?: IdentityIndex | null)
     const choice = parseFlagChoiceKey(handle.choice);
     if (choice) {
       const drawn = index.getDrawnFlag(choice);
+      const res = drawn?.image?.resolution;
+      if (res) return res.status === 'ready' ? res.url : null;
       if (drawn?.url) return drawn.url;
     }
   }
@@ -76,7 +78,7 @@ function resolutionFromHandle(
   }
   const flagSize = flagSizeFromScope(handle.scope);
   if (flagSize) {
-    return flagEntryToArt(lookupFlag(handle.choice, flagSize), CURRENT_INSTALL_PROVENANCE);
+    return flagEntryToArt(lookupFlag(handle.choice, flagSize));
   }
   return PENDING_ART;
 }

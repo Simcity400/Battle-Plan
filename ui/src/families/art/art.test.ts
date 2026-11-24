@@ -5,7 +5,9 @@ import { IdentityIndex } from '../identity/index.ts';
 import { flagChoiceKey } from '../identity/types.ts';
 import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
+import { flagEntryToArt, flagImageToArt, spriteImageToArt } from './adapters.ts';
 import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle } from './provider.ts';
+import { spriteResolutions } from '../../dashboard/spriteArtwork.ts';
 import {
   CURRENT_INSTALL_PROVENANCE,
   NO_ART,
@@ -207,4 +209,54 @@ test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art(
   assert.equal(domReady.provenance.label, 'Current installation');
 
   laneCache.dispose();
+});
+
+test('Rust ArtResolution on CountryFlagImage and SpriteImage passes straight through adapters, caches, and spriteResolutions', () => {
+  const modOrigin = { kind: 'mod', id: '2777392649', name: 'Millennium Dawn' } as const;
+  const modProvenance = { fromCurrentInstall: true, label: 'Current installation (Millennium Dawn)', scopeKey: 'md' };
+  const readyModRes = {
+    status: 'ready',
+    assetId: 'md:flag:USA',
+    url: 'asset://md/flags/USA.png',
+    origin: modOrigin,
+    file: 'gfx/flags/USA.tga',
+    frame: defaultArtFrame(82, 52),
+    provenance: modProvenance,
+  } as const;
+  const missingSpiritRes = {
+    status: 'confirmedMissing',
+    reason: 'Spirit declares no sprite in mod stack',
+    origin: modOrigin,
+    file: 'common/ideas/md.txt',
+  } as const;
+
+  const flagImage = {
+    flag: 0,
+    asset: 'gfx/flags/USA.tga',
+    key: 'md:flag:USA',
+    width: 82,
+    height: 52,
+    png: 'asset://md/flags/USA.png',
+    resolution: readyModRes,
+  };
+  assert.strictEqual(flagImageToArt(flagImage), readyModRes);
+  assert.strictEqual(flagEntryToArt({ url: flagImage.png, image: flagImage }), readyModRes);
+
+  const spriteImage = { key: 'GFX_md_spirit_none', frame: 0, icon: null, resolution: missingSpiritRes };
+  assert.strictEqual(spriteImageToArt(spriteImage), missingSpiritRes);
+
+  const parsed = spriteResolutions(
+    {
+      items: [
+        { key: 'GFX_md_spirit_ok', frame: 0, icon: 'asset://md/spirit.png', resolution: readyModRes },
+        spriteImage,
+      ],
+      warnings: [],
+    },
+    [{ key: 'GFX_md_spirit_ok', frame: 0 }, { key: 'GFX_md_spirit_none', frame: 0 }],
+  );
+  const okKey = JSON.stringify([0, 'GFX_md_spirit_ok', null, false]);
+  const missingKey = JSON.stringify([0, 'GFX_md_spirit_none', null, false]);
+  assert.deepEqual(parsed.get(okKey), readyModRes);
+  assert.deepEqual(parsed.get(missingKey), missingSpiritRes);
 });
