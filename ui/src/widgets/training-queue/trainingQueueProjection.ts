@@ -29,7 +29,7 @@ export function validateTrainingQueue(value: unknown): TrainingQueueReply {
 }
 
 type QueueRow =
-  | { readonly kind: 'order'; readonly key: string; readonly order: TrainingOrder; readonly icon: string | undefined; readonly children: readonly QueueRow[] }
+  | { readonly kind: 'order'; readonly key: string; readonly order: TrainingOrder; readonly icon: string | undefined; readonly open: boolean; readonly children: readonly QueueRow[] }
   | { readonly kind: 'division'; readonly key: string; readonly division: TrainingDivision };
 
 function share(part: bigint, whole: bigint): Value<number> {
@@ -62,7 +62,7 @@ function orderLine(order: TrainingOrder): string {
 const [DIVISION, TRAINING, EQUIPMENT, MANPOWER] = COLUMNS;
 
 const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, never>>[] = [
-  { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
+  { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
     icon: row => row.kind === 'order' ? row.icon : undefined,
     extra: row => (row.kind === 'order' ? { subtext: orderLine(row.order) } : {}),
     value: row => row.kind === 'order'
@@ -120,11 +120,12 @@ export const trainingQueueProjection: TableProjection<Record<string, never>> = r
     columns: QUEUE_COLUMNS,
     rows: (reply, _live, _hour, _options, readView) => {
       if (reply.missing !== null) return { rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
-      const rows: QueueRow[] = reply.orders.map(order => ({
+      const rows: QueueRow[] = reply.orders.map((order, at) => ({
         kind: 'order',
         key: `order:${order.order}`,
         order,
         icon: orderIcon(order, readView),
+        open: at === 0,
         children: order.divisions.map(division => ({ kind: 'division', key: `line:${division.line}`, division })),
       }));
       return {
@@ -137,7 +138,7 @@ export const trainingQueueProjection: TableProjection<Record<string, never>> = r
     rowKey: row => row.key,
     rowName: row => row.kind === 'order' ? (row.order.templateName ?? 'Template name unavailable') : (row.division.name ?? 'Division name unavailable'),
     children: row => row.kind === 'order' ? row.children : undefined,
-    initiallyOpen: () => false,
+    initiallyOpen: row => row.kind === 'order' && row.open,
     tooltipExtra: row => row.kind === 'order' ? orderTooltip(row.order) : divisionTooltip(row.division),
     tooltipNote: (_row, reply) => reply.readHour === null ? undefined : `As of ${formatDateOnly(reply.readHour)}`,
   }),
@@ -149,7 +150,7 @@ export const trainingQueueDeclaration: TableWidgetDeclaration<Record<string, nev
   label: 'Training queue',
   subject: 'training queue',
   emptyCampaign: 'Load a campaign to see the training queue.',
-  icon: 'helmet',
+  icon: 'person',
   optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its training queue.' },
   sources: ctx => {

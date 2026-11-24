@@ -22,7 +22,7 @@ const portName = (port: RepairPort): Value<string> => textValue(port.name, 'Port
 const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
 
 const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never>>[] = [
-  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Wilhelmshaven harbour'],
+  { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Wilhelmshaven harbour'],
     value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name) },
   { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
@@ -91,7 +91,7 @@ export const dockyardsDeclaration: TableWidgetDeclaration<Record<string, never>>
   label: 'Dockyards and repairs',
   subject: 'repair ports',
   emptyCampaign: 'Load a campaign to see dockyards and repairs.',
-  icon: 'anchor',
+  icon: 'cube',
   optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its dockyards.' },
   sources: ctx => {
