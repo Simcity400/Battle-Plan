@@ -7,7 +7,7 @@ dashboard_base::register_products! {
     OCCUPATION_RESERVE_RESERVEHISTORY => crate::products::occupation_reserve::ReserveHistory,
     FACTION_STATE_HISTORY_FACTIONSTATE => crate::products::faction_state::history::FactionState,
     WARS_WARS => crate::products::wars::Wars,
-    WARS_WARLOSSES => crate::products::wars::WarLosses,
+    WARS_WARTIMELINEAT => crate::products::wars::WarTimelineAt,
     SCOREBOARD_SCOREBOARDCOLUMNS => crate::products::scoreboard::ScoreboardColumns,
     SCOREBOARD_SCOREBOARD => crate::products::scoreboard::Scoreboard,
 }
