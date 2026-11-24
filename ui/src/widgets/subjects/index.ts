@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import SubjectsWidget from './SubjectsWidget';
+import { subjectsDeclaration } from './subjectsProjection';
 
-export default { render: SubjectsWidget } satisfies WidgetRenderer;
+export default { declaration: subjectsDeclaration } satisfies WidgetRenderer;

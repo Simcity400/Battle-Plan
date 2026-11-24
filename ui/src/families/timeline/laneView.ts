@@ -104,6 +104,7 @@ function navOf(layout: TimelinePlacement): FamilyNavTuple[] {
   const nav: FamilyNavTuple[] = [];
   for (const placed of layout.lanes) {
     const lane = placed.lane;
+    if (lane.kind === 'heading') continue;
     const tree = lane.expandable ? (layout.lanes[placed.ordinal + 1]?.lane.parentKey === lane.key ? 1 : 0) : -1;
     nav.push([lane.key, lane.label, nav.length, tree, lane.parentKey ?? '', lane.meta ?? null, placed.y, placed.height]);
   }
@@ -111,7 +112,7 @@ function navOf(layout: TimelinePlacement): FamilyNavTuple[] {
 }
 
 function mirrorOf(layout: TimelinePlacement): MirrorModel {
-  const rows = layout.lanes.map((placed, index) => ({
+  const rows = layout.lanes.filter(placed => placed.lane.kind !== 'heading').map((placed, index) => ({
     key: placed.lane.key,
     name: placed.lane.label,
     rowIndex: index,

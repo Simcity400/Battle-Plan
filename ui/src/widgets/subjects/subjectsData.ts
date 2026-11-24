@@ -164,8 +164,20 @@ export function subjectLanes(views: readonly OverlordView[], levels: ReadonlyMap
   const info = new Map<string, LaneInfo>();
   const missing = views[0]?.identityGaps ?? [];
   const unread = missing.length ? [...unobserved, ...missing] : unobserved;
+  const seenGaps = unread.filter(span => span.firstHour <= hour).map(span => ({ firstHour: span.firstHour, lastHour: Math.min(span.lastHour, hour) }))
+    .sort((a, b) => a.firstHour - b.firstHour);
+  const bounded = new Map<SubjectView, readonly HourRange[]>();
+  const stretchesAt = (view: SubjectView) => {
+    let held = bounded.get(view);
+    if (!held) {
+      const runs = view.runs.filter(run => run.firstHour <= hour).map(run => ({ ...run, lastHour: Math.min(run.lastHour, hour) }));
+      held = bridgeGaps(runs, seenGaps, (earlier, later) => earlier.startHour === later.startHour).map(({ firstHour, lastHour }) => ({ firstHour, lastHour }));
+      bounded.set(view, held);
+    }
+    return held;
+  };
   const shownSubjects = (overlord: OverlordView) => overlord.subjects.filter(view => firstHour(view.runs) <= hour
-    && (options.ended || runState(view.stretches, hour, unread).kind !== 'ended'));
+    && (options.ended || runState(stretchesAt(view), hour, unread).kind !== 'ended'));
   const heldCount = (overlord: OverlordView) => overlord.counts.find(step => step.firstHour <= hour && hour <= step.lastHour)?.value ?? 0;
   const chosen = options.countryIds ?? (options.countries === null ? null : new Set<string>());
   const involves = (overlord: OverlordView) => { for (const [key, since] of overlord.countryIds) if (since <= hour && chosen!.has(key)) return true; return false; };
@@ -197,10 +209,10 @@ export function subjectLanes(views: readonly OverlordView[], levels: ReadonlyMap
       : (a, b) => since(a) - since(b) || subjectName(a).localeCompare(subjectName(b)) || compareTags(a.key, b.key));
     for (const view of subjects) {
       const subject = countryAt(subjectTags.get(view) ?? null);
-      const state = runState(view.stretches, hour, unread);
+      const state = runState(stretchesAt(view), hour, unread);
       const run = runNear(view, hour);
       const level = state.kind === 'held' ? levelAt(run, hour) : undefined;
-      const label = state.kind === 'held' ? `${levelName(levels, level ?? null)} · since ${text.day(run.startHour)}`
+      const label = state.kind === 'held' ? `${levelName(levels, level ?? null)} · Since ${text.day(run.startHour)}`
         : state.kind === 'ended' ? (state.lastSeen == null ? `Ended ${text.day(state.at)}` : `Ended by ${text.day(state.at)}`)
           : state.kind === 'unknown' ? `Last recorded ${text.day(state.lastSeen)}` : '';
       const spans: TimelineSpan[] = view.runs.flatMap(item => item.steps.map(step => ({
