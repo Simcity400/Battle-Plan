@@ -269,7 +269,6 @@ impl AtHour for DecoratedDivisions {
     const KEY: &'static str = "decorated-divisions";
     const TITLE: &'static str = "Most decorated divisions";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = DecoratedDivisionsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", by, descending, count];
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
@@ -301,10 +300,6 @@ impl AtHour for DecoratedDivisions {
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         Ok(Content::load(source, load))
-    }
-
-    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        params.countries.iter().flatten().map(|span| if at.hour < span.first_hour { span.first_hour - 1 } else if at.hour <= span.last_hour { span.last_hour } else { i32::MAX }).min().unwrap_or(i32::MAX)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
