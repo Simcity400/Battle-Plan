@@ -142,6 +142,14 @@ export function validateNavalLossesAtReply(value: unknown): NavalLossesAtReply {
   return value as unknown as NavalLossesAtReply;
 }
 
+export function witnessedPartItems(reply: ForceAtReply, item: ForceAtRow, decimals: number, format: ValueFormat): TooltipListItem[] {
+  return reply.parts.flatMap((part, at): TooltipListItem[] => {
+    const raw = item.values[at] ?? null;
+    if (raw === null) return item.values.length ? [{ label: forcePartLabel(part), missingReason: 'Not recorded at this hour' }] : [];
+    return raw > 0 ? [{ label: forcePartLabel(part), value: formatScaled(scaleRaw(raw, decimals, null).value, format) }] : [];
+  });
+}
+
 export function forcePartLabel(part: ForcePart): string {
   return part.name ?? (part.unresolved ? 'Name unavailable' : part.key);
 }
@@ -205,7 +213,7 @@ export function projectForceAtReply(
     let segments: BarsSegment[] | undefined;
     if (options.split && numeric !== null && numeric > 0) {
       if (item.partsMissing !== null) {
-        tooltipItems.push({ label: config.partsLabel, missingReason: item.partsMissing });
+        tooltipItems.push({ label: config.partsLabel, missingReason: item.partsMissing }, ...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
       } else if (reply.parts.length > 0 && item.values.length === reply.parts.length) {
         const built: BarsSegment[] = [];
         let knownSum = 0;

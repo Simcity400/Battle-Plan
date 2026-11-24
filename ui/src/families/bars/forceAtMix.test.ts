@@ -35,6 +35,7 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
     rows: [
       { country: 'ENG', slot: null, tag: 'ENG', total: 100, missing: null, values: [25, 75], partsMissing: null },
       { country: 'GER', slot: null, tag: 'GER', total: 50, missing: null, values: [30, null], partsMissing: null },
+      { country: 'ITA', slot: null, tag: 'ITA', total: 40, missing: null, values: [12, 20], partsMissing: 'Part breakdown does not reconcile with the recorded total at this hour' },
     ],
     missing: null,
     warnings: [],
@@ -64,4 +65,10 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
   assert.equal(rows[1]!.segments?.length, 0);
   assert.equal(rows[1]!.value?.value.kind, 'notRecorded');
   assert.deepEqual(model.legend?.map(l => l.label), ['Ships', 'Convoys']);
+  assert.equal(rows[2]!.segments?.length, 0, 'parts that do not reconcile are never drawn as shares');
+  assert.deepEqual(rows[2]!.tooltip?.items?.slice(1), [
+    { label: 'Ships and convoys', missingReason: 'Part breakdown does not reconcile with the recorded total at this hour' },
+    { label: 'Ships', value: '12' },
+    { label: 'Convoys', value: '20' },
+  ], 'each witnessed count is still shown');
 });

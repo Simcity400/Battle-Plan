@@ -3,10 +3,12 @@ import { describe, it } from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { boundTiledSeries, createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
+import { readPlanExact } from '../../families/broker.ts';
+import { freezeGate } from '../../families/sources.ts';
 import { IdentityIndex } from '../../families/identity/index.ts';
 import { createSnapshotIdentityProvider } from '../../families/identity/provider.ts';
 import type { ApmReply } from '../../generated/dashboard';
-import { apmGraphProjection } from './apmGraphProjection.ts';
+import { apmGraphDeclaration, apmGraphProjection } from './apmGraphProjection.ts';
 
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H1943 = engineHour({ year: 1943, month: 9, day: 7, hour: 1 })!;
@@ -355,5 +357,142 @@ describe('apm-graph projection', () => {
     assert.ok(items.some(item => item.label === 'Small' && item.value === '<1'), 'hover sub-unit rate prints <1');
     assert.ok(items.some(item => item.label.includes('3 actions') && item.label.includes('0.3 min')), `hover shows recorded operands for Exact: ${JSON.stringify(items)}`);
     assert.ok(items.some(item => item.label.includes('1 action') && item.label.includes('3 min')), `hover shows recorded operands for Small: ${JSON.stringify(items)}`);
+  });
+
+  it('R2-S18: reads exact single-hour eAPM for head, end label, and audit through readPlanExact and omits heads for departed players', async () => {
+    const h0 = H1936;
+    const h1 = H1936 + 1;
+    const plan = apmGraphDeclaration.sources({
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+      branch: { id: '1', firstHour: h0, lastHour: h1, gaps: [] },
+      countries: { all: true, tags: [], top: null },
+      options: { group: 'player' },
+      aux: {
+        available: true,
+        warnings: [],
+        players: [
+          { id: 'user:active', name: 'Active', nameMissing: null, tags: ['GER'], runs: [{ firstHour: h0, lastHour: h1, tag: 'GER', name: 'Active', nameMissing: null }] },
+          { id: 'user:departed', name: 'Departed', nameMissing: null, tags: ['ITA'], runs: [{ firstHour: h0, lastHour: h0, tag: 'ITA', name: 'Departed', nameMissing: null }] },
+        ],
+        series: [],
+      },
+      gateSpan: (a: number, b: number) => ({ firstHour: a, lastHour: b }),
+    } as never, { width: 800, height: 300, following: true, staticSpan: null });
+
+    const headEntry = plan.entries.find(e => e.name === 'head')!;
+    assert.equal(headEntry.read.shape, 'point', 'apm-graph head must be a single-hour point read, not a 168-hour trailing window');
+    const followParams = (headEntry.read as { followQuery?: { params?: { windowHours?: number } } }).followQuery?.params;
+    assert.equal(followParams?.windowHours, 1, 'followed head must use a 1-hour window matching the hourly line');
+
+    const requests: { product: string; params: Record<string, unknown> }[] = [];
+    const client = {
+      product: async (req: { product: string; params: Record<string, unknown> }) => {
+        requests.push({ product: req.product, params: req.params });
+        if (req.params.hour === h1) {
+          return {
+            data: {
+              available: true,
+              warnings: [],
+              players: [],
+              series: [{
+                id: 'user:active',
+                name: 'Active',
+                nameMissing: null,
+                tag: 'GER',
+                hour: h1,
+                summary: { apm: 20, confirmedApm: 20, orders: '20', confirmedOrders: '20', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
+                points: [],
+              }],
+            } satisfies ApmReply,
+          };
+        }
+        return {
+          data: {
+            available: true,
+            warnings: [],
+            players: [],
+            series: [
+              {
+                id: 'user:active',
+                name: 'Active',
+                nameMissing: null,
+                tag: 'GER',
+                hour: h1,
+                summary: { apm: 10, confirmedApm: 10, orders: '20', confirmedOrders: '20', pausedOrders: '0', unpausedMinutes: 2, unpausedMinutesNum: '2', unpausedMinutesDen: '1', complete: true, gaps: false },
+                points: [],
+              },
+              {
+                id: 'user:departed',
+                name: 'Departed',
+                nameMissing: null,
+                tag: 'ITA',
+                hour: h0,
+                summary: { apm: 15, confirmedApm: 15, orders: '15', confirmedOrders: '15', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
+                points: [],
+              },
+            ],
+          } satisfies ApmReply,
+        };
+      },
+    };
+    const exactView = await readPlanExact(plan, displayedHour(h1), {
+      client: client as never,
+      following: true,
+      timeMode: 'follow',
+      branch: { firstHour: h0, lastHour: h1 },
+      window: { firstHour: h0, lastHour: h1 },
+      staticSpan: null,
+      gate: freezeGate({
+        recorded: h => h as never,
+        span: (a, b) => ({ firstHour: a, lastHour: b }) as never,
+      }),
+    });
+    assert.ok(exactView);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.params.hour, h1, 'readPlanExact must request exact hour h1, not a trailing span');
+
+    const model = apmGraphProjection.project(exactView, {
+      group: 'player',
+      extent: [h0, h1],
+      surface: '#111111',
+      gaps: [],
+      yMin: null,
+      yMax: null,
+      available: true,
+    });
+    assert.equal(model.series[0]?.headValue, 20);
+    assert.equal(model.series[0]?.headHour, h1);
+    assert.equal(model.series[0]?.endLabel?.value, '20');
+    assert.equal(model.auditRows?.find(r => r.row === 'user:active')?.value, '20');
+
+    const staleDepartedView = createBoundedReadView({
+      hour: h1,
+      panels: new Map([['head', {
+        available: true,
+        warnings: [],
+        players: [],
+        series: [{
+          id: 'user:departed',
+          name: 'Departed',
+          nameMissing: null,
+          tag: 'ITA',
+          hour: h0,
+          summary: { apm: 15, confirmedApm: 15, orders: '15', confirmedOrders: '15', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
+          points: [],
+        }],
+      } satisfies ApmReply]]),
+    });
+    const staleModel = apmGraphProjection.project(staleDepartedView, {
+      group: 'player',
+      extent: [h0, h1],
+      surface: '#111111',
+      gaps: [],
+      yMin: null,
+      yMax: null,
+      available: true,
+    });
+    assert.equal(staleModel.series[0]?.headValue, null, 'departed player observed only at h0 < h1 gets no head value at h1');
+    assert.equal(staleModel.series[0]?.endLabel, null, 'departed player gets no end label at h1');
+    assert.equal(staleModel.auditRows?.length, 0, 'departed player is not audited as a head at h1');
   });
 });

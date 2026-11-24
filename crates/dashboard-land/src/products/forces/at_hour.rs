@@ -7,7 +7,7 @@ use dashboard_base::{
     catalogue::{self, Catalogue},
     products::{
         Country, LoadContext,
-        at_hour::{At, AtHour, Owner, Read},
+        at_hour::{At, AtHour, Owner, Read, ReadsAt},
     },
 };
 use dashboard_query::{
@@ -129,6 +129,31 @@ pub(crate) fn chosen(countries: &[Country], group: Option<&GroupSelection>, grou
         Some(reason) => Chosen::Refused(reason),
         None => Chosen::These(members.tags.into_iter().map(Country::from).collect()),
     })
+}
+
+pub(crate) fn chosen_set(countries: &[Country], group: Option<&GroupSelection>, groups: &GroupsAt, holders: &Holders, hour: i32) -> Option<Vec<u32>> {
+    match groups.chosen_slots(group, countries, holders, hour) {
+        Ok(Ok(Some(slots))) => {
+            let mut slots: Vec<u32> = slots.into_iter().collect();
+            slots.sort_unstable();
+            Some(slots)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn slot_ranges(slots: &[u32], shift: u32) -> Keys {
+    Keys::Ranges(slots.iter().map(|&slot| (u128::from(slot) << shift, ((u128::from(slot) + 1) << shift) - 1)).collect())
+}
+
+pub(crate) fn chosen_reads(slots: &[u32], totals: TableId, parts: &[(TableId, u32)]) -> Vec<Read> {
+    let mut reads = vec![Read::these(totals, slots.iter().map(|&slot| u128::from(slot)))];
+    reads.extend(parts.iter().map(|&(table, shift)| Read { table, keys: slot_ranges(slots, shift) }));
+    reads
+}
+
+pub(crate) fn parts_keys(params_countries: &[Country], group: Option<&GroupSelection>, at: &At<'_, ForceContext>, shift: u32) -> Keys {
+    chosen_set(params_countries, group, &at.context.groups, at.holders, at.hour).map_or(Keys::All, |slots| slot_ranges(&slots, shift))
 }
 
 pub(crate) fn validate_group(group: Option<&GroupSelection>, countries: &[Country], top: Option<u32>) -> Result<(), &'static str> {
@@ -498,12 +523,8 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
                 .flatten()
                 .filter_map(|&(part, value)| Some((*named.of.get(&part)?, value)))
                 .collect();
-            let values = split(row.total, &held, groups);
-            let parts_missing = if row.total.is_some() && values.iter().any(Option::is_none) {
-                Some("Part breakdown does not reconcile with the recorded total at this hour".into())
-            } else {
-                None
-            };
+            let (values, reconciled) = split(row.total, &held, groups);
+            let parts_missing = (row.total.is_some() && !reconciled).then(|| "Part breakdown does not reconcile with the recorded total at this hour".to_owned());
             ForceAtRow {
                 country: row.country,
                 slot: row.slot,
@@ -594,6 +615,20 @@ impl AtHour for AirForceAt {
         load_context_for(source, load, "Air equipment type names", &params.branch_id, params.group.as_ref())
     }
 
+    fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        match (step, chosen_set(&params.countries, params.group.as_ref(), &at.context.groups, at.holders, at.hour)) {
+            (0, Some(slots)) => match params.measure {
+                AirForceMeasure::Planes => chosen_reads(&slots, TableId::AirForceTotals, &[(TableId::AirForceParts, 73)]),
+                AirForceMeasure::Wings => {
+                    let mut reads = chosen_reads(&slots, TableId::AirForceTotals, &[(TableId::AirForceWingKinds, 40)]);
+                    reads.push(Read::all(TableId::AirForceWingSignatures));
+                    reads
+                }
+            },
+            _ => Self::reads(params, owner, step, held),
+        }
+    }
+
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
         at.context.groups.valid_through(params.group.as_ref(), at.hour)
     }
@@ -630,7 +665,7 @@ impl AtHour for AirForceAt {
         let mut met = BTreeSet::new();
         let mut by_slot: HashMap<u32, Vec<(u128, Option<i64>)>> = HashMap::new();
         let parts_error = match params.measure {
-            AirForceMeasure::Planes => match population::<tables::AirForceParts>(frame, &Keys::All) {
+            AirForceMeasure::Planes => match population::<tables::AirForceParts>(frame, &parts_keys(&params.countries, params.group.as_ref(), at, 73)) {
                 Ok(rows) => {
                     for row in rows {
                         let row: &AirForcePartRow = row;
@@ -645,7 +680,7 @@ impl AtHour for AirForceAt {
                 }
                 Err(reason) => Some(reason),
             },
-            AirForceMeasure::Wings => match population::<tables::AirForceWingKinds>(frame, &Keys::All) {
+            AirForceMeasure::Wings => match population::<tables::AirForceWingKinds>(frame, &parts_keys(&params.countries, params.group.as_ref(), at, 40)) {
                 Ok(rows) => {
                     for row in rows {
                         let row: &AirForceWingKindRow = row;
@@ -724,6 +759,13 @@ impl AtHour for NavyAt {
         load_context_for(source, load, "Ship class names", &params.branch_id, params.group.as_ref())
     }
 
+    fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        match (step, chosen_set(&params.countries, params.group.as_ref(), &at.context.groups, at.holders, at.hour)) {
+            (0, Some(slots)) => chosen_reads(&slots, TableId::NavyTotals, &[(TableId::NavyClasses, 40)]),
+            _ => Self::reads(params, owner, step, held),
+        }
+    }
+
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
         at.context.groups.valid_through(params.group.as_ref(), at.hour)
     }
@@ -765,7 +807,7 @@ impl AtHour for NavyAt {
         let owner_code = if params.ownership == NavyOwnership::Logical { 1 } else { 0 };
         let mut met = BTreeSet::new();
         let mut by_slot: HashMap<u32, Vec<(u128, Option<i64>)>> = HashMap::new();
-        let parts_error = match population::<tables::NavyClasses>(frame, &Keys::All) {
+        let parts_error = match population::<tables::NavyClasses>(frame, &parts_keys(&params.countries, params.group.as_ref(), at, 40)) {
             Ok(rows) => {
                 for row in rows {
                     let row: &NavyClassRow = row;

@@ -203,9 +203,8 @@ impl AtHour for ProductionLicences {
             table: false,
             not_recorded: LICENCES_NOT_RECORDED,
             unlinked: LICENCE_UNLINKED,
-            incomplete: None,
         };
-        let reply = build_flows(&licence_edges(records, links), licence_parts(), 0, &shape, &|slot| FlowEndpoint::at(at.holders, slot, at.hour, LICENCE_UNLINKED));
+        let reply = build_flows(&licence_edges(records, links), &[], licence_parts(), 0, &shape, &|slot| FlowEndpoint::at(at.holders, slot, at.hour, LICENCE_UNLINKED));
         check_reply_budget(&reply)?;
         Ok(reply)
     }

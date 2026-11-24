@@ -137,7 +137,7 @@ function idle(friendly: string | null, enemy: string | null): boolean {
 }
 
 function runCell(run: SupremacyRun, look: Look, scale: number, friendly: string): { cell: HeatLaneCell; items: { label: string; value?: string; swatch?: string }[] } {
-  if (run.control === null) return { cell: { kind: 'missing', reason: 'Naval region control was not recorded' }, items: [] };
+  if (run.control === null) return { cell: { kind: 'missing', reason: run.missing ?? 'Naval region control was not recorded' }, items: [] };
   if (idle(run.friendly, run.enemy)) return { cell: { kind: 'clear', label: 'No activity' }, items: [{ label: 'No activity' }] };
   const share = shareOf(run.share, scale);
   const pct = share === null ? null : formatShare(share);

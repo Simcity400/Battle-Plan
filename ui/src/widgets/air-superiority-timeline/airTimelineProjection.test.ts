@@ -6,7 +6,7 @@ import type { AirSide, AirTimelineReply } from '../../generated/dashboard';
 import { askUnits } from '../../families/readUnits.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { FrozenGate } from '../../families/sources.ts';
-import { DAY_PIECE_HOURS, DAY_TILE_HOURS } from '../../families/heat/dayTiles.ts';
+import { DAY_TILE_HOURS } from '../../families/heat/dayTiles.ts';
 import { airTimelineDeclaration, projectAirTimeline } from './airTimelineProjection.ts';
 
 const SURFACE = '#161616';
@@ -149,9 +149,9 @@ test('a hundred played hours ask each completed tile once, the current tile once
     }
   }
   const completedTiles = Math.ceil(24 * 1000 / DAY_TILE_HOURS);
-  assert.equal(tileAsks, Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8), 'every complete tile and every complete eight-day piece of the current tile once');
+  assert.equal(tileAsks, Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8) + 4, 'every complete tile and every complete eight-day piece of the current tile and every complete day of the current piece once (four midnights)');
   assert.equal(nowAsks, 100);
-  assert.ok(widest <= DAY_PIECE_HOURS, 'the hourly ask covers the current eight-day piece only');
+  assert.ok(widest <= 24, 'the hourly ask covers today only');
 
   const visits = { cells: 0 };
   const counted = <T>(items: T[]): T[] => new Proxy(items, {

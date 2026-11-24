@@ -39,9 +39,11 @@ test('table family plays live with zero React commits, zero layout reads on inst
     assert.equal(played.pauseInstallReads, 0, `zero layout/style reads through pause flush: ${played.pauseInstallReads}`);
     assert.ok(played.installs >= 6, `frames actually installed while playing: ${played.installs}`);
     assert.equal(played.flushedOnPause, true, `mirror immediately flushed to ${played.wantTop} on pause`);
-    const settled = await act<{ mutations: number; installs: number; samePicture: boolean }>('mirrorSyncsOverFrames(100)');
-    t.diagnostic(`100 frames after the pause flush: ${settled.mutations} mirror mutations, ${settled.installs} installs`);
-    assert.equal(settled.mutations, 0, `100 frames that change neither rows, text, selection nor focus touch the mirror zero times: ${settled.mutations}`);
+    const settled = await act<{ mutations: number; installs: number; stepped: number }>('mirrorSyncsOverFrames(40)');
+    t.diagnostic(`40 paused hour steps with unchanged content: ${settled.mutations} mirror mutations, ${settled.installs} installs`);
+    assert.equal(settled.stepped, 40, `R4-S12: every step installed a new hour (${settled.stepped} of 40)`);
+    assert.ok(settled.installs >= 40, `R4-S12: the unchanged-content installs happened (${settled.installs})`);
+    assert.equal(settled.mutations, 0, `installs that change neither rows, text, selection nor focus touch the mirror zero times: ${settled.mutations}`);
     assert.equal(played.mirrorRows.at(-1)?.key, 'ENG', 'notRecorded row stays last');
     assert.ok(played.mirrorRows.at(-1)?.cells.some(c => c?.includes('Not recorded: ENG factories not recorded')), 'mirror speaks missing reason');
 
