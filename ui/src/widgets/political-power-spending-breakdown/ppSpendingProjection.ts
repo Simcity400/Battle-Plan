@@ -1,9 +1,10 @@
-import { formatPower, powerDecimals } from '../../dashboard/powerDecimals.ts';
+import { powerDecimals } from '../../dashboard/powerDecimals.ts';
 import { breakdownAtHourModel, breakdownAtHourSource, validateBreakdownAtHour, type BreakdownAtHourWords } from '../../families/breakdown/atHour.ts';
 import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownProjection } from '../../families/breakdown/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import type { PowerSpendingBreakdownReply } from '../../generated/dashboard';
+import { formatRational } from '../../families/valueFormat.ts';
+import type { BreakdownAmount, PowerSpendingBreakdownReply } from '../../generated/dashboard';
 
 export interface PoliticalPowerSpendingOptions {
   readonly digits: number;
@@ -18,7 +19,7 @@ function words(digits: number): BreakdownAtHourWords {
     since: 'Spent since',
     nothing: 'spending',
     notRecorded: 'Political power spending was not recorded.',
-    format: (raw, decimals) => formatPower(raw, digits, decimals),
+    format: (numerator, denominator) => formatRational(numerator, denominator, { maxDecimals: digits }),
   };
 }
 
@@ -27,15 +28,15 @@ export const ppSpendingProjection: BreakdownProjection<PoliticalPowerSpendingOpt
   kind: 'political-power-spending-breakdown',
   project(readView: BoundedReadView, options: PoliticalPowerSpendingOptions): BreakdownModel {
     const reply = readView.panel<PowerSpendingBreakdownReply>('main');
-    const lost = reply?.lostAtCapRaw == null ? null : BigInt(reply.lostAtCapRaw);
-    const power = (raw: bigint) => `${formatPower(raw, options.digits, reply?.breakdown.decimals ?? 5)} PP`;
-    const capped = lost !== null && lost > 0n ? `${power(lost)} lost at the cap.` : null;
+    const lost = reply?.lostAtCap ?? null;
+    const power = (amount: BreakdownAmount) => `${formatRational(BigInt(amount.numerator), BigInt(amount.denominator), { maxDecimals: options.digits })} PP`;
+    const capped = lost !== null && BigInt(lost.numerator) > 0n ? `${power(lost)} lost at the cap.` : null;
     const lostReason = reply?.lostAtCapReason !== reply?.gainedReason ? reply?.lostAtCapReason : null;
-    const note = [reply?.gainedReason, reply?.gainedRaw !== null ? capped : null, lostReason].filter((text): text is string => Boolean(text)).join(' ');
+    const note = [reply?.gainedReason, reply?.gained !== null ? capped : null, lostReason].filter((text): text is string => Boolean(text)).join(' ');
     return breakdownAtHourModel(Math.floor(readView.hour), reply, words(options.digits), reply ? {
       label: 'Gained',
-      value: reply.gainedRaw === null ? 'Not recorded' : power(BigInt(reply.gainedRaw)),
-      ...(reply.gainedRaw !== null && reply.gainedReason ? { partial: true } : {}),
+      value: reply.gained === null ? 'Not recorded' : power(reply.gained),
+      ...(reply.gained !== null && reply.gainedReason ? { partial: true } : {}),
       ...(note ? { note } : {}),
     } : undefined);
   },

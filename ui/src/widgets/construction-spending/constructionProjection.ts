@@ -1,10 +1,9 @@
-import { formatAmount } from '../../charts/valueAxis.ts';
 import { icDecimals } from '../../dashboard/icDecimals.ts';
 import { breakdownAtHourModel, breakdownAtHourSource, validateBreakdownAtHour } from '../../families/breakdown/atHour.ts';
 import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownProjection } from '../../families/breakdown/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatRational, formatScalar } from '../../families/valueFormat.ts';
 import type { ConstructionBreakdownReply } from '../../generated/dashboard';
 
 export interface ConstructionSpendingOptions {
@@ -26,7 +25,7 @@ export const constructionProjection: BreakdownProjection<ConstructionSpendingOpt
       since: 'Used since',
       nothing: 'construction',
       notRecorded: 'Construction was not recorded.',
-      format: (raw, decimals) => formatAmount(raw, decimals, Math.min(decimals, options.digits)),
+      format: (numerator, denominator) => formatRational(numerator, denominator, { maxDecimals: options.digits }),
     });
     const notes = [
       ...(reply?.beforeFirstRead ? [`Output of ${plural(reply.beforeFirstRead, 'project')} before the recording began is not counted.`] : []),

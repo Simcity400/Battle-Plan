@@ -4093,21 +4093,21 @@ export type PowerSpendingBreakdownReply = { from: number, hour: number,
  */
 through: number, breakdown: Breakdown,
 /**
- * Gained over the same period before the cap, scaled by the breakdown's decimals; none when an
- * amount gained was read without its value. With `gained_reason`, hours of the period whose gains
- * were not read are left out: the figure is partial.
+ * Gained over the same period before the cap; none when an amount gained was read without its
+ * value. With `gained_reason`, hours of the period whose gains were not read are left out: the
+ * figure is partial.
  */
-gainedRaw: string | null, lostAtCapRaw: string | null,
+gained: BreakdownAmount | null, lostAtCap: BreakdownAmount | null,
 /**
- * Why the gain is not known, or (with `gained_raw`) why it is partial.
+ * Why the gain is not known, or (with `gained`) why it is partial.
  */
 gainedReason: string | null,
 /**
- * Why the loss at the cap is not known, or (with `lost_at_cap_raw`) why it is partial.
+ * Why the loss at the cap is not known, or (with `lost_at_cap`) why it is partial.
  */
 lostAtCapReason: string | null, warnings: Array<string>, };
 export type SpendCurrency = "Political" | "Command";
-export type Breakdown = { decimals: number, total: BreakdownTotal,
+export type Breakdown = { total: BreakdownTotal,
 /**
  * In display order: the largest known part first, then parts at zero or below, then other,
  * then parts not recorded.
@@ -4117,11 +4117,16 @@ parts: Array<BreakdownPart>,
  * Hours of the period that were not recorded.
  */
 unrecordedHours: number, };
+export type BreakdownAmount = {
+/**
+ * Reduced, over a positive denominator.
+ */
+numerator: string, denominator: string, };
 export type BreakdownTotal = {
 /**
- * Scaled by `decimals`; none when nothing is known.
+ * None when nothing is known.
  */
-raw: string | null, state: BreakdownState, reason: string | null, };
+amount: BreakdownAmount | null, state: BreakdownState, reason: string | null, };
 export type BreakdownPart = {
 /**
  * Unique among its siblings.
@@ -4141,9 +4146,9 @@ ordinal: number,
  */
 other: boolean,
 /**
- * Scaled by `decimals`; none when not recorded.
+ * None when not recorded.
  */
-raw: string | null, state: BreakdownState, reason: string | null,
+amount: BreakdownAmount | null, state: BreakdownState, reason: string | null,
 /**
  * Of the whole; none where the whole is only a lower bound or the part is not positive.
  */
@@ -4475,8 +4480,7 @@ export type TerritoryBreakdownReply = { hour: number,
 /**
  * Countries (key: `slot:N`, the recorded slot, named by the tag it holds at the hour or `other` where no
  * tag names it; `~unheld` for land no country holds), each split by strategic region (`~region` where
- * the region is not recorded). States are counted to two decimals: a state split between holders counts
- * by its share.
+ * the region is not recorded). A state split between holders counts by its exact share.
  */
 breakdown: Breakdown, warnings: Array<string>, };
 export type TerritoryBreakdownParamsAtHour = TerritoryBreakdownParams & { hour: number };

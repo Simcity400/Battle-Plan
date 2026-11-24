@@ -1,7 +1,7 @@
 use super::super::spending::{Facts, LineFacts, SpentStep, unread_spans};
 use super::super::SpendingGap;
 use super::index;
-use dashboard_base::products::breakdown::BreakdownState;
+use dashboard_base::products::breakdown::{BreakdownAmount, BreakdownState};
 use replay_data::rows::TagHolderRow;
 
 const NONE: u32 = TagHolderRow::NONE;
@@ -29,8 +29,7 @@ fn facts() -> Facts {
 fn spending_at_an_hour_is_the_running_total_then() {
     let at = index(&facts()).at(25);
     let parts = &at.breakdown.parts;
-    assert_eq!(at.breakdown.decimals, 5);
-    assert_eq!(at.breakdown.total.raw.as_deref(), Some("800000"), "the step read at hour 30 is not counted at hour 25");
+    assert_eq!(at.breakdown.total.amount, Some(BreakdownAmount { numerator: "8".into(), denominator: "1".into() }), "the step read at hour 30 is not counted at hour 25");
     assert_eq!(parts.iter().map(|part| part.name.as_str()).collect::<Vec<_>>(), ["New buildings", "Repairs"]);
     assert_eq!(parts[0].children.iter().map(|part| part.name.as_str()).collect::<Vec<_>>(), ["Workshop", "type_b"]);
     assert_eq!(at.through, 29);
@@ -44,10 +43,10 @@ fn hours_with_neither_queue_read_are_not_an_exact_zero() {
     held.spent.clear();
     held.unrecorded.push((0, 4, "The construction queues were not read, so output in those hours is not counted".into()));
     let early = index(&held).at(3);
-    assert_eq!((early.breakdown.total.state, early.breakdown.total.raw.as_deref(), early.breakdown.unrecorded_hours), (BreakdownState::NotRecorded, None, 4), "no hour witnessed is no figure at all");
+    assert_eq!((early.breakdown.total.state, early.breakdown.total.amount.clone(), early.breakdown.unrecorded_hours), (BreakdownState::NotRecorded, None, 4), "no hour witnessed is no figure at all");
     assert_eq!(early.through, 3, "the count of unread hours grows each hour");
     let later = index(&held).at(50);
-    assert_eq!((later.breakdown.total.state, later.breakdown.total.raw.as_deref()), (BreakdownState::Partial, Some("0")), "an unread stretch keeps every later zero partial");
+    assert_eq!((later.breakdown.total.state, later.breakdown.total.amount), (BreakdownState::Partial, Some(BreakdownAmount { numerator: "0".into(), denominator: "1".into() })), "an unread stretch keeps every later zero partial");
 }
 
 #[test]
@@ -101,6 +100,6 @@ fn spending_no_longer_read_makes_the_part_a_lower_bound_never_zero() {
     held.spent.insert((false, false, 7, 1, NONE), steps(&[(10, Some(500_000)), (20, None)]));
     let at = index(&held).at(25);
     let part = at.breakdown.parts[0].children.iter().find(|part| part.name == "Workshop").expect("workshop");
-    assert_eq!((part.state, part.raw.as_deref()), (BreakdownState::AtLeast, Some("500000")));
+    assert_eq!((part.state, part.amount.clone()), (BreakdownState::AtLeast, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() })));
     assert_eq!(at.breakdown.total.state, BreakdownState::AtLeast);
 }
