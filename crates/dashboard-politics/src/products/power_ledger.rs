@@ -713,6 +713,7 @@ fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i3
         return Ok(vec![(first, last, Some(format!("{label} was not recorded in this format")))]);
     }
     let runs = dashboard_query::cost::storage(|| lanes::statuses(recording, run, table, first, last))?;
+    let reads = dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, table, first, last))?;
     let mut out: Vec<(i32, i32, Option<String>)> = Vec::new();
     let mut push = |a: i32, b: i32, reason: Option<String>| {
         if a > b {
@@ -721,6 +722,31 @@ fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i3
         match out.last_mut() {
             Some((_, end, held)) if end.checked_add(1) == Some(a) && *held == reason => *end = b,
             _ => out.push((a, b, reason)),
+        }
+    };
+    let mut read_at = 0usize;
+    let mut push_complete = |a: i32, b: i32| {
+        let mut cursor = a;
+        while read_at < reads.len() && reads[read_at].1 < cursor {
+            read_at += 1;
+        }
+        while read_at < reads.len() && reads[read_at].0 <= b {
+            let (ra, rb) = reads[read_at];
+            let hit_a = ra.max(cursor);
+            let hit_b = rb.min(b);
+            if cursor < hit_a {
+                push(cursor, hit_a - 1, Some(format!("{label} was not read at this hour")));
+            }
+            push(hit_a, hit_b, None);
+            cursor = hit_b.saturating_add(1);
+            if rb <= b {
+                read_at += 1;
+            } else {
+                break;
+            }
+        }
+        if cursor <= b {
+            push(cursor, b, Some(format!("{label} was not read at this hour")));
         }
     };
     let mut cursor = first;
@@ -732,13 +758,43 @@ fn status_runs(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i3
         if cursor < a {
             push(cursor, a - 1, Some(format!("{label} was not recorded")));
         }
-        push(a, b, status_reason(run.status, label));
+        match status_reason(run.status, label) {
+            None => push_complete(a, b),
+            Some(reason) => push(a, b, Some(reason)),
+        }
         cursor = b.saturating_add(1);
     }
     if cursor <= last {
         push(cursor, last, Some(format!("{label} was not recorded")));
     }
     Ok(out)
+}
+
+fn intersect_status_runs(a: &[(i32, i32, Option<String>)], b: &[(i32, i32, Option<String>)]) -> Vec<(i32, i32, Option<String>)> {
+    let mut out: Vec<(i32, i32, Option<String>)> = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        let (aa, ab, ref ar) = a[i];
+        let (ba, bb, ref br) = b[j];
+        let lo = aa.max(ba);
+        let hi = ab.min(bb);
+        if lo <= hi {
+            let reason = ar.clone().or_else(|| br.clone());
+            match out.last_mut() {
+                Some((_, end, held)) if end.checked_add(1) == Some(lo) && *held == reason => *end = hi,
+                _ => out.push((lo, hi, reason)),
+            }
+        }
+        if ab < bb {
+            i += 1;
+        } else if bb < ab {
+            j += 1;
+        } else {
+            i += 1;
+            j += 1;
+        }
+    }
+    out
 }
 
 fn maps_to_slot(steps: &[(i32, Option<u32>)], hour: i32, slot: u32) -> bool {
@@ -753,8 +809,9 @@ fn instant_gains(
     gain_coverage: &mut Vec<SpendCoverage>,
     buckets: &mut BTreeMap<(i32, Option<i32>), GainBucket>,
 ) -> io::Result<()> {
-    let statuses = status_runs(query, piece.run, TableId::CountryPowerChanges, piece.first, piece.last, "Power changes")?;
-    for (first_hour, last_hour, reason) in statuses {
+    let change_statuses = status_runs(query, piece.run, TableId::CountryPowerChanges, piece.first, piece.last, "Power changes")?;
+    let link_statuses = status_runs(query, piece.run, TableId::CountryLinks, piece.first, piece.last, "Country links")?;
+    for (first_hour, last_hour, reason) in intersect_status_runs(&change_statuses, &link_statuses) {
         push_coverage(gain_coverage, SpendCoverage { first_hour, last_hour, covered: reason.is_none(), reason });
     }
     let recording = query.replay.recording();
@@ -800,21 +857,22 @@ fn instant_gains(
     for (key, steps) in &history.keys {
         let raw = (*key >> 64) as u32;
         let Some(link_steps) = links_by_raw.get(&raw) else { continue };
-        let mut seen_epoch: Option<u64> = None;
+        let mut seen_epochs: Vec<u64> = Vec::new();
         for step in steps {
-            let Some(cells) = &step.cells else {
-                seen_epoch = None;
-                continue;
-            };
+            let Some(cells) = &step.cells else { continue };
             let epoch = Value::of(cells[order[0]]).number().map(|value| value as u64);
             if piece.baseline == Some(step.hour) || step.hour < piece.first || step.hour <= piece.run_first {
-                seen_epoch = epoch;
+                if let Some(ep) = epoch && !seen_epochs.contains(&ep) {
+                    seen_epochs.push(ep);
+                }
                 continue;
             }
-            if epoch.is_some() && seen_epoch == epoch {
-                continue;
+            if let Some(ep) = epoch {
+                if seen_epochs.contains(&ep) {
+                    continue;
+                }
+                seen_epochs.push(ep);
             }
-            seen_epoch = epoch;
             if !maps_to_slot(link_steps, step.hour, piece.slot) {
                 continue;
             }

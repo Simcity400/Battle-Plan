@@ -397,7 +397,8 @@ export function powerReconciler(
     capMiss.push(cMiss);
     unmatched.push(unm);
   }
-  return hour => {
+  return rawHour => {
+    const hour = Math.floor(rawHour);
     if (!indexed.length) return { kind: 'unrecorded', reason: 'No country selected.' };
     if (hour < openingHour) return { kind: 'unrecorded', reason: 'Outside recording span.' };
     if (selection?.membership) {

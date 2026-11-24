@@ -130,6 +130,7 @@ test('powerReconciliation omits exact zero, reports signed remainder when comple
 
   const exactLedger = [ledgerOf('GER', 'Political', [base()])];
   assert.deepEqual(powerReconciliation(exactLedger, { from: null, hour: last }, first), { kind: 'zero' });
+  assert.deepEqual(powerReconciliation(exactLedger, { from: null, hour: first + 2.5 }, first), { kind: 'zero' });
 
   const plusLedger = [ledgerOf('GER', 'Political', [base({
     balances: [
