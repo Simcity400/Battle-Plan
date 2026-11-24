@@ -92,6 +92,8 @@ const paths = {
   'shield-check': <><path d="M12 3.5 19 6v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6l7-2.5Z" /><path d="m8.75 12 2.25 2.25 4.25-4.5" /></>,
   ballot: <><path d="M4 11h16v9.5H4z" /><path d="M8.5 11 9 3.5h6l.5 7.5" /><path d="m10 7.5 1.5 1.5 3-3" /><path d="M8.5 14.5h7" /></>,
   lock: <><rect x="5" y="11" width="14" height="9.5" rx="2" /><path d="M8 11V7.5a4 4 0 0 1 8 0V11" /></>,
+  person: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c.8-3.8 3.6-6 7-6s6.2 2.2 7 6" /></>,
+  cube: <><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="M4 7.5 12 12l8-4.5M12 12v9" /></>,
 } satisfies Record<IconName, ReactNode>;
 
 export function Icon({ name, ...props }: SVGProps<SVGSVGElement> & { name: IconName }) {

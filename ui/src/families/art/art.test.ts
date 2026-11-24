@@ -7,9 +7,8 @@ import { DomArtCache, type DomArtImage } from './domCache.ts';
 import { LaneArtCache } from './laneCache.ts';
 import { flagEntryToArt, flagImageToArt, spriteImageToArt } from './adapters.ts';
 import { artUrlForHandle, createDomArtProvider, createLaneArtProvider, flagArtHandle, laneArtDemand } from './provider.ts';
-import { fetchArtHandles } from '../../dashboard/useSpriteArtwork.ts';
+import { fetchArtHandles, spriteResolutions } from './transport.ts';
 import type { ArtHandle } from '../plan.ts';
-import { spriteResolutions } from '../../dashboard/spriteArtwork.ts';
 import {
   artHandleKey,
   CURRENT_INSTALL_PROVENANCE,
@@ -39,7 +38,7 @@ test('LaneArtCache distinguishes all six Rust ArtResolution states, wakes on loa
   let wakes = 0;
 
   const cache = new LaneArtCache<ArtBitmap>({
-    maxEntries: 2,
+    maxEntries: 3,
     contentRevision: 1,
     onSettle: () => { wakes++; },
     fetchBitmap: (url, signal) => new Promise((resolve, reject) => {
@@ -99,9 +98,9 @@ test('LaneArtCache distinguishes all six Rust ArtResolution states, wakes on loa
   cache.requestVisible([okRes, flakyRes]);
   assert.deepEqual(aborted, ['art://slow'], 'scrolled-off pending fetch is aborted');
 
-  cache.requestVisible([readyArt('art://third')]);
+  cache.requestVisible([readyArt('art://third'), readyArt('art://fourth')]);
   await flush();
-  assert.equal(cache.cachedCount, 2);
+  assert.equal(cache.cachedCount, 3);
   assert.ok(closed.includes('art://ok'), 'evicted bitmap is closed');
 
   cache.setContentRevision(2);
@@ -162,6 +161,74 @@ test('DomArtCache distinguishes pending, ready, and failed, wakes listeners, ret
   cache.setContentRevision(2);
   assert.equal(cache.cachedCount, 0);
   unsub();
+});
+
+test('at 1,500 assets the lane decodes a bounded few at a time and holds no more than its limit, the DOM cache keeps no failure past its limit, and a decode that lands before subscribing is seen', async () => {
+  let started = 0;
+  let inFlight = 0;
+  let mostInFlight = 0;
+  let open = 0;
+  const lane = new LaneArtCache<ArtBitmap>({
+    maxEntries: 128,
+    fetchBitmap: () => {
+      started++;
+      inFlight++;
+      mostInFlight = Math.max(mostInFlight, inFlight);
+      return new Promise(resolve => queueMicrotask(() => {
+        inFlight--;
+        open++;
+        const bitmap = fakeBitmap();
+        bitmap.close = () => { open--; };
+        resolve(bitmap);
+      }));
+    },
+  });
+  const urls = Array.from({ length: 1500 }, (_, i) => readyArt(`art://flag-${i}`));
+  lane.requestVisible(urls);
+  assert.ok(lane.pendingCount <= 6, 'decodes start a bounded few at a time');
+  for (let i = 0; i < 2000; i++) await Promise.resolve();
+  assert.ok(mostInFlight <= 6, 'never more than the concurrent bound in flight');
+  assert.equal(started, 128, 'no decode starts that the cache could not keep');
+  assert.equal(lane.cachedCount, 128);
+  assert.equal(open, 128, 'every bitmap decoded is held or closed');
+  assert.equal(lane.resolve(urls[1499]!).status, 'pending', 'art beyond the limit waits, never borrowed or dropped');
+
+  lane.requestVisible(urls.slice(1400));
+  for (let i = 0; i < 2000; i++) await Promise.resolve();
+  assert.equal(started, 228);
+  assert.equal(lane.cachedCount, 128);
+  assert.equal(open, 128, 'art scrolled away is closed to make room');
+  assert.equal(lane.resolve(urls[1499]!).status, 'ready');
+  lane.dispose();
+  assert.equal(open, 0);
+
+  const images: (DomArtImage & { fail: () => void; load: () => void })[] = [];
+  const dom = new DomArtCache<DomArtImage>({
+    maxEntries: 2048,
+    maxFailed: 2048,
+    createImage: () => {
+      const image = {
+        complete: false,
+        naturalWidth: 0,
+        naturalHeight: 0,
+        src: '',
+        onload: null as ((...args: any[]) => unknown) | null,
+        onerror: null as ((...args: any[]) => unknown) | null,
+        fail() { this.complete = true; this.onerror?.(); },
+        load() { this.complete = true; this.naturalWidth = 8; this.naturalHeight = 8; this.onload?.(); },
+      };
+      images.push(image);
+      return image;
+    },
+  });
+  for (let i = 0; i < 2050; i++) dom.resolve(readyArt(`dom://broken-${i}`));
+  for (const image of images) image.fail();
+  assert.equal(dom.failedCount, 2048, 'failures beyond the limit are evicted');
+  assert.equal(dom.cachedCount, 0, 'a failed image is not also kept as an entry');
+
+  assert.equal(dom.resolve(readyArt('dom://late')).status, 'pending');
+  images.at(-1)!.load();
+  assert.equal(dom.stateOfUrl('dom://late'), 'ready', 'a decode that settled before the subscriber arrived is seen when it subscribes');
 });
 
 test('ArtProvider plugs LaneArtCache and DomArtCache behind BoundedReadView.art() for flags and URLs', async () => {

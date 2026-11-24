@@ -480,6 +480,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     flagSize: 'panel',
     branchBounds,
   });
+  const identityRevision = identityState.index?.resolveRevision() ?? -1;
   useEffect(() => {
     if (!active || !wantsLabels || !identityScope || !track || !identityState.index?.hasFacts()) return;
     const seen = new Set<string>();
@@ -503,7 +504,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
     }
     if (choices.length) identityBrokerFor(runtime.client).requestFlagChoices(identityScope, 'panel', choices, track.source);
-  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityState.version, labelTags, firstHour, lastHour]);
+  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, identityRevision, labelTags, firstHour, lastHour]);
 
   const builtLooks = useMemo(
     () => (wantsLabels ? buildCountryLooksFromIdentity(identityState.index, labelTags, firstHour, lastHour, identityState.flagFor, wantsColours) : NO_LOOKS),
@@ -772,7 +773,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const trackOffset = track?.axisOffset ?? 0;
 
   const [tileClockHour, setTileClockHour] = useState<number>(() => Math.floor(runtime.clock.getHour()) + trackOffset);
-  const tileHour = following ? tileClockHour : Math.floor(pinHour ?? window?.lastHour ?? effectiveEndHour);
+  const tileSeenHour = useMemo(
+    () => Math.floor(runtime.clock.getHour()) + trackOffset,
+    [currentTiled, tileClockHour, runtime.clock, trackOffset],
+  );
+  const tileHour = following ? tileSeenHour : Math.floor(pinHour ?? window?.lastHour ?? effectiveEndHour);
   const tileUnrecorded = useMemo(() => {
     if (!currentTiled) return null;
     const lines: UnrecordedLine[] = [];

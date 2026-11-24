@@ -1,7 +1,10 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { choiceVariants } from '../../dashboard/options.ts';
-import { TABLE_OPTIONS, tableSortOptions } from '../../charts/table/options.ts';
+import { columnsControl } from '../../families/settingsControls.ts';
+import type { TableColumnSpec } from '../../families/table/model.ts';
+import { OFFERED, TABLE_SETTINGS_KEY, type TableBase } from '../../families/table/settings.ts';
+import type { MarketTab } from './marketData.ts';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const DETAILS = { id: 'details', label: 'Market details' };
@@ -11,15 +14,221 @@ export const SORTS = {
   requests: { column: 'amount', direction: 'descending' },
   inventory: { column: 'amount', direction: 'descending' },
 } as const;
-const sortField = (view: keyof typeof SORTS, columns: readonly { key: string; label: string }[]): OptionField => ({
-  ...tableSortOptions(columns, SORTS[view])[0], key: `sort-${view}`, visibleWhen: options => (options.view ?? 'contracts') === view });
+
+export const MARKET_TABS: readonly MarketTab[] = ['contracts', 'requests', 'inventory'];
+
+export function marketColumns(view: MarketTab): TableColumnSpec[] {
+  if (view === 'inventory') {
+    return [
+      {
+        key: 'seller',
+        label: 'Seller',
+        as: 'flag',
+        offered: OFFERED.country,
+        showNamesDefault: false,
+        pinned: true,
+        priority: 0,
+        text: true,
+        hideable: false,
+      },
+      {
+        key: 'equipment',
+        label: 'Equipment',
+        as: 'icon',
+        cellKind: 'item',
+        offered: OFFERED.text,
+        pinned: true,
+        priority: 0,
+        text: true,
+        hideable: false,
+        minWidth: 200,
+      },
+      {
+        key: 'amount',
+        label: 'On market',
+        as: 'faint',
+        barEligible: true,
+        offered: OFFERED.number,
+        priority: 1,
+        numeric: true,
+        format: 'fixed5Amount',
+        widest: ['99,999'],
+      },
+      {
+        key: 'level',
+        label: 'Price level',
+        as: 'plain',
+        barEligible: false,
+        offered: OFFERED.text,
+        priority: 2,
+        text: true,
+        minWidth: 104,
+      },
+    ];
+  }
+  if (view === 'requests') {
+    return [
+      {
+        key: 'buyer',
+        label: 'Buyer',
+        as: 'flag',
+        offered: OFFERED.country,
+        showNamesDefault: false,
+        pinned: true,
+        priority: 0,
+        text: true,
+        hideable: false,
+      },
+      {
+        key: 'seller',
+        label: 'Seller',
+        as: 'flag',
+        offered: OFFERED.country,
+        showNamesDefault: false,
+        pinned: true,
+        priority: 0,
+        text: true,
+        hideable: false,
+      },
+      {
+        key: 'equipment',
+        label: 'Wants',
+        as: 'icon',
+        cellKind: 'item',
+        offered: OFFERED.text,
+        priority: 1,
+        text: true,
+        minWidth: 200,
+      },
+      {
+        key: 'amount',
+        label: 'Amount',
+        as: 'faint',
+        barEligible: true,
+        offered: OFFERED.number,
+        priority: 1,
+        numeric: true,
+        format: 'fixed5Amount',
+        widest: ['99,999'],
+      },
+      {
+        key: 'level',
+        label: 'Price offered',
+        as: 'plain',
+        barEligible: false,
+        offered: OFFERED.text,
+        priority: 2,
+        text: true,
+        minWidth: 110,
+      },
+    ];
+  }
+  return [
+    {
+      key: 'seller',
+      label: 'Seller',
+      as: 'flag',
+      offered: OFFERED.country,
+      showNamesDefault: false,
+      pinned: true,
+      priority: 0,
+      text: true,
+      hideable: false,
+    },
+    {
+      key: 'buyer',
+      label: 'Buyer',
+      as: 'flag',
+      offered: OFFERED.country,
+      showNamesDefault: false,
+      pinned: true,
+      priority: 0,
+      text: true,
+      hideable: false,
+    },
+    {
+      key: 'equipment',
+      label: 'Equipment',
+      as: 'icon',
+      cellKind: 'item',
+      offered: OFFERED.text,
+      priority: 1,
+      text: true,
+      minWidth: 200,
+    },
+    {
+      key: 'price',
+      label: 'Price',
+      unit: 'CIC',
+      as: 'plain',
+      barEligible: false,
+      offered: OFFERED.number,
+      priority: 2,
+      numeric: true,
+      format: 'fixed5Amount',
+      minWidth: 84,
+      widest: ['99,999'],
+    },
+    {
+      key: 'convoys',
+      label: 'Convoys',
+      unit: 'used / needed',
+      as: 'plain',
+      cellKind: 'outOf',
+      barEligible: false,
+      offered: OFFERED.number,
+      priority: 3,
+      numeric: true,
+      minWidth: 86,
+      widest: ['99 / 99'],
+    },
+    {
+      key: 'collected',
+      label: 'Collected',
+      unit: 'CIC',
+      as: 'faint',
+      barEligible: true,
+      offered: OFFERED.number,
+      priority: 1,
+      numeric: true,
+      format: 'fixed5Amount',
+      minWidth: 96,
+      widest: ['99,999'],
+    },
+    {
+      key: 'deliveries',
+      label: 'Deliveries',
+      as: 'faint',
+      barEligible: true,
+      offered: OFFERED.number,
+      priority: 2,
+      numeric: true,
+      format: 'integer',
+      minWidth: 88,
+      widest: ['999'],
+    },
+  ];
+}
+
+export function marketTableBase(view: MarketTab): TableBase {
+  return {
+    density: 'normal',
+    barsBehind: 'all',
+    overflow: 'scroll',
+    showRank: false,
+    sort: SORTS[view],
+  };
+}
+
+export const marketSettingsKey = (view: MarketTab) => `${TABLE_SETTINGS_KEY}:${view}`;
+
+export function marketTableOptions(view: MarketTab): readonly OptionField[] {
+  return [columnsControl(marketColumns(view), marketTableBase(view), { key: marketSettingsKey(view) })];
+}
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'contracts', choices: [...VIEWS] },
-  sortField('contracts', [{ key: 'collected', label: 'Collected' }, { key: 'price', label: 'Price' }, { key: 'deliveries', label: 'Deliveries' }, { key: 'seller', label: 'Seller' }, { key: 'buyer', label: 'Buyer' }]),
-  sortField('requests', [{ key: 'amount', label: 'Amount' }, { key: 'buyer', label: 'Buyer' }]),
-  sortField('inventory', [{ key: 'amount', label: 'On market' }, { key: 'seller', label: 'Seller' }]),
-  ...TABLE_OPTIONS, DRILL_OPTION,
+  DRILL_OPTION,
 ];
 
 export const definition = {

@@ -1,7 +1,7 @@
 
 use dashboard_base::products::{Country, validate_country};
 use super::{COST_SCALE, Content, ConstructionStateName, ConstructionType, Line, ProjectKind, SpendingGap, gap_of, missing};
-use dashboard_base::{Source, products::{LoadContext, Product}, queries::country_ids::Names};
+use dashboard_base::{Source, products::LoadContext, queries::country_ids::Names};
 use dashboard_query::{Query, identity::Holder, series::MissingSpan};
 use replay_lanes::lanes::{Cell, Keys};
 use replay_data::rows::{TableId, TagHolderRow, key_field};
@@ -13,8 +13,6 @@ use std::{
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
-
-pub struct ConstructionSpending;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -182,105 +180,79 @@ pub fn spent_by_leaf(query: &Query<'_>, tag: &Country) -> io::Result<BTreeMap<Le
     Ok(by_leaf.into_iter().map(|(leaf, deltas)| (leaf, totals(deltas))).collect())
 }
 
-impl Product for ConstructionSpending {
-    const KEY: &'static str = "construction-spending";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = ConstructionSpendingParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
-    type Reply = ConstructionSpendingReply;
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_country(&params.country)
+pub(crate) fn history(source: &Source, params: &ConstructionSpendingParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ConstructionSpendingReply> {
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+    let names = Names::new(&query.holders);
+    let end = query.timeline.last;
+    let mut leaves: BTreeMap<LeafKey, SpendingLeaf> = BTreeMap::new();
+    for (key, spent) in spent_by_leaf(&query, &params.country)? {
+        leaf_mut(&mut leaves, key).spent = spent;
     }
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            ConstructionSpendingParams::decl(),
-            ConstructionStateName::decl(),
-            SpentStep::decl(),
-            SpendingUnknown::decl(),
-            LeafProject::decl(),
-            SpendingLeaf::decl(),
-            ConstructionSpendingReply::decl(),
-        ]
-    }
-
-    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+    let mut before_first_read = 0u32;
+    let mut unattributed = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut tokens = BTreeMap::new();
+    for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
-        let names = Names::new(&query.holders);
-        let end = query.timeline.last;
-        let mut leaves: BTreeMap<LeafKey, SpendingLeaf> = BTreeMap::new();
-        for (key, spent) in spent_by_leaf(&query, &params.country)? {
-            leaf_mut(&mut leaves, key).spent = spent;
-        }
-        let mut before_first_read = 0u32;
-        let mut unattributed = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut tokens = BTreeMap::new();
-        for stretch in &query.timeline.stretches {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let lines = crate::products::construction::cached_construction(source, stretch.run)?;
-            let links = dashboard_base::queries::links(source, stretch.run)?;
-            let mut ids = BTreeSet::new();
-            for line in lines.within(stretch.first, stretch.last) {
-                if !seen.insert(line.id) {
-                    continue;
-                }
-                let until = (line.last < end).then_some(line.last + 1);
-                if line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown) {
-                    unattributed.push(SpendingUnknown { known_at: line.first, reason: SpendingGap::OwnerUnknown, project: line.id.to_string(), until });
-                    continue;
-                }
-                if !names.tag_at(&links, line.country, line.first_read).is_some_and(|tag| query.holders.goes_by(&params.country, tag, line.first_read)) {
-                    continue;
-                }
-                before_first_read += u32::from(line.before_observation);
-                ids.extend(line.building);
-                for key in leaf_keys(line) {
-                    let leaf = leaf_mut(&mut leaves, key);
-                    leaf.building = leaf.building.or(line.building);
-                    leaf.projects.push(LeafProject { project: line.id.to_string(), first_read: line.first_read, until });
-                    if let Some(gap) = line_gap(line, until) {
-                        leaf.unknown.push(gap);
-                    }
+        let lines = crate::products::construction::cached_construction(source, stretch.run)?;
+        let links = dashboard_base::queries::links(source, stretch.run)?;
+        let mut ids = BTreeSet::new();
+        for line in lines.within(stretch.first, stretch.last) {
+            if !seen.insert(line.id) {
+                continue;
+            }
+            let until = (line.last < end).then_some(line.last + 1);
+            if line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown) {
+                unattributed.push(SpendingUnknown { known_at: line.first, reason: SpendingGap::OwnerUnknown, project: line.id.to_string(), until });
+                continue;
+            }
+            if !names.tag_at(&links, line.country, line.first_read).is_some_and(|tag| query.holders.goes_by(&params.country, tag, line.first_read)) {
+                continue;
+            }
+            before_first_read += u32::from(line.before_observation);
+            ids.extend(line.building);
+            for key in leaf_keys(line) {
+                let leaf = leaf_mut(&mut leaves, key);
+                leaf.building = leaf.building.or(line.building);
+                leaf.projects.push(LeafProject { project: line.id.to_string(), first_read: line.first_read, until });
+                if let Some(gap) = line_gap(line, until) {
+                    leaf.unknown.push(gap);
                 }
             }
-            for leaf in leaves.values() {
-                ids.extend(leaf.building);
-            }
-            super::spellings(&query, stretch.run, stretch.last, &ids, &mut tokens)?;
         }
-        let states: BTreeSet<u32> = leaves.values().flat_map(|leaf| [leaf.state, leaf.to_state]).flatten().collect();
-        let mut warnings = Vec::new();
-        let content = Content::load(source, context).name(source, &tokens, &states, &mut warnings);
-        let mut leaves: Vec<SpendingLeaf> = leaves.into_values().collect();
-        for leaf in &mut leaves {
-            leaf.projects.sort_by_key(|project| project.first_read);
+        for leaf in leaves.values() {
+            ids.extend(leaf.building);
         }
-        let recorded = super::recorded(&query)?;
-        if recorded && leaves.is_empty() {
-            warnings.push(query.holders.say(&params.country, query.timeline.last, |name| format!("{name}: no recorded construction in this branch")));
-        }
-        let reply = ConstructionSpendingReply {
-            branch_id: params.branch_id.clone(),
-            tag: query.holders.name(&params.country, query.timeline.last),
-            cost_scale: COST_SCALE,
-            recorded,
-            types: content.types,
-            repair_icon: content.repair_icon,
-            states: content.states,
-            before_first_read,
-            leaves,
-            unattributed,
-            missing: missing(&query, query.timeline.first, end),
-            warnings,
-        };
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
+        super::spellings(&query, stretch.run, stretch.last, &ids, &mut tokens)?;
     }
+    let states: BTreeSet<u32> = leaves.values().flat_map(|leaf| [leaf.state, leaf.to_state]).flatten().collect();
+    let mut warnings = Vec::new();
+    let content = Content::load(source, context).name(source, &tokens, &states, &mut warnings);
+    let mut leaves: Vec<SpendingLeaf> = leaves.into_values().collect();
+    for leaf in &mut leaves {
+        leaf.projects.sort_by_key(|project| project.first_read);
+    }
+    let recorded = super::recorded(&query)?;
+    if recorded && leaves.is_empty() {
+        warnings.push(query.holders.say(&params.country, query.timeline.last, |name| format!("{name}: no recorded construction in this branch")));
+    }
+    let reply = ConstructionSpendingReply {
+        branch_id: params.branch_id.clone(),
+        tag: query.holders.name(&params.country, query.timeline.last),
+        cost_scale: COST_SCALE,
+        recorded,
+        types: content.types,
+        repair_icon: content.repair_icon,
+        states: content.states,
+        before_first_read,
+        leaves,
+        unattributed,
+        missing: missing(&query, query.timeline.first, end),
+        warnings,
+    };
+    dashboard_base::products::check_reply_budget(&reply)?;
+    Ok(reply)
 }
 
 fn leaf_mut(leaves: &mut BTreeMap<LeafKey, SpendingLeaf>, key: LeafKey) -> &mut SpendingLeaf {

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeAt, endedBy, historyLanes, spiritState, spirits, startUnseen } from './spiritsData.ts';
+import { describeRun } from '../../charts/timeline/runState.ts';
+import { activeAt, endedBy, spiritState, spirits, spiritsShown, startUnseen } from './spiritsData.ts';
 import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 
 const info = (token: string, category: string): IdeaInfo => ({ token, category, slot: null, law: false, designer: false,
@@ -38,7 +39,6 @@ test('a spirit is named whether or not its art resolves; one the recording does 
   const names = new Map(spirits(reply).map(spirit => [spirit.token, spirit.name]));
   assert.equal(names.get('blitz'), 'Blitzkrieg');
   assert.equal(names.get('heer'), 'Name not recorded');
-  assert.equal(historyLanes(spirits(reply), 650, 'gained', true, describe)[0].identity?.label, 'Name not recorded');
   const heer = spirits(reply).find(spirit => spirit.token === 'heer');
   assert.equal(heer?.nameMissing, `Name not recorded: ${missing}`);
   assert.equal(spirits(reply).find(spirit => spirit.token === 'blitz')?.nameMissing, null);
@@ -56,14 +56,11 @@ test('history lanes sort by gained, ended or name, and can hide ended spirits', 
   const blitz = list.find(spirit => spirit.token === 'blitz')!;
   assert.equal(endedBy(blitz, 650), 600);
   assert.equal(endedBy(blitz, 750), null);
-  const gained = historyLanes(list, 650, 'gained', true, describe);
-  assert.deepEqual(gained.map(lane => [lane.id, lane.label]), [['heer', 'since 0'], ['mefo', 'ended 400'], ['blitz', 'ended 600']]);
-  assert.deepEqual(historyLanes(list, 650, 'ended', true, describe).map(lane => lane.id), ['mefo', 'blitz', 'heer']);
-  assert.deepEqual(historyLanes(list, 650, 'name', false, describe).map(lane => lane.id), ['heer']);
-  assert.deepEqual(historyLanes(list, 50, 'gained', true, describe).map(lane => lane.id), ['heer']);
-  assert.equal(gained[0].spans[0].emphasis, true);
-  assert.equal(gained[1].spans[0].emphasis, false);
-  assert.equal(gained[0].identity?.label, 'National spirit name unavailable');
+  const gained = spiritsShown(list, 650, 'gained', true);
+  assert.deepEqual(gained.map(spirit => [spirit.token, describeRun(spirit.spans, 650, describe)]), [['heer', 'since 0'], ['mefo', 'ended 400'], ['blitz', 'ended 600']]);
+  assert.deepEqual(spiritsShown(list, 650, 'ended', true).map(spirit => spirit.token), ['mefo', 'blitz', 'heer']);
+  assert.deepEqual(spiritsShown(list, 650, 'name', false).map(spirit => spirit.token), ['heer']);
+  assert.deepEqual(spiritsShown(list, 50, 'gained', true).map(spirit => spirit.token), ['heer']);
 });
 
 test('a spirit whose next hours were not recorded is unknown, not ended', () => {
@@ -72,7 +69,7 @@ test('a spirit whose next hours were not recorded is unknown, not ended', () => 
   const gap = [{ firstHour: 400, lastHour: 450 }];
   assert.deepEqual(spiritState(mefo, 420, gap), { kind: 'unknown', lastSeen: 399 });
   assert.equal(endedBy(mefo, 420, gap), null);
-  assert.deepEqual(historyLanes(list, 420, 'gained', false, describe, gap).map(lane => [lane.id, lane.label]), [['heer', 'since 0'], ['mefo', 'last 399']]);
+  assert.deepEqual(spiritsShown(list, 420, 'gained', false, gap).map(spirit => [spirit.token, describeRun(spirit.spans, 420, describe, gap)]), [['heer', 'since 0'], ['mefo', 'last 399']]);
 });
 
 test('the grid orders spirits by their latest acquisition', () => {
@@ -89,8 +86,8 @@ test('a spirit already held when recording began, or after an unrecorded stretch
   assert.equal(startUnseen(0, 0), true);
   assert.equal(startUnseen(700, 0), false);
   assert.equal(startUnseen(700, 0, [{ firstHour: 650, lastHour: 699 }]), true);
-  assert.deepEqual(historyLanes(list, 750, 'gained', false, describe, [], 0).map(lane => [lane.id, lane.label]), [['heer', 'before 0'], ['blitz', 'since 700']]);
-  assert.deepEqual(historyLanes(list, 750, 'gained', false, describe, [{ firstHour: 650, lastHour: 699 }], 0).map(lane => lane.label), ['before 0', 'before 700']);
+  assert.deepEqual(spiritsShown(list, 750, 'gained', false, []).map(spirit => [spirit.token, describeRun(spirit.spans, 750, describe, [], 0)]), [['heer', 'before 0'], ['blitz', 'since 700']]);
+  assert.deepEqual(spiritsShown(list, 750, 'gained', false, [{ firstHour: 650, lastHour: 699 }]).map(spirit => describeRun(spirit.spans, 750, describe, [{ firstHour: 650, lastHour: 699 }], 0)), ['before 0', 'before 700']);
 });
 
 test('a spirit gone at the first recorded hour after a gap ended by then, at an unknown time', () => {
@@ -100,6 +97,6 @@ test('a spirit gone at the first recorded hour after a gap ended by then, at an 
   assert.deepEqual(spiritState(mefo, 440, gap), { kind: 'unknown', lastSeen: 399 });
   assert.deepEqual(spiritState(mefo, 460, gap), { kind: 'ended', at: 451, lastSeen: 399 });
   assert.equal(endedBy(mefo, 460, gap), 451);
-  assert.deepEqual(historyLanes(list, 460, 'gained', true, describe, gap).map(lane => [lane.id, lane.label]), [['heer', 'since 0'], ['mefo', 'ended by 451']]);
-  assert.deepEqual(historyLanes(list, 460, 'gained', false, describe, gap).map(lane => lane.id), ['heer']);
+  assert.deepEqual(spiritsShown(list, 460, 'gained', true, gap).map(spirit => [spirit.token, describeRun(spirit.spans, 460, describe, gap)]), [['heer', 'since 0'], ['mefo', 'ended by 451']]);
+  assert.deepEqual(spiritsShown(list, 460, 'gained', false, gap).map(spirit => spirit.token), ['heer']);
 });

@@ -46,7 +46,7 @@ export function validateRaidLog(value: unknown): RaidLogReply {
       && isOrderedSpans(item.runs) && (item.runs as unknown[]).every(run => object(run) && typeof run.firstExact === 'boolean' && maybe(run.afterHour, integer) && maybe(run.raider, text) && integer(run.phase) && integer(run.outcome) && maybe(run.phaseName, text) && maybe(run.outcomeName, text))
       && preparationRuns(item.preparation)
       && maybe(item.launchedHour, integer) && typeof item.launchedExact === 'boolean' && typeof item.launched === 'boolean'
-      && maybe(item.endedHour, integer) && typeof item.endedExact === 'boolean' && maybe(item.endedSource, endedSource)
+      && maybe(item.endedHour, integer) && typeof item.endedExact === 'boolean' && maybe(item.endedSource, endedSource) && maybe(item.endedSeenHour, integer)
       && maybe(item.disappearedHour, integer) && typeof item.disappearedExact === 'boolean'
       && typeof item.succeeded === 'boolean'
       && (item.launchedHour === null || item.launched) && (!item.launchedExact || item.launchedHour !== null)
@@ -246,7 +246,7 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
   for (const episode of episodes) {
     const marks: [number, 0 | 1, string | null][] = [];
     if (episode.launchedHour !== null) marks.push([episode.launchedHour, 0, episode.launchedRaider ?? episode.raider]);
-    if (episode.succeeded && episode.endedHour !== null) marks.push([episode.endedHour, 1, episode.endedRaider ?? episode.raider]);
+    if (episode.succeeded && episode.endedHour !== null) marks.push([Math.max(episode.endedHour, episode.endedSeenHour ?? episode.endedHour), 1, episode.endedRaider ?? episode.raider]);
     if (!marks.length) continue;
     let missingRaider = false;
     for (const [hour, kind, raider] of marks) {

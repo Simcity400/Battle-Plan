@@ -269,8 +269,7 @@ mod lend_lease {
 
 mod market {
     use super::*;
-    use crate::products::economy::market::{MarketLendLease, history::ended_spans};
-    use replay_lanes::lanes::{Cell, Step};
+    use crate::products::economy::market::MarketLendLease;
     use replay_data::rows::{CountryLinkRow, CountryMarketRow, CountryRow, LendLeaseAgreementRow, MarketContractTermsRow, MarketEquipment, MarketPool, PurchaseContractRow, SharedMarketPool, tables};
 
     const FRA: u32 = 44;
@@ -379,13 +378,5 @@ mod market {
         let every = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [] }), 110).unwrap();
         assert_eq!(every["contracts"].as_array().unwrap().len(), 2);
         assert_eq!(every["contracts"][1]["buyer"], Value::Null, "a buyer with no identity is unnamed, never dropped");
-    }
-
-    #[test]
-    fn an_agreement_ends_where_its_row_leaves_for_good_or_in_a_read_hour_not_where_the_table_was_unread() {
-        let shown = |hour| Step { hour, cells: Some(vec![Cell::Number(0)].into_boxed_slice()) };
-        let hidden = |hour| Step { hour, cells: None };
-        let history = vec![(1u128, vec![shown(100), hidden(110), shown(115), hidden(120)]), (2, vec![shown(100)]), (3, vec![shown(100), hidden(130)])];
-        assert_eq!(ended_spans(&history, |hour| hour != 110 && hour != 130), vec![(1, 115, 119), (3, 100, 129)], "a row gone for good ended though its hour was not read");
     }
 }

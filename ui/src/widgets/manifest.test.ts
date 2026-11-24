@@ -97,7 +97,7 @@ test('playback placeholder gate uses the manifest as its single switch', () => {
     assert.equal(isPlaybackDatedView(entry.kind, opts, meta), true, `(${entry.kind}, ${entry.view ?? DEFAULT_VIEW}) plays back live`);
   }
   assert.equal(isPlaybackDatedView('research', undefined, metaOf('research')), true);
-  assert.equal(isPlaybackDatedView('casualties', undefined, metaOf('casualties')), false);
+  assert.equal(isPlaybackDatedView('map', undefined, metaOf('map')), false);
   assert.equal(isPlaybackDatedView('game-score', { view: 'table' }), true);
   assert.equal(isPlaybackDatedView('game-score', { view: 'race' }), true);
 });

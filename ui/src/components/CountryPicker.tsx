@@ -40,7 +40,7 @@ function nameReadFromIdentity(result: CountryIdentityResult | null | undefined):
   return { kind: 'failed', failure: result.name.failure };
 }
 
-export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads, disabled = false }: {
+export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads, onShownTags, disabled = false }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
   onChange: (tag: string | null, slot: number | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
   onCountries?: (sourceId: string, revision: string, countries: CountryMetadata[]) => void;
@@ -50,6 +50,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   addLabel?: string; chosen?: readonly string[];
   allowedTags?: readonly string[];
   choiceReads?: ReadonlyMap<string, CountryPickerRead | null>;
+  onShownTags?: (tags: readonly string[]) => void;
 }) {
   const id = useId();
   const listId = `${id}-countries`;
@@ -131,6 +132,8 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const filtered = filterChoices(choices, query, choice => countryName(choice.country));
   const range = visibleRange(filtered.length, view.scrollTop, view.height);
   const visible = open ? filtered.slice(range.start, range.end) : [];
+  const shownText = visible.map(({ country }) => country.tag).join('\u0001');
+  useEffect(() => { onShownTags?.(shownText ? shownText.split('\u0001') : []); }, [onShownTags, shownText]);
   const sole = searching && filtered.length === 1 ? 0 : -1;
   const shownActive = active >= 0 ? active : sole;
 

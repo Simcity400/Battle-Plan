@@ -13,14 +13,45 @@ const WORLD_TENSION_RACE_OPTIONS = WORLD_TENSION_OPTIONS.filter(field => field.k
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
-    kind: 'naval-supremacy',
-    view: 'shares',
-    label: 'Shares',
+    kind: 'air-superiority-region',
+    view: DEFAULT_VIEW,
+    family: 'bars',
+    loadSpec: () => import('../air-superiority-region/airSuperiorityProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-superiority-region', view: DEFAULT_VIEW,
+      projection: mod.airSuperiorityRegionProjection, declaration: mod.airSuperiorityRegionDeclaration,
+    })),
+  },
+  {
+    kind: 'casualties',
+    view: 'butterfly',
+    label: 'Butterfly',
     family: 'bars',
     viewOption: 'view',
-    loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
-      family: 'bars', kind: 'naval-supremacy', view: 'shares',
-      projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
+    loadSpec: () => import('../casualties/casualtiesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'casualties', view: 'butterfly',
+      projection: mod.casualtiesButterflyProjection, declaration: mod.casualtiesButterflyDeclaration,
+    })),
+  },
+  {
+    kind: 'casualties',
+    view: 'race',
+    label: 'Race',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../casualties/casualtiesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'casualties', view: 'race',
+      projection: mod.casualtiesRaceProjection, declaration: mod.casualtiesRaceDeclaration,
+    })),
+  },
+  {
+    kind: 'casualties-between',
+    view: 'opponents',
+    label: 'By opponent',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../casualties-between/casualtiesBetweenProjection.ts').then(mod => ({
+      family: 'bars', kind: 'casualties-between', view: 'opponents',
+      projection: mod.casualtyOpponentsProjection, declaration: mod.casualtyOpponentsDeclaration,
     })),
   },
   {
@@ -47,12 +78,12 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     })),
   },
   {
-    kind: 'air-superiority-region',
+    kind: 'lend-lease-balance',
     view: DEFAULT_VIEW,
     family: 'bars',
-    loadSpec: () => import('../air-superiority-region/airSuperiorityProjection.ts').then(mod => ({
-      family: 'bars', kind: 'air-superiority-region', view: DEFAULT_VIEW,
-      projection: mod.airSuperiorityRegionProjection, declaration: mod.airSuperiorityRegionDeclaration,
+    loadSpec: () => import('../lend-lease-balance/lendLeaseBalanceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'lend-lease-balance', view: DEFAULT_VIEW,
+      projection: mod.lendLeaseBalanceProjection, declaration: mod.lendLeaseBalanceDeclaration,
     })),
   },
   {
@@ -62,6 +93,17 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../minefields/minefieldsProjection.ts').then(mod => ({
       family: 'bars', kind: 'minefields', view: DEFAULT_VIEW,
       projection: mod.minefieldsProjection, declaration: mod.minefieldsDeclaration,
+    })),
+  },
+  {
+    kind: 'naval-supremacy',
+    view: 'shares',
+    label: 'Shares',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
+      family: 'bars', kind: 'naval-supremacy', view: 'shares',
+      projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
     })),
   },
   {
@@ -85,26 +127,6 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../who-spies-on-whom/whoSpiesProjection.ts').then(mod => ({
       family: 'bars', kind: 'who-spies-on-whom', view: 'pairs',
       projection: mod.operativePairsProjection, declaration: mod.operativePairsDeclaration,
-    })),
-  },
-  {
-    kind: 'casualties-between',
-    view: 'opponents',
-    label: 'By opponent',
-    family: 'bars',
-    viewOption: 'view',
-    loadSpec: () => import('../casualties-between/casualtiesBetweenProjection.ts').then(mod => ({
-      family: 'bars', kind: 'casualties-between', view: 'opponents',
-      projection: mod.casualtyOpponentsProjection, declaration: mod.casualtyOpponentsDeclaration,
-    })),
-  },
-  {
-    kind: 'lend-lease-balance',
-    view: DEFAULT_VIEW,
-    family: 'bars',
-    loadSpec: () => import('../lend-lease-balance/lendLeaseBalanceProjection.ts').then(mod => ({
-      family: 'bars', kind: 'lend-lease-balance', view: DEFAULT_VIEW,
-      projection: mod.lendLeaseBalanceProjection, declaration: mod.lendLeaseBalanceDeclaration,
     })),
   },
   {
