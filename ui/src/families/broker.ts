@@ -195,11 +195,6 @@ export function compileFollowPlan(
   };
 }
 
-export function primaryStaticEntry(plan: SourcePlan): SourceEntry | null {
-  if (plan.staticEntry !== undefined) return plan.staticEntry;
-  return plan.entries[0] ?? null;
-}
-
 export function primaryExactEntry(plan: SourcePlan): SourceEntry | null {
   if (plan.exactEntry !== undefined) return plan.exactEntry;
   if (plan.staticEntry !== undefined) return plan.staticEntry;
@@ -335,45 +330,6 @@ export function stabilizeCanvasDimension(
   return Math.max(1, Math.round(measured));
 }
 
-function readsWithoutFollow(read: SourceTimeShape): boolean {
-  if (read.shape === 'range') return true;
-  return (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') && read.followQuery === null;
-}
-
-function boundedReadable(read: SourceTimeShape): boolean {
-  return read.shape === 'point' || read.shape === 'range' || read.shape === 'branch-to-hour' || read.shape === 'trailing-window';
-}
-
-const NO_ENTRIES: readonly SourceEntry[] = [];
-
-export function boundedEntries(
-  plan: SourcePlan | null,
-  following: boolean,
-  subscriptions: readonly CompiledFollowSubscription[],
-): readonly SourceEntry[] {
-  if (!plan || plan.refused || plan.unavailable) return NO_ENTRIES;
-  const primary = primaryStaticEntry(plan);
-  const out: SourceEntry[] = [];
-  if (!following) {
-    if (primary && boundedReadable(primary.read)) out.push(primary);
-  } else if (primary && subscriptions.length === 0 && !plan.allowEmptyFollow && readsWithoutFollow(primary.read)) {
-    out.push(primary);
-  }
-  const followed = new Set(subscriptions.map(sub => sub.name));
-  for (const entry of plan.entries) {
-    if (entry === primary || followed.has(entry.name) || !readsWithoutFollow(entry.read)) continue;
-    out.push(entry);
-  }
-  return out.length ? out : NO_ENTRIES;
-}
-
-export function needsPlaybackBoundedRead(
-  plan: SourcePlan | null,
-  subscriptions: readonly CompiledFollowSubscription[],
-): boolean {
-  return boundedEntries(plan, true, subscriptions).length > 0;
-}
-
 export interface PlaybackBoundedSpec extends StaticRequestSpec {
   readonly anchorHour: number;
 }
@@ -412,22 +368,9 @@ export function resolvePlaybackProvenInterval(
       ? read.provenInterval?.(data, requested, anchor) ?? null
       : null;
   if (evidence && evidence[0] <= anchor && anchor <= evidence[1]) hi = Math.max(hi, evidence[1]);
-  if (read.shape === 'range' && anchor >= read.lastHour) hi = Infinity;
+  if (read.shape === 'range' && anchor >= read.lastHour) return [read.lastHour, Infinity];
   if (anchor >= endHour) hi = Infinity;
   return [anchor, hi];
-}
-
-export function composeProof(
-  readings: readonly { readonly anchorHour: number; readonly proof: readonly [number, number] }[],
-): readonly [number, number] | null {
-  if (!readings.length) return null;
-  let lo = -Infinity;
-  let hi = Infinity;
-  for (const reading of readings) {
-    lo = Math.max(lo, reading.anchorHour, reading.proof[0]);
-    hi = Math.min(hi, reading.proof[1]);
-  }
-  return lo <= hi ? [lo, hi] : null;
 }
 
 export function playbackIdleInterval(
@@ -440,13 +383,19 @@ export function playbackIdleInterval(
   if (raw < first) return [-Infinity, first - 1];
   const read = entry?.read;
   if (read?.shape === 'range' && raw < read.firstHour) return [-Infinity, read.firstHour - 1];
+  if (read?.shape === 'range' && raw >= read.lastHour) return [read.lastHour, Infinity];
   if (raw > end) return [end + 1, Infinity];
-  if (read?.shape === 'point' && options.gate.recorded(raw) === null) {
-    return options.gate.recordedRun?.(raw) ?? [raw, raw];
+  if (!read) return [-Infinity, Infinity];
+  const gap = options.gate.recorded(raw) === null;
+  const unrecorded = (): readonly [number, number] => (gap ? options.gate.recordedRun?.(raw) : undefined) ?? [raw, raw];
+  if (read.shape === 'point') {
+    if (gap) return unrecorded();
+    return read.params && read.buildExactParams ? [raw, raw] : [-Infinity, Infinity];
   }
-  const hourDependent = (read?.shape === 'trailing-window' && !!options.countriesKnown)
-    || ((read?.shape === 'branch-to-hour' || read?.shape === 'trailing-window' || read?.shape === 'range') && !!read.buildSpanParams);
-  return hourDependent ? [raw, raw] : [-Infinity, Infinity];
+  if (read.shape !== 'branch-to-hour' && read.shape !== 'trailing-window' && read.shape !== 'range') return [-Infinity, Infinity];
+  if (!read.params) return [-Infinity, Infinity];
+  if (read.buildSpanParams || (read.shape === 'trailing-window' && options.countriesKnown)) return [raw, raw];
+  return unrecorded();
 }
 
 export function buildPlaybackBoundedRequest(
