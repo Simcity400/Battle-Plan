@@ -144,7 +144,7 @@ function absentRows(readView: BoundedReadView, reply: MilitaryAirAtReply, shape:
     const key = countryKey(country);
     const pres = countryRowPresentation(readView, key);
     const value = notRecorded(ABSENT);
-    const shared = { kind: 'data' as const, key, subject: key, label: pres.label, labelMissing: pres.labelMissing, media: pres.media, ...(pres.color ? { color: pres.color } : {}) };
+    const shared = { kind: 'data' as const, key, subject: key, label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media, ...(pres.color ? { color: pres.color } : {}) };
     return shape === 'two-sided'
       ? { ...shared, left: { value: { value }, numeric: null }, right: { value: { value }, numeric: null } }
       : { ...shared, segments: [], value: { value } };
@@ -207,7 +207,7 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
       })
       : [];
     return {
-      kind: 'data', key: row.identity, subject: slotKeyOf(row), label: pres.label, labelMissing: pres.labelMissing, media: pres.media,
+      kind: 'data', key: row.identity, subject: slotKeyOf(row), label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       segments,
       ...(row.complete ? {} : { value: total }),
@@ -255,7 +255,7 @@ export function militaryAirModel(readView: BoundedReadView, options: MilitaryAir
     const ratio = options.ratio ? ratioText(row) : null;
     const readout: BarsReadout | undefined = options.paired ? pairedReadout(row, options) : ratio ? { primary: `${ratio} : 1`, secondary: 'Ratio' } : undefined;
     return {
-      kind: 'data', key: row.identity, subject: slotKeyOf(row), label: pres.label, labelMissing: pres.labelMissing, media: pres.media,
+      kind: 'data', key: row.identity, subject: slotKeyOf(row), label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media,
       ...(pres.color ? { color: pres.color } : {}),
       left: { value: militaryAirAmount(row.taken, row.partial, options), numeric: magnitude(row.taken, options) },
       right: { value: militaryAirAmount(row.dealt, row.partial, options), numeric: magnitude(row.dealt, options) },

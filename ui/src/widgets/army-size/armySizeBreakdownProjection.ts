@@ -39,6 +39,7 @@ import {
   validateArmyMetadata,
   type ArmyMetadataReply,
 } from './armySizeMeta.ts';
+import { identityNameOr } from '../../families/table/identityCell.ts';
 
 const SERIES_MEASURES: Readonly<Record<ArmyMeasure, string>> = {
   manpower: 'Manpower',
@@ -450,7 +451,7 @@ function projectScalarMeasure(readView: BoundedReadView, options: ArmySizeBreakd
   const head = headReading(readView, 'main', { tag: subject }, decimals);
   const who = readView.who('country', subject, hour);
   const tagVal = who.tag?.status === 'ready' ? who.tag.value : subject;
-  const name = who.name.status === 'ready' ? who.name.value : tagVal;
+  const name = identityNameOr(readView, 'country', subject, tagVal, hour);
   const flag: ChartArtSlot = { art: flagChoiceArt(readView, who.flagChoice), tag: tagVal };
   const color = who.colour?.status === 'ready'
     ? readableColour(who.colour.value, options.surface)

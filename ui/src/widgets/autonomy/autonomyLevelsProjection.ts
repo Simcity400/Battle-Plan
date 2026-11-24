@@ -11,6 +11,7 @@ import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext } from '
 import type { ArtResult } from '../../families/contract.ts';
 import { formatProgress } from '../../families/valueFormat.ts';
 import type { AutonomyLevelsReply, AutonomySubject, SubjectLevel } from '../../generated/dashboard';
+import { identityName } from '../../families/table/identityCell.ts';
 
 export interface AutonomyLevelsOptions {
   readonly filter: DeclaredCountryFilter;
@@ -56,7 +57,7 @@ interface Named {
 function named(readView: BoundedReadView, tag: string | null, rawId: number): Named {
   if (!tag) return { name: `Country ${rawId}`, tag: '?', flag: unavailableArt('Country tag not recorded') };
   const who = readView.who('country', tag, readView.hour);
-  const name = who.name.status === 'ready' ? who.name.value : tag;
+  const name = identityName(readView, 'country', tag);
   const flag = flagChoiceArt(readView, who.flagChoice);
   return { name, tag, flag };
 }

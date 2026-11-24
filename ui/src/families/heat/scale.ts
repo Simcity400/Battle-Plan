@@ -3,6 +3,7 @@ import { readableColour, reservedGrey } from '../../charts/palette.ts';
 import type { BoundedReadView, EntityKind } from '../contract.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import type { ArtResult } from '../art/types.ts';
+import { LOADING_NAME } from '../table/identityCell.ts';
 
 export interface HeatPart {
   readonly id: string;
@@ -97,6 +98,7 @@ export function resolveEntityFromReadView(
     label = identity.name.value;
     nameMissing = undefined;
   } else if (identity.name.status === 'pending') {
+    label = LOADING_NAME;
     pending = true;
   } else if (identity.name.status === 'absent') {
     nameMissing = identity.name.reason;

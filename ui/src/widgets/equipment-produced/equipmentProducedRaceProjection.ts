@@ -216,7 +216,7 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
         key,
         subject: subjectTag,
         label: pres.label,
-        labelMissing: pres.labelMissing,
+        labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         ...(pres.color ? { color: pres.color } : {}),
         value: { value, format: valueFormat, label: options.measureLabel },

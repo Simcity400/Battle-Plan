@@ -11,6 +11,7 @@ import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyP
 import { holderRunAt, type HolderRun, type HourRanges } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
+import { identityName, LOADING_NAME } from '../table/identityCell.ts';
 import type { ChartArtSlot, ChartEndLabel, ChartGap, ChartIdentityRun, ChartMarker, ChartMarkerItem, ChartMissingSpan, ChartSeriesLook, ChartStackBand, ChartStackModel } from './model.ts';
 import type { PowerSpendMarker, PowerSpendMarkersParams, PowerSpendMarkersReply, SeriesRankReply } from '../../generated/dashboard';
 import { formatCompactRational, formatCompactScalar, formatDateOnly, formatRational, formatScalar } from '../valueFormat.ts';
@@ -279,7 +280,7 @@ function identityStretches(
         }
       }
     }
-    const name = who.name.status === 'ready' ? who.name.value : identityTag;
+    const name = who.name.status === 'ready' ? who.name.value : who.name.status === 'pending' ? LOADING_NAME : identityTag;
     const mapColour = who.colour?.status === 'ready' ? who.colour.value : null;
     const flagChoice = who.flagChoice?.status === 'ready' ? who.flagChoice.value : null;
     const prev = out[out.length - 1];
@@ -362,8 +363,7 @@ export function countrySeriesLooks(
 }
 
 export function countryNameAt(readView: BoundedReadView, key: string, hour: number): string {
-  const who = readView.who('country', key, hour);
-  return who.name.status === 'ready' ? who.name.value : key;
+  return identityName(readView, 'country', key, hour);
 }
 
 export function memberAt(

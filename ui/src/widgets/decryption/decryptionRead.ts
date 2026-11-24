@@ -17,6 +17,7 @@ import {
   type CipherNumbers,
   type CountrySide,
 } from './decryptionData.ts';
+import { identityName } from '../../families/table/identityCell.ts';
 
 export interface DecryptionFilterOptions {
   readonly filter: DeclaredCountryFilter;
@@ -78,7 +79,7 @@ function resolveCountry(readView: BoundedReadView, country: Country, hour: numbe
     };
   }
   const who = readView.who('country', tag, hour);
-  const name = who.name.status === 'ready' ? who.name.value : tag;
+  const name = identityName(readView, 'country', tag, hour);
   const colour = who.colour?.status === 'ready' ? who.colour.value : undefined;
   const flag: ArtResult = flagChoiceArt(readView, who.flagChoice, 'panel');
   return { key: String(country.id), tag, name, ...(colour ? { colour } : {}), flag };

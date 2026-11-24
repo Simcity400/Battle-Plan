@@ -10,6 +10,7 @@ export interface ShareRowEntry {
   readonly subject?: string;
   readonly label: string;
   readonly labelMissing?: boolean;
+  readonly labelLoading?: boolean;
   readonly media?: BarsRowMedia;
   readonly group?: 'picked' | 'auto';
   readonly region?: number;
@@ -48,6 +49,7 @@ function toShareDataRow(entry: ShareRowEntry, group?: 'picked' | 'auto'): BarsDa
     subject: entry.subject ?? entry.key,
     label: entry.label,
     labelMissing: entry.labelMissing,
+    ...(entry.labelLoading ? { labelLoading: true } : {}),
     ...(entry.media ? { media: entry.media } : {}),
     group: entry.group ?? group,
     ...(entry.region !== undefined ? { region: entry.region } : {}),

@@ -68,7 +68,7 @@ function dataRow(readView: BoundedReadView, row: LendLeaseRow, measure: LendLeas
   }
   const pres = countryRowPresentation(readView, row.tag);
   return {
-    kind: 'data', key, subject: row.tag, label: pres.label, labelMissing: pres.labelMissing, media: pres.media,
+    kind: 'data', key, subject: row.tag, label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     left: { value: received.field, numeric: received.numeric },
     right: { value: sent.field, numeric: sent.numeric },
@@ -82,7 +82,7 @@ function missingRow(readView: BoundedReadView, key: string, reason: string): Bar
   }
   const pres = countryRowPresentation(readView, key);
   return {
-    kind: 'data', key, subject: key, label: pres.label, labelMissing: pres.labelMissing, media: pres.media,
+    kind: 'data', key, subject: key, label: pres.label, labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}), media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     left: { value: { value }, numeric: null },
     right: { value: { value }, numeric: null },

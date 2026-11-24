@@ -29,6 +29,7 @@ interface FlowEndpointPresentation {
   readonly key: string;
   readonly label: string;
   readonly labelMissing: boolean;
+  readonly labelLoading?: true;
   readonly subject?: string;
   readonly tag?: string;
   readonly flag?: ArtResult;
@@ -49,6 +50,7 @@ export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEnd
     key,
     label: named ? shown.label : endpoint.tag ?? UNKNOWN_COUNTRY,
     labelMissing: shown.labelMissing || !named,
+    ...(shown.labelLoading ? { labelLoading: true as const } : {}),
     subject,
     ...(endpoint.tag ? { tag: endpoint.tag } : {}),
     flag: shown.media.art,
@@ -122,6 +124,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       side,
       label: shown.label,
       ...(shown.labelMissing ? { labelMissing: true } : {}),
+      ...(shown.labelLoading ? { labelLoading: true } : {}),
       ...(shown.tag ? { tag: shown.tag } : {}),
       ...(shown.flag ? { flag: shown.flag } : {}),
       ...(shown.unknown ? { unknown: shown.unknown } : {}),
@@ -166,6 +169,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       side: 'centre',
       label: subject.label,
       ...(subject.labelMissing ? { labelMissing: true } : {}),
+      ...(subject.labelLoading ? { labelLoading: true } : {}),
       ...(subject.tag ? { tag: subject.tag } : {}),
       ...(subject.flag ? { flag: subject.flag } : {}),
       numeric: value(reply.largest),

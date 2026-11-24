@@ -12,6 +12,13 @@ import type {
   LeaderNameRunsReply,
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import { countryRowPresentation } from '../bars/model.ts';
+import { presentFlowEndpoint } from '../flow/countryFlow.ts';
+import { resolveEntityFromReadView } from '../heat/scale.ts';
+import { LOADING_NAME } from '../table/identityCell.ts';
+import { countryNameAt, countrySeriesLooks } from '../time-chart/seriesHelpers.ts';
+import { countryLook } from '../timeline/helpers.ts';
+import { datedIdentity } from './dated.fixture.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, readArtDemands, requestDemandedFlags } from '../art/provider.ts';
 import { toArtSlotState } from '../art/adapters.ts';
@@ -1140,4 +1147,27 @@ test('the picker dates the rows that decide what it shows in the same render: a 
   const ger = broker.resolve(SCOPE, countryTagKey('GER'), at);
   assert.equal(ger.kind === 'known' && ger.name.kind === 'known' ? ger.name.value : null, 'Later Empire', 'while searching every candidate dates the hour, so one renamed into a match is found');
   broker.dispose();
+});
+
+test('a country name that is still loading reads as loading in every family, never as its tag, and as the name once it arrives', () => {
+  const waiting = createBoundedReadView({ hour: 10, identity: datedIdentity({}) });
+  const named = createBoundedReadView({ hour: 10, identity: datedIdentity({ GER: [{ from: 0, name: 'Germany' }] }) });
+  const looks = (view: typeof waiting) => countrySeriesLooks(['GER'], view, { holders: null, from: 0, surface: '#111111', withFlag: false, recordedOrdinal: () => 0 }).get('GER')!;
+  const shown = (view: typeof waiting) => ({
+    bars: countryRowPresentation(view, 'GER').label,
+    heat: resolveEntityFromReadView(view, 'country', 'GER', 10, 'GER').label,
+    timeChart: countryNameAt(view, 'GER', 10),
+    timeChartLine: looks(view).name,
+    timeChartRun: looks(view).identities.map(run => run.name).join('|'),
+    timeline: countryLook(view, 'GER', 10).name,
+  });
+  const all = (label: string) => ({ bars: label, heat: label, timeChart: label, timeChartLine: label, timeChartRun: label, timeline: label });
+  assert.deepEqual(shown(waiting), all(LOADING_NAME));
+  assert.deepEqual(shown(named), all('Germany'));
+  assert.equal(countryRowPresentation(waiting, 'GER').labelLoading, true, 'the bars row knows the name is loading, so it is drawn muted');
+  assert.equal(countryRowPresentation(waiting, 'GER').labelMissing, false, 'loading is not "not recorded"');
+  assert.equal(resolveEntityFromReadView(waiting, 'country', 'GER', 10, 'GER').pending, true);
+  const flow = presentFlowEndpoint(waiting, { slot: 7, tag: 'GER', unknown: null });
+  assert.equal(flow.label, LOADING_NAME, 'a flow endpoint waiting for its name does not print the tag as the name');
+  assert.equal(flow.labelLoading, true);
 });

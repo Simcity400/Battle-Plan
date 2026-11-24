@@ -26,6 +26,7 @@ import {
   validateOccupationReserve,
   validateReserveHistory,
 } from './occupationReserveData.ts';
+import { identityName } from '../../families/table/identityCell.ts';
 
 export interface OccupationReserveHolderChoice {
   readonly tag: string;
@@ -127,8 +128,7 @@ function unresolvedSourceLabel(sourceId: number): string {
 
 function countryNameAt(readView: BoundedReadView, key: string | null, atHour: number, fallback: string): string {
   if (key === null) return fallback;
-  const who = readView.who('country', key, Math.min(atHour, readView.hour));
-  return who.name.status === 'ready' ? who.name.value : key;
+  return identityName(readView, 'country', key, Math.min(atHour, readView.hour));
 }
 
 function countryFlagAt(readView: BoundedReadView, tag: string | null, atHour: number): ChartArtSlot | undefined {

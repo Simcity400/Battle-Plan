@@ -1094,7 +1094,7 @@ describe('multi-country order from the product', () => {
     const unresolved = rankReply(['GER', 'ITA']);
     const unnamedRows = { ...unresolved, rows: unresolved.rows.map(row => (row.country === 'GER' ? { ...row, unnamed: 'The holder of GER is not resolved at this hour' } : row)) };
     const unnamed = project({ panels: new Map([['rank', unnamedRows]]) });
-    assert.deepEqual(unnamed.series.map(s => [s.id, s.name]), [['GER', 'Country not recorded'], ['ITA', 'ITA']], 'an unnamed row keeps its place and names its country as not recorded');
+    assert.deepEqual(unnamed.series.map(s => [s.id, s.name]), [['GER', 'Country not recorded'], ['ITA', 'Loading name…']], 'an unnamed row keeps its place and names its country as not recorded; a name still loading says so');
     assert.deepEqual(project({}).series.map(s => s.id), ['GER', 'ITA'], 'no ranking yet: the recorded order, never a client sort');
   });
 

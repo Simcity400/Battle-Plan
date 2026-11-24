@@ -2,6 +2,7 @@ import type { LegendStripEntry } from '../../draw/kit.ts';
 import type { HourSpan } from '../../generated/dashboard';
 import { flagChoiceArt } from '../art/provider.ts';
 import type { ArtResult, BoundedReadView, DisplayedHour } from '../contract.ts';
+import { resolveName } from '../table/identityCell.ts';
 import type { TimelineLane, TimelineModel } from './model.ts';
 
 export interface CountryLook {
@@ -12,10 +13,10 @@ export interface CountryLook {
 }
 
 export function countryLook(readView: BoundedReadView, tag: string, atHour: number): CountryLook {
-  const who = readView.who('country', tag, Math.min(atHour, readView.hour));
+  const { name, who } = resolveName(readView, 'country', tag, { atHour: Math.min(atHour, readView.hour) });
   return {
     tag,
-    name: who.name.status === 'ready' ? who.name.value : tag,
+    name,
     flag: flagChoiceArt(readView, who.flagChoice, 'panel'),
     colour: who.colour?.status === 'ready' ? who.colour.value : null,
   };

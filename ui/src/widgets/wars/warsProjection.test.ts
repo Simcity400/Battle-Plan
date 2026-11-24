@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import type { WarObservation, WarParticipantRun, WarTimeline, WarTimelineReply } from '../../generated/dashboard';
 import { sideOf, validateWarTimeline, warSides, warsProjection, warTimelineProof, type WarsOptions } from './warsProjection.ts';
 
@@ -24,13 +25,14 @@ test('sides come from the recorded orientation: the viewpoint attacks only where
 
 test('each war is a lane with its two leads, an outcome, and its participants beneath, attackers first, then "Against"', () => {
   const capitulated = war('2', 100, 199, { capitulations: [{ tag: 'BBB', hour: 190 }] });
-  const model = warsProjection.project(createBoundedReadView({ hour: 400, panels: new Map([['main', reply(400, [war('1', 300, 400), capitulated])]]) }), OPTIONS);
+  const identity = datedIdentity({ AAA: [{ from: 0, name: 'Alpha' }], BBB: [{ from: 0, name: 'Bravo' }], CCC: [{ from: 0, name: 'Charlie' }] });
+  const model = warsProjection.project(createBoundedReadView({ hour: 400, identity, panels: new Map([['main', reply(400, [war('1', 300, 400), capitulated])]]) }), OPTIONS);
   const heads = model.lanes.filter(lane => lane.sides);
-  assert.deepEqual(heads.map(lane => lane.outcome?.text), ['Ongoing', 'BBB capitulated']);
+  assert.deepEqual(heads.map(lane => lane.outcome?.text), ['Ongoing', 'Bravo capitulated']);
   assert.equal(heads[1]!.sides![1].dim, true, 'the side that capitulated dims');
   assert.equal(heads[0]!.defaultOpen, true, 'ongoing wars are open by default');
   const rows = model.lanes.filter(lane => lane.parentKey === heads[0]!.key);
-  assert.deepEqual(rows.map(lane => lane.label), ['AAA', 'CCC', 'Against', 'BBB']);
+  assert.deepEqual(rows.map(lane => lane.label), ['Alpha', 'Charlie', 'Against', 'Bravo']);
   assert.equal(rows[1]!.aside?.startsWith('Joined '), true, 'a late joiner says when it joined');
   assert.deepEqual(heads[1]!.spans[0]!.marks?.map(mark => mark.hour), [190]);
   assert.equal(model.firstHour, 100, 'the window starts at the first war shown');

@@ -32,17 +32,20 @@ export interface IdentityOptions {
   readonly boundary?: IdentityBoundary;
 }
 
-export interface ResolvedIdentity extends CellArt {
-  readonly value: Value<string>;
-  readonly name: string;
-  readonly loading: boolean;
+export interface ResolvedIdentity extends CellArt, ResolvedName {
   readonly color?: string;
 }
 
 export const NAME_LOADING = 'Name is loading';
 export const LOADING_NAME = 'Loading name…';
 
-export function resolveIdentity(readView: BoundedReadView, kind: EntityKind, key: string, options: IdentityOptions = {}): ResolvedIdentity {
+export interface ResolvedName {
+  readonly value: Value<string>;
+  readonly name: string;
+  readonly loading: boolean;
+}
+
+export function resolveName(readView: BoundedReadView, kind: EntityKind, key: string, options: Pick<IdentityOptions, 'atHour' | 'boundary'> = {}): ResolvedName & { readonly who: ReturnType<BoundedReadView['who']> } {
   const atHour = options.atHour ?? readView.hour;
   const who = readView.who(kind, key, atHour);
   if (options.boundary && atHour >= readView.hour) {
@@ -54,9 +57,14 @@ export function resolveIdentity(readView: BoundedReadView, kind: EntityKind, key
     : loading
       ? notRecorded(NAME_LOADING)
       : notRecorded(who.name.status === 'ready' ? 'Name not recorded' : who.name.reason);
+  return { value, name: value.kind === 'known' ? value.value : loading ? LOADING_NAME : key, loading, who };
+}
+
+export function resolveIdentity(readView: BoundedReadView, kind: EntityKind, key: string, options: IdentityOptions = {}): ResolvedIdentity {
+  const { value, name, loading, who } = resolveName(readView, kind, key, options);
   return {
     value,
-    name: value.kind === 'known' ? value.value : loading ? LOADING_NAME : key,
+    name,
     loading,
     ...(kind === 'country' ? flagArt(readView, who.flagChoice, options.flag ?? 'panel') : {}),
     ...(who.colour?.status === 'ready' ? { color: who.colour.value } : {}),
@@ -120,5 +128,10 @@ export function artKindCell(readView: BoundedReadView, handle: ArtHandle | null,
 }
 
 export function identityName(readView: BoundedReadView, kind: EntityKind, key: string, atHour?: number): string {
-  return resolveIdentity(readView, kind, key, atHour === undefined ? {} : { atHour }).name;
+  return resolveName(readView, kind, key, atHour === undefined ? {} : { atHour }).name;
+}
+
+export function identityNameOr(readView: BoundedReadView, kind: EntityKind, key: string, unnamed: string, atHour?: number): string {
+  const { value, name, loading } = resolveName(readView, kind, key, atHour === undefined ? {} : { atHour });
+  return value.kind === 'known' || loading ? name : unnamed;
 }

@@ -19,7 +19,9 @@ import { registerFamilyProjection } from '../registry.ts';
 import { cardHostAdapter } from './hostAdapter.ts';
 import { cardLane } from './laneView.ts';
 import { layoutCards } from './layout.ts';
-import { assertCardModelValid, cardRowHours, deriveCardAudit, FutureCardDataError, type CardHeroRow, type CardItemRow, type CardModel } from './model.ts';
+import { datedIdentity } from '../identity/dated.fixture.ts';
+import { LOADING_NAME, NAME_LOADING } from '../table/identityCell.ts';
+import { assertCardModelValid, cardRowHours, cardRowName, deriveCardAudit, deriveCardMirror, deriveCardTooltip, FutureCardDataError, type CardHeroRow, type CardItemRow, type CardModel } from './model.ts';
 
 const DAY = 24;
 const art = (token: string, name: string | null, icon: string | null = null) => ({ token, name, nameMissing: name ? null : 'Name refused', icon, iconMissing: icon ? null : 'No sprite in the installed mods' });
@@ -110,6 +112,34 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   const named = warGoalsProjection.project(view(hour, reply, live), { targetNames: true });
   assert.equal(items(named)[0]!.subtitle, 'Take state');
   assert.ok(deriveCardAudit(model).some(row => row.key === `${row.row}:state` && String(row.value).endsWith(':Expired')));
+});
+
+test('a war goal target whose name is still loading reads as loading on the card, its tooltip, mirror and audit, never as its tag', () => {
+  const hour = 2000 * DAY;
+  const reply: WargoalsReply = {
+    branchId: '1', tag: 'AAA', asked: 'AAA',
+    standings: [], justifications: [], warnings: [],
+    removed: [{ handle: '9', name: 'Take state', recipient: 'BBB', seen: hour - 6 * DAY, granted: null, grantedMissing: 'Held when the branch began', removed: hour - 5 * DAY, removedExact: true, reasonMissing: 'War goal removal reason was not recorded' }],
+    goals: [{ handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'BBB', available: true, expires: null, states: [4], liberate: ['CCC'], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null }],
+    stateNames: [{ id: 4, name: 'Invented state 4', known: true }],
+  };
+  const at = (names: Parameters<typeof datedIdentity>[0]) => warGoalsProjection.project(
+    createBoundedReadView({ hour, panels: new Map([['main', reply]]), live: new Map([['main', { get: () => undefined, missing: () => 'Not read at this hour' }]]), identity: datedIdentity(names) }),
+    { targetNames: true },
+  );
+  const waiting = at({});
+  const row = items(waiting)[0]!;
+  assert.deepEqual(row.title, { kind: 'notRecorded', reason: NAME_LOADING });
+  assert.equal(row.titleLoading, true);
+  assert.equal(cardRowName(row), LOADING_NAME, 'the painted title and the mirror name read loading');
+  assert.equal(row.place, `Invented state 4 · Liberate ${LOADING_NAME}`);
+  assert.equal(deriveCardMirror(waiting).rows[0]!.name, LOADING_NAME);
+  assert.equal(deriveCardTooltip(waiting, items(waiting)[1]!.key)?.title, LOADING_NAME, 'a removed goal’s tooltip is titled with the loading target, not a missing kind');
+  assert.ok(deriveCardAudit(waiting).some(cell => cell.row === row.key && cell.key === `${row.key}:loading` && cell.value === 'title'), 'the audit says the title is loading');
+  const named = items(at({ BBB: [{ from: 0, name: 'Bravo' }], CCC: [{ from: 0, name: 'Charlie' }] }))[0]!;
+  assert.deepEqual(named.title, { kind: 'known', value: 'Bravo' });
+  assert.equal(named.titleLoading, undefined);
+  assert.equal(named.place, 'Invented state 4 · Liberate Charlie');
 });
 
 test('national spirits list the product’s membership at the displayed hour, in its order, with since dates and unclassified items kept', () => {

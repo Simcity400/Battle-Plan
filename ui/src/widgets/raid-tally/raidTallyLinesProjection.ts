@@ -39,6 +39,7 @@ import type {
   RaidTallySlotRun,
 } from '../../generated/dashboard';
 import { validateRaidTallyAt } from './raidTallyRaceProjection.ts';
+import { identityName, identityNameOr } from '../../families/table/identityCell.ts';
 
 const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 const COLOURED = 8;
@@ -86,7 +87,7 @@ export function unresolvedSlotLabel(slot: number): string {
 export function raidTallySlotLabel(readView: BoundedReadView, slot: number, hour: number): string {
   const key = countryKey(slot);
   const who = readView.who('country', key, hour);
-  if (who.name.status === 'ready') return who.name.value;
+  if (who.name.status === 'ready' || who.name.status === 'pending') return identityName(readView, 'country', key, hour);
   if (who.tag?.status === 'ready') return who.tag.value;
   return unresolvedSlotLabel(slot);
 }
@@ -225,8 +226,7 @@ function buildHoverDetail(
     const label = typeof row.country === 'number'
       ? raidTallySlotLabel(readView, row.country, hour)
       : (() => {
-          const who = readView.who('country', key, hour);
-          return who.name.status === 'ready' ? who.name.value : row.tag;
+          return identityNameOr(readView, 'country', key, row.tag, hour);
         })();
     const look = looks.get(key);
     const atHour = look ? seriesLookAt(look, hour) : null;

@@ -16,6 +16,7 @@ import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
 import { formatRational, formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
 import { validateWorldTensionHover, validateWorldTensionStack } from './worldTensionProjection.ts';
+import { identityName } from '../../families/table/identityCell.ts';
 
 const TOP_NAMED = 8;
 
@@ -128,7 +129,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     const infos = reply.bands.map(band => {
       if (!band.tag) return { name: 'Unknown', fullName: 'Unknown country', color: null, flagChoice: null };
       const id = readView.who('country', band.tag, hour);
-      const baseName = id.name.status === 'ready' ? id.name.value : band.tag;
+      const baseName = identityName(readView, 'country', band.tag, hour);
       return {
         name: baseName,
         fullName: band.remembered ? `${baseName} (former)` : baseName,

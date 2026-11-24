@@ -69,7 +69,7 @@ function makeRow(
     key,
     subject: key,
     label: pres.label,
-    labelMissing: pres.labelMissing,
+    labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
     media: pres.media,
     ...(pres.color ? { color: pres.color } : {}),
     value: { value, format: { decimals: 0 }, label: 'Nuclear stockpile' },

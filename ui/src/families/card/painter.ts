@@ -34,7 +34,7 @@ import {
   visibleCardRows,
   type CardLayout,
 } from './layout.ts';
-import { cardTitleText, type CardFigure, type CardHeroRow, type CardItemRow, type CardListRow, type CardMeter, type CardMeterRow, type CardModel, type CardSectionRow } from './model.ts';
+import { cardTitle, type CardFigure, type CardHeroRow, type CardItemRow, type CardListRow, type CardMeter, type CardMeterRow, type CardModel, type CardSectionRow } from './model.ts';
 
 export interface DrawCardsInput {
   readonly model: CardModel;
@@ -177,7 +177,7 @@ function drawHero(ctx: Canvas2D, row: CardHeroRow, top: number, layout: CardLayo
     }
   }
   const textW = Math.max(0, x + w - 14 - (figureW ? figureW + 16 : 0) - textX);
-  line(ctx, cardTitleText(row.title), textX, titleY, textW, `600 15px ${theme.font}`, row.title.kind === 'notRecorded' ? theme.muted : theme.text);
+  line(ctx, cardTitle(row), textX, titleY, textW, `600 15px ${theme.font}`, row.title.kind === 'notRecorded' ? theme.muted : theme.text);
   const mark = drawStatusMark(ctx, textX, stateY, row.state.mark, theme, { label: row.state.label, maxWidth: textW });
   if (row.detail) line(ctx, row.detail, textX + mark.width + 8, stateY, Math.max(0, textW - mark.width - 8), `400 ${theme.fontSize.small}px ${theme.font}`, theme.muted);
   if (row.meter) drawMeter(ctx, row.meter, x + 11, top + 69, w - 22, 6, theme);
@@ -198,12 +198,12 @@ function drawItem(ctx: Canvas2D, model: CardModel, row: CardItemRow, top: number
   const titleFont = `${columns.titleWeight ?? 500} 13px ${theme.font}`;
   const titleColor = row.title.kind === 'notRecorded' ? theme.muted : theme.text;
   if (subtitle) {
-    line(ctx, cardTitleText(row.title), titleX, middleY - 7, titleWidth, titleFont, titleColor);
+    line(ctx, cardTitle(row), titleX, middleY - 7, titleWidth, titleFont, titleColor);
     const flagShift = row.subtitleFlag ? CARD_FLAG_WIDTH * 0.8 + 6 : 0;
     if (row.subtitleFlag) drawMediaSlot(ctx, titleX, middleY + 9, CARD_FLAG_WIDTH * 0.8, CARD_FLAG_HEIGHT * 0.8, row.subtitleFlag, theme, { artCache, radius: 2 });
     line(ctx, subtitle, titleX + flagShift, middleY + 9, titleWidth - flagShift, `400 11px ${theme.font}`, theme.muted);
   } else {
-    line(ctx, cardTitleText(row.title), titleX, middleY, titleWidth, titleFont, titleColor);
+    line(ctx, cardTitle(row), titleX, middleY, titleWidth, titleFont, titleColor);
   }
   if (row.place && layout.placeWidth > 0) line(ctx, row.place, layout.placeX, middleY, layout.placeWidth, `400 12.5px ${theme.font}`, theme.muted);
   if (row.meter && layout.meterWidth > 0) {

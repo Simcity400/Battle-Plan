@@ -15,6 +15,7 @@ import { ADD_REGION_LABEL, mostActiveHeading, noRegionsBody, PICKED_REGIONS_HEAD
 import { formatShare } from '../../families/valueFormat.ts';
 import type { MinedRegion } from '../../generated/dashboard';
 import { minesText, validateMinefields, type RegionRow } from './minefieldsData.ts';
+import { identityName } from '../../families/table/identityCell.ts';
 
 const FALLBACK_SURFACE = DEFAULT_CARD_SURFACE;
 
@@ -97,8 +98,7 @@ function projectMineRegion(
   if (total === null) {
     const reason = live?.missing(totalKey) ?? 'Not recorded at this hour';
     const items: TooltipListItem[] = region.owners.map(owner => {
-      const identity = readView.who('country', owner.tag);
-      const ownerName = identity.name.status === 'ready' ? identity.name.value : owner.tag;
+      const ownerName = identityName(readView, 'country', owner.tag);
       const ownerKey = liveKey(id, owner.tag);
       const amount = readBigInt(live, ownerKey);
       return amount === null
@@ -131,7 +131,7 @@ function projectMineRegion(
   const unrecordedColour = reservedGrey(FALLBACK_SURFACE);
   for (const owner of region.owners) {
     const identity = readView.who('country', owner.tag);
-    const ownerName = identity.name.status === 'ready' ? identity.name.value : owner.tag;
+    const ownerName = identityName(readView, 'country', owner.tag);
     const ownerColor = identity.colour?.status === 'ready' ? identity.colour.value : unrecordedColour;
     const ownerKey = liveKey(id, owner.tag);
     const amount = readBigInt(live, ownerKey);

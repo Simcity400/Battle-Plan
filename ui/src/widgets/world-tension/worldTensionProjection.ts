@@ -17,6 +17,7 @@ import type { ChartExactRational, ChartGap, ChartMarker, ChartStackBand, TimeCha
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
 import { formatRational, formatRecordedPercent, formatScaledPercent, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
+import { identityName } from '../../families/table/identityCell.ts';
 
 export interface WorldTensionChartOptions {
   readonly extent: readonly [number, number];
@@ -110,7 +111,7 @@ function contributorLabel(
 ): { readonly name: string; readonly fullName: string; readonly color: string | null; readonly flagChoice: string | null } {
   if (!tag) return { name: 'Unknown', fullName: 'Unknown country', color: null, flagChoice: null };
   const id = readView.who('country', tag, atHour);
-  const baseName = id.name.status === 'ready' ? id.name.value : tag;
+  const baseName = identityName(readView, 'country', tag, atHour);
   const fullName = remembered ? `${baseName} (former)` : baseName;
   const color = id.colour?.status === 'ready' ? id.colour.value : null;
   const flagChoice = id.flagChoice?.status === 'ready' ? id.flagChoice.value : null;
