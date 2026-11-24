@@ -215,9 +215,9 @@ test('worker projection registry loads table and bars projections lazily on dema
 
   assert.deepEqual(
     FAMILY_MANIFESTS.map(entry => entry.family),
-    ['bars', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
+    ['bars', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
   );
-  for (const family of ['bars', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
+  for (const family of ['bars', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
     assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
   }
 });
