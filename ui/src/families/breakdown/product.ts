@@ -1,23 +1,26 @@
-import type { Breakdown, BreakdownPart as WirePart } from '../../generated/dashboard';
+import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart } from '../../generated/dashboard';
 import { formatScalar } from '../valueFormat.ts';
 import { PATH, type BreakdownPart, type BreakdownTotal } from './model.ts';
 
 export interface BreakdownWords {
   readonly unit: string;
   readonly verb: string;
-  readonly format: (raw: bigint, decimals: number) => string;
+  readonly format: (numerator: bigint, denominator: bigint) => string;
 }
 
 function sentence(text: string | null): string | undefined {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : undefined;
 }
 
-function scaled(raw: bigint, decimals: number): number {
-  return Number(raw) / 10 ** decimals;
+function amount(wire: BreakdownAmount | null, words: BreakdownWords): { readonly value: number; readonly text: string } | null {
+  if (wire === null) return null;
+  const numerator = BigInt(wire.numerator);
+  const denominator = BigInt(wire.denominator);
+  return { value: Number(numerator) / Number(denominator), text: words.format(numerator, denominator) };
 }
 
-function part(wire: WirePart, decimals: number, words: BreakdownWords, parent: string | null): BreakdownPart {
-  const raw = wire.raw === null ? null : BigInt(wire.raw);
+function part(wire: WirePart, words: BreakdownWords, parent: string | null): BreakdownPart {
+  const known = amount(wire.amount, words);
   const reason = sentence(wire.reason);
   const key = parent === null ? wire.key : `${parent}${PATH}${wire.key}`;
   return {
@@ -25,8 +28,8 @@ function part(wire: WirePart, decimals: number, words: BreakdownWords, parent: s
     name: wire.name,
     ...(wire.nameMissing ? { nameMissing: sentence(wire.nameMissing) } : {}),
     ordinal: wire.ordinal,
-    value: raw === null ? null : scaled(raw, decimals),
-    text: raw === null ? '' : words.format(raw, decimals),
+    value: known?.value ?? null,
+    text: known?.text ?? '',
     share: wire.share,
     parentShare: wire.parentShare,
     ...(wire.other ? { neutral: true } : {}),
@@ -34,12 +37,12 @@ function part(wire: WirePart, decimals: number, words: BreakdownWords, parent: s
     ...(wire.state === 'partial' || wire.state === 'atLeast' ? { partial: true, ...(reason ? { partialReason: reason } : {}) } : {}),
     ...(wire.state === 'atLeast' ? { atLeast: true } : {}),
     ...(wire.count !== null ? { count: Number(wire.count) } : {}),
-    ...(wire.children.length ? { children: wire.children.map(child => part(child, decimals, words, key)) } : {}),
+    ...(wire.children.length ? { children: wire.children.map(child => part(child, words, key)) } : {}),
   };
 }
 
 export function breakdownParts(breakdown: Breakdown, words: BreakdownWords): readonly BreakdownPart[] {
-  return breakdown.parts.map(wire => part(wire, breakdown.decimals, words, null));
+  return breakdown.parts.map(wire => part(wire, words, null));
 }
 
 function hours(count: number): string {
@@ -49,15 +52,15 @@ function hours(count: number): string {
 }
 
 export function breakdownTotal(breakdown: Breakdown, words: BreakdownWords): BreakdownTotal {
-  const { total, decimals } = breakdown;
-  const raw = total.raw === null ? null : BigInt(total.raw);
+  const { total } = breakdown;
+  const known = amount(total.amount, words);
   const reason = sentence(total.reason);
   return {
     known: total.state === 'known',
     ...(total.state === 'atLeast' ? { atLeast: true } : {}),
     ...(total.state === 'partial' || total.state === 'atLeast' ? { partial: true } : {}),
-    value: raw === null ? null : scaled(raw, decimals),
-    text: raw === null ? 'Not recorded' : words.format(raw, decimals),
+    value: known?.value ?? null,
+    text: known?.text ?? 'Not recorded',
     unit: words.unit,
     verb: words.verb,
     ...(reason ? { reason } : {}),

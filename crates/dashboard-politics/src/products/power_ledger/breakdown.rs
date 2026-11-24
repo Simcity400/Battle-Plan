@@ -1,5 +1,5 @@
 use super::{PowerSpendingParams, PowerSpendingReply, SpendCoverage, SpendCurrency, SpendGain, naming, spending};
-use dashboard_base::products::breakdown::{self, Amount, Breakdown, Dated, History, HistoryBuilder, Node};
+use dashboard_base::products::breakdown::{self, Amount, Breakdown, BreakdownAmount, Dated, Exact, History, HistoryBuilder, Node};
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
 use dashboard_base::Source;
 use dashboard_query::{identity::{Holder, Holders}, timeline::Timeline};
@@ -34,14 +34,14 @@ pub struct PowerSpendingBreakdownReply {
     #[doc = " Everything in the reply stands unchanged from `hour` through this hour."]
     pub through: i32,
     pub breakdown: Breakdown,
-    #[doc = " Gained over the same period before the cap, scaled by the breakdown's decimals; none when an"]
-    #[doc = " amount gained was read without its value. With `gained_reason`, hours of the period whose gains"]
-    #[doc = " were not read are left out: the figure is partial."]
-    pub gained_raw: Option<String>,
-    pub lost_at_cap_raw: Option<String>,
-    #[doc = " Why the gain is not known, or (with `gained_raw`) why it is partial."]
+    #[doc = " Gained over the same period before the cap; none when an amount gained was read without its"]
+    #[doc = " value. With `gained_reason`, hours of the period whose gains were not read are left out: the"]
+    #[doc = " figure is partial."]
+    pub gained: Option<BreakdownAmount>,
+    pub lost_at_cap: Option<BreakdownAmount>,
+    #[doc = " Why the gain is not known, or (with `gained`) why it is partial."]
     pub gained_reason: Option<String>,
-    #[doc = " Why the loss at the cap is not known, or (with `lost_at_cap_raw`) why it is partial."]
+    #[doc = " Why the loss at the cap is not known, or (with `lost_at_cap`) why it is partial."]
     pub lost_at_cap_reason: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -65,6 +65,7 @@ impl Product for PowerSpendingBreakdown {
             PowerSpendingBreakdownReply::decl(),
             SpendCurrency::decl(),
             Breakdown::decl(),
+            BreakdownAmount::decl(),
             BreakdownTotal::decl(),
             BreakdownPart::decl(),
             BreakdownState::decl(),
@@ -163,6 +164,7 @@ struct Gain {
 
 pub(super) struct PowerHistory {
     from: i32,
+    decimals: u8,
     history: History,
     gained: Dated<Gain>,
     warnings: Dated<Vec<String>>,
@@ -177,8 +179,8 @@ impl PowerHistory {
             hour,
             through,
             breakdown,
-            gained_raw: gain.gained.map(|value| value.to_string()),
-            lost_at_cap_raw: gain.lost.map(|value| value.to_string()),
+            gained: gain.gained.and_then(|value| Exact::scaled(value, self.decimals)).map(Exact::wire),
+            lost_at_cap: gain.lost.and_then(|value| Exact::scaled(value, self.decimals)).map(Exact::wire),
             gained_reason: gain.gained_reason,
             lost_at_cap_reason: gain.lost_reason,
             warnings: self.warnings.at(hour).cloned().unwrap_or_default(),
@@ -302,7 +304,7 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
     let mut categories: HashMap<String, u32> = HashMap::new();
     let mut kinds: HashMap<String, u32> = HashMap::new();
     let mut groups: HashMap<String, u32> = HashMap::new();
-    let mut built = HistoryBuilder::new(reply.decimals, reply.from, reply.to).dated();
+    let mut built = HistoryBuilder::new(reply.from, reply.to).dated();
     let mut dated_warnings: Vec<(i32, String)> = Vec::new();
     for entry in &entries {
         let Some(item) = reply.items.get(entry.item as usize) else { continue };
@@ -328,7 +330,7 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
         }
         let leaf = built.leaf(path);
         let count = Some(u64::from(entry.payments));
-        match entry.charge {
+        match entry.charge.and_then(|charge| Exact::scaled(charge, reply.decimals)) {
             Some(charge) => {
                 let amount = if entry.uncovered { Amount::Partial(charge, "Some payments may be missing.".into()) } else { Amount::Known(charge) };
                 built.add(entry.read, leaf, amount, count);
@@ -367,5 +369,5 @@ pub(super) fn index(reply: &PowerSpendingReply, spend_unread: &[(i32, i32, Strin
         list.push(warning);
         warnings.push((hour, list));
     }
-    PowerHistory { from: reply.from, history: built.build(), gained, warnings: Dated::new(warnings) }
+    PowerHistory { from: reply.from, decimals: reply.decimals, history: built.build(), gained, warnings: Dated::new(warnings) }
 }

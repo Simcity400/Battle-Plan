@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
+import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
 import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
 import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { territoryBreakdown, territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
@@ -45,19 +45,24 @@ const THEME: FamilyTheme = {
 };
 
 const START = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
-const WORDS: BreakdownWords = { unit: 'PP', verb: 'Spent', format: raw => raw.toLocaleString('en-US') };
+const WORDS: BreakdownWords = { unit: 'PP', verb: 'Spent', format: (numerator, denominator) => (numerator / denominator).toLocaleString('en-US') };
 const measure = (text: string) => text.length * 7;
 
-function wire(key: string, ordinal: number, raw: string | null, extra: Partial<WirePart> = {}): WirePart {
+function exact(figure: string): BreakdownAmount {
+  const [numerator = figure, denominator = '1'] = figure.split('/');
+  return { numerator, denominator };
+}
+
+function wire(key: string, ordinal: number, figure: string | null, extra: Partial<WirePart> = {}): WirePart {
   return {
     key,
     name: key,
     nameMissing: null,
     ordinal,
     other: false,
-    raw,
-    state: raw === null ? 'notRecorded' : 'known',
-    reason: raw === null ? `${key} was not recorded` : null,
+    amount: figure === null ? null : exact(figure),
+    state: figure === null ? 'notRecorded' : 'known',
+    reason: figure === null ? `${key} was not recorded` : null,
     share: null,
     parentShare: null,
     count: null,
@@ -70,8 +75,7 @@ function wire(key: string, ordinal: number, raw: string | null, extra: Partial<W
 
 function partlyKnown(): Breakdown {
   return {
-    decimals: 0,
-    total: { raw: '211', state: 'atLeast', reason: 'New ships were not recorded' },
+    total: { amount: exact('211'), state: 'atLeast', reason: 'New ships were not recorded' },
     parts: [wire('Repairs', 2, '211'), wire('New ships', 0, null), wire('Refits', 1, null)],
     unrecordedHours: 0,
   };
@@ -79,8 +83,7 @@ function partlyKnown(): Breakdown {
 
 function spent(): Breakdown {
   return {
-    decimals: 0,
-    total: { raw: '5972', state: 'partial', reason: 'Spending was not recorded' },
+    total: { amount: exact('5972'), state: 'partial', reason: 'Spending was not recorded' },
     parts: [
       wire('Daily costs', 3, '2071', { share: 0.35 }),
       wire('Decisions', 0, '1415', {
@@ -167,7 +170,7 @@ test('expanding a part is held by the host, shared by the parts list and the rin
 });
 
 function reply(breakdown: Breakdown, extra: Partial<PowerSpendingBreakdownReply> = {}): PowerSpendingBreakdownReply {
-  return { from: START, hour: START + 10, through: START + 30, breakdown, gainedRaw: '5306', lostAtCapRaw: '1', gainedReason: null, lostAtCapReason: null, warnings: [], ...extra };
+  return { from: START, hour: START + 10, through: START + 30, breakdown, gained: exact('5306'), lostAtCap: exact('1'), gainedReason: null, lostAtCapReason: null, warnings: [], ...extra };
 }
 
 function project(data: PowerSpendingBreakdownReply | null) {
@@ -185,19 +188,19 @@ test('political power spending reads the product at the displayed hour', () => {
   const partly = project(reply(spent(), { gainedReason: 'Gains in hours when power changes were not read are not counted.' }));
   assert.deepEqual(partly.comparison, { label: 'Gained', value: '5,306 PP', partial: true, note: 'Gains in hours when power changes were not read are not counted. 1 PP lost at the cap.' });
 
-  const ungained = project(reply(spent(), { gainedRaw: null, gainedReason: 'Some gains were not recorded.' }));
+  const ungained = project(reply(spent(), { gained: null, gainedReason: 'Some gains were not recorded.' }));
   assert.deepEqual(ungained.comparison, { label: 'Gained', value: 'Not recorded', note: 'Some gains were not recorded.' });
 
-  const none = project(reply({ decimals: 0, total: { raw: null, state: 'notRecorded', reason: 'Spending was not recorded' }, parts: [], unrecordedHours: 10 }));
+  const none = project(reply({ total: { amount: null, state: 'notRecorded', reason: 'Spending was not recorded' }, parts: [], unrecordedHours: 10 }));
   assert.equal(none.empty, 'Not recorded at this time.');
   assert.equal(none.emptyKind, 'unavailable');
   assert.equal(none.emptyDetail, 'Spending was not recorded');
 
-  const zero = project(reply({ decimals: 0, total: { raw: '0', state: 'known', reason: null }, parts: [], unrecordedHours: 0 }));
+  const zero = project(reply({ total: { amount: exact('0'), state: 'known', reason: null }, parts: [], unrecordedHours: 0 }));
   assert.equal(zero.empty, 'No spending at this date.');
   assert.equal(zero.total.text, '0', 'a known zero is 0');
 
-  const unrecorded = project(reply({ decimals: 0, total: { raw: '0', state: 'partial', reason: 'Spending was not recorded' }, parts: [], unrecordedHours: 5 }));
+  const unrecorded = project(reply({ total: { amount: exact('0'), state: 'partial', reason: 'Spending was not recorded' }, parts: [], unrecordedHours: 5 }));
   assert.equal(unrecorded.empty, 'No spending recorded at this date.', 'unrecorded hours never read as no spending');
   assert.equal(unrecorded.emptyDetail, 'Spending was not recorded');
 
@@ -214,7 +217,7 @@ test('political power spending reads the product at the displayed hour', () => {
     { label: 'spent', binding: held, hour: START + 10, check: true },
     { label: 'later', binding: lane(reply(partlyKnown(), { hour: START + 20 })), hour: START + 20, speed: 24 },
     { label: 'seek back', binding: held, hour: START + 10, check: true },
-    { label: 'same-hour correction', binding: lane(reply(spent(), { gainedRaw: '6000' })), hour: START + 10, check: true },
+    { label: 'same-hour correction', binding: lane(reply(spent(), { gained: exact('6000') })), hour: START + 10, check: true },
     { label: 'another view', binding: lane(reply(spent()), { view: 'ring', namesInRing: true, digits: 0 }), hour: START + 10, check: true },
     { label: 'a part opened', binding: lane(reply(spent()), parts, { Decisions: true }), hour: START + 10, check: true },
   ], surface);
@@ -228,8 +231,8 @@ test('nothing after the displayed hour reaches the projection', () => {
 test('construction spending reads IC used since the branch began and names what it leaves out', () => {
   const reply: ConstructionBreakdownReply = {
     from: START, hour: START + 10, through: START + 20, beforeFirstRead: 2, unattributed: 1, warnings: [],
-    breakdown: { decimals: 5, total: { raw: '162101200000', state: 'known', reason: null }, unrecordedHours: 0,
-      parts: [wire('New buildings', 0, '158376400000', { share: 0.98 }), wire('Repairs', 1, '3724800000', { share: 0.023 })] },
+    breakdown: { total: { amount: exact('1621012'), state: 'known', reason: null }, unrecordedHours: 0,
+      parts: [wire('New buildings', 0, '1583764', { share: 0.98 }), wire('Repairs', 1, '37248', { share: 0.023 })] },
   };
   const readView = createBoundedReadView({ hour: START + 10, panels: new Map([['main', reply]]), validInterval: [START + 10, START + 20] });
   const read = constructionProjection.project(readView, { digits: 0 });
@@ -246,8 +249,7 @@ test('construction spending reads IC used since the branch began and names what 
 function nested(): Breakdown {
   const items = Array.from({ length: 11 }, (_, at) => wire(`item-${at}`, at, String(10 + at), { share: 0.001, parentShare: 0.01 }));
   return {
-    decimals: 0,
-    total: { raw: '2000', state: 'known', reason: null },
+    total: { amount: exact('2000'), state: 'known', reason: null },
     parts: [
       wire('New', 0, '1415', {
         share: 0.7075,
@@ -324,12 +326,12 @@ test('the audit lists what the installed view draws: shares, open children and t
   assert.ok(rows.some(row => row.key === 'New' && String(row.value).endsWith('|71%')), 'a drawn share is audited');
   assert.ok(deriveBreakdownAudit(read, open).length > deriveBreakdownAudit(read, closed).length, 'opening a part audits its drawn children');
   const moved = nested();
-  moved.parts[0] = { ...moved.parts[0]!, children: [{ ...moved.parts[0]!.children[0]!, raw: '700' }, { ...moved.parts[0]!.children[1]!, raw: '292' }] };
+  moved.parts[0] = { ...moved.parts[0]!, children: [{ ...moved.parts[0]!.children[0]!, amount: exact('700') }, { ...moved.parts[0]!.children[1]!, amount: exact('292') }] };
   assert.notDeepEqual(deriveBreakdownAudit(model(moved), layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(moved)), view: 'parts', userExpanded: { New: true } })), deriveBreakdownAudit(model(nested()), layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(nested())), view: 'parts', userExpanded: { New: true } })), 'moving spending between children under a fixed part changes the audit');
 });
 
 test('a lone sub-part that repeats its part is not drawn as a split, but its name stays in the tooltip', () => {
-  const lone: Breakdown = { decimals: 0, total: { raw: '20', state: 'known', reason: null }, unrecordedHours: 0,
+  const lone: Breakdown = { total: { amount: exact('20'), state: 'known', reason: null }, unrecordedHours: 0,
     parts: [wire('Daily', 0, '20', { share: 1, parentShare: 1, children: [wire('One daily cost', 0, '20', { share: 1, parentShare: 1 })] })] };
   const read = model(lone);
   const parts = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(read), view: 'parts', userExpanded: {} }) as PartsViewLayout;
@@ -339,7 +341,7 @@ test('a lone sub-part that repeats its part is not drawn as a split, but its nam
 });
 
 test('a lone item under a category is still a row', () => {
-  const single: Breakdown = { decimals: 0, total: { raw: '20', state: 'known', reason: null }, unrecordedHours: 0,
+  const single: Breakdown = { total: { amount: exact('20'), state: 'known', reason: null }, unrecordedHours: 0,
     parts: [wire('Decisions', 0, '20', { share: 1, parentShare: 1, children: [
       wire('Group', 0, '12', { share: 0.6, parentShare: 0.6, children: [wire('Only decision', 0, '12', { share: 0.6, parentShare: 1 })] }),
       wire('Other group', 1, '8', { share: 0.4, parentShare: 0.4 }),
@@ -367,8 +369,8 @@ test('territory names each recorded slot by its identity at the hour, with its f
     },
   };
   const territory: TerritoryBreakdownReply = { hour: 10, warnings: [], breakdown: {
-    decimals: 2, unrecordedHours: 0, total: { raw: '583', state: 'known', reason: null },
-    parts: [wire('slot:1', 1, '433', { share: 0.74, name: 'AAA' }), wire('slot:2', 2, '100', { other: true, name: 'Country not named at this hour' }), wire('~unheld', 9, '50', { other: true, name: 'Held by no country' })],
+    unrecordedHours: 0, total: { amount: exact('35/6'), state: 'known', reason: null },
+    parts: [wire('slot:1', 1, '13/3', { share: 0.74, name: 'AAA' }), wire('slot:2', 2, '1', { other: true, name: 'Country not named at this hour' }), wire('~unheld', 9, '1/2', { other: true, name: 'Held by no country' })],
   } };
   const project = (reply: TerritoryBreakdownReply, chosen = false) => territoryBreakdownProjection.project(
     createBoundedReadView({ hour: 10, panels: new Map([['main', reply]]), identity }), { measure: 'states', rule: 'controlled', chosen });
@@ -378,11 +380,12 @@ test('territory names each recorded slot by its identity at the hour, with its f
   assert.equal(read.parts[0]!.color, '#4f86f7');
   assert.equal(read.parts[0]!.flag, 'BBB');
   assert.equal(read.parts[1]!.flag, undefined, 'a slot no tag names has no flag');
-  assert.equal(read.total.text, '5.83');
+  assert.equal(read.total.text, '5.83', 'the exact sum, cut at the shown precision');
+  assert.deepEqual(read.parts.map(part => part.text), ['4.33', '1', '0.5']);
   assert.equal(read.total.unit, 'states');
   assert.equal(read.periodLabel, 'Controlled by every country');
   assert.equal(project(territory, true).periodLabel, 'Controlled by the chosen countries');
-  const unread = project({ ...territory, breakdown: { decimals: 0, unrecordedHours: 0, total: { raw: null, state: 'notRecorded', reason: 'territory by strategic region is not known at this hour' }, parts: [] } });
+  const unread = project({ ...territory, breakdown: { unrecordedHours: 0, total: { amount: null, state: 'notRecorded', reason: 'territory by strategic region is not known at this hour' }, parts: [] } });
   assert.equal(unread.empty, 'Not recorded at this time.');
   assert.equal(unread.emptyDetail, 'Territory by strategic region is not known at this hour');
 });
@@ -444,7 +447,7 @@ test('the art asked for is the flags the laid-out rows draw, found once per layo
 });
 
 test('a name the recording does not hold is the key with its reason, never passed off as a name', () => {
-  const unnamed: Breakdown = { decimals: 0, unrecordedHours: 0, total: { raw: '5', state: 'known', reason: null },
+  const unnamed: Breakdown = { unrecordedHours: 0, total: { amount: exact('5'), state: 'known', reason: null },
     parts: [wire('group_a_cat', 0, '5', { share: 1, parentShare: 1, nameMissing: 'the recorded localisation holds no name for group_a_cat' })] };
   const read = model(unnamed);
   assert.equal(read.parts[0]!.name, 'group_a_cat');
