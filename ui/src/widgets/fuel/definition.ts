@@ -36,7 +36,7 @@ export const OPTIONS: readonly OptionField[] = [
 ];
 
 export const definition = {
-  kind: 'fuel', version: 1, title: 'Fuel', icon: 'droplet',
+  kind: 'fuel', version: 1, title: 'Fuel', icon: 'chart-line',
   description: 'A country’s fuel against its capacity over time, with each day’s gain and burn.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 },

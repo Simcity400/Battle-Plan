@@ -2,7 +2,7 @@ import { colour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { flagArtHandle } from '../art/provider.ts';
-import { missingArt, PENDING_ART } from '../art/types.ts';
+import { failedArt, missingArt, PENDING_ART } from '../art/types.ts';
 import type { BoundedReadView, BoundedSeries } from '../contract.ts';
 import { holderTagAt, type HolderRun } from '../holders.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -81,7 +81,9 @@ export function countrySeriesIdentity(
       ? { art: readView.art(flagArtHandle(who.flagChoice.value, 'panel')), tag: identityTag }
       : who.flagChoice?.status === 'absent'
         ? { art: missingArt(who.flagChoice.reason), tag: identityTag }
-        : { art: PENDING_ART, tag: identityTag };
+        : who.flagChoice?.status === 'failed'
+          ? { art: failedArt(who.flagChoice.reason, who.flagChoice.retryable), tag: identityTag }
+          : { art: PENDING_ART, tag: identityTag };
   return { identityTag, name, ...(flag ? { flag } : {}) };
 }
 
