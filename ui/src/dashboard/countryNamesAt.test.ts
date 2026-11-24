@@ -79,3 +79,55 @@ test('dated fact hooks own independent reads and mask switched clients immediate
   } finally { delete host.__datedFactHooks; await vite.close(); }
 });
 
+test('useCountryNamesAt never borrows another hour’s name while a renamed or reused tag’s hour is still loading', async () => {
+  const host = globalThis as typeof globalThis & { __datedFactHooks?: ReturnType<typeof hooks> };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'dated-names-no-borrow', enforce: 'pre',
+      transform(source, id) {
+        const path = id.replaceAll('\\', '/');
+        if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';
+        if (path.endsWith('/dashboard/countrySlots.ts')) return 'export const useSlotTags = () => undefined;';
+        if (path.endsWith('/dashboard/countryNamesAt.ts'))
+          return source.replace(/import \{ ([^}]+) \} from 'react';/, (_match, names: string) => names.split(',').map(name =>
+            `const ${name.trim()} = (...args) => globalThis.__datedFactHooks.${name.trim()}(...args);`).join('\n'));
+      } }] });
+  try {
+    const { useCountryNamesAt, nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryNamesAt.ts') as typeof import('./countryNamesAt.ts');
+    const state = hooks();
+    host.__datedFactHooks = state;
+    const track = { source: { id: 'rename-source', revision: '1' }, branch: { id: '1', firstHour: 0, lastHour: 300, gaps: [] } } as unknown as BoundTrack;
+    const pending = new Map<number, () => void>();
+    const client = {
+      product: (request: ProductRequest) => {
+        const hour = (request.params as { hour?: number }).hour;
+        if (request.product === 'country-styles' && hour === 200) {
+          return Promise.resolve({ ...request, data: { styles: [{ tag: 'GER', name: 'Later Name', color: null }], warnings: [] } });
+        }
+        return new Promise<ProductReply<unknown>>(resolve => {
+          if (hour !== undefined) pending.set(hour, () => resolve({ ...request, data: { styles: [{ tag: 'GER', name: 'Earlier Name', color: null }], warnings: [] } }));
+        });
+      },
+    } as unknown as DashboardClient;
+
+    state.begin(); useCountryNamesAt(client, track, [{ hour: 200, tag: 'GER' }], true); state.commit();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    state.begin();
+    const at200 = useCountryNamesAt(client, track, [{ hour: 200, tag: 'GER' }], true);
+    state.commit();
+    assert.deepEqual(at200.get(nameKey(200, 'GER')), { kind: 'value', value: 'Later Name' });
+
+    state.begin();
+    const at100Pending = useCountryNamesAt(client, track, [{ hour: 100, tag: 'GER' }], true);
+    state.commit();
+    assert.deepEqual(at100Pending.get(nameKey(100, 'GER')), { kind: 'loading' }, 'must not borrow hour 200 name for pending hour 100');
+
+    pending.get(100)?.();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    state.begin();
+    const at100Settled = useCountryNamesAt(client, track, [{ hour: 100, tag: 'GER' }], true);
+    state.commit();
+    assert.deepEqual(at100Settled.get(nameKey(100, 'GER')), { kind: 'value', value: 'Earlier Name' });
+    state.dispose();
+  } finally { delete host.__datedFactHooks; await vite.close(); }
+});
+

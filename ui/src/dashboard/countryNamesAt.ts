@@ -161,24 +161,18 @@ const NAMES: FactSpec<string> = {
 };
 
 export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  maxHours = Infinity, attempt = 0, exact = false): ReadonlyMap<string, NameRead> {
+  maxHours = Infinity, attempt = 0): ReadonlyMap<string, NameRead> {
   const available = useMemo(() => wanted.filter(item => Number.isSafeInteger(item.hour) && recordedHour(track, item.hour) === item.hour), [wanted, track]);
   const read = useCountryFactsByKey(client, track, available, active, NAMES, maxHours, attempt);
   const previous = useRef<ReadonlyMap<string, NameRead>>(new Map());
-  const lastRead = useRef<{ client: DashboardClient | null; track: string; names: Map<string, NameRead> }>({ client: null, track: '', names: new Map() });
-  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : '';
-  if (lastRead.current.track !== trackKey || lastRead.current.client !== client) lastRead.current = { client, track: trackKey, names: new Map() };
   return useMemo(() => {
     const requested = new Set(available.map(item => nameKey(item.hour, item.tag)));
-    const held = lastRead.current.names;
     const next = new Map(wanted.map(item => {
       const key = nameKey(item.hour, item.tag), before = previous.current.get(key);
-      let value = nameReadFrom(read.get(key), active && requested.has(key));
-      if (value.kind === 'value' || value.kind === 'failed') held.set(item.tag, value);
-      else if (value.kind === 'loading' && !exact) value = held.get(item.tag) ?? value;
+      const value = nameReadFrom(read.get(key), active && requested.has(key));
       return [key, sameNameRead(before, value) ? before! : value] as const;
     }));
     if (next.size !== previous.current.size || [...next].some(([key, value]) => previous.current.get(key) !== value)) previous.current = next;
     return previous.current;
-  }, [read, available, wanted, active, exact]);
+  }, [read, available, wanted, active]);
 }

@@ -4,7 +4,7 @@ import { asFailure, type Failure } from './queryError.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CountryFlagChoice, CountryFlagImage, CountryFlagReply, CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from './client';
-import { isFailedFact, nameKey, retryDelay, transientError } from './countryFacts.ts';
+import { nameKey, retryDelay, transientError } from './countryFacts.ts';
 import type { NameAt } from './countryFacts';
 import { askableAt, askTimeline, flagIn, heldTimeline, timelineFailure, retryTimelines, watchTimeline } from './countryTimeline.ts';
 import { useContentRevision } from './contentRevision.ts';
@@ -179,7 +179,7 @@ export function retryFlags(client: DashboardClient, sourceId: string): void {
 export const flagReadKey = (read: FlagAt) => JSON.stringify([read.branchId, read.hour, read.tag]);
 
 export function useFlagReads(client: DashboardClient, recording: DashboardSource | undefined, reads: readonly FlagAt[], active: boolean,
-  size: CountryFlagSize, exact = false): ReadonlyMap<string, FlagValue> {
+  size: CountryFlagSize): ReadonlyMap<string, FlagValue> {
   const content = useContentRevision(client);
   const readsKey = JSON.stringify(reads.map(read => [read.branchId, read.hour, read.tag]));
   const wanted = useMemo(() => JSON.parse(readsKey) as [string, number, string][], [readsKey]);
@@ -235,24 +235,11 @@ export function useFlagReads(client: DashboardClient, recording: DashboardSource
     }));
     return () => { for (const stop of stops) stop(); };
   }, [active, client, sourceId, revision, branches]);
-  const lastDrawn = useRef({ group: '', flags: new Map<string, FlagRead>() });
-  const group = sourceId === undefined || revision === undefined ? '' : JSON.stringify([groupKey({ id: sourceId, revision }, size), content]);
-  if (lastDrawn.current.group !== group) lastDrawn.current = { group, flags: new Map() };
-  return useMemo(() => {
-    const held = lastDrawn.current.flags;
-    let values: Map<string, FlagValue> | undefined;
-    for (const [branchId, hour, tag] of wanted) {
-      const key = JSON.stringify([branchId, hour, tag]), country = JSON.stringify([branchId, tag]);
-      const value = shown.values.get(key);
-      if (value && !isFailedFact(value) && value.url) held.set(country, value);
-      else if (value === undefined && !exact && held.has(country)) (values ??= new Map(shown.values)).set(key, held.get(country)!);
-    }
-    return values ?? shown.values;
-  }, [shown, wanted, exact]);
+  return shown.values;
 }
 
 export function useCountryFlagsRead(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  size: CountryFlagSize = 'panel', exact = false): ReadonlyMap<string, FlagValue> {
+  size: CountryFlagSize = 'panel'): ReadonlyMap<string, FlagValue> {
   const branchId = track?.branch.id ?? '';
   const bySlot = wanted.some(item => typeof countryFromKey(item.tag) === 'number');
   const slots = useSlotTags(client, track, active && bySlot);
@@ -261,7 +248,7 @@ export function useCountryFlagsRead(client: DashboardClient, track: Pick<BoundTr
     const shown = typeof slot === 'number' ? slots?.tagAt(slot, hour) ?? null : tag;
     return shown === null ? [] : [{ asked: tag, tag: shown, hour }];
   }), [wanted, slots]);
-  const flags = useFlagReads(client, track?.source, asked.map(({ tag, hour }) => ({ tag, hour, branchId })), active && !!track, size, exact);
+  const flags = useFlagReads(client, track?.source, asked.map(({ tag, hour }) => ({ tag, hour, branchId })), active && !!track, size);
   return useMemo(() => {
     const keyed = new Map<string, FlagValue>();
     for (const [key, value] of flags) {

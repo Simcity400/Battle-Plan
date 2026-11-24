@@ -354,7 +354,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     () => (wantsLabels ? starts.flatMap(([tag, hours]) => hours.flatMap(([at, held]) => (held ? [{ tag, hour: at }] : []))) : []),
     [wantsLabels, starts],
   );
-  const { exactAt } = useCountryLabelsAt(runtime.client, wantsLabels ? track : undefined, wantedLabels, active && wantsLabels, Infinity, true);
+  const { exactAt } = useCountryLabelsAt(runtime.client, wantsLabels ? track : undefined, wantedLabels, active && wantsLabels, Infinity);
   const builtLooks = wantsLabels ? buildDatedCountryLooks(timeline, labelTags, firstHour, lastHour, exactAt, wantsColours) : NO_LOOKS;
   const labelsText = wantsLabels ? JSON.stringify(builtLooks) : '{}';
   const labels = useMemo<CountryLooksMap>(
