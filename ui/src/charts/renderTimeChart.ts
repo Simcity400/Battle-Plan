@@ -113,13 +113,15 @@ export function resolveTimeChartTargetX(input: TimeChartDomainInput): Range {
   return resolveX(input.view, input.axes, input.branchStart, playback);
 }
 
+export const NO_VALUE_TICKS: readonly number[] = [];
+
 export function resolveTimeChartTargetY(
   layers: readonly Pick<ChartLayer, 'extent'>[],
   x: Range,
   view: ViewState,
   axes: AxisSettings,
   fitValues?: ChartFitId | ValueFit,
-): { range: Range; log: boolean } {
+): { range: Range; log: boolean; measured: boolean } {
   let data: [number, number] | null = null;
   for (const layer of layers) {
     const extent = layer.extent?.(x);
@@ -127,7 +129,8 @@ export function resolveTimeChartTargetY(
   }
   const fit = resolveChartFit(fitValues);
   const fitted = fit?.(data) ?? null;
-  return resolveY(view, fitted ? { ...axes, yMin: axes.yMin ?? fitted[0], yMax: axes.yMax ?? fitted[1] } : axes, data);
+  const resolved = resolveY(view, fitted ? { ...axes, yMin: axes.yMin ?? fitted[0], yMax: axes.yMax ?? fitted[1] } : axes, data);
+  return { ...resolved, measured: data != null || fitted != null || view.y != null || axes.yMin != null || axes.yMax != null };
 }
 
 export interface FitTimeChartFrameInput {
@@ -195,7 +198,7 @@ export interface ResolveTimeChartFrameInput extends TimeChartDomainInput {
 export function resolveTimeChartFrame(input: ResolveTimeChartFrameInput): {
   readonly frame: PlotFrame;
   readonly targetX: Range;
-  readonly targetY: { readonly range: Range; readonly log: boolean };
+  readonly targetY: { readonly range: Range; readonly log: boolean; readonly measured: boolean };
   readonly padding: Padding;
 } {
   const stripHeight = normalizeStripHeight(input.stripHeight);
@@ -220,7 +223,7 @@ export function resolveTimeChartFrame(input: ResolveTimeChartFrameInput): {
     stripHeight,
     hasRows: input.rowLabelWidth !== undefined,
     hasExplicitLeftPadding: input.padding?.left != null,
-    valueTicks: input.valueTicks,
+    valueTicks: input.valueTicks ?? (targetY.measured ? undefined : NO_VALUE_TICKS),
     tokens: input.tokens,
     formatValue: input.formatValue,
     measure: input.measure,

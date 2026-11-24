@@ -1,10 +1,11 @@
-import type { SunburstItem, SunburstKey } from '../../charts/sunburst/layout';
+import type { SunburstItem, SunburstKey, SunburstTotal } from '../../charts/sunburst/layout';
 import type { ColumnPeriod } from '../../charts/columns';
+import { runAt } from '../../charts/series.ts';
 import { UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { dayLabel } from '../../charts/draw.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, gameDate, monthIndex, monthNames } from '../../dashboard/calendar.ts';
-import { amountIn, spendingFinals, unknownLabel, validateProductionSpendingReply } from '../production-spending/spendingData.ts';
+import { amountIn, equipmentPeriodNote, spendingFinals, unknownLabel, validateProductionSpendingReply } from '../production-spending/spendingData.ts';
 import type { SpendingData } from '../production-spending/spendingData';
 import type { SpendingAmount, SpendingDesign, SpendingWindow } from '../production-spending/spendingData';
 import type { Domain, ProductionPurpose, ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun, ProductionSpendingUnknown } from '../../generated/dashboard';
@@ -92,6 +93,28 @@ export function rateSum(runs: readonly ProductionSpendingRun[], first: number, l
   return { exact: at(b, last) - before, reason: null, denominator: over };
 }
 
+export interface PartialExact extends Exact { recorded: bigint | null }
+
+export function rateRecordedSum(runs: readonly ProductionSpendingRun[], first: number, last: number, denominator: number): PartialExact {
+  const full = rateSum(runs, first, last, denominator);
+  if (full.exact != null) return { ...full, recorded: full.exact };
+  const over = BigInt(denominator);
+  let recorded = 0n;
+  let any = false;
+  for (const run of runs) {
+    if (run.lastHour < first) continue;
+    if (run.firstHour > last) break;
+    if (run.totalRaw == null) continue;
+    const lo = Math.max(run.firstHour, first);
+    const hi = Math.min(run.lastHour, last);
+    if (hi >= lo) {
+      recorded += BigInt(run.totalRaw) * BigInt(hi - lo + 1);
+      any = true;
+    }
+  }
+  return { exact: null, recorded: any ? recorded : null, reason: full.reason, denominator: over };
+}
+
 export const repairsSince = (reply: SpendingData) => reply.repairs?.total.find(run => run.totalRaw != null)?.firstHour ?? null;
 
 function repairSplit(total: Exact, parts: readonly Exact[], unattributed: number): { values: Exact[]; incomplete: boolean } {
@@ -107,7 +130,17 @@ function repairSplit(total: Exact, parts: readonly Exact[], unattributed: number
 export function repairAmount(reply: SpendingData, runs: readonly ProductionSpendingRun[], window: SpendingWindow, until: number): Exact {
   const since = window.from ?? repairsSince(reply);
   if (since == null || !reply.repairs) return { exact: null, reason: 'notRecorded' };
-  return rateSum(runs, since, until, reply.repairs.denominator);
+  const at = Math.floor(until);
+  if (window.from == null && at < since) return { exact: null, reason: runAt(runs, at)?.reason ?? 'notRecorded' };
+  return rateSum(runs, since, at, reply.repairs.denominator);
+}
+
+function repairRecordedAmount(reply: SpendingData, runs: readonly ProductionSpendingRun[], window: SpendingWindow, until: number): PartialExact {
+  const since = window.from ?? repairsSince(reply);
+  if (since == null || !reply.repairs) return { exact: null, recorded: null, reason: 'notRecorded' };
+  const at = Math.floor(until);
+  if (window.from == null && at < since) return { exact: null, recorded: null, reason: runAt(runs, at)?.reason ?? 'notRecorded', denominator: BigInt(reply.repairs.denominator) };
+  return rateRecordedSum(runs, since, at, reply.repairs.denominator);
 }
 
 export function repairItems(reply: SpendingData, window: SpendingWindow, purpose: SunburstKey = PURPOSES[2]): SunburstItem[] {
@@ -117,16 +150,35 @@ export function repairItems(reply: SpendingData, window: SpendingWindow, purpose
   const parts = [...repairs.parts.filter(part => part.variant != null), repairs.parts.find(part => part.variant == null) ?? whole];
   const rest = parts.length - 1;
   const denominator = BigInt(repairs.denominator);
-  const now = repairSplit(repairAmount(reply, repairs.total, window, window.hour), parts.map(part => repairAmount(reply, part.runs, window, window.hour)), rest);
-  const end = repairSplit(repairAmount(reply, repairs.total, window, window.end), parts.map(part => repairAmount(reply, part.runs, window, window.end)), rest);
+  const totalNow = repairRecordedAmount(reply, repairs.total, window, window.hour);
+  const totalEnd = repairRecordedAmount(reply, repairs.total, window, window.end);
+  const now = repairSplit(totalNow, parts.map(part => repairAmount(reply, part.runs, window, window.hour)), rest);
+  const end = repairSplit(totalEnd, parts.map(part => repairAmount(reply, part.runs, window, window.end)), rest);
   const since = repairsSince(reply);
   const noted = window.from == null && since != null ? `${REPAIR_NOTE.slice(0, -1)} since ${dayLabel(since)}.` : REPAIR_NOTE;
-  const totalReason = repairAmount(reply, repairs.total, window, window.hour).reason;
+  const totalReason = totalNow.reason;
+  const partialTotal = totalNow.exact == null && totalNow.recorded != null;
+  const partialEnd = totalEnd.exact == null && totalEnd.recorded != null;
   return parts.map((part, index) => {
-    const value = now.values[index], final = end.values[index];
     const path: SunburstKey[] = part.variant == null ? [purpose, UNATTRIBUTED] : [purpose,
       { id: part.typeKey, label: part.name ?? unresolvedTypeName(part.typeKey) },
       { id: part.variant, label: variantNameAt(part.names, window.hour, part.variant) }];
+    if (partialTotal) {
+      if (index !== rest) return {
+        path, value: null, exact: null, exactDenominator: denominator,
+        unknownValue: false, final: 0, finalUnknown: false, present: false, counted: [],
+      };
+      const reason = totalReason ?? 'notRecorded';
+      return {
+        path, value: Number(totalNow.recorded!) / Number(denominator), exact: totalNow.recorded!, exactDenominator: denominator,
+        unknownValue: false, unknown: { [reason]: 1 },
+        note: `${noted} ${unknownLabel(reason)}`,
+        final: partialEnd ? Number(totalEnd.recorded!) / Number(denominator) : totalEnd.exact == null ? 0 : Number(totalEnd.exact) / Number(denominator),
+        finalUnknown: totalEnd.exact == null && !partialEnd,
+        present: true, counted: [],
+      };
+    }
+    const value = now.values[index], final = end.values[index];
     const withdrawn = now.incomplete && value.exact == null;
     const observed = !withdrawn && (value.exact == null || value.exact !== 0n);
     const reason = value.reason ?? totalReason;
@@ -221,6 +273,67 @@ export function colouredSplit(split: PurposeSplit, colours: readonly string[], s
     remainders: [coloured(UNRECORDED, colours[after]), coloured(OTHER, colours[after + 1])] };
 }
 
+export function domainEquipmentTotal(reply: SpendingData, domain: Domain, window: SpendingWindow): {
+  exact: bigint | null; recorded: bigint | null; reason: string | null;
+} {
+  const leaves = domainLeaves(reply, domain);
+  const whole = amountIn(reply.equipmentTotal, window.from, window.hour, reply.equipmentObservations);
+  let sum = 0n;
+  let any = false;
+  let reason: string | null = whole.exact == null ? whole.reason ?? 'outsideRead' : null;
+  for (const leaf of leaves) {
+    const amount = amountIn(leaf.runs, window.from, window.hour, reply.equipmentObservations);
+    if (unresolvedLeaf(leaf)) {
+      if (amount.exact !== 0n) reason ??= UNRESOLVED_REASON;
+      continue;
+    }
+    if (amount.exact == null) reason ??= amount.reason ?? 'outsideRead';
+    else { sum += amount.exact; if (amount.exact !== 0n) any = true; }
+  }
+  return reason == null ? { exact: sum, recorded: sum, reason: null }
+    : { exact: null, recorded: any ? sum : null, reason };
+}
+
+export function dockyardTotal(reply: SpendingData, window: SpendingWindow): SunburstTotal {
+  const equip = domainEquipmentTotal(reply, 'naval', window);
+  const denom = BigInt(reply.repairs?.denominator ?? 1);
+  const repNow = reply.repairs ? repairRecordedAmount(reply, reply.repairs.total, window, window.hour)
+    : { exact: null, recorded: null, reason: 'notRecorded', denominator: denom };
+  const periodNote = equipmentPeriodNote(reply, window);
+  const since = repairsSince(reply);
+  const repairPeriodNote = window.from == null && since != null ? `${REPAIR_NOTE.slice(0, -1)} since ${dayLabel(since)}.` : undefined;
+  const combine = (equipAmt: typeof equip, repAmt: typeof repNow) => {
+    if (equipAmt.exact != null && repAmt.exact != null) {
+      const exact = equipAmt.exact * denom + repAmt.exact;
+      return { exact, unknown: undefined as Record<string, number> | undefined, reason: null as string | null };
+    }
+    const hasRecorded = (equipAmt.exact != null && equipAmt.exact !== 0n)
+      || (equipAmt.exact == null && equipAmt.recorded != null)
+      || repAmt.recorded != null;
+    if (hasRecorded) {
+      const exact = (equipAmt.recorded ?? 0n) * denom + (repAmt.recorded ?? 0n);
+      const reason = equipAmt.reason ?? repAmt.reason ?? 'notRecorded';
+      return { exact, unknown: { [reason]: 1 }, reason };
+    }
+    return { exact: null, unknown: undefined, reason: equipAmt.reason ?? repAmt.reason ?? 'notRecorded' };
+  };
+  const now = combine(equip, repNow);
+  const endWindow = { ...window, hour: window.end };
+  const end = combine(domainEquipmentTotal(reply, 'naval', endWindow),
+    reply.repairs ? repairRecordedAmount(reply, reply.repairs.total, endWindow, window.end) : { exact: null, recorded: null, reason: 'notRecorded', denominator: denom });
+  const note = [now.reason ? reasonLabel(now.reason) : undefined, periodNote, repairPeriodNote].filter(Boolean).join(' ') || undefined;
+  return {
+    value: now.exact == null ? null : Number(now.exact) / Number(denom),
+    exact: now.exact,
+    exactDenominator: denom,
+    unknownValue: now.exact == null,
+    unknown: now.unknown,
+    note,
+    final: end.exact == null ? 0 : Number(end.exact) / Number(denom),
+    finalUnknown: end.exact == null,
+  };
+}
+
 export function dockyardItems(reply: SpendingData, window: SpendingWindow, colours: readonly string[] = []): SunburstItem[] {
   return [...purposeItems(reply, domainLeaves(reply, 'naval'), window, colouredSplit(DOCKYARD_SPLIT, colours, 1)),
     ...repairItems(reply, window, coloured(PURPOSES[2], colours[2]))];
@@ -283,6 +396,19 @@ export function dockyardMonth(reply: SpendingData, first: number, last: number, 
   const purposes = spent.purposeUnproven || spent.unresolved;
   return { firstHour: first, lastHour: last, bands, total: monthTotal(spent, bands, BigInt(reply.repairs?.denominator ?? 1)),
     note: monthNote(spent), uncertain: [purposes, purposes, false, spent.purposeUnproven, false] };
+}
+
+export function visibleMonths(months: readonly PurposeMonth[], at: number | null,
+  monthThrough: (index: number, hour: number) => PurposeMonth): PurposeMonth[] {
+  if (at == null) return [...months];
+  const head = Math.floor(at);
+  const shown: PurposeMonth[] = [];
+  for (let index = 0; index < months.length; index++) {
+    const month = months[index];
+    if (month.firstHour > head) break;
+    shown.push(head < month.lastHour ? monthThrough(index, head) : month);
+  }
+  return shown;
 }
 
 export function shownMonthBands<T extends { id: string }>(bands: readonly T[], months: readonly PurposeMonth[]): { index: number; band: T }[] {

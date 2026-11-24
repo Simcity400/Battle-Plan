@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Sunburst from '../../charts/sunburst/Sunburst';
 import type { SunburstText, SunburstValues } from '../../charts/sunburst/Sunburst';
-import type { SunburstItem, SunburstKey } from '../../charts/sunburst/layout';
+import type { SunburstItem, SunburstKey, SunburstTotal } from '../../charts/sunburst/layout';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
@@ -12,6 +12,7 @@ import type { ColumnPeriod } from '../../charts/columns';
 import { liveAt } from '../../charts/live';
 import type { Live } from '../../charts/live';
 import { useChartTokens } from '../../charts/useChartTokens';
+import { firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { icDecimals } from '../../dashboard/icDecimals';
 import { resolveOptions } from '../../dashboard/options';
@@ -21,7 +22,7 @@ import { UNIT, formatAppliedIc, noProductionAt, spendingRecorded } from '../prod
 import type { SpendingWindow } from '../production-spending/spendingData';
 import { useSpending } from '../production-spending/useSpending';
 import type { DockyardViewChoice } from './definition';
-import { LEVELS, formatExactIc, monthColumns, monthLabel, monthsOf, reasonLabel, shownMonthBands } from './dockyardData';
+import { LEVELS, formatExactIc, monthColumns, monthLabel, monthsOf, reasonLabel, shownMonthBands, visibleMonths } from './dockyardData';
 import type { Exact, PurposeMonth } from './dockyardData';
 import './dockyardSpending.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
@@ -41,6 +42,7 @@ export interface PurposeSpendingKind {
   validate: (data: unknown) => ProductionSpendingReply;
   read?: (data: SpendingData) => boolean;
   items: (data: SpendingData, options: Options, window: SpendingWindow, colours: readonly string[]) => SunburstItem[];
+  total?: (data: SpendingData, options: Options, window: SpendingWindow) => SunburstTotal;
   other?: (data: SpendingData, window: SpendingWindow) => Exact;
   month: (data: SpendingData, options: Options, first: number, last: number, branchFirst: number) => PurposeMonth;
   note?: string;
@@ -63,7 +65,19 @@ export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnos
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, onDiagnostics]);
-  headKey.current = at => view === 'months' || !data || end == null ? view : JSON.stringify(emptyAt(kind, data, { from, hour: at, end }));
+  headKey.current = at => {
+    if (!data || !track || end == null) return view;
+    if (view === 'months') {
+      const floored = Math.floor(at);
+      const date = gameDate(floored);
+      const bucket = date ? monthIndex(date) : floored;
+      const monthStart = date ? Math.max(from ?? track.branch.firstHour, firstHourOfMonth(bucket)) : floored;
+      const current = kind.month(data, options, monthStart, floored, track.branch.firstHour);
+      const remainders = shownMonthBands(kind.bands, [current]).map(entry => entry.band.id).join(',');
+      return `months:${bucket}:${remainders}`;
+    }
+    return JSON.stringify(emptyAt(kind, data, { from, hour: at, end: at }));
+  };
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
 
   const read = data && (spendingRecorded(data) || kind.read?.(data) === true);
@@ -74,7 +88,7 @@ export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnos
   if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="outside" />;
   if (view === 'months') return <PurposeMonths kind={kind} data={data} options={options}
     extent={[from ?? track.branch.firstHour, widget.time.mode === 'range' ? hour : track.branch.lastHour]}
-    last={headAt ? track.branch.lastHour : hour} playhead={headAt ? hour : null} headAt={headAt} runtime={runtime}
+    last={hour} playhead={headAt ? hour : null} headAt={headAt} runtime={runtime}
     branchStart={track.branch.firstHour} decimals={decimals} digits={digits} hoursPerSecond={hoursPerSecond} active={active} />;
   return <PurposeCircle kind={kind} data={data} window={{ from, hour, end }} options={options} decimals={decimals} digits={digits}
     headAt={headAt} runtime={runtime} hoursPerSecond={hoursPerSecond} active={active} />;
@@ -100,7 +114,10 @@ export function PurposeCircle({ kind, data, window, options, decimals, digits, h
   const settings = sunburstSettings(options);
   const colours = usePurposeColours(kind.bands);
   const { from, hour, end } = window;
-  const valuesAt = (at: number): SunburstValues => ({ items: kind.items(data, options, { from, hour: at, end }, colours) });
+  const valuesAt = (at: number): SunburstValues => ({
+    items: kind.items(data, options, { from, hour: at, end: at }, colours),
+    authoritativeTotal: kind.total?.(data, options, { from, hour: at, end: at }),
+  });
   const build = useRef(valuesAt);
   build.current = valuesAt;
   const values = useMemo(() => valuesAt(hour), [kind, data, options, from, hour, end, colours]);
@@ -116,7 +133,12 @@ export function PurposeCircle({ kind, data, window, options, decimals, digits, h
   }), [decimals, digits, emptyLabel, kind.measure]);
   return empty ? <WidgetState kind="empty" icon="sunburst" message={`No ${kind.measure} spent yet.`} />
     : <Sunburst label={kind.name} items={values.items} root={kind.root} levels={levels} text={text} settings={settings}
-      live={live} hoursPerSecond={hoursPerSecond} active={active} />;
+      authoritativeTotal={values.authoritativeTotal} live={live} hoursPerSecond={hoursPerSecond} active={active} />;
+}
+
+function monthEndOf(hour: number, limit: number): number {
+  const date = gameDate(hour);
+  return date ? Math.min(limit, firstHourOfMonth(monthIndex(date) + 1) - 1) : Math.min(limit, hour);
 }
 
 function headMonthLayer(columns: readonly ColumnPeriod[], colours: readonly string[], through: (index: number, hour: number) => ColumnPeriod): ChartLayer {
@@ -126,10 +148,10 @@ function headMonthLayer(columns: readonly ColumnPeriod[], colours: readonly stri
     draw(ctx, frame, tokens, state) {
       const head = state.playhead == null ? null : Math.floor(state.playhead);
       const index = head == null ? -1 : columnAt(columns, head);
-      if (head == null || index < 0 || head >= columns[index].lastHour) return base.draw(ctx, frame, tokens, state);
+      if (head == null || index < 0 || (head >= columns[index].lastHour && index < columns.length - 1)) return base.draw(ctx, frame, tokens, state);
       if (held?.hour !== head) {
         const shown = [...columns];
-        shown[index] = through(index, head);
+        shown[index] = through(index, Math.min(head, columns[index].lastHour));
         held = { hour: head, layer: columnsLayer(shown, colours) };
       }
       held.layer.draw(ctx, frame, tokens, state);
@@ -145,22 +167,31 @@ export function PurposeMonths({ kind, data, options, extent, last, playhead, hea
 }) {
   const colours = usePurposeColours(kind.bands);
   const first = extent[0];
-  const months = useMemo(() => monthsOf(first, last).map(month => kind.month(data, options, month.firstHour, month.lastHour, branchStart)),
-    [kind, data, options, first, last, branchStart]);
+  const spans = useMemo(() => monthsOf(first, monthEndOf(last, extent[1])), [first, last, extent[1]]);
+  const months = useMemo(() => spans.map(span => {
+    const to = Math.min(span.lastHour, last);
+    const computed = kind.month(data, options, span.firstHour, to, branchStart);
+    return to < span.lastHour ? { ...computed, lastHour: span.lastHour } : computed;
+  }), [kind, data, options, spans, last, branchStart]);
   const columns = useMemo(() => monthColumns(months, decimals), [months, decimals]);
   const head = useMemo<Live<number> | undefined>(() => {
     if (!headAt || playhead == null) return undefined;
     const live = liveAt(runtime.clock, position => Math.floor(headAt(position) ?? playhead), at => at);
     return { read: live.hour, subscribe: live.subscribe };
   }, [headAt, runtime.clock, playhead]);
-  const monthThrough = (index: number, hour: number) => kind.month(data, options, months[index].firstHour, Math.min(months[index].lastHour, hour), branchStart);
+  const monthThrough = (index: number, hour: number) => {
+    const span = spans[index];
+    const computed = kind.month(data, options, span.firstHour, Math.min(span.lastHour, hour), branchStart);
+    return { ...computed, lastHour: span.lastHour };
+  };
   const layers = useMemo(() => [headMonthLayer(columns, colours, (index, hour) => monthColumns([monthThrough(index, hour)], decimals)[0])],
-    [columns, colours]);
+    [columns, colours, spans, data, options, branchStart, decimals]);
   const keyHours = useMemo(() => columns.map(column => column.firstHour), [columns]);
   const label = `${kind.name} by month`;
   const write = ({ exact, reason, denominator }: Exact) => exact == null ? reasonLabel(reason)
     : `${formatExactIc(exact, denominator ?? 1n, decimals, digits)} ${UNIT}`;
-  const shownBands = useMemo(() => shownMonthBands(kind.bands, months), [kind.bands, months]);
+  const shownBands = useMemo(() => shownMonthBands(kind.bands, visibleMonths(months, playhead ?? last, monthThrough)),
+    [kind.bands, months, playhead, last]);
   return <div className="dockyard-months">
     <Legend label={`${sentence(kind.measure)} spent on`} always items={shownBands.map(({ band, index }) => ({ id: band.id, label: band.label, color: colours[index] }))} />
     <div className="dockyard-months-chart">
@@ -170,12 +201,16 @@ export function PurposeMonths({ kind, data, options, extent, last, playhead, hea
         tooltip={at => {
           const index = columnAt(columns, Math.floor(at));
           if (index < 0) return null;
-          const headHour = head?.read();
-          const month = headHour != null && headHour >= months[index].firstHour && headHour < months[index].lastHour ? monthThrough(index, headHour) : months[index];
+          const headHour = head?.read() ?? playhead;
+          const flooredHead = headHour == null ? null : Math.floor(headHour);
+          if (flooredHead != null && flooredHead < spans[index].firstHour) return null;
+          const tipBands = shownMonthBands(kind.bands, visibleMonths(months, flooredHead ?? last, monthThrough));
+          const month = flooredHead != null && flooredHead >= spans[index].firstHour && flooredHead <= spans[index].lastHour
+            ? monthThrough(index, flooredHead) : months[index];
           return {
             title: monthLabel(month.firstHour),
             rows: [
-              ...shownBands.map(({ band, index: row }) => ({ label: band.label, swatch: colours[row], value: write(month.bands[row]) })),
+              ...tipBands.map(({ band, index: row }) => ({ label: band.label, swatch: colours[row], value: write(month.bands[row]) })),
               { label: 'Total', strong: true, divider: true, value: write(month.total) },
             ],
             note: [month.note, kind.note].filter(Boolean).join(' ') || undefined,

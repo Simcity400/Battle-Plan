@@ -1,4 +1,5 @@
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
+import { dayLabel } from '../../charts/draw.ts';
 import { runAt, sameStretch } from '../../charts/series.ts';
 import { formatIc } from '../../dashboard/icDecimals.ts';
 import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
@@ -242,12 +243,23 @@ export function productionSpendingItems(reply: SpendingData, window: SpendingWin
   return items;
 }
 
+export function equipmentPeriodNote(reply: SpendingData, window: SpendingWindow, observations: readonly number[] = reply.equipmentObservations): string | undefined {
+  if (window.from != null) return undefined;
+  const current = readAt(observations, window.hour);
+  const first = observations[0];
+  if (current == null || first == null || current <= first) return undefined;
+  return `Equipment spending since ${dayLabel(current)}.`;
+}
+
 export function spendingTotal(reply: SpendingData, designs: readonly SpendingDesign[], window: SpendingWindow, kind: FactoryKind | undefined, refits: boolean): SunburstTotal {
+  const whole = wholeOf(reply, kind, refits);
   const amount = kindAmount(reply, designs, window.from, window.hour, kind, refits);
   const final = kindAmount(reply, designs, window.from, window.end, kind, refits);
+  const periodNote = equipmentPeriodNote(reply, window, whole.observations);
+  const note = [amount.reason ? unknownLabel(amount.reason) : undefined, periodNote].filter(Boolean).join(' ') || undefined;
   return {
     value: amount.exact == null ? null : Number(amount.exact), exact: amount.exact,
-    unknownValue: amount.exact == null, note: amount.reason ? unknownLabel(amount.reason) : undefined,
+    unknownValue: amount.exact == null, note,
     final: final.exact == null ? 0 : Number(final.exact), finalUnknown: final.exact == null,
   };
 }
@@ -275,15 +287,68 @@ const union = (lists: readonly (readonly number[])[]) => [...new Set(lists.flat(
 const absentRuns = (basis: readonly ProductionSpendingRun[]): ProductionSpendingRun[] =>
   basis.map(run => run.totalRaw == null ? { ...run } : { ...run, totalRaw: '0', reason: null });
 
-export function spendingWindows(branch: { firstHour: number; lastHour: number }, at: number, from: number | null, end: number,
-  whole: boolean, repairs: boolean, ahead: boolean): number[] {
-  if (whole || repairs) return windowsOf(from ?? branch.firstHour, Math.max(end, at), ahead);
-  const hours = [at, end, ...(from == null ? [] : [from, from - 1])].filter(value => value >= branch.firstHour && value <= branch.lastHour);
-  return [...new Set([...hours.map(windowOf), ...(ahead ? [windowOf(at) + 1] : [])])].sort((a, b) => a - b);
+function absentRepairBasis(repairs: NonNullable<ProductionSpendingReply['repairs']>): ProductionSpendingRun[] {
+  const unattributed = repairs.parts.find(part => part.variant === null);
+  if (unattributed) return absentRuns(unattributed.runs);
+  return repairs.total.map(run => run.totalRaw == null ? { ...run }
+    : BigInt(run.totalRaw) === 0n ? { ...run, totalRaw: '0', reason: null }
+    : { ...run, totalRaw: null, reason: 'spendingUnavailable' });
 }
 
-export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingReply>): SpendingData | null {
-  const held = [...windows.values()].sort((a, b) => a.window - b.window);
+export function displayedSpendingWindows(branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
+  whole: boolean, repairs: boolean): number[] {
+  const clampedAt = Math.min(branch.lastHour, Math.floor(at));
+  if (clampedAt < branch.firstHour) return [];
+  const start = from == null ? branch.firstHour : Math.max(branch.firstHour, from - 1);
+  if (whole || repairs) return windowsOf(start, clampedAt, false);
+  const hours = [clampedAt, ...(from == null ? [] : [from, from - 1])].filter(value => value >= branch.firstHour && value <= clampedAt);
+  return [...new Set(hours.map(windowOf))].sort((a, b) => a - b);
+}
+
+export function prefetchSpendingWindows(branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
+  whole: boolean, repairs: boolean, ahead: boolean): number[] {
+  const needed = displayedSpendingWindows(branch, at, from, whole, repairs);
+  if (!ahead || !needed.length) return needed;
+  const next = needed[needed.length - 1] + 1;
+  return next <= windowOf(branch.lastHour) ? [...needed, next] : needed;
+}
+
+export type SpendingWindowBuilder = (branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
+  whole: boolean, repairs: boolean, ahead: boolean) => number[];
+
+export function createWindowTracker(build: SpendingWindowBuilder = prefetchSpendingWindows) {
+  let cached: {
+    firstHour: number; lastHour: number; atWindow: number; from: number | null;
+    whole: boolean; repairs: boolean; ahead: boolean; windows: number[];
+  } | null = null;
+  return {
+    get(branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
+      whole: boolean, repairs: boolean, ahead: boolean): number[] {
+      const clamped = Math.min(branch.lastHour, Math.floor(at));
+      const atWindow = clamped < branch.firstHour ? -1 : windowOf(clamped);
+      if (cached && cached.firstHour === branch.firstHour && cached.lastHour === branch.lastHour
+        && cached.atWindow === atWindow && cached.from === from && cached.whole === whole
+        && cached.repairs === repairs && cached.ahead === ahead) return cached.windows;
+      const windows = build(branch, at, from, whole, repairs, ahead);
+      cached = { firstHour: branch.firstHour, lastHour: branch.lastHour, atWindow, from, whole, repairs, ahead, windows };
+      return windows;
+    },
+  };
+}
+
+export function selectSpendingState<E>(needed: readonly number[], data: ReadonlyMap<number, ProductionSpendingReply>,
+  errors: ReadonlyMap<number, E>, at?: number): { data: SpendingData | undefined; error: E | undefined } {
+  const error = needed.map(index => errors.get(index)).find(failure => failure !== undefined);
+  if (error !== undefined) return { data: undefined, error };
+  if (!needed.length || !needed.every(index => data.has(index))) return { data: undefined, error: undefined };
+  const selected = new Map<number, ProductionSpendingReply>();
+  for (const index of needed) selected.set(index, data.get(index)!);
+  return { data: mergeSpending(selected, at) ?? undefined, error: undefined };
+}
+
+export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingReply>, atHour?: number): SpendingData | null {
+  const cutoff = atHour == null ? Infinity : Math.floor(atHour);
+  const held = [...windows.values()].filter(reply => reply.firstHour <= cutoff).sort((a, b) => a.window - b.window);
   if (!held.length) return null;
   const leaves = new Map<string, ProductionSpendingLeaf>();
   const hasUnproven = new Set<string>();
@@ -296,11 +361,15 @@ export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingRep
   for (const reply of held) {
     for (const leaf of reply.leaves) {
       const key = leafKey(leaf);
-      if (!leaves.has(key)) leaves.set(key, { ...leaf, runs: [], unproven: [], names: [] });
+      const heldLeaf = leaves.get(key);
+      if (!heldLeaf) leaves.set(key, { ...leaf, runs: [], unproven: [], names: [] });
+      else { heldLeaf.typeKey = leaf.typeKey; heldLeaf.name = leaf.name; heldLeaf.domain = leaf.domain; }
       if (leaf.unproven.length) hasUnproven.add(key);
     }
     for (const part of reply.repairs?.parts ?? []) {
-      if (!parts.has(part.variant)) parts.set(part.variant, { ...part, runs: [], names: [] });
+      const heldPart = parts.get(part.variant);
+      if (!heldPart) parts.set(part.variant, { ...part, runs: [], names: [] });
+      else { heldPart.typeKey = part.typeKey; heldPart.name = part.name; heldPart.domain = part.domain; }
     }
   }
   for (const reply of held) {
@@ -325,19 +394,20 @@ export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingRep
     }
     if (reply.repairs) {
       const windowParts = new Map(reply.repairs.parts.map(part => [part.variant, part]));
+      const absentRepair = absentRepairBasis(reply.repairs);
       for (const [variant, into] of parts) {
         const part = windowParts.get(variant);
         if (part) {
           joinRuns(into.runs, part.runs);
           joinNames(into.names, part.names);
-        } else joinRuns(into.runs, absentRuns(reply.repairs.total));
+        } else joinRuns(into.runs, variant === null ? absentRuns(reply.repairs.total) : absentRepair);
       }
       joinRuns(repairTotal, reply.repairs.total);
     }
     for (const warning of reply.warnings) warnings.add(warning);
   }
   const { window: _window, firstHour: _firstHour, lastHour: _lastHour, ...first } = held[0];
-  const named = held.find(reply => reply.rocketKey !== null) ?? first;
+  const named = [...held].reverse().find(reply => reply.rocketKey !== null) ?? first;
   const repairs = held.find(reply => reply.repairs !== null)?.repairs ?? null;
   return { ...first, ...totals, rocketKey: named.rocketKey, rocketName: named.rocketName,
     reads: union(held.map(reply => reply.reads)), observations: union(held.map(reply => reply.observations)),

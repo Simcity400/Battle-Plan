@@ -33,19 +33,18 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const { track, tag, data, error, retry, hour, from, end, headAt } = spending;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const designs = useMemo(() => data ? spendingDesigns(data, refits, kind) : [], [data, refits, kind]);
-  const finals = useMemo(() => data && end != null ? spendingFinals(data, designs, from, end) : [], [data, designs, from, end]);
-  const empty = (at: number) => !!data && noProductionAt(data, at, refits) && spendingTotal(data, designs, { from, hour: at, end: end ?? at }, kind, refits).exact === 0n;
+  const empty = (at: number) => !!data && noProductionAt(data, at, refits) && spendingTotal(data, designs, { from, hour: at, end: at }, kind, refits).exact === 0n;
   const emptyLabel = (at: number) => data ? spendingEmptyLabel(data, designs, at, from, kind, refits) : 'Loading production spending…';
   headKey.current = at => JSON.stringify([empty(at), emptyLabel(at)]);
   const valuesAt = (at: number): SunburstValues => !data || end == null ? { items: [] } : {
-    items: productionSpendingItems(data, { from, hour: at, end }, designs, finals, kind, refits),
-    authoritativeTotal: spendingTotal(data, designs, { from, hour: at, end }, kind, refits),
+    items: productionSpendingItems(data, { from, hour: at, end: at }, designs, spendingFinals(data, designs, from, at), kind, refits),
+    authoritativeTotal: spendingTotal(data, designs, { from, hour: at, end: at }, kind, refits),
   };
   const build = useRef(valuesAt);
   build.current = valuesAt;
-  const values = useMemo(() => hour == null ? { items: [] } : valuesAt(hour), [data, designs, finals, kind, refits, from, hour, end]);
+  const values = useMemo(() => hour == null ? { items: [] } : valuesAt(hour), [data, designs, kind, refits, from, hour, end]);
   const live = useMemo(() => headAt && data && hour != null ? liveAt(runtime.clock, position => Math.floor(headAt(position) ?? hour), at => build.current(at)) : undefined,
-    [headAt, runtime.clock, data, designs, finals, kind, refits, from, end]);
+    [headAt, runtime.clock, data, designs, kind, refits, from, end]);
   const levelKey = LEVELS.map(level => options[level] !== false).join();
   const levels = useMemo(() => levelsShown(options, LEVELS), [levelKey]);
   const decimals = data?.decimals ?? 5;

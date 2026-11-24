@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BANDS, dockyardItems, dockyardMonth, formatExactIc, monthColumns, monthsOf, nearestInteger, rateSum, repairItems, repairsRead, shownMonthBands, validateDockyardSpendingReply } from './dockyardData.ts';
+import { BANDS, dockyardItems, dockyardMonth, dockyardTotal, formatExactIc, monthColumns, monthsOf, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, shownMonthBands, validateDockyardSpendingReply, visibleMonths } from './dockyardData.ts';
+import { sunburstTree, unknownTotal } from '../../charts/sunburst/layout.ts';
+import { mergeSpending } from '../production-spending/spendingData.ts';
 import { firstHourOfMonth } from '../../dashboard/calendar.ts';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 
@@ -103,4 +105,113 @@ test('all-unknown months become unknown columns without value height, and empty 
   const withUnknownPurpose = { ...data, leaves: [...data.leaves, leaf({ variant: '99', purpose: 'unknown', runs: [known(100, 171, '50000')] })] };
   assert.deepEqual(shownMonthBands(BANDS, [dockyardMonth(withUnknownPurpose, 100, 171, 100)]).map(entry => entry.band.id),
     ['new', 'refit', 'repair', 'purpose-unrecorded']);
+});
+
+test('unknown repair split in an earlier window keeps a later ship withheld instead of inventing zero earlier repairs', () => {
+  const base = reply();
+  const win0 = validateDockyardSpendingReply({
+    ...base, window: 0, firstHour: 0, lastHour: 2879, reads: [0], observations: [0], equipmentReads: [0], rocketReads: [0],
+    equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(0, 2879, '0')],
+    production: [{ firstHour: 0, lastHour: 2879, present: true, emptyCensusHour: null }], leaves: [],
+    total: [known(0, 2879, '0')], totalWithoutRefits: [known(0, 2879, '0')],
+    equipmentTotal: [known(0, 2879, '0')], equipmentTotalWithoutRefits: [known(0, 2879, '0')],
+    repairs: { denominator: 24, total: [known(0, 2879, '24000')], parts: [
+      { variant: null, typeKey: '', name: null, domain: null, names: [], runs: [unknown(0, 2879)] },
+    ] },
+  });
+  const win1 = validateDockyardSpendingReply({
+    ...win0, window: 1, firstHour: 2880, lastHour: 5759, reads: [2880], equipmentReads: [2880], rocketReads: [2880],
+    rocketTotal: [known(2880, 5759, '0')], production: [{ firstHour: 2880, lastHour: 5759, present: true, emptyCensusHour: null }],
+    total: [known(2880, 5759, '0')], totalWithoutRefits: [known(2880, 5759, '0')],
+    equipmentTotal: [known(2880, 5759, '0')], equipmentTotalWithoutRefits: [known(2880, 5759, '0')],
+    repairs: { denominator: 24, total: [known(2880, 2880, '2400000'), known(2881, 5759, '0')], parts: [
+      { variant: 'D', typeKey: 'mod_hull_d', name: 'Hull D', domain: 'naval', names: [], runs: [known(2880, 2880, '2400000'), known(2881, 5759, '0')] },
+      { variant: null, typeKey: '', name: null, domain: null, names: [], runs: [known(2880, 5759, '0')] },
+    ] },
+  });
+  const merged = mergeSpending(new Map([[0, win0], [1, win1]]), 3000)!;
+  const shipD = merged.repairs!.parts.find(part => part.variant === 'D')!;
+  assert.deepEqual(repairAmount(merged, shipD.runs, { from: null, hour: 3000, end: 3000 }, 3000), { exact: null, reason: 'spendingUnavailable' });
+  const items = repairItems(merged, { from: null, hour: 3000, end: 3000 });
+  assert.equal(items.find(item => item.path.at(-1)?.id === 'D')?.exact, null);
+});
+
+test('a future repair reading never turns an unread past into zero', () => {
+  const base = reply();
+  const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
+  const win0 = validateDockyardSpendingReply({
+    ...base, window: 0, firstHour: 0, lastHour: 2879, reads: [0], observations: [0], equipmentReads: [0], rocketReads: [0],
+    equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(0, 2879, '0')],
+    production: [{ firstHour: 0, lastHour: 2879, present: true, emptyCensusHour: null }], leaves: [],
+    total: [known(0, 2879, '0')], totalWithoutRefits: [known(0, 2879, '0')],
+    equipmentTotal: [known(0, 2879, '0')], equipmentTotalWithoutRefits: [known(0, 2879, '0')],
+    repairs: { denominator: 24, total: [notRec(0, 2879)], parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(0, 2879)] }] },
+  });
+  const win3 = validateDockyardSpendingReply({
+    ...win0, window: 3, firstHour: 8640, lastHour: 11519, reads: [8640], equipmentReads: [8640], rocketReads: [8640],
+    rocketTotal: [known(8640, 11519, '0')], production: [{ firstHour: 8640, lastHour: 11519, present: true, emptyCensusHour: null }],
+    total: [known(8640, 11519, '0')], totalWithoutRefits: [known(8640, 11519, '0')],
+    equipmentTotal: [known(8640, 11519, '0')], equipmentTotalWithoutRefits: [known(8640, 11519, '0')],
+    repairs: { denominator: 24, total: [known(8640, 11519, '24000')], parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [known(8640, 11519, '24000')] }] },
+  });
+  const atPast = mergeSpending(new Map([[0, win0], [3, win3]]), 500)!;
+  assert.deepEqual(repairAmount(atPast, atPast.repairs!.total, { from: null, hour: 500, end: 500 }, 500), { exact: null, reason: 'notRecorded' });
+  const both = mergeSpending(new Map([[0, win0], [3, win3]]))!;
+  assert.deepEqual(repairAmount(both, both.repairs!.total, { from: null, hour: 500, end: 500 }, 500), { exact: null, reason: 'notRecorded' });
+});
+
+test('by-month visible bands use completed past months plus the current month through the playhead', () => {
+  const data = validateDockyardSpendingReply({
+    ...reply(),
+    leaves: [
+      leaf({ variant: '11', purpose: 'new', runs: [known(100, 171, '1000000')] }),
+      leaf({ variant: '15', purpose: 'converted', runs: [known(100, 123, '0'), known(124, 147, '500000'), known(148, 171, '0')] }),
+    ],
+    total: [known(100, 123, '1000000'), known(124, 147, '1500000'), known(148, 171, '1000000')],
+    equipmentTotal: [known(100, 123, '1000000'), known(124, 147, '1500000'), known(148, 171, '1000000')],
+  });
+  const fullMonth = dockyardMonth(data, 100, 171, 100);
+  const through = (_index: number, hour: number) => dockyardMonth(data, 100, hour, 100);
+  const atMid = visibleMonths([fullMonth], 135, through);
+  assert.ok(shownMonthBands(BANDS, atMid).some(entry => entry.band.id === 'other-purpose'), '5 IC at playhead stays shown even when month-end corrects back to 0');
+  const atEarly = visibleMonths([fullMonth], 110, through);
+  assert.ok(!shownMonthBands(BANDS, atEarly).some(entry => entry.band.id === 'other-purpose'), 'purpose appearing only after playhead stays hidden');
+});
+
+test('partial repair coverage around an unread window gives the root a partial recorded total rather than hiding 240 IC', () => {
+  const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
+  const mkWin = (window: number, firstHour: number, lastHour: number, leaves: ProductionSpendingLeaf[], repairRate: string | null): ProductionSpendingReply =>
+    validateDockyardSpendingReply({
+      ...reply(), window, firstHour, lastHour, reads: [firstHour], observations: [0], equipmentReads: [firstHour], rocketReads: [firstHour],
+      equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(firstHour, lastHour, '0')],
+      production: [{ firstHour, lastHour, present: true, emptyCensusHour: null }], leaves,
+      total: [known(firstHour, lastHour, '3000000')], totalWithoutRefits: [known(firstHour, lastHour, '3000000')],
+      equipmentTotal: [known(firstHour, lastHour, '3000000')], equipmentTotalWithoutRefits: [known(firstHour, lastHour, '3000000')],
+      repairs: {
+        denominator: 24,
+        total: [repairRate == null ? notRec(firstHour, lastHour) : known(firstHour, lastHour, repairRate)],
+        parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [repairRate == null ? notRec(firstHour, lastHour) : known(firstHour, lastHour, repairRate)] }],
+      },
+    });
+  const shipA = (firstHour: number, lastHour: number) => leaf({ variant: 'A', typeKey: 'mod_hull_a', name: 'Hull A', domain: 'naval', purpose: 'new', runs: [known(firstHour, lastHour, '3000000')] });
+  const shipB = (firstHour: number, lastHour: number) => leaf({ variant: 'B', typeKey: 'mod_hull_b', name: 'Hull B', domain: 'naval', purpose: 'new', runs: [known(firstHour, lastHour, '500000')] });
+  const rateFor120Ic = String(100_000);
+  const windows = new Map([
+    [0, mkWin(0, 0, 2879, [shipA(0, 2879)], rateFor120Ic)],
+    [1, mkWin(1, 2880, 5759, [shipA(2880, 5759)], null)],
+    [2, mkWin(2, 5760, 8639, [shipA(5760, 8639)], rateFor120Ic)],
+    [4, mkWin(4, 11520, 14399, [shipA(11520, 14399), shipB(11520, 14399)], rateFor120Ic)],
+  ]);
+  const merged = mergeSpending(windows, 8639)!;
+  assert.ok(!merged.leaves.some(item => item.variant === 'B'), 'future window 4 is excluded at hour 8639');
+  const win = { from: null, hour: 8639, end: 8639 };
+  const items = dockyardItems(merged, win);
+  const total = dockyardTotal(merged, win);
+  assert.equal(total.unknownValue, false);
+  assert.equal(total.exact, (30n + 240n) * 100_000n * 24n);
+  assert.equal(total.exactDenominator, 24n);
+  assert.ok(total.unknown && Object.values(total.unknown).reduce((a, b) => a + b, 0) > 0);
+  const tree = sunburstTree(items, { id: 'all', label: 'All dockyard IC' }, undefined, { authoritativeTotal: total });
+  assert.equal(tree.valueUnknown, false);
+  assert.ok(unknownTotal(tree) > 0, 'root carries the partial flag');
 });

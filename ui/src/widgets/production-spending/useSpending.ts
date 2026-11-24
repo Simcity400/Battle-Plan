@@ -2,12 +2,13 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo, useRef } from 'react';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetRuntime } from '../../dashboard/definitions';
+import { windowOf } from '../../dashboard/heldWindows.ts';
 import { resolveWindow } from '../../dashboard/model';
 import type { WidgetSpec } from '../../dashboard/model';
 import { useFrameWindows } from '../army-size/frameWindows.ts';
 import { useHeadHour } from '../army-size/headHour.ts';
 import type { ProductionSpendingReply } from '../../generated/dashboard';
-import { mergeSpending, spendingWindows } from './spendingData';
+import { createWindowTracker, displayedSpendingWindows, prefetchSpendingWindows, selectSpendingState } from './spendingData';
 import type { SpendingData } from './spendingData';
 import { productRequest } from '../../dashboard/request.ts';
 
@@ -23,31 +24,56 @@ export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: 
   keys.current = { key, headAt };
   const playbackHour = useHeadHour(runtime.clock, following, position => {
     const at = keys.current.headAt?.(position);
-    return at == null ? 'outside' : keys.current.key(at);
+    return at == null ? 'outside' : `${windowOf(Math.floor(at))}:${keys.current.key(at)}`;
   });
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const range = widget.time.mode === 'range';
   const from = range ? window?.firstHour ?? null : null;
-  const end = range ? hour : track?.branch.lastHour;
-  const windowsAt = (position: number, ahead: boolean): number[] => {
-    if (!track || hour == null || end == null) return [];
-    const at = keys.current.headAt?.(position) ?? hour;
-    return spendingWindows(track.branch, at, from, end, whole, repairs, ahead);
+  const end = hour;
+  const wantedTracker = useMemo(() => createWindowTracker(prefetchSpendingWindows), []);
+  const neededTracker = useMemo(() => createWindowTracker((branch, at, spanFrom, spanWhole, spanRepairs) =>
+    displayedSpendingWindows(branch, at, spanFrom, spanWhole, spanRepairs)), []);
+  const atFor = (position: number): number | null => {
+    if (!track || hour == null) return null;
+    return keys.current.headAt?.(position) ?? hour;
+  };
+  const wantedAt = (position: number): number[] => {
+    const at = atFor(position);
+    return !track || at == null ? [] : wantedTracker.get(track.branch, at, from, whole, repairs, following);
+  };
+  const neededAt = (position: number): number[] => {
+    const at = atFor(position);
+    return !track || at == null ? [] : neededTracker.get(track.branch, at, from, whole, repairs, false);
   };
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, repairs]) : null;
   const subscribeClock = useMemo(() => (changed: () => void) => {
-    const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
+    const currentWindow = () => {
+      const at = keys.current.headAt?.(runtime.clock.getSnapshot().position);
+      return at == null ? null : windowOf(Math.floor(at));
+    };
+    let seenWindow = currentWindow();
+    const onFrame = () => {
+      const next = currentWindow();
+      if (next === seenWindow) return;
+      seenWindow = next;
+      changed();
+    };
+    const onCommit = () => {
+      seenWindow = currentWindow();
+      changed();
+    };
+    const stops = [runtime.clock.subscribeFrame(onFrame), runtime.clock.subscribe(onCommit)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
   const held = useFrameWindows<ProductionSpendingReply>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
     product: 'production-spending', params: { branchId: track!.branch.id, country: countryFromKey(tag!), repairs, window: index } })),
-  () => windowsAt(runtime.clock.getSnapshot().position, following), subscribeClock, active, validate, track?.source);
-  const needed = windowsAt(runtime.clock.getSnapshot().position, false);
-  const error = needed.map(index => held.errors.get(index)).find(failure => failure !== undefined);
-  const complete = needed.length > 0 && needed.every(index => held.data.has(index));
-  const data: SpendingData | undefined = useMemo(() => complete ? mergeSpending(held.data) ?? undefined : undefined, [complete, held.data]);
+  () => wantedAt(runtime.clock.getSnapshot().position), subscribeClock, active, validate, track?.source);
+  const needed = neededAt(runtime.clock.getSnapshot().position);
+  const selected = useMemo(() => selectSpendingState(needed, held.data, held.errors), [needed, held.data, held.errors]);
+  const data: SpendingData | undefined = selected.data;
+  const error = selected.error;
   const retry = held.retry;
   return { track, tag, data, error, retry, window, hour, from, end, headAt };
 }

@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CAP_HEADROOM, columnAt, columnEdges, columnsExtent, columnStops } from './columns.ts';
+import { CAP_HEADROOM, columnAt, columnEdges, columnsExtent, columnsLayer, columnStops } from './columns.ts';
 import type { ColumnPeriod } from './columns';
+import { plotFrame } from './frame.ts';
+import { resolveTimeChartFrame } from './renderTimeChart.ts';
+import { EMPTY_VIEW } from './view.ts';
+import { tokensFromValues } from './tokens.ts';
+
+const TEST_TOKENS = tokensFromValues(() => '#888888', 'sans-serif');
 
 const periods: ColumnPeriod[] = [
   { firstHour: 0, lastHour: 743, values: [2, 3, 1] },
@@ -55,6 +61,33 @@ test('a period not known at all has no extent, never zero, and stops stay at eve
   const many = Array.from({ length: 5000 }, (_, i) => ({ firstHour: i * 10, lastHour: i * 10 + 9, values: [] }));
   assert.equal(columnAt(many, 49_995), 4999);
   assert.equal(columnAt(many, 12_345), 1234);
+});
+
+test('an unread month draws full plot height even when measured values are negative, and an all-unread chart suppresses numeric ticks', () => {
+  const negativeAndUnread: ColumnPeriod[] = [
+    { firstHour: 0, lastHour: 9, values: [-10] },
+    { firstHour: 10, lastHour: 19, values: [], unknown: true },
+  ];
+  const frame = plotFrame(200, 120, { left: 40, right: 10, top: 10, bottom: 20 }, [0, 20], [-10, 0], false);
+  let clippedHeight = 0;
+  const fakeCtx = {
+    fillStyle: '', strokeStyle: '', lineWidth: 0,
+    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillRect() {},
+    rect(_x: number, _y: number, _w: number, h: number) { clippedHeight = Math.max(clippedHeight, h); },
+    clip() {},
+  } as unknown as CanvasRenderingContext2D;
+  columnsLayer(negativeAndUnread, ['#888']).draw(fakeCtx, frame, TEST_TOKENS, { playhead: null });
+  assert.equal(clippedHeight, frame.plotHeight, 'unread hatch spans full plot height rather than collapsing to zero');
+
+  const onlyUnread: ColumnPeriod[] = [{ firstHour: 0, lastHour: 24 * 30 - 1, values: [], unknown: true }];
+  const resolved = resolveTimeChartFrame({
+    layoutWidth: 400, layoutHeight: 200, tokens: TEST_TOKENS,
+    layers: [columnsLayer(onlyUnread, ['#888'])],
+    extent: [0, 24 * 30 - 1], playhead: null, playback: 'draw-in', paused: true,
+    view: EMPTY_VIEW, axes: { xFrom: null, xTo: null, yMin: null, yMax: null, log: false },
+    branchStart: 0, measure: () => 20,
+  });
+  assert.deepEqual(resolved.frame.valueTicks, [], 'all-unread chart suppresses synthetic 0–1 value ticks');
 });
 
 

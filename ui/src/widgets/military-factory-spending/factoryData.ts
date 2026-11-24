@@ -1,6 +1,7 @@
-import type { SunburstItem } from '../../charts/sunburst/layout';
+import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
+import { equipmentPeriodNote } from '../production-spending/spendingData.ts';
 import type { SpendingWindow } from '../production-spending/spendingData';
-import { REMAINDER_BANDS, colouredSplit, domainLeaves, monthNote, monthTotal, purposeItems, spentMonth } from '../dockyard-spending/dockyardData.ts';
+import { REMAINDER_BANDS, colouredSplit, domainEquipmentTotal, domainLeaves, monthNote, monthTotal, purposeItems, reasonLabel, spentMonth } from '../dockyard-spending/dockyardData.ts';
 import type { Exact, PurposeMonth, PurposeSplit, SpentMonth } from '../dockyard-spending/dockyardData';
 import type { Domain } from '../../generated/dashboard';
 import type { SpendingData } from '../production-spending/spendingData';
@@ -15,6 +16,25 @@ const SPLIT: PurposeSplit = { purposes: [{ key: PURPOSES[0], leaf: 'new' }, { ke
 
 export function factoryItems(reply: SpendingData, domain: Domain, window: SpendingWindow, colours: readonly string[] = []): SunburstItem[] {
   return purposeItems(reply, domainLeaves(reply, domain), window, colouredSplit(SPLIT, colours));
+}
+
+export function factoryTotal(reply: SpendingData, domain: Domain, window: SpendingWindow): SunburstTotal {
+  const now = domainEquipmentTotal(reply, domain, window);
+  const end = domainEquipmentTotal(reply, domain, { ...window, hour: window.end });
+  const periodNote = equipmentPeriodNote(reply, window);
+  const note = [now.reason ? reasonLabel(now.reason) : undefined, periodNote].filter(Boolean).join(' ') || undefined;
+  if (now.exact != null) return {
+    value: Number(now.exact), exact: now.exact, unknownValue: false, note,
+    final: end.exact != null ? Number(end.exact) : end.recorded != null ? Number(end.recorded) : 0,
+    finalUnknown: end.exact == null && end.recorded == null,
+  };
+  if (now.recorded != null) return {
+    value: Number(now.recorded), exact: now.recorded, unknownValue: false,
+    unknown: { [now.reason ?? 'notRecorded']: 1 }, note,
+    final: end.exact != null ? Number(end.exact) : end.recorded != null ? Number(end.recorded) : 0,
+    finalUnknown: end.exact == null && end.recorded == null,
+  };
+  return { value: null, exact: null, unknownValue: true, note, final: 0, finalUnknown: true };
 }
 
 export const BANDS = [...PURPOSES, ...REMAINDER_BANDS];
