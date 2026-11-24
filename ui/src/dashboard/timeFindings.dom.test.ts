@@ -159,7 +159,7 @@ test('12. A missing pin reads no branch-end facts: Factories’ saved breakdown 
   assert.deepEqual(dated(gapped.asks, 105), [], `a pin in a gap sends its literal hour nowhere: ${JSON.stringify(gapped.asks)}`);
 }));
 
-const RESOURCES = `({ tag: 'GER', decimals: 3, resources: [{ id: 1, token: 'oil', ordinal: 1, name: 'Oil', icon: null }], pools: [], shown: [], poolsMissing: null,
+const RESOURCES = `({ tag: 'GER', decimals: 3, resources: [{ id: 1, token: 'oil', ordinal: 1, name: 'Oil', icon: null }], pools: [], rows: [], short: 0, unrecorded: 0, poolsMissing: null,
   dealsMissing: null, deals: [], warnings: [] })`;
 
 test('13. Hover, expansion, ranking and follow obey coverage: nothing is sent into a 105–106 gap and a paused seek past the track releases a follow', () => onPage(async act => {
@@ -289,25 +289,6 @@ test('27. Fuel on the default player selection (a slot key): a breakdown picked 
   assert.deepEqual([country.tag, country.originOffset], ['GER', 3]);
 }));
 
-test('28. Resource balance: GER’s breakdown picked at 103 keeps that country through continuous playback into GDR, reading its history by identity', () => onPage(async act => {
-  await act(scene({ kind: 'resource-balance', time: { mode: 'follow' }, hour: 103, requestsWhilePlaying: true, countries: GER, groups: RENAMED,
-    replies: { 'resource-balance': RESOURCES.replace('shown: []', 'shown: [1]') } }));
-  const opened = await act<Read & { clicked: boolean }>('click(".resource-bars li")');
-  assert.ok(opened.clicked && opened.drillOpen, `the breakdown opens: ${opened.text}`);
-  const viewed = await act<Read & { called: boolean }>('call("TimeChart", "onSummaryView", { from: 100, to: 109, end: 109, width: 400 })');
-  const tiles = [...opened.asks, ...viewed.asks].filter(ask => ask.product === 'series-tiles');
-  assert.ok(tiles.length > 0 && tiles.every(ask => JSON.stringify(ask.params?.lines).includes('"country":1') && JSON.stringify(ask.params?.within ?? null).includes('[1,')),
-    `the history is read by the held identity’s slot, within its runs: ${JSON.stringify(tiles.map(ask => ask.params))}`);
-  const played = await act<Read & { hour: number; playing: boolean }>('play(1, 5, 1000)');
-  assert.ok(played.playing && played.hour >= 107, `playback runs to ${played.hour}`);
-  assert.ok(naming(played.asks, 'GDR').length > 0, `past 105 the breakdown reads GDR without a seek: ${JSON.stringify(played.asks.map(ask => [ask.product, ask.params]))}`);
-  const drilled = reads(played.asks, 'resource-balance').filter(params => !('order' in params));
-  assert.ok(drilled.some(params => params.country === 'GDR'), `the breakdown’s own read names GDR: ${JSON.stringify(played.asks)}`);
-  assert.deepEqual(played.asks.filter(ask => ask.product === 'resource-balance' && ask.params?.country === 'GER' && (ask.hour ?? 0) >= 105), [],
-    'the breakdown never reads the other country now named GER');
-  await act('pause()');
-}));
-
 test('29. Fuel: GER picked at 103 and followed by continuous playback into 108 reads GDR without a seek, and pins the country it picked', () => onPage(async act => {
   await act(scene({ kind: 'fuel', time: { mode: 'follow' }, hour: 103, requestsWhilePlaying: true, countries: GER, groups: RENAMED }));
   const opened = await act<Read & { called: boolean }>('call("TimeChart", "onPick", 103)');
@@ -360,16 +341,8 @@ test('35. Fuel’s held country is read under its alias at each request’s hour
   assert.ok(hovered.called && named.length > 0 && named.every(country => country === 'GDR'), `the hover at 108 names the held country’s alias: ${JSON.stringify(hovered.asks)}`);
 }));
 
-test('38. A breakdown’s Follow comes from its own region: Resource balance pinned at 105 with its breakdown open offers Follow playback at 108', () => onPage(async act => {
-  await act(scene({ kind: 'resource-balance', time: pinAt(105), hour: 108, countries: GER, groups: groupsOf(['GER']),
-    replies: { 'resource-balance': RESOURCES.replace('shown: []', 'shown: [1]') } }));
-  const opened = await act<Read & { clicked: boolean }>('click(".resource-bars li")');
-  assert.ok(opened.clicked && opened.drillOpen, `the breakdown opens: ${opened.text}`);
-  assert.ok(opened.buttons.includes('Follow playback'), `the pinned parent’s breakdown can follow: ${JSON.stringify(opened.buttons)}`);
-}));
-
 test('39. Resource balance’s saved breakdown on its “First resource” setting shows the first resource of the reply at its hour', () => onPage(async act => {
-  const shown = await act<Read>(scene({ kind: 'resource-balance', time: pinAt(105), hour: 107, countries: GER, options: { show: 'resource' }, groups: groupsOf(['GER']),
+  const shown = await act<Read>(scene({ kind: 'resource-balance', time: pinAt(105), hour: 107, countries: GER, options: { view: 'time', show: 'resource' }, groups: groupsOf(['GER']),
     replies: { 'resource-balance': RESOURCES } }));
   assert.ok(!/Resource unavailable/.test(shown.text), `the setting chooses the first resource: ${shown.text}`);
 }));

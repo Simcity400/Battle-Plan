@@ -119,6 +119,7 @@ mod resources {
     use replay_data::rows::{CountryResourceRow, CountryRow, LexicalTokenRow, ResourceDefinitionRow, ResourceExchangeRow, tables};
 
     const DEALS_UNREAD: i32 = 118;
+    const DEAL_BEGINS: i32 = 122;
     const FRA: u32 = 44;
 
     fn pools(country: u32, resource: u32, produced: i64) -> CountryResourceRow {
@@ -141,17 +142,34 @@ mod resources {
                     set::<tables::ResourceDefinitions>(&mut frame, vec![
                         ResourceDefinitionRow { id: 1, token: 70, active: 1, factory_cost: 0 },
                         ResourceDefinitionRow { id: 2, token: 71, active: 1, factory_cost: 0 },
+                        ResourceDefinitionRow { id: 3, token: 72, active: 1, factory_cost: 0 },
+                        ResourceDefinitionRow { id: 4, token: 73, active: 1, factory_cost: 0 },
+                        ResourceDefinitionRow { id: 5, token: 74, active: 1, factory_cost: 0 },
                     ]);
                     set::<tables::LexicalTokens>(&mut frame, vec![
                         LexicalTokenRow { token: 70, literal: b"oil".to_vec() },
                         LexicalTokenRow { token: 71, literal: b"steel".to_vec() },
+                        LexicalTokenRow { token: 72, literal: b"coal".to_vec() },
+                        LexicalTokenRow { token: 73, literal: b"chromium".to_vec() },
+                        LexicalTokenRow { token: 74, literal: b"tungsten".to_vec() },
                     ]);
                     let oil = i64::from(hour / 10) * 100_000;
-                    set::<tables::CountryResources>(&mut frame, vec![pools(FRA, 1, 5), pools(GER, 1, oil), pools(GER, 2, 700_000), pools(GER + 1, 2, 9)]);
+                    set::<tables::CountryResources>(&mut frame, vec![
+                        pools(FRA, 1, 5),
+                        pools(GER, 1, oil),
+                        pools(GER, 2, 700_000),
+                        pools(GER, 3, 0),
+                        CountryResourceRow { country: GER, resource: 4, ..Default::default() },
+                        pools(GER + 1, 2, 9),
+                    ]);
                     if hour == DEALS_UNREAD {
                         *frame.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable { reason: "deals unreadable".into() };
                     } else {
-                        set::<tables::ResourceExchanges>(&mut frame, vec![deal(5, GER, FRA, 2, 200_000), deal(6, FRA, GER, 1, 300_000), deal(7, FRA, 66, 1, 1)]);
+                        let mut deals = vec![deal(5, GER, FRA, 2, 200_000), deal(6, FRA, GER, 1, 300_000), deal(7, FRA, 66, 1, 1)];
+                        if hour >= DEAL_BEGINS {
+                            deals.push(deal(8, FRA, GER, 3, 50_000));
+                        }
+                        set::<tables::ResourceExchanges>(&mut frame, deals);
                     }
                     frame
                 })
@@ -166,25 +184,50 @@ mod resources {
         same_on_both_paths::<ResourceBalance>(&source, params.clone());
         let at = asked::<ResourceBalance>(&source, params.clone(), 125).unwrap();
         let tokens: Vec<&str> = at["resources"].as_array().unwrap().iter().map(|resource| resource["token"].as_str().unwrap()).collect();
-        assert_eq!(tokens, ["oil", "steel"]);
+        assert_eq!(tokens, ["oil", "steel", "coal", "chromium", "tungsten"]);
         assert!(at["resources"][0]["name"].is_null(), "no content names no resource");
-        assert_eq!(at["pools"], json!([1, 2]), "the country's own rows, in the game's order");
-        assert_eq!(at["shown"], json!([1, 2]));
+        assert_eq!(at["pools"], json!([1, 2, 3, 4]), "the country's own rows, in the game's order");
+        assert_eq!(at["rows"], json!([
+            { "resource": 3, "net": "-3", "supply": "0", "demand": "3", "missing": null },
+            { "resource": 1, "net": "1199997", "supply": "1200000", "demand": "3", "missing": null },
+            { "resource": 2, "net": "699997", "supply": "700000", "demand": "3", "missing": null },
+            { "resource": 4, "net": "0", "supply": "0", "demand": "0", "missing": null },
+            { "resource": 5, "net": null, "supply": null, "demand": null, "missing": "No row of this resource was recorded for this country at this hour" },
+        ]), "shortages, then surpluses largest first, then the balanced, then the unrecorded; exact fixed-point figures");
+        assert_eq!((at["short"].clone(), at["unrecorded"].clone()), (json!(1), json!(1)), "a resource not recorded is never counted short");
+        let hidden = asked::<ResourceBalance>(&source, json!({ "branchId": "1", "country": "GER", "hideEmpty": true }), 125).unwrap();
+        let ids: Vec<u64> = hidden["rows"].as_array().unwrap().iter().map(|row| row["resource"].as_u64().unwrap()).collect();
+        assert_eq!(ids, [3, 1, 2, 5], "only a recorded row with nothing in or out is hidden");
         let cells = cells(&at);
         let cell = |row: &str, column: &str| cells[&(row.to_owned(), column.to_owned())].clone();
         assert_eq!((cell("1", "produced"), cell("2", "produced"), cell("1", "production")), (json!(1_200_000), json!(700_000), json!(-3)));
-        assert_eq!(cells.len(), 18, "eight pools of each of GER's two rows and each of its two deals' delivery, none of another country's");
-        assert_eq!((cell("6", "delivered"), cell("5", "delivered")), (json!(300_000), json!(200_000)));
-        let ordered = |order: &str| asked::<ResourceBalance>(&source, json!({ "branchId": "1", "country": "GER", "order": order }), 125).unwrap()["shown"].clone();
-        assert_eq!((ordered("game"), ordered("shortfall"), ordered("volume")), (json!([1, 2]), json!([2, 1]), json!([1, 2])));
+        assert_eq!(cells.len(), 35, "eight pools of each of GER's four rows and each of its three deals' delivery, none of another country's");
+        assert_eq!((cell("6", "delivered"), cell("5", "delivered"), cell("8", "delivered")), (json!(300_000), json!(200_000), json!(50_000)));
         assert_eq!(at["deals"], json!([
             { "deal": "6", "resource": 1, "direction": "import", "partner": "FRA", "factories": 1, "convoysAssigned": 2, "convoysRequired": 3 },
             { "deal": "5", "resource": 2, "direction": "export", "partner": "FRA", "factories": 1, "convoysAssigned": 2, "convoysRequired": 3 },
-        ]));
+            { "deal": "8", "resource": 3, "direction": "import", "partner": "FRA", "factories": 1, "convoysAssigned": 2, "convoysRequired": 3 },
+        ]), "a deal begun after the first hour asked is read from its own first hour");
+        let before = asked::<ResourceBalance>(&source, params.clone(), DEAL_BEGINS - 1).unwrap();
+        assert_eq!(before["deals"].as_array().unwrap().len(), 2);
         let unread = asked::<ResourceBalance>(&source, params, DEALS_UNREAD).unwrap();
-        assert_eq!(unread["pools"].as_array().unwrap().len(), 2, "the pools go on where the deals are not known");
+        assert_eq!(unread["pools"].as_array().unwrap().len(), 4, "the pools go on where the deals are not known");
         assert_eq!(unread["deals"], json!([]));
         assert!(unread["dealsMissing"].as_str().unwrap().starts_with("Trade deals are not recorded at this hour"), "unknown deals are not no deals");
+    }
+
+    #[test]
+    fn a_countrys_deals_are_read_again_when_one_begins_or_ends() {
+        use crate::products::{convoys::RunConvoys, economy::resources::deals_through};
+        let mut index = RunConvoys::default();
+        index.deals.insert(GER, vec![(5, 100, 110), (8, 122, 200)]);
+        index.exports.insert(GER, vec![(6, 90, 140)]);
+        index.deals.insert(FRA, vec![(9, 105, 106)]);
+        assert_eq!(deals_through(&index, GER, 100), (vec![5, 6], 110));
+        assert_eq!(deals_through(&index, GER, 111), (vec![6], 121));
+        assert_eq!(deals_through(&index, GER, 122), (vec![6, 8], 140));
+        assert_eq!(deals_through(&index, GER, 141), (vec![8], 200));
+        assert_eq!(deals_through(&index, GER, 201), (vec![], i32::MAX), "with no deal begun or to begin, nothing expires");
     }
 
     #[test]
@@ -193,7 +236,7 @@ mod resources {
         let params = serde_json::from_value(json!({ "branchId": "1", "country": "GER" })).unwrap();
         let reply = ResourceSizes::load(&source, &params, &load(), &AtomicBool::new(false)).unwrap();
         let sizes: Vec<(u32, Option<&str>)> = reply.sizes.iter().map(|size| (size.id, size.longest_raw.as_deref())).collect();
-        assert_eq!(sizes, [(1, Some("1300000")), (2, Some("700000"))]);
+        assert_eq!(sizes, [(1, Some("1300000")), (2, Some("700000")), (3, Some("3")), (4, Some("0")), (5, None)]);
     }
 }
 

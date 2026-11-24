@@ -5141,11 +5141,7 @@ index: number, requested: string, received: string, priority: number, };
 export type FuelBranchesParamsAtHour = FuelBranchesParams & { hour: number };
 export type ResourceBalanceParams = { branchId: string, country: CountryRef,
 /**
- * The order `shown` lists the resources in; the game's when absent.
- */
-order?: ResourceOrder,
-/**
- * Leave out of `shown` the resources with nothing in either bar.
+ * Leave out of `rows` the resources recorded with nothing in or out.
  */
 hideEmpty?: boolean, };
 export type ResourceBalanceReply = { tag: string, decimals: number,
@@ -5159,9 +5155,14 @@ resources: Array<ResourceInfo>,
  */
 pools: Array<number>,
 /**
- * The resources the bars show, in the asked order (those with no row last, in the game's).
+ * The balance of each resource: shortages first (largest first), then surpluses (largest first), then the
+ * balanced, then those not recorded; a tie keeps the game's order.
  */
-shown: Array<number>,
+rows: Array<ResourceNet>,
+/**
+ * How many recorded rows are short; rows not recorded are counted in `unrecorded`, never here.
+ */
+short: number, unrecorded: number,
 /**
  * Why the pools are not known at the hour.
  */
@@ -5187,7 +5188,27 @@ ordinal: number, name: string | null,
  * An artwork URL; null when content has no icon for it.
  */
 icon: string | null, };
-export type ResourceOrder = "game" | "shortfall" | "volume";
+export type ResourceNet = {
+/**
+ * The resource's native index, as in `resources`.
+ */
+resource: number,
+/**
+ * What is left a day after special projects and production lines, fixed-point at `decimals`; null when not recorded.
+ */
+net: string | null,
+/**
+ * In a day: produced, from subjects and imported.
+ */
+supply: string | null,
+/**
+ * Out a day: special projects, production lines, to the overlord and the export reserve.
+ */
+demand: string | null,
+/**
+ * Why the figures are not recorded for this resource at the hour.
+ */
+missing: string | null, };
 export type ResourceDeal = {
 /**
  * The deal's native handle, as a decimal string.
@@ -7032,7 +7053,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "research": { "branchId": "leaf", "country": "any" },
   "research-breakdown": { "branchId": "leaf", "country": "any", "parts": "node", "parts[]": "node", "parts[].firstObservedHour": "leaf", "parts[].lastHour": "leaf", "parts[].slot": "leaf", "parts[].started": "leaf" },
   "research-slots": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "resource-balance": { "branchId": "leaf", "country": "any", "hideEmpty": "leaf", "hour": "leaf", "order": "leaf" },
+  "resource-balance": { "branchId": "leaf", "country": "any", "hideEmpty": "leaf", "hour": "leaf" },
   "resource-sizes": { "branchId": "leaf", "country": "any", "from": "leaf", "to": "leaf" },
   "scoreboard": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "top": "node", "top.count": "leaf", "top.descending": "leaf", "top.sort": "leaf" },
   "scoreboard-columns": { "branchId": "leaf" },
