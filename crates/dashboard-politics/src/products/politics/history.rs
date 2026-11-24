@@ -3,7 +3,7 @@ use dashboard_effects::ScriptedEffects;
 use dashboard_base::products::Country;
 use super::{
     HolderTag, Holding, PoliticsRun, by_id, decimal, holdings, pieces,
-    state::{BalanceRange, BalanceSide, NameScope, resolve_balance_name},
+    state::{BalanceRange, BalanceSide, NameScope, raw_scripted_text, resolve_balance_name},
     stretch_runs, tags_of, token, value_at, within,
 };
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, check_reply_budget}};
