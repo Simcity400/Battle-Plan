@@ -15,7 +15,7 @@ import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { regionLanes } from '../../families/regions/regionRows.ts';
-import { formatDateOnly, formatDateParts, formatScalar } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatDateParts, formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
 import type {
   RegionalWeatherColumn,
   RegionalWeatherColumnRegion,
@@ -45,7 +45,7 @@ export function temperatureText(raw: number): string {
 }
 
 export function modifierText(raw: number): string {
-  return formatScalar((raw / FIXED) * 100, { decimals: 0, maxDecimals: 1, percent: true, signed: true });
+  return formatRecordedPercent((raw / FIXED) * 100, { signed: true });
 }
 
 interface Palette {

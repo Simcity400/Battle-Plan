@@ -6,7 +6,7 @@ import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { formatChartAxisValue } from '../../families/time-chart/layout.ts';
+import { formatCompactScalar, formatScalar } from '../../families/valueFormat.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
   assignCountrySeriesColours,
@@ -35,7 +35,8 @@ export interface CommandPowerOptions {
 
 
 function formatEndAmount(value: number): string {
-  return formatChartAxisValue(value, 'power');
+  if (!Number.isFinite(value)) return '';
+  return Math.abs(value) >= 1e4 ? formatCompactScalar(Math.trunc(value), 'integer').text : formatScalar(value, 'integer');
 }
 
 export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerFamilyProjection({

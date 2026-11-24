@@ -1,7 +1,7 @@
 import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
-import { formatDateOnly } from '../valueFormat.ts';
+import { formatDateOnly, formatShare } from '../valueFormat.ts';
 import type { HeatPart } from './scale.ts';
 
 export type HeatLaneCell =
@@ -211,7 +211,7 @@ export function laneCellTooltip(title: string, hour: number, cell: HeatLaneCell)
   return {
     title,
     hour,
-    items: cell.parts.map(part => ({ label: part.label, value: part.text ?? `${Math.round(part.share * 100)}%`, swatch: part.color })),
+    items: cell.parts.map(part => ({ label: part.label, value: part.text ?? formatShare(part.share), swatch: part.color })),
   };
 }
 
@@ -237,7 +237,7 @@ function cellAuditText(cell: HeatLaneCell): string {
   if (cell.kind === 'gap') return `Gap (${cell.reason ?? 'Recording gap'})`;
   if (cell.kind === 'clear') return cell.label ?? 'Clear';
   if (cell.kind === 'solid') return cell.label ? `${cell.label} ${cell.color}` : cell.color;
-  return cell.parts.map(part => `${part.label} ${part.text ?? `${Math.round(part.share * 100)}%`} ${part.color}`).join(', ');
+  return cell.parts.map(part => `${part.label} ${part.text ?? formatShare(part.share)} ${part.color}`).join(', ');
 }
 
 function laneAuditText(row: HeatLaneRow, hour: number): string {

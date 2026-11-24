@@ -1,7 +1,7 @@
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import { REGION_ADD_KEY, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import type { Value } from '../value.ts';
-import type { ValueFormat } from '../valueFormat.ts';
+import { formatShare, type ValueFormat } from '../valueFormat.ts';
 import type { BarsDataRow, BarsLegendItem, BarsModel, BarsRow, BarsRowMedia, BarsSegment } from './model.ts';
 
 export interface ShareRowEntry {
@@ -105,7 +105,7 @@ export function barsRegionRows(model: BarsModel, layout: { readonly bodyTop: num
       picked: row.group === 'picked',
       top,
       height,
-      ...(lead ? { activity: { color: lead.color, text: `${Math.round(lead.share * 100)}% ${lead.label}` } } : {}),
+      ...(lead ? { activity: { color: lead.color, text: `${formatShare(lead.share)} ${lead.label}` } } : {}),
     });
   });
   return rows.length || add ? { rows, add, nameLeft: layout.nameX } : null;
