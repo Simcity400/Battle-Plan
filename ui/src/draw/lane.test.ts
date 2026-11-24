@@ -167,6 +167,11 @@ test('addendum 3: a widget of two subscriptions installs their join, or waits wh
   lane.receive('follow', message(30, [{ id: 7, hour: 20, answer: { keys: [1n], columns: 1, values: [2n] } }], false, NATIVE));
   await step(25);
   assert.deepEqual([page.view(1).h, page.view(1).through], [20, 25]);
+  mount(2, [{ id: 5, channel: 'followed' }], 'fields', 0, { dated: { h: 28, c: 28 } });
+  await step(26);
+  assert.equal(page.view(2).mode, 'reading', 'a followed widget whose static read was asked at 28 shows nothing at 26');
+  await step(29);
+  assert.equal(page.view(2).mode, 'picture', 'and installs once the clock reaches the hour that read answered');
 });
 
 const at: LaneView = {

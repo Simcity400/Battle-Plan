@@ -11,10 +11,14 @@ export type { FamilyFactionRun };
 export interface FrozenGate {
   readonly recorded: Gate['recorded'];
   readonly span: Gate['span'];
+  readonly recordedRun?: (hour: number) => readonly [number, number];
 }
 
-export function freezeGate(gate: Pick<Gate, 'recorded' | 'span'>): FrozenGate {
-  return { recorded: gate.recorded, span: gate.span };
+export function freezeGate(
+  gate: Pick<Gate, 'recorded' | 'span'>,
+  recordedRun?: (hour: number) => readonly [number, number],
+): FrozenGate {
+  return recordedRun ? { recorded: gate.recorded, span: gate.span, recordedRun } : { recorded: gate.recorded, span: gate.span };
 }
 
 export function resolveRetainedHeadSpan(
@@ -38,6 +42,7 @@ export interface DisplayedStaticSnapshot<TContext = unknown, TExtra = unknown> {
   readonly data: unknown;
   readonly moment: string | undefined;
   readonly requestKey: string | null;
+  readonly anchorHour: number | null;
   readonly span: readonly [number, number] | null;
   readonly context: TContext;
   readonly gate: FrozenGate;
@@ -48,6 +53,7 @@ export interface DisplayedStaticInput<TContext, TExtra> {
   readonly data: unknown;
   readonly moment: string | undefined;
   readonly requestKey: string | null;
+  readonly anchorHour?: number | null;
   readonly satisfiesCurrent: boolean;
   readonly requestedSpan: readonly [number, number] | null;
   readonly context: TContext;
@@ -65,6 +71,7 @@ export function resolveDisplayedStaticSnapshot<TContext, TExtra = undefined>(
       data: input.data,
       moment: input.moment,
       requestKey: input.requestKey,
+      anchorHour: input.anchorHour ?? null,
       span: resolveRetainedHeadSpan(input.moment, input.requestedSpan),
       context: input.context,
       gate: input.gate,
@@ -78,6 +85,7 @@ export function resolveDisplayedStaticSnapshot<TContext, TExtra = undefined>(
     data: input.data,
     moment: input.moment,
     requestKey: input.requestKey,
+    anchorHour: input.anchorHour ?? null,
     span: resolveRetainedHeadSpan(input.moment, input.requestedSpan),
     context: input.context,
     gate: input.gate,

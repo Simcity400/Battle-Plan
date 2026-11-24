@@ -3,7 +3,7 @@ import test from 'node:test';
 import { experienceRatio, headerDetail, recordRows, topDivision, validateDivisionRecord } from './careersData.ts';
 import type { CareerFacts, CareerRow, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
 
-const facts = (extra: Partial<CareerFacts> = {}): CareerFacts => ({ medals: 3, awards: [], historyMissing: null, experienceRaw: '60000', level: 2, levelName: 'Veteran', kills: 1234, ...extra });
+const facts = (extra: Partial<CareerFacts> = {}): CareerFacts => ({ medals: 3, awards: [], historyMissing: null, experienceRaw: '60000', level: 2, levelName: 'Veteran', casualtiesTaken: 1234, ...extra });
 const entry = (award: boolean, ordinal: number, hour: number): RecordEntry => ({ award, ordinal, hour, description: `E${ordinal}`, descriptionMissing: null, provinces: [], medal: award ? 0 : null });
 const reply = (entries: RecordEntry[]): DivisionRecordReply => validateDivisionRecord({ division: '7', absent: false, tag: 'GER', template: null,
   name: 'First', nameMissing: null, facts: facts(), medals: [{ key: 'm', name: 'Medal' }], entries, warnings: [] });
@@ -17,8 +17,8 @@ test('the record lists entries newest first and filters by the Show setting', ()
 });
 
 test('header parts are missing on their own, never zero', () => {
-  assert.equal(headerDetail('Infantry', facts()), 'Infantry · 3 medals · Veteran · 1,234 enemy soldiers killed');
-  assert.equal(headerDetail(null, facts({ medals: null, kills: null, levelName: null })), '— · — · — · —');
+  assert.equal(headerDetail('Infantry', facts()), 'Infantry · 3 medals · Veteran · 1,234 casualties taken');
+  assert.equal(headerDetail(null, facts({ medals: null, casualtiesTaken: null, levelName: null })), '— · — · — · —');
   assert.equal(headerDetail('Infantry', null), 'Infantry · — · — · —');
 });
 

@@ -22,15 +22,26 @@ export interface FamilyViewUiLoader {
 }
 
 export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
+  'active-research': { load: () => import('./active-research') },
+  'agency-comparison': { load: () => import('./agency-comparison') },
   'air-superiority-region': { load: () => import('./air-superiority-region') },
   'apm-table': { load: () => import('./apm-table') },
   'division-template': { load: () => import('./division-template') },
+  'doctrine-mastery': { load: () => import('./doctrine-mastery') },
+  'equipment-designs': { load: () => import('./equipment-designs') },
+  'factions': { load: () => import('./factions') },
   'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },
   'game-score': { load: () => import('./game-score') },
+  'idea-timeline': { load: () => import('./idea-timeline') },
+  'industrial-organisations': { load: () => import('./industrial-organisations') },
   'minefields': { load: () => import('./minefields') },
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'scoreboard': { load: () => import('./scoreboard') },
+  'convoy-health': { load: () => import('./convoy-health'), slots: ['render', 'countryChip'] },
+  'air-superiority-timeline': { load: () => import('./air-superiority-timeline'), slots: ['render', 'countryChip'] },
+  'weather-by-region': { load: () => import('./weather-by-region') },
+  'naval-supremacy': { load: () => import('./naval-supremacy'), slots: ['render', 'countryChip'] },
 };
 
 const familyByKind = new Map<string, FamilyViewEntry[]>();
