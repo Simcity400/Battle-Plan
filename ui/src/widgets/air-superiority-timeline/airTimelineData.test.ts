@@ -14,10 +14,10 @@ const looks: AirLooks = { name: item => item.key, color: item => `colour ${item.
 
 function reply(): AirTimelineReply {
   const shares = { kind: 'sides' as const, parts: [{ side: 0, tag: 'ENG', friendly: '300' }, { side: 1, tag: 'GER', friendly: '100' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false };
-  return { firstHour: 24, lastHour: 119, dayHours: 24, days: [47, 71, null, 119], excluded: [0, 0, 0, 2], sides: SIDES, viewpoint: null, scale: 100_000, badBelow: 40_000, goodAbove: 60_000,
+  return { firstHour: 24, lastHour: 119, dayHours: 24, days: [47, 71, null, 119], excluded: [0, 0, 0, 2], sides: SIDES, legend: [0, 1], viewpoint: null, gaps: [], scale: 100_000, badBelow: 40_000, goodAbove: 60_000,
     warnings: [], rows: [
-      { region: 5, name: 'Channel', nameMissing: null, cells: [[2, shares], [1, null], [1, { kind: 'reason', reason: 'outside-theatres' }]] },
-      { region: 6, name: null, nameMissing: 'not in the stack', cells: [[1, { kind: 'sides', parts: [], viewpoints: [], unknown: [1], noAirObject: [], filtered: false }], [3, { kind: 'sides', parts: [], viewpoints: [], unknown: [], noAirObject: [], filtered: false }]] },
+      { region: 5, name: 'Channel', nameMissing: null, pinned: false, cells: [[2, shares], [1, null], [1, { kind: 'reason', reason: 'outside-theatres' }]] },
+      { region: 6, name: null, nameMissing: 'not in the stack', pinned: false, cells: [[1, { kind: 'sides', parts: [], viewpoints: [], unknown: [1], noAirObject: [], filtered: false }], [3, { kind: 'sides', parts: [], viewpoints: [], unknown: [], noAirObject: [], filtered: false }]] },
     ] };
 }
 
@@ -61,7 +61,7 @@ test('following, the view ends at the end of the head\'s step while playing and 
 });
 
 test('the head\'s day is drawn from the moment\'s values through the hour they are of', () => {
-  const moment: AirSuperiorityReply = { missing: null, sides: SIDES, viewpoint: null, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, warnings: [],
+  const moment: AirSuperiorityReply = { missing: null, sides: SIDES, legend: [0, 1], viewpoint: null, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, warnings: [],
     regions: [{ id: 5, name: 'Channel', nameMissing: null, active: true, wings: 'none',
       cell: { kind: 'sides', parts: [{ side: 0, tag: 'ENG', live: 'ENG@5' }, { side: 1, tag: 'GER', live: 'GER@5' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, excluded: 0 } }],
     fallback: { kind: 'sides', parts: [], viewpoints: [], unknown: [], noAirObject: [], filtered: false, excluded: 0 } };
@@ -84,7 +84,7 @@ test("a view's cells come in tiles: those it covers whole asked through their en
 test('tiles join in hour order, each made with its own sides; a tile not read leaves its hours loading', () => {
   const first = reply();
   const second: AirTimelineReply = { ...reply(), firstHour: 120, lastHour: 167, days: [143, 167], excluded: [0, 0], sides: [SIDES[1], SIDES[0]],
-    rows: [{ region: 5, name: 'Channel', nameMissing: null, cells: [[2, { kind: 'sides', parts: [{ side: 0, tag: 'GER', friendly: '100' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false }]] }] };
+    rows: [{ region: 5, name: 'Channel', nameMissing: null, pinned: false, cells: [[2, { kind: 'sides', parts: [{ side: 0, tag: 'GER', friendly: '100' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false }]] }] };
   const regions = [{ id: 5, name: 'Channel' }, { id: 6, name: 'Region 6' }];
   const joined = joinTiles([first, undefined, second], [{ firstHour: 24, lastHour: 119 }, { firstHour: 120, lastHour: 120 }, { firstHour: 120, lastHour: 167 }], looks, regions);
   assert.deepEqual(joined.periods.map(period => period.firstHour), [24, 48, 72, 96, 120, 144]);

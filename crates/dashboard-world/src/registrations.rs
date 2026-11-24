@@ -10,6 +10,7 @@ dashboard_base::register_products! {
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,
     SUBJECTS_SUBJECTS => crate::products::subjects::Subjects,
     PLACE_NAMES_PLACENAMES => crate::products::place_names::PlaceNames,
+    SEA_REGIONS_STRATEGICREGIONS => crate::products::sea_regions::StrategicRegions,
 }
 
 dashboard_base::register_hourly_products! {

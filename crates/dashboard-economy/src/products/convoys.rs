@@ -2,15 +2,17 @@
 use dashboard_base::products::{Country, validate_country};
 use dashboard_base::{products::{LoadContext, Product}, queries::country_ids::{Names, RunLinks}};
 use dashboard_base::{Source, catalogue, span::HourSpan};
-use dashboard_base::products::{resources::ResourceNaming};
+use dashboard_base::products::resources::ResourceNaming;
 use dashboard_query::{Query, identity::Holder, read};
-use replay_recording::columnar_frames::Recording;
-use replay_lanes::lanes::{self, Cell, History, Keys};
+use dashboard_world::products::styles::LookResolver;
+use replay_recording::columnar_frames::{Recording, complete as status_complete};
+use replay_lanes::{at::Seeker, lanes::{self, Cell, History, Keys}};
 use replay_columnar::summary::{Cells, Source as Column};
-use replay_data::rows::TableId;
+use replay_data::rows::{TableId, TradeRouteRow, tables};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::atomic::AtomicBool,
 };
@@ -19,7 +21,14 @@ use ts_rs::TS;
 
 pub const KEY: &str = "convoy-health";
 const SCALE: u32 = 100_000;
+const SUPPLY_TRANSFER: u8 = 1;
+const IMPORT: u8 = 2;
 const LEND_LEASE: i64 = 4;
+const LEND_LEASE_U8: u8 = 4;
+const MARKET: u8 = 6;
+const NO_ROUTE: u8 = 0;
+const NAVAL_ROUTE: u8 = 2;
+pub const TRAFFIC_NOT_RECORDED: &str = "regional convoy traffic was not recorded";
 
 const REGION_EFFICIENCY: usize = 0;
 const DEAL_EXPORTER: usize = 0;
@@ -111,6 +120,36 @@ pub struct ConvoyHealthParams {
     pub from: Option<i32>,
     #[serde(default)]
     pub to: Option<i32>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub regions: Option<Vec<u32>>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub pinned_regions: Option<Vec<u32>>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hidden_regions: Option<Vec<u32>>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ConvoyCellState {
+    Efficiency { value: i64 },
+    NoTraffic,
+    NotRecorded { reason: String },
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ConvoyCellRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub state: ConvoyCellState,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -120,6 +159,10 @@ pub struct ConvoyCountry {
     pub first_hour: i32,
     pub last_hour: i32,
     pub tag: Option<String>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub name: Option<String>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub name_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -130,6 +173,10 @@ pub struct ConvoyRegion {
     #[doc = " The region's in-game name; null with why where the content does not name it."]
     pub name: Option<String>,
     pub missing: Option<String>,
+    pub pinned: bool,
+    pub cells: Vec<ConvoyCellRun>,
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub readout: Option<ConvoyCellState>,
     #[doc = " Fixed5 efficiency: first hour, last hour, value."]
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, number]>"))]
     pub efficiency: Vec<(i32, i32, i64)>,
@@ -197,6 +244,7 @@ pub struct ConvoyHealthReply {
     pub known: Vec<Vec<HourSpan>>,
     #[doc = " Hours the tag had no country, or the recording holds none: nothing is known of it there."]
     pub unheld: Vec<HourSpan>,
+    pub gaps: Vec<HourSpan>,
     pub regions: Vec<ConvoyRegion>,
     pub deals: Vec<ConvoyDeal>,
     pub leases: Vec<ConvoyLease>,
@@ -262,7 +310,7 @@ fn countries(runs: &[(i32, i32, i64)], names: &Names, links: &RunLinks, out: &mu
             let tag = tag.map(str::to_owned);
             match out.last_mut() {
                 Some(held) if held.tag == tag && i64::from(held.last_hour) + 1 == i64::from(a) => held.last_hour = b,
-                _ => out.push(ConvoyCountry { first_hour: a, last_hour: b, tag }),
+                _ => out.push(ConvoyCountry { first_hour: a, last_hour: b, tag, name: None, name_missing: None }),
             }
         }
     }
@@ -279,9 +327,167 @@ pub(crate) fn rows_of(owned: &Owned, country: u32, first: i32, last: i32) -> BTr
     out
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TrafficProof {
+    Proven(BTreeSet<u32>),
+    Unknown(String),
+}
+
+pub(crate) fn traffic_in_frame(frame: &DecodedFrame, slot: u32) -> TrafficProof {
+    let Ok(links_rows) = frame.complete::<tables::CountryLinks>() else {
+        return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
+    };
+    let Ok(clients) = frame.complete::<tables::ConvoyClients>() else {
+        return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
+    };
+    let Ok(origins) = frame.complete::<tables::ResourceOrigins>() else {
+        return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
+    };
+    let Ok(route_rows) = frame.complete::<tables::TradeRoutes>() else {
+        return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
+    };
+    let links: HashMap<u32, u32> = links_rows.iter().map(|row| (row.id, row.canonical_slot)).collect();
+    let routes: HashMap<(u8, u32, u32), &TradeRouteRow> = route_rows.iter().map(|row| ((row.class, row.country, row.other), row)).collect();
+    let ours = |raw: u32| links.get(&raw) == Some(&slot);
+    let client_routes = clients.iter().filter(|row| match row.category {
+        IMPORT | SUPPLY_TRANSFER => ours(row.owner),
+        LEND_LEASE_U8 | MARKET => ours(row.other),
+        _ => false,
+    }).map(|row| (row.convoys_assigned, (row.route_class, row.route_country, row.route_other)));
+    let origin_routes = origins.iter().filter(|row| row.list == 0 && ours(row.country)).map(|row| (row.convoys_assigned, (0u8, row.country, row.state)));
+    let mut crossed = BTreeSet::new();
+    for (convoys, key) in client_routes.chain(origin_routes) {
+        if convoys == 0 {
+            continue;
+        }
+        let Some(route) = routes.get(&key).copied() else {
+            return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
+        };
+        match route.kind {
+            NAVAL_ROUTE if route.path.is_empty() && (route.from == 0 || route.to == 0) => {
+                return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned());
+            }
+            NAVAL_ROUTE => crossed.extend(route.path.iter().copied()),
+            NO_ROUTE => return TrafficProof::Unknown(TRAFFIC_NOT_RECORDED.to_owned()),
+            _ => {}
+        }
+    }
+    TrafficProof::Proven(crossed)
+}
+
+fn intersect_spans(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        let from = a[i].0.max(b[j].0);
+        let to = a[i].1.min(b[j].1);
+        if from <= to {
+            out.push((from, to));
+        }
+        if a[i].1 < b[j].1 {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    out
+}
+
+fn complete_spans(recording: &Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
+    let statuses = dashboard_query::cost::storage(|| lanes::statuses(recording, run, table, first, last))?;
+    let mut out: Vec<(i32, i32)> = Vec::new();
+    for status in statuses {
+        if !status_complete(status.status) {
+            continue;
+        }
+        let (a, b) = (status.first.max(first), status.last.min(last));
+        if a > b {
+            continue;
+        }
+        match out.last_mut() {
+            Some(prev) if i64::from(prev.1) + 1 >= i64::from(a) => prev.1 = prev.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn build_region_cells(
+    region: u32,
+    efficiency: &[(i32, i32, i64)],
+    traffic: &[(i32, i32, TrafficProof)],
+    known: &[HourSpan],
+    unheld: &[HourSpan],
+    from: i32,
+    to: i32,
+) -> Vec<ConvoyCellRun> {
+    if from > to {
+        return Vec::new();
+    }
+    let mut cuts = BTreeSet::from([from]);
+    let mut mark = |a: i32, b: i32| {
+        let (a, b) = (a.max(from), b.min(to));
+        if a <= b {
+            cuts.insert(a);
+            if let Some(next) = b.checked_add(1).filter(|&n| n <= to) {
+                cuts.insert(next);
+            }
+        }
+    };
+    for &(a, b, _) in efficiency {
+        mark(a, b);
+    }
+    for (a, b, _) in traffic {
+        mark(*a, *b);
+    }
+    for span in known {
+        mark(span.first_hour, span.last_hour);
+    }
+    for span in unheld {
+        mark(span.first_hour, span.last_hour);
+    }
+    let points: Vec<i32> = cuts.into_iter().collect();
+    let in_spans = |spans: &[HourSpan], h: i32| {
+        let idx = spans.partition_point(|s| s.last_hour < h);
+        idx < spans.len() && spans[idx].first_hour <= h
+    };
+    let eff_at = |h: i32| {
+        let idx = efficiency.partition_point(|r| r.1 < h);
+        (idx < efficiency.len() && efficiency[idx].0 <= h).then(|| efficiency[idx].2)
+    };
+    let traffic_at = |h: i32| {
+        let idx = traffic.partition_point(|r| r.1 < h);
+        (idx < traffic.len() && traffic[idx].0 <= h).then(|| &traffic[idx].2)
+    };
+    let mut out: Vec<ConvoyCellRun> = Vec::new();
+    for (i, &start) in points.iter().enumerate() {
+        let end = points.get(i + 1).map_or(to, |&next| next - 1);
+        let state = if in_spans(unheld, start) {
+            ConvoyCellState::NotRecorded { reason: "No country holds this tag at this hour".into() }
+        } else if !in_spans(known, start) {
+            ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was not recorded".into() }
+        } else if let Some(value) = eff_at(start) {
+            ConvoyCellState::Efficiency { value }
+        } else {
+            match traffic_at(start) {
+                Some(TrafficProof::Proven(active)) if active.contains(&region) => ConvoyCellState::Efficiency { value: i64::from(SCALE) },
+                Some(TrafficProof::Proven(_)) => ConvoyCellState::NoTraffic,
+                Some(TrafficProof::Unknown(reason)) => ConvoyCellState::NotRecorded { reason: reason.clone() },
+                None => ConvoyCellState::NotRecorded { reason: TRAFFIC_NOT_RECORDED.to_owned() },
+            }
+        };
+        match out.last_mut() {
+            Some(prev) if prev.state == state && i64::from(prev.last_hour) + 1 == i64::from(start) => prev.last_hour = end,
+            _ => out.push(ConvoyCellRun { first_hour: start, last_hour: end, state }),
+        }
+    }
+    out
+}
+
 #[derive(Default)]
 struct Gathered {
     regions: BTreeMap<u32, Vec<(i32, i32, i64)>>,
+    traffic: Vec<(i32, i32, TrafficProof)>,
     deals: BTreeMap<u128, ConvoyDeal>,
     leases: BTreeMap<u128, ConvoyLease>,
     known: [Vec<HourSpan>; 3],
@@ -382,7 +588,7 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
             ConvoyView::Trade => (Some(dashboard_base::queries::links(source, run)?), Some(crate::products::convoys::cached_convoys(source, run)?)),
         };
         for holder in query.holders.within(&params.country, stretch.first, stretch.last) {
-            let Holder::Found { id, .. } = holder.holder else { continue };
+            let Holder::Found { slot, id } = holder.holder else { continue };
             let (first, last) = (holder.first, holder.last);
             held.push((first, last));
             match (params.view, &links, &index) {
@@ -393,6 +599,99 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                         let region = gathered.regions.entry(key as u32).or_default();
                         for run in numbers(&runs, &[(first, last)]) {
                             push(region, run);
+                        }
+                    }
+                    let mut spans = complete_spans(recording, run, TableId::ConvoyClients, first, last)?;
+                    for table in [TableId::ResourceOrigins, TableId::TradeRoutes, TableId::CountryLinks] {
+                        if spans.is_empty() {
+                            break;
+                        }
+                        let other = complete_spans(recording, run, table, first, last)?;
+                        spans = intersect_spans(&spans, &other);
+                    }
+                    if !spans.is_empty() {
+                        let mut eval_hours = BTreeSet::new();
+                        for &(a, b) in &spans {
+                            eval_hours.insert(a);
+                            eval_hours.insert(b);
+                        }
+                        let clients_h = history(recording, run, TableId::ConvoyClients, &[CLIENT_CATEGORY, CLIENT_OWNER, CLIENT_OTHER, 3, 4, 5, CLIENT_ASSIGNED], Keys::All, first, last)?;
+                        let mut route_keys: Vec<u128> = Vec::new();
+                        let cat_i = at(&clients_h, CLIENT_CATEGORY);
+                        let own_i = at(&clients_h, CLIENT_OWNER);
+                        let oth_i = at(&clients_h, CLIENT_OTHER);
+                        let rc_i = at(&clients_h, 3);
+                        let rcty_i = at(&clients_h, 4);
+                        let roth_i = at(&clients_h, 5);
+                        for (_, steps) in &clients_h.keys {
+                            let relevant = steps.iter().any(|step| {
+                                step.cells.as_deref().is_some_and(|cells| {
+                                    let cat = number(cells, cat_i);
+                                    let own = number(cells, own_i).and_then(|v| u32::try_from(v).ok());
+                                    let oth = number(cells, oth_i).and_then(|v| u32::try_from(v).ok());
+                                    matches!(cat, Some(1 | 2)) && own == Some(id) || matches!(cat, Some(4 | 6)) && oth == Some(id)
+                                })
+                            });
+                            if relevant {
+                                for step in steps {
+                                    eval_hours.insert(step.hour);
+                                    if let Some(cells) = step.cells.as_deref()
+                                        && let (Some(rc), Some(rcty), Some(roth)) = (
+                                            number(cells, rc_i).and_then(|v| u8::try_from(v).ok()),
+                                            number(cells, rcty_i).and_then(|v| u32::try_from(v).ok()),
+                                            number(cells, roth_i).and_then(|v| u32::try_from(v).ok()),
+                                        )
+                                    {
+                                        route_keys.push((u128::from(rcty) << 40) | (u128::from(rc) << 32) | u128::from(roth));
+                                    }
+                                }
+                            }
+                        }
+                        let origins_h = history(recording, run, TableId::ResourceOrigins, &[0, 5], Keys::All, first, last)?;
+                        for (key, steps) in &origins_h.keys {
+                            let key = *key;
+                            if key as u32 == id {
+                                let state = (key >> 32) as u32;
+                                route_keys.push((u128::from(id) << 40) | u128::from(state));
+                                for step in steps {
+                                    eval_hours.insert(step.hour);
+                                }
+                            }
+                        }
+                        route_keys.sort_unstable();
+                        route_keys.dedup();
+                        if !route_keys.is_empty() {
+                            let routes_h = history(recording, run, TableId::TradeRoutes, &[0, 1, 2, 3], Keys::These(&route_keys), first, last)?;
+                            for (_, steps) in &routes_h.keys {
+                                for step in steps {
+                                    eval_hours.insert(step.hour);
+                                }
+                            }
+                        }
+                        let mut seeker = Seeker::new(recording)?;
+                        let traffic_tables = [
+                            replay_lanes::at::Read::all(TableId::CountryLinks),
+                            replay_lanes::at::Read::all(TableId::ConvoyClients),
+                            replay_lanes::at::Read::all(TableId::ResourceOrigins),
+                            replay_lanes::at::Read::all(TableId::TradeRoutes),
+                        ];
+                        for &(span_a, span_b) in &spans {
+                            let hours: Vec<i32> = eval_hours.range(span_a..=span_b).copied().collect();
+                            for (idx, &hour) in hours.iter().enumerate() {
+                                dashboard_text::metadata::check_cancel(cancelled)?;
+                                let seg_end = hours.get(idx + 1).map_or(span_b, |&next| next - 1);
+                                let frame = dashboard_query::cost::storage(|| seeker.frame(run, hour, &traffic_tables))?;
+                                let proof = traffic_in_frame(&frame, slot);
+                                if let TrafficProof::Proven(active) = &proof {
+                                    for &r in active {
+                                        gathered.regions.entry(r).or_default();
+                                    }
+                                }
+                                match gathered.traffic.last_mut() {
+                                    Some(prev) if prev.2 == proof && i64::from(prev.1) + 1 == i64::from(hour) => prev.1 = seg_end,
+                                    _ => gathered.traffic.push((hour, seg_end, proof)),
+                                }
+                            }
                         }
                     }
                 }
@@ -482,7 +781,7 @@ impl Product for ConvoyHealth {
     const KEY: &'static str = KEY;
     const CONTENT_DEPENDENT: bool = true;
     type Params = ConvoyHealthParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, view, country, from: Start, to: End];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, view, country, from: Start, to: End, regions, pinnedRegions, hiddenRegions, top, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = ConvoyHealthReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -501,6 +800,8 @@ impl Product for ConvoyHealth {
             ConvoyHealthParams::decl(),
             ConvoyHealthReply::decl(),
             ConvoyView::decl(),
+            ConvoyCellState::decl(),
+            ConvoyCellRun::decl(),
             ConvoyCountry::decl(),
             ConvoyRegion::decl(),
             ConvoyDeal::decl(),
@@ -516,22 +817,89 @@ impl Product for ConvoyHealth {
         let from = params.from.unwrap_or(query.timeline.first).max(query.timeline.first);
         let to = params.to.unwrap_or(query.timeline.last).min(query.timeline.last);
         let mut warnings = Vec::new();
-        let (gathered, mut held) = if from <= to { gather(source, &query, params, (from, to), cancelled)? } else { (Gathered::default(), Vec::new()) };
+        let (mut gathered, mut held) = if from <= to { gather(source, &query, params, (from, to), cancelled)? } else { (Gathered::default(), Vec::new()) };
         held.sort_unstable();
         let unheld = outside(&held, from, to);
-        let named = region_names(source, context, &gathered.regions.keys().copied().collect(), &mut warnings);
-        let regions = gathered
-            .regions
+        let [regional, deals_known, clients_known] = gathered.known;
+        let known = [regional, deals_known, clients_known].map(dashboard_world::products::subjects::settle).to_vec();
+        let gaps: Vec<HourSpan> = query
+            .timeline
+            .unheld
+            .iter()
+            .filter_map(|gap| {
+                let a = gap.first.max(from);
+                let b = gap.last.min(to);
+                (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
+            })
+            .collect();
+        let mut region_ids: BTreeSet<u32> = gathered.regions.keys().copied().collect();
+        region_ids.extend(params.regions.iter().flatten().copied());
+        region_ids.extend(params.pinned_regions.iter().flatten().copied());
+        let named = region_names(source, context, &region_ids, &mut warnings);
+        let mut all_regions: BTreeMap<u32, ConvoyRegion> = region_ids
             .into_iter()
-            .map(|(region, efficiency)| {
+            .map(|region| {
+                let efficiency = gathered.regions.remove(&region).unwrap_or_default();
+                let cells = build_region_cells(region, &efficiency, &gathered.traffic, &known[0], &unheld, from, to);
+                let readout = cells.last().map(|run| run.state.clone());
                 let (name, missing) = match named.get(&region) {
                     Some(Ok(name)) => (Some(name.clone()), None),
                     Some(Err(why)) => (None, Some(why.clone())),
                     None => (None, Some(format!("Region {region} absent from the recorded stack"))),
                 };
-                ConvoyRegion { region, name, missing, efficiency }
+                (region, ConvoyRegion { region, name, missing, pinned: false, cells, readout, efficiency })
             })
             .collect();
+        let regions: Vec<ConvoyRegion> = if let Some(explicit) = &params.regions {
+            explicit
+                .iter()
+                .filter_map(|id| {
+                    let mut entry = all_regions.remove(id)?;
+                    entry.pinned = true;
+                    Some(entry)
+                })
+                .collect()
+        } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
+            let mut seen = HashSet::new();
+            let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
+            let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+            let mut auto: Vec<(u32, i128, u64)> = all_regions
+                .iter()
+                .filter(|(id, _)| !seen.contains(id) && !hidden.contains(id))
+                .map(|(&id, entry)| {
+                    let mut deficit: i128 = 0;
+                    let mut active_hours: u64 = 0;
+                    for run in &entry.cells {
+                        if let ConvoyCellState::Efficiency { value } = run.state {
+                            let span = (i64::from(run.last_hour) - i64::from(run.first_hour) + 1).max(0) as u64;
+                            active_hours += span;
+                            deficit += i128::from((i64::from(SCALE) - value).max(0)) * i128::from(span);
+                        }
+                    }
+                    (id, deficit, active_hours)
+                })
+                .filter(|&(_, deficit, active)| deficit > 0 || active > 0)
+                .collect();
+            auto.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+            if let Some(limit) = params.top {
+                auto.truncate(limit);
+            }
+            let mut ordered = Vec::with_capacity(pinned_list.len() + auto.len());
+            for id in pinned_list {
+                if let Some(mut entry) = all_regions.remove(&id) {
+                    entry.pinned = true;
+                    ordered.push(entry);
+                }
+            }
+            for (id, _, _) in auto {
+                if let Some(entry) = all_regions.remove(&id) {
+                    ordered.push(entry);
+                }
+            }
+            ordered
+        } else {
+            all_regions.into_values().collect()
+        };
         let resources = if params.view == ConvoyView::Trade {
             let tokens = resource_tokens(&query, Some(&gathered.resources), &mut warnings)?;
             let (infos, notes) = ResourceNaming::stored(source, context).infos(&tokens, cancelled)?;
@@ -540,19 +908,28 @@ impl Product for ConvoyHealth {
         } else {
             Vec::new()
         };
-        let [regional, deals, clients] = gathered.known;
-        let known = [regional, deals, clients].map(dashboard_world::products::subjects::settle).to_vec();
-        let deals = gathered.deals.into_values().filter(|deal| !deal.resource.is_empty() || !deal.efficiency.is_empty() || !deal.exporter.is_empty()).collect();
-        let leases = gathered.leases.into_values().filter(|lease| !lease.bad.is_empty()).collect();
+        let mut deals: Vec<ConvoyDeal> = gathered.deals.into_values().filter(|deal| !deal.resource.is_empty() || !deal.efficiency.is_empty() || !deal.exporter.is_empty()).collect();
+        let mut leases: Vec<ConvoyLease> = gathered.leases.into_values().filter(|lease| !lease.bad.is_empty()).collect();
+        if params.view == ConvoyView::Trade && (!deals.is_empty() || !leases.is_empty()) {
+            let mut looks = LookResolver::new(source, &query.timeline, context, &mut warnings)?;
+            for country in deals.iter_mut().flat_map(|d| d.exporter.iter_mut()).chain(leases.iter_mut().flat_map(|l| l.giver.iter_mut())) {
+                if let Some(tag) = &country.tag {
+                    let look = looks.at(tag, country.last_hour)?;
+                    country.name = look.name;
+                    country.name_missing = look.name_missing;
+                }
+            }
+        }
         Ok(ConvoyHealthReply {
             branch_id: params.branch_id.clone(),
             view: params.view,
-            tag: query.holders.name(&params.country, query.timeline.last),
+            tag: query.holders.name(&params.country, to),
             first_hour: from,
             last_hour: to,
             scale: SCALE,
             known,
             unheld,
+            gaps,
             regions,
             deals,
             leases,

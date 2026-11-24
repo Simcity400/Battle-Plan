@@ -6,12 +6,12 @@ import type { RegionalWeatherColumns as WeatherColumns } from '../../generated/d
 const colours = { flag: (index: number) => `c${index}`, ramp: (value: number, highest: number) => `r${value / highest}`, clear: 'surface', gap: 'gap' };
 const days: WeatherColumns = { days: 1, columns: [{ firstHour: 0, lastHour: 23, sampledHour: 23, readHour: 23, recorded: 1 },
   { firstHour: 24, lastHour: 47, sampledHour: 47, readHour: 47, recorded: 1 }, { firstHour: 48, lastHour: 71, sampledHour: null, readHour: null, recorded: 0 }], regions: [
-  { id: '1', observed: [1, 1, 0], clear: [0, 0, 0], measures: [{ id: 'rain', days: [1, 1, 0] }, { id: 'snow', days: [0, 1, 0] },
+  { id: '1', pinned: false, observed: [1, 1, 0], clear: [0, 0, 0], measures: [{ id: 'rain', days: [1, 1, 0] }, { id: 'snow', days: [0, 1, 0] },
     { id: 'mod:air', days: [1, 0, 0], values: [['-25000', '-25000', '-25000'], null, null] }] },
-  { id: '2', observed: [1, 1, 0], clear: [1, 1, 0], measures: [] }] };
+  { id: '2', pinned: false, observed: [1, 1, 0], clear: [1, 1, 0], measures: [] }] };
 const reply = validateWeather({ firstHour: 0, lastHour: 71, dayHours: 24, regions: [{ id: '1', name: 'Alps' }, { id: '2', name: 'Sea' }, { id: '3', name: 'Desert' }],
   flags: [{ id: 'rain', name: 'Rain' }, { id: 'snow', name: 'Snow' }], modifiers: [{ id: 'air', name: 'Air detection' }],
-  temperature: 'Temperature unavailable: no weather settings', columns: days, warnings: [] });
+  temperature: 'Temperature unavailable: no weather settings', columns: days, legend: [], gaps: [], warnings: [] });
 
 test('overlapping flags all show as stripes, none set is blank, a region never sampled is unknown', () => {
   const periods = weatherPeriods(days, [0, 71], 24);
@@ -25,7 +25,7 @@ test('overlapping flags all show as stripes, none set is blank, a region never s
 
 test('a folded column sizes its stripes by days, keeps clear days and never takes an unsampled day for clear', () => {
   const week: WeatherColumns = { days: 7, columns: [{ firstHour: 0, lastHour: 167, sampledHour: 167, readHour: 160, recorded: 6 }],
-    regions: [{ id: '1', observed: [6], clear: [3], measures: [{ id: 'rain', days: [2] }, { id: 'snow', days: [1] }] }, { id: '2', observed: [6], clear: [6], measures: [] }] };
+    regions: [{ id: '1', pinned: false, observed: [6], clear: [3], measures: [{ id: 'rain', days: [2] }, { id: 'snow', days: [1] }] }, { id: '2', pinned: false, observed: [6], clear: [6], measures: [] }] };
   const data = validateWeather({ ...reply, columns: week });
   const { rows } = weatherRows(data, data.regions, weatherPeriods(week, [24, 100], 24), 'conditions', null, colours);
   assert.deepEqual(rows[0].cells[0].parts.map(part => [part.id, part.share, part.color]),

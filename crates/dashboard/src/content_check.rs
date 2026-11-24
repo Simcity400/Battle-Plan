@@ -407,6 +407,13 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "peace action names", findings);
             Ok("The state-taking action's name checked; other action names come from the recorded settlements' keys and cached names.".into())
         }
+        dashboard_world::products::sea_regions::StrategicRegions::KEY => {
+            let regions = dashboard_base::content::strategic_regions(&content.resolved.layers).map_err(|why| why.to_string())?;
+            for note in &regions.notes {
+                findings.push(Finding::new(Kind::Warning, "strategic regions", note.clone()));
+            }
+            Ok(format!("{} strategic regions checked through the recorded content stack.", regions.regions.len()))
+        }
         convoys::ConvoyHealth::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "regional convoy efficiency, resource deals and lend-lease convoy clients need recorded rows; unavailable offline"));
             let regions = dashboard_base::content::strategic_regions(&content.resolved.layers).map_err(|why| why.to_string())?;
