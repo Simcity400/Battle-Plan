@@ -188,3 +188,23 @@ test('a hundred played hours ask each completed tile once, the current tile once
   }
   assert.equal(visits.cells, tiles.length * 7 * tileDays, 'each history cell is read once over a hundred hours, not once an hour');
 });
+
+test('a thousand cells of five values ask for five colours, once across frames', () => {
+  let asked = 0;
+  const counted = (item: AirSide): AirSide => new Proxy(item, { get: (target, key, receiver) => { if (key === 'color') asked++; return Reflect.get(target, key, receiver); } });
+  const palette: [number, number, number][] = [[200, 40, 40], [40, 80, 220], [40, 160, 60], [200, 160, 40], [140, 60, 200]];
+  const sides = palette.map((color, index) => counted(side(`f:${index}`, { name: `Side ${index}`, color })));
+  const cell = (lead: number) => ({ kind: 'sides' as const, parts: [{ side: lead, tag: 'GER', friendly: '70' }, { side: (lead + 1) % 5, tag: 'ENG', friendly: '30' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false, lead: { kind: 'leading' as const, side: lead, share_bp: 7000 } });
+  const days = 1000;
+  const tile: AirTimelineReply = {
+    ...reply(0), firstHour: 0, lastHour: days * 24 - 1, sides,
+    days: Array.from({ length: days }, (_, day) => day * 24 + 23),
+    rows: [{ region: 5, name: 'Southern England', nameMissing: null, pinned: false, cells: Array.from({ length: days }, (_, day): [number, AirTimelineReply['rows'][number]['cells'][number][1]] => [1, cell(day % 5)]) }],
+    absent: [[days, null]],
+  };
+  for (let hour = days * 24; hour < days * 24 + 3; hour++) {
+    const now = { ...reply(hour), firstHour: days * 24, lastHour: hour, days: [hour], sides: [] };
+    projectAirTimeline(createBoundedReadView({ hour, panels: new Map<string, unknown>([['now', now], ['tile:0', tile]]) }), { ...OPTIONS, tiles: 1 });
+  }
+  assert.equal(asked, 5, 'each side colour is solved once, for every cell, row and frame');
+});

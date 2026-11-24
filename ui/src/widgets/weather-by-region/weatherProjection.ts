@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, identityColour, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, identityColour } from '../../charts/palette.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
@@ -12,7 +12,7 @@ import {
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
-import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
+import { readableOn, regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { regionLanes } from '../../families/regions/regionRows.ts';
@@ -63,9 +63,9 @@ function palette(reply: RegionalWeatherReply, surface: string): Palette {
   return {
     flag,
     track: surfaceMix(surface, 0.04),
-    cold: readableColour(CHART_MEASURE_COLOURS.temperatureCold, surface),
-    warm: readableColour(CHART_MEASURE_COLOURS.temperatureWarm, surface),
-    ramp: readableColour(CHART_MEASURE_COLOURS.weatherModifier, surface),
+    cold: readableOn(CHART_MEASURE_COLOURS.temperatureCold, surface),
+    warm: readableOn(CHART_MEASURE_COLOURS.temperatureWarm, surface),
+    ramp: readableOn(CHART_MEASURE_COLOURS.weatherModifier, surface),
   };
 }
 

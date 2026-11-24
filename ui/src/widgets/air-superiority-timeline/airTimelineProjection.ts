@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, readableColour, authoredHex, reservedGrey } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, authoredHex } from '../../charts/palette.ts';
 import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -14,7 +14,7 @@ import {
   type HeatLanesModel,
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
-import { countryColourAt, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
+import { contestedGrey, countryColourAt, readableOn, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { readRegionChoice, regionParams, type RegionChoice } from '../../families/regions/regionChoice.ts';
@@ -82,8 +82,18 @@ const REASONS: Readonly<Record<string, string>> = {
   'side-not-present': 'This side was not present',
 };
 
-function sideColour(side: AirSide | undefined, surface: string, fallback: string): string {
-  return side?.color ? readableColour(authoredHex(side.color), surface) : fallback;
+const palettes = new WeakMap<AirTimelineReply, { readonly surface: string; readonly colours: readonly (string | null)[] }>();
+
+function sidePalette(reply: AirTimelineReply, surface: string): readonly (string | null)[] {
+  const held = palettes.get(reply);
+  if (held && held.surface === surface) return held.colours;
+  const colours = reply.sides.map(({ color }) => (color ? readableOn(authoredHex(color), surface) : null));
+  palettes.set(reply, { surface, colours });
+  return colours;
+}
+
+function sideColour(reply: AirTimelineReply, side: number, surface: string, fallback: string): string {
+  return sidePalette(reply, surface)[side] ?? fallback;
 }
 
 function sideName(side: AirSide | undefined): string {
@@ -110,7 +120,7 @@ interface Made {
 
 function viewerColour(side: number | null, reply: AirTimelineReply, look: Look, surface: string, hour: number): DatedColour {
   if (look.viewer) return look.viewer(hour);
-  return { colour: sideColour(side === null ? undefined : reply.sides[side], surface, look.noViewer), through: Infinity };
+  return { colour: side === null ? look.noViewer : sideColour(reply, side, surface, look.noViewer), through: Infinity };
 }
 
 function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, surface: string, viewer: string): Made {
@@ -144,10 +154,10 @@ function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, su
     const score = Math.max(0, Number(part.friendly));
     if (score <= 0) continue;
     const side = reply.sides[part.side];
-    items.push({ label: sideName(side), value: formatShare(score / total), swatch: sideColour(side, surface, look.unknownSide) });
+    items.push({ label: sideName(side), value: formatShare(score / total), swatch: sideColour(reply, part.side, surface, look.unknownSide) });
   }
   if (lead.kind === 'contested') return { cell: { kind: 'solid', color: look.contested }, tip: { items: [{ label: 'Contested' }, ...items] } };
-  const color = depth(look.track, sideColour(reply.sides[lead.side], surface, look.unknownSide), lead.share_bp / 10_000);
+  const color = depth(look.track, sideColour(reply, lead.side, surface, look.unknownSide), lead.share_bp / 10_000);
   return { cell: { kind: 'solid', color }, tip: { items } };
 }
 
@@ -163,7 +173,7 @@ function readoutOf(readout: AirReadout | undefined, reply: AirTimelineReply, loo
     case 'leading': {
       const side = reply.sides[readout.side];
       const pct = formatShare(readout.share_bp / 10_000);
-      return { kind: 'value', form: 'value', primary: pct, secondary: sideName(side), swatch: sideColour(side, surface, look.unknownSide) };
+      return { kind: 'value', form: 'value', primary: pct, secondary: sideName(side), swatch: sideColour(reply, readout.side, surface, look.unknownSide) };
     }
     case 'viewpoint': {
       const pct = formatShare(readout.share_bp / 10_000);
@@ -286,14 +296,14 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
   }
   const through = now.lastHour;
   const surface = options.surface;
-  const noViewer = readableColour(CHART_MEASURE_COLOURS.bopRight, surface);
+  const noViewer = readableOn(CHART_MEASURE_COLOURS.bopRight, surface);
   const viewpointCountry = options.viewpointCountry;
   const sideColours = new Set<string>();
-  for (const reply of [...tiles, now]) for (const side of reply.sides) if (side.color) sideColours.add(readableColour(authoredHex(side.color), surface));
+  for (const reply of [...tiles, now]) for (const colour of sidePalette(reply, surface)) if (colour) sideColours.add(colour);
   const look: Look = {
     track: surfaceMix(surface, 0.04),
-    contested: reservedGrey(surface, [...sideColours]),
-    enemy: readableColour(CHART_MEASURE_COLOURS.short, surface),
+    contested: contestedGrey(surface, [...sideColours].sort()),
+    enemy: readableOn(CHART_MEASURE_COLOURS.short, surface),
     unknownSide: surfaceMix(surface, 0.45),
     viewer: viewpointCountry ? at => countryColourAt(readView, viewpointCountry, at, surface, noViewer) : null,
     noViewer,

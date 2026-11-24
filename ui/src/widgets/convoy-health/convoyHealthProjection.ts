@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, CONVOY_EFFICIENCY_STOPS, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, CONVOY_EFFICIENCY_STOPS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
@@ -13,7 +13,7 @@ import {
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
-import { regionLabel } from '../../families/heat/scale.ts';
+import { readableOn, regionLabel } from '../../families/heat/scale.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { countrySubject, regionLanes } from '../../families/regions/regionRows.ts';
 import { formatProgress } from '../../families/valueFormat.ts';
@@ -68,7 +68,7 @@ function efficiencyReadout(value: number, scale: number, surface: string): HeatL
     primary: percentText(value, scale),
     meaning: 'Efficiency',
     ...(value >= scale ? { tone: 'muted' as const } : {}),
-    swatch: readableColour(efficiencyColour(value / scale), surface, 1),
+    swatch: readableOn(efficiencyColour(value / scale), surface, 1),
   };
 }
 
@@ -262,7 +262,7 @@ function dealName(deal: Deal, reply: ConvoyHealthReply, hour: number): string {
 }
 
 function tradeRows(tiles: readonly ConvoyHealthReply[], now: ConvoyHealthReply, through: number, surface: string): ConvoyRow[] {
-  const routeBad = readableColour(CHART_MEASURE_COLOURS.short, surface);
+  const routeBad = readableOn(CHART_MEASURE_COLOURS.short, surface);
   const held = tiles.map(tile => tileTrade(tile, routeBad));
   const tileDeals = tiles.map(tile => new Map(tile.deals.map(deal => [deal.id, deal])));
   const tileLeases = tiles.map(tile => new Map(tile.leases.map(lease => [lease.handle, lease])));
