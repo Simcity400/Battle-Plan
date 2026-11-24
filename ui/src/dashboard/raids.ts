@@ -261,7 +261,8 @@ export function raidPlaceId(episode: RaidEpisode): string {
 }
 
 export type RaidMetric = 'both' | 'launched' | 'succeeded';
-export interface RaidTallyRun { firstHour: number; lastHour: number; readHour: number; launched: number; succeeded: number }
+export interface RaidTallyRun { firstHour: number; lastHour: number; readHour: number; launched: number; succeeded: number; partial: string | null }
+export const RAID_GAP_REASON = 'Raids during an unrecorded stretch before this date are not counted.';
 export interface RaidTallySeries { tag: string; runs: RaidTallyRun[]; segments: Span[]; membership: Span[] | null; identities?: undefined }
 export interface RaidTally { series: RaidTallySeries[]; hours: number[]; unattributed: number }
 
@@ -327,18 +328,19 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
 function tallyRuns(events: readonly TallyEvent[], segments: readonly Span[]): RaidTallyRun[] {
   const runs: RaidTallyRun[] = [];
   let launched = 0, succeeded = 0, next = 0;
-  for (const segment of segments) {
+  segments.forEach((segment, index) => {
+    const partial = index > 0 ? RAID_GAP_REASON : null;
     let first = segment.firstHour;
     const take = (through: number) => { while (next < events.length && events[next][0] <= through) { if (events[next][1] === 0) launched += events[next][2]; else succeeded += events[next][2]; next++; } };
     take(first);
     while (first <= segment.lastHour) {
       const change = next < events.length ? events[next][0] : Infinity;
       const last = Math.min(segment.lastHour, change - 1);
-      runs.push({ firstHour: first, lastHour: last, readHour: first, launched, succeeded });
+      runs.push({ firstHour: first, lastHour: last, readHour: first, launched, succeeded, partial });
       first = last + 1;
       take(first);
     }
-  }
+  });
   return runs;
 }
 

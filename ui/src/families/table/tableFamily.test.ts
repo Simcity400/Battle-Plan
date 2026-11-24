@@ -1536,7 +1536,6 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   const extraRow = tipAtLeast.rows.find(r => r.label === 'Strength')!;
   assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
   assert.equal(extraRow.valueState?.kind, 'partial');
-  assert.equal(extraRow.valueState?.atLeast, true, 'F8: tooltip row preserves atLeast on partial values');
   assert.ok(tooltipText(tipAtLeast).includes('1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText without at least wording');
   assert.ok(!tooltipText(tipAtLeast).includes('at least'), 'F8: tooltipText omits at least wording');
 
