@@ -29,6 +29,9 @@ export const CHART_MEASURE_COLOURS = {
   temperatureCold: '#4f8fcf',
   temperatureWarm: '#e3843b',
   weatherModifier: '#9085e9',
+  opinionNegative: '#d95926',
+  opinionPositive: '#199e70',
+  intelCoverage: '#3987e5',
 } as const;
 
 export const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
