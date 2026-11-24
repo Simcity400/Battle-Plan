@@ -270,3 +270,29 @@ fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_share
     let reply = LeaderHour::reply(&frame, &params, &at).unwrap();
     assert_eq!(reply.name.as_deref(), Some("Isoroku Yamamoto"), "{:?}", reply.warnings);
 }
+
+#[test]
+fn skill_icons_are_the_installed_leader_windows_buttons_and_a_missing_one_is_named() {
+    engine_executable::executable_tables::initialize_for_tests().expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use content_reader_gui::gui::native;
+    let gui = native::read(
+        br#"guiTypes = { containerWindowType = {
+        name = "armyleaderwindow"
+        buttonType = { name = "sort_skills" spriteType = "GFX_mod_skill" }
+        buttonType = { name = "sort_attack_skill" spriteType = "GFX_mod_attack" }
+        buttonType = { name = "sort_defense_skill" spriteType = "GFX_mod_defense" }
+        buttonType = { name = "sort_supply_skill" spriteType = "GFX_mod_supply" }
+    } }"#,
+    );
+    let guis = native::Guis::new(vec![("interface/unitleaderwindow.gui".into(), gui)]);
+    let mut warnings = Vec::new();
+    let icons = super::window_icons(Ok(&guis), "armyleaderwindow", super::LAND_SKILL_BUTTONS, &mut warnings);
+    assert_eq!(
+        icons.iter().map(|icon| icon.as_ref().map(|icon| (icon.key.as_str(), icon.frame, icon.text))).collect::<Vec<_>>(),
+        [Some(("GFX_mod_skill", 0, None)), Some(("GFX_mod_attack", 0, None)), Some(("GFX_mod_defense", 0, None)), None, Some(("GFX_mod_supply", 0, None))],
+        "a mod's own sprites, in skill, attack, defense, planning, logistics order"
+    );
+    assert!(warnings.iter().any(|warning| warning.contains("sort_planning_skill")), "the missing button is named: {warnings:?}");
+    let refused = super::window_icons(Err("Game content is not configured".into()), "navyleaderwindow", super::NAVY_SKILL_BUTTONS, &mut warnings);
+    assert!(refused.iter().all(Option::is_none));
+}

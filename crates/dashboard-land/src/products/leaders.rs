@@ -3,11 +3,12 @@ pub mod career;
 #[cfg(test)]
 mod tests;
 
-use dashboard_base::products::{LoadContext, Product, artwork::ArtResolution, at_hour::{At, AtHour, Read, ReadsAt}, politics_content::{PoliticsContent, recorded_politics_content}};
+use dashboard_base::products::{LoadContext, Product, artwork::{ArtResolution, sprites::SpriteFrame}, at_hour::{At, AtHour, Read, ReadsAt}, politics_content::{PoliticsContent, recorded_politics_content}};
 use dashboard_intelligence::products::intelligence::Tags;
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}};
 use dashboard_query::Query;
 use dashboard_text::triggers::{Evaluator, LeaderVisibility, RECORDED_TABLES, World, core_gap};
+use content_reader_gui::gui::native::{Guis, window_button_sprite};
 use content_reader_key_names::unit_leader::Leaders;
 use replay::campaign::Replay;
 use replay_data::rows::{CharacterRow, LexicalTokenRow, TableId, UnitLeaderRow, UnitLeaderTraitRow, tables};
@@ -142,6 +143,7 @@ pub struct Content {
     catalogue: Result<Arc<Catalogue>, String>,
     politics: Result<Arc<PoliticsContent>, String>,
     leaders: Result<Arc<Leaders>, String>,
+    icons: std::sync::OnceLock<(LeaderSkillIcons, Vec<String>)>,
 }
 
 type HeldLeaders = content_reader_layers::content::diagnostics::Once<Result<Arc<Leaders>, String>>;
@@ -149,7 +151,7 @@ type HeldLeaders = content_reader_layers::content::diagnostics::Once<Result<Arc<
 impl Content {
     pub fn load(source: &Source, load: &LoadContext) -> Self {
         let Some(options) = load.content.as_ref() else {
-            return Self { catalogue: Err(UNCONFIGURED.into()), politics: Err(UNCONFIGURED.into()), leaders: Err(UNCONFIGURED.into()) };
+            return Self { catalogue: Err(UNCONFIGURED.into()), politics: Err(UNCONFIGURED.into()), leaders: Err(UNCONFIGURED.into()), icons: std::sync::OnceLock::new() };
         };
         let catalogue = catalogue::catalogue(source, options).map_err(|error| error.to_string());
         let politics = recorded_politics_content(source, options).map_err(|error| error.to_string());
@@ -161,7 +163,14 @@ impl Content {
                 .get_or_init(|| Leaders::load(&catalogue.content.layers, &|_| None).map(Arc::new).map_err(|error| error.to_string()))
                 .clone()
         });
-        Self { catalogue, politics, leaders }
+        Self { catalogue, politics, leaders, icons: std::sync::OnceLock::new() }
+    }
+
+    pub fn skill_icons(&self) -> &(LeaderSkillIcons, Vec<String>) {
+        self.icons.get_or_init(|| {
+            let mut warnings = Vec::new();
+            (skill_icons(self.catalogue.as_deref(), &mut warnings), warnings)
+        })
     }
 
     fn localised(&self, key: &str) -> Option<String> {
@@ -606,10 +615,52 @@ pub struct UnitLeadersReply {
     #[doc = " The first hour up to this one the battle log was not recorded: counts are then lower bounds."]
     pub battles_partial_from: Option<i32>,
     pub results_missing: String,
+    #[doc = " The leader window's own skill icons, from the installed interface."]
+    pub skill_icons: LeaderSkillIcons,
     pub warnings: Vec<String>,
 }
 
 dashboard_base::reply_warnings!(UnitLeadersReply, LeaderPortraitsReply);
+
+const LAND_WINDOW: &str = "armyleaderwindow";
+const NAVY_WINDOW: &str = "navyleaderwindow";
+const LAND_SKILL_BUTTONS: [&str; 5] = ["sort_skills", "sort_attack_skill", "sort_defense_skill", "sort_planning_skill", "sort_supply_skill"];
+const NAVY_SKILL_BUTTONS: [&str; 5] = ["sort_skills", "sort_attack_skill", "sort_defense_skill", "sort_maneuvering_skill", "sort_coordination_skill"];
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderSkillIcons {
+    #[doc = " Skill, attack, defense, planning and logistics: the army leader window's sort buttons; none where the installed interface draws none."]
+    pub land: Vec<Option<SpriteFrame>>,
+    #[doc = " Skill, attack, defense, maneuvering and coordination: the navy leader window's sort buttons."]
+    pub navy: Vec<Option<SpriteFrame>>,
+}
+
+pub(crate) fn window_icons(guis: Result<&Guis, String>, window: &str, buttons: [&str; 5], warnings: &mut Vec<String>) -> Vec<Option<SpriteFrame>> {
+    let guis = match guis {
+        Ok(guis) => guis,
+        Err(why) => {
+            warnings.push(format!("Leader skill icons are unavailable: {why}"));
+            return vec![None; buttons.len()];
+        }
+    };
+    buttons
+        .iter()
+        .map(|button| match window_button_sprite(guis, window, button, warnings) {
+            Ok(key) => Some(SpriteFrame { key, frame: 0, recorded: None, text: None }),
+            Err(why) => {
+                warnings.push(format!("The installed interface draws no {button} icon in {window}: {why}"));
+                None
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn skill_icons(catalogue: Result<&Catalogue, &String>, warnings: &mut Vec<String>) -> LeaderSkillIcons {
+    let guis = || catalogue.map_err(Clone::clone).and_then(|catalogue| catalogue.guis().map_err(|error| error.to_string()));
+    LeaderSkillIcons { land: window_icons(guis(), LAND_WINDOW, LAND_SKILL_BUTTONS, warnings), navy: window_icons(guis(), NAVY_WINDOW, NAVY_SKILL_BUTTONS, warnings) }
+}
 
 const BASE_TABLES: [TableId; 4] = [TableId::UnitLeaders, TableId::UnitLeaderTraits, TableId::Countries, TableId::CountryLinks];
 
@@ -656,7 +707,7 @@ impl AtHour for UnitLeaders {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![UnitLeadersParams::decl(), LeaderSelection::decl(), LeaderKinds::decl(), LeaderTrait::decl(), LeaderRole::decl(), LeaderWithheld::decl(), LeaderRow::decl(), UnitLeadersReply::decl()]
+        vec![UnitLeadersParams::decl(), LeaderSelection::decl(), LeaderKinds::decl(), LeaderTrait::decl(), LeaderRole::decl(), LeaderWithheld::decl(), LeaderRow::decl(), LeaderSkillIcons::decl(), UnitLeadersReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -717,7 +768,7 @@ impl AtHour for UnitLeaders {
         let leaders = match frame.complete::<tables::UnitLeaders>().map_err(|error| error.to_string()) {
             Ok(leaders) => leaders,
             Err(why) => {
-                return Ok(UnitLeadersReply { leaders: Vec::new(), traits: Vec::new(), withheld: Vec::new(), missing: Some(why), battles_partial_from: None, results_missing: RESULTS_MISSING.into(), warnings });
+                return Ok(UnitLeadersReply { leaders: Vec::new(), traits: Vec::new(), withheld: Vec::new(), missing: Some(why), battles_partial_from: None, results_missing: RESULTS_MISSING.into(), skill_icons: content.skill_icons().0.clone(), warnings });
             }
         };
         let branch = parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?;
@@ -806,7 +857,9 @@ impl AtHour for UnitLeaders {
             });
         }
         let battles_partial_from = battles_partial_from(&query, query.timeline.first, at.hour)?;
-        Ok(UnitLeadersReply { leaders: out, traits: traits.traits, withheld, missing: None, battles_partial_from, results_missing: RESULTS_MISSING.into(), warnings })
+        let (icons, icon_warnings) = content.skill_icons();
+        warnings.extend(icon_warnings.iter().cloned());
+        Ok(UnitLeadersReply { leaders: out, traits: traits.traits, withheld, missing: None, battles_partial_from, results_missing: RESULTS_MISSING.into(), skill_icons: icons.clone(), warnings })
     }
 }
 
