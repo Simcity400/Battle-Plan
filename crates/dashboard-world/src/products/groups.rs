@@ -340,11 +340,10 @@ fn naming(source: &Source, context: &LoadContext, warnings: &mut Vec<String>) ->
     };
     let (templates, localisation, generation) = match loaded {
         Some(Ok((templates, localisation, layers))) => {
-            let generation = templates.as_ref().ok().map(|templates| {
+            if let Ok(templates) = &templates {
                 warnings.extend(templates.warnings.iter().cloned());
-                Generation::Of(layers)
-            });
-            (templates, localisation, generation)
+            }
+            (templates, localisation, Some(Generation::Of(layers)))
         }
         Some(Err(error)) => (Err(format!("Faction naming content is unavailable: {error}")), stored(), None),
         None => (Err("Faction naming content is unavailable until the game folders are chosen".into()), stored(), Some(Generation::Uncontent)),

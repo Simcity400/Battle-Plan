@@ -6,6 +6,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
+  seriesRaceSelection,
   seriesRaceSources,
   seriesRaceUnavailable,
   seriesRaceWarnings,
@@ -43,7 +44,6 @@ export const navySizeRaceProjection: BarsProjection<NavySizeRaceOptions> = regis
 
     if (!options.split && !strength) {
       return projectSeriesRace(readView, options, {
-        decimals: 0,
         valueFormat,
         scaleFormat,
         scaleUnit,
@@ -163,12 +163,12 @@ export const navySizeRaceDeclaration: BarsWidgetDeclaration<NavySizeRaceOptions>
       ownership: navyOwnership(ctx.options.ownership),
       grouping: navyGrouping(ctx.options.grouping),
       split: ctx.options.split === true,
-      candidates: ranked ? ctx.countries.every : ctx.countries.tags,
       holders: ranked ? null : ctx.countries.holders,
       membership: ranked ? null : ctx.countries.membership,
       unobserved: ranked ? [] : ctx.countries.unobserved,
       top: ctx.countries.top,
       all: ctx.countries.all,
+      group: seriesRaceSelection(ctx).group,
     };
   },
   unavailable: seriesRaceUnavailable,

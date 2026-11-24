@@ -210,7 +210,7 @@ export function primaryExactEntry(plan: SourcePlan): SourceEntry | null {
   return plan.entries[0] ?? null;
 }
 
-function producePointParams(
+export function producePointParams(
   read: Extract<SourceTimeShape, { shape: 'point' }>,
   hour: GatedHour,
   mode: 'static' | 'exact',
@@ -223,7 +223,7 @@ function producePointParams(
   return { ...read.params, [read.hourParam ?? 'hour']: hour };
 }
 
-function produceSpanParams(
+export function produceSpanParams(
   base: Readonly<Record<string, unknown>> | null,
   span: BoundWindow,
   builder?: (base: Readonly<Record<string, unknown>>, span: BoundWindow) => Readonly<Record<string, unknown>> | null,
@@ -251,14 +251,14 @@ function tailQueryParams(
   return {
     branchId: query.branchId,
     ...(query.log !== undefined ? { log: query.log } : {}),
-    facets: query.facets,
+    ...(query.facets !== undefined ? { facets: query.facets } : {}),
     from: query.from,
     hour,
     offset: String(Math.max(0, Math.floor(offset))),
     limit: Math.max(1, Math.floor(limit)),
     ...(query.columns !== undefined ? { columns: query.columns } : {}),
     ...(query.countFacets && query.countFacets.length ? { countFacets: query.countFacets } : {}),
-    ...(query.scope !== undefined ? { scope: query.scope } : {}),
+    ...query.ask,
   };
 }
 

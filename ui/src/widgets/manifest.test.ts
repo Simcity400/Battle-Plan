@@ -31,7 +31,7 @@ import {
 } from '../families/settingsControls.ts';
 import { encodeTableSettings, ROW_HEIGHT, tableDefaults, tableSettingsOf, updateTableSettings, type TableBase, type TableColumnDefaults } from '../families/table/settings.ts';
 import { widgetMetas } from './definitions.ts';
-import { FAMILY_MANIFESTS, FAMILY_VIEWS, familyLaneView } from './familyManifest.ts';
+import { FAMILY_MANIFESTS, FAMILY_VIEWS } from './familyManifest.ts';
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
 import { drawnViews } from '../draw/views/drawn.ts';
 import {
@@ -42,8 +42,12 @@ import {
   resolveWidgetScopedOptions,
   resolveWidgetViewSwitch,
   familyViewOptionFields,
+  presetStoredOptions,
   widgetOptionFields,
+  widgetViewOptions,
 } from './manifest.ts';
+import { viewSlotProps } from './viewProps.ts';
+import type { WidgetSpec } from '../dashboard/model';
 
 test('manifest accounts for every widget kind once across family views and legacy entries', () => {
   const familyKinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
@@ -108,6 +112,9 @@ test('every manifest view reaches its own projection through the binding the hos
           const reopened = parseStoredOptions(JSON.parse(JSON.stringify(written)));
           assert.ok(reopened, `${entry.kind}/${view}: ${field.key} written by the ${editor} survives a save`);
           assert.equal(resolveOptions(read, reopened)[field.key], value, `${entry.kind}/${view}: ${field.key} written by the ${editor} is what the host reads`);
+          const handed = viewSlotProps(entry.kind, { widget: { kind: entry.kind, options: reopened } as unknown as WidgetSpec });
+          assert.equal(handed.options[field.key], value, `${entry.kind}/${view}: ${field.key} written by the ${editor} is what the view's wrapper, chip and detail window are handed`);
+          assert.equal(Object.hasOwn(handed.widget ?? {}, 'options'), false, `${entry.kind}/${view}: the view's wrapper is never handed the stored record`);
         }
       }
     }
@@ -265,11 +272,23 @@ test('worker projection registry loads table and bars projections lazily on dema
     },
   ]);
 
+  const settle = async (wakes: readonly number[]) => {
+    for (let i = 0; i < 16 && !wakes.length; i++) await Promise.resolve();
+  };
+  const laneOf = (family: string) => FAMILY_MANIFESTS.find(entry => entry.family === family)!.lane;
+
   const matrixWakes: number[] = [];
   const matrixView = drawnViews('heat-matrix', wid => matrixWakes.push(wid))!;
   const matrixBinding = { family: 'heat-matrix', kind: 'synthetic-heat-matrix', options: {}, sources: {}, width: 100, height: 100, scrollLeft: 0, scrollTop: 0 };
-  assert.equal(matrixView.next!({ widget: 7, subs: [], pictures: [], model: matrixBinding }, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
-  for (let i = 0; i < 16 && !matrixWakes.length; i++) await Promise.resolve();
+  const matrixScene = { widget: 7, subs: [], pictures: [], model: matrixBinding };
+  assert.equal(matrixView.next!(matrixScene, 50), null, 'a lane whose code is loading locates no change, so the lane paints at its target and walks no history');
+  await laneOf('heat-matrix')();
+  await settle(matrixWakes);
+  assert.deepEqual(matrixWakes, [7], 'the placement that asked is woken once its lane code loads');
+  assert.equal(heatMatrixLoads, 0);
+  matrixWakes.length = 0;
+  assert.equal(matrixView.next!(matrixScene, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
+  await settle(matrixWakes);
   assert.equal(heatMatrixLoads, 1);
   assert.deepEqual(matrixWakes, [7]);
   assert.equal(familyProjection('heat-matrix', 'synthetic-heat-matrix')?.kind, 'synthetic-heat-matrix');
@@ -277,8 +296,14 @@ test('worker projection registry loads table and bars projections lazily on dema
   const lanesWakes: number[] = [];
   const lanesView = drawnViews('heat-lanes', wid => lanesWakes.push(wid))!;
   const lanesBinding = { family: 'heat-lanes', kind: 'synthetic-heat-lanes', options: {}, sources: {}, width: 100, height: 100, scrollTop: 0 };
-  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
-  for (let i = 0; i < 16 && !lanesWakes.length; i++) await Promise.resolve();
+  const lanesScene = { widget: 9, subs: [], pictures: [], model: lanesBinding };
+  assert.equal(lanesView.next!(lanesScene, 50), null);
+  await laneOf('heat-lanes')();
+  await settle(lanesWakes);
+  assert.deepEqual(lanesWakes, [9]);
+  lanesWakes.length = 0;
+  assert.equal(lanesView.next!(lanesScene, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
+  await settle(lanesWakes);
   assert.equal(heatLanesLoads, 1);
   assert.deepEqual(lanesWakes, [9]);
   assert.equal(familyProjection('heat-lanes', 'synthetic-heat-lanes')?.kind, 'synthetic-heat-lanes');
@@ -287,8 +312,8 @@ test('worker projection registry loads table and bars projections lazily on dema
     FAMILY_MANIFESTS.map(entry => entry.family),
     ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
   );
-  for (const family of ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
-    assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
+  for (const manifest of FAMILY_MANIFESTS) {
+    assert.equal((await manifest.lane()).family, manifest.family, `${manifest.family} lane code loads and names its family`);
   }
 });
 
@@ -419,4 +444,13 @@ test('two table views of one kind each draw their own projection, and a missing 
   await drain(() => woken > 1);
   assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => {}), shares);
   assert.equal(familyProjection('table', 'synthetic-same-family'), undefined, 'a kind with named views has no default view to fall back to');
+});
+
+test('a preset is stored through the mapping of the view it opens, so the view reads what the preset chose (R3-S3)', () => {
+  const stored = presetStoredOptions('world-tension', { values: 'recorded' });
+  assert.equal(resolveWidgetActiveView('world-tension', stored), 'tension');
+  assert.equal(widgetViewOptions('world-tension', stored).values, 'recorded', 'the Tension view shows recorded contributions, not its default share');
+  const race = presetStoredOptions('army-size', { view: 'race', countFor: 'host' });
+  assert.equal(widgetViewOptions('army-size', race).countFor, 'host', 'R3-S2: a race preset counting expeditionary forces for the host is what the race view and its detail read');
+  assert.equal(viewSlotProps('army-size', { widget: { kind: 'army-size', options: race } as unknown as WidgetSpec }).options.countFor, 'host');
 });

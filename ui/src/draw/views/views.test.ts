@@ -94,7 +94,7 @@ test('lazy projection arriving after first next wakes the lane and reports its t
     await drain();
 
     assert.ok(pending.resolve, 'next started the lazy projection load');
-    assert.equal(presented.at(-1), 100, 'while loading, the lane claims no validity past the displayed hour');
+    assert.deepEqual(presented, [], 'while loading, the lane presents nothing and waits to be woken');
     assert.equal(page.view(1).mode, 'reading', 'and nothing is installed');
 
     pending.resolve!({

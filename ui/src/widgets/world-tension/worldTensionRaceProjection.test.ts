@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CELL, parseFollowed, type FollowedRows } from '../../dashboard/follow/message.ts';
-import { message } from '../../dashboard/follow/messages.fixture.ts';
-import { assertBarsModelValid, deriveBarsAudit, formatBarsValueField, type BarsDataRow } from '../../families/bars/model.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { assertBarsModelValid, formatBarsValueField, type BarsDataRow } from '../../families/bars/model.ts';
 import { createBoundedReadView, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
-import { worldTensionRaceProjection, type WorldTensionRaceOptions } from './worldTensionRaceProjection.ts';
+import { BARS_VIEWS } from '../manifest/bars.ts';
+import { worldTensionRaceDeclaration, worldTensionRaceProjection, type WorldTensionRaceOptions } from './worldTensionRaceProjection.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
   return {
@@ -27,62 +27,75 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-function makeFollowed(rows: readonly (readonly [string, number | null])[]): FollowedRows {
-  const keys = rows.map((_, idx) => BigInt(idx + 1));
-  const names = rows.map(([tag]) => tag);
-  const values = rows.map(([, val]) => BigInt(val ?? 0));
-  const states = rows.map(([, val]) => (val === null ? CELL.missing : CELL.value));
-  const reasons = rows.map(([, val]) => (val === null ? 'Not recorded at this hour' : null));
-  const parsed = parseFollowed(message(500, [{ id: 1, answer: { keys, columns: 1, values, states, reasons, names } }]));
-  return parsed.answers[0]!.answer as FollowedRows;
-}
-
 const BASE_OPTS: WorldTensionRaceOptions = {
-  candidates: ['GER', 'JAP', 'ITA'],
   top: 10,
   all: false,
+  group: false,
 };
 
-test('world-tension race preserves Rust top order, formats fixed-5 percentages, and matches exact audit', () => {
-  const identity = fakeIdentity({
-    GER: { name: 'German Reich', color: '#6b7280' },
-    JAP: { name: 'Imperial Japan', color: '#e5b89b' },
-  });
+const reading = (country: string, hour: number, valueRaw: string | null, missing: string | null = null) => ({
+  country, hour, run: valueRaw === null ? null : { valueRaw, firstHour: hour - 10, lastHour: hour + 10 }, missing,
+});
 
-  const followedView = createBoundedReadView({
-    hour: displayedHour(500),
-    answers: new Map([['main', makeFollowed([['GER', 4525000], ['JAP', 1800000]])]]),
-    identity,
+test('world-tension race keeps the product order, keys each row by its recorded slot, and formats fixed-5 percentages', () => {
+  const identity = fakeIdentity({
+    [countryKey(7)]: { name: 'German Reich', color: '#6b7280' },
+    [countryKey(31)]: { name: 'Imperial Japan', color: '#e5b89b' },
   });
-  const exactView = createBoundedReadView({
+  const view = createBoundedReadView({
     hour: displayedHour(500),
     panels: new Map([['main', {
-      branchId: '1',
-      hour: 500,
-      from: 500,
-      until: 500,
-      refused: null,
+      branchId: '1', hour: 500, from: 500, until: 500, refused: null,
       measures: [{ name: 'contribution', decimals: 5 }],
       rows: [
-        { country: 'GER', readings: [{ country: 'GER', hour: 500, run: { valueRaw: '4525000', firstHour: 490, lastHour: 510 }, missing: null }] },
-        { country: 'JAP', readings: [{ country: 'JAP', hour: 500, run: { valueRaw: '1800000', firstHour: 490, lastHour: 510 }, missing: null }] },
+        { country: 'GER', slot: 7, readings: [reading('GER', 500, '4525000')] },
+        { country: 'JAP', slot: 31, readings: [reading('JAP', 500, '1800000')] },
       ],
     }]]),
     identity,
   });
-
-  const followedModel = worldTensionRaceProjection.project(followedView, BASE_OPTS);
-  const exactModel = worldTensionRaceProjection.project(exactView, BASE_OPTS);
-  assertBarsModelValid(followedModel, 500);
-  assertBarsModelValid(exactModel, 500);
-
-  const rows = followedModel.rows.filter((r): r is BarsDataRow => r.kind === 'data');
-  assert.deepEqual(rows.map(r => [r.key, r.numeric, formatBarsValueField(r.value!).text]), [
-    ['GER', 45.25, '45.25%'],
-    ['JAP', 18, '18%'],
+  const model = worldTensionRaceProjection.project(view, BASE_OPTS);
+  assertBarsModelValid(model, 500);
+  const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
+  assert.deepEqual(rows.map(r => [r.key, r.label, r.numeric, formatBarsValueField(r.value!).text]), [
+    [countryKey(7), 'German Reich', 45.25, '45.25%'],
+    [countryKey(31), 'Imperial Japan', 18, '18%'],
   ]);
-  assert.deepEqual(deriveBarsAudit(followedModel), deriveBarsAudit(exactModel));
-  assert.throws(() => followedView.who('country', 'GER', displayedHour(501)), FutureDataError);
+  assert.throws(() => view.who('country', 'GER', displayedHour(501)), FutureDataError);
+});
+
+test('a group race sends the group to the product and changes at the hour a country enters it', async () => {
+  const entry = BARS_VIEWS.find(view => view.kind === 'world-tension' && view.view === 'race')!;
+  const spec = await entry.loadSpec();
+  assert.equal(spec.projection, worldTensionRaceProjection);
+  const declaration = spec.declaration as unknown as typeof worldTensionRaceDeclaration;
+  const ctx = {
+    track: { source: { id: 's', revision: 1 }, axisOffset: 0 },
+    branch: { id: '1' },
+    options: {},
+    countries: { top: null, all: false, every: ['GER', 'ITA'], tags: ['GER', 'ITA'], membership: { GER: [[0, 1000]], ITA: [[600, 1000]] }, holders: null, unobserved: [] },
+    widget: { countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false } },
+  } as unknown as Parameters<typeof declaration.sources>[0];
+  const plan = declaration.sources(ctx, { following: true, staticSpan: null });
+  assert.deepEqual(plan.entries.map(e => e.name), ['main'], 'one read: the rank, never a followed member list beside it');
+  const read = plan.entries[0]!.read;
+  assert.ok(read.shape === 'point' && read.followQuery === null);
+  if (read.shape !== 'point') return;
+  const asked = read.buildExactParams?.(read.params!, 500 as never, 'static') as { group?: unknown; countries?: unknown; top?: unknown };
+  assert.deepEqual([asked.group, asked.countries, asked.top], [{ type: 'faction', id: '42', membership: 'hour' }, undefined, undefined]);
+  const reply = {
+    branchId: '1', hour: 500, from: 321, until: 599, refused: null,
+    measures: [{ name: 'contribution', decimals: 5 }],
+    rows: [{ country: 'GER', slot: 7, readings: [reading('GER', 500, '4525000')] }],
+  };
+  assert.deepEqual(read.provenInterval?.(reply, 500), [321, 599], 'ITA joins at 600, so the race is asked again then');
+  assert.deepEqual(read.provenInterval?.(reply, 600), [600, 600], 'a reply never stands for an hour past its membership');
+  const options = declaration.projectionOptions(ctx);
+  const view = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
+  assert.deepEqual(worldTensionRaceProjection.project(view, options).rows.map(row => row.key), [countryKey(7)]);
+  const empty = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', { ...reply, rows: [] }]]), identity: fakeIdentity({}) });
+  const none = worldTensionRaceProjection.project(empty, options);
+  assert.deepEqual([none.emptyKind, none.empty], ['empty', 'No country of this group at this date.']);
 });
 
 test('world-tension race keeps missing readings as notRecorded with null numeric', () => {
@@ -107,7 +120,7 @@ test('world-tension race keeps missing readings as notRecorded with null numeric
     identity,
   });
 
-  const model = worldTensionRaceProjection.project(view, { candidates: ['ITA', 'GER'], top: null, all: false });
+  const model = worldTensionRaceProjection.project(view, { top: null, all: false, group: false });
   assertBarsModelValid(model, 200);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.equal(rows[0]!.key, 'GER');

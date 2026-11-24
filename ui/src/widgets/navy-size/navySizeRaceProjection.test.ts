@@ -31,12 +31,12 @@ const BASE_OPTS: NavySizeRaceOptions = {
   ownership: 'roster',
   grouping: 'class',
   split: true,
-  candidates: [],
   holders: null,
   membership: null,
   unobserved: [],
   top: 10,
   all: false,
+  group: false,
 };
 
 test('navy-size race scales fixed-5 hull HP, splits by ship class, and includes maximum hull HP in tooltip', () => {
@@ -100,7 +100,6 @@ test('navy-size race under default Top handles unpopulated panel and preserves e
     measure: 'ships',
     split: false,
     top: null,
-    candidates: ['ENG', 'JAP'],
   });
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.value?.value.kind]), [['ENG', 'known'], ['JAP', 'notRecorded']]);

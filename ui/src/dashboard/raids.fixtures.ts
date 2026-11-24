@@ -1,7 +1,9 @@
-import type { RaidEpisode, RaidLogReply, RaidPhaseRun, RaidVictimAt, RaidVictimSource } from '../generated/dashboard';
+import type { RaidEndAt, RaidEpisode, RaidLogReply, RaidPhaseRun, RaidVictimAt, RaidVictimSource } from '../generated/dashboard';
 
 export const phaseRun = (firstHour: number, lastHour: number, phase: number, outcome = 0, firstExact = true, afterHour: number | null = firstHour - 1, raider: string | null = null): RaidPhaseRun =>
   ({ firstHour, lastHour, firstExact, afterHour, raider, phase, phaseName: `Phase ${phase}`, outcome, outcomeName: outcome ? `Outcome ${outcome}` : 'No result' });
+
+export const observedEnd = (hour: number, raider: string | null, exact = true): RaidEndAt => ({ hour, endedHour: hour, exact, source: 'observedEndedRead', raider });
 
 export function syntheticEpisode(id: string, firstHour: number, raider: string | null, launchedHour: number | null, endedHour: number | null,
   succeeded: boolean, changes: Partial<RaidEpisode> = {}): RaidEpisode {
@@ -24,15 +26,13 @@ export function syntheticEpisode(id: string, firstHour: number, raider: string |
   return {
     id, firstHour, firstHourExact: true, lastHour, raider, raiderSlot: null,
     launchedRaider: launchedHour !== null ? raider : null,
-    endedRaider: endedHour !== null ? raider : null,
     victim, victimMissing, victimSource, victims,
-    raidType: 'mod/sky_raid', raidTypeName: 'Sky raid from a mod',
-    icon: 'GFX_mod_raid_target', iconMissing: null, province: null, state: 7,
+    raidTypeHour: firstHour, raidType: 'mod/sky_raid', raidTypeName: 'Sky raid from a mod',
+    icon: 'GFX_mod_raid_target', iconMissing: null, placeHour: firstHour, province: null, state: 7,
     phase: runs[runs.length - 1].phase, phaseName: null, outcome: runs[runs.length - 1].outcome, outcomeName: null, outcomeMissing: null, runs,
     preparation: preparingTo >= firstHour ? [[firstHour, preparingTo, 0, 1]] : [],
     launchedHour, launchedExact: launchedHour !== null, launched: launchedHour !== null,
-    endedHour, endedExact: endedHour !== null,
-    endedSource: endedHour !== null ? 'observedEndedRead' : null, succeededHour: succeeded ? endedHour : null,
+    ends: endedHour !== null ? [observedEnd(endedHour, raider)] : [], succeededHour: succeeded ? endedHour : null,
     disappearedHour: null, disappearedExact: false,
     ...changes,
   };
