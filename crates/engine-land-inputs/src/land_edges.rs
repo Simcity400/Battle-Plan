@@ -16,8 +16,8 @@ pub const EXIT_WORDS: usize = 10;
 
 pub const COMBAT_UNREADABLE: u8 = 1;
 pub const DIVISION_UNREADABLE: u8 = 2;
-pub const SIDE_UNKNOWN: u8 = 3;
-pub const HOUR_UNREADABLE: u8 = 4;
+pub const SIDE_UNKNOWN: u8 = 4;
+pub const HOUR_UNREADABLE: u8 = 8;
 pub const NO_SIDE: u8 = u8::MAX;
 
 pub const fn optional(value: Option<i32>) -> u64 {
@@ -167,16 +167,16 @@ impl Exit {
             Read::Land(sides) => (sides.handle, 0, Some(sides.units)),
         };
         let division = division(memory, base, army);
-        if withheld == 0 && division.is_none() {
-            withheld = DIVISION_UNREADABLE;
+        if division.is_none() {
+            withheld |= DIVISION_UNREADABLE;
         }
         let side = units.and_then(|units| {
             units.iter().position(|units| (0..units.count).any(|ordinal| {
                 units.element(ordinal, 8).and_then(|at| field::<u64>(memory, at, 0)) == Some(army as u64)
             }))
         });
-        if withheld == 0 && side.is_none() {
-            withheld = SIDE_UNKNOWN;
+        if units.is_some() && side.is_none() {
+            withheld |= SIDE_UNKNOWN;
         }
         Some(Self {
             hour,

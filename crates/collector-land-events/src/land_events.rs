@@ -1394,12 +1394,25 @@ impl Hooks {
                 )
             }?);
         }
-        match unsafe { edge_hooks(base) } {
-            Ok(edges) => {
+        use collector_hooks::hook::installation;
+        let (edges, report) = installation::capture(|| unsafe { edge_hooks(base) });
+        match (edges, report.failure) {
+            (Ok(edges), None) => {
+                for site in report.sites {
+                    installation::site(site);
+                }
                 hooks.extend(edges);
                 EDGES_ARMED.store(true, Ordering::Release);
             }
-            Err(reason) => {
+            (edges, failure) => {
+                if let Some(fatal) = failure.as_ref().filter(|failure| failure.kind.fatal()) {
+                    installation::refused(fatal.kind, fatal.site, &fatal.cause);
+                }
+                let reason = match (edges, failure) {
+                    (Err(reason), _) => reason,
+                    (Ok(_), Some(failure)) => format!("land combat edge hook withheld: {}", failure.cause),
+                    (Ok(_), None) => unreachable!(),
+                };
                 EDGES_ARMED.store(false, Ordering::Release);
                 *EDGES_WITHHELD
                     .lock()

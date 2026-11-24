@@ -136,6 +136,10 @@ impl Captured {
         }
     }
     pub fn tables(&self) -> [TableView; N] {
+        self.tables_with(crate::land_events::edges_withheld())
+    }
+
+    fn tables_with(&self, edges_withheld: Option<String>) -> [TableView; N] {
         let Some(d) = self.drained else {
             return std::array::from_fn(|_| TableView::Unavailable {
                 reason: "land event drain unavailable".into(),
@@ -150,21 +154,23 @@ impl Captured {
             lost_events: d.lost,
         };
         let result = if d.complete {
-            decode(&self.words[..d.words], d.first, d.to_hour).and_then(|(results, destroyed, edges)| {
+            decode(&self.words[..d.words], d.first, d.to_hour).and_then(|(results, destroyed, mut edges)| {
                 if results
                     .iter()
                     .any(|r| r.end_hour < d.from_hour || r.end_hour > d.to_hour)
                     || destroyed
                         .iter()
                         .any(|r| r.hour < d.from_hour || r.hour > d.to_hour)
-                    || edges
-                        .iter()
-                        .any(|r| r.hour < d.from_hour || r.hour > d.to_hour)
                 {
-                    Err("land event timestamp outside observed interval")
-                } else {
-                    Ok((results, destroyed, edges))
+                    return Err("land event timestamp outside observed interval");
                 }
+                let edges = if edges.iter().any(|r| r.hour < d.from_hour || r.hour > d.to_hour) {
+                    Err(EDGE_OUTSIDE_INTERVAL)
+                } else {
+                    edges.sort_unstable_by_key(|row| (row.combat, row.id));
+                    Ok(edges)
+                };
+                Ok((results, destroyed, edges))
             })
         } else {
             Err(d.reason)
@@ -174,9 +180,12 @@ impl Captured {
                 TableView::Complete(TableRows::LandCombatResults(results)),
                 TableView::Complete(TableRows::DestroyedDivisions(destroyed)),
                 coverage_table(coverage),
-                match crate::land_events::edges_withheld() {
-                    Some(reason) => TableView::Unavailable { reason },
-                    None => TableView::Complete(TableRows::LandCombatEdges(edges)),
+                match (edges_withheld, edges) {
+                    (Some(reason), _) => TableView::Unavailable { reason },
+                    (None, Err(reason)) => TableView::Unavailable {
+                        reason: reason.into(),
+                    },
+                    (None, Ok(edges)) => TableView::Complete(TableRows::LandCombatEdges(edges)),
                 },
             ],
             Err(reason) => {
@@ -206,6 +215,7 @@ fn coverage_table(row: LandEventCoverageRow) -> TableView {
     }
 }
 const EDGES_WITHHELD: &str = "land combat edge hooks withheld";
+const EDGE_OUTSIDE_INTERVAL: &str = "land combat edge timestamp outside observed interval";
 const _: () = {
     assert!(edges::COMBAT_UNREADABLE == LandCombatEdgesRow::COMBAT_UNREADABLE);
     assert!(edges::DIVISION_UNREADABLE == LandCombatEdgesRow::DIVISION_UNREADABLE);
@@ -336,9 +346,7 @@ type Decoded = (
 
 fn edge_hour(word: u64, to_hour: i32, withheld: &mut u8) -> i32 {
     edges::unpack(word).unwrap_or_else(|| {
-        if *withheld == 0 {
-            *withheld = edges::HOUR_UNREADABLE;
-        }
+        *withheld |= edges::HOUR_UNREADABLE;
         to_hour
     })
 }
@@ -611,7 +619,7 @@ fn decode(words: &[u64], first: u64, to_hour: i32) -> Result<Decoded, &'static s
                         manpower: edges::unpack(reader.word()?),
                         casualties_before: edges::unpack(reader.word()?),
                         casualties_after: None,
-                        withheld: if withheld == 0 { (packed >> 8) as u8 } else { withheld },
+                        withheld: withheld | (packed >> 8) as u8,
                     });
                 }
             }
@@ -914,6 +922,36 @@ mod tests {
             &TableView::Complete(TableRows::DestroyedDivisions(vec![]))
         );
         fixture.stop();
+    }
+    #[test]
+    fn combat_edges_publish_in_key_order_and_an_edge_outside_the_interval_withholds_only_the_edges() {
+        let some = |value: i32| edges::optional(Some(value));
+        let exit = |combat: u64, hour: i32| [10, edges::EXITED, combat, some(hour), 0, 1, 6, some(0), some(5), some(9)];
+        let wipe = [12, 7, 10, 17, 4999, 1500, 9, 10, 41, 2, 42, 42];
+        let drained = |words: &[u64]| Captured {
+            words: words.to_vec(),
+            drained: Some(Drain {
+                epoch: 1,
+                first: 0,
+                words: words.len(),
+                required: words.len(),
+                from_hour: 9,
+                to_hour: 10,
+                complete: true,
+                lost: 0,
+                reason: "",
+            }),
+        };
+        let words = [&exit(90, 10)[..], &exit(80, 10)].concat();
+        let [_, _, _, edges] = drained(&words).tables_with(None);
+        let TableView::Complete(TableRows::LandCombatEdges(rows)) = edges else {
+            panic!("{edges:?}")
+        };
+        assert_eq!(rows.iter().map(|row| row.combat).collect::<Vec<_>>(), [80, 90]);
+        let words = [&wipe[..], &exit(90, 30)].concat();
+        let [_, destroyed, _, edges] = drained(&words).tables_with(None);
+        assert!(matches!(destroyed, TableView::Complete(TableRows::DestroyedDivisions(ref rows)) if rows.len() == 1), "{destroyed:?}");
+        assert_eq!(edges, TableView::Unavailable { reason: EDGE_OUTSIDE_INTERVAL.into() });
     }
     #[test]
     fn combat_edges_decode_each_opening_member_and_exit_and_never_guess_a_missing_value() {

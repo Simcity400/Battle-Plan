@@ -175,18 +175,26 @@ impl LandCombatEdgesRow {
     pub const NO_SIDE: u8 = u8::MAX;
     pub const COMBAT_UNREADABLE: u8 = 1;
     pub const DIVISION_UNREADABLE: u8 = 2;
-    pub const SIDE_UNKNOWN: u8 = 3;
-    pub const HOUR_UNREADABLE: u8 = 4;
+    pub const SIDE_UNKNOWN: u8 = 4;
+    pub const HOUR_UNREADABLE: u8 = 8;
+    const REASONS: [(u8, &'static str); 4] = [
+        (Self::COMBAT_UNREADABLE, "The combat could not be read"),
+        (Self::DIVISION_UNREADABLE, "The division could not be read"),
+        (Self::SIDE_UNKNOWN, "The division was on neither side of the combat"),
+        (Self::HOUR_UNREADABLE, "The game hour could not be read; the row carries the hour it was drained"),
+    ];
 
-    pub fn withheld_reason(&self) -> Option<&'static str> {
-        match self.withheld {
-            0 => None,
-            Self::COMBAT_UNREADABLE => Some("The combat could not be read"),
-            Self::DIVISION_UNREADABLE => Some("The division could not be read"),
-            Self::SIDE_UNKNOWN => Some("The division was on neither side of the combat"),
-            Self::HOUR_UNREADABLE => Some("The game hour could not be read; the row carries the hour it was drained"),
-            _ => Some("Withheld for a reason this build does not know"),
+    pub fn withheld_reason(&self) -> Option<String> {
+        let known = Self::REASONS.iter().fold(0, |bits, &(bit, _)| bits | bit);
+        let mut reasons: Vec<&str> = Self::REASONS
+            .iter()
+            .filter(|&&(bit, _)| self.withheld & bit != 0)
+            .map(|&(_, reason)| reason)
+            .collect();
+        if self.withheld & !known != 0 {
+            reasons.push("Withheld for a reason this build does not know");
         }
+        (!reasons.is_empty()).then(|| reasons.join("; "))
     }
 }
 typed_codec!(

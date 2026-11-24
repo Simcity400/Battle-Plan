@@ -278,7 +278,7 @@ fn a_battle_course_carries_its_opening_roster_and_each_exit_and_names_what_was_n
         edge(4, Edge::EXITED, 13, Some(6), 1, [Some(100), Some(40), None], 0),
     ];
     let battle = Battle { combat: 9, start: 11, exact: true, ..Battle::default() };
-    let edges = shape_edges(&rows, &[(10, 12)], &battle, 10, 14);
+    let edges = shape_edges(&rows, &[(10, 12)], &[13], &battle, 10, 14);
     let opening = edges.opening.expect("an opening");
     assert_eq!(opening.hour, 10);
     assert_eq!(opening.members[0], LandEdgeMember { division: Some("5".into()), side: 0, manpower: Some(9000), casualties: Some(300), missing: None });
@@ -287,12 +287,22 @@ fn a_battle_course_carries_its_opening_roster_and_each_exit_and_names_what_was_n
     assert_eq!(edges.exits[0].losses, Some(512), "losses are the casualties the exit realised");
     assert_eq!(edges.exits[1].losses, None);
     assert_eq!(edges.exits[1].missing.as_deref(), Some(CASUALTIES_UNREAD));
-    assert_eq!(edges.unrecorded, [LandEdgeGap { first_hour: 13, last_hour: 14, reason: NOT_RECORDED.into() }]);
+    assert_eq!(
+        edges.unrecorded,
+        [
+            LandEdgeGap { first_hour: 13, last_hour: 14, reason: NOT_RECORDED.into() },
+            LandEdgeGap { first_hour: 13, last_hour: 13, reason: UNATTRIBUTED.into() },
+        ]
+    );
 
     let running = Battle { combat: 9, start: 10, exact: false, ..Battle::default() };
-    let before = shape_edges(&rows[2..], &[(10, 14)], &running, 10, 14);
-    assert_eq!(before.opening_missing.as_deref(), Some(OPENED_EARLIER));
-    let older = shape_edges(&[], &[], &battle, 10, 14);
+    let before = shape_edges(&rows[2..], &[(11, 14)], &[], &running, 10, 14);
+    assert_eq!(before.opening_missing.as_deref(), Some(OPENED_EARLIER), "the first drain after attach is never complete");
+    let reused = [rows.to_vec(), vec![edge(5, Edge::OPENED, 13, Some(7), 0, [Some(1), Some(0), None], 0), edge(6, Edge::EXITED, 14, Some(7), 0, [None, Some(0), Some(3)], 0)]].concat();
+    let first = shape_edges(&reused, &[(10, 14)], &[], &battle, 10, 14);
+    assert_eq!(first.opening.unwrap().members.len(), 2, "a later occurrence of the handle keeps its own opening");
+    assert_eq!(first.exits.len(), 2, "and its own exits");
+    let older = shape_edges(&[], &[], &[], &battle, 10, 14);
     assert_eq!(older.opening_missing.as_deref(), Some(NOT_RECORDED), "a recording without edges says so, never an empty roster");
     assert_eq!(older.unrecorded, [LandEdgeGap { first_hour: 10, last_hour: 14, reason: NOT_RECORDED.into() }]);
 }
