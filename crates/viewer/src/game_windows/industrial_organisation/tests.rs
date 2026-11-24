@@ -1,18 +1,16 @@
 use super::*;
-use content_reader_layers::{Layer, LayerKind, ResolvedLayers};
+use content_reader_layers::ResolvedLayers;
 use std::collections::BTreeMap;
 
 fn synthetic_layers(entries: &[(&str, &[u8])]) -> ResolvedLayers {
-    let files: BTreeMap<String, Vec<u8>> = entries
-        .iter()
-        .map(|(path, bytes)| (path.to_ascii_lowercase(), bytes.to_vec()))
-        .collect();
-    ResolvedLayers::from_layers(vec![Layer {
-        name: "synthetic".to_owned(),
-        kind: LayerKind::Mod,
-        root: std::path::PathBuf::from("synthetic"),
-        files: std::sync::Arc::new(files),
-    }])
+    let root = std::env::temp_dir().join(format!("battleplan-mio-test-{}", uuid::Uuid::new_v4()));
+    for (path, bytes) in entries {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, bytes).unwrap();
+    }
+    std::fs::create_dir_all(&root).unwrap();
+    ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap()
 }
 
 #[test]
@@ -45,6 +43,7 @@ fn funds_progress_uses_defines_formula_and_withholds_when_defines_missing() {
 
 #[test]
 fn missing_details_sets_na_and_not_recorded_tooltips() {
+    content_reader_script::test_game::enter();
     let gui = br#"
         guiTypes = {
             containerWindowType = {
@@ -101,7 +100,7 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
             custom_name: "Chrysler".to_owned(),
             recorded_icon: String::new(),
             details: RecordedDetails::Unavailable("table omitted in older format".to_owned()),
-            policy_costs: BTreeMap::new(),
+            policy_costs: Ok(BTreeMap::new()),
             history: None,
             history_reason: Some("history omitted".to_owned()),
             funds_defines: Err("no defines".to_owned()),
@@ -126,7 +125,7 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
     let points_el = find_direct(root, "top_left_window/points").unwrap();
     assert_eq!(
         instance.control(root, points_el).unwrap().text.as_deref(),
-        Some("Trait points: n/a")
+        Some("INDUSTRIAL_ORG_DETAIL_TRAIT_POINTS n/a")
     );
     let policy_text_el =
         find_direct(root, "open_policies_window/click_to_open_policies_text").unwrap();
@@ -150,6 +149,7 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
 
 #[test]
 fn missing_mio_window_template_is_refused_by_name() {
+    content_reader_script::test_game::enter();
     let layers = synthetic_layers(&[
         ("interface/empty.gui", b"guiTypes = {}"),
         ("localisation/english/empty_l_english.yml", b"l_english:\n"),
@@ -164,6 +164,7 @@ fn missing_mio_window_template_is_refused_by_name() {
         visual_revision: String::new(),
         language: "english".to_owned(),
         force_pow2_textures: false,
+        art_stack: layers.art_stack_key(),
         window: DETAIL_WINDOW_NAME.to_owned(),
     };
     let data = OrganisationViewData {
@@ -175,7 +176,7 @@ fn missing_mio_window_template_is_refused_by_name() {
         custom_name: "Mod Org".to_owned(),
         recorded_icon: String::new(),
         details: RecordedDetails::Unavailable("not recorded".to_owned()),
-        policy_costs: BTreeMap::new(),
+        policy_costs: Ok(BTreeMap::new()),
         history: None,
         history_reason: None,
         funds_defines: Err("no defines".to_owned()),

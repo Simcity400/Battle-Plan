@@ -6,6 +6,8 @@ use super::{
     layout_window, missing_window_refusal, strip_markup,
 };
 use content_reader_defines::defines;
+use content_reader_key_names::key_name_products::KeyNamesExt as _;
+use content_reader_parser::parser::c_string;
 use content_reader_gui::gui::native::{self, Element, Fields};
 use content_reader_layers::ResolvedLayers;
 use content_reader_localisation::localisation::Localisation;
@@ -29,7 +31,6 @@ use std::{
 use viewer_native_gui::native_gui::{
     self, Assets, Layout, Resources, lifecycle::Instance,
 };
-use viewer_native_gui::native_text::COLOR;
 
 #[cfg(test)]
 mod tests;
@@ -292,7 +293,12 @@ fn extract_details(
     lexical: &[LexicalTokenRow],
     warnings: &mut Vec<String>,
 ) -> OrganisationDetails {
-    let mut spell_list = |what: &str, tokens: &[u32]| -> Vec<String> {
+    fn spell_list(
+        lexical: &[LexicalTokenRow],
+        what: &str,
+        tokens: &[u32],
+        warnings: &mut Vec<String>,
+    ) -> Vec<String> {
         let mut spelled = Vec::with_capacity(tokens.len());
         for &token in tokens {
             match spell(lexical, token) {
@@ -303,7 +309,7 @@ fn extract_details(
             }
         }
         spelled
-    };
+    }
     let policy_token = if row.state.policy == UNSELECTED_POLICY {
         None
     } else {
@@ -330,9 +336,9 @@ fn extract_details(
         auto_upgrade: row.state.upgrades != 0,
         policy_token,
         cooldown_hour: row.state.cooldown_hour,
-        unlocked: spell_list("unlocked trait", &row.unlocked),
-        queued: spell_list("queued trait", &row.queued),
-        allowed_policies: spell_list("allowed policy", &row.allowed_policies),
+        unlocked: spell_list(lexical, "unlocked trait", &row.unlocked, warnings),
+        queued: spell_list(lexical, "queued trait", &row.queued, warnings),
+        allowed_policies: spell_list(lexical, "allowed policy", &row.allowed_policies, warnings),
     }
 }
 
@@ -382,7 +388,7 @@ fn extract_history(
                     .map(|idx| &defs[idx])
             })
             .map(|def| {
-                let raw_name = String::from_utf8_lossy(&def.name).trim().to_owned();
+                let raw_name = String::from_utf8_lossy(c_string(&def.display_name)).trim().to_owned();
                 let eq = spell(lexical, def.equipment_token).unwrap_or_default();
                 let display = if raw_name.is_empty() { eq.clone() } else { raw_name };
                 (display, eq)
@@ -1002,6 +1008,7 @@ fn configure_detail_main(
                         .enumerate()
                         .map(|(idx, tok)| {
                             let name = tree
+                                .as_ref()
                                 .and_then(|t| {
                                     t.traits
                                         .iter()
@@ -1133,18 +1140,19 @@ fn compose_funds_progressbar(
     let Some(pb_root) = guis.template(b"progressbar_widget") else {
         return Ok(());
     };
-    let Some(top_left) = find_direct(root, "top_left_window") else {
-        return Ok(());
+    let refuse = |what: &str| {
+        GameWindowError::refused(format!(
+            "Window '{DETAIL_WINDOW_NAME}' is missing required '{what}' for the funds bar."
+        ))
     };
-    let Some(holder) = container_holder(main_layout, &top_left.path) else {
-        return Ok(());
-    };
+    let top_left = find_direct(root, "top_left_window").ok_or_else(|| refuse("top_left_window"))?;
+    let holder = container_holder(main_layout, &top_left.path).ok_or_else(|| refuse("top_left_window layout"))?;
     let pos = find_direct(top_left, "funds_progressbar_position")
         .and_then(|el| match &el.fields {
-            Fields::Position(p) => Some([p.position.x.value, p.position.y.value]),
+            Fields::PositionType(p) => Some(p.position),
             _ => None,
         })
-        .unwrap_or([120, 55]);
+        .ok_or_else(|| refuse("top_left_window/funds_progressbar_position"))?;
 
     let (percent, tooltip) = match &prepared.data.details {
         RecordedDetails::Available(details) => {
@@ -1221,6 +1229,84 @@ fn compose_funds_progressbar(
     Ok(())
 }
 
+struct BonusRows<'a> {
+    holder: &'a native_gui::Holder,
+    resources: &'a dyn Resources,
+    separator: Option<&'a Element>,
+    modifier: Option<&'a Element>,
+    bonus: Option<&'a Element>,
+    max_y: i32,
+    cursor_y: i32,
+    row: usize,
+    dropped: usize,
+}
+
+impl BonusRows<'_> {
+    fn push(
+        &mut self,
+        template: Option<&Element>,
+        window: &str,
+        child: &str,
+        text: String,
+        tooltip: Option<GameWindowTooltip>,
+        plan: &mut ComposedPlan,
+    ) -> Result<(), GameWindowError> {
+        let template = template.ok_or_else(|| GameWindowError::refused(missing_window_refusal(window)))?;
+        let height = template
+            .container()
+            .map(|container| container.size.size[1].value)
+            .filter(|&height| height > 0)
+            .ok_or_else(|| {
+                GameWindowError::refused(format!(
+                    "Template '{window}' declares no height, so its rows cannot be stacked."
+                ))
+            })?;
+        if self.cursor_y + height > self.max_y {
+            self.dropped += 1;
+            return Ok(());
+        }
+        let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
+        let layout = layout_window(template, self.resources, viewport, |instance| {
+            set_text_by_name(instance, template, child, text);
+        })?;
+        let mut overrides = BTreeMap::new();
+        if let Some(tip) = tooltip {
+            overrides.insert(template.path.clone(), tip);
+        }
+        let place = [0, self.cursor_y];
+        plan.sub_windows.push(ComposedSubWindow {
+            before_part: self.holder.before,
+            parts: self.holder.place(place, &layout),
+            regions: self.holder.place_regions(place, &layout.regions),
+            diagnostics: layout.diagnostics,
+            root_window: window.to_owned(),
+            path_prefix: format!("bonus:{}/", self.row),
+            close_paths: Vec::new(),
+            tooltip_overrides: overrides,
+        });
+        self.cursor_y += height;
+        self.row += 1;
+        Ok(())
+    }
+
+    fn separator(&mut self, title: String, plan: &mut ComposedPlan) -> Result<(), GameWindowError> {
+        self.push(self.separator, "industrial_organisation_detail_separator", "separator_name", title, None, plan)
+    }
+
+    fn modifier(
+        &mut self,
+        text: String,
+        tooltip: Option<GameWindowTooltip>,
+        plan: &mut ComposedPlan,
+    ) -> Result<(), GameWindowError> {
+        self.push(self.modifier, "industrial_organisation_detail_modifier_item", "modifier_text", text, tooltip, plan)
+    }
+
+    fn bonus(&mut self, text: String, plan: &mut ComposedPlan) -> Result<(), GameWindowError> {
+        self.push(self.bonus, "industrial_organisation_detail_bonus_item", "bonus_text", text, None, plan)
+    }
+}
+
 fn compose_aggregated_bonuses(
     main_layout: &Layout,
     root: &Element,
@@ -1240,103 +1326,25 @@ fn compose_aggregated_bonuses(
     else {
         return Ok(());
     };
-    let sep_tpl = guis.template(b"industrial_organisation_detail_separator");
-    let mod_tpl = guis.template(b"industrial_organisation_detail_modifier_item");
-    let bonus_tpl = guis.template(b"industrial_organisation_detail_bonus_item");
-    let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
-    let max_y = holder.content[1].max(0);
-    let mut cursor_y = 0i32;
-    let mut row_idx = 0usize;
-
-    let mut push_separator = |title: String, plan: &mut ComposedPlan| -> Result<(), GameWindowError> {
-        let Some(tpl) = sep_tpl else {
-            return Ok(());
-        };
-        if cursor_y + 30 > max_y {
-            return Ok(());
-        }
-        let layout = layout_window(tpl, resources, viewport, |instance| {
-            set_text_by_name(instance, tpl, "separator_name", title);
-        })?;
-        plan.sub_windows.push(ComposedSubWindow {
-            before_part: holder.before,
-            parts: holder.place([0, cursor_y], &layout),
-            regions: Vec::new(),
-            diagnostics: layout.diagnostics,
-            root_window: "industrial_organisation_detail_separator".to_owned(),
-            path_prefix: format!("bonus_sep:{row_idx}/"),
-            close_paths: Vec::new(),
-            tooltip_overrides: BTreeMap::new(),
-        });
-        cursor_y += 32;
-        row_idx += 1;
-        Ok(())
-    };
-
-    let mut push_modifier = |text: String,
-                             tooltip: Option<GameWindowTooltip>,
-                             plan: &mut ComposedPlan|
-     -> Result<(), GameWindowError> {
-        let Some(tpl) = mod_tpl else {
-            return Ok(());
-        };
-        if cursor_y + 20 > max_y {
-            return Ok(());
-        }
-        let layout = layout_window(tpl, resources, viewport, |instance| {
-            set_text_by_name(instance, tpl, "modifier_text", text);
-        })?;
-        let mut overrides = BTreeMap::new();
-        if let Some(tip) = tooltip {
-            overrides.insert(tpl.path.clone(), tip);
-        }
-        plan.sub_windows.push(ComposedSubWindow {
-            before_part: holder.before,
-            parts: holder.place([0, cursor_y], &layout),
-            regions: holder.place_regions([0, cursor_y], &layout.regions),
-            diagnostics: layout.diagnostics,
-            root_window: "industrial_organisation_detail_modifier_item".to_owned(),
-            path_prefix: format!("bonus_mod:{row_idx}/"),
-            close_paths: Vec::new(),
-            tooltip_overrides: overrides,
-        });
-        cursor_y += 22;
-        row_idx += 1;
-        Ok(())
-    };
-
-    let mut push_bonus = |text: String, plan: &mut ComposedPlan| -> Result<(), GameWindowError> {
-        let Some(tpl) = bonus_tpl else {
-            return Ok(());
-        };
-        if cursor_y + 20 > max_y {
-            return Ok(());
-        }
-        let layout = layout_window(tpl, resources, viewport, |instance| {
-            set_text_by_name(instance, tpl, "bonus_text", text);
-        })?;
-        plan.sub_windows.push(ComposedSubWindow {
-            before_part: holder.before,
-            parts: holder.place([0, cursor_y], &layout),
-            regions: Vec::new(),
-            diagnostics: layout.diagnostics,
-            root_window: "industrial_organisation_detail_bonus_item".to_owned(),
-            path_prefix: format!("bonus_val:{row_idx}/"),
-            close_paths: Vec::new(),
-            tooltip_overrides: BTreeMap::new(),
-        });
-        cursor_y += 22;
-        row_idx += 1;
-        Ok(())
+    let mut rows = BonusRows {
+        holder,
+        resources,
+        separator: guis.template(b"industrial_organisation_detail_separator"),
+        modifier: guis.template(b"industrial_organisation_detail_modifier_item"),
+        bonus: guis.template(b"industrial_organisation_detail_bonus_item"),
+        max_y: holder.content[1].max(0),
+        cursor_y: 0,
+        row: 0,
+        dropped: 0,
     };
 
     match &prepared.data.details {
         RecordedDetails::Unavailable(reason) => {
-            push_separator(
+            rows.separator(
                 loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIERS"),
                 plan,
             )?;
-            push_modifier(
+            rows.modifier(
                 NOT_RECORDED_VALUE.to_owned(),
                 Some(GameWindowTooltip {
                     title: "Not recorded".to_owned(),
@@ -1349,11 +1357,11 @@ fn compose_aggregated_bonuses(
             )?;
         }
         RecordedDetails::Available(details) => {
-            push_separator(
+            rows.separator(
                 loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIERS"),
                 plan,
             )?;
-            push_modifier(
+            rows.modifier(
                 modifier_item(
                     localisation,
                     "MODIFIER_MIO_RESEARCH_BONUS_MIO_CONTEXT",
@@ -1363,7 +1371,7 @@ fn compose_aggregated_bonuses(
                 plan,
             )?;
             if details.funds_gain_factor_raw != 0 {
-                push_modifier(
+                rows.modifier(
                     modifier_item(
                         localisation,
                         "MODIFIER_MIO_FUNDS_GAIN",
@@ -1374,7 +1382,7 @@ fn compose_aggregated_bonuses(
                 )?;
             }
             if details.size_cost_factor_raw != 0 {
-                push_modifier(
+                rows.modifier(
                     modifier_item(
                         localisation,
                         "MODIFIER_MIO_FUNDS_SIZE_UP_REQUIREMENT",
@@ -1385,7 +1393,7 @@ fn compose_aggregated_bonuses(
                 )?;
             }
             if details.task_capacity != 0 {
-                push_modifier(
+                rows.modifier(
                     modifier_item(
                         localisation,
                         "MODIFIER_MIO_TASK_CAPACITY",
@@ -1400,8 +1408,8 @@ fn compose_aggregated_bonuses(
                 .catalog
                 .as_deref()
                 .and_then(|cat| cat.tree(&prepared.data.token).ok().flatten());
-            if let Some(initial) = tree.and_then(|t| t.initial) {
-                push_separator(
+            if let Some(initial) = tree.as_ref().and_then(|t| t.initial) {
+                rows.separator(
                     loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_INITIAL_TRAIT_BONUSES"),
                     plan,
                 )?;
@@ -1411,7 +1419,7 @@ fn compose_aggregated_bonuses(
                     prepared.data.owner_tag.as_deref(),
                     localisation,
                 );
-                push_modifier(
+                rows.modifier(
                     loc_fill(
                         localisation,
                         "INDUSTRIAL_ORG_DETAIL_MIO_INITIAL_TRAIT_ITEM",
@@ -1422,17 +1430,23 @@ fn compose_aggregated_bonuses(
                 )?;
             }
 
-            let totals = aggregate_bonuses(&prepared.data, tree, prepared.org_db.as_deref());
+            let totals = aggregate_bonuses(&prepared.data, tree.as_ref(), prepared.org_db.as_deref());
             if !totals.is_empty() {
-                push_separator(
+                rows.separator(
                     loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_EQUIPMENT_BONUSES"),
                     plan,
                 )?;
                 for (name, value) in totals {
-                    push_bonus(format_bonus_plain(&name, value, localisation), plan)?;
+                    rows.bonus(format_bonus_plain(&name, value, localisation), plan)?;
                 }
             }
         }
+    }
+    if rows.dropped > 0 {
+        plan.warnings.push(format!(
+            "{} organisation bonus rows lie below the visible list and are not drawn: the game window scrolls, this picture does not.",
+            rows.dropped
+        ));
     }
     Ok(())
 }
@@ -1945,7 +1959,7 @@ fn compose_trait_tree(
             if trait_def.bonuses.iter().any(|b| is_production_stat(&b.name)) {
                 badges.push("GFX_industrial_manufacturer_icon");
             }
-            if !trait_def.organisation_modifiers.is_empty() {
+            if trait_def.organisation_modifiers.listed().next().is_some() {
                 badges.push("GFX_organization_modifier_icon");
             }
             let total_w = badges.len() as i32 * 22;
@@ -2334,10 +2348,11 @@ pub fn render_data(
             let tree = catalog
                 .as_deref()
                 .and_then(|cat| cat.tree(&data.token).ok().flatten());
-            let emblem_sprite = resolve_org_icon(&data, tree, has_sprite);
+            let emblem_sprite = resolve_org_icon(&data, tree.as_ref(), has_sprite);
             assets.sprites.insert(emblem_sprite.as_bytes().to_vec());
 
             let tree_background = tree
+                .as_ref()
                 .and_then(|t| t.background)
                 .filter(|bg| !bg.is_empty() && has_sprite(bg))
                 .map(str::to_owned);
@@ -2645,7 +2660,7 @@ pub fn render(
 
     let samples: Vec<(TableId, i32)> = read_tables
         .iter()
-        .filter_map(|&id| frame.sampled_at(id).map(|hour| (id, hour)))
+        .filter_map(|&id| frame.tables[id.index()].sampled_at().map(|hour| (id, hour)))
         .collect();
     let (read_hour, cadence_warning) = compute_read_hour(request.hour, &samples);
     if let Some(warning) = cadence_warning {
