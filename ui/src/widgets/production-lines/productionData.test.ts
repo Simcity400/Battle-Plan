@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { compareValues, knownValue } from '../../families/value.ts';
 import { efficiencyPercent, iconImage, validateAtReply, validateBreakdownReply, variantName, variantOf, weeklyRaw } from './productionData.ts';
 import { productionLinesProjection, type ProductionLineMeta } from './productionLinesProjection.ts';
 import type { LineNow, ProductionLineBreakdownReply, ProductionLinesAtReply } from '../../generated/dashboard';
@@ -36,6 +37,10 @@ test('a line shows its recorded maximum factories, and output counted since a la
   assert.deepEqual([cells.factories!.value, cells.factories!.secondaryValue], [{ kind: 'known', value: 4 }, { kind: 'known', value: 15 }], 'assigned / the recorded maximum, never the requested count');
   assert.equal(cells.total!.value.kind, 'partial');
   assert.equal(cells.total!.value.kind === 'partial' && cells.total!.value.value, 12);
+  const sorted = cells.total!.sortValue ?? cells.total!.value;
+  for (const direction of ['ascending', 'descending'] as const) {
+    assert.ok(compareValues(sorted, knownValue(10), direction) > 0, `a partial lifetime total is unranked, after complete ones, ${direction}`);
+  }
 });
 
 test('a row carries its line and country, so a freshly drawn table opens the breakdown at the clicked hour without any history', () => {
