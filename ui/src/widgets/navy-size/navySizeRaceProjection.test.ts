@@ -80,13 +80,15 @@ test('navy-size race under default Top handles unpopulated panel and preserves e
     hour: displayedHour(400),
     panels: new Map([['main', {
       branchId: '1',
-      measure: 'rosterShips',
-      decimals: 0,
-      states: [
-        { country: 'ENG', hour: 400, run: { firstHour: 400, lastHour: 400, value: 329, valueRaw: '329' }, missing: null },
-        { country: 'JAP', hour: 400, run: null, missing: 'Ships not recorded at this hour' },
+      hour: 400,
+      from: 400,
+      until: 400,
+      refused: 'Ships not recorded at this hour',
+      measures: [{ name: 'rosterShips', decimals: 0 }],
+      rows: [
+        { country: 'ENG', readings: [{ country: 'ENG', hour: 400, run: { firstHour: 400, lastHour: 400, value: 329, valueRaw: '329' }, missing: null }] },
+        { country: 'JAP', readings: [{ country: 'JAP', hour: 400, run: null, missing: 'Ships not recorded at this hour' }] },
       ],
-      warnings: [],
     }]]),
     identity: fakeIdentity({
       ENG: { name: 'United Kingdom', color: '#e11d48' },

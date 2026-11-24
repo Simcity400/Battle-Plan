@@ -12,7 +12,9 @@ use ts_rs::TS;
 
 pub struct MilitaryAirAt;
 
-pub const NOT_OBSERVED: &str = "Military air events were not read at this hour";
+pub const LOSSES_NOT_RECORDED: &str = "Aircraft loss events were not recorded at this hour";
+pub const BOMBING_NOT_RECORDED: &str = "Bombing events were not recorded at this hour";
+pub const LINKS_NOT_RECORDED: &str = "Country links were not recorded at this hour, so events cannot be credited to countries";
 pub const POPULATION_INCOMPLETE: &str = "Some military air events since the totals' start may be missing, so countries cannot be ranked";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -166,7 +168,7 @@ fn next_change(reply: &MilitaryAirReply, hour: i32) -> i32 {
             consider(point.1);
         }
     }
-    let spans = reply.observed.iter().chain(&reply.incomplete).chain(reply.countries.iter().flat_map(|country| &country.present));
+    let spans = reply.observed.iter().chain(&reply.incomplete).chain(&reply.unjoined).chain(reply.countries.iter().flat_map(|country| &country.present));
     for span in spans {
         consider(span.first_hour);
         consider(span.last_hour.saturating_add(1));
@@ -188,7 +190,16 @@ pub fn answer(reply: &MilitaryAirReply, params: &MilitaryAirAtParams) -> io::Res
         warnings: reply.warnings.clone(),
     };
     let Some(observed) = run_at(&reply.observed, hour) else {
-        out.missing = Some(NOT_OBSERVED.to_owned());
+        out.missing = Some(
+            if run_at(&reply.unjoined, hour).is_some() {
+                LINKS_NOT_RECORDED
+            } else if params.family == MilitaryAirFamily::AirLosses {
+                LOSSES_NOT_RECORDED
+            } else {
+                BOMBING_NOT_RECORDED
+            }
+            .to_owned(),
+        );
         return Ok(out);
     };
     let from = params.from_hour.or(reply.counted_from).unwrap_or(observed.first_hour);
@@ -352,6 +363,7 @@ mod tests {
             available: true,
             observed: vec![span(0, 99)],
             incomplete: Vec::new(),
+            unjoined: Vec::new(),
             countries: vec![country("GER", "1:1", span(0, 99)), country("SOV", "2:2", span(0, 99)), country("FRA", "3:3", span(50, 99))],
             openings: Vec::new(),
             parts: vec![
@@ -425,8 +437,13 @@ mod tests {
         let mut gap = ledger();
         gap.observed = vec![span(0, 40)];
         let unread = answer(&gap, &asked(60)).unwrap();
-        assert_eq!(unread.missing.as_deref(), Some(NOT_OBSERVED));
+        assert_eq!(unread.missing.as_deref(), Some(BOMBING_NOT_RECORDED), "the reason names the events that were not recorded");
         assert!(unread.rows.is_empty());
+        gap.unjoined = vec![span(41, 99)];
+        assert_eq!(answer(&gap, &asked(60)).unwrap().missing.as_deref(), Some(LINKS_NOT_RECORDED), "read events without links are not credited");
+        let quiet = MilitaryAirReply { parts: Vec::new(), ..ledger() };
+        let none = answer(&quiet, &asked(60)).unwrap();
+        assert_eq!((none.missing.as_deref(), none.rank_missing.as_deref(), none.rows.len()), (None, None, 0), "an observed hour with no events is a recorded none, not missing");
         let ranged = answer(&ledger(), &MilitaryAirAtParams { from_hour: Some(10), ..asked(25) }).unwrap();
         assert_eq!(tags(&ranged), [("GER", "200", "50")], "events before the range start do not count; SOV has none in range");
     }
