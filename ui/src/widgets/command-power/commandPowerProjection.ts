@@ -92,7 +92,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       const isTail = !single && rank >= 8;
       const bounded = mainMap?.get(tag) ?? null;
       const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, !single);
-      const color = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.commandPower);
+      const color = isTail ? CHART_MEASURE_COLOURS.tailLine : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.commandPower);
       const headValue = headByTag.get(tag) ?? null;
       const ceilingBounded = options.showCeiling && !isTail ? (ceilingMap?.get(tag) ?? null) : null;
       const ceilingHead = options.showCeiling && !isTail ? (ceilingByTag.get(tag) ?? null) : null;

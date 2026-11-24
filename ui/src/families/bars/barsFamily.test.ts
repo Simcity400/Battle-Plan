@@ -25,6 +25,7 @@ import { axisCeiling, layoutFamilyBars } from './layout.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
 import { registerBarsProjection } from './registry.ts';
 import { familyBarsLaneView, type FamilyBarsBinding } from './laneView.ts';
+import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
 import { buildShareRowsModel } from './shareRows.ts';
 
 const THEME: FamilyTheme = {
@@ -159,7 +160,7 @@ test('guards reject future hours, bare nulls, and missing values carrying bar ma
   const pres = countryRowPresentation(rv, 'GER');
   assert.equal(pres.label, 'German Reich');
   assert.equal(pres.labelMissing, false);
-  assert.equal(pres.color, 'rgb(102, 102, 102)');
+  assert.equal(pres.color, '#666666');
   assert.equal(pres.media.kind, 'flag');
   assert.equal(pres.media.art.status, 'pending');
 });
@@ -537,6 +538,16 @@ test('a backward seek drops a cached model from a later hour', () => {
   } finally {
     (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
   }
+  const options: Record<string, never> = {};
+  const binding = { family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, reducedMotion: true };
+  const surface = { width: 480, height: 240, dpr: 1 };
+  assert.equal(assertQuietFrames(() => familyBarsLaneView(() => {}), { label: 'before the change', binding, hour: 3 }, 24, surface), 10);
+  assertFreshPaint(() => familyBarsLaneView(() => {}), [
+    { label: 'before', binding, hour: 5, check: true },
+    { label: 'after', binding, hour: 20, speed: 24 },
+    { label: 'seek back', binding, hour: 5, check: true },
+    { label: 'scrolled', binding: { ...binding, scrollTop: 10 }, hour: 5, check: true },
+  ], surface);
 });
 
 test('the top painted gliding row takes the hit where two rows overlap', () => {

@@ -90,3 +90,7 @@ export function ensureFamilyProjection<TModel = unknown, TOptions = unknown>(
 export function familyProjectionFailure(family: FamilyId, kind: string, view?: string): string | undefined {
   return failures.get(resolveLookupKey(family, kind, view));
 }
+
+export function retryFamilyProjection(family: FamilyId, kind: string, view?: string): void {
+  failures.delete(resolveLookupKey(family, kind, view));
+}

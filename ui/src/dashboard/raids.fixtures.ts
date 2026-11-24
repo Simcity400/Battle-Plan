@@ -22,7 +22,7 @@ export function syntheticEpisode(id: string, firstHour: number, raider: string |
       ? [{ hour: firstHour, tag: victim, missing: null, source: 'controllerAtObservedRead' }, { hour: endedHour, tag: victim, missing: null, source: 'controllerAtFirstEndedRead' }]
       : [{ hour: firstHour, tag: victim, missing: victimMissing, source: victimSource }];
   return {
-    id, firstHour, firstHourExact: true, lastHour, raider,
+    id, firstHour, firstHourExact: true, lastHour, raider, raiderSlot: null,
     launchedRaider: launchedHour !== null ? raider : null,
     endedRaider: endedHour !== null ? raider : null,
     victim, victimMissing, victimSource, victims,
@@ -32,9 +32,9 @@ export function syntheticEpisode(id: string, firstHour: number, raider: string |
     preparation: preparingTo >= firstHour ? [[firstHour, preparingTo, 0, 1]] : [],
     launchedHour, launchedExact: launchedHour !== null, launched: launchedHour !== null,
     endedHour, endedExact: endedHour !== null,
-    endedSource: endedHour !== null ? 'observedEndedRead' : null, endedSeenHour: endedHour,
+    endedSource: endedHour !== null ? 'observedEndedRead' : null, succeededHour: succeeded ? endedHour : null,
     disappearedHour: null, disappearedExact: false,
-    succeeded, ...changes,
+    ...changes,
   };
 }
 

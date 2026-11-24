@@ -1,5 +1,5 @@
 import { liveKey } from '../../charts/live.ts';
-import { reservedGrey } from '../../charts/palette.ts';
+import { DEFAULT_CARD_SURFACE, reservedGrey } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -15,7 +15,7 @@ import type { MinedRegion } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 import { minesText, validateMinefields, type RegionRow } from './minefieldsData.ts';
 
-const FALLBACK_SURFACE = '#1e1e1e';
+const FALLBACK_SURFACE = DEFAULT_CARD_SURFACE;
 
 export type MinefieldsOrderOption = 'mines' | 'name';
 

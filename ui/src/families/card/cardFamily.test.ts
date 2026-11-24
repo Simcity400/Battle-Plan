@@ -4,14 +4,21 @@ import type { LiveValues } from '../../charts/live';
 import type { FocusCardReply, IdeaHistoryReply, WargoalsReply } from '../../generated/dashboard';
 import { nationalFocusProjection } from '../../widgets/national-focus/nationalFocusProjection.ts';
 import { nationalSpiritsProjection } from '../../widgets/national-spirits/nationalSpiritsProjection.ts';
-import { warGoalsProjection } from '../../widgets/war-goals/warGoalsProjection.ts';
+import { warGoalsDeclaration, warGoalsProjection } from '../../widgets/war-goals/warGoalsProjection.ts';
+import { resolveOptions } from '../../dashboard/options.ts';
+import type { FamilyPlanContext, InstalledPicture } from '../plan.ts';
+import { displayedHour } from '../boundedView.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
+import { CARD_VIEWS } from '../../widgets/manifest/card.ts';
+import { DEFAULT_VIEW } from '../manifest.ts';
+import type { FamilyBindingContext } from '../host/adapter.ts';
+import { cardHostAdapter } from './hostAdapter.ts';
 import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
-import { registerFamilyProjection } from '../registry.ts';
-import { familyCardLaneView } from './laneView.ts';
+import { ensureFamilyProjection, registerFamilyProjection } from '../registry.ts';
+import { familyCardLaneView, type FamilyCardBinding } from './laneView.ts';
 import { layoutCards } from './layout.ts';
-import { assertCardModelValid, deriveCardAudit, FutureCardDataError, type CardHeroRow, type CardItemRow, type CardModel } from './model.ts';
+import { assertCardModelValid, cardRowHours, deriveCardAudit, FutureCardDataError, type CardHeroRow, type CardItemRow, type CardModel } from './model.ts';
 
 const DAY = 24;
 const art = (token: string, name: string | null, icon: string | null = null) => ({ token, name, nameMissing: name ? null : 'Name refused', icon, iconMissing: icon ? null : 'No sprite in the installed mods' });
@@ -63,13 +70,13 @@ test('a focus card shows the product’s dated completions, then its undated one
 test('war goals keep the product’s order and states, show a missing expiry by name and unread progress as not recorded', () => {
   const hour = 2000 * DAY;
   const reply: WargoalsReply = {
-    branchId: '1', tag: 'GER', asked: 'GER',
+    branchId: '1', tag: 'AAA', asked: 'AAA',
     standings: [],
-    justifications: [{ id: '11', ordinal: 0, name: 'Take state', actor: 'GER', recipient: 'SWE', states: [1], total: '1000000', daily: '10000', payUpfront: false, start: null, completion: hour + 21 * DAY, paused: false }],
+    justifications: [{ id: '11', ordinal: 0, name: 'Take state', actor: 'AAA', recipient: 'BBB', states: [1], total: '1000000', daily: '10000', payUpfront: false, start: null, completion: hour + 21 * DAY, paused: false }],
     goals: [
-      { handle: '1', name: 'Puppet', actor: 'GER', recipient: 'SOV', available: false, expires: null, states: [2, 3], liberate: [], puppets: [], state: 'atWar', granted: null, grantedMissing: 'Held when the branch began' },
-      { handle: '2', name: 'Conquer', actor: 'GER', recipient: 'DEN', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null },
-      { handle: '3', name: 'Conquer', actor: 'GER', recipient: 'POL', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired', granted: hour - 300 * DAY, grantedMissing: null },
+      { handle: '1', name: 'Puppet', actor: 'AAA', recipient: 'CCC', available: false, expires: null, states: [2, 3], liberate: [], puppets: [], state: 'atWar', granted: null, grantedMissing: 'Held when the branch began' },
+      { handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'DDD', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null },
+      { handle: '3', name: 'Conquer', actor: 'AAA', recipient: 'EEE', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired', granted: hour - 300 * DAY, grantedMissing: null },
     ],
     removed: [{ handle: '9', name: 'Take state', recipient: 'NOR', granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }],
     warnings: [],
@@ -90,25 +97,31 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.equal(rows[3]!.place, 'Danzig · State not recorded');
   const unread = warGoalsProjection.project(view(hour, reply, null), { targetNames: false });
   assert.equal(items(unread)[0]!.meter?.fraction.kind, 'notRecorded', 'progress not read is not zero');
+  const justification = reply.justifications[0]!;
+  const withPause = (paused: boolean | null) => items(warGoalsProjection.project(view(hour, { ...reply, justifications: [{ ...justification, paused }] }, live), { targetNames: false }))[0]!;
+  assert.equal(withPause(true).state?.label, 'Paused', 'a paused justification is not Justifying');
+  assert.equal(withPause(true).figure?.value.kind, 'notRecorded', 'and has no countdown');
+  assert.equal(withPause(null).state, undefined, 'an unread pause state claims no state');
+  assert.equal(withPause(null).figure?.value.kind, 'notRecorded');
   const named = warGoalsProjection.project(view(hour, reply, live), { targetNames: true });
   assert.equal(items(named)[0]!.subtitle, 'Take state');
-  assert.ok(deriveCardAudit(model).some(row => row.key === 'state' && row.value === 'Expired'));
+  assert.ok(deriveCardAudit(model).some(row => row.key === 'state' && String(row.value).endsWith(':Expired')));
 });
 
 test('national spirits list only what is held at the displayed hour, with since dates from the recording', () => {
   const first = 100 * DAY;
   const reply = {
-    branchId: '1', tag: 'USA', asked: 'USA',
+    branchId: '1', tag: 'AAA', asked: 'AAA',
     spans: [
-      { token: 'war_dept', firstHour: first, lastHour: first + 500 * DAY, slot: null, character: null },
-      { token: 'home_free', firstHour: first + 10 * DAY, lastHour: first + 500 * DAY, slot: null, character: null },
-      { token: 'later', firstHour: first + 40 * DAY, lastHour: first + 500 * DAY, slot: null, character: null },
+      { token: 'mod_spirit_a', firstHour: first, lastHour: first + 500 * DAY, slot: null, character: null },
+      { token: 'mod_spirit_b', firstHour: first + 10 * DAY, lastHour: first + 500 * DAY, slot: null, character: null },
+      { token: 'mod_spirit_c', firstHour: first + 40 * DAY, lastHour: first + 500 * DAY, slot: null, character: null },
     ],
-    ideas: ['war_dept', 'home_free', 'later'].map(token => ({ token, category: 'spirits', slot: null, law: false, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null })),
+    ideas: ['mod_spirit_a', 'mod_spirit_b', 'mod_spirit_c'].map(token => ({ token, category: 'spirits', slot: null, law: false, designer: false, effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null })),
     artwork: [
-      { token: 'war_dept', name: 'War Department', description: null, baseDurationDays: null, icon: 'asset://war.png' },
-      { token: 'home_free', name: 'Home of the Free', description: null, baseDurationDays: null, icon: null },
-      { token: 'later', name: 'Later Spirit', description: null, baseDurationDays: null, icon: null },
+      { token: 'mod_spirit_a', name: 'Invented Spirit A', description: null, baseDurationDays: null, icon: 'asset://spirit-a.png' },
+      { token: 'mod_spirit_b', name: 'Invented Spirit B', description: null, baseDurationDays: null, icon: null },
+      { token: 'mod_spirit_c', name: 'Invented Spirit C', description: null, baseDurationDays: null, icon: null },
     ],
     holders: [], categories: [{ token: 'spirits', name: 'Spirits', kind: 'national_spirit', hidden: false, politicsTab: false, slots: [] }],
     unobserved: [{ firstHour: first + 60 * DAY, lastHour: first + 61 * DAY }], identityStarts: [], modifiers: [], texts: [], warnings: [],
@@ -116,7 +129,7 @@ test('national spirits list only what is held at the displayed hour, with since 
   const hour = first + 20 * DAY;
   const model = nationalSpiritsProjection.project(view(hour, reply), { branchFirst: first });
   const rows = items(model);
-  assert.deepEqual(rows.map(row => row.key), ['war_dept', 'home_free'], 'a spirit gained after the displayed hour is not shown');
+  assert.deepEqual(rows.map(row => row.key), ['mod_spirit_a', 'mod_spirit_b'], 'a spirit gained after the displayed hour is not shown');
   assert.match(String(rows[0]!.figure?.value.kind === 'known' && rows[0]!.figure.value.value), /^Held before /);
   assert.match(String(rows[1]!.figure?.value.kind === 'known' && rows[1]!.figure.value.value), /^Since /);
   assert.equal(rows[1]!.art?.art.status, 'confirmedMissing');
@@ -128,7 +141,7 @@ test('national spirits list only what is held at the displayed hour, with since 
   const options = { branchFirst: first };
   const lane = (panel: unknown) => ({ family: 'card', kind: 'national-spirits', options, sources: {}, staticPanels: { main: panel }, scrollTop: 0, theme: LANE_THEME, width: 420, height: 160 });
   const held = lane(reply);
-  const renamed = { ...reply, artwork: reply.artwork.map(entry => (entry.token === 'home_free' ? { ...entry, name: 'Arsenal of Democracy' } : entry)) } as IdeaHistoryReply;
+  const renamed = { ...reply, artwork: reply.artwork.map(entry => (entry.token === 'mod_spirit_b' ? { ...entry, name: 'Invented Spirit Renamed' } : entry)) } as IdeaHistoryReply;
   const surface = { width: 420, height: 160, dpr: 1 };
   assert.equal(assertQuietFrames(() => familyCardLaneView(() => {}), { label: 'spirits', binding: held, hour }, 24, surface), first + 40 * DAY);
   assertFreshPaint(() => familyCardLaneView(() => {}), [
@@ -164,7 +177,7 @@ test('special projects follow the product’s order: running with progress and s
   const status = (presentation: number, state: string, progress: number) => ({ firstHour: first, lastHour: hour + 10, readHour: first, presentation, progress, state, iterations: null, scientistRead: null, lastScientistRead: null });
   const project = (id: string, firstState: string, statuses: unknown[], entries: unknown[] = []) => ({ id, owner: 1, local: 0, firstRead: first, firstState, statuses, entries, attempts: [] });
   const reply = {
-    branchId: '1', tag: 'GER', identities: [{ firstHour: first, lastHour: hour + 10, slot: 7, countryId: 9 }], unresolved: [], available: [{ firstHour: first, lastHour: hour + 10 }], partial: [],
+    branchId: '1', tag: 'AAA', identities: [{ firstHour: first, lastHour: hour + 10, slot: 7, countryId: 9 }], unresolved: [], available: [{ firstHour: first, lastHour: hour + 10 }], partial: [],
     projects: [
       project('support', 'running', [status(0, 'running', 24)]),
       project('radar', 'running', [status(1, 'completed', 100)], [{ ordinal: 0, date: hour - 196 * DAY, completion: true, readHour: hour - 196 * DAY, counted: true, presentation: null }]),
@@ -184,4 +197,56 @@ test('special projects follow the product’s order: running with progress and s
   assert.deepEqual(radar!.figure?.value, { kind: 'known', value: 'No scientist' });
   assert.deepEqual(old!.date, { hour: null, reason: 'Already complete when the project was first recorded' });
   assert.equal(radar!.art?.art.status, 'confirmedMissing');
+});
+
+test('every card view in the manifest reaches its projection through the binding the card adapter builds', async () => {
+  for (const entry of CARD_VIEWS) {
+    const ctx = {
+      kind: entry.kind, view: entry.view ?? DEFAULT_VIEW, options: {}, settings: undefined, window: null, sources: {}, extent: null, plan: null,
+      viewport: { width: 400, height: 300, scrollLeft: 0, scrollTop: 0 }, theme: {} as FamilyBindingContext<unknown>['theme'], reducedMotion: false,
+      identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
+    } as FamilyBindingContext<unknown>;
+    const binding = cardHostAdapter.buildBinding(ctx) as FamilyCardBinding;
+    assert.equal(binding.view, ctx.view, `${entry.kind} keeps its view in the binding`);
+    const lookup = (onReady: () => void) => ensureFamilyProjection('card', binding.kind, binding.view, onReady);
+    const found = await new Promise<ReturnType<typeof lookup>>(resolve => {
+      const first = lookup(() => resolve(lookup(() => {})));
+      if (first !== 'loading') resolve(first);
+    });
+    assert.notEqual(found, 'unknown', `${entry.kind}/${ctx.view} is found by the worker`);
+    assert.notEqual(found, 'loading');
+  }
+});
+
+test('a stored "Show names" reaches the war goals projection through the declaration the host resolves', () => {
+  const resolve = (stored: Record<string, boolean>) => warGoalsDeclaration.projectionOptions({
+    options: resolveOptions(warGoalsDeclaration.optionFields ?? [], stored),
+  } as FamilyPlanContext<unknown>);
+  assert.equal(resolve({ targetNames: true }).targetNames, true);
+  assert.equal(resolve({}).targetNames, false);
+});
+
+test('a dated card row acts at its own date; an undated one at the installed hour', () => {
+  const model: CardModel = { hour: 500, columns: { date: true }, rowHeight: 36, rows: [
+    { kind: 'item', key: 'done', title: { kind: 'known', value: 'Invented focus' }, date: { hour: 120 } },
+    { kind: 'item', key: 'undated', title: { kind: 'known', value: 'Other focus' }, date: { hour: null, reason: 'Completion not recorded' } },
+  ] };
+  const installed = { id: 1, owner: 'o', hour: displayedHour(500), actionKeys: new Map() } as unknown as InstalledPicture;
+  const fields = { rowHours: cardRowHours(model) };
+  assert.equal(cardHostAdapter.resolveHitAction!({ key: 'done' }, installed, fields)?.hour, 120);
+  assert.equal(cardHostAdapter.resolveHitAction!({ key: 'undated' }, installed, fields)?.hour, 500);
+});
+
+test('the card audit lists what is drawn: printed meter text, subtitle, hero detail and caption, state mark', () => {
+  const model: CardModel = { hour: 500, columns: {}, rowHeight: 36, rows: [
+    { kind: 'hero', key: 'hero', title: { kind: 'known', value: 'Invented focus' }, state: { mark: 'running', label: 'In progress' }, detail: 'Day 12 of 70',
+      figure: { value: { kind: 'known', value: '58 days' }, caption: 'Due 3 Mar 1937' }, meter: { fraction: { kind: 'known', value: 0 }, text: '-20%' } },
+    { kind: 'item', key: 'item', title: { kind: 'known', value: 'Invented project' }, subtitle: 'Invented science' },
+  ] };
+  const audit = new Map(deriveCardAudit(model).map(row => [`${row.row}/${row.key}`, row.value]));
+  assert.equal(audit.get('hero/meterText'), '-20%');
+  assert.equal(audit.get('hero/detail'), 'Day 12 of 70');
+  assert.equal(audit.get('hero/caption'), 'Due 3 Mar 1937');
+  assert.equal(audit.get('hero/state'), 'running:In progress');
+  assert.equal(audit.get('item/subtitle'), 'Invented science');
 });
