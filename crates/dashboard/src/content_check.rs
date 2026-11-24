@@ -178,7 +178,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         technology_artwork::TechnologyArtwork::KEY => {
             artwork_check(content, artwork::Kind::Technology, findings)
         }
-        research::Research::KEY | research::breakdown::ResearchBreakdown::KEY | <research::slots::ResearchSlots as AtHour>::KEY => {
+        research::Research::KEY | research::breakdown::ResearchBreakdown::KEY | research::history::ResearchHistoryAt::KEY | <research::slots::ResearchSlots as AtHour>::KEY => {
             let names = artwork_check(content, artwork::Kind::Technology, findings)?;
             Ok(format!("{names} Slots, assignments, progress, modifiers and grants require the recorded research tables."))
         }

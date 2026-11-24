@@ -1,12 +1,11 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { projectForceAtMix, type ForceAtMixOptions } from '../../families/bars/forceAtMix.ts';
-import { validateForceAtReply } from '../../families/bars/forceAtRace.ts';
+import { forceAtSources, validateForceAtReply } from '../../families/bars/forceAtRace.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel } from '../../families/bars/shareRows.ts';
-import { nextSeriesRaceChange, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
-import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
+import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings } from '../../families/bars/seriesRace.ts';
+import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { NavyGroupingOption, NavyMeasureOption, NavyOwnershipOption } from './navySizeRaceProjection.ts';
 
 export interface NavySizeMixOptions extends ForceAtMixOptions {
@@ -22,15 +21,9 @@ const navyGrouping = (value: unknown): NavyGroupingOption => (value === 'type' ?
 export const navySizeMixProjection: BarsProjection<NavySizeMixOptions> = registerFamilyProjection({
   kind: 'navy-size',
   family: 'bars',
-  nextChange(readView, options) {
-    return nextSeriesRaceChange(readView.hour, options);
-  },
+  nextChange: () => Infinity,
   project(readView: BoundedReadView, options: NavySizeMixOptions): BarsModel {
     const hour = readView.hour;
-    const ranked = options.top != null || options.all === true;
-    if (!ranked && options.unobserved?.some(([first, last]) => first <= hour && hour <= last)) {
-      return buildShareRowsModel({ hour, rows: [], empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable' });
-    }
     const refused = readView.refused('main');
     if (refused) {
       return buildShareRowsModel({ hour, rows: [], empty: refused, emptyKind: 'unavailable' });
@@ -56,41 +49,11 @@ function navySizeMixSources(ctx: FamilyPlanContext): SourcePlan {
   const measure = navyMeasure(ctx.options.measure);
   const ownership = navyOwnership(ctx.options.ownership);
   const grouping = navyGrouping(ctx.options.grouping);
-  const top = ctx.countries.top;
-  const all = ctx.countries.all;
-  const countries = top == null && !all ? ctx.countries.tags.map(countryFromKey) : [];
-  const coverage: SourceCoverage = top != null
-    ? { mode: 'population', form: 'top', limit: top }
-    : all
-      ? { mode: 'population', form: 'all' }
-      : { mode: 'keyed', keys: ctx.countries.tags };
-  const params = {
-    branchId: ctx.branch.id,
-    countries,
-    ...(top != null ? { top } : {}),
+  return forceAtSources(ctx, `navy-size:mix:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${measure}:${ownership}:${grouping}`, 'navy-at', {
     ownership,
     grouping,
     measure,
-  };
-  return {
-    owner: `navy-size:mix:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${measure}:${ownership}:${grouping}`,
-    entries: top == null && !all && !countries.length ? [] : [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage,
-        product: 'navy-at',
-        followQuery: { panel: 'navy-at', ...params },
-        params,
-        validate: validateForceAtReply,
-      },
-    }],
-    allowEmptyFollow: top == null && !all && !countries.length,
-  };
+  });
 }
 
 export const navySizeMixDeclaration: BarsWidgetDeclaration<NavySizeMixOptions> = {
@@ -111,16 +74,11 @@ export const navySizeMixDeclaration: BarsWidgetDeclaration<NavySizeMixOptions> =
   sources: navySizeMixSources,
   projection: navySizeMixProjection,
   projectionOptions: ctx => {
-    const ranked = ctx.countries.top != null || ctx.countries.all;
     return {
+      ...seriesRaceSelection(ctx),
       measure: navyMeasure(ctx.options.measure),
       ownership: navyOwnership(ctx.options.ownership),
       grouping: navyGrouping(ctx.options.grouping),
-      holders: ranked ? null : ctx.countries.holders,
-      membership: ranked ? null : ctx.countries.membership,
-      unobserved: ranked ? [] : ctx.countries.unobserved,
-      top: ctx.countries.top,
-      all: ctx.countries.all,
     };
   },
   unavailable: seriesRaceUnavailable,

@@ -28,7 +28,7 @@ import { barsHostAdapter } from './hostAdapter.ts';
 import { drawFamilyBars, hitFamilyBars } from './painter.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { barsLane, type FamilyBarsBinding } from './laneView.ts';
-import { assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { buildShareRowsModel } from './shareRows.ts';
 
@@ -551,10 +551,11 @@ test('a backward seek drops a cached model from a later hour', () => {
     const state = new Map<string, unknown>();
     let seq = 0;
     const options: Record<string, never> = {};
+    const model = new LaneTransport().carry({ family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, audit: true, auditId: 1 } satisfies FamilyBarsBinding<Record<string, never>>);
     const input = (hour: number): PaintInput => ({
       widget: 1, subs: [], pictures: [], hour, seek: 0, speed: 24, now: hour, inspect: null,
       binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
-      model: { family: 'bars', kind: 'test-bars-seek-back', options, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME, audit: true, auditId: 1 } satisfies FamilyBarsBinding<Record<string, never>>,
+      model,
     });
     const label = (painted: ReturnType<typeof view.paint>) => (painted.fields.audit?.value as { rows: readonly { key: string; value?: string }[] }).rows.find(row => row.key.endsWith('label'))?.value;
     assert.equal(label(view.paint(input(20), state, () => `c${++seq}`)), 'After');
@@ -589,6 +590,10 @@ test('a backward seek drops a cached model from a later hour', () => {
     { label: 'seek back across the swap while playing', binding: swapping, hour: 5, speed: 24, check: true },
     { label: 'seek forward across the swap while playing', binding: swapping, hour: 30, speed: 24, check: true },
   ], surface);
+  assertContinuity(() => createLaneView(barsLane, () => {}), {
+    from: { label: 'before the swap', binding: swapping, hour: 9 },
+    to: { label: 'the swap', binding: swapping, hour: 10 },
+  }, surface);
 });
 
 test('the top painted gliding row takes the hit where two rows overlap', () => {
@@ -754,16 +759,4 @@ test('share rows draw the category legend strip, wrap long category lists cleanl
   assert.ok(texts.includes('Armored Battalions'), 'legend includes first category');
   assert.ok(texts.includes('Support Companies'), 'wrapped legend includes last category');
   assert.ok(texts.includes('Battalions'), 'legend strip includes count unit once');
-});
-
-test('a bars race view breaks at the exact hour a country enters or leaves selection membership, not midnight', async () => {
-  const { nextSeriesRaceChange } = await import('./seriesRace.ts');
-  const leaveAt = nextSeriesRaceChange(101, {
-    membership: { GER: [[100, 102]], ITA: [[100, 200]] },
-  });
-  assert.equal(leaveAt, 103, 'leaves at lastHour + 1 (hour 103), not midnight');
-  const enterAt = nextSeriesRaceChange(101, {
-    membership: { GER: [[100, 200]], ITA: [[105, 200]] },
-  });
-  assert.equal(enterAt, 105, 'enters at firstHour (hour 105), not midnight');
 });

@@ -14,10 +14,12 @@ import {
   headReading,
   headValueOf,
   type HeadReading,
+  type KnownHeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatRational, formatScalar } from '../../families/valueFormat.ts';
 
 export const EXPERIENCE_SCALE = 1 / 32_768;
+const EXPERIENCE_RATIONAL_SCALE = { denominator: 32_768n } as const;
 
 export const EXPERIENCE_BRANCHES: readonly { readonly id: 'army' | 'navy' | 'air'; readonly label: string; readonly colour: string; readonly art: ChartMeasureArt }[] = [
   { id: 'army', label: 'Army', colour: CHART_MEASURE_COLOURS.armyExperience, art: 'armyExperience' },
@@ -35,6 +37,13 @@ export function formatExperience(value: number): string {
   return formatScalar(value, { decimals: 0, maxDecimals: 2 });
 }
 
+function formatExperienceReading(reading: KnownHeadReading): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    return formatRational(reading.raw, reading.denominator, { maxDecimals: 2 });
+  }
+  return formatExperience(reading.value);
+}
+
 export const experienceProjection: TimeChartProjection<ExperienceOptions> = registerFamilyProjection({
   kind: 'experience',
   family: 'time-chart',
@@ -47,10 +56,10 @@ export const experienceProjection: TimeChartProjection<ExperienceOptions> = regi
     const readings: [string, HeadReading | null][] = [];
     const series: TimeChartSeriesModel[] = EXPERIENCE_BRANCHES.map((branch, rank) => {
       const bounded = tag ? readView.series(branch.id)?.get(tag) ?? null : null;
-      const reading = tag ? headReading(readView, branch.id, { tag }, 0, EXPERIENCE_SCALE) : null;
+      const reading = tag ? headReading(readView, branch.id, { tag }, 0, EXPERIENCE_RATIONAL_SCALE) : null;
       if (tag) readings.push([branch.id, reading]);
       const headValue = headValueOf(reading);
-      const exact = exactHoverReadings(readView, `${branch.id}Hover`, 0, EXPERIENCE_SCALE)?.[0] ?? null;
+      const exact = exactHoverReadings(readView, `${branch.id}Hover`, 0, EXPERIENCE_RATIONAL_SCALE)?.[0] ?? null;
       const icon = { art: readView.art(measureArtHandle(branch.art)), label: `${branch.label} experience` };
       return {
         id: branch.id,
@@ -67,9 +76,9 @@ export const experienceProjection: TimeChartProjection<ExperienceOptions> = regi
         icon,
         missingSpans: missingSpansOf(bounded),
         rank,
-        endLabel: headValue === null
+        endLabel: !reading || !('value' in reading)
           ? null
-          : { icon, name: branch.label, fullName: `${branch.label} experience`, value: formatExperience(headValue) },
+          : { icon, name: branch.label, fullName: `${branch.label} experience`, value: formatExperienceReading(reading) },
       };
     });
     return {
@@ -81,7 +90,7 @@ export const experienceProjection: TimeChartProjection<ExperienceOptions> = regi
       yAxis: { format: 'number', decimals: 2 },
       series,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      auditRows: readings.map(([row, reading]) => auditReading(row, reading, known => formatExperience(known.value))),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatExperienceReading)),
     };
   },
 });

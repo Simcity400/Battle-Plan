@@ -155,7 +155,7 @@ export const supplyHealthProjection: TimeChartProjection<SupplyHealthOptions> = 
       mode: 'stack',
       hour,
       extent: options.extent,
-      yAxis: { format: 'percent', fixed: [0, 100], ticks: PERCENT_TICKS },
+      yAxis: { format: 'share', fixed: [0, 100], ticks: PERCENT_TICKS },
       series: [],
       stack,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,

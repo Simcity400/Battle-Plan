@@ -192,9 +192,8 @@ pub struct FactionLinesParams {
     pub from: i32,
     pub to: i32,
     pub width: u32,
-    #[doc = " Whose membership a faction sums: `hour` (each member over its own membership; the default), `end` (the"]
-    #[doc = " members at the view's last hour, over the whole view) or `ever` (anyone a member within the view, over the"]
-    #[doc = " whole view)."]
+    #[doc = " Whose membership a faction sums: `hour` (each member over its own membership; the default) or `ever`"]
+    #[doc = " (anyone a member within the view, over the whole view)."]
     #[serde(default)]
     pub membership: Option<String>,
     #[doc = " A group's members summed as one line, `group`, instead of the factions: each by tag over its spans (the"]
@@ -219,7 +218,6 @@ pub const GROUP_LINE: &str = "group";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Membership {
     Hour,
-    End,
     Ever,
 }
 
@@ -227,9 +225,8 @@ impl Membership {
     fn of(text: Option<&str>) -> Result<Self, &'static str> {
         match text {
             None | Some("hour") => Ok(Self::Hour),
-            Some("end") => Ok(Self::End),
             Some("ever") => Ok(Self::Ever),
-            Some(_) => Err("A faction's membership is hour, end or ever"),
+            Some(_) => Err("A faction's membership is hour or ever"),
         }
     }
 }
@@ -244,7 +241,6 @@ fn roster_spans(runs: Vec<(String, i32, i32)>, membership: Membership, from: i32
         .filter_map(|(tag, spans)| {
             let counted = match membership {
                 Membership::Hour => merged(spans, from, to),
-                Membership::End => spans.iter().any(|&(first, last)| first <= to && to <= last).then(|| vec![(from, to)]).unwrap_or_default(),
                 Membership::Ever => spans.iter().any(|&(first, last)| first <= to && from <= last).then(|| vec![(from, to)]).unwrap_or_default(),
             };
             (!counted.is_empty()).then_some((tag, counted))
@@ -391,9 +387,8 @@ fn lines(source: &Source, params: &FactionLinesParams, cancelled: &AtomicBool) -
         let unread_spans = merged(unknown.iter().map(|span| (span.first_hour, span.last_hour)).collect(), from, to);
         let unread_spans = match membership {
             Membership::Hour => unread_spans,
-            Membership::End if unread_spans.iter().any(|&(first, last)| first <= to && to <= last) => vec![(from, to)],
             Membership::Ever if !unread_spans.is_empty() => vec![(from, to)],
-            Membership::End | Membership::Ever => Vec::new(),
+            Membership::Ever => Vec::new(),
         };
         let unread: Vec<MissingSpan> = unread_spans
             .into_iter()
@@ -824,13 +819,13 @@ mod tests {
     }
 
     #[test]
-    fn a_roster_at_the_end_or_of_anyone_ever_a_member_sums_its_members_over_the_whole_view() {
+    fn a_roster_of_anyone_ever_a_member_sums_its_members_over_the_whole_view_and_members_at_the_end_are_not_a_choice() {
         let runs = || vec![("GER".to_owned(), 0, 99), ("ITA".to_owned(), 20, 40), ("ITA".to_owned(), 60, 200), ("HUN".to_owned(), 150, 300), ("JAP".to_owned(), 0, 5)];
         let shown = |membership| roster_spans(runs(), membership, 10, 100);
         assert_eq!(shown(Membership::Hour), [("GER".to_owned(), vec![(10, 99)]), ("ITA".to_owned(), vec![(20, 40), (60, 100)])]);
-        assert_eq!(shown(Membership::End), [("ITA".to_owned(), vec![(10, 100)])], "only who is a member at the view's last hour, over all of it");
         assert_eq!(shown(Membership::Ever), [("GER".to_owned(), vec![(10, 100)]), ("ITA".to_owned(), vec![(10, 100)])]);
-        assert_eq!(Membership::of(Some("later")), Err("A faction's membership is hour, end or ever"));
+        assert_eq!(Membership::of(Some("later")), Err("A faction's membership is hour or ever"));
+        assert_eq!(Membership::of(Some("end")), Err("A faction's membership is hour or ever"), "members at the view's end are read after its hours");
         assert_eq!(Membership::of(None), Ok(Membership::Hour));
     }
 

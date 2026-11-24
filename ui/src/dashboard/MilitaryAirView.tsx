@@ -67,7 +67,7 @@ export default function MilitaryAirView({ widget, runtime, active, onDiagnostics
   const rows = useMemo(() => index ? militaryAirAt(index, from, hour) : [], [index, from, hour]);
   const fallback = selectedCountryKeys(widget.countries, track), fallbackKey = JSON.stringify(fallback);
   const lastHour = track?.branch.lastHour ?? hour;
-  const selected = useMemo(() => ledgerCountries(rows, widget.countries, fallback, groups.data, hour, lastHour, metric, data?.countries),
+  const selected = useMemo(() => ledgerCountries(rows, widget.countries, fallback, groups.data, hour, metric, data?.countries),
     [rows, widget.countries, fallbackKey, groups.data, hour, lastHour, metric, data?.countries]);
   const lineSeries = useMemo(() => {
     if (!index) return [];
@@ -89,7 +89,7 @@ export default function MilitaryAirView({ widget, runtime, active, onDiagnostics
     })).filter(line => line.runs.length);
   }, [air, options.view, lineSeries, grouped, widget.countries, fallbackKey, groups.data, lastHour, from, end, family]);
   const hourAt = (position: number) => (track && resolveWindow(widget, track, runtime.tracks, position)?.lastHour) ?? hour;
-  const rowsAt = (at: number) => index ? ledgerCountries(militaryAirAt(index, from, at), widget.countries, fallback, groups.data, at, lastHour, metric, data?.countries).rows : [];
+  const rowsAt = (at: number) => index ? ledgerCountries(militaryAirAt(index, from, at), widget.countries, fallback, groups.data, at, metric, data?.countries).rows : [];
   const axisOffset = track?.axisOffset ?? 0;
   const liveScope = JSON.stringify([following, air, options.view, from, metric, options.ratio, widget.countries, fallbackKey, lastHour, track?.id]);
   const sticky = useRef<{ held: StickyMembers | null; key: string }>({ held: null, key: '' });

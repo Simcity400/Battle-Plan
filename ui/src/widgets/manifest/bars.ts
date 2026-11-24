@@ -11,6 +11,7 @@ import { OPTIONS as NAVAL_LOSSES_OPTIONS } from '../naval-losses/definition.ts';
 import { OPTIONS as NAVY_SIZE_OPTIONS } from '../navy-size/definition.ts';
 import { OPTIONS as NUCLEAR_ARSENAL_OPTIONS } from '../nuclear-arsenal/definition.ts';
 import { OPTIONS as OCCUPATION_TREND_OPTIONS } from '../occupation-trend/definition.ts';
+import { OPTIONS as RESOURCE_BALANCE_OPTIONS } from '../resource-balance/definition.ts';
 import { OPTIONS as TERRITORY_OPTIONS } from '../territory/definition.ts';
 import { OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
 
@@ -51,6 +52,7 @@ const RAID_TALLY_RACE_OPTIONS: readonly OptionField[] = [
 ];
 const TERRITORY_RACE_OPTIONS = raceScopedOptions(TERRITORY_OPTIONS, new Set(['view', 'measure', 'rule']));
 const WORLD_TENSION_RACE_OPTIONS = WORLD_TENSION_OPTIONS.filter(field => field.key === 'view');
+const RESOURCE_BALANCE_BARS_OPTIONS = raceScopedOptions(RESOURCE_BALANCE_OPTIONS, new Set(['view', 'hideEmpty']));
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
@@ -398,6 +400,18 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
     loadSpec: () => import('../raid-tally/raidTallyRaceProjection.ts').then(mod => ({
       family: 'bars', kind: 'raid-tally', view: 'race',
       projection: mod.raidTallyRaceProjection, declaration: mod.raidTallyRaceDeclaration,
+    })),
+  },
+  {
+    kind: 'resource-balance',
+    view: 'bars',
+    label: 'Bars',
+    family: 'bars',
+    viewOption: 'view',
+    options: RESOURCE_BALANCE_BARS_OPTIONS,
+    loadSpec: () => import('../resource-balance/resourceBalanceProjection.ts').then(mod => ({
+      family: 'bars', kind: 'resource-balance', view: 'bars',
+      projection: mod.resourceBalanceProjection, declaration: mod.resourceBalanceDeclaration,
     })),
   },
   {

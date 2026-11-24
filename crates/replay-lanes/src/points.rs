@@ -1,6 +1,6 @@
 
 use replay_recording::{cells::{self, Change, Held, Stretch, TableReader}, columnar_frames::Recording};
-use crate::lanes::Keys;
+use crate::lanes::{Keys, StatusRun};
 use replay_data::rows::TableId;
 use replay_columnar::{
     manifest::Status,
@@ -492,6 +492,17 @@ fn push_complete(out: &mut Vec<(i32, i32)>, first: i32, last: i32) {
     }
 }
 
+fn push_status(out: &mut Vec<StatusRun>, first: i32, last: i32, status: Status) {
+    let first = out.last().map_or(first, |prev| first.max(prev.last + 1));
+    if first > last {
+        return;
+    }
+    match out.last_mut() {
+        Some(prev) if prev.status == status && prev.last + 1 == first => prev.last = last,
+        _ => out.push(StatusRun { first, last, status }),
+    }
+}
+
 fn read<L: Look>(
     recording: &Recording,
     (run, table): (u32, TableId),
@@ -500,7 +511,7 @@ fn read<L: Look>(
     (from, to): (i32, i32),
     look: impl FnOnce(Vec<usize>, Vec<Kind>) -> L,
     initial_witness: bool,
-    mut complete: Option<&mut Vec<(i32, i32)>>,
+    mut statuses: Option<&mut Vec<StatusRun>>,
     each: &mut dyn FnMut(i32, u128, &L::State) -> bool,
 ) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
     let (mut first, last) = ordinals(recording, run, from, to)?;
@@ -543,10 +554,8 @@ fn read<L: Look>(
     let mut follow = || -> io::Result<()> {
         let mut reading = Reading { columns: &asked, places: &places, wanted: &wanted, look: &mut look, state: HashMap::default() };
         {
-            if let Some(out) = complete.as_deref_mut()
-                && matches!(reader.status(), Status::Complete)
-            {
-                push_complete(out, from, from);
+            if let Some(out) = statuses.as_deref_mut() {
+                push_status(out, from, from, reader.status());
             }
             let view = reader.view();
             let read = if first == 0 && !initial_witness && matches!(reader.status(), Status::Truncated { .. }) {
@@ -601,15 +610,13 @@ fn read<L: Look>(
                     resume += 1;
                 }
                 let next_at = last.min(resume * BLOCK - 1);
-                if let Some(out) = complete.as_deref_mut() {
+                if let Some(out) = statuses.as_deref_mut() {
                     let skip_first = held.first_hour + (at + 1) as i32;
                     let skip_last = held.first_hour + next_at as i32;
                     for skipped in block..resume {
                         let entry = recording.table_entry(run, skipped, table.index())?.unit;
                         replay_columnar::unit::reader::statuses(&entry, held.block(skipped as usize).1 as u16, held.block_first_hour(skipped), &mut |start, end, status| {
-                            if matches!(status, Status::Complete) {
-                                push_complete(out, start.max(skip_first), end.min(skip_last));
-                            }
+                            push_status(out, start.max(skip_first), end.min(skip_last), status);
                         })?;
                     }
                 }
@@ -621,12 +628,10 @@ fn read<L: Look>(
             }
             let end = last.min((block + 1) * BLOCK - 1);
             let stretch = reader.read_stretch(recording, end)?;
-            if let Some(out) = complete.as_deref_mut() {
-                for (offset, status) in stretch.statuses.iter().enumerate() {
-                    if matches!(status, Status::Complete) {
-                        let hour = stretch.block_first + i32::from(stretch.from) + offset as i32;
-                        push_complete(out, hour, hour);
-                    }
+            if let Some(out) = statuses.as_deref_mut() {
+                for (offset, &status) in stretch.statuses.iter().enumerate() {
+                    let hour = stretch.block_first + i32::from(stretch.from) + offset as i32;
+                    push_status(out, hour, hour, status);
                 }
             }
             let born = born(recording, (run, table), &mut probe, &stretch, &reading)?;
@@ -704,7 +709,7 @@ pub fn points_with_complete(
     to: i32,
     each: &mut dyn FnMut(Point) -> bool,
 ) -> io::Result<Vec<(i32, i32)>> {
-    let mut complete = Vec::new();
+    let mut statuses = Vec::new();
     read(
         recording,
         (run, table),
@@ -713,9 +718,13 @@ pub fn points_with_complete(
         (from, to),
         |columns, kinds| Valued { columns, kinds, source, texts: Texts::default(), values: Vec::new() },
         true,
-        Some(&mut complete),
+        Some(&mut statuses),
         &mut |hour, key, &(covered, value): &(bool, Option<i64>)| each(Point { hour, key, covered, value }),
     )?;
+    let mut complete = Vec::new();
+    for held in statuses.into_iter().filter(|held| matches!(held.status, Status::Complete)) {
+        push_complete(&mut complete, held.first, held.last);
+    }
     Ok(complete)
 }
 
@@ -727,6 +736,7 @@ pub fn cells(
     keys: Keys<'_>,
     from: i32,
     to: i32,
+    statuses: Option<&mut Vec<StatusRun>>,
     each: &mut dyn FnMut(i32, u128, Option<&[Cell]>) -> bool,
 ) -> io::Result<(Vec<usize>, Vec<Box<[u8]>>)> {
     read(
@@ -737,7 +747,7 @@ pub fn cells(
         (from, to),
         |columns, kinds| Celled { columns, kinds, texts: Texts::default() },
         false,
-        None,
+        statuses,
         &mut |hour, key, cells: &Option<Box<[Cell]>>| each(hour, key, cells.as_deref()),
     )
 }

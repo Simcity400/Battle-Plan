@@ -85,6 +85,7 @@ const OWN: &[Registered] = &[
     dashboard_air::registrations::AIRCRAFT_CATALOGUE_AIRCRAFTCATALOGUE,
     dashboard_world::registrations::ARTWORK_SPRITEARTWORK,
     dashboard_land::registrations::ARMY_ARMYSIZE,
+    dashboard_land::registrations::ARMY_ARMYBREAKDOWN,
     dashboard_world::registrations::IDENTITIES_COUNTRYIDENTITIES,
     dashboard_world::registrations::STYLES_COUNTRYFACTS,
     dashboard_world::registrations::STYLES_COUNTRYSTYLES,
@@ -151,6 +152,7 @@ const OWN: &[Registered] = &[
     dashboard_naval::registrations::NAVAL_LOSSES_NAVALLOSSESAT,
     dashboard_research::registrations::RESEARCH_RESEARCH,
     dashboard_research::registrations::RESEARCH_BREAKDOWN_RESEARCHBREAKDOWN,
+    dashboard_research::registrations::RESEARCH_HISTORY_RESEARCHHISTORYAT,
     dashboard_politics::registrations::FEED_EVENTFEEDTAIL,
     dashboard_politics::registrations::FEED_EVENTCHOICESTAIL,
     dashboard_politics::registrations::FEED_DECISIONSTAIL,
@@ -180,6 +182,7 @@ const OWN: &[Registered] = &[
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDRACE,
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN,
+    dashboard_politics::registrations::POWER_LEDGER_MARKERS_POWERSPENDMARKERS,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS,
 ];
@@ -189,6 +192,7 @@ pub static PRODUCTS: &[Registered] = &ALL;
 
 const MOVED_OWN: &[&str] = &[
     dashboard_land::registrations::ARMY_ARMYSIZE.key,
+    dashboard_land::registrations::ARMY_ARMYBREAKDOWN.key,
     dashboard_world::registrations::IDENTITIES_COUNTRYIDENTITIES.key,
     dashboard_world::registrations::STYLES_COUNTRYFACTS.key,
     dashboard_world::registrations::STYLES_COUNTRYSTYLES.key,
@@ -255,6 +259,7 @@ const MOVED_OWN: &[&str] = &[
     dashboard_naval::registrations::NAVAL_LOSSES_NAVALLOSSESAT.key,
     dashboard_research::registrations::RESEARCH_RESEARCH.key,
     dashboard_research::registrations::RESEARCH_BREAKDOWN_RESEARCHBREAKDOWN.key,
+    dashboard_research::registrations::RESEARCH_HISTORY_RESEARCHHISTORYAT.key,
     dashboard_politics::registrations::FEED_EVENTFEEDTAIL.key,
     dashboard_politics::registrations::FEED_EVENTCHOICESTAIL.key,
     dashboard_politics::registrations::FEED_DECISIONSTAIL.key,
@@ -284,6 +289,7 @@ const MOVED_OWN: &[&str] = &[
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT.key,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDRACE.key,
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN.key,
+    dashboard_politics::registrations::POWER_LEDGER_MARKERS_POWERSPENDMARKERS.key,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE.key,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS.key,
 ];

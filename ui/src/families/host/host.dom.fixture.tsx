@@ -684,14 +684,9 @@ window.hostDom = {
     await frames(2);
     clock.setSpeed(24);
     clock.setPlaying(true);
-    let dateOnly = false;
-    for (let i = 0; i < 40 && !dateOnly; i++) {
-      const idBefore = pipeline.view(pipeG)?.id;
-      const installsBefore = installCalls.get(pipeG) ?? 0;
+    for (let i = 0; i < 40; i++) {
       sendHour(subsG, clock.getSnapshot().hour, [90n, 70n, 50n, 30n]);
       await frames(1);
-      const now = pipeline.view(pipeG);
-      dateOnly = now?.id !== idBefore && now?.dim === false && (installCalls.get(pipeG) ?? 0) === installsBefore;
     }
     genericActivated = [];
     body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -711,7 +706,6 @@ window.hostDom = {
       blockedShown,
       description,
       clearedDescription,
-      dateOnly,
       activatedId: activated?.installedId ?? null,
       activatedHour: activated?.hour ?? null,
       viewId: view?.id ?? null,

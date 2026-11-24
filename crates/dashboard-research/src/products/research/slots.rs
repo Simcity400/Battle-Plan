@@ -157,7 +157,7 @@ impl AtHour for ResearchSlots {
             }) { return Ok(false); }
         data["readHour"] = read.into();
         let Some(slots) = data["slots"].as_array_mut() else { return Ok(false) };
-        let assignments = frame.complete::<tables::ResearchAssignments>()?;
+        let Ok(assignments) = frame.complete::<tables::ResearchAssignments>() else { return Ok(false) };
         let mods = frame.complete::<tables::ResearchModifiers>().ok();
         for r in inputs {
             let index = r.index;
@@ -229,11 +229,12 @@ impl AtHour for ResearchSlots {
             reply.warnings.push(format!("Research names are unavailable: {error}"));
         }
         match slots(frame, owner, at.hour, &localise, at.live) {
-            Ok((read, mut slots, inventory)) => {
+            Ok((read, mut slots, inventory, unjoined)) => {
                 defined(&mut slots, &|token, index| at.context.as_ref().map_or((None, None), |art| art.definition_text(token, index)));
                 reply.read_hour = Some(read);
                 reply.slots = slots;
                 reply.grants = inventory;
+                reply.warnings.extend(unjoined);
             }
             Err(missing) => reply.missing = Some(missing),
         }
@@ -266,7 +267,7 @@ fn progress_cell(input: &ResearchInputRow, live: &Cells) {
     }
 }
 
-pub(crate) fn slots(frame: &DecodedFrame, owner: Owner, hour: i32, localise: &dyn Fn(&str) -> Option<String>, live: &Cells) -> Result<(i32, Vec<ResearchSlotNow>, GrantInventory), String> {
+pub(crate) fn slots(frame: &DecodedFrame, owner: Owner, hour: i32, localise: &dyn Fn(&str) -> Option<String>, live: &Cells) -> Result<(i32, Vec<ResearchSlotNow>, GrantInventory, Option<String>), String> {
     let unread = |table: &str, error: io::Error| format!("{table} is not recorded at this hour: {error}");
     let coverage = frame.complete::<tables::ResearchCoverage>().map_err(|error| unread("Research coverage", error))?;
     if !coverage.iter().any(|row| row.holder_slot == owner.slot && row.holder_id == owner.id && row.member == ResearchCoverageRow::HOLDER) {
@@ -294,9 +295,10 @@ pub(crate) fn slots(frame: &DecodedFrame, owner: Owner, hour: i32, localise: &dy
     if !valid_inputs(&mine) {
         return Err("The research read of these slots cannot be observed".into());
     }
-    let assignments = frame.complete::<tables::ResearchAssignments>().map_err(|error| unread("Research assignments", error))?;
+    let assignments = frame.complete::<tables::ResearchAssignments>();
+    let unjoined = assignments.as_ref().err().map(|error| format!("Research assignments are not recorded at this hour, so these slots are not joined to their assignments: {error}"));
     let active: BTreeMap<u32, &ResearchAssignmentRow> =
-        assignments.iter().filter(|row| row.holder_slot == owner.slot && row.holder_id == owner.id && row.lane == 0 && row.outcome == ResearchAssignmentRow::ACTIVE).map(|row| (row.index, row)).collect();
+        assignments.iter().flat_map(|rows| rows.iter()).filter(|row| row.holder_slot == owner.slot && row.holder_id == owner.id && row.lane == 0 && row.outcome == ResearchAssignmentRow::ACTIVE).map(|row| (row.index, row)).collect();
     let bonuses = frame.complete::<tables::ResearchAppliedBonuses>().ok();
     let modifiers = frame.complete::<tables::ResearchModifiers>().ok();
     let mut out = Vec::with_capacity(mine.len());
@@ -332,5 +334,5 @@ pub(crate) fn slots(frame: &DecodedFrame, owner: Owner, hour: i32, localise: &dy
             }
         }
     };
-    Ok((read, out, inventory))
+    Ok((read, out, inventory, unjoined))
 }
