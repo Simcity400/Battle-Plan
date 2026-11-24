@@ -84,6 +84,7 @@ export class TileView {
   private rankHour: number | null = null;
   private rankAsked = 0;
   private rankPending = false;
+  private rankFailedHour: number | null = null;
   private readonly cache: TileCache;
   private readonly lane: TileLane;
   private readonly changed: () => void;
@@ -107,7 +108,7 @@ export class TileView {
     this.rankHour = hour;
     const held = this.ranked;
     if (held && hour >= held.from && hour <= held.until) return;
-    if (this.rankPending) return;
+    if (this.rankPending || this.rankFailedHour === hour) return;
     this.askTop();
   }
 
@@ -117,10 +118,13 @@ export class TileView {
     const binHours = wanted.binHours, index = Math.max(wanted.first, Math.min(wanted.last, Math.floor(hour / (TILE_BINS * binHours))));
     const asked = ++this.rankAsked;
     this.rankPending = true;
+    this.rankFailedHour = null;
     this.asked++;
     void top.ask(binHours, index, hour).then(reply => {
       if (this.closed || asked !== this.rankAsked) return;
       this.rankPending = false;
+      this.rankFailedHour = null;
+      this.failure = null;
       const ranking = reply.ranking;
       if (!ranking || !Array.isArray(reply.lines)) throw new Error('The chart tile reply names no top.');
       const tags = reply.lines.map(held => countryKey(held.country));
@@ -135,6 +139,7 @@ export class TileView {
     }).catch(error => {
       if (this.closed || asked !== this.rankAsked) return;
       this.rankPending = false;
+      this.rankFailedHour = hour;
       this.failure = error;
       this.changed();
     });
@@ -165,7 +170,7 @@ export class TileView {
     this.cache.pin(keys);
     if (held) this.cache.unpin(held.keys);
     this.wanted = { binHours, first, last, width: view.width, cell, keys };
-    if (this.lane.top && !this.ranked && this.rankHour !== null) this.askTop();
+    if (this.lane.top && !this.ranked && !this.rankPending && this.rankHour !== null && this.rankFailedHour !== this.rankHour) this.askTop();
     this.fetch();
     const made = this.assembled;
     if (made && made.binHours === binHours && made.width === view.width && made.cell === cell && made.first <= first && last <= made.last) return;
@@ -174,6 +179,8 @@ export class TileView {
 
   retry(): void {
     this.failure = null;
+    this.rankFailedHour = null;
+    if (this.lane.top && !this.ranked && !this.rankPending && this.rankHour !== null) this.askTop();
     this.fetch();
     this.assemble();
   }
