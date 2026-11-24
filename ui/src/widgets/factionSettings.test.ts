@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const WIDGETS = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.dirname(WIDGETS);
-const READS = /\buse(FactionColours|FactionDisplayNames)\(/;
+const READS = /\buse(FactionColours|FactionDisplayNames)\(|\.campaigns\[[^\]]+\]\??\.factions\b/;
 
 function sources(folder: string): string[] {
   const seen = new Set<string>();
