@@ -65,7 +65,7 @@ test('the shown balance is the saved one, else the one the game shows, and its s
   assert.deepEqual(plotRuns(guild).map(item => item.value), [0.3, -0.3]);
   const active = balanceStatusAt(guild, 10, 400, []);
   assert.deepEqual(active, { kind: 'active', value: '30000', range: 'guild_high', trending: 'guild_right' });
-  assert.equal(statusText(active, guild, {}), 'High · 0.30 · toward Side name unavailable');
+  assert.equal(statusText(active, guild, {}), 'High · 0.30 · toward Name not recorded (unresolved localisation)');
   assert.deepEqual(balanceStatusAt(guild, 250, 400, []), { kind: 'active', value: '-30000', range: 'guild_low', trending: 'guild_right' });
   assert.deepEqual(balanceStatusAt(guild, 150, 400, []), { kind: 'ended', hour: 100, by: false, range: 'guild_high' });
   const unread = [{ firstHour: 100, lastHour: 199 }];
