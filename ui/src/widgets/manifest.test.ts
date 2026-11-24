@@ -49,7 +49,7 @@ test('manifest accounts for every widget kind once across family views and legac
     const pair = `${entry.kind}:${normalizeView(entry.view)}`;
     assert.equal(familyPairs.has(pair), false, `${pair} must not appear in both lists`);
   }
-  assert.equal(FAMILY_VIEWS.length, 10);
+  assert.equal(FAMILY_VIEWS.length, 11);
 });
 
 test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {

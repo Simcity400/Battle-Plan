@@ -21,7 +21,7 @@ test('project effects render again when their game text changes, never only beca
 
 const marker = (date: number, readHour: number, counted = true): ProjectEntry => ({ ordinal: 3, date, completion: true, readHour, counted, presentation: counted ? 0 : null });
 
-const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],
+const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [], shown: { through: null, running: [], completed: [], undated: 0 },
   identities: [{firstHour:100,lastHour:199,slot:5,countryId:10},{firstHour:220,lastHour:300,slot:5,countryId:10}],
   available: [{firstHour:100,lastHour:199},{firstHour:220,lastHour:300}], partial: [], unresolved: [],
   iterationTexts:{2:'Mod iterations: 2',3:'Mod iterations: 3'},

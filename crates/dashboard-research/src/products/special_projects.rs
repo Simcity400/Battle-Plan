@@ -195,7 +195,58 @@ pub struct SpecialProjectsReply {
     pub iteration_texts: BTreeMap<i32, Option<String>>,
     #[doc = " Why nothing is shown at any hour; the hours outside `available` say for themselves why they show nothing."]
     pub unavailable: Option<String>,
+    pub shown: ProjectsShown,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ShownCompleted {
+    pub project: u32,
+    pub date: Option<i32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectsShown {
+    pub through: Option<i32>,
+    pub running: Vec<u32>,
+    pub completed: Vec<ShownCompleted>,
+    pub undated: u32,
+}
+
+pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPresentation], available: &[HourSpan], hour: i32) -> ProjectsShown {
+    let mut shown = ProjectsShown { through: Some(hour), ..ProjectsShown::default() };
+    if !available.iter().any(|span| span.first_hour <= hour && hour <= span.last_hour) {
+        return shown;
+    }
+    let name = |run: &ProjectStatus| presentations.get(run.presentation as usize).map_or("", |info| info.name.as_str());
+    let mut running = Vec::new();
+    let mut dated = Vec::new();
+    let mut undated = Vec::new();
+    for (index, project) in projects.iter().enumerate() {
+        let Some(run) = project.statuses.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour) else { continue };
+        match run.state {
+            ProjectState::Cancelled => {}
+            ProjectState::Completed => {
+                let date = project.entries.iter().filter(|entry| entry.completion && entry.counted && entry.date <= hour && entry.read_hour <= hour).map(|entry| entry.date).max();
+                match date {
+                    Some(date) => dated.push((date, name(run), project.id.as_str(), index as u32)),
+                    None => undated.push((name(run), project.id.as_str(), index as u32)),
+                }
+            }
+            _ => running.push((run.progress, project.first_read, name(run), project.id.as_str(), index as u32)),
+        }
+    }
+    running.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(b.2)).then(a.3.cmp(b.3)));
+    dated.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)).then(a.2.cmp(b.2)));
+    undated.sort();
+    shown.running = running.into_iter().map(|item| item.4).collect();
+    shown.undated = undated.len() as u32;
+    shown.completed = dated.into_iter().map(|item| ShownCompleted { project: item.3, date: Some(item.0) }).chain(undated.into_iter().map(|item| ShownCompleted { project: item.2, date: None })).collect();
+    shown
 }
 
 dashboard_base::reply_warnings!(SpecialProjectsReply);
@@ -1162,7 +1213,12 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         people: people.values,
         iteration_texts,
         unavailable,
+        shown: ProjectsShown::default(),
         warnings,
+    };
+    let reply = match follow.through() {
+        Some(hour) => SpecialProjectsReply { shown: shown_at(&reply.projects, &reply.presentations, &reply.available, hour), ..reply },
+        None => reply,
     };
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)
@@ -1214,6 +1270,8 @@ impl Product for SpecialProjects {
             ProjectEntry::decl(),
             ProjectAttempt::decl(),
             ProjectRecord::decl(),
+            ShownCompleted::decl(),
+            ProjectsShown::decl(),
             SpecialProjectsReply::decl(),
         ]
     }

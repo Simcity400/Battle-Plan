@@ -1090,3 +1090,25 @@ fn differential_batched_completions_matches_reference_across_300_seeds() {
     assert!(total_completions > 100, "expected differential suite to exercise completions, got {total_completions}");
     assert!(total_spelled > 50, "expected differential suite to exercise spellings, got {total_spelled}");
 }
+
+#[test]
+fn the_card_at_an_hour_orders_running_by_progress_and_completed_by_their_recorded_date_with_undated_last() {
+    let info = |name: &str| ProjectPresentation { name: name.into(), specialization: None, specialization_name: None, icon: None, icon_missing: None, scientist: 0, last_scientist: None };
+    let status = |presentation: u32, state: ProjectState, progress: i32| ProjectStatus { first_hour: 10, last_hour: 50, read_hour: 10, presentation, progress, state, iterations: None, scientist_read: None, last_scientist_read: None };
+    let completion = |date: i32, read_hour: i32| ProjectEntry { ordinal: 0, date, completion: true, read_hour, counted: true, presentation: None };
+    let project = |id: &str, first_state: ProjectState, statuses: Vec<ProjectStatus>, entries: Vec<ProjectEntry>| ProjectRecord { id: id.into(), owner: 1, local: 0, first_read: 10, first_state, statuses, entries, attempts: Vec::new() };
+    let presentations = vec![info("Radar"), info("Support Ships"), info("Cruiser Submarine"), info("Jet Engines"), info("Atomic Research")];
+    let projects = vec![
+        project("a", ProjectState::Completed, vec![status(0, ProjectState::Completed, 100)], vec![completion(20, 20)]),
+        project("b", ProjectState::Running, vec![status(1, ProjectState::Running, 24)], Vec::new()),
+        project("c", ProjectState::Completed, vec![status(2, ProjectState::Completed, 100)], vec![completion(30, 30)]),
+        project("d", ProjectState::Running, vec![status(3, ProjectState::Running, 60)], Vec::new()),
+        project("e", ProjectState::Completed, vec![status(4, ProjectState::Completed, 100)], vec![completion(45, 45)]),
+    ];
+    let available = vec![HourSpan { first_hour: 10, last_hour: 50 }];
+    let shown = shown_at(&projects, &presentations, &available, 40);
+    assert_eq!(shown.running, [3, 1], "more progress first");
+    assert_eq!(shown.completed, [ShownCompleted { project: 2, date: Some(30) }, ShownCompleted { project: 0, date: Some(20) }, ShownCompleted { project: 4, date: None }]);
+    assert_eq!(shown.undated, 1, "a completion read after the hour is not used, so that project is undated at 40");
+    assert_eq!(shown_at(&projects, &presentations, &available, 60), ProjectsShown { through: Some(60), ..ProjectsShown::default() }, "an hour not recorded shows nothing");
+}

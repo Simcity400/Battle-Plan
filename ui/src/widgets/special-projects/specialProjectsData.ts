@@ -64,6 +64,11 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
       || !(entry.presentation === null || entry.counted && presentation(entry.presentation))) return bad();
     for (const attempt of project.attempts) if (!object(attempt) || !integer(attempt.ordinal) || !integer(attempt.date) || !integer(attempt.readHour) || !nullableInteger(attempt.sinceRead)) return bad();
   }
+  const shown = input.shown;
+  const index = (value: unknown) => integer(value) && value >= 0 && value < (input.projects as unknown[]).length;
+  if (!object(shown) || !nullableInteger(shown.through) || !Array.isArray(shown.running) || !shown.running.every(index)
+    || !Array.isArray(shown.completed) || !shown.completed.every(item => object(item) && index(item.project) && nullableInteger(item.date))
+    || !integer(shown.undated) || shown.undated < 0 || shown.undated > shown.completed.length) return bad();
   return input as unknown as SpecialProjectsReply;
 }
 

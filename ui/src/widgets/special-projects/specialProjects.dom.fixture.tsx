@@ -47,7 +47,7 @@ const merge = (runs: ProjectStatus[]) => runs.reduce<ProjectStatus[]>((out, run)
   if (last && last.progress === run.progress && last.iterations === run.iterations) last.lastHour = run.lastHour; else out.push({ ...run });
   return out;
 }, []);
-export const reply: SpecialProjectsReply = { branchId: '1', tag: 'GER', identities, available: [{ firstHour: 0, lastHour: HOURS - 1 }], partial: [], unresolved: [],
+export const reply: SpecialProjectsReply = { branchId: '1', tag: 'GER', shown: { through: null, running: [], completed: [], undated: 0 }, identities, available: [{ firstHour: 0, lastHour: HOURS - 1 }], partial: [], unresolved: [],
   presentations: [{ name: 'Rocket engines', specialization: null, specializationName: null, icon: null, iconMissing: 'none', scientist: 0, lastScientist: null }], reads: [],
   people: [{ assigned: false, id: null, name: null, portrait: null, missing: 'No scientist assigned.' }],
   iterationTexts: { 0: '0', 1: '1', 2: '2', 3: '3', 4: '4' }, unavailable: null, warnings: [],

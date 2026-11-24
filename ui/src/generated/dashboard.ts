@@ -3513,6 +3513,8 @@ owner: number, local: number,
  * The first usable Projects read of the project, published or not, and its state; for a project seen only in history, its first history read and an unknown state.
  */
 firstRead: number, firstState: ProjectState, statuses: Array<ProjectStatus>, entries: Array<ProjectEntry>, attempts: Array<ProjectAttempt>, };
+export type ShownCompleted = { project: number, date: number | null, };
+export type ProjectsShown = { through: number | null, running: Array<number>, completed: Array<ShownCompleted>, undated: number, };
 export type SpecialProjectsReply = { branchId: string, tag: string,
 /**
  * The tag's holders over the branch.
@@ -3541,7 +3543,7 @@ iterationTexts: { [key in number]?: string | null },
 /**
  * Why nothing is shown at any hour; the hours outside `available` say for themselves why they show nothing.
  */
-unavailable: string | null, warnings: Array<string>, };
+unavailable: string | null, shown: ProjectsShown, warnings: Array<string>, };
 export type AirChoice = { id: string, name: string, };
 export type AirChoicesReply = {
 /**
