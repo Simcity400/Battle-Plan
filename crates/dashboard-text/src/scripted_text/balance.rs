@@ -557,33 +557,51 @@ impl<'a> ScriptedText<'a> {
                 weekly = weekly.wrapping_add(native.weekly_effective());
             }
         }
-        let weekly_change = daily.wrapping_mul(7);
-        let weekly_change = weekly_change.wrapping_add(weekly);
+        let drift = balance_drift(daily, weekly);
         if which == 7 {
-            return Ok(Some(if weekly_change == 0 {
+            return Ok(Some(if drift.weekly_change == 0 {
                 String::new()
             } else {
                 format!(
                     "\u{13}BoP_{}_texticon ",
-                    if weekly_change < 0 { "left" } else { "right" }
+                    if drift.weekly_change < 0 { "left" } else { "right" }
                 )
             }));
         }
-        let converted = if !(i64::MIN + 2..=i64::MAX - 1).contains(&weekly) {
-            0xffff_ffff
-        } else {
-            weekly.wrapping_mul(100_000) / 700_000
-        };
-        let change = daily.wrapping_add(converted);
-        let (key, value) = if change == 0 {
-            (b"BOP_CHANGE_RATE_WEEKLY".as_slice(), weekly_change)
-        } else {
-            (b"BOP_CHANGE_RATE_DAILY".as_slice(), change)
+        let (key, value) = match drift.shown {
+            ChangeRate::Weekly(value) => (b"BOP_CHANGE_RATE_WEEKLY".as_slice(), value),
+            ChangeRate::Daily(value) => (b"BOP_CHANGE_RATE_DAILY".as_slice(), value),
         };
         self.localisation
             .localise_with(key, &[("VALUE", Argument::Fixed5(value.wrapping_abs()))])
             .map(Some)
             .map_err(|e| e.to_string())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeRate {
+    Daily(i64),
+    Weekly(i64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BalanceDrift {
+    pub weekly_change: i64,
+    pub shown: ChangeRate,
+}
+
+pub fn balance_drift(daily: i64, weekly: i64) -> BalanceDrift {
+    let weekly_change = daily.wrapping_mul(7).wrapping_add(weekly);
+    let converted = if !(i64::MIN + 2..=i64::MAX - 1).contains(&weekly) {
+        0xffff_ffff
+    } else {
+        weekly.wrapping_mul(100_000) / 700_000
+    };
+    let change = daily.wrapping_add(converted);
+    BalanceDrift {
+        weekly_change,
+        shown: if change == 0 { ChangeRate::Weekly(weekly_change) } else { ChangeRate::Daily(change) },
     }
 }
 
