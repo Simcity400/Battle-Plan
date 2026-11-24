@@ -13,7 +13,7 @@ import {
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { knownValue, notRecorded, valueFromLive, zeroValue } from '../../families/value.ts';
-import { MARKET_TABS, OPTIONS, marketColumns, marketSettingsKey, marketTableBase } from './definition.ts';
+import { MARKET_TABS, marketColumns, marketTableBase } from './definition.ts';
 
 const UNKNOWN_COUNTRY: ResolvedIdentity = { value: notRecorded('Unknown country'), name: 'Unknown country' };
 const countryAt = (readView: BoundedReadView, tag: string | null | undefined, hour: number): ResolvedIdentity =>
@@ -244,12 +244,11 @@ function marketDeclaration(view: MarketTab): TableWidgetDeclaration<Internationa
     subject: 'international market',
     emptyCampaign: 'Load a campaign to see the market.',
     icon: 'globe',
-    optionFields: OPTIONS,
     countries: { mode: 'filter', labels: true, colours: true },
     sources: ctx => marketSources(ctx, view),
     projection: internationalMarketProjection,
     columns: marketColumns(view),
-    settings: { kind: 'table', key: marketSettingsKey(view), base: marketTableBase(view) },
+    settings: { kind: 'table', base: marketTableBase(view) },
     projectionOptions: ctx => ({
       view,
       filterAll: ctx.countries.all,

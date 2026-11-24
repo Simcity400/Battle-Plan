@@ -30,7 +30,7 @@ import {
 } from '../../families/value.ts';
 import { defaultWidestSamples, type ValueFormat } from '../../families/valueFormat.ts';
 import type { ScoreboardColumn, ScoreboardColumnsReply, ScoreboardReply } from '../../generated/dashboard';
-import { DEFAULT_SORT, OPTIONS, TABLE_BASE } from './definition.ts';
+import { DEFAULT_SORT, TABLE_BASE } from './definition.ts';
 import {
   partialSource,
   rankedTags,
@@ -535,7 +535,6 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
   emptyCampaign: 'Load a campaign to compare its countries.',
   icon: 'grid',
   className: 'scoreboard',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

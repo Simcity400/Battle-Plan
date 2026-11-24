@@ -17,7 +17,7 @@ import { knownValue, notApplicable, notRecorded, partialValue, wireFloat, wireWh
 import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
 import { GAPS_NOTE, playerNames, validateApm, valueNote } from './apmData.ts';
 import { apmHeadQuery } from './apmHead.ts';
-import { TABLE_APM_OPTIONS, TABLE_BASE } from './definition.ts';
+import { TABLE_BASE } from './definition.ts';
 
 export interface ApmTableProjectionOptions {
   readonly players: boolean;
@@ -247,7 +247,6 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
   subject: 'eAPM',
   emptyCampaign: 'Load a campaign to see eAPM.',
   icon: 'chart-bars',
-  optionFields: TABLE_APM_OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

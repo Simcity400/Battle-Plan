@@ -8,7 +8,6 @@ import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from
 import { inHourRanges, nextMembershipChange, type HourRanges } from '../../families/holders.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import type { SeriesState } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export const FAMILY = 'casualty-totals';
 const RANK = 'dealtAndTaken';
@@ -203,7 +202,7 @@ export const casualtiesRaceProjection: BarsProjection<CasualtiesOptions> = regis
 
 export const casualtiesButterflyDeclaration: BarsWidgetDeclaration<CasualtiesOptions> = {
   family: 'bars', kind: 'casualties', label: 'Casualties taken and dealt', subject: 'casualties',
-  emptyCampaign: 'Load a campaign to see casualties.', icon: 'target', optionFields: OPTIONS, countries,
+  emptyCampaign: 'Load a campaign to see casualties.', icon: 'target', countries,
   sources: ctx => casualtySources(ctx, 'butterfly'),
   projection: casualtiesButterflyProjection,
   projectionOptions: ctx => options(ctx, 'butterfly'),

@@ -12,7 +12,6 @@ import { formatDateOnly } from '../../families/valueFormat.ts';
 import { regionIds } from '../../families/regionTokens.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import type { MissionShips, NavalSupremacyReply, SupremacyRegion, SupremacyRun } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export const SUPREMACY_TOP_DEFAULT = 7;
 
@@ -248,7 +247,6 @@ const COMMON = {
   subject: 'naval supremacy',
   emptyCampaign: 'Load a campaign to see naval supremacy.',
   icon: 'anchor' as const,
-  optionFields: OPTIONS,
   countries: { mode: 'single' } as const,
   unavailable: (ctx: FamilyPlanContext) => (ctx.countryTag ? null : 'Choose a country in the widget’s header.'),
   jumpToDate: true,

@@ -9,7 +9,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { Agency, AgencyComparisonReply, Upgrades } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 
 export interface AgencyProjectionOptions {
   readonly filter: DeclaredCountryFilter;
@@ -154,6 +154,7 @@ const TOP_MEASURES = new Set(['defense', 'active', 'maximum']);
 export const agencyDeclaration: TableWidgetDeclaration<AgencyProjectionOptions> = {
   family: 'table',
   kind: 'agency-comparison',
+  optionFields: OPTIONS,
   label: 'Agency comparison',
   subject: 'agencies',
   emptyCampaign: 'Load a campaign to see agencies.',

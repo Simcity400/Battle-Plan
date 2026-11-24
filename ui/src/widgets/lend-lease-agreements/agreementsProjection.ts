@@ -10,7 +10,7 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { LeaseTerms, MarketItem, MarketLendLeaseReply } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 
 export type Direction = 'sent' | 'received';
 
@@ -192,6 +192,7 @@ export const agreementsProjection: TableProjection<AgreementsProjectionOptions> 
 export const agreementsDeclaration: TableWidgetDeclaration<AgreementsProjectionOptions> = {
   family: 'table',
   kind: 'lend-lease-agreements',
+  optionFields: OPTIONS,
   label: 'Lend-lease agreements',
   subject: 'lend-lease agreements',
   emptyCampaign: 'Load a campaign to see lend-lease.',

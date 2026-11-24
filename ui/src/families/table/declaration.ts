@@ -1,5 +1,5 @@
 import type { IconName } from '../../components/Icons';
-import type { OptionField, OptionValue } from '../../dashboard/options';
+import type { OptionValue } from '../../dashboard/options';
 import type { BoundWindow } from '../../dashboard/regionTime';
 import { resolveHeadSpan } from '../broker.ts';
 import {
@@ -70,7 +70,6 @@ export interface TableWidgetDeclaration<TProjectionOptions = Record<string, neve
   readonly icon?: IconName;
   readonly className?: string;
   readonly frameClassName?: string;
-  readonly optionFields?: readonly OptionField[];
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
