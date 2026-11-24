@@ -135,8 +135,7 @@ struct Signature {
     from: Option<i32>,
     to: Option<i32>,
     kinds: Option<Vec<u16>>,
-    membership: Vec<(String, i32, i32)>,
-    unobserved: Vec<(i32, i32)>,
+    selection: Option<(Vec<(String, i32, i32)>, Vec<(i32, i32)>)>,
     search: Option<String>,
 }
 
@@ -275,16 +274,13 @@ impl<P> Index<P> {
             kinds.dedup();
             kinds
         });
-        let (membership, unobserved) = match ask.selection {
-            None => (Vec::new(), Vec::new()),
-            Some(selection) => {
-                let mut membership: Vec<(String, i32, i32)> = selection.membership.iter().map(|span| (span.country.key().into_owned(), span.first_hour, span.last_hour)).collect();
-                membership.sort_unstable();
-                (membership, sorted_spans(selection.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect()))
-            }
-        };
+        let selection = ask.selection.map(|selection| {
+            let mut membership: Vec<(String, i32, i32)> = selection.membership.iter().map(|span| (span.country.key().into_owned(), span.first_hour, span.last_hour)).collect();
+            membership.sort_unstable();
+            (membership, sorted_spans(selection.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect()))
+        });
         let search = ask.search.map(str::trim).filter(|text| !text.is_empty()).map(str::to_lowercase);
-        Signature { from: ask.from, to: ask.to, kinds, membership, unobserved, search }
+        Signature { from: ask.from, to: ask.to, kinds, selection, search }
     }
 
     fn filtered(&self, holders: &Holders, ask: &Ask<'_>) -> Arc<Filtered> {
@@ -295,7 +291,7 @@ impl<P> Index<P> {
                 return Arc::clone(found);
             }
         }
-        let members = ask.selection.filter(|_| !signature.membership.is_empty() || !signature.unobserved.is_empty()).map(|selection| Members::resolve(holders, selection));
+        let members = ask.selection.map(|selection| Members::resolve(holders, selection));
         let (from, to) = (signature.from.unwrap_or(i32::MIN), signature.to.unwrap_or(i32::MAX));
         let mut display = Vec::new();
         let mut unattributed = Vec::new();
@@ -317,7 +313,8 @@ impl<P> Index<P> {
         let mut changes: Vec<i32> = display.iter().flat_map(|&(at, _)| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
         changes.sort_unstable();
         unattributed.sort_unstable();
-        let made = Arc::new(Filtered { display, observed, changes, unattributed, unknown: signature.unobserved.clone() });
+        let unknown = signature.selection.as_ref().map_or_else(Vec::new, |(_, unobserved)| unobserved.clone());
+        let made = Arc::new(Filtered { display, observed, changes, unattributed, unknown });
         let mut kept = self.filtered.lock().unwrap_or_else(PoisonError::into_inner);
         kept.push_back((signature, Arc::clone(&made)));
         while kept.len() > KEPT_SIGNATURES {

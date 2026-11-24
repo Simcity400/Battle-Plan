@@ -3,6 +3,7 @@ import { unavailableArt } from '../art/types.ts';
 import type { DashboardSource } from '../../dashboard/client';
 import type { CountryRef, GroupSelection, MissingSpan } from '../../generated/dashboard';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { FamilyPlanContext } from '../plan.ts';
@@ -206,11 +207,14 @@ export function tailFollowParams(query: LogTailQuery): Record<string, unknown> {
   };
 }
 
-export function occurrenceSelection(ctx: Pick<FamilyPlanContext, 'countries' | 'widget'>): { readonly countries?: readonly CountryRef[]; readonly group?: GroupSelection } | undefined {
+export function occurrenceSelection(ctx: Pick<FamilyPlanContext, 'countries' | 'widget' | 'track'>): { readonly countries?: readonly CountryRef[]; readonly group?: GroupSelection } | undefined {
   const group = groupSelection(ctx.widget.countries);
   if (group) return { group };
-  if (ctx.countries.all) return undefined;
-  return { countries: ctx.countries.tags.map(countryFromKey) };
+  if (ctx.widget.countries.kind === 'all' || ctx.countries.all) return undefined;
+  const keys = ctx.widget.countries.kind === 'tags' || ctx.widget.countries.kind === 'selected'
+    ? selectedCountryKeys(ctx.widget.countries, ctx.track)
+    : ctx.countries.tags;
+  return { countries: keys.map(countryFromKey) };
 }
 
 export function pagedTailEntry(
