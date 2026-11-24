@@ -25,6 +25,7 @@ export interface ForceAtMixConfig {
   readonly decimals: number;
   readonly valueFormat: ValueFormat;
   readonly valueLabel: string;
+  readonly unit: string;
   readonly partsLabel: string;
   readonly emptyMessage: string;
   readonly referenceLabel?: string;
@@ -286,6 +287,7 @@ export function projectForceAtMix(
     hour,
     rows,
     legend,
+    unit: config.unit,
     warnings: reply.warnings,
     ...(!rows.length ? { empty: config.emptyMessage, emptyKind: 'empty' as const } : {}),
   });

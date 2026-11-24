@@ -34,6 +34,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
   'equipment-designs': { load: () => import('./equipment-designs') },
+  'equipment-produced': { load: () => import('./equipment-produced/family.tsx') },
   'factions': { load: () => import('./factions') },
   'fuel': { load: () => import('./fuel') },
   'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },

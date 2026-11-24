@@ -21,6 +21,7 @@ dashboard_base::register_hourly_products! {
     SCALARS_NUCLEARARSENAL => crate::products::scalars::NuclearArsenal,
     SCALARS_WORLDTENSION => crate::products::scalars::WorldTension,
     SCALARS_FACTORYPARTS => crate::products::scalars::FactoryParts,
+    SCALARS_FACTORYMIX => crate::products::scalars::FactoryMix,
     AUTONOMY_LEVELS_AUTONOMYLEVELS => crate::products::autonomy_levels::AutonomyLevels,
 }
 
@@ -34,3 +35,4 @@ type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, St
 pub const EXACT_NUCLEARARSENAL: ExactPanel = exact_panel::<crate::products::scalars::NuclearArsenal>;
 pub const EXACT_GAMESCORE: ExactPanel = exact_panel::<crate::products::scalars::GameScore>;
 pub const EXACT_TERRITORYSHARE: ExactPanel = exact_panel::<crate::products::territory::TerritoryShare>;
+pub const EXACT_FACTORYMIX: ExactPanel = exact_panel::<crate::products::scalars::FactoryMix>;

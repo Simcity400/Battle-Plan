@@ -1,5 +1,6 @@
 
 mod factory_groups;
+mod factory_mix;
 mod factory_parts;
 mod game_score;
 pub mod nuclear_arsenal;
@@ -7,6 +8,7 @@ pub mod world_tension;
 pub mod world_tension_stack;
 
 pub use factory_groups::{FactoryGroups, FactoryGroupsParams, FactoryGroupsReply};
+pub use factory_mix::{FactoryMix, FactoryMixParams, FactoryMixPart, FactoryMixReply, FactoryMixRow, factory_channel_value};
 pub use factory_parts::{FactoryParts, FactoryPartsParams, FactoryPartsReply};
 pub use game_score::{GameScore, GameScoreParams, GameScoreReply};
 pub use nuclear_arsenal::{NuclearArsenal, NuclearArsenalParams, NuclearArsenalReply};

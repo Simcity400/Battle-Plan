@@ -1185,6 +1185,212 @@ impl Product for EquipmentProducedAt {
     }
 }
 
+pub struct EquipmentProducedRace;
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EquipmentProducedRaceParams {
+    pub branch_id: String,
+    pub hour: i32,
+    #[serde(default)]
+    pub countries: Vec<Country>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<u32>,
+    pub count: ProducedCount,
+    pub measure: ProducedMeasure,
+    #[serde(default)]
+    pub types: Vec<String>,
+    pub refits: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EquipmentProducedRaceRow {
+    pub country: Country,
+    pub tag: String,
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
+    pub value: Option<i64>,
+    pub unknown: Option<ProducedUnknown>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct EquipmentProducedRaceReply {
+    pub branch_id: String,
+    pub hour: i32,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub count: ProducedCount,
+    pub measure: ProducedMeasure,
+    pub decimals: u8,
+    pub types: Vec<String>,
+    pub rows: Vec<EquipmentProducedRaceRow>,
+    pub read_hour: Option<i32>,
+    pub observation_hour: Option<i32>,
+    pub missing: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(EquipmentProducedRaceReply);
+
+fn race_reply(
+    source: &Source,
+    query: &Query<'_>,
+    params: &EquipmentProducedRaceParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<EquipmentProducedRaceReply> {
+    let mut warnings = Vec::new();
+    let hour = params.hour;
+    let Some(stretch) = query.timeline.at(hour).copied() else {
+        return Ok(EquipmentProducedRaceReply {
+            branch_id: params.branch_id.clone(),
+            hour,
+            first_hour: hour,
+            last_hour: hour,
+            count: params.count,
+            measure: params.measure,
+            decimals: decimals(params.count),
+            types: params.types.clone(),
+            rows: Vec::new(),
+            read_hour: None,
+            observation_hour: None,
+            missing: Some("This hour is not recorded on this branch".to_owned()),
+            warnings,
+        });
+    };
+    let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
+    let measure = series.measure(produced_measure(params.count, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
+    let line = dashboard_query::series::Line::new(query, series, measure)?;
+    let back = back_of(params.measure);
+    let back: Option<&dyn Fn(i32) -> Option<i32>> = back.as_ref().map(|back| back as &dyn Fn(i32) -> Option<i32>);
+    let mut met = BTreeSet::new();
+    met.insert(stretch.run);
+    let mut notes = BTreeSet::new();
+    let types: BTreeMap<u32, BTreeMap<u32, Typed>> = match params.types.is_empty() {
+        true => met.iter().map(|&run| (run, BTreeMap::new())).collect(),
+        false => {
+            let content = Content::read(source, context, &mut warnings);
+            run_types(source, query, &content, &met, &mut notes)?
+        }
+    };
+    let parts = asked_parts(&types, &params.types);
+    let parts_of = |run: u32| parts.get(&run).cloned().unwrap_or_default();
+    dashboard_text::metadata::check_cancel(cancelled)?;
+
+    let clock = line.clock(stretch.first, stretch.last)?;
+    let read_hour = measure::read_at(&clock.reads, hour);
+    let observation_hour = measure::read_at(&clock.since, hour);
+    let next_read = clock.reads.iter().copied().find(|&h| h > hour);
+    let mut first_hour = read_hour.unwrap_or(stretch.first).max(stretch.first);
+    let mut last_hour = next_read.map_or(stretch.last, |h| h - 1).min(stretch.last);
+
+    let tags: Vec<Country> = if params.countries.is_empty() {
+        let limit = params.top.map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
+        line.totals_ranked(hour, limit, &parts_of, back, &|value| value > 0)?.into_iter().map(Country::from).collect()
+    } else {
+        params.countries.clone()
+    };
+    let runs = if tags.is_empty() { Vec::new() } else { line.totals(&tags, &parts_of, back, hour, hour)? };
+    let mut rows = Vec::with_capacity(tags.len());
+    for (country, country_runs) in tags.into_iter().zip(runs) {
+        let tag = query.holders.name(&country, hour);
+        if let Some(holder_run) = query.holders.at(&country, hour) {
+            first_hour = first_hour.max(holder_run.first);
+            last_hour = last_hour.min(holder_run.last);
+        }
+        let amount = country_runs
+            .into_iter()
+            .find(|run| run.first <= hour && hour <= run.last)
+            .map_or(Amount::Unknown(ProducedUnknown::NotRecorded), |run| amount_of_total(run.value));
+        let (value, unknown) = match amount {
+            Amount::Known(val) if val.abs() <= MAX_EXACT => (Some(val as i64), None),
+            Amount::Known(_) => (None, Some(ProducedUnknown::OutOfRange)),
+            Amount::Unknown(reason) => (None, Some(reason)),
+        };
+        rows.push(EquipmentProducedRaceRow { country, tag, value, unknown });
+    }
+    if params.countries.is_empty() {
+        for holder_runs in query.holders.tags.values() {
+            for run in holder_runs {
+                if run.first > first_hour && run.first <= hour {
+                    first_hour = run.first;
+                }
+                if run.last >= hour && run.last < last_hour {
+                    last_hour = run.last;
+                }
+                if run.first > hour && run.first - 1 < last_hour {
+                    last_hour = run.first - 1;
+                }
+            }
+        }
+    }
+    if !params.countries.is_empty() {
+        rows.sort_unstable_by(|a, b| match (a.value, b.value) {
+            (Some(av), Some(bv)) => bv.cmp(&av).then_with(|| a.tag.cmp(&b.tag)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.tag.cmp(&b.tag),
+        });
+    }
+    let first_hour = first_hour.min(hour);
+    let last_hour = last_hour.max(hour);
+    warnings.extend(notes);
+    let reply = EquipmentProducedRaceReply {
+        branch_id: params.branch_id.clone(),
+        hour,
+        first_hour,
+        last_hour,
+        count: params.count,
+        measure: params.measure,
+        decimals: decimals(params.count),
+        types: params.types.clone(),
+        rows,
+        read_hour,
+        observation_hour,
+        missing: None,
+        warnings,
+    };
+    dashboard_base::products::check_reply_budget(&reply)?;
+    Ok(reply)
+}
+
+impl Product for EquipmentProducedRace {
+    const KEY: &'static str = "equipment-produced-race";
+    const CONTENT_DEPENDENT: bool = true;
+    const INTERACTIVE: bool = true;
+    type Params = EquipmentProducedRaceParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, top, count, measure, types, refits, "countries[]"];
+    type Reply = EquipmentProducedRaceReply;
+
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
+        for country in &params.countries {
+            validate_country(country)?;
+        }
+        match (params.countries.is_empty(), params.top) {
+            (true, Some(0)) => Err("top must be at least 1"),
+            (false, Some(_)) => Err("Chosen countries or a top N, not both"),
+            _ => Ok(()),
+        }
+    }
+
+    #[cfg(any(test, feature = "export-types"))]
+    fn types() -> Vec<String> {
+        vec![EquipmentProducedRaceParams::decl(), EquipmentProducedRaceRow::decl(), EquipmentProducedRaceReply::decl()]
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
+        race_reply(source, &query, params, context, cancelled)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

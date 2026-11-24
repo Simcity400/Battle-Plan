@@ -1,5 +1,4 @@
 import type { TooltipRow } from '../../charts/tooltip';
-import type { MeasureParts } from '../../charts/race/measureParts';
 import type { FactoryGroupsReply, FactoryPartValue, FactoryPartsReply } from '../../generated/dashboard';
 
 export const COUNT_MODES = [
@@ -38,14 +37,6 @@ export function groupName(key: string, names: FactoryGroupsReply | undefined): s
 export const typeChoices = (names?: FactoryGroupsReply) => FACTORY_GROUPS.map(group => ({ value: group.value, label: groupName(group.value, names) }));
 
 export const chosenGroups = (groups: readonly string[]) => FACTORY_GROUPS.filter(group => !groups.length || groups.includes(group.value));
-
-export function factoryParts(mode: CountMode, groups: readonly string[], names: FactoryGroupsReply | undefined): MeasureParts {
-  const chosen = chosenGroups(groups);
-  const damaged = mode === 'built' ? chosen.map(group => ({ id: `damaged:${group.value}`, label: `Damaged ${groupName(group.value, names)}`, hatchOf: group.value,
-    measure: { kind: 'country-factories', measure: `damaged${group.bit}` } })) : [];
-  return { kind: 'measures', label: 'Factory types', decimals: 0, items: [...chosen.map(group => ({ id: group.value,
-    label: groupName(group.value, names), measure: { kind: 'country-factories', measure: `${mode}${group.bit}` } })), ...damaged] };
-}
 
 export function validateFactoryGroups(value: unknown): FactoryGroupsReply {
   const reply = value as Partial<FactoryGroupsReply> | null;

@@ -1,4 +1,4 @@
-use super::{factory_groups, factory_parts, game_score, nuclear_arsenal, world_tension, world_tension_stack};
+use super::{factory_groups, factory_mix, factory_parts, game_score, nuclear_arsenal, world_tension, world_tension_stack};
 use replay_data::rows::{CountryFactoriesRow, CountryGameScoreRow, NukeRow, Recorded, ThreatEventRow};
 use world_tension_stack::{Identity, Joined, Step, join};
 
@@ -101,6 +101,36 @@ fn factory_parts_truncate_as_the_game_shows_and_name_an_unavailable_count_withhe
     assert_eq!(parts.len(), 31);
     assert_eq!(unexplained, ["civilian"]);
     assert!(factory_parts::parts(&CountryFactoriesRow { naval_total_raw: i64::MAX, ..row }).is_none());
+}
+
+#[test]
+fn factory_mix_splits_built_and_damaged_and_refuses_unreconciled_parts() {
+    let row = CountryFactoriesRow {
+        military_total_raw: 1_000_000,
+        military_damaged_raw: 200_000,
+        naval_total_raw: 500_000,
+        naval_damaged_raw: 100_000,
+        civilian_total_raw: 1_500_000,
+        civilian_damaged_raw: 300_000,
+        consumer_goods: 4,
+        ..CountryFactoriesRow::default()
+    };
+    let (total, values, missing, parts_missing) = factory_mix::row_mix(&row, "built", &[0, 1, 2]);
+    assert_eq!((total, missing, parts_missing), (Some(30), None, None));
+    assert_eq!(values, vec![Some(8), Some(4), Some(12), Some(2), Some(1), Some(3)]);
+    assert_eq!(factory_mix::factory_channel_value(&row, "built7"), Some(30));
+    assert_eq!(factory_mix::factory_channel_value(&row, "free7"), Some(20));
+
+    let bad_damaged = CountryFactoriesRow {
+        military_total_raw: 200_000,
+        military_damaged_raw: 500_000,
+        ..CountryFactoriesRow::default()
+    };
+    let (bad_total, bad_values, bad_missing, bad_parts_missing) = factory_mix::row_mix(&bad_damaged, "built", &[0]);
+    assert_eq!(bad_total, Some(2));
+    assert!(bad_values.is_empty());
+    assert_eq!(bad_missing, None);
+    assert!(bad_parts_missing.is_some());
 }
 
 #[test]

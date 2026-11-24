@@ -768,12 +768,14 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   }
   ctx.restore();
 
-  if (layout.legendHeight > 0 && model.legend?.length) {
+  if (layout.legendHeight > 0 && (model.legend?.length || model.scaleUnit)) {
     drawLegendStrip(ctx, 0, layout.legendTop, layout.width, layout.legendHeight, {
-      entries: model.legend.map(entry => ({
+      entries: (model.legend ?? []).map(entry => ({
         label: entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label,
         color: entry.color,
+        ...(entry.hatched ? { hatch: true } : {}),
       })),
+      ...(model.scaleUnit ? { rightNote: model.scaleUnit } : {}),
       padX: BARS_PAD_X,
       entryGap: 14,
     }, theme);

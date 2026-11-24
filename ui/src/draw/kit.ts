@@ -1914,6 +1914,14 @@ export function drawLegendStrip(
   const middleY = Math.round(y + height / 2);
   let cursor = x + padX;
   const rightLimit = x + width - padX;
+  let rightNoteWidth = 0;
+  if (spec.rightNote) {
+    ctx.save();
+    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+    rightNoteWidth = Math.min(Math.floor(width * 0.3), Math.ceil(textWidth(ctx, spec.rightNote)));
+    ctx.restore();
+  }
+  const entriesRightLimit = rightNoteWidth > 0 ? Math.max(cursor, rightLimit - rightNoteWidth - entryGap) : rightLimit;
   if (spec.gradient) {
     const drawn = drawGradientLegend(
       ctx,
@@ -1928,7 +1936,7 @@ export function drawLegendStrip(
   }
   if (spec.entries) {
     for (const entry of spec.entries) {
-      const room = rightLimit - cursor;
+      const room = entriesRightLimit - cursor;
       if (room < 32) break;
       const drawn = drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color ?? '', theme, {
         ...(entry.dash?.length ? { dash: entry.dash } : {}),
@@ -1942,7 +1950,7 @@ export function drawLegendStrip(
     }
   }
   if (spec.rightNote) {
-    const maxW = Math.max(0, rightLimit - cursor);
+    const maxW = Math.max(rightNoteWidth, rightLimit - cursor);
     if (maxW >= 24) {
       ctx.save();
       ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;

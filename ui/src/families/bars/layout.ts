@@ -130,7 +130,7 @@ export function layoutFamilyBars(
   const hasHeader = Boolean(model.caption || model.leftHeader || model.rightHeader || (twoSidedLayout === 'stacked-pair' && model.legend?.length));
   const headerTop = BARS_PAD_TOP;
   const headerHeight = hasHeader ? BARS_HEADER_HEIGHT : 0;
-  const hasLegend = form === 'stacked' && Boolean(model.legend?.length);
+  const hasLegend = (form === 'stacked' || form === 'share') && Boolean(model.legend?.length || model.scaleUnit);
   const legendHeight = hasLegend ? BARS_LEGEND_ROW_HEIGHT : 0;
   const wantAxis = (model.showAxis ?? (form === 'ordered')) && h >= 140 && w >= 240;
   const axisHeight = wantAxis ? BARS_AXIS_HEIGHT : 0;

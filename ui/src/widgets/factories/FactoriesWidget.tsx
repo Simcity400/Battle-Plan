@@ -1,12 +1,8 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import MeasureDetails from '../../charts/race/MeasureDetails';
-import MeasureRace from '../../charts/race/MeasureRace';
-import { formatRaw } from '../../charts/race/measureRaceData.ts';
-import type { RaceView } from '../../charts/race/options';
-import { dayLabel } from '../../charts/draw';
+import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { contentSet, resolveOptions } from '../../dashboard/options';
+import { contentSet } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
@@ -16,15 +12,12 @@ import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/inde
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import { timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import type { InstalledAction } from '../../families/plan.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { FactoryPartsReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition';
-import { COUNT_MODES, countMode, factoryMeasure, factoryParts, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
+import { countMode, partRows, validateFactoryParts } from './factoriesData.ts';
 import { factoriesLinesDeclaration } from './factoriesLinesProjection.ts';
+import { factoriesMixDeclaration } from './factoriesMixProjection.ts';
 import { factoriesDeclaration, type FactoriesRowMeta } from './factoriesProjection.ts';
-
-const NO_WARNINGS: string[] = [];
-const format = (raw: string, decimals: number) => formatRaw(raw, decimals);
-const formatValue = (value: number) => Math.round(value).toLocaleString('en-US');
 
 function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
   tag: string; hour: GatedHour; types: readonly string[]; mode: ReturnType<typeof countMode>;
@@ -37,112 +30,91 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
     params: { branchId: track.branch.id, country: countryFromKey(tag), hour },
   }) : null;
   const parts = useProduct<FactoryPartsReply>(runtime.client, request, active, validateFactoryParts, track?.source);
+  if (parts.error) return <WidgetState kind="error" failure={parts.error} onRetry={parts.retry} />;
+  if (!parts.data) return <WidgetState kind="loading" label="Loading factory breakdown…" />;
+  const rows = partRows(parts.data, types, mode);
   return (
-    <MeasureDetails
-      title={`${tag}, ${dayLabel(hour)}`}
-      rows={parts.data ? partRows(parts.data, types, mode) : undefined}
-      error={parts.error}
-      onRetry={parts.retry}
-    />
+    <div className="detail-list">
+      <p>{tag}, {formatDateOnly(hour)}</p>
+      {rows.map((row, index) => (
+        <div key={`${row.label}:${index}`} className="detail-row">
+          <span>{row.strong ? <strong>{row.label}</strong> : row.label}</span>
+          <span>{row.strong ? <strong>{row.value ?? ''}</strong> : (row.value ?? '')}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
 export default function FactoriesWidget(props: WidgetProps) {
-  const { widget, runtime, active, onDiagnostics, countrySlot } = props;
-  const options = resolveOptions(OPTIONS, widget.options);
-  const view = (['race', 'lines', 'mix'].includes(String(options.view)) ? options.view : 'race') as RaceView;
-  const mode = countMode(options.count);
-  const types = useMemo(() => contentSet(options.types), [options.types]);
-  const isBarsRace = view === 'race' && options.show !== 'breakdown';
-  const isLines = view === 'lines';
-  const isFamily = isBarsRace || isLines;
+  const { widget, runtime, active } = props;
+  const rawView = String(widget.options?.view ?? 'race');
+  const view = rawView === 'lines' ? 'lines' : rawView === 'mix' ? 'mix' : 'race';
+  const mode = countMode(widget.options?.count);
+  const types = useMemo(() => contentSet(widget.options?.types ?? ''), [widget.options?.types]);
 
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
-  const gate = useGate(runtime, widget, SPEC, active && isFamily);
-
-  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const named = useProduct(
-    runtime.client,
-    !isFamily && track
-      ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'factory-groups', params: { branchId: track.branch.id } })
-      : null,
-    active && !isFamily,
-    validateFactoryGroups,
-    track?.source,
-  );
-  const measure = useMemo(() => ({ kind: 'country-factories', measure: factoryMeasure(mode, types) }), [mode, types]);
-  const parts = useMemo(() => factoryParts(mode, types, named.data), [mode, types, named.data]);
-  const onWarnings = useCallback((warnings: readonly string[]) => {
-    const all = [...warnings, ...(named.data?.missing ? [named.data.missing] : []), ...(named.data?.warnings ?? [])];
-    onDiagnostics(all.length ? all : NO_WARNINGS);
-  }, [onDiagnostics, named.data]);
+  const gate = useGate(runtime, widget, SPEC, active);
 
   const onActivate = useCallback((action: InstalledAction) => {
-    if (isLines && parseChartInspect(action.subject) !== null) return;
+    if (view === 'lines' && parseChartInspect(action.subject) !== null) return;
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
     const rowMeta = action.meta as FactoriesRowMeta | null | undefined;
     setDetail({ tag: rowMeta?.tag ?? action.subject, key: rowMeta?.key ?? action.subject, hour: gated });
-  }, [gate, isLines]);
+  }, [gate, view]);
 
-  if (isFamily) {
-    return (
-      <div ref={anchorRef} className="fh-frame">
-        {isLines ? <DeclaredFamilyWidget {...props} view="lines" adapter={timeChartHostAdapter} declaration={factoriesLinesDeclaration} onActivate={onActivate} /> : <DeclaredFamilyWidget
+  return (
+    <div ref={anchorRef} className="fh-frame">
+      {view === 'lines' ? (
+        <DeclaredFamilyWidget
+          {...props}
+          view="lines"
+          adapter={timeChartHostAdapter}
+          declaration={factoriesLinesDeclaration}
+          onActivate={onActivate}
+        />
+      ) : view === 'mix' ? (
+        <DeclaredFamilyWidget
+          {...props}
+          view="mix"
+          adapter={barsHostAdapter}
+          declaration={factoriesMixDeclaration}
+          selectedKey={detail?.key ?? null}
+          onActivate={onActivate}
+        />
+      ) : (
+        <DeclaredFamilyWidget
           {...props}
           view="race"
           adapter={barsHostAdapter}
           declaration={factoriesDeclaration}
           selectedKey={detail?.key ?? null}
           onActivate={onActivate}
-        />}
-        <DetailWindowHost
-          open={detail !== null}
-          subject={detail?.tag ?? null}
-          hour={detail?.hour ?? null}
-          title={detail ? `${detail.tag} factories` : 'Factories'}
-          anchor={anchorRef}
-          returnFocus=".fh-body"
-          onClose={() => setDetail(null)}
-        >
-          {detail ? (
-            <FactoryDetails
-              widget={widget}
-              runtime={runtime}
-              active={active}
-              tag={detail.tag}
-              hour={detail.hour}
-              types={types}
-              mode={mode}
-            />
-          ) : null}
-        </DetailWindowHost>
-      </div>
-    );
-  }
-
-  const label = `Factories, ${COUNT_MODES.find(item => item.value === mode)!.label.toLowerCase()}`;
-  return (
-    <MeasureRace
-      widget={widget}
-      runtime={runtime}
-      active={active}
-      countrySlot={countrySlot}
-      measure={measure}
-      decimals={0}
-      view={view}
-      options={options}
-      label={label}
-      icon="factory"
-      format={format}
-      formatValue={formatValue}
-      onWarnings={onWarnings}
-      parts={parts}
-      split={options.split === true}
-      details={(tag, _hour, following, at) => (following || at === null
-        ? null
-        : <FactoryDetails widget={widget} runtime={runtime} active={active} tag={tag} hour={at} types={types} mode={mode} />)}
-    />
+        />
+      )}
+      <DetailWindowHost
+        open={detail !== null}
+        subject={detail?.tag ?? null}
+        hour={detail?.hour ?? null}
+        title={detail ? `${detail.tag} factories` : 'Factories'}
+        anchor={anchorRef}
+        returnFocus=".fh-body"
+        onClose={() => setDetail(null)}
+      >
+        {detail ? (
+          <FactoryDetails
+            widget={widget}
+            runtime={runtime}
+            active={active}
+            tag={detail.tag}
+            hour={detail.hour}
+            types={types}
+            mode={mode}
+          />
+        ) : null}
+      </DetailWindowHost>
+    </div>
   );
 }

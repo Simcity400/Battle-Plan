@@ -640,3 +640,36 @@ test('a two-sided row can carry a ratio column with its own header', () => {
   const texts = ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
   assert.ok(texts.includes('1.80 : 1') && texts.includes('Ratio'));
 });
+
+test('share rows draw the category legend strip and right-aligned count unit once', () => {
+  const h = engineHour({ year: 1941, month: 9, day: 15, hour: 12 })!;
+  const model: BarsModel = {
+    form: 'share',
+    hour: h,
+    scaleUnit: 'Battalions',
+    legend: [
+      { key: 'infantry', label: 'Infantry', color: '#3b82f6' },
+      { key: 'armor', label: 'Armor', color: '#f97316' },
+    ],
+    rows: [
+      {
+        kind: 'data',
+        key: 'GER',
+        label: 'German Reich',
+        segments: [
+          { key: 'infantry', label: 'Infantry', share: 0.75, value: knownValue(300), color: '#3b82f6' },
+          { key: 'armor', label: 'Armor', share: 0.25, value: knownValue(100), color: '#f97316' },
+        ],
+        readout: { primary: '400' },
+      },
+    ],
+  };
+  const layout = layoutFamilyBars(model, 840, 300);
+  assert.ok(layout.legendHeight > 0, 'share rows with legend and unit reserve the legend strip');
+  const { ctx, ops } = makeFakeCtx();
+  drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const texts = ops.filter(op => op.op === 'fillText').map(op => String(op.args[0]));
+  assert.ok(texts.includes('Infantry'), 'legend includes Infantry');
+  assert.ok(texts.includes('Armor'), 'legend includes Armor');
+  assert.ok(texts.includes('Battalions'), 'legend strip includes count unit once');
+});
