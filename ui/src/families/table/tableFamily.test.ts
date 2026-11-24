@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
@@ -637,9 +637,12 @@ test('lane view skips projection on next(), caches unchanged sources across serv
     const state = new Map<string, unknown>();
     let seq = 1;
     const content = () => `c${seq++}`;
+    const transport = new LaneTransport();
+    const plain = transport.carry(model);
+    const audited = transport.carry({ ...model, audit: true });
     const mkInput = (now: number, speed: number, audit = false) => ({
       ...scene,
-      model: audit ? { ...model, audit: true } : model,
+      model: audit ? audited : plain,
       hour: 10,
       seek: 0,
       speed,
@@ -1804,13 +1807,14 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     const lane = () => {
       const view = createLaneView(tableLane, () => {});
       const state = new Map<string, unknown>();
+      const transport = new LaneTransport();
       let seq = 1;
       const before = contexts.length;
       const paint = (rows: Row[], hour: number, settings: TableSettings) => view.paint({
         widget: 1,
         subs: [],
         pictures: [],
-        model: { family: 'table' as const, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+        model: transport.carry({ family: 'table' as const, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true }),
         hour,
         seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 360, height: 200, dpr: 1 }], offset: 0, pin: null },

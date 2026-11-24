@@ -78,33 +78,43 @@ export function gameWindowRequestKey(request: GameWindowRequest, contentRevision
 export interface GameWindowWant {
   key: string;
   subject: string;
+  generation: number;
   active: boolean;
 }
 
-export interface GameWindowFlight {
+export interface GameWindowFrame {
   key: string;
   subject: string;
+  generation: number;
 }
 
 export type GameWindowStep = 'idle' | 'reuse' | 'wait' | 'start';
 
+export function frameShown(frame: GameWindowFrame | null, want: GameWindowWant): boolean {
+  return frame !== null && frame.subject === want.subject && frame.generation === want.generation;
+}
+
+export function acceptRender(settled: GameWindowFrame, want: GameWindowWant): boolean {
+  return settled.subject === want.subject && settled.generation === want.generation;
+}
+
 export function planGameWindowRender(
   want: GameWindowWant,
-  flight: GameWindowFlight | null,
-  completedKey: string | null,
-): { step: GameWindowStep; abort: boolean } {
-  if (!want.active) return { step: 'idle', abort: flight !== null };
-  if (completedKey === want.key) return { step: 'reuse', abort: flight !== null };
-  if (flight && flight.subject === want.subject) return { step: 'wait', abort: false };
-  return { step: 'start', abort: flight !== null };
+  flight: GameWindowFrame | null,
+  shown: GameWindowFrame | null,
+): GameWindowStep {
+  if (!want.active) return 'idle';
+  if (frameShown(shown, want) && shown!.key === want.key) return 'reuse';
+  if (flight) return 'wait';
+  return 'start';
 }
 
 export function followGameWindowRender(
-  settled: GameWindowFlight,
+  settled: GameWindowFrame,
   want: GameWindowWant,
-  completedKey: string | null,
+  shown: GameWindowFrame | null,
 ): boolean {
-  return want.active && want.subject === settled.subject && want.key !== settled.key && completedKey !== want.key;
+  return want.active && want.key !== settled.key && !(frameShown(shown, want) && shown!.key === want.key);
 }
 
 function inRect(rect: readonly [number, number, number, number], x: number, y: number): boolean {

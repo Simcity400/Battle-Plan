@@ -1,4 +1,5 @@
 import type { FollowedAnswer } from '../dashboard/follow/message';
+import { sameRevision, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { LaneView, Painted, PaintInput, Scene, Surface } from '../draw/lane.ts';
 import { LaneArtCache, type LaneArtFetcher } from './art/laneCache.ts';
 import { createLaneArtProvider, type ArtResolutions } from './art/provider.ts';
@@ -33,6 +34,7 @@ export interface LaneBinding<TOptions = unknown> extends TiledSources {
   readonly focusedKey?: string | null;
   readonly audit?: boolean;
   readonly auditId?: number;
+  readonly revisions?: Revisions;
   readonly pagedRows?: Readonly<Record<string, PagedRowsSnapshot>>;
   readonly window?: RowWindow;
 }
@@ -83,7 +85,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   boundary(model: TModel, hour: number): number;
   redraw(model: TModel, hour: number): number;
   status(model: TModel): LaneStatus;
-  view(binding: TBinding): readonly unknown[];
+  readonly view: readonly (keyof TBinding & string)[];
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
   paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number;
   hit(frame: LaneFrame<TBinding, TModel, TLayout>, point: readonly [number, number]): string | null;
@@ -110,8 +112,7 @@ interface Painting {
   readonly pin: number | null;
   readonly kind: string;
   readonly view: string | undefined;
-  readonly options: unknown;
-  readonly sources: unknown;
+  readonly revisions: Revisions | undefined;
 }
 
 interface Held<TBinding extends LaneBinding, TModel, TLayout> {
@@ -120,7 +121,8 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   readonly art: LaneArtCache;
   wake: () => void;
   artRevision: number;
-  snapshot: IdentitySnapshot | null | undefined;
+  readers: Revisions | null;
+  snapshot: number | null;
   artResolutions: ArtResolutions | undefined;
   index: IdentityIndex | null;
   identity: IdentityProvider | undefined;
@@ -129,11 +131,8 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   projectedArtRevision: number;
   kind: string;
   viewName: string | undefined;
-  options: unknown;
-  staticPanels: unknown;
-  staticAnswers: unknown;
-  tiled: unknown;
-  hovers: unknown;
+  owner: string | undefined;
+  inputs: Revisions | undefined;
   readonly tiles: SceneTiles;
   parts: readonly (readonly unknown[])[];
   validFrom: number;
@@ -150,7 +149,6 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   layoutHour: number;
   layoutKey: readonly unknown[];
   expiry: number;
-  pagedRows: unknown;
   windowKey: string;
   phases: { serves: number; projMs: number; layoutMs: number; paintMs: number; fieldsMs: number; auditMs: number };
   phasesField: Field | null;
@@ -172,15 +170,40 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   auditField: Field | null;
 }
 
-const snapshots = new WeakMap<IdentitySnapshot, { readonly index: IdentityIndex; readonly identity: IdentityProvider }>();
+const PROJECTION_INPUTS = ['options', 'sources', 'staticPanels', 'staticAnswers', 'staticShifts', 'hovers', 'tiledBySource', 'headSourceBySeries', 'pagedRows'] as const;
 
-function indexedSnapshot(snapshot: IdentitySnapshot): { readonly index: IdentityIndex; readonly identity: IdentityProvider } {
-  let held = snapshots.get(snapshot);
+function sameInputRevisions(a: Revisions | undefined, b: Revisions | undefined): boolean {
+  if (!a || !b) return false;
+  for (const field of PROJECTION_INPUTS) if (!sameRevision(a[field], b[field])) return false;
+  return true;
+}
+
+function readerRevisions(binding: LaneBinding): Revisions | null {
+  const revisions = binding.revisions;
+  if (!revisions) return null;
+  return {
+    ...(revisions.identitySnapshot !== undefined ? { identitySnapshot: revisions.identitySnapshot } : {}),
+    ...(revisions.artResolutions !== undefined ? { artResolutions: revisions.artResolutions } : {}),
+  };
+}
+
+type Indexed = { readonly index: IdentityIndex; readonly identity: IdentityProvider; users: number };
+const indexes = new Map<number, Indexed>();
+
+function acquireIndex(revision: number, snapshot: IdentitySnapshot): Indexed {
+  let held = indexes.get(revision);
   if (!held) {
     const index = IdentityIndex.fromSnapshot(snapshot);
-    snapshots.set(snapshot, held = { index, identity: createSnapshotIdentityProvider(index) });
+    indexes.set(revision, held = { index, identity: createSnapshotIdentityProvider(index), users: 0 });
   }
+  held.users++;
   return held;
+}
+
+function releaseIndex(revision: number | null): void {
+  if (revision === null) return;
+  const held = indexes.get(revision);
+  if (held && --held.users <= 0) indexes.delete(revision);
 }
 
 const MIRROR_CADENCE_MS = 1000;
@@ -209,7 +232,7 @@ function windowKeyOf(binding: LaneBinding): string {
 function painting(input: PaintInput, binding: LaneBinding): Painting {
   return {
     seek: input.seek, speed: input.speed, hour: input.hour, owner: input.binding.owner, pin: input.binding.pin,
-    kind: binding.kind, view: binding.view, options: binding.options, sources: binding.sources,
+    kind: binding.kind, view: binding.view, revisions: binding.revisions,
   };
 }
 
@@ -222,8 +245,14 @@ function continues(last: Painting | null, next: Painting): boolean {
     && next.owner === last.owner
     && next.kind === last.kind
     && next.view === last.view
-    && next.options === last.options
-    && next.sources === last.sources;
+    && next.revisions !== undefined && last.revisions !== undefined
+    && sameRevision(next.revisions.options, last.revisions.options)
+    && sameRevision(next.revisions.sources, last.revisions.sources);
+}
+
+function viewKey(binding: LaneBinding, fields: readonly string[]): unknown[] {
+  if (!binding.revisions) return [{}];
+  return fields.map(field => binding.revisions![field] ?? (binding as unknown as Record<string, unknown>)[field]);
 }
 
 function backing(surface: Surface): readonly [number, number, number] {
@@ -313,12 +342,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     held.projected !== null
     && held.kind === binding.kind
     && held.viewName === binding.view
-    && held.options === binding.options
-    && held.staticPanels === binding.staticPanels
-    && held.staticAnswers === binding.staticAnswers
-    && held.tiled === binding.tiledBySource
-    && held.hovers === binding.hovers
-    && held.pagedRows === binding.pagedRows
+    && held.owner === scene.owner
+    && sameInputRevisions(held.inputs, binding.revisions)
     && (!held.projected.reads.rows || held.windowKey === windowKeyOf(binding))
     && hour >= held.validFrom
     && hour < held.validUntil
@@ -346,21 +371,21 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       canvas, ctx, art,
       wake: wakerOf(widget),
       artRevision: 0,
-      snapshot: undefined, artResolutions: undefined, index: null, identity: undefined,
+      readers: null, snapshot: null, artResolutions: undefined, index: null, identity: undefined,
       artProvider: createLaneArtProvider(art),
       projected: null, projectedArtRevision: 0,
-      kind: '', viewName: undefined, options: undefined, staticPanels: undefined, staticAnswers: undefined,
+      kind: '', viewName: undefined, owner: undefined, inputs: undefined,
       parts: [], validFrom: Infinity, validUntil: -Infinity, drawFrom: Infinity, drawUntil: -Infinity, drawn: null, before: null, painting: null, changedAt: -Infinity,
       demandFields: {},
       layout: null, layoutModel: null, layoutHour: -Infinity, layoutKey: [], expiry: Infinity,
-      pagedRows: undefined, windowKey: '', phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 }, phasesField: null,
+      windowKey: '', phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 }, phasesField: null,
       drawKey: [], content: '', motion: false, artKey: '',
       structureKey: [], structureFields: {},
       kept: new Map(),
       mirrorGate, mirrorField: null, tipGate, tipField: null, focusGate, focusField: null,
       flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusGate], options?.timers),
       auditKey: [], auditField: null,
-      tiled: undefined, hovers: undefined, tiles: new SceneTiles(),
+      tiles: new SceneTiles(),
     };
     art.setOnSettle(() => {
       held.artRevision++;
@@ -386,6 +411,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (!held) return;
       held.flusher.cancel();
       held.art.dispose();
+      releaseIndex(held.snapshot);
       state.delete(stateKey);
     },
 
@@ -423,15 +449,17 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.canvas.height = height;
       }
 
-      const snapshot = binding.identitySnapshot;
-      const readersChanged = keep.snapshot !== snapshot || keep.artResolutions !== binding.artResolutions;
-      if (keep.snapshot !== snapshot) {
-        keep.snapshot = snapshot;
-        const indexed = snapshot ? indexedSnapshot(snapshot) : null;
+      const readerKey = readerRevisions(binding);
+      const readersChanged = readerKey === null || keep.readers === null || !sameRevision(readerKey, keep.readers);
+      if (readersChanged) {
+        keep.readers = readerKey;
+        const snapshot = binding.identitySnapshot;
+        const revision = binding.revisions?.identitySnapshot;
+        const indexed = snapshot && typeof revision === 'number' ? acquireIndex(revision, snapshot) : null;
+        releaseIndex(keep.snapshot);
+        keep.snapshot = indexed ? revision as number : null;
         keep.index = indexed?.index ?? null;
         keep.identity = indexed?.identity;
-      }
-      if (readersChanged) {
         keep.artResolutions = binding.artResolutions;
         keep.artProvider = createLaneArtProvider(keep.art, {
           index: keep.index,
@@ -452,12 +480,12 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.projectedArtRevision = keep.artRevision;
       }
       if (!reuse) {
-        keep.tiles.sync(binding);
         const base: SceneSources = {
           sources: binding.sources,
           ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
           ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
           ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
+          ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
           ...(binding.hovers ? { hovers: binding.hovers } : {}),
           kind: binding.kind,
           ...(binding.pagedRows ? { pagedRows: binding.pagedRows } : {}),
@@ -474,12 +502,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.projectedArtRevision = keep.artRevision;
         keep.kind = binding.kind;
         keep.viewName = binding.view;
-        keep.options = binding.options;
-        keep.staticPanels = binding.staticPanels;
-        keep.staticAnswers = binding.staticAnswers;
-        keep.tiled = binding.tiledBySource;
-        keep.hovers = binding.hovers;
-        keep.pagedRows = binding.pagedRows;
+        keep.owner = input.owner;
+        keep.inputs = binding.revisions;
         keep.windowKey = windowKeyOf(binding);
         keep.parts = snapshotPictures(input.pictures);
         keep.validFrom = hour;
@@ -508,8 +532,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         return { ...EMPTY, mode: 'refused', reason: status.refused, ...nextChangeAt };
       }
 
-      const view = family.view(binding);
-      const layoutKey = [model, drawn, surface.width, surface.height, theme, ...view];
+      const layoutKey = [model, drawn, surface.width, surface.height, ...viewKey(binding, ['theme', ...family.view])];
       if (!keep.layout || !sameKey(keep.layoutKey, layoutKey)) {
         const previous = continuing && keep.layout && keep.layoutModel !== null ? { model: keep.layoutModel, layout: keep.layout, hour: keep.layoutHour } : null;
         keep.layout = family.layout(model, binding, surface, theme, keep.ctx, drawn, { previous, now: input.now, speed: input.speed });

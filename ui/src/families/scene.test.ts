@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Scene } from '../draw/lane.ts';
+import { artHandleKey } from './art/types.ts';
 import { projectScene, sceneReadView } from './scene.ts';
 
 const part = (version: number, value: unknown) => ({ h: 100, c: 130, value, refused: null, cells: [], seeds: new Map(), channel: 'panel', version, bytes: 0 });
@@ -66,4 +67,31 @@ test('a projection’s identity and art reads are compared, not the snapshot: a 
   assert.equal(lookups, 1, 'one lookup per read key, whatever the snapshot holds');
   assert.equal(projected.reads.unchanged({ identity: identityOf({ GER: 'German Reich' }) as never, art: artOf('noArtExpected') as never }), false);
   assert.equal(projected.reads.unchanged({ identity: identityOf({ GER: 'Germany' }) as never, art: artOf('pending') as never }), false);
+});
+
+test('a read compares the whole observable result: the interval, a failure’s retryability, a ready frame, and the URL the read would demand', () => {
+  const scene = { widget: 1, subs: [], pictures: [], model: null } as unknown as Scene;
+  const identityFrom = (from: number, name: { status: 'ready'; value: string } | { status: 'failed'; reason: string; retryable: boolean }) => ({
+    resolve: (kind: 'country', key: string, atHour: number) => ({ kind, key, atHour, holder: { status: 'ready', value: key }, name, validInterval: [from, 200] as const, nextChangeAt: 200 }),
+  });
+  const named = { status: 'ready' as const, value: 'Germany' };
+  const read = projectScene(scene, { sources: {} }, 120, { identity: identityFrom(90, named) as never }, view => view.who('country', 'GER', 100).name.status);
+  assert.equal(read.reads.unchanged({ identity: identityFrom(90, named) as never }), true);
+  assert.equal(read.reads.unchanged({ identity: identityFrom(110, named) as never }), false, 'a corrected run that now starts after the historical reading is a change, though name and end agree');
+  const failing = (retryable: boolean) => identityFrom(90, { status: 'failed', reason: 'Lookup failed', retryable });
+  const failed = projectScene(scene, { sources: {} }, 120, { identity: failing(true) as never }, view => view.who('country', 'GER', 100).name.status);
+  assert.equal(failed.reads.unchanged({ identity: failing(false) as never }), false, 'a failure that can no longer be retried is a change');
+
+  const sprite = { kind: 'sprite', key: 'GFX_tech', frame: 0 } as never;
+  const pending = { resolve: () => ({ status: 'pending' }) };
+  const unresolved = projectScene(scene, { sources: {} }, 120, { art: pending as never }, view => view.art(sprite).status);
+  assert.deepEqual([unresolved.artUrls, unresolved.artAsks.length], [[], 1]);
+  const resolution = { status: 'ready', assetId: 'a', url: 'asset://tech.png', origin: 'game', file: 'tech.dds', frame: { index: 0, count: 1, width: 64, height: 64 }, provenance: 'current' };
+  const resolutions = { [artHandleKey(sprite)]: resolution };
+  assert.equal(unresolved.reads.unchanged({ art: pending as never, artResolutions: resolutions as never }), false,
+    'resolved but not yet decoded is still pending, yet the read now demands a URL, so the model is rebuilt to ask for it');
+  const readyOf = (width: number) => ({ resolve: () => ({ ...resolution, frame: { index: 0, count: 1, width, height: 64 } }) });
+  const ready = projectScene(scene, { sources: {} }, 120, { art: readyOf(64) as never }, view => view.art(sprite).status);
+  assert.equal(ready.reads.unchanged({ art: readyOf(64) as never }), true);
+  assert.equal(ready.reads.unchanged({ art: readyOf(48) as never }), false, 'another frame size is a change');
 });

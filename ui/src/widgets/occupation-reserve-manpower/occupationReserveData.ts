@@ -1,4 +1,3 @@
-import type { Run } from '../../charts/series';
 import type { OccupationReserveReply, ReserveHistoryReply, ReserveSegment } from '../../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -43,25 +42,6 @@ export function segmentParts(segment: ReserveSegment, sources: readonly number[]
   const by = new Map<number, number>();
   for (const entry of segment.entries) if (entry.amount > 0) by.set(entry.source, (by.get(entry.source) ?? 0) + entry.amount);
   return sources.map(source => by.get(source) ?? (segment.admitted ? 0 : undefined));
-}
-
-export function holderBands(history: ReserveHistoryReply, sources: readonly number[]): Run[][] {
-  const bands = sources.map(() => [] as Run[]);
-  for (const segment of history.segments) {
-    segmentParts(segment, sources).forEach((value, band) => {
-      if (value === undefined) return;
-      const runs = bands[band], previous = runs.at(-1);
-      if (previous && previous.lastHour + 1 === segment.firstHour && previous.value === value) previous.lastHour = segment.lastHour;
-      else runs.push({ firstHour: segment.firstHour, lastHour: segment.lastHour, value, breakBefore: !previous || previous.lastHour + 1 !== segment.firstHour });
-    });
-  }
-  return bands;
-}
-
-export function historySources(history: ReserveHistoryReply): number[] {
-  const most = new Map<number, number>();
-  for (const segment of history.segments) for (const entry of segment.entries ?? []) most.set(entry.source, Math.max(most.get(entry.source) ?? 0, entry.amount));
-  return [...most].sort((a, b) => b[1] - a[1] || a[0] - b[0]).map(([source]) => source);
 }
 
 export function holderOf(token: unknown): { tag: string; id: number } | null {

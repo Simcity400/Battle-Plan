@@ -272,7 +272,7 @@ export function familyBinding<TOptions, TBinding, TSettings>(
     pauseFlush: ctx.pauseFlush,
     ...(ctx.window ? { window: ctx.window } : {}),
   };
-  return { ...base, ...extras } as TBinding & FamilyBaseBinding<TOptions>;
+  return { ...extras, ...base } as TBinding & FamilyBaseBinding<TOptions>;
 }
 
 export function requestedRowWindow<TSettings>(

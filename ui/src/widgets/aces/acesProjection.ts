@@ -31,9 +31,9 @@ function portraitMedia(ace: AirAce, readView: BoundedReadView): Media {
   return art.status === 'ready' ? { icon: art.url, pending: false } : { icon: undefined, pending: art.status === 'pending' };
 }
 
-function countryOf(tag: string | null, readView: BoundedReadView): { readonly flag: Media; readonly country: Value<string> } {
+function countryOf(tag: string | null, readView: BoundedReadView, atHour?: number): { readonly flag: Media; readonly country: Value<string> } {
   if (tag === null) return { flag: { icon: undefined, pending: false }, country: NO_COUNTRY };
-  const shown = countryRowPresentation(readView, tag);
+  const shown = countryRowPresentation(readView, tag, undefined, undefined, atHour);
   return {
     flag: { icon: shown.media.kind === 'flag' ? shown.media.iconUrl : undefined, pending: shown.media.kind === 'flag' && shown.media.art.status === 'pending' },
     country: shown.labelMissing ? notRecorded('Country name not recorded') : textValue(shown.label, 'Country name not recorded'),
@@ -70,7 +70,8 @@ const ACE_COLUMNS: readonly DeclarativeColumnSpec<AceRow, AcesOptions>[] = [
     value: row => textValue(row.ace.name, 'Ace name not recorded') },
   { ...WING!, priority: 2, text: true, widest: ['Sturzkampfgeschwader 2'], value: row => wingValue(row.ace),
     extra: row => (aircraftLine(row.ace) ? { subtext: aircraftLine(row.ace) } : {}) },
-  { ...SINCE!, priority: 3, numeric: true, cellKind: 'date', widest: ['30 Sep 1941'],
+  { ...SINCE!, priority: 3, numeric: true, cellKind: 'date', widest: ['by 30 Sep 1941'],
+    extra: row => (row.ace.firstSeen === null ? {} : { boundedDate: 'by' }),
     value: row => row.ace.firstSeen === null ? notRecorded('First sighting not recorded') : knownValue(row.ace.firstSeen) },
 ];
 
@@ -109,7 +110,9 @@ export const acesProjection: TableProjection<AcesOptions> = registerFamilyProjec
       for (const ace of reply.aces) {
         if (passing && (ace.tag === null || !inHourRanges(passing[ace.tag], hour))) continue;
         const killerTag = ace.death?.killerTag ?? null;
-        rows.push({ ace, portrait: portraitMedia(ace, readView), ...countryOf(ace.tag, readView), killerCountry: killerTag === null ? null : countryOf(killerTag, readView).country });
+        const seenDead = ace.death?.seenDead ?? null;
+        const killerCountry = killerTag === null || seenDead === null ? null : countryOf(killerTag, readView, Math.min(seenDead, hour)).country;
+        rows.push({ ace, portrait: portraitMedia(ace, readView), ...countryOf(ace.tag, readView), killerCountry });
       }
       return { rows, ...(!rows.length ? { empty: 'No aces yet', emptyKind: 'empty' as const } : {}), warnings: reply.warnings };
     },

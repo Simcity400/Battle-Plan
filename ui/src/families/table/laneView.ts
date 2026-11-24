@@ -313,7 +313,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     const handled = model.rows.length > 0 || model.panes !== undefined || (model.slots?.length ?? 0) > 0 || model.empty !== undefined || model.clockSummary !== undefined;
     return handled ? 'picture' : 'scene';
   },
-  view: binding => [binding.settings, binding.expanded, binding.scrollTop, binding.scrollLeft, binding.focusedKey, binding.reducedMotion],
+  view: ['settings', 'expanded', 'scrollTop', 'scrollLeft', 'focusedKey', 'reducedMotion'],
   layout: layoutTable,
   paint(ctx, frame) {
     const { layout, binding, model, theme } = frame;

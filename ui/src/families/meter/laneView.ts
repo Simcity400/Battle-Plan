@@ -23,7 +23,7 @@ export const meterLane: LaneFamily<FamilyMeterBinding, MeterModel, MeterLayout> 
   boundary: nextMeterChange,
   redraw: () => Infinity,
   status: model => (model.refused !== undefined ? { refused: model.refused } : 'scene'),
-  view: () => [],
+  view: [],
   layout: (model, _binding, surface, theme, measure) => layoutMeterModel(measure, model, surface.width, theme),
   paint(ctx, frame) {
     drawMeterModel(ctx, {

@@ -56,7 +56,7 @@ export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, H
   boundary: () => Infinity,
   redraw: () => Infinity,
   status: model => (model.refused !== undefined ? { refused: model.refused } : 'scene'),
-  view: binding => [binding.scrollTop],
+  view: ['scrollTop'],
   layout: (model, binding, surface) => layoutHeatLanes({
     width: surface.width,
     height: surface.height,
