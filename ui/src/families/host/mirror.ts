@@ -44,7 +44,7 @@ export function syncTableMirror(
   options: TableMirrorSyncOptions,
 ): boolean {
   if (!tbody) return false;
-  const table = tbody.parentElement instanceof HTMLTableElement ? tbody.parentElement : null;
+  const table = tbody.parentElement ?? null;
   if (!mirror) {
     if (options.lastMirrorKeyRef.current !== '') {
       options.lastMirrorKeyRef.current = '';

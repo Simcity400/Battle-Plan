@@ -42,7 +42,7 @@ export const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
   tooltip(frame, key, focus) {
     const rowKey = focus ? key : inspectedRow(key);
     const payload = rowKey ? deriveCardTooltip(frame.model, rowKey) : null;
-    return payload && rowKey ? { hour: frame.model.hour, rowKey, payload } : null;
+    return payload && rowKey ? { rowKey, payload } : null;
   },
   structure({ model, layout }) {
     return {

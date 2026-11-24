@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatDay } from '../../dashboard/calendar.ts';
 import { validateProductReply } from '../../dashboard/client.ts';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { useGate } from '../../dashboard/regionGate.ts';
 import { productRequest } from '../../dashboard/request.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
-import type { EventFeedActivityReply, EventFeedKindInfo, MissingSpan } from '../../generated/dashboard';
+import type { EventFeedActivityReply, MissingSpan } from '../../generated/dashboard';
 import { CATEGORIES } from './definition.ts';
 import './eventFeedActivityStrip.css';
 
@@ -20,7 +21,6 @@ export interface EventFeedActivityStripProps {
   readonly active: boolean;
   readonly categories: readonly string[];
   readonly excludedKinds?: readonly string[];
-  readonly kinds: readonly EventFeedKindInfo[] | null;
   readonly from: number | null;
   readonly pinnedHour?: number | null;
 }
@@ -54,7 +54,6 @@ export default function EventFeedActivityStrip({
   active,
   categories,
   excludedKinds,
-  kinds,
   from,
   pinnedHour,
 }: EventFeedActivityStripProps) {
@@ -72,7 +71,7 @@ export default function EventFeedActivityStrip({
   }, [track, pinnedHour, shown]);
 
   const queryKey = useMemo(() => {
-    if (!track || !active || displayedHour === null || !kinds || !categories.length) return null;
+    if (!track || !active || displayedHour === null || !categories.length) return null;
     const stripFrom = Math.max(track.branch.firstHour, from ?? (displayedHour - STRIP_WINDOW_HOURS));
     if (stripFrom > displayedHour) return null;
     const bound = gate.span(stripFrom, displayedHour);
@@ -80,10 +79,10 @@ export default function EventFeedActivityStrip({
     const binHours = stripBinHours(bound.lastHour - bound.firstHour);
     const exKey = excludedKinds?.length ? [...excludedKinds].sort().join(',') : '';
     return JSON.stringify([track.source.id, track.source.revision, track.branch.id, bound.firstHour, bound.lastHour, binHours, categories, exKey, widget.countries]);
-  }, [track, active, displayedHour, kinds, categories, excludedKinds, from, gate, widget.countries]);
+  }, [track, active, displayedHour, categories, excludedKinds, from, gate, widget.countries]);
 
   useEffect(() => {
-    if (!track || !queryKey || displayedHour === null || !kinds) return;
+    if (!track || !queryKey || displayedHour === null) return;
     if (lastKeyRef.current === queryKey) return;
     const stripFrom = Math.max(track.branch.firstHour, from ?? (displayedHour - STRIP_WINDOW_HOURS));
     const bound = gate.span(stripFrom, displayedHour);
@@ -97,7 +96,7 @@ export default function EventFeedActivityStrip({
     const cutoff = gate.recorded(bound.lastHour);
     if (cutoff === null) return;
     const group = groupSelection(widget.countries);
-    const countries = widget.countries.kind === 'tags' ? widget.countries.tags : null;
+    const countries = widget.countries.kind === 'tags' ? widget.countries.tags.map(countryFromKey) : null;
     const request = productRequest({
       sourceId: track.source.id,
       revision: track.source.revision,
@@ -133,7 +132,7 @@ export default function EventFeedActivityStrip({
       });
     }).catch(() => {});
     return () => controller.abort();
-  }, [track, runtime.client, queryKey, displayedHour, kinds, categories, excludedKinds, from, gate, widget.countries]);
+  }, [track, runtime.client, queryKey, displayedHour, categories, excludedKinds, from, gate, widget.countries]);
 
   if (!strip || strip.binCount === 0) return null;
 
@@ -144,8 +143,9 @@ export default function EventFeedActivityStrip({
   const maxTotal = Math.max(1, ...totals);
   const gapBins = new Set<number>();
   for (const span of strip.missing) {
-    const idx = Math.max(0, Math.min(strip.binCount - 1, Math.floor((span.firstHour - strip.firstHour) / strip.binHours)));
-    gapBins.add(idx);
+    const firstIdx = Math.max(0, Math.min(strip.binCount - 1, Math.floor((span.firstHour - strip.firstHour) / strip.binHours)));
+    const lastIdx = Math.max(firstIdx, Math.min(strip.binCount - 1, Math.floor((span.lastHour - strip.firstHour) / strip.binHours)));
+    for (let idx = firstIdx; idx <= lastIdx; idx++) gapBins.add(idx);
   }
 
   const tickCount = Math.min(5, Math.max(2, Math.floor(strip.binCount / 10) + 1));
@@ -172,8 +172,8 @@ export default function EventFeedActivityStrip({
               {barTotal > 0 ? strip.series.map(s => {
                 const count = s.counts[idx] ?? 0;
                 if (count <= 0) return null;
-                const px = Math.max(1, (count / maxTotal) * maxPx);
-                return <i key={s.category} className={`efs-seg is-${s.category}`} style={{ height: `${px.toFixed(1)}px` }} />;
+                const px = Math.round(Math.max(1, (count / maxTotal) * maxPx) * 10) / 10;
+                return <i key={s.category} className={`efs-seg is-${s.category}`} style={{ height: `${px}px` }} />;
               }) : null}
             </span>
           );
