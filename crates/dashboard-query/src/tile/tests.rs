@@ -427,3 +427,35 @@ fn a_line_has_the_same_bins_asked_alone_or_beside_tags_held_over_other_hours() {
     }
     assert!(compared > 1_000, "{compared} bins compared");
 }
+
+#[test]
+fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_the_top() {
+    let fixture = long_campaign();
+    let query = fixture.query();
+    let line = line(&query);
+    let bin_hours = 96;
+    let ask = |hour: i32| reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": i64::from(hour).div_euclid(BINS as i64 * bin_hours), "top": 1, "hour": hour })).unwrap();
+    let mut proven = 0;
+    for hour in (FIRST + 24..LONG_SECOND - GAP).step_by(37) {
+        let top = ask(hour);
+        let ranking = top.ranking.clone().expect("a top says who it is");
+        assert_eq!(ranking.refused, None, "hour {hour}");
+        let ranked = line.rank_at(hour, 1).unwrap();
+        assert_eq!(top.lines.iter().map(|line| line.country.to_string()).collect::<Vec<_>>(), ranked, "the reply names exactly the top at {hour}");
+        let plain = tile(&line, "1", &whole(&ranked.iter().map(String::as_str).collect::<Vec<_>>()), None, bin_hours, top.index, false).unwrap();
+        assert_eq!(top.bins, plain.bins, "the top's bins are its countries' tiles at {hour}");
+        assert!(ranking.from <= hour && hour <= ranking.until);
+        for at in ranking.from..=ranking.until {
+            assert_eq!(line.rank_at(at, 1).unwrap(), ranked, "the same top through its proven hours ({at} for {hour})");
+        }
+        if ranking.from > FIRST && hour - ranking.from < RANK_PROOF_HOURS {
+            assert_ne!(line.rank_at(ranking.from - 1, 1).unwrap(), ranked, "the hour before the proof is another top");
+        }
+        proven += usize::try_from(ranking.until - ranking.from).unwrap();
+    }
+    assert!(proven > 50, "{proven} hours proven");
+    let refused = ask(LONG_SECOND - 2);
+    assert!(refused.lines.is_empty(), "no line in a gap");
+    assert!(refused.ranking.unwrap().refused.is_some(), "a gap's top is refused with its reason");
+    assert!(reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": 0, "top": 1, "hour": FIRST, "countries": ["GER"] })).is_err());
+}

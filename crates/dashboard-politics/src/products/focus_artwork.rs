@@ -1,52 +1,38 @@
-use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::{LoadContext, Product, artwork};
+use dashboard_base::products::Country;
+use dashboard_base::products::{LoadContext, artwork};
 use dashboard_core::dto::{Artwork, FocusDatabase};
 use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use replay::campaign::{Replay, SeekResult};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     collections::{BTreeSet, VecDeque},
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
-#[cfg(any(test, feature = "export-types"))]
-use ts_rs::TS;
 
-pub struct FocusArtwork;
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FocusArtworkParams {
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FocusArtworkParams {
     pub branch_id: String,
     pub hour: i32,
     pub country: Country,
-    #[doc = " The database every token is looked up in."]
     pub database: FocusDatabase,
     pub tokens: Vec<String>,
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub text_only: Option<bool>,
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub include_descriptions: Option<bool>,
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub icons_only: Option<bool>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct DatedFocusArtwork {
+pub(crate) struct DatedFocusArtwork {
     pub artwork: Artwork,
     pub reason: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct FocusArtworkReply {
+pub(crate) struct FocusArtworkReply {
     pub branch_id: String,
     pub hour: i32,
     pub tag: String,
@@ -253,97 +239,59 @@ fn held_campaign(replay: &Replay, branch: u64, hour: i32) -> io::Result<()> {
     Ok(())
 }
 
-impl Product for FocusArtwork {
-    const KEY: &'static str = "focus-artwork";
-    const CONTENT_DEPENDENT: bool = true;
-    const INTERACTIVE: bool = true;
-    type Params = FocusArtworkParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, country, database, tokens, textOnly, includeDescriptions, iconsOnly];
-    type Reply = FocusArtworkReply;
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![
-            FocusArtworkParams::decl(),
-            DatedFocusArtwork::decl(),
-            FocusArtworkReply::decl(),
-        ]
-    }
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_country(&params.country)?;
-        params
-            .branch_id
-            .parse::<u64>()
-            .map_err(|_| "Invalid focus artwork branch")?;
-        if params.tokens.is_empty()
-            || params
-                .tokens
-                .iter()
-                .any(|token| token.is_empty() || token.contains('\0'))
-        {
-            return Err("Invalid focus artwork tokens");
-        }
-        if params.icons_only == Some(true)
-            && (params.text_only == Some(true) || params.include_descriptions != Some(false))
-        {
-            return Err("Icon-only focus artwork requires icons and excludes descriptions");
-        }
-        Ok(())
-    }
-    fn load(
-        source: &Source,
-        params: &Self::Params,
-        context: &LoadContext,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Self::Reply> {
-        check_cancel(cancelled)?;
-        let branch = params.branch_id.parse::<u64>().expect("validated branch");
-        let replay = source.replay();
-        let state = source.state::<State>();
-        let (slot, frame) = {
-            let state = state.lock().unwrap_or_else(|error| error.into_inner());
-            let contexts = match params.database {
-                FocusDatabase::National => &state.national,
-                FocusDatabase::Continuous => &state.continuous,
-            };
-            (
-                Arc::clone(
-                    if params.text_only == Some(true) && params.include_descriptions == Some(false)
-                    {
-                        &contexts.titles
-                    } else if params.text_only == Some(true) {
-                        &contexts.text
-                    } else {
-                        &contexts.artwork
-                    },
-                ),
-                Arc::clone(&state.frame),
-            )
+pub(crate) fn load(
+    source: &Source,
+    params: &FocusArtworkParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<FocusArtworkReply> {
+    check_cancel(cancelled)?;
+    let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid focus artwork branch"))?;
+    let replay = source.replay();
+    let state = source.state::<State>();
+    let (slot, frame) = {
+        let state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let contexts = match params.database {
+            FocusDatabase::National => &state.national,
+            FocusDatabase::Continuous => &state.continuous,
         };
-        let mut slot = slot.lock().unwrap_or_else(|error| error.into_inner());
-        let art = artwork::ensure(
-            &mut slot,
-            source,
-            context.content()?,
-            artwork::Kind::Focus(params.database),
-        )?;
-        let needs_frame = if params.icons_only == Some(true) {
-            art.requested_focus_icons_need_frame(&params.tokens)
-        } else if params.include_descriptions == Some(false) {
-            if params.text_only == Some(true) {
-                art.requested_focus_title_needs_frame(&params.tokens)
-            } else {
-                art.requested_focus_display_needs_frame(&params.tokens)
-            }
-        } else if params.text_only == Some(true) {
-            art.requested_focus_text_needs_frame(&params.tokens)
+        (
+            Arc::clone(
+                if params.text_only == Some(true) && params.include_descriptions == Some(false) {
+                    &contexts.titles
+                } else if params.text_only == Some(true) {
+                    &contexts.text
+                } else {
+                    &contexts.artwork
+                },
+            ),
+            Arc::clone(&state.frame),
+        )
+    };
+    let mut slot = slot.lock().unwrap_or_else(|error| error.into_inner());
+    let art = artwork::ensure(
+        &mut slot,
+        source,
+        context.content()?,
+        artwork::Kind::Focus(params.database),
+    )?;
+    let needs_frame = if params.icons_only == Some(true) {
+        art.requested_focus_icons_need_frame(&params.tokens)
+    } else if params.include_descriptions == Some(false) {
+        if params.text_only == Some(true) {
+            art.requested_focus_title_needs_frame(&params.tokens)
         } else {
-            art.requested_focus_needs_frame(&params.tokens)
-        };
-        let decoded = frame.at(&replay, branch, params.hour, needs_frame, cancelled)?;
-        check_cancel(cancelled)?;
-        let tag = dashboard_base::queries::query(source, branch)?.holders.name(&params.country, params.hour);
-        present_decoded(art, params, &tag, &decoded, cancelled)
-    }
+            art.requested_focus_display_needs_frame(&params.tokens)
+        }
+    } else if params.text_only == Some(true) {
+        art.requested_focus_text_needs_frame(&params.tokens)
+    } else {
+        art.requested_focus_needs_frame(&params.tokens)
+    };
+    let decoded = frame.at(&replay, branch, params.hour, needs_frame, cancelled)?;
+    check_cancel(cancelled)?;
+    let tag = dashboard_base::queries::query(source, branch)?.holders.name(&params.country, params.hour);
+    present_decoded(art, params, &tag, &decoded, cancelled)
 }
 
 pub(crate) fn present_decoded(
@@ -560,40 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn icon_only_requests_preserve_defaults_and_reject_conflicting_fields() {
-        let old: FocusArtworkParams = serde_json::from_value(serde_json::json!({
-            "branchId": "1", "hour": 100, "country": "synthetic", "database": "national", "tokens": ["static"]
-        }))
-        .unwrap();
-        assert_eq!(old.database, FocusDatabase::National);
-        assert!(
-            serde_json::from_value::<FocusArtworkParams>(serde_json::json!({
-                "branchId": "1", "hour": 100, "country": "synthetic", "tokens": ["static"]
-            }))
-            .is_err()
-        );
-        assert_eq!(old.icons_only, None);
-        assert_eq!(old.text_only, None);
-        assert_eq!(old.include_descriptions, None);
-        assert!(FocusArtwork::validate(&old).is_ok());
-        for icons_only in [None, Some(false), Some(true)] {
-            for text_only in [None, Some(false), Some(true)] {
-                for include_descriptions in [None, Some(false), Some(true)] {
-                    let params = FocusArtworkParams {
-                        icons_only,
-                        text_only,
-                        include_descriptions,
-                        ..old.clone()
-                    };
-                    let valid = icons_only != Some(true)
-                        || (text_only != Some(true) && include_descriptions == Some(false));
-                    assert_eq!(FocusArtwork::validate(&params).is_ok(), valid, "{params:?}");
-                }
-            }
-        }
-    }
-
-    #[test]
     fn static_icon_only_product_skips_scoped_titles() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -617,7 +531,7 @@ mod tests {
             include_descriptions: Some(false),
             icons_only: Some(true),
         };
-        let reply = FocusArtwork::load(&source, &params, &context, &cancelled).unwrap();
+        let reply = load(&source, &params, &context, &cancelled).unwrap();
         assert_eq!(
             (reply.branch_id.as_str(), reply.hour, &reply.tag),
             ("1", 100, &params.country.to_string())
@@ -656,7 +570,7 @@ mod tests {
                 24
             );
         }
-        let title = FocusArtwork::load(
+        let title = load(
             &source,
             &FocusArtworkParams {
                 text_only: Some(true),
@@ -699,7 +613,7 @@ mod tests {
                 include_descriptions,
                 icons_only,
             };
-            let reply = FocusArtwork::load(&source, &params, &context, &cancelled).unwrap();
+            let reply = load(&source, &params, &context, &cancelled).unwrap();
             let item = &reply.items[0];
             assert!(item.artwork.name.is_none() && item.artwork.icon.is_none());
             let reason = item.reason.as_deref().unwrap_or_default();
@@ -751,7 +665,7 @@ mod tests {
             let cancelled = AtomicBool::new(false);
             let tag = String::from_utf8(scale_tag(2)).unwrap();
             let load = |database, text_only| {
-                FocusArtwork::load(
+                load(
                     &source,
                     &FocusArtworkParams {
                         branch_id: "1".into(),
@@ -823,7 +737,7 @@ mod tests {
 
     #[test]
     fn focus_history_text_keeps_each_database_apart() {
-        use dashboard_base::products::CountryParams;
+        use dashboard_base::products::{CountryParams, Product};
         use crate::products::national_focus::NationalFocus;
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -945,7 +859,7 @@ mod tests {
                 include_descriptions: Some(false),
                 icons_only: Some(true),
             };
-            let reply = FocusArtwork::load(&source, &params, &context, &cancelled).unwrap();
+            let reply = load(&source, &params, &context, &cancelled).unwrap();
             assert_eq!(reply.items.len(), 1);
             let item = &reply.items[0];
             assert_eq!(item.artwork.base_duration_days, Some(14.0));
@@ -1273,7 +1187,6 @@ mod tests {
     fn large_token_requests_stop_artwork_generation_at_the_serialized_budget() {
         let mut params = params();
         params.tokens = (0..5_000).map(|index| format!("focus-{index}")).collect();
-        assert!(FocusArtwork::validate(&params).is_ok());
         let produced = Cell::new(0);
         let items = params.tokens.iter().map(|token| {
             produced.set(produced.get() + 1);

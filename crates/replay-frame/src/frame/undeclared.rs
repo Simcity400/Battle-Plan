@@ -41,7 +41,7 @@ fn views() -> &'static Views {
 }
 
 pub fn not_declared(table: TableId) -> SharedView {
-    SharedView(Arc::clone(&views().views[table.index()]), None, None, None, None)
+    SharedView(Arc::clone(&views().views[table.index()]), None, None, None, None, None)
 }
 
 pub fn undeclared_reads() -> u64 {

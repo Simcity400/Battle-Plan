@@ -262,7 +262,7 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       'division-equipment',
       'equipment',
       () => import('../division-equipment/divisionEquipmentProjection.ts'),
-      mod => ({ projection: mod.divisionEquipmentProjection, declaration: mod.divisionEquipmentDeclaration }),
+      mod => ({ projection: mod.equipmentTypeProjection, declaration: mod.equipmentTypeDeclaration }),
     ),
   },
   {
@@ -276,7 +276,7 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       'division-equipment',
       'template',
       () => import('../division-equipment/divisionEquipmentProjection.ts'),
-      mod => ({ projection: mod.divisionEquipmentProjection, declaration: mod.divisionEquipmentDeclaration }),
+      mod => ({ projection: mod.equipmentTemplateProjection, declaration: mod.equipmentTemplateDeclaration }),
     ),
   },
   {
@@ -311,6 +311,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       () => import('../most-decorated-divisions/mostDecoratedProjection.ts'),
       mod => ({ projection: mod.mostDecoratedProjection, declaration: mod.mostDecoratedDeclaration }),
     ),
+  },
+  {
+    kind: 'trade-flows',
+    view: 'table',
+    label: 'Table',
+    family: 'table',
+    viewOption: 'view',
+    loadSpec: () => import('../trade-flows/tradeFlowsProjection.ts').then(mod => ({
+      family: 'table', kind: 'trade-flows', view: 'table',
+      projection: mod.tradeTableProjection, declaration: mod.tradeTableDeclaration,
+    })),
   },
 ];
 

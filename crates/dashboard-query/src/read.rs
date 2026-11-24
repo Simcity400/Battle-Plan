@@ -10,6 +10,27 @@ use replay_columnar::{
 };
 use std::{collections::HashMap, io};
 
+pub fn touched(reader: &TableReader, key: u128) -> bool {
+    let changes = reader.changes();
+    if changes.anew || changes.status_changed || changes.deleted.iter().any(|&(_, deleted)| deleted == key) {
+        return true;
+    }
+    let Some(slot) = reader.slot(key) else { return false };
+    changes.inserted.contains(&slot) || changes.written.iter().any(|slots| slots.contains(&slot))
+}
+
+pub fn row<T: replay_data::rows::TableSchema>(reader: &TableReader, key: u128, format: u16) -> Option<T::Row>
+where
+    T::Row: Clone,
+{
+    if !reader.available() {
+        return None;
+    }
+    let slot = reader.slot(key)?;
+    let rows = replay_frame::frame::cells_rows(T::ID, &reader.view(), &[(key, slot)], format).ok()?;
+    rows.rows::<T>()?.first().cloned()
+}
+
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }

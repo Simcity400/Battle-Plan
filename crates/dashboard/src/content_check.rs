@@ -149,11 +149,11 @@ fn aggregate(findings: &mut Vec<Finding>) {
 fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<String, String> {
     use dashboard_base::products::{Product, artwork, at_hour::{self, AtHour}};
     use dashboard_world::products::{country_flags, identities, subjects};
-    use dashboard_land::products::{army, army_losses, divisions, doctrine_mastery, doctrines, experience, forces, leaders, training_queue};
+    use dashboard_land::products::{army, army_losses, divisions, doctrine_mastery, doctrines, forces, leaders, training_queue};
     use dashboard_naval::products::naval;
-    use dashboard_wars::products::{casualties, diplomacy, faction_state, occupation, peace, scoreboard, territory_transfers, volunteers, wargoals, wars};
-    use dashboard_politics::products::{feed, focus_artwork, national_focus, stability, technology_artwork};
-    use dashboard_economy::products::{convoys, economy, trade_flows};
+    use dashboard_wars::products::{casualties, casualty_matrix, diplomacy, faction_state, occupation, peace, scoreboard, territory_transfers, volunteers, wargoals, wars};
+    use dashboard_politics::products::{feed, national_focus, stability, technology_artwork};
+    use dashboard_economy::products::{convoys, economy, trade_flow};
     use dashboard_production::products::{construction, equipment_losses, equipment_produced, production, production_spending};
     use dashboard_air::products::aircraft_catalogue;
     use dashboard_players::products::{campaign_clock, player_apm};
@@ -162,8 +162,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
     match key {
         campaign_clock::CampaignClock::KEY => Ok("Campaign clock totals require recorded real-time intervals, pause-state coverage and each session's clock frequency; no authored content is read. Recording-dependent values are unavailable offline.".into()),
         player_apm::PlayerApm::KEY => Ok("eAPM requires recorded accepted-command kinds, player lifetimes, provenance and unpaused timing coverage; no authored content is read. Recording-dependent values are unavailable offline.".into()),
-        national_focus::NationalFocus::KEY
-        | focus_artwork::FocusArtwork::KEY => {
+        national_focus::NationalFocus::KEY => {
             let national = artwork_check(
                 content,
                 artwork::Kind::Focus(dashboard_core::dto::FocusDatabase::National),
@@ -244,12 +243,11 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             content_reader_key_names::unit_leader::sub_units(&content.catalogue()?.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes and roles resolve recorded class tokens through the sub-unit database; totals and classes require the recorded navy tables.".into())
         }
-        volunteers::VolunteersExpeditionaries::KEY => Ok("No content dependency: links are the recorded military aid table and the identity table.".into()),
+        <volunteers::VolunteerFlow as at_hour::AtHour>::KEY => Ok("No content dependency: links are the recorded military aid table and the identity table.".into()),
         production_spending::ProductionSpending::KEY => {
             let units = dashboard_base::catalogue::equipment_units(content.catalogue()?)?;
             Ok(format!("Equipment types resolve each design's recorded archetype through the equipment database ({} types); design names localise the recorded naming operands; amounts and repair rates are the recorded production tables.", units.equipment.len()))
         }
-        <experience::CountryExperience as at_hour::AtHour>::KEY => Ok("No content dependency: banked experience and its daily change and gain are recorded tables.".into()),
         <training_queue::TrainingQueue as at_hour::AtHour>::KEY => {
             content.catalogue()?;
             Ok("Deployment orders, divisions in training, manpower and equipment come from the recorded daily queue read; template, priority, location and archetype names resolve through the recorded naming operands and the content stack.".into())
@@ -365,7 +363,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         economy::fuel::awards::CountryFuelAwardHistory::KEY | economy::fuel::demand::CountryFuelDemandHistory::KEY => {
             Ok("No content dependency: receipts and rates are recorded amounts.".into())
         }
-        production::ProductionLines::KEY | production::ProductionLineDetail::KEY | production::ProductionLinesAt::KEY | production::ProductionLineBreakdown::KEY => {
+        production::ProductionLines::KEY | production::ProductionLinesAt::KEY | production::ProductionLineBreakdown::KEY => {
             Ok("Variant and organisation names and icons, and modifier source labels, need the recorded variant, country, organisation and modifier operands; unavailable offline.".into())
         }
         production::ProductionLicences::KEY | production::IndustrialOrganisations::KEY | production::EquipmentDesigns::KEY => {
@@ -387,15 +385,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         <stability::CountryStabilityBreakdown as at_hour::AtHour>::KEY | <stability::StabilityPartNames as at_hour::AtHour>::KEY => {
             Ok("No offline check: idea, advisor, leader, ideology and modifier names are read at the reply from the recorded lines and parts dictionary, in the country's look at the hour.".into())
         }
-        casualties::CasualtyPairs::KEY | casualties::CasualtyBreakdown::KEY => Ok("No content dependency: pairs and losses are the recorded casualty lifetimes and totals, named by the identity table.".into()),
-        casualties::CasualtyLabels::KEY => {
-            let catalogue = content.catalogue()?;
-            if catalogue.localised("CASUALTIES_UNKNOWN", dashboard_base::catalogue::View::Plain).is_none() {
-                findings.push(Finding::new(Kind::Fallback, "casualty labels", "localisation CASUALTIES_UNKNOWN is missing; \"Unknown attacker\" is shown"));
-            }
-            take(catalogue, "casualty labels", findings);
-            Ok("The name of losses from unknown attackers checked through the recorded content stack.".into())
-        }
+        casualties::CasualtyBreakdown::KEY | <casualty_matrix::CasualtyMatrix as at_hour::AtHour>::KEY => Ok("No content dependency: pairs and losses are the recorded casualty lifetimes and totals, named by the identity table.".into()),
         peace::PeaceDeals::KEY | territory_transfers::TerritoryTransfers::KEY => {
             let catalogue = content.catalogue()?;
             if catalogue.localised("PEACE_TAKE_STATES_DEMAND", dashboard_base::catalogue::View::Scripted).is_none() {
@@ -419,7 +409,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             }
             Ok("Sea region names read the recorded stack's strategic regions; resource names use the shared resource naming.".into())
         }
-        trade_flows::TradeFlows::KEY => {
+        <trade_flow::TradeFlow as at_hour::AtHour>::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "seller and buyer flows and their quantities need the recorded TradeFlows rows; unavailable offline"));
             Ok("Resource names and icons are read through the shared resource naming of the recorded content stack.".into())
         }

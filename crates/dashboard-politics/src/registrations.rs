@@ -1,15 +1,11 @@
 dashboard_base::register_products! {
     NATIONAL_FOCUS_NATIONALFOCUS => crate::products::national_focus::NationalFocus,
-    FOCUS_ARTWORK_FOCUSARTWORK => crate::products::focus_artwork::FocusArtwork,
     TECHNOLOGY_ARTWORK_TECHNOLOGYARTWORK => crate::products::technology_artwork::TechnologyArtwork,
     LOGS_LOGPAGE => crate::products::logs::LogPage,
     LOGS_LOGTAIL => crate::products::logs::LogTail,
     LOGS_LOGCOUNTS => crate::products::logs::LogCounts,
     POLITICS_HISTORY_POLITICSSTATEHISTORY => crate::products::politics::history::PoliticsStateHistory,
     POLITICS_CIVIL_WARS_CIVILWARS => crate::products::politics::civil_wars::CivilWars,
-    FOCUS_FOCUSHOURPRODUCT => crate::products::focus::FocusHourProduct,
-    FOCUS_FOCUSORDERPAGEPRODUCT => crate::products::focus::FocusOrderPageProduct,
-    FOCUS_FOCUSCOMPLETIONSPRODUCT => crate::products::focus::FocusCompletionsProduct,
     FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard,
     IDEAS_IDEAHISTORY => crate::products::ideas::IdeaHistory,
     PARTY_HISTORY_PARTYHISTORY => crate::products::party_history::PartyHistory,
@@ -22,17 +18,13 @@ dashboard_base::register_products! {
     FEED_EVENTFEEDSPAN => crate::products::feed::EventFeedSpan,
     POWER_LEDGER_POWERSPENDING => crate::products::power_ledger::PowerSpending,
     POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN => crate::products::power_ledger::breakdown::PowerSpendingBreakdown,
-    STABILITY_READS_STABILITYREADS => crate::products::stability::reads::StabilityReads,
 }
 
 dashboard_base::register_hourly_products! {
     POLITICS_STATE_POLITICSSTATE => crate::products::politics::state::PoliticsState,
     POLITICS_ELECTIONS_NEXTELECTIONS => crate::products::politics::elections::NextElections,
-    COUNTRY_PEOPLE_COUNTRYPEOPLE => crate::products::country_people::CountryPeople,
-    FOCUS_FOCUSUNAVAILABLEAT => crate::products::focus::FocusUnavailableAt,
     STABILITY_COUNTRYSTABILITYBREAKDOWN => crate::products::stability::CountryStabilityBreakdown,
     STABILITY_STABILITYPARTNAMES => crate::products::stability::StabilityPartNames,
-    POWER_LEDGER_DAY_POWERDAY => crate::products::power_ledger::day::PowerDay,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};

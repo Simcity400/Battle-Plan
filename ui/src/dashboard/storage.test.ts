@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
 import { doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, layoutsUnsaved, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
+import { resolveOptions, setOption, type OptionField } from './options.ts';
+import { viewOwnedFields } from '../families/manifest.ts';
 import '../widgets/definitions.ts';
 
 function memoryStorage() {
@@ -198,7 +200,13 @@ test('widget options round-trip, survive an uninstalled widget type and refuse u
   assert.deepEqual(restored[0].options, { order: 'size', ticks: false, window: 90, yMax: null });
   assert.equal(restored[1].kind, 'not-installed');
   assert.deepEqual(restored[1].options, { future: 'kept' });
-  for (const invalid of [[], 'x', { a: {} }, { 'two words': 1 }, Object.fromEntries(Array.from({ length: 49 }, (_, i) => [`k${i}`, i]))]) {
+  const rowCount: OptionField = { key: 'rowCount', section: 'options', label: 'Rows', kind: 'number', min: 1, max: 20, step: 1, default: 8 };
+  const scoped = viewOwnedFields([rowCount], 'shares');
+  widgets[0].options = setOption(scoped, widgets[0].options, 'rowCount', 5)!;
+  assert.equal(saveLayouts(library, storage), null);
+  const reopened = loadLayouts(storage).library.layouts[0].template.widgets[0];
+  assert.equal(resolveOptions(scoped, reopened.options).rowCount, 5, 'a view-scoped option survives a save and reopen');
+  for (const invalid of [[], 'x', { a: {} }, { 'two words': 1 }, { 'rowCount@': 1 }, { 'rowCount@a@b': 1 }, Object.fromEntries(Array.from({ length: 49 }, (_, i) => [`k${i}`, i]))]) {
     const raw = structuredClone(library);
     Object.assign(raw.layouts[0].template.widgets[0], { options: invalid });
     assert.equal(parseLayoutLibrary(raw), null);

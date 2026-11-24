@@ -29,13 +29,7 @@ mod incremental;
 mod placed;
 pub use incremental::{Edits, Held};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Keys {
-    All,
-    These(Vec<u128>),
-    Range(u128, u128),
-    Ranges(Vec<(u128, u128)>),
-}
+pub use replay_frame::frame::Keys;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Read {

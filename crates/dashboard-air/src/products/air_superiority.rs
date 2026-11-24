@@ -19,7 +19,6 @@ use ts_rs::TS;
 
 pub use replay_derive::air_superiority::{assignment, compose};
 pub mod index;
-mod ranking;
 pub mod timeline;
 
 #[cfg(test)]
@@ -314,17 +313,16 @@ impl<'a> RecordedSideResolver<'a> {
     pub(crate) fn new(
         source: &'a Source,
         query: &'a dashboard_query::Query<'a>,
-        branch: u64,
         load: &LoadContext,
         cancelled: &AtomicBool,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let looks = LookResolver::new(source, &query.timeline, load, warnings)?;
-        let reply = groups::groups(source, query, &branch.to_string(), load, cancelled)?;
+        let reply = groups::shared(source, query, load, cancelled)?;
         let factions = reply
             .factions
-            .into_iter()
-            .filter_map(|faction| Some((faction.id.parse::<u64>().ok()?, faction)))
+            .iter()
+            .filter_map(|faction| Some((faction.id.parse::<u64>().ok()?, faction.clone())))
             .collect();
         Ok(Self { looks, factions })
     }
@@ -355,17 +353,16 @@ impl BranchSideResolver {
     fn load(
         source: &Source,
         query: &dashboard_query::Query<'_>,
-        branch: u64,
         load: &LoadContext,
         cancelled: &AtomicBool,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let looks = BranchLooks::load(source, &query.timeline, load, warnings)?;
-        let reply = groups::groups(source, query, &branch.to_string(), load, cancelled)?;
+        let reply = groups::shared(source, query, load, cancelled)?;
         let factions = reply
             .factions
-            .into_iter()
-            .filter_map(|faction| Some((faction.id.parse::<u64>().ok()?, faction)))
+            .iter()
+            .filter_map(|faction| Some((faction.id.parse::<u64>().ok()?, faction.clone())))
             .collect();
         Ok(Self { looks, factions })
     }
@@ -965,7 +962,7 @@ impl AtHour for AirSuperiorityAt {
         let resolver = match dashboard_base::queries::query(source, branch) {
             Ok(query) => {
                 let cancelled = AtomicBool::new(false);
-                Some(Arc::new(BranchSideResolver::load(source, &query, branch, load, &cancelled, &mut resolver_warnings)?))
+                Some(Arc::new(BranchSideResolver::load(source, &query, load, &cancelled, &mut resolver_warnings)?))
             }
             Err(_) => None,
         };
@@ -1022,7 +1019,7 @@ impl Product for AirSuperiorityChoices {
         for side in index.epochs.iter().filter_map(|epoch| epoch.sides.as_deref()).flatten() {
             last.insert(&side.key, side);
         }
-        let mut resolver = RecordedSideResolver::new(source, &query, branch, context, cancelled, &mut warnings)?;
+        let mut resolver = RecordedSideResolver::new(source, &query, context, cancelled, &mut warnings)?;
         let sides = last.values().map(|side| side_of(&index, side, query.timeline.last, &mut resolver)).collect();
         let (theatres, theatres_missing) = match theatres_at_end(&query, &names) {
             Ok(theatres) => (theatres, None),
