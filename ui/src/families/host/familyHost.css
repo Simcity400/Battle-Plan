@@ -90,3 +90,7 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+.fh-body:not(:hover)::-webkit-scrollbar-thumb:vertical {
+  background: transparent;
+}

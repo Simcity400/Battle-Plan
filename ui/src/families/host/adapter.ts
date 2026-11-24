@@ -13,7 +13,9 @@ import type {
   InstalledPicture,
   SourcePlan,
 } from '../contract.ts';
+import type { OptionValue } from '../../dashboard/options';
 import type { IdentitySnapshot } from '../identity/types.ts';
+import type { FamilyPlanContext } from '../plan.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
 
 const navActionIndexCache = new WeakMap<readonly FamilyNavTuple[], Map<string, FamilyNavTuple>>();
@@ -139,10 +141,23 @@ export interface FamilyMetaState {
   readonly warnings: readonly string[];
 }
 
-export interface FamilyBindingContext<TOptions> {
+export interface FamilyRowWindow {
+  readonly first: number;
+  readonly count: number;
+}
+
+export interface FamilyRowGeometry {
+  readonly rowHeight: number;
+  readonly overscan: number;
+}
+
+export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly kind: string;
   readonly view: string;
   readonly options: TOptions;
+  readonly settings: TSettings | undefined;
+  readonly expanded: Readonly<Record<string, boolean>>;
+  readonly window: FamilyRowWindow | null;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
@@ -162,8 +177,18 @@ export interface FamilyBindingContext<TOptions> {
   readonly pauseFlush: number;
 }
 
-export interface FamilyAuditContext {
+export interface FamilyAuditContext<TSettings = unknown> {
   readonly viewport: FamilyViewportState;
+  readonly settings: TSettings | undefined;
+  readonly expanded: Readonly<Record<string, boolean>>;
+  readonly window: FamilyRowWindow | null;
+  readonly fields: Readonly<Record<string, unknown>>;
+}
+
+export interface FamilySettingsPolicy<TSettings> {
+  readonly resolve: (declaration: unknown, ctx: FamilyPlanContext<unknown> | null, options: Readonly<Record<string, unknown>>) => TSettings;
+  readonly store?: (declaration: unknown, next: TSettings, live: TSettings, ctx: FamilyPlanContext<unknown>, setOption: (key: string, value: OptionValue) => void) => void;
+  readonly editable?: (declaration: unknown) => boolean;
 }
 
 export interface FamilyContextHit {
@@ -192,26 +217,31 @@ export interface FamilyGestureHandlers {
   readonly onDoubleClick?: (point: readonly [number, number], ctx: FamilyGestureContext) => boolean;
 }
 
-export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBinding = unknown> {
+export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBinding = unknown, TSettings = unknown> {
   readonly family: FamilyId;
   readonly skeleton?: FamilySkeletonKind;
   readonly pointerMode?: FamilyPointerMode;
   readonly scroll?: FamilyScrollMode;
   readonly navigation: FamilyNavigationKind;
   readonly mirror?: FamilyMirrorKind;
+  readonly mirrorFocus?: 'body' | 'rows';
+  readonly tree?: boolean;
+  readonly settings?: FamilySettingsPolicy<TSettings>;
+  readonly rowGeometry?: (settings: TSettings | undefined, fields: Readonly<Record<string, unknown>>) => FamilyRowGeometry | null;
+  readonly chromeState?: (fields: Readonly<Record<string, unknown>>, previous: unknown) => unknown;
   readonly auditOwnerId?: number;
   readonly defaultSize?: readonly [width: number, height: number];
-  readonly buildBinding: (ctx: FamilyBindingContext<TOptions>) => TBinding | null;
+  readonly buildBinding: (ctx: FamilyBindingContext<TOptions, TSettings>) => TBinding | null;
   readonly parseHit: (hitKey: string | null) => ParsedFamilyHit | null;
   readonly inspectToken: (key: string) => string;
   readonly resolveHitAction?: (hit: ParsedFamilyHit, installed: InstalledPicture, fields: Readonly<Record<string, unknown>>) => InstalledAction | null;
-  readonly getScrollExtent?: (fields: Readonly<Record<string, unknown>>) => FamilyScrollExtent | null;
+  readonly getScrollExtent?: (fields: Readonly<Record<string, unknown>>, rows: FamilyRowGeometry | null) => FamilyScrollExtent | null;
   readonly getRowStride?: (fields: Readonly<Record<string, unknown>>) => number;
   readonly getPageStep?: (fields: Readonly<Record<string, unknown>>, viewport: FamilyViewportState) => number;
   readonly getGridMetrics?: (fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null;
   readonly parseGridKey?: (key: string | null) => { readonly row: number; readonly column: number } | null;
   readonly formatGridKey?: (row: number, column: number) => string;
-  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext) => readonly AuditRow[];
+  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext<TSettings>) => readonly AuditRow[];
   readonly auditOrdered?: boolean;
   readonly gestures?: FamilyGestureHandlers;
 }
