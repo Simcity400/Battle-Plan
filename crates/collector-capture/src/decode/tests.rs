@@ -1152,8 +1152,8 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
     let mut indices = Vec::new();
     for _ in 0..4 {
         indices.push(
-            // SAFETY: This consumer owns the queue removal for the named pool.
-            unsafe { shared.frames.pop() }.expect("pooled buffer"),
+            // SAFETY: This test owns the fixture pool and claims four distinct slots without a live hook.
+            unsafe { shared.take_frame(&mut 0) }.expect("pooled buffer"),
         );
     }
     for (order, index) in indices.iter().enumerate() {

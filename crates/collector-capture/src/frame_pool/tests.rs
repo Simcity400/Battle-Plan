@@ -336,6 +336,13 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
                 }
             }
         });
+        struct Finish<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Finish<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _finish = Finish(&done);
         // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe { shared.prepare_frame_for_reuse(reused) };
         assert_eq!(pool.live_bytes(), transfer_total + box_bytes);
@@ -347,7 +354,6 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
         assert_eq!(again, reused);
         assert_eq!(pool.live_bytes(), transfer_total);
         assert_eq!(shared.pool_owned(), owned_total);
-        done.store(true, Ordering::Release);
     });
     assert!(!spiked.load(Ordering::Relaxed));
     assert!(!dipped.load(Ordering::Relaxed));

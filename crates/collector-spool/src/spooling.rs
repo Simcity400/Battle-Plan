@@ -391,11 +391,7 @@ fn baseline_retention(
     use replay_data::cadence::Cadence;
     use replay_frame::frame::BaselineRetention;
     if !live_columnar {
-        return if retains_baseline(table) {
-            BaselineRetention::Full
-        } else {
-            BaselineRetention::Drop
-        };
+        return BaselineRetention::Full;
     }
     if matches!(
         table,
@@ -473,31 +469,6 @@ fn baseline_retention(
     } else {
         BaselineRetention::Drop
     }
-}
-
-fn retains_baseline(table: TableId) -> bool {
-    spooled(table)
-        || matches!(
-            replay_data::cadence::cadence(table),
-            replay_data::cadence::Cadence::Hourly | replay_data::cadence::Cadence::Sliced
-        )
-        || table == TableId::SliceReads
-        || collector_characters::extended::characters::SHADOW_TABLES.contains(&table)
-        || matches!(
-            table,
-            TableId::AdvisorTokens
-                | TableId::CharacterRoleTraits
-                | TableId::DivisionTemplates
-                | TableId::DivisionStatus
-                | TableId::DivisionPanelStats
-                | TableId::CombatLogObservers
-                | TableId::RailCooldowns
-                | TableId::VariantDefinitions
-                | TableId::VariantModules
-                | TableId::VariantStats
-                | TableId::VariantUpgrades
-                | TableId::WeatherProvinces
-        )
 }
 
 #[cfg(test)]
@@ -1376,14 +1347,6 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         &mut self,
         source: &mut replay_frame::frame::DecodedFrame,
     ) -> [bool; TABLE_COUNT] {
-        let previous = KEEP_EVERY_TABLE.with(|keep| keep.replace(true));
-        struct Restore(bool);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                KEEP_EVERY_TABLE.with(|keep| keep.set(self.0));
-            }
-        }
-        let _restore = Restore(previous);
         let mut input = source.clone().into();
         let skipped = self.apply_staggered_inputs(&mut input);
         *source = sampled_frame(input);
@@ -10086,7 +10049,26 @@ mod tests {
 
     #[test]
     fn non_spooled_daily_tables_skip_staggered_cache_and_encoder_baselines() {
+        struct TempDir(PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TempDir(std::env::temp_dir().join(format!(
+            "battleplan-non-spooled-daily-{}",
+            std::process::id()
+        )));
+        let _ = fs::remove_dir_all(&dir.0);
+        fs::create_dir_all(&dir.0).unwrap();
+        let journal_thread = crate::columnar::JournalThread::start().unwrap();
         let (mut campaign, _) = campaign();
+        campaign.columnar = crate::columnar::Columnar::open(
+            &dir.0,
+            "non-spooled-daily",
+            &session(),
+            &journal_thread,
+        );
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
         let mut first: FrameInput = staggered_frame(branch, 0, false).into();
         campaign.apply_staggered_inputs(&mut first);
@@ -10121,6 +10103,7 @@ mod tests {
                 "{table:?}"
             );
         }
+        campaign.columnar.finish();
     }
 
     #[test]
