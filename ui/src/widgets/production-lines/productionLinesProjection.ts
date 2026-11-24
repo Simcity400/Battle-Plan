@@ -31,7 +31,15 @@ import {
   weeklyText,
 } from './productionData.ts';
 
-export type ProductionLinesProjectionOptions = Record<string, never>;
+export interface ProductionLinesProjectionOptions {
+  readonly country: string | null;
+}
+
+export interface ProductionLineMeta {
+  readonly handle: string;
+  readonly country: string | null;
+  readonly name: string;
+}
 
 function readLiveNum(live: ReturnType<BoundedReadView['live']>, handle: string, field: string): number | null {
   if (!live) return null;
@@ -58,7 +66,7 @@ function readLiveWhole(live: ReturnType<BoundedReadView['live']>, handle: string
 export const productionLinesProjection: TableProjection<ProductionLinesProjectionOptions> = registerTableProjection({
   kind: 'production-lines',
   family: 'table',
-  project(readView: BoundedReadView): TableModel {
+  project(readView: BoundedReadView, options: ProductionLinesProjectionOptions): TableModel {
     const hour = readView.hour;
     const columns = PRODUCTION_LINES_COLUMNS;
     const refused = readView.refused('main');
@@ -181,8 +189,8 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
         name,
         cells,
         tooltipExtra: extra,
-        tooltipAction: 'Click for efficiency breakdown',
-        meta: { handle: line.handle, name, variant: line.variant },
+        tooltipAction: 'Click for its production factors',
+        meta: { handle: line.handle, country: options.country, name } satisfies ProductionLineMeta,
       };
     });
 
@@ -233,7 +241,7 @@ export const productionLinesDeclaration: TableWidgetDeclaration<ProductionLinesP
   projection: productionLinesProjection,
   columns: PRODUCTION_LINES_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: PRODUCTION_LINES_BASE },
-  projectionOptions: () => ({}),
+  projectionOptions: ctx => ({ country: ctx.countryTag }),
   jumpToDate: true,
   keyByBranch: true,
 };
