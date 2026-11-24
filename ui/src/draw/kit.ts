@@ -25,7 +25,7 @@ import {
   NOT_APPLICABLE_LABEL,
   notRecordedLabel,
 } from '../families/valueFormat.ts';
-import { CHART_MEASURE_COLOURS, paletteCache } from '../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, paletteCache, readableColour } from '../charts/palette.ts';
 import { niceStep } from '../charts/valueAxis.ts';
 import { colorCache, contrast, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
@@ -671,6 +671,70 @@ export function drawSplitBar(
     }
     cursor += segW;
   }
+}
+
+export interface ShareBarSegment {
+  readonly share: number;
+  readonly color: string;
+  readonly hatched?: boolean;
+  readonly label?: string;
+  readonly shortLabel?: string;
+  readonly labelAlign?: 'left' | 'right';
+}
+
+export function drawShareBar(
+  ctx: Canvas2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  segments: readonly ShareBarSegment[],
+  theme: FamilyTheme,
+  radius = 2.5,
+): void {
+  if (width <= 0 || height <= 0) return;
+  const tokens = resolveKitTokens(theme);
+  ctx.save();
+  ctx.fillStyle = tokens.barTrack;
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, radius);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, radius);
+  ctx.clip();
+
+  const active = segments.filter(seg => seg.share > 0);
+  const gap = active.length > 1 ? 1 : 0;
+  const usable = Math.max(0, width - gap * Math.max(0, active.length - 1));
+  let cursor = x;
+  let total = 0;
+  for (let i = 0; i < active.length; i++) total += active[i]!.share;
+  const complete = total >= 0.999;
+  for (let i = 0; i < active.length; i++) {
+    const seg = active[i]!;
+    const segW = complete && i === active.length - 1 ? Math.max(0, x + width - cursor) : usable * seg.share;
+    if (segW <= 0) continue;
+    if (seg.hatched) {
+      drawHatchRect(ctx, cursor, y, segW, height, 0, theme);
+    } else {
+      ctx.fillStyle = readableColour(seg.color, theme.surface);
+      ctx.fillRect(cursor, y, segW, height);
+    }
+    if (!seg.hatched && seg.label && segW >= 34) {
+      ctx.font = `600 11px ${theme.font}`;
+      ctx.fillStyle = contrastInkForFill(readableColour(seg.color, theme.surface), theme);
+      const right = seg.labelAlign === 'right';
+      ctx.textAlign = right ? 'right' : 'left';
+      ctx.textBaseline = 'middle';
+      const pad = 6;
+      const room = segW - pad * 2;
+      const shown = textWidth(ctx, seg.label) <= room ? seg.label : seg.shortLabel && textWidth(ctx, seg.shortLabel) <= room ? seg.shortLabel : null;
+      if (shown) ctx.fillText(shown, right ? cursor + segW - pad : cursor + pad, y + height / 2);
+    }
+    cursor += segW + gap;
+  }
+  if (!complete && cursor < x + width) drawHatchRect(ctx, cursor, y, x + width - cursor, height, 0, theme);
+  ctx.restore();
 }
 
 export function drawTrackBar(

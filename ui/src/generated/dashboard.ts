@@ -533,6 +533,10 @@ export type SeriesRankRow = { country: CountryRef,
  */
 slot: number | null,
 /**
+ * Why the row's country is not named at the hour, for a recorded row whose holder is not resolved: it is ranked by its recorded readings.
+ */
+unnamed?: string,
+/**
  * One reading per measure of the reply, in the reply's order, each with its own missing reason.
  */
 readings: Array<SeriesState>, };
@@ -5822,7 +5826,7 @@ missing: string | null,
  */
 battlesPartialFrom: number | null, resultsMissing: string, warnings: Array<string>, };
 export type UnitLeadersParamsAtHour = UnitLeadersParams & { hour: number };
-export type LeaderHourParams = { branchId: string, reference: string, };
+export type LeaderHourParams = { branchId: string, reference?: string, selection?: LeaderSelection, };
 export type LeaderTraining = { key: string, token: string | null, name: string | null, requiredRaw: string | null, };
 export type LeaderFactor = { token: string | null, name: string | null, factorRaw: string, };
 export type LeaderProgress = { nextRequiredRaw: string | null,
@@ -5830,11 +5834,11 @@ export type LeaderProgress = { nextRequiredRaw: string | null,
  * None where the training rows were not recorded.
  */
 training: Array<LeaderTraining> | null, factors: Array<LeaderFactor> | null, };
-export type LeaderHourReply = { reference: string,
+export type LeaderHourReply = { reference: string | null,
 /**
  * Why the leader is not shown at this hour, when it is not.
  */
-missing: string | null, name: string | null, role: LeaderRole | null, skill: number | null, components: [number, number, number, number], traits: Array<number> | null, traitDates: Array<[number, number] | null>, traitCatalogue: Array<LeaderTrait>, fought: number, won: number, lost: number, battlesPartialFrom: number | null, progress: LeaderProgress | null, warnings: Array<string>, };
+missing: string | null, name: string | null, role: LeaderRole | null, skill: number | null, components: [number, number, number, number], traits: Array<number> | null, traitDates: Array<[number, number] | null>, traitCatalogue: Array<LeaderTrait>, fought: number, won: number, lost: number, battlesPartialFrom: number | null, firstSeenHour: number | null, progress: LeaderProgress | null, warnings: Array<string>, };
 export type LeaderHourParamsAtHour = LeaderHourParams & { hour: number };
 export type NavalManagementParams = { branchId: string, country: CountryRef, };
 export type NavalManagementAmount = { row: string, column: string, raw: string | null, of: string | null, unit: string, };
@@ -7386,7 +7390,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "unit-leader-career": { "branchId": "leaf", "reference": "leaf" },
   "unit-leader-choices": { "branchId": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
-  "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf" },
+  "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
   "unit-leader-portraits": { "branchId": "leaf", "edge": "leaf", "hour": "leaf", "references": "node", "references[]": "leaf" },
   "unit-leaders": { "branchId": "leaf", "hour": "leaf", "leaders": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
   "volunteer-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any" },

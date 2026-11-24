@@ -193,7 +193,8 @@ fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_share
         kind: KIND_ARMY,
         owner: 9001,
         character_id: 10,
-        visibility_choice: 1,
+        skill_valid: 1,
+        skill_level: 2,
         ..Default::default()
     };
     let second_leader = UnitLeaderRow {
@@ -202,7 +203,8 @@ fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_share
         kind: KIND_ARMY,
         owner: 9001,
         character_id: 20,
-        visibility_choice: 1,
+        skill_valid: 1,
+        skill_level: 4,
         ..Default::default()
     };
     let mut frame = source(1, 100, Some(1_000));
@@ -215,7 +217,8 @@ fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_share
     .into();
     let params = LeaderHourParams {
         branch_id: "1".into(),
-        reference: handle(&second_leader).to_string(),
+        reference: Some(handle(&second_leader).to_string()),
+        selection: None,
     };
     let step1 = LeaderHour::reads(&params, None, 1, &frame);
     assert_eq!(step1.len(), 1);
@@ -269,4 +272,11 @@ fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_share
     };
     let reply = LeaderHour::reply(&frame, &params, &at).unwrap();
     assert_eq!(reply.name.as_deref(), Some("Isoroku Yamamoto"), "{:?}", reply.warnings);
+    let top = LeaderHourParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::Countries { countries: vec!["GER".into()] }) };
+    let reply = LeaderHour::reply(&frame, &top, &at).unwrap();
+    assert_eq!(reply.reference, Some(handle(&second_leader).to_string()), "the top general is the selection's most skilled army leader: {:?}", reply.missing);
+    assert_eq!(reply.name.as_deref(), Some("Isoroku Yamamoto"));
+    let nobody = LeaderHourParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::Countries { countries: vec!["ITA".into()] }) };
+    let reply = LeaderHour::reply(&frame, &nobody, &at).unwrap();
+    assert_eq!((reply.reference, reply.missing), (None, None), "a selection with no generals has no top general, and nothing is missing");
 }
