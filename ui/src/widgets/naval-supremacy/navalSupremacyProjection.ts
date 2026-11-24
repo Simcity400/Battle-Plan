@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, authoredHex, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, authoredHex, readableColour, reservedGrey } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection, BarsSegment } from '../../families/bars/model.ts';
@@ -11,11 +11,9 @@ import { regionLabel } from '../../families/heat/scale.ts';
 import { regionIds } from '../../families/regionTokens.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import type { MissionShips, NavalSupremacyReply, SupremacyRegion, SupremacyRun } from '../../generated/dashboard';
-import { mix } from '../../shell/appearance/color.ts';
 import { OPTIONS } from './definition.ts';
 
 export const SUPREMACY_TOP_DEFAULT = 7;
-const LANE_FILL = '#f5f5f5';
 
 export interface SupremacyOptions {
   readonly surface: string;
@@ -32,10 +30,11 @@ interface Look {
 
 function lookOf(reply: NavalSupremacyReply, surface: string): Look {
   const viewer = reply.viewerName ?? 'Viewer';
+  const friendly = reply.viewerColor ? readableColour(authoredHex(reply.viewerColor), surface) : readableColour(CHART_MEASURE_COLOURS.bopRight, surface);
   return {
-    friendly: reply.viewerColor ? readableColour(authoredHex(reply.viewerColor), surface) : readableColour(CHART_MEASURE_COLOURS.bopRight, surface),
+    friendly,
     enemy: readableColour(CHART_MEASURE_COLOURS.short, surface),
-    contested: mix(surface, LANE_FILL, 0.3),
+    contested: reservedGrey(surface, [friendly]),
     friendlyLabel: 'Friendly control',
     enemyLabel: 'Enemy control',
     viewer,

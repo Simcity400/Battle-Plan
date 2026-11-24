@@ -8,7 +8,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'priority', label: 'Repair priority', as: 'plain', offered: ['plain'] },
   { key: 'dockyards', label: 'Dockyards', as: 'faint', tone: 'grey', offered: OFFERED.number },
 ];
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: { column: 'priority', direction: 'descending' } };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: { column: 'priority', direction: 'descending' } };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'dockyards-and-repairs', version: 1, title: 'Dockyards & repairs', icon: 'cube', category: 'Navy',

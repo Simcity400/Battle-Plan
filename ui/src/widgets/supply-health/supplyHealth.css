@@ -1,7 +1,0 @@
-.supply-health { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
-.supply-health-country-chart { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: var(--space-2) 0; }
-.supply-health-country { margin: 0 0 var(--space-2); padding: 0 var(--space-3); color: var(--muted); font-size: var(--type-sm); }
-
-.supply-health-breakdown { display: flex; flex: 1; flex-direction: column; gap: var(--space-3); min-height: 0; padding: var(--space-3); }
-.supply-health-breakdown { overflow: auto; }
-.supply-health-breakdown .stacked-share-plot { min-height: calc(var(--type-md) * 12); }

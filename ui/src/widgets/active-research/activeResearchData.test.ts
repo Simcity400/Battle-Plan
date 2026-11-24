@@ -98,6 +98,8 @@ test('at an hour without a read, slots open at the last read are unavailable rat
   assert.deepEqual(slots.map(slot => [slot.kind, slot.slot.index]), [['unavailable', 0]]);
   const covered = activeSlots(history, reply(day(90), [], 'This country\'s research slots were not read together'));
   assert.deepEqual(covered.map(slot => slot.kind === 'unavailable' && slot.reason), ['This country\'s research slots were not read together']);
+  assert.equal(covered[0]!.slot, history.slots[0], 'the slot is the recorded one, not a copy made for the hour');
+  assert.equal(activeSlots(history, reply(day(91), [], 'Not read'))[0]!.slot, history.slots[0], 'a later reading copies no history');
 });
 test('a research without a joined assignment keeps the definition it was read with, and a later read is never taken for it', () => {
   const first: ResearchEntry = { ...active, token: 'mod_tech', databaseIndex: 5 };

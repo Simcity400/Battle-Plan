@@ -24,7 +24,7 @@ import {
   NOT_APPLICABLE_LABEL,
   notRecordedLabel,
 } from '../families/valueFormat.ts';
-import { isDark, mix, parseColor } from '../shell/appearance/color.ts';
+import { luminance, mix, parseColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, monthNames } from '../dashboard/calendar.ts';
 import type { KitRaster, PathBuilder, PathPaint } from './path';
 
@@ -1074,7 +1074,7 @@ export function drawDateTab(
 export function contrastInkForFill(fill: string, theme: FamilyTheme): string {
   const rgb = parseColor(fill);
   if (!rgb) return theme.text;
-  return isDark(rgb) ? '#f4f6f9' : '#0f141c';
+  return luminance(rgb) > 0.32 ? 'rgba(17, 17, 17, 0.88)' : 'rgba(255, 255, 255, 0.96)';
 }
 
 export function drawChevron(

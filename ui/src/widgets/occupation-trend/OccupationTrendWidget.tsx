@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CountryPicker from '../../components/CountryPicker';
 import MeasureRace from '../../charts/race/MeasureRace';
 import { mixCountry } from '../../charts/race/options.ts';
-import type { RaceView } from '../../charts/race/options';
 import type { LabelAt } from '../../charts/race/lines';
 import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
@@ -30,7 +29,7 @@ const NO_WARNINGS: string[] = [];
 
 export default function OccupationTrendWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
-  const view = (options.view as RaceView) ?? 'lines';
+  const view: 'lines' | 'mix' = options.view === 'mix' ? 'mix' : 'lines';
   const shown = options.measure as ShownMeasure;
   const rank = rankingMeasure(shown, options.rankingMeasure as OccupationMeasure);
   const collaboration = options.collaboration === true;
@@ -38,7 +37,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const playing = (usePlaybackMotion(runtime.clock) ?? 0) > 0;
   const measure = useMemo(() => ({ kind: SERIES, measure: rank }), [rank]);
-  const second = useMemo(() => shown === 'both' && view !== 'race' ? { kind: SERIES, measure: otherMeasure(rank) } : undefined, [shown, view, rank]);
+  const second = useMemo(() => shown === 'both' ? { kind: SERIES, measure: otherMeasure(rank) } : undefined, [shown, rank]);
   const format = useCallback((raw: string) => occupationPercent(raw, digits), [digits]);
   const formatValue = useCallback((value: number) => `${value.toFixed(digits)}%`, [digits]);
 
@@ -84,9 +83,9 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const detail = useMemo<DetailAt | null>(() => read.data && detailHour !== null ? { hour: detailHour, reply: read.data, values: repliedCells(read.data).read() } : null,
     [read.data, detailHour]);
   const tooltip = useCallback((tag: string, hour: number, _name: string, labelAt: LabelAt) => {
-    if (!playing || view !== 'race') ask(hour);
+    ask(hour);
     return [occupationTooltip(tag, Math.floor(hour), detail, labelAt, shown, collaboration)];
-  }, [playing, view, ask, detail, shown, collaboration]);
+  }, [ask, detail, shown, collaboration]);
   const lineTooltip = useCallback((hour: number, tags: readonly string[], labelAt: LabelAt, colour: (tag: string) => string) =>
     [occupationLineTooltip(Math.floor(hour), tags, detail, labelAt, colour, shown, rank, collaboration)], [detail, shown, rank, collaboration]);
 
@@ -99,7 +98,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     return () => onDiagnostics(NO_WARNINGS);
   }, [diagnosticKey, onDiagnostics]);
 
-  const legend = shown === 'both' && view !== 'race'
+  const legend = shown === 'both'
     ? <p className="chart-line-key"><i aria-hidden="true" />Solid: {measureName(rank).toLowerCase()} · <i className="is-dashed" aria-hidden="true" />dashed: {measureName(otherMeasure(rank)).toLowerCase()}</p> : null;
   const chooser = view === 'mix' && track && choiceHour !== null ? <CountryPicker countries={track.source.metadata.countries} allowedTags={candidates} selectedTag={mixTag} playerCountryId={null}
     source={track.source} client={runtime.client} field flagAt={{ branchId: track.branch.id, hour: choiceHour }}

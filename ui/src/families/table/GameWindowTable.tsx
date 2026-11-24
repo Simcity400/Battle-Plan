@@ -21,7 +21,8 @@ import type { BoundTrack } from '../../dashboard/model';
 import { TimeRegion, useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { DetailWindowHost } from '../host/DetailWindowHost';
 import type { AnyTableWidgetDeclaration } from './declaration.ts';
-import DeclaredTableWidget from './DeclaredTableWidget';
+import type { InstalledAction } from '../contract.ts';
+import { FamilyWidget } from '../host/registry';
 import './gameWindowTable.css';
 
 const NO_LINES: readonly string[] = [];
@@ -70,8 +71,8 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
   }, [row.kind, slotOwner, handOver]);
   useEffect(() => close, [scope, close]);
 
-  const activate = useCallback((key: string, meta?: unknown, hour?: number) => {
-    if (!Window || !track || hour === undefined || row.select(track, key, meta, hour) === null) return;
+  const activate = useCallback(({ subject: key, meta, hour }: InstalledAction) => {
+    if (!Window || !track || row.select(track, key, meta, hour) === null) return;
     setInherited(claimGameWindowSlot(row.kind, slotOwner, handOver));
     setPicked({ scope, key, meta });
     dispatch({ type: 'open', breakdown: WINDOW_BREAKDOWN, hour, follow: drill.followsAt(hour) });
@@ -90,8 +91,9 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
   const title = shown?.title ?? row.label;
 
   return <div ref={anchor} className="game-window-table">
-    <DeclaredTableWidget
+    <FamilyWidget
       {...props}
+      family="table"
       declaration={declaration}
       selectedKey={opened?.key ?? null}
       onActivate={Window ? activate : undefined}
