@@ -16,7 +16,8 @@ use replay_recording::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     io,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -24,6 +25,31 @@ use ts_rs::TS;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+thread_local! {
+    static EXAMINED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub fn count_examined<T>(run: impl FnOnce() -> T) -> (T, u64) {
+    let prev = EXAMINED.with(|cell| cell.replace(Some(0)));
+    let value = run();
+    let count = EXAMINED.with(|cell| cell.replace(prev)).unwrap_or(0);
+    (value, count)
+}
+
+#[inline]
+fn record_examined(n: usize) {
+    #[cfg(test)]
+    EXAMINED.with(|cell| {
+        if let Some(count) = cell.get() {
+            cell.set(Some(count.saturating_add(n as u64)));
+        }
+    });
+    #[cfg(not(test))]
+    let _ = n;
+}
 
 const DEFAULT_MAX_BUCKETS: usize = 64;
 const DEFAULT_MAX_BUCKET_ENTRIES: usize = 524_288;
@@ -130,10 +156,25 @@ pub struct FacetFilter {
     pub unobserved: Vec<UnobservedSpan>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlap {
+    EachPattern,
+    FirstMatch,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewestPage {
+    pub base: u64,
+    pub offset: u64,
+    pub total: u64,
+    pub rows: Vec<Paged>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Selection {
     pub patterns: Vec<Pattern>,
     pub groups: Vec<Option<Country>>,
+    pub overlap: Overlap,
 }
 
 #[derive(Clone, Copy)]
@@ -338,6 +379,7 @@ impl<'q, 'a> Reader<'q, 'a> {
             .collect();
         let mut groups: Vec<Option<Country>> = vec![None];
         let mut seen: Vec<usize> = Vec::new();
+        let mut overlap = Overlap::EachPattern;
         for filter in filters {
             let mut named = Vec::new();
             for name in filter.name.split('|') {
@@ -352,6 +394,9 @@ impl<'q, 'a> Reader<'q, 'a> {
                 }
                 seen.push(at);
                 named.push(at);
+            }
+            if named.len() > 1 || !filter.membership.is_empty() || !filter.unobserved.is_empty() {
+                overlap = Overlap::FirstMatch;
             }
             let has_values = !filter.values.is_empty();
             let has_countries = !filter.countries.is_empty();
@@ -456,7 +501,7 @@ impl<'q, 'a> Reader<'q, 'a> {
                 _ => return Err(invalid(format!("The facet {} is filtered by values or by tags", filter.name))),
             }
         }
-        Ok(Selection { patterns, groups })
+        Ok(Selection { patterns, groups, overlap })
     }
 
     fn run_hours(&self, run: u32) -> io::Result<(i64, i64)> {
@@ -500,12 +545,12 @@ impl<'q, 'a> Reader<'q, 'a> {
             .collect()
     }
 
-    fn cells_from_log_state(rows: &TableState, kinds: &[replay_columnar::state::Kind], recorded: usize, columns: usize, slot: u32, strings: &HashMap<u32, Vec<u8>>) -> Vec<Cell> {
+    fn cells_from_log_state(rows: &TableState, kinds: &[replay_columnar::state::Kind], recorded: usize, columns: usize, selected: &[usize], slot: u32, strings: &HashMap<u32, Vec<u8>>) -> Vec<Cell> {
         let empty = Strings::default();
         let view = TableView::new(rows, &kinds[..recorded], &empty);
         (0..columns)
             .map(|column| {
-                if column >= recorded {
+                if column >= recorded || !selected.contains(&column) {
                     return Cell::Unrecorded;
                 }
                 match rows.value(column, slot) {
@@ -557,7 +602,7 @@ impl<'q, 'a> Reader<'q, 'a> {
         unit::reader::class_of(&pages, index)
     }
 
-    fn index_buckets(&self, run: u32, ranges: &[(i32, i32)]) -> io::Result<Vec<BucketEntry>> {
+    fn load_buckets(&self, run: u32, ranges: &[(i32, i32)]) -> io::Result<Vec<(i64, Arc<Vec<BucketEntry>>)>> {
         let six = bucket_hours(0);
         let mut buckets: Vec<i64> = ranges.iter().flat_map(|&(a, b)| i64::from(a).div_euclid(six)..=i64::from(b).div_euclid(six)).collect();
         buckets.sort_unstable();
@@ -599,14 +644,37 @@ impl<'q, 'a> Reader<'q, 'a> {
             }
         }
         let walked = self.walked.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut out = Vec::new();
-        for bucket in buckets {
-            for entry in walked.get(&(run, bucket)).into_iter().flat_map(|entries| entries.iter()) {
-                if ranges.iter().any(|&(a, b)| a <= entry.hour && entry.hour <= b) {
-                    out.push(*entry);
+        Ok(buckets
+            .into_iter()
+            .filter_map(|bucket| walked.get(&(run, bucket)).map(|entries| (bucket, Arc::clone(entries))))
+            .collect())
+    }
+
+    fn visit_bucket_ranges(&self, run: u32, ranges: &[(i32, i32)], mut visit: impl FnMut(BucketEntry)) -> io::Result<()> {
+        let six = bucket_hours(0);
+        for (bucket, entries) in self.load_buckets(run, ranges)? {
+            let bucket_first = (bucket * six) as i32;
+            let bucket_last = ((bucket + 1) * six - 1) as i32;
+            for &(a, b) in ranges {
+                let lo_h = a.max(bucket_first);
+                let hi_h = b.min(bucket_last);
+                if lo_h > hi_h {
+                    continue;
+                }
+                let lo = entries.partition_point(|entry| entry.hour < lo_h);
+                let hi = entries.partition_point(|entry| entry.hour <= hi_h);
+                record_examined(hi - lo);
+                for &entry in &entries[lo..hi] {
+                    visit(entry);
                 }
             }
         }
+        Ok(())
+    }
+
+    fn index_buckets(&self, run: u32, ranges: &[(i32, i32)]) -> io::Result<Vec<BucketEntry>> {
+        let mut out = Vec::new();
+        self.visit_bucket_ranges(run, ranges, |entry| out.push(entry))?;
         Ok(out)
     }
 
@@ -751,7 +819,7 @@ impl<'q, 'a> Reader<'q, 'a> {
                         strings.insert(id, text.to_vec());
                     }
                     LogEvent::Appended { ordinal, rows, at, .. } => {
-                        by_ord.insert(ordinal, Self::cells_from_log_state(rows, &kinds, recorded, columns, at, &strings));
+                        by_ord.insert(ordinal, Self::cells_from_log_state(rows, &kinds, recorded, columns, &all_cols, at, &strings));
                     }
                     LogEvent::Forgotten { .. } => {}
                 })
@@ -870,17 +938,31 @@ impl<'q, 'a> Reader<'q, 'a> {
     }
 
     pub fn rows(&self, run: u32, patterns: &[Pattern], ranges: &[(i32, i32)]) -> io::Result<Vec<(usize, Row)>> {
+        self.rows_with(run, patterns, ranges, Overlap::EachPattern)
+    }
+
+    pub fn rows_with(&self, run: u32, patterns: &[Pattern], ranges: &[(i32, i32)], overlap: Overlap) -> io::Result<Vec<(usize, Row)>> {
         let mut mine: Vec<usize> = (0..patterns.len()).filter(|&at| patterns[at].run == run).collect();
         if mine.is_empty() {
             return Ok(Vec::new());
         }
         mine.sort_unstable_by_key(|&at| (patterns[at].group, at));
         let mut matched: Vec<(usize, BucketEntry)> = Vec::new();
-        for entry in self.index_buckets(run, ranges)? {
-            if let Some(at) = canonical_match_at(patterns, &mine, entry.hour, entry.facet) {
-                matched.push((at, entry));
+        self.visit_bucket_ranges(run, ranges, |entry| match overlap {
+            Overlap::FirstMatch => {
+                if let Some(at) = canonical_match_at(patterns, &mine, entry.hour, entry.facet) {
+                    matched.push((at, entry));
+                }
             }
-        }
+            Overlap::EachPattern => {
+                for &at in &mine {
+                    let p = &patterns[at];
+                    if p.first <= entry.hour && entry.hour <= p.last && p.holds(entry.facet) {
+                        matched.push((at, entry));
+                    }
+                }
+            }
+        })?;
         matched.sort_unstable_by_key(|(at, entry)| (entry.hour, patterns[*at].group, entry.key));
         let entries: Vec<BucketEntry> = matched.iter().map(|&(_, entry)| entry).collect();
         let rows = self.materialize(run, &entries)?;
@@ -888,9 +970,13 @@ impl<'q, 'a> Reader<'q, 'a> {
     }
 
     pub fn every(&self, patterns: &[Pattern], from: i32, to: i32) -> io::Result<Vec<(usize, Row)>> {
+        self.every_with(patterns, from, to, Overlap::EachPattern)
+    }
+
+    pub fn every_with(&self, patterns: &[Pattern], from: i32, to: i32, overlap: Overlap) -> io::Result<Vec<(usize, Row)>> {
         let six = bucket_hours(0);
         let mut by_run: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
-        for (at, bins) in self.bins(patterns, from, to, six)?.into_iter().enumerate() {
+        for (at, bins) in self.bins_with(patterns, from, to, six, overlap)?.into_iter().enumerate() {
             for (start, _) in bins {
                 by_run.entry(patterns[at].run).or_default().push((start.max(i64::from(from)) as i32, (start + six - 1).min(i64::from(to)) as i32));
             }
@@ -905,13 +991,17 @@ impl<'q, 'a> Reader<'q, 'a> {
                     _ => merged.push((a, b)),
                 }
             }
-            out.extend(self.rows(run, patterns, &merged)?);
+            out.extend(self.rows_with(run, patterns, &merged, overlap)?);
         }
         out.sort_by_key(|(at, row)| (row.hour, patterns[*at].group, row.key));
         Ok(out)
     }
 
     pub fn bins(&self, patterns: &[Pattern], from: i32, to: i32, bin: i64) -> io::Result<Vec<Vec<(i64, u64)>>> {
+        self.bins_with(patterns, from, to, bin, Overlap::EachPattern)
+    }
+
+    pub fn bins_with(&self, patterns: &[Pattern], from: i32, to: i32, bin: i64, overlap: Overlap) -> io::Result<Vec<Vec<(i64, u64)>>> {
         let six = bucket_hours(0);
         let mut out: Vec<Vec<(i64, u64)>> = vec![Vec::new(); patterns.len()];
         if from > to || patterns.is_empty() {
@@ -944,89 +1034,186 @@ impl<'q, 'a> Reader<'q, 'a> {
                 by_run.entry(pattern.run).or_default().push((at, a, b));
             }
         }
-        let mut coarse: BTreeMap<u32, Vec<(Vec<usize>, i64, i64)>> = BTreeMap::new();
-        let mut fine: BTreeMap<u32, Vec<(Vec<usize>, i64, i64)>> = BTreeMap::new();
-        let mut slivers: BTreeMap<u32, Vec<(Vec<usize>, i64, i64)>> = BTreeMap::new();
-        for (run, held) in by_run {
-            let (run_first, run_last) = runs[&run];
-            let mut pts: Vec<i64> = Vec::with_capacity(held.len() * 2);
-            for &(_, a, b) in &held {
-                pts.push(a);
-                pts.push(b + 1);
-            }
-            pts.sort_unstable();
-            pts.dedup();
-            for pair in pts.windows(2) {
-                let (mut a, mut b) = (pair[0], pair[1] - 1);
-                if a > b {
-                    continue;
-                }
-                let mut active: Vec<usize> = held
-                    .iter()
-                    .filter(|&&(_, pa, pb)| pa <= a && b <= pb)
-                    .map(|&(at, _, _)| at)
-                    .collect();
-                if active.is_empty() {
-                    continue;
-                }
-                active.sort_unstable_by_key(|&at| (patterns[at].group, at));
-                if a == run_first {
-                    a = a.div_euclid(bin) * bin;
-                }
-                if b == run_last {
-                    b = (b.div_euclid(bin) + 1) * bin - 1;
-                }
-                let (whole, edges) = split(a, b, bin);
-                if let Some((first, last)) = whole {
-                    coarse.entry(run).or_default().push((active.clone(), first, last));
-                }
-                for (x, y) in edges {
-                    let (middle, ends) = split(x, y, six);
-                    if let Some((first, last)) = middle {
-                        fine.entry(run).or_default().push((active.clone(), first, last));
-                    }
-                    for (first, last) in ends {
-                        slivers.entry(run).or_default().push((active.clone(), first, last));
-                    }
-                }
-            }
-        }
         let recording = self.query.replay.recording();
-        for (spans, size) in [(&coarse, bin), (&fine, six)] {
-            for (&run, held) in spans {
-                let (first, last) = (held.iter().map(|span| span.1).min().unwrap_or(0), held.iter().map(|span| span.2).max().unwrap_or(0));
-                let (run_first, run_last) = runs[&run];
-                let asked = |facet: u128| held.iter().any(|(active, _, _)| active.iter().any(|&at| patterns[at].holds(facet)));
-                let counts = pieces::counts(recording, run, self.log.table, (first.max(run_first) as i32, last.min(run_last) as i32), size, &asked)?;
-                for (active, a, b) in held {
-                    for (facet, counts) in &counts {
-                        let Some(at) = canonical_pattern(patterns, active, *facet) else { continue };
-                        for (index, &count) in counts.iter().enumerate() {
-                            let start = first + index as i64 * size;
-                            if count > 0 && *a <= start && start <= *b {
-                                out[at].push((start.div_euclid(bin) * bin, count));
+        match overlap {
+            Overlap::EachPattern => {
+                let mut coarse: BTreeMap<u32, Vec<(usize, i64, i64)>> = BTreeMap::new();
+                let mut fine: BTreeMap<u32, Vec<(usize, i64, i64)>> = BTreeMap::new();
+                let mut slivers: BTreeMap<u32, Vec<(usize, i64, i64)>> = BTreeMap::new();
+                for (run, held) in by_run {
+                    let (run_first, run_last) = runs[&run];
+                    for (at, mut a, mut b) in held {
+                        if a == run_first {
+                            a = a.div_euclid(bin) * bin;
+                        }
+                        if b == run_last {
+                            b = (b.div_euclid(bin) + 1) * bin - 1;
+                        }
+                        let (whole, edges) = split(a, b, bin);
+                        if let Some((first, last)) = whole {
+                            coarse.entry(run).or_default().push((at, first, last));
+                        }
+                        for (x, y) in edges {
+                            let (middle, ends) = split(x, y, six);
+                            if let Some((first, last)) = middle {
+                                fine.entry(run).or_default().push((at, first, last));
+                            }
+                            for (first, last) in ends {
+                                slivers.entry(run).or_default().push((at, first, last));
                             }
                         }
                     }
                 }
-            }
-        }
-        for (&run, held) in &slivers {
-            let mut ranges: Vec<(i32, i32)> = held.iter().map(|(_, a, b)| (*a as i32, *b as i32)).collect();
-            ranges.sort_unstable();
-            let mut merged: Vec<(i32, i32)> = Vec::new();
-            for (a, b) in ranges {
-                match merged.last_mut() {
-                    Some(last) if last.1 + 1 >= a => last.1 = last.1.max(b),
-                    _ => merged.push((a, b)),
+                for (spans, size) in [(&coarse, bin), (&fine, six)] {
+                    for (&run, held) in spans {
+                        let (first, last) = (held.iter().map(|span| span.1).min().unwrap_or(0), held.iter().map(|span| span.2).max().unwrap_or(0));
+                        let (run_first, run_last) = runs[&run];
+                        let mut unique_ats: Vec<usize> = held.iter().map(|&(at, _, _)| at).collect();
+                        unique_ats.sort_unstable();
+                        unique_ats.dedup();
+                        let asked = |facet: u128| unique_ats.iter().any(|&at| patterns[at].holds(facet));
+                        let counts = pieces::counts(recording, run, self.log.table, (first.max(run_first) as i32, last.min(run_last) as i32), size, &asked)?;
+                        for &(at, a, b) in held {
+                            let pattern = &patterns[at];
+                            for (facet, counts) in &counts {
+                                if !pattern.holds(*facet) {
+                                    continue;
+                                }
+                                for (index, &count) in counts.iter().enumerate() {
+                                    let start = first + index as i64 * size;
+                                    if count > 0 && a <= start && start <= b {
+                                        out[at].push((start.div_euclid(bin) * bin, count));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                for (&run, held) in &slivers {
+                    let mut ranges: Vec<(i32, i32)> = held.iter().map(|&(_, a, b)| (a as i32, b as i32)).collect();
+                    ranges.sort_unstable();
+                    let mut merged: Vec<(i32, i32)> = Vec::new();
+                    for (a, b) in ranges {
+                        match merged.last_mut() {
+                            Some(last) if last.1 + 1 >= a => last.1 = last.1.max(b),
+                            _ => merged.push((a, b)),
+                        }
+                    }
+                    let mut by_start: Vec<(i64, i64, usize)> = held.iter().map(|&(at, a, b)| (a, b, at)).collect();
+                    by_start.sort_unstable_by_key(|&(a, b, _)| (a, b));
+                    self.visit_bucket_ranges(run, &merged, |entry| {
+                        let hour = i64::from(entry.hour);
+                        for &(a, b, at) in &by_start {
+                            if a > hour {
+                                break;
+                            }
+                            if hour <= b && patterns[at].holds(entry.facet) {
+                                out[at].push((hour.div_euclid(bin) * bin, 1));
+                            }
+                        }
+                    })?;
                 }
             }
-            for entry in self.index_buckets(run, &merged)? {
-                let hour = i64::from(entry.hour);
-                if let Some((active, _, _)) = held.iter().find(|(_, a, b)| *a <= hour && hour <= *b)
-                    && let Some(at) = canonical_pattern(patterns, active, entry.facet)
-                {
-                    out[at].push((hour.div_euclid(bin) * bin, 1));
+            Overlap::FirstMatch => {
+                let mut coarse: BTreeMap<u32, Vec<(Arc<Vec<usize>>, i64, i64)>> = BTreeMap::new();
+                let mut fine: BTreeMap<u32, Vec<(Arc<Vec<usize>>, i64, i64)>> = BTreeMap::new();
+                let mut slivers: BTreeMap<u32, Vec<(Arc<Vec<usize>>, i64, i64)>> = BTreeMap::new();
+                for (run, held) in by_run {
+                    let (run_first, run_last) = runs[&run];
+                    let mut events: Vec<(i64, bool, usize, usize)> = Vec::with_capacity(held.len() * 2);
+                    for &(at, a, b) in &held {
+                        let g = patterns[at].group;
+                        events.push((a, true, g, at));
+                        events.push((b + 1, false, g, at));
+                    }
+                    events.sort_unstable_by_key(|&(pt, is_add, g, at)| (pt, is_add, g, at));
+                    let mut active_set: BTreeSet<(usize, usize)> = BTreeSet::new();
+                    let mut idx = 0usize;
+                    while idx < events.len() {
+                        let pt = events[idx].0;
+                        while idx < events.len() && events[idx].0 == pt {
+                            let (_, is_add, g, at) = events[idx];
+                            if is_add {
+                                active_set.insert((g, at));
+                            } else {
+                                active_set.remove(&(g, at));
+                            }
+                            idx += 1;
+                        }
+                        if idx >= events.len() || active_set.is_empty() {
+                            continue;
+                        }
+                        let next_pt = events[idx].0;
+                        let (mut a, mut b) = (pt, next_pt - 1);
+                        if a > b {
+                            continue;
+                        }
+                        let active = Arc::new(active_set.iter().map(|&(_, at)| at).collect::<Vec<_>>());
+                        if a == run_first {
+                            a = a.div_euclid(bin) * bin;
+                        }
+                        if b == run_last {
+                            b = (b.div_euclid(bin) + 1) * bin - 1;
+                        }
+                        let (whole, edges) = split(a, b, bin);
+                        if let Some((first, last)) = whole {
+                            coarse.entry(run).or_default().push((Arc::clone(&active), first, last));
+                        }
+                        for (x, y) in edges {
+                            let (middle, ends) = split(x, y, six);
+                            if let Some((first, last)) = middle {
+                                fine.entry(run).or_default().push((Arc::clone(&active), first, last));
+                            }
+                            for (first, last) in ends {
+                                slivers.entry(run).or_default().push((Arc::clone(&active), first, last));
+                            }
+                        }
+                    }
+                }
+                for (spans, size) in [(&coarse, bin), (&fine, six)] {
+                    for (&run, held) in spans {
+                        let (first, last) = (held.iter().map(|span| span.1).min().unwrap_or(0), held.iter().map(|span| span.2).max().unwrap_or(0));
+                        let (run_first, run_last) = runs[&run];
+                        let mut unique_ats: Vec<usize> = held.iter().flat_map(|(active, _, _)| active.iter().copied()).collect();
+                        unique_ats.sort_unstable();
+                        unique_ats.dedup();
+                        let asked = |facet: u128| unique_ats.iter().any(|&at| patterns[at].holds(facet));
+                        let counts = pieces::counts(recording, run, self.log.table, (first.max(run_first) as i32, last.min(run_last) as i32), size, &asked)?;
+                        for (active, a, b) in held {
+                            for (facet, counts) in &counts {
+                                let Some(at) = canonical_pattern(patterns, active, *facet) else { continue };
+                                for (index, &count) in counts.iter().enumerate() {
+                                    let start = first + index as i64 * size;
+                                    if count > 0 && *a <= start && start <= *b {
+                                        out[at].push((start.div_euclid(bin) * bin, count));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                for (&run, held) in &slivers {
+                    let mut sorted_held: Vec<(&[usize], i64, i64)> = held.iter().map(|(active, a, b)| (active.as_slice(), *a, *b)).collect();
+                    sorted_held.sort_unstable_by_key(|&(_, a, b)| (a, b));
+                    let mut merged: Vec<(i32, i32)> = Vec::new();
+                    for &(_, a, b) in &sorted_held {
+                        let (a, b) = (a as i32, b as i32);
+                        match merged.last_mut() {
+                            Some(last) if last.1 + 1 >= a => last.1 = last.1.max(b),
+                            _ => merged.push((a, b)),
+                        }
+                    }
+                    self.visit_bucket_ranges(run, &merged, |entry| {
+                        let hour = i64::from(entry.hour);
+                        let pos = sorted_held.partition_point(|&(_, a, _)| a <= hour);
+                        if let Some(&(active, a, b)) = pos.checked_sub(1).and_then(|i| sorted_held.get(i))
+                            && a <= hour
+                            && hour <= b
+                            && let Some(at) = canonical_pattern(patterns, active, entry.facet)
+                        {
+                            out[at].push((hour.div_euclid(bin) * bin, 1));
+                        }
+                    })?;
                 }
             }
         }
@@ -1045,6 +1232,10 @@ impl<'q, 'a> Reader<'q, 'a> {
     }
 
     pub fn counts(&self, patterns: &[Pattern], groups: usize, first: i32, last: i32, bin_hours: i64) -> io::Result<Vec<Counts>> {
+        self.counts_with(patterns, groups, first, last, bin_hours, Overlap::EachPattern)
+    }
+
+    pub fn counts_with(&self, patterns: &[Pattern], groups: usize, first: i32, last: i32, bin_hours: i64, overlap: Overlap) -> io::Result<Vec<Counts>> {
         if bin_hours < 1 || (bin_hours >= bucket_hours(0) && bin_hours % bucket_hours(0) != 0) {
             return Err(invalid("A log's bins are 1 to 5 hours or whole six-hour buckets"));
         }
@@ -1052,7 +1243,7 @@ impl<'q, 'a> Reader<'q, 'a> {
         let mut out = vec![Counts { before: 0, bins: Vec::new() }; groups];
         if first > timeline_first {
             let coarse = bin_for(i64::from(first) - i64::from(timeline_first), 256);
-            for (at, bins) in self.bins(patterns, timeline_first, first - 1, coarse)?.into_iter().enumerate() {
+            for (at, bins) in self.bins_with(patterns, timeline_first, first - 1, coarse, overlap)?.into_iter().enumerate() {
                 out[patterns[at].group].before += bins.iter().map(|(_, count)| count).sum::<u64>();
             }
         }
@@ -1060,7 +1251,7 @@ impl<'q, 'a> Reader<'q, 'a> {
         let bin_of = |hour: i64| ((hour - first_bin).div_euclid(bin_hours)) as u32;
         let mut binned: Vec<BTreeMap<u32, u64>> = vec![BTreeMap::new(); groups];
         if bin_hours >= bucket_hours(0) {
-            for (at, bins) in self.bins(patterns, first, last, bin_hours)?.into_iter().enumerate() {
+            for (at, bins) in self.bins_with(patterns, first, last, bin_hours, overlap)?.into_iter().enumerate() {
                 for (start, count) in bins {
                     *binned[patterns[at].group].entry(bin_of(start)).or_default() += count;
                 }
@@ -1084,14 +1275,26 @@ impl<'q, 'a> Reader<'q, 'a> {
                 }
                 let mut mine: Vec<usize> = (0..patterns.len()).filter(|&at| patterns[at].run == run).collect();
                 mine.sort_unstable_by_key(|&at| (patterns[at].group, at));
-                for entry in self.index_buckets(run, &merged)? {
-                    if first <= entry.hour
-                        && entry.hour <= last
-                        && let Some(at) = canonical_match_at(patterns, &mine, entry.hour, entry.facet)
-                    {
-                        *binned[patterns[at].group].entry(bin_of(i64::from(entry.hour))).or_default() += 1;
+                self.visit_bucket_ranges(run, &merged, |entry| {
+                    if !(first <= entry.hour && entry.hour <= last) {
+                        return;
                     }
-                }
+                    match overlap {
+                        Overlap::FirstMatch => {
+                            if let Some(at) = canonical_match_at(patterns, &mine, entry.hour, entry.facet) {
+                                *binned[patterns[at].group].entry(bin_of(i64::from(entry.hour))).or_default() += 1;
+                            }
+                        }
+                        Overlap::EachPattern => {
+                            for &at in &mine {
+                                let p = &patterns[at];
+                                if p.first <= entry.hour && entry.hour <= p.last && p.holds(entry.facet) {
+                                    *binned[p.group].entry(bin_of(i64::from(entry.hour))).or_default() += 1;
+                                }
+                            }
+                        }
+                    }
+                })?;
             }
         }
         for (counts, bins) in out.iter_mut().zip(binned) {
@@ -1100,7 +1303,7 @@ impl<'q, 'a> Reader<'q, 'a> {
         Ok(out)
     }
 
-    fn slice(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, window: impl FnOnce(u64, u64) -> (u64, u64)) -> io::Result<Page> {
+    fn slice(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, overlap: Overlap, window: impl FnOnce(u64, u64) -> (u64, u64)) -> io::Result<Page> {
         if from > to {
             return Err(invalid("Invalid log page"));
         }
@@ -1108,12 +1311,12 @@ impl<'q, 'a> Reader<'q, 'a> {
         let bin = bin_for(i64::from(to) - i64::from(first_hour) + 1, 256);
         let mut before = vec![0u64; groups];
         if from > first_hour {
-            for (at, bins) in self.bins(patterns, first_hour, from - 1, bin)?.into_iter().enumerate() {
+            for (at, bins) in self.bins_with(patterns, first_hour, from - 1, bin, overlap)?.into_iter().enumerate() {
                 before[patterns[at].group] += bins.iter().map(|(_, count)| count).sum::<u64>();
             }
         }
         let mut bins: BTreeMap<i64, Vec<(usize, u64)>> = BTreeMap::new();
-        for (at, held) in self.bins(patterns, from, to, bin)?.into_iter().enumerate() {
+        for (at, held) in self.bins_with(patterns, from, to, bin, overlap)?.into_iter().enumerate() {
             for (start, count) in held {
                 bins.entry(start).or_default().push((at, count));
             }
@@ -1140,14 +1343,14 @@ impl<'q, 'a> Reader<'q, 'a> {
                 }
                 let range = ((start.max(i64::from(from))) as i32, ((start + bin - 1).min(i64::from(to))) as i32);
                 let mut buckets: BTreeMap<i64, u64> = BTreeMap::new();
-                for counts in self.bins(patterns, range.0, range.1, six)? {
+                for counts in self.bins_with(patterns, range.0, range.1, six, overlap)? {
                     for (bucket, count) in counts {
                         *buckets.entry(bucket).or_default() += count;
                     }
                 }
                 let (skip, reach) = page_buckets(&buckets, ordinal, first, end, range);
                 if skip > 0 {
-                    for (at, counts) in self.bins(patterns, range.0, reach[0].0 - 1, bin)?.into_iter().enumerate() {
+                    for (at, counts) in self.bins_with(patterns, range.0, reach[0].0 - 1, bin, overlap)?.into_iter().enumerate() {
                         own[patterns[at].group] += counts.iter().map(|(_, count)| count).sum::<u64>();
                     }
                     ordinal += skip;
@@ -1167,11 +1370,21 @@ impl<'q, 'a> Reader<'q, 'a> {
                 for run in runs {
                     let mut mine: Vec<usize> = (0..patterns.len()).filter(|&at| patterns[at].run == run).collect();
                     mine.sort_unstable_by_key(|&at| (patterns[at].group, at));
-                    for entry in self.index_buckets(run, &reach)? {
-                        if let Some(at) = canonical_match_at(patterns, &mine, entry.hour, entry.facet) {
-                            matched.push(Matched { hour: entry.hour, group: patterns[at].group, key: entry.key, run, entry });
+                    self.visit_bucket_ranges(run, &reach, |entry| match overlap {
+                        Overlap::FirstMatch => {
+                            if let Some(at) = canonical_match_at(patterns, &mine, entry.hour, entry.facet) {
+                                matched.push(Matched { hour: entry.hour, group: patterns[at].group, key: entry.key, run, entry });
+                            }
                         }
-                    }
+                        Overlap::EachPattern => {
+                            for &at in &mine {
+                                let p = &patterns[at];
+                                if p.first <= entry.hour && entry.hour <= p.last && p.holds(entry.facet) {
+                                    matched.push(Matched { hour: entry.hour, group: p.group, key: entry.key, run, entry });
+                                }
+                            }
+                        }
+                    })?;
                 }
                 let slice_lo = first.saturating_sub(ordinal) as usize;
                 let slice_hi = end.saturating_sub(ordinal) as usize;
@@ -1227,32 +1440,258 @@ impl<'q, 'a> Reader<'q, 'a> {
     }
 
     pub fn page(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, cursor: u64, size: u32) -> io::Result<Page> {
-        self.slice(patterns, groups, from, to, |base, last| {
+        self.page_with(patterns, groups, from, to, cursor, size, Overlap::EachPattern)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "paged log reads take patterns, group count, hour range, cursor, size and overlap mode")]
+    pub fn page_with(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, cursor: u64, size: u32, overlap: Overlap) -> io::Result<Page> {
+        self.slice(patterns, groups, from, to, overlap, |base, last| {
             let first = cursor.max(base);
             let end = first.saturating_add(u64::from(size)).min(last);
             (first, end)
         })
     }
 
-    pub fn tail(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, limit: u32) -> io::Result<Page> {
-        let mut page = self.slice(patterns, groups, from, to, |base, last| {
-            let first = last.saturating_sub(u64::from(limit)).max(base);
-            (first, last)
-        })?;
-        page.rows.reverse();
-        Ok(page)
+    #[allow(clippy::too_many_arguments, reason = "newest-first log reads take patterns, group count, hour range, display offset, limit and overlap mode")]
+    pub fn newest_page_with(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, offset: u64, limit: u32, overlap: Overlap) -> io::Result<NewestPage> {
+        if from > to {
+            return Err(invalid("Invalid log page"));
+        }
+        let first_hour = self.query.timeline.first;
+        let bin = bin_for(i64::from(to) - i64::from(first_hour) + 1, 256);
+        let mut before = vec![0u64; groups];
+        if from > first_hour {
+            for (at, bins) in self.bins_with(patterns, first_hour, from - 1, bin, overlap)?.into_iter().enumerate() {
+                before[patterns[at].group] += bins.iter().map(|(_, count)| count).sum::<u64>();
+            }
+        }
+        let mut bins: BTreeMap<i64, Vec<(usize, u64)>> = BTreeMap::new();
+        let mut group_total = before.clone();
+        for (at, held) in self.bins_with(patterns, from, to, bin, overlap)?.into_iter().enumerate() {
+            for (start, count) in held {
+                group_total[patterns[at].group] += count;
+                bins.entry(start).or_default().push((at, count));
+            }
+        }
+        let base: u64 = before.iter().sum();
+        let total: u64 = bins.values().flatten().map(|(_, count)| count).sum();
+        let first = offset.min(total);
+        let end = first.saturating_add(u64::from(limit)).min(total);
+        if first >= end {
+            return Ok(NewestPage { base, offset: first, total, rows: Vec::new() });
+        }
+
+        #[derive(Clone, Copy)]
+        struct Chosen {
+            run: u32,
+            entry: BucketEntry,
+            group: usize,
+            ordinal: u64,
+            own: u64,
+        }
+
+        let six = bucket_hours(0);
+        let mut seen_newer = 0u64;
+        let mut newer_in_group = vec![0u64; groups];
+        let mut chosen: Vec<Chosen> = Vec::with_capacity((end - first) as usize);
+
+        for (&start, held) in bins.iter().rev() {
+            if seen_newer >= end {
+                break;
+            }
+            let bin_count: u64 = held.iter().map(|(_, count)| count).sum();
+            if seen_newer + bin_count <= first {
+                for &(at, count) in held {
+                    newer_in_group[patterns[at].group] += count;
+                }
+                seen_newer += bin_count;
+                continue;
+            }
+            let range = ((start.max(i64::from(from))) as i32, ((start + bin - 1).min(i64::from(to))) as i32);
+            let mut buckets: BTreeMap<i64, Vec<(usize, u64)>> = BTreeMap::new();
+            for (at, counts) in self.bins_with(patterns, range.0, range.1, six, overlap)?.into_iter().enumerate() {
+                for (bucket, count) in counts {
+                    buckets.entry(bucket).or_default().push((at, count));
+                }
+            }
+            for (&bucket, b_held) in buckets.iter().rev() {
+                if seen_newer >= end {
+                    break;
+                }
+                let b_count: u64 = b_held.iter().map(|(_, count)| count).sum();
+                if seen_newer + b_count <= first {
+                    for &(at, count) in b_held {
+                        newer_in_group[patterns[at].group] += count;
+                    }
+                    seen_newer += b_count;
+                    continue;
+                }
+                let b_from = bucket.max(i64::from(range.0)) as i32;
+                let b_to = (bucket + six - 1).min(i64::from(range.1)) as i32;
+                let mut runs: Vec<u32> = b_held.iter().map(|&(at, _)| patterns[at].run).collect();
+                runs.sort_unstable();
+                runs.dedup();
+
+                if groups <= 1 && runs.len() == 1 && (overlap == Overlap::FirstMatch || patterns.len() <= 1) {
+                    let run = runs[0];
+                    let loaded = self.load_buckets(run, &[(b_from, b_to)])?;
+                    if let Some((_, entries)) = loaded.first() {
+                        let lo = entries.partition_point(|e| e.hour < b_from);
+                        let hi = entries.partition_point(|e| e.hour <= b_to);
+                        let slice = &entries[lo..hi];
+                        if !slice.is_empty() && slice[0].hour == slice[slice.len() - 1].hour {
+                            let mut mine: Vec<usize> = (0..patterns.len()).filter(|&at| patterns[at].run == run).collect();
+                            mine.sort_unstable_by_key(|&at| (patterns[at].group, at));
+                            let want_lo = first.saturating_sub(seen_newer) as usize;
+                            let want_hi = end.saturating_sub(seen_newer) as usize;
+                            let ord_base = base + total - seen_newer - b_count;
+                            let own_base = group_total[0] - newer_in_group[0] - b_count;
+                            let mut matched_idx = 0usize;
+                            for &entry in slice {
+                                record_examined(1);
+                                let hit = match overlap {
+                                    Overlap::FirstMatch => canonical_match_at(patterns, &mine, entry.hour, entry.facet).is_some(),
+                                    Overlap::EachPattern => mine.iter().any(|&at| {
+                                        let p = &patterns[at];
+                                        p.first <= entry.hour && entry.hour <= p.last && p.holds(entry.facet)
+                                    }),
+                                };
+                                if !hit {
+                                    continue;
+                                }
+                                if matched_idx >= want_lo && matched_idx < want_hi {
+                                    chosen.push(Chosen {
+                                        run,
+                                        entry,
+                                        group: 0,
+                                        ordinal: ord_base + matched_idx as u64,
+                                        own: own_base + matched_idx as u64,
+                                    });
+                                }
+                                matched_idx += 1;
+                                if matched_idx >= want_hi {
+                                    break;
+                                }
+                            }
+                            seen_newer += b_count;
+                            newer_in_group[0] += b_count;
+                            continue;
+                        }
+                    }
+                }
+
+                #[derive(Clone, Copy)]
+                struct Item {
+                    hour: i32,
+                    group: usize,
+                    key: u128,
+                    run: u32,
+                    entry: BucketEntry,
+                }
+                let mut bucket_items: Vec<Item> = Vec::new();
+                for run in runs {
+                    let mut mine: Vec<usize> = (0..patterns.len()).filter(|&at| patterns[at].run == run).collect();
+                    mine.sort_unstable_by_key(|&at| (patterns[at].group, at));
+                    self.visit_bucket_ranges(run, &[(b_from, b_to)], |entry| match overlap {
+                        Overlap::FirstMatch => {
+                            if let Some(at) = canonical_match_at(patterns, &mine, entry.hour, entry.facet) {
+                                bucket_items.push(Item { hour: entry.hour, group: patterns[at].group, key: entry.key, run, entry });
+                            }
+                        }
+                        Overlap::EachPattern => {
+                            for &at in &mine {
+                                let p = &patterns[at];
+                                if p.first <= entry.hour && entry.hour <= p.last && p.holds(entry.facet) {
+                                    bucket_items.push(Item { hour: entry.hour, group: p.group, key: entry.key, run, entry });
+                                }
+                            }
+                        }
+                    })?;
+                }
+                bucket_items.sort_unstable_by_key(|item| (Reverse(item.hour), item.group, item.key));
+                let mut pos = 0usize;
+                while pos < bucket_items.len() && seen_newer < end {
+                    let hour = bucket_items[pos].hour;
+                    let mut next = pos + 1;
+                    while next < bucket_items.len() && bucket_items[next].hour == hour {
+                        next += 1;
+                    }
+                    let hour_slice = &bucket_items[pos..next];
+                    let hour_count = hour_slice.len() as u64;
+                    let mut hour_groups = vec![0u64; groups];
+                    for item in hour_slice {
+                        hour_groups[item.group] += 1;
+                    }
+                    if seen_newer + hour_count > first {
+                        let ord_base = base + total - seen_newer - hour_count;
+                        let mut group_pos = vec![0u64; groups];
+                        for (idx_in_hour, item) in hour_slice.iter().enumerate() {
+                            let disp = seen_newer + idx_in_hour as u64;
+                            let k = group_pos[item.group];
+                            group_pos[item.group] += 1;
+                            if disp >= first && disp < end {
+                                let own_base = group_total[item.group] - newer_in_group[item.group] - hour_groups[item.group];
+                                chosen.push(Chosen {
+                                    run: item.run,
+                                    entry: item.entry,
+                                    group: item.group,
+                                    ordinal: ord_base + idx_in_hour as u64,
+                                    own: own_base + k,
+                                });
+                            }
+                        }
+                    }
+                    seen_newer += hour_count;
+                    for g in 0..groups {
+                        newer_in_group[g] += hour_groups[g];
+                    }
+                    pos = next;
+                }
+            }
+        }
+
+        let mut by_run: BTreeMap<u32, Vec<(usize, BucketEntry)>> = BTreeMap::new();
+        for (pos, item) in chosen.iter().enumerate() {
+            by_run.entry(item.run).or_default().push((pos, item.entry));
+        }
+        let mut materialized: Vec<Option<Row>> = vec![None; chosen.len()];
+        for (run, asks) in by_run {
+            let entries: Vec<BucketEntry> = asks.iter().map(|&(_, entry)| entry).collect();
+            let decoded = self.materialize(run, &entries)?;
+            for ((pos, _), row) in asks.into_iter().zip(decoded) {
+                materialized[pos] = Some(row);
+            }
+        }
+        let rows = chosen
+            .into_iter()
+            .zip(materialized.into_iter().map(Option::unwrap))
+            .map(|(item, row)| Paged { row, group: item.group, ordinal: item.ordinal, own: item.own })
+            .collect();
+        Ok(NewestPage { base, offset: first, total, rows })
+    }
+
+    pub fn tail(&self, patterns: &[Pattern], groups: usize, from: i32, to: i32, limit: u32) -> io::Result<NewestPage> {
+        self.newest_page_with(patterns, groups, from, to, 0, limit, Overlap::EachPattern)
     }
 
     pub fn total(&self, patterns: &[Pattern], from: i32, to: i32) -> io::Result<u64> {
+        self.total_with(patterns, from, to, Overlap::EachPattern)
+    }
+
+    pub fn total_with(&self, patterns: &[Pattern], from: i32, to: i32, overlap: Overlap) -> io::Result<u64> {
         if from > to {
             return Ok(0);
         }
         let bin = bin_for(i64::from(to) - i64::from(from) + 1, 256);
         let mut total = 0u64;
-        for held in self.bins(patterns, from, to, bin)? {
+        for held in self.bins_with(patterns, from, to, bin, overlap)? {
             total += held.iter().map(|(_, count)| count).sum::<u64>();
         }
         Ok(total)
+    }
+
+    pub fn has_any_with(&self, patterns: &[Pattern], from: i32, to: i32, overlap: Overlap) -> io::Result<bool> {
+        Ok(self.total_with(patterns, from, to, overlap)? > 0)
     }
 }
 

@@ -12,6 +12,7 @@ export interface LogCountryLook {
   readonly from: number;
   readonly name: string | null;
   readonly flag?: string;
+  readonly flagReason?: string;
   readonly color?: string;
   readonly status?: string;
 }

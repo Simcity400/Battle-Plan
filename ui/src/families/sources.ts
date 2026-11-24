@@ -159,7 +159,7 @@ export function buildDatedCountryLooks(
   tags: readonly string[],
   firstHour: number,
   lastHour: number,
-  exactAt: (hour: number) => (tag: string) => { readonly known?: boolean; readonly name: string; readonly flag?: string } | undefined,
+  exactAt: (hour: number) => (tag: string) => { readonly known?: boolean; readonly name: string; readonly flag?: string; readonly flagReason?: string } | undefined,
   includeColours: boolean,
 ): CountryLooksMap {
   const out: Record<string, CountryLook[]> = {};
@@ -174,6 +174,7 @@ export function buildDatedCountryLooks(
         from: at,
         name: look?.known ? look.name : null,
         ...(look?.flag ? { flag: look.flag } : {}),
+        ...(look?.flagReason ? { flagReason: look.flagReason } : {}),
         ...(color ? { color } : {}),
         ...(look && !look.known ? { status: look.name } : {}),
       });

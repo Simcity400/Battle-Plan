@@ -18,15 +18,24 @@ export function useLogLooks(
   firstHour: number,
   lastHour: number,
   active: boolean,
+  fallbackTags: readonly string[] = NO_TAGS,
 ): LogLooksMap {
   const groups = useCountryGroups(runtime, track, active && !!track);
-  const allTagsText = useMemo(
-    () => (groups.data?.countryIdentities ?? []).map(history => history.tag).sort().join(','),
-    [groups.data],
-  );
-  const allTags = useMemo(() => (allTagsText ? allTagsText.split(',') : NO_TAGS), [allTagsText]);
   const revision = useContentRevision(runtime.client, active && !!track);
   const timeline = useHeldTimeline(runtime.client, active ? track : undefined, revision, active && !!track);
+  const fallbackKey = fallbackTags.length > 0 ? [...new Set(fallbackTags)].sort().join(',') : '';
+  const allTagsText = useMemo(() => {
+    const merged = new Set<string>();
+    for (const history of groups.data?.countryIdentities ?? []) merged.add(history.tag);
+    if (timeline) {
+      for (const tag of timeline.runs.keys()) merged.add(tag);
+    }
+    if (fallbackKey) {
+      for (const tag of fallbackKey.split(',')) if (tag) merged.add(tag);
+    }
+    return [...merged].sort().join(',');
+  }, [groups.data, timeline, fallbackKey]);
+  const allTags = useMemo(() => (allTagsText ? allTagsText.split(',') : NO_TAGS), [allTagsText]);
   const startsText = active && track && allTags.length > 0
     ? JSON.stringify(allTags.map(tag => [tag, lookStarts(timeline, tag, firstHour, lastHour)]))
     : '[]';

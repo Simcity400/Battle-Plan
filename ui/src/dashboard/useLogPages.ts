@@ -5,7 +5,8 @@ import { aheadThrough, askedPages, binPages, cumulativeCounts, drawnAhead, faile
 import type { HeldPages, LogCounts, LogReplyRow } from '../charts/log/logSource';
 import { AHEAD_ROWS, aheadEnd } from '../charts/reveal.ts';
 import { useAheadHour } from './aheadHour.ts';
-import type { FacetFilter, MembershipRun, MissingSpan } from '../generated/dashboard';
+import type { MembershipRun, MissingSpan } from '../generated/dashboard';
+import type { LogFacet } from '../families/log/scope';
 import type { DashboardClient, DashboardSource } from './client';
 import { inFrame } from './frameUpdates.ts';
 import type { PlaybackController } from './playback';
@@ -20,7 +21,7 @@ export interface LogSpec {
   source: DashboardSource;
   branchId: string;
   log: string;
-  facets?: readonly FacetFilter[];
+  facets?: readonly LogFacet[];
   scope?: readonly (MembershipRun & BoundWindow)[];
   firstHour: BoundHour;
   lastHour: BoundHour;

@@ -2124,7 +2124,7 @@ pub mod tests {
         }
     }
 
-    pub fn folder_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
+    fn write_folder(files: &[(&str, &str)]) -> (ResolvedLayers, Folder) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
@@ -2144,7 +2144,17 @@ pub mod tests {
             std::fs::write(&file, text).unwrap();
         }
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        (layers, folder)
+    }
+
+    pub fn folder_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
+        let (layers, folder) = write_folder(files);
         (layers_catalogue(layers), folder)
+    }
+
+    pub fn localisation_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
+        let (layers, folder) = write_folder(files);
+        (layers_catalogue_without_tables(layers), folder)
     }
 
     pub fn with_effect_describer(
@@ -2159,6 +2169,10 @@ pub mod tests {
     pub fn layers_catalogue(layers: ResolvedLayers) -> Catalogue {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        layers_catalogue_without_tables(layers)
+    }
+
+    fn layers_catalogue_without_tables(layers: ResolvedLayers) -> Catalogue {
         let localisation = content_reader_localisation::localisation::read(&layers, "english").unwrap();
         let sprites = content_reader_gfx::gfx::read(&layers).unwrap();
         Catalogue {

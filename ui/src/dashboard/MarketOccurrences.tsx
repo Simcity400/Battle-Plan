@@ -9,16 +9,15 @@ import type { Gate } from './regionGate';
 import type { BoundWindow } from './regionTime';
 import { forwardRequest } from './request.ts';
 import type { LogCut } from './useLogPages';
-import { ledgerFacets, ledgerSelection, MARKET_LEDGER, MARKET_LEDGER_TAIL, type LedgerItem } from './marketLedger.ts';
+import { ledgerFacets, ledgerSelection, MARKET_LEDGER_TAIL, type LedgerItem } from './marketLedger.ts';
 import type { FamilySources } from '../families/contract.ts';
 import FamilyLogHost from '../families/log/FamilyLogHost.tsx';
 import type { LogControlsSpec, LogSourceSubscription } from '../families/log/declaration.ts';
 import { LOG_MIN_TAIL_LIMIT } from '../families/log/layout.ts';
-import { isLogTailReply, pageReplyToTail, scrollPageOrdinalRange, type LogTailReplyWire } from '../families/log/tailReply.ts';
+import type { CountryScopeFilter } from '../families/log/scope.ts';
+import { isLogTailReply, type LogTailReplyWire } from '../families/log/tailReply.ts';
 import { useLogLooks } from '../families/log/useLogLooks.ts';
-import type { CountryScopeFilter } from '../widgets/division-log/divisionLogData.ts';
 import { marketLedgerProjection, type MarketLedgerProjectionOptions } from '../widgets/market-ledger/marketLedgerProjection.ts';
-import type { LogPageReply } from '../generated/dashboard';
 
 export interface MarketOccurrencesProps {
   runtime: WidgetRuntime;
@@ -39,6 +38,8 @@ export interface MarketOccurrencesProps {
   controls?: LogControlsSpec | null;
   onDiagnostics?: (warnings: string[]) => void;
 }
+
+const NO_ROW_TAGS: readonly string[] = [];
 
 export default function MarketOccurrences({
   runtime,
@@ -61,6 +62,7 @@ export default function MarketOccurrences({
 }: MarketOccurrencesProps) {
   const facets = useMemo(() => ledgerFacets(kinds, tags), [kinds, tags]);
   const [limit, setLimit] = useState(LOG_MIN_TAIL_LIMIT);
+  const [rowTags, setRowTags] = useState<readonly string[]>(NO_ROW_TAGS);
   const follow = cut.follow;
   const followOffset = cut.follow ? cut.offset : 0;
   const cutHour = cut.follow ? null : cut.hour;
@@ -69,7 +71,7 @@ export default function MarketOccurrences({
   const pinHour = follow ? null : (cutHour ?? spanLast ?? track.branch.lastHour);
   const fromParam = spanFirst !== null && spanFirst > track.branch.firstHour ? spanFirst : null;
 
-  const looks = useLogLooks(runtime, track, track.branch.firstHour, track.branch.lastHour, active && kinds.length > 0);
+  const looks = useLogLooks(runtime, track, track.branch.firstHour, track.branch.lastHour, active && kinds.length > 0, rowTags);
 
   const syntheticWidget = useMemo<WidgetSpec>(() => widget ?? ({
     id: `market-occurrences:${track.id}:${label}`,
@@ -93,6 +95,11 @@ export default function MarketOccurrences({
       countFacets: [],
     };
   }, [kinds.length, spanFirst, spanLast, track.branch.id, facets, fromParam, limit]);
+
+  const queryKey = useMemo(
+    () => JSON.stringify([track.source.id, track.source.revision, track.branch.id, facets, fromParam, pinHour, follow ? 1 : 0, spanFirst, spanLast]),
+    [track.source.id, track.source.revision, track.branch.id, facets, fromParam, pinHour, follow, spanFirst, spanLast],
+  );
 
   const followPlan = useMemo(() => {
     if (!follow || !tailParams || !active) {
@@ -159,29 +166,35 @@ export default function MarketOccurrences({
     return { answers: new Map(), panels: new Map<string, unknown>([['tail', reply]]), live: new Map() };
   }, [tailParams, gate.recorded, runtime.client, track.source]);
 
-  const onLoadScrollPage = useCallback(async (frozenHour: number, offset: number, pageSize: number, baseOrdinal: number, total: number) => {
-    if (!tailParams) return null;
-    const range = scrollPageOrdinalRange(baseOrdinal, total, offset, pageSize);
-    if (!range) return null;
+  const onLoadScrollPage = useCallback(async (
+    frozenHour: number,
+    offset: number,
+    pageSize: number,
+    _baseOrdinal: number,
+    total: number,
+    signal?: AbortSignal,
+  ) => {
+    if (!tailParams || total <= 0 || offset >= total) return null;
     const clamped = gate.recorded(frozenHour);
     if (clamped === null) return null;
     const controller = new AbortController();
-    const page = await loadProduct<LogPageReply>(
+    const activeSignal = signal ?? controller.signal;
+    return loadProduct<LogTailReplyWire>(
       runtime.client,
-      forwardRequest(track.source, MARKET_LEDGER, {
-        branchId: track.branch.id,
-        facets,
-        ...(fromParam !== null ? { from: fromParam } : {}),
-        to: clamped,
-        cursor: range.cursor,
-        pageSize: range.pageSize,
+      forwardRequest(track.source, MARKET_LEDGER_TAIL, {
+        ...tailParams,
+        hour: clamped,
+        offset: String(offset),
+        limit: pageSize,
       }),
-      controller.signal,
-      undefined,
+      activeSignal,
+      value => {
+        if (!isLogTailReply(value)) throw new Error('The market ledger tail reply is malformed.');
+        return value;
+      },
       track.source,
     );
-    return pageReplyToTail(page, baseOrdinal, total);
-  }, [tailParams, gate.recorded, runtime.client, track.source, track.branch.id, facets, fromParam]);
+  }, [tailParams, gate.recorded, runtime.client, track.source]);
 
   const projectionOptions = useMemo<MarketLedgerProjectionOptions>(() => ({
     looks,
@@ -204,7 +217,7 @@ export default function MarketOccurrences({
     ];
   }, [onOpen, runtime, track.id]);
 
-  const blockedState = !kinds.length
+  const bodyBlockedState = !kinds.length
     ? <WidgetState kind="empty" icon="history" message="Choose the occurrences to show in the widget settings." />
     : followPlan.refused
       ? <WidgetState kind="unavailable" message={followPlan.refused} />
@@ -231,9 +244,11 @@ export default function MarketOccurrences({
       twoLine
       subscriptions={followPlan.subs}
       staticSources={staticSources}
+      queryKey={queryKey}
       exactSources={exactSources}
       onLoadScrollPage={onLoadScrollPage}
       onLimitChange={setLimit}
+      onRowTags={setRowTags}
       offset={followOffset}
       pin={pinHour}
       bounds={bounds}
@@ -242,7 +257,7 @@ export default function MarketOccurrences({
       contextMenuItems={contextMenuItems}
       headerSlot={headerSlot}
       onDiagnostics={onDiagnostics}
-      blockedState={blockedState}
+      bodyBlockedState={bodyBlockedState}
     />
   );
 }

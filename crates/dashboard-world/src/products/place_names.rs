@@ -73,7 +73,16 @@ struct Cached {
 }
 
 impl Content {
-    pub fn from_catalogue(cat: Arc<Catalogue>) -> Self {
+    pub fn read(source: &Source, load: &LoadContext) -> io::Result<Arc<Self>> {
+        let options = load.content.as_ref().ok_or_else(|| dashboard_core::refused("Place names need the recorded content stack and language"))?;
+        let cat = catalogue::catalogue(source, options)?;
+        let state = source.state::<Cached>();
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some((held, content)) = &state.held
+            && Arc::ptr_eq(held, &cat)
+        {
+            return Ok(Arc::clone(content));
+        }
         let regions = dashboard_base::content::strategic_regions(&cat.content.layers)
             .map(|regions| {
                 let named = |region: &content_reader_regions::regions::StrategicRegion| {
@@ -96,20 +105,7 @@ impl Content {
                 Regions { by_region, by_province, notes: regions.notes.clone() }
             })
             .map_err(|error| format!("Strategic-region names unavailable: {error}"));
-        Self { cat, regions }
-    }
-
-    pub fn read(source: &Source, load: &LoadContext) -> io::Result<Arc<Self>> {
-        let options = load.content.as_ref().ok_or_else(|| dashboard_core::refused("Place names need the recorded content stack and language"))?;
-        let cat = catalogue::catalogue(source, options)?;
-        let state = source.state::<Cached>();
-        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some((held, content)) = &state.held
-            && Arc::ptr_eq(held, &cat)
-        {
-            return Ok(Arc::clone(content));
-        }
-        let content = Arc::new(Self::from_catalogue(Arc::clone(&cat)));
+        let content = Arc::new(Self { cat: Arc::clone(&cat), regions });
         state.held = Some((cat, Arc::clone(&content)));
         Ok(content)
     }
@@ -374,40 +370,6 @@ fn read_hour(query: &dashboard_query::Query<'_>, frames: &mut at_hour::Frames<'_
         }
     }
     Ok(frame)
-}
-
-pub fn resolve_provinces(
-    query: &dashboard_query::Query<'_>,
-    content: &Content,
-    asks: &[(u32, i32)],
-    land: bool,
-    cancelled: &AtomicBool,
-) -> io::Result<HashMap<(u32, i32), Name>> {
-    let mut hours: BTreeMap<i32, Vec<u32>> = BTreeMap::new();
-    for &(province_id, hour) in asks {
-        hours.entry(hour).or_default().push(province_id);
-    }
-    let mut places: HashMap<(u32, i32), Name> = HashMap::new();
-    let mut frames = at_hour::Frames::new(query)?;
-    for (&hour, provinces) in &mut hours {
-        check_cancel(cancelled)?;
-        provinces.sort_unstable();
-        provinces.dedup();
-        match read_hour(query, &mut frames, hour, provinces, &[]) {
-            Ok(frame) => {
-                let named = Places::new(&frame);
-                for &id in provinces.iter() {
-                    places.insert((id, hour), named.province(content, id, land));
-                }
-            }
-            Err(reason) => {
-                for &id in provinces.iter() {
-                    places.insert((id, hour), Name::missing(reason.clone()));
-                }
-            }
-        }
-    }
-    Ok(places)
 }
 
 impl Product for PlaceNames {

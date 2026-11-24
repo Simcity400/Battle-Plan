@@ -11,10 +11,12 @@ export interface LogTailReplyWire {
   readonly columns: readonly string[];
   readonly baseOrdinal: string;
   readonly firstOrdinal: string;
+  readonly offset?: string;
   readonly total: string;
   readonly rows: readonly LogPageRow[];
   readonly facetTotals: readonly LogFacetTotalWire[];
   readonly missing: readonly MissingSpan[];
+  readonly inlineMissing?: readonly MissingSpan[];
   readonly warnings: readonly string[];
 }
 
@@ -111,6 +113,7 @@ export function pageReplyToTail(
   baseOrdinal: number,
   total: number,
   facetTotals: readonly LogFacetTotalWire[] = [],
+  offset = 0,
 ): LogTailReplyWire {
   return {
     branchId: page.branchId,
@@ -118,12 +121,31 @@ export function pageReplyToTail(
     columns: page.columns,
     baseOrdinal: String(baseOrdinal),
     firstOrdinal: page.firstOrdinal,
+    offset: String(offset),
     total: String(total),
     rows: newestFirstWireRows(page.rows),
     facetTotals,
     missing: page.missing,
     warnings: page.warnings,
   };
+}
+
+export function mergeMissingSpans(a: readonly MissingSpan[], b: readonly MissingSpan[]): readonly MissingSpan[] {
+  if (b.length === 0) return a;
+  if (a.length === 0) return b;
+  const seen = new Set<string>();
+  const out: MissingSpan[] = [];
+  for (const list of [a, b]) {
+    for (const span of list) {
+      const key = `${span.firstHour}:${span.lastHour}:${span.reason}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(span);
+      }
+    }
+  }
+  out.sort((x, y) => x.firstHour - y.firstHour || x.lastHour - y.lastHour);
+  return out;
 }
 
 export function mergeFrozenPageIntoTail(
@@ -142,9 +164,105 @@ export function mergeFrozenPageIntoTail(
   }
   return {
     ...pageTail,
+    baseOrdinal: frozenTail.baseOrdinal,
+    total: frozenTail.total,
     facetTotals: pageTail.facetTotals.length > 0 ? pageTail.facetTotals : frozenTail.facetTotals,
+    missing: frozenTail.missing,
+    inlineMissing: mergeMissingSpans(frozenTail.inlineMissing ?? frozenTail.missing, pageTail.inlineMissing ?? pageTail.missing),
     warnings,
   };
+}
+
+export interface AssembledPageSlice {
+  readonly offset: number;
+  readonly tail: LogTailReplyWire;
+  readonly loadedPages: readonly { readonly pageIndex: number; readonly offset: number; readonly limit: number }[];
+}
+
+export function assembleFrozenPageWindow(
+  frozenTail: LogTailReplyWire | null,
+  pages: ReadonlyMap<number, LogTailReplyWire>,
+  pageSize: number,
+  wantStart: number,
+  wantEnd: number,
+): AssembledPageSlice | null {
+  const firstPage = Math.max(0, Math.floor(wantStart / pageSize));
+  const lastPage = Math.max(firstPage, Math.floor(Math.max(wantStart, wantEnd - 1) / pageSize));
+
+  const getChunk = (pageIndex: number): { readonly wire: LogTailReplyWire; readonly fetched: boolean } | null => {
+    const fetched = pages.get(pageIndex);
+    if (fetched) return { wire: fetched, fetched: true };
+    if (pageIndex === 0 && frozenTail) return { wire: frozenTail, fetched: false };
+    return null;
+  };
+
+  let startPage = firstPage;
+  let chunk = getChunk(startPage);
+  if (!chunk) {
+    for (let p = firstPage + 1; p <= lastPage; p++) {
+      const candidate = getChunk(p);
+      if (candidate) {
+        startPage = p;
+        chunk = candidate;
+        break;
+      }
+    }
+  }
+  if (!chunk) {
+    if (frozenTail) {
+      return { offset: 0, tail: frozenTail, loadedPages: [] };
+    }
+    return null;
+  }
+
+  const rows: LogPageRow[] = [...chunk.wire.rows];
+  let inlineMissing: readonly MissingSpan[] = chunk.wire.inlineMissing ?? chunk.wire.missing;
+  const warnings: string[] = [...chunk.wire.warnings];
+  const seenWarn = new Set<string>(warnings);
+  const loadedPages: { readonly pageIndex: number; readonly offset: number; readonly limit: number }[] = [];
+  if (chunk.fetched) {
+    loadedPages.push({ pageIndex: startPage, offset: startPage * pageSize, limit: pageSize });
+  }
+
+  const expectedChunkLen = (p: number) => p * pageSize + pageSize;
+  let endIndex = startPage * pageSize + chunk.wire.rows.length;
+  for (let p = startPage + 1; p <= lastPage; p++) {
+    if (endIndex < expectedChunkLen(p - 1)) break;
+    const next = getChunk(p);
+    if (!next) break;
+    rows.push(...next.wire.rows);
+    inlineMissing = mergeMissingSpans(inlineMissing, next.wire.inlineMissing ?? next.wire.missing);
+    for (const w of next.wire.warnings) {
+      if (w && !seenWarn.has(w)) {
+        seenWarn.add(w);
+        warnings.push(w);
+      }
+    }
+    if (next.fetched) {
+      loadedPages.push({ pageIndex: p, offset: p * pageSize, limit: pageSize });
+    }
+    endIndex += next.wire.rows.length;
+  }
+
+  const base = frozenTail ?? chunk.wire;
+  const offset = startPage * pageSize;
+  const assembled: LogTailReplyWire = {
+    branchId: base.branchId,
+    log: base.log,
+    columns: base.columns,
+    baseOrdinal: base.baseOrdinal,
+    firstOrdinal: rows[0]?.ordinal ?? base.firstOrdinal,
+    offset: String(offset),
+    total: base.total,
+    rows,
+    facetTotals: base.facetTotals,
+    missing: base.missing,
+    inlineMissing: mergeMissingSpans(base.inlineMissing ?? base.missing, inlineMissing),
+    warnings: frozenTail
+      ? [...new Set([...frozenTail.warnings, ...warnings])]
+      : warnings,
+  };
+  return { offset, tail: assembled, loadedPages };
 }
 
 export function facetTotalMap(reply: LogTailReplyWire): ReadonlyMap<string, number> {

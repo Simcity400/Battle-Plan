@@ -75,6 +75,7 @@ fn log_tail_and_dated_panel_match_page_in_reverse_with_exact_facet_totals() {
         facets: Vec::new(),
         from: None,
         hour: Some(136),
+        offset: None,
         limit: 3,
         columns: None,
         count_facets: vec![LogFacetCountAsk { key: "kind1".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![1], ..Default::default() }] }],
@@ -129,22 +130,23 @@ fn tail_coverage_cost_does_not_grow_with_elapsed_campaign() {
         facets: Vec::new(),
         from: None,
         hour: Some(hour),
+        offset: None,
         limit: 8,
         columns: None,
         count_facets,
     };
 
-    let (first_reply, first_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(first + 150, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
+    let (first_reply, first_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(first + 250, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
     assert!(first_counts.status_blocks > 0, "cold call indexes the branch coverage once");
-    assert_eq!(first_reply.missing, Vec::<MissingSpan>::new());
+    assert_eq!(first_reply.missing, Vec::<MissingSpan>::new(), "8 newest events at H350 span H280..=H350 after the H200..=H220 gap");
 
-    let (early_reply, early_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(first + 300, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
+    let (early_reply, early_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(first + 150, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
     assert_eq!(early_counts.status_blocks, 0, "indexed coverage reads zero status blocks on subsequent early steps");
-    assert!(early_reply.missing.is_empty(), "tail slice without counts omits gaps before the slice");
+    assert_eq!(spans(&early_reply.missing), [(200, 220, true)], "8 newest events at H250 cross the H200..=H220 gap");
 
-    let (late_reply, late_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(last, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
+    let (late_reply, late_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(2_430, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
     assert_eq!(late_counts.status_blocks, 0, "indexed coverage reads zero status blocks late in the campaign");
-    assert_eq!(spans(&late_reply.missing), [(2_400, 2_410, true)], "late tail slice carries only the gap inside its slice");
+    assert_eq!(spans(&late_reply.missing), [(2_400, 2_410, true)], "8 newest events at H2430 cross only the H2400..=H2410 gap");
 
     let count_asks = vec![LogFacetCountAsk { key: "kind1".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![1], ..Default::default() }] }];
     let (counted_reply, counted_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(last, count_asks), &load, &AtomicBool::new(false)).unwrap());

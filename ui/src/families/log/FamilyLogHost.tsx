@@ -4,7 +4,9 @@ import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { useViewportHeight } from '../../charts/useChartTokens';
-import LogGaps from '../../charts/log/LogGaps.tsx';
+import { dayLabel } from '../../charts/draw';
+import { missingNote, missingThrough } from '../../charts/log/logSource.ts';
+import '../../charts/log/log.css';
 import type { MissingSpan } from '../../generated/dashboard';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
@@ -14,7 +16,7 @@ import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
-import { perfLog, type ExactPicture } from '../../shell/perf.ts';
+import { perfLog } from '../../shell/perf.ts';
 import type { FamilySources } from '../contract.ts';
 import {
   attachAuditWatch,
@@ -40,110 +42,25 @@ import {
 import type { LogControlsSpec, LogExactReader, LogProjection, LogSourceSubscription } from './declaration.ts';
 import type { FamilyLogBinding, LogMetaField, LogNavEntry } from './laneView.ts';
 import {
-  buildLogLayout,
   LOG_MIN_TAIL_LIMIT,
-  LOG_MONTH_HEIGHT,
   logicalScrollFromPhysical,
   physicalScrollFromLogical,
   rowIndexAtLogicalY,
-  stickyMonthAt,
   tailLimitForViewport,
-  visibleItemRange,
 } from './layout.ts';
-import { deriveLogAuditRows, type LogDensity, type LogFacetPill } from './model.ts';
+import type { LogDensity, LogFacetPill } from './model.ts';
 import { logThemeFromFamily } from './painter.ts';
-import { isLogTailReply, mergeFrozenPageIntoTail, parseOrdinal } from './tailReply.ts';
+import {
+  reconcileFrozenView,
+  verifyLogAuditSnapshot,
+  visiblePageIndices,
+  type FrozenViewState,
+  type LogAuditSnapshot,
+} from './frozenView.ts';
+import { isLogTailReply } from './tailReply.ts';
 import './logFamily.css';
 
 const LOG_AUDIT = -1;
-
-interface FrozenViewState {
-  readonly gen: number;
-  readonly hour: number;
-  readonly baseOrdinal: number;
-  readonly total: number;
-  offset: number;
-  pageSize: number;
-  panels: Record<string, unknown> | null;
-}
-
-interface ScrollPageRequest {
-  readonly gen: number;
-  readonly frozenHour: number;
-  readonly offset: number;
-  readonly pageSize: number;
-  readonly baseOrdinal: number;
-  readonly total: number;
-}
-
-interface LogAuditSnapshot<TOptions> {
-  readonly projection: LogProjection<TOptions>;
-  readonly options: TOptions;
-  readonly density: LogDensity;
-  readonly months: boolean;
-  readonly scrollTop: number;
-  readonly height: number;
-  readonly limit: number;
-  readonly isStatic: boolean;
-  readonly exactSources: LogExactReader;
-  readonly onLoadScrollPage?: (frozenHour: number, offset: number, pageSize: number, baseOrdinal: number, total: number) => Promise<unknown>;
-  readonly frozen: {
-    readonly hour: number;
-    readonly baseOrdinal: number;
-    readonly total: number;
-    readonly offset: number;
-    readonly pageSize: number;
-  } | null;
-}
-
-async function verifyLogAuditSnapshot<TOptions>(hour: number, snap: LogAuditSnapshot<TOptions>): ReturnType<ExactPicture> {
-  if (snap.frozen) {
-    const frozenExact = await snap.exactSources(snap.frozen.hour, snap.limit);
-    if (!frozenExact) return null;
-    let effectiveSources = frozenExact;
-    if (snap.frozen.offset > 0 && snap.onLoadScrollPage) {
-      const pageTail = await snap.onLoadScrollPage(
-        snap.frozen.hour,
-        snap.frozen.offset,
-        snap.frozen.pageSize,
-        snap.frozen.baseOrdinal,
-        snap.frozen.total,
-      );
-      if (!isLogTailReply(pageTail)) return null;
-      const baseTail = frozenExact.panels.get('tail');
-      const mergedTail = isLogTailReply(baseTail) ? mergeFrozenPageIntoTail(baseTail, pageTail) : pageTail;
-      const panels = new Map(frozenExact.panels);
-      panels.set('tail', mergedTail);
-      panels.set('__offset', snap.frozen.offset);
-      effectiveSources = { ...frozenExact, panels };
-    }
-    let newRowCount = 0;
-    if (!snap.isStatic) {
-      const liveExact = await snap.exactSources(hour, 1);
-      const liveTail = liveExact?.panels.get('tail');
-      if (isLogTailReply(liveTail)) {
-        newRowCount = Math.max(0, parseOrdinal(liveTail.total) - snap.frozen.total);
-      }
-    }
-    const model = snap.projection.project(effectiveSources, snap.frozen.hour, snap.options);
-    const layout = buildLogLayout(model, snap.density, snap.months);
-    const [start, end] = visibleItemRange(layout.items, snap.scrollTop, snap.height);
-    const sticky = snap.months ? stickyMonthAt(layout, snap.scrollTop) : null;
-    const stickyH = sticky ? LOG_MONTH_HEIGHT[snap.density] : 0;
-    const rows = deriveLogAuditRows(model, layout.items, start, end, snap.scrollTop, stickyH, snap.height, newRowCount);
-    return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
-  }
-
-  const exact = await snap.exactSources(hour, snap.limit);
-  if (!exact) return null;
-  const model = snap.projection.project(exact, hour, snap.options);
-  const layout = buildLogLayout(model, snap.density, snap.months);
-  const [start, end] = visibleItemRange(layout.items, snap.scrollTop, snap.height);
-  const sticky = snap.months ? stickyMonthAt(layout, snap.scrollTop) : null;
-  const stickyH = sticky ? LOG_MONTH_HEIGHT[snap.density] : 0;
-  const rows = deriveLogAuditRows(model, layout.items, start, end, snap.scrollTop, stickyH, snap.height, 0);
-  return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
-}
 
 function dedupeMissingSpans(spans: readonly MissingSpan[]): readonly MissingSpan[] {
   if (spans.length <= 1) return spans;
@@ -189,9 +106,11 @@ export interface FamilyLogHostProps<TOptions> {
   readonly twoLine?: boolean;
   readonly subscriptions: readonly LogSourceSubscription[];
   readonly staticSources?: { readonly sources: FamilySources; readonly hour: number } | null;
+  readonly queryKey?: string;
   readonly exactSources?: LogExactReader;
-  readonly onLoadScrollPage?: (frozenHour: number, offset: number, pageSize: number, baseOrdinal: number, total: number) => Promise<unknown>;
+  readonly onLoadScrollPage?: (frozenHour: number, offset: number, pageSize: number, baseOrdinal: number, total: number, signal?: AbortSignal) => Promise<unknown>;
   readonly onLimitChange?: (limit: number) => void;
+  readonly onRowTags?: (tags: readonly string[]) => void;
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
@@ -205,6 +124,7 @@ export interface FamilyLogHostProps<TOptions> {
   readonly onDiagnostics?: (warnings: string[]) => void;
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
+  readonly bodyBlockedState?: ReactNode;
   readonly held?: boolean;
   readonly loadingLabel?: string;
   readonly className?: string;
@@ -215,7 +135,6 @@ interface LogHostMetaState {
   reason: string | null;
   failureOrigin: FailureOrigin;
   empty: LogMetaField['empty'];
-  missing: readonly MissingSpan[];
   warnings: readonly string[];
 }
 
@@ -232,9 +151,11 @@ export default function FamilyLogHost<TOptions>({
   twoLine = false,
   subscriptions,
   staticSources = null,
+  queryKey,
   exactSources,
   onLoadScrollPage,
   onLimitChange,
+  onRowTags,
   offset,
   pin,
   bounds,
@@ -248,6 +169,7 @@ export default function FamilyLogHost<TOptions>({
   onDiagnostics,
   extraWarnings,
   blockedState = null,
+  bodyBlockedState = null,
   held = false,
   loadingLabel,
   className,
@@ -263,8 +185,13 @@ export default function FamilyLogHost<TOptions>({
   const scrollRef = useRef<HTMLDivElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
   const pillsRef = useRef<HTMLSpanElement>(null);
+  const gapsRef = useRef<HTMLDivElement>(null);
   const jumpLabelRef = useRef<HTMLSpanElement>(null);
   const lastPillsSigRef = useRef('');
+  const lastGapsSigRef = useRef('');
+  const gapsSubjectRef = useRef(gapsSubject);
+  gapsSubjectRef.current = gapsSubject;
+  const lastRowTagsSigRef = useRef('');
   const focusAnchorRef = useRef({ x: 0, y: 0 });
 
   const viewportRef = useRef({ width: 0, height: 0, scrollTop: 0, physicalTop: 0 });
@@ -273,8 +200,7 @@ export default function FamilyLogHost<TOptions>({
   const frozenRef = useRef<FrozenViewState | null>(null);
   const [scrolledBack, setScrolledBack] = useState(false);
   const lastJumpCountRef = useRef(0);
-  const scrollPageFlightRef = useRef<{ gen: number; offset: number } | null>(null);
-  const [pageError, setPageError] = useState<{ readonly failure: Failure; readonly req: ScrollPageRequest } | null>(null);
+  const [pageError, setPageError] = useState<{ readonly failure: Failure; readonly pageIndex: number; readonly gen: number } | null>(null);
   const pendingFocusOrdinalRef = useRef<number | null>(null);
 
   const focusedKeyRef = useRef<string | null>(null);
@@ -301,7 +227,6 @@ export default function FamilyLogHost<TOptions>({
     reason: null,
     failureOrigin: 'local',
     empty: null,
-    missing: [],
     warnings: [],
   }));
   const metaSigRef = useRef('');
@@ -310,7 +235,7 @@ export default function FamilyLogHost<TOptions>({
   const theme = useMemo(() => (familyTheme ? logThemeFromFamily(familyTheme) : undefined), [familyTheme]);
   const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer('log');
 
-  const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null);
+  const enabled = active && !prepared && !blockedState && !bodyBlockedState && (subscriptions.length > 0 || staticSources !== null);
   const auditable = !!exactSources;
   const placement = useFamilyPlacement({
     family: 'log',
@@ -383,9 +308,55 @@ export default function FamilyLogHost<TOptions>({
     host.replaceChildren(fragment);
   }, []);
 
+  const paintGaps = useCallback((missing: readonly MissingSpan[], until: number | null) => {
+    const host = gapsRef.current;
+    if (!host) return;
+    const subjectName = gapsSubjectRef.current;
+    const note = subjectName && missing.length > 0
+      ? missingNote(missingThrough(dedupeMissingSpans(missing), until), dayLabel, subjectName)
+      : null;
+    if (!note) {
+      if (lastGapsSigRef.current !== '') {
+        lastGapsSigRef.current = '';
+        host.hidden = true;
+        host.replaceChildren();
+      }
+      return;
+    }
+    const sig = `${note.counted}|${note.spans.map(s => `${s.text}\0${s.detail}`).join('\n')}`;
+    if (sig === lastGapsSigRef.current) return;
+    lastGapsSigRef.current = sig;
+    const box = document.createElement('div');
+    box.className = 'log-gaps';
+    box.setAttribute('role', 'note');
+    box.setAttribute('aria-label', 'Hours not recorded');
+    const title = document.createElement('b');
+    title.textContent = 'Not recorded';
+    const list = document.createElement('ul');
+    for (const span of note.spans) {
+      const li = document.createElement('li');
+      li.dataset.tooltip = span.detail;
+      li.append(span.text);
+      const sr = document.createElement('span');
+      sr.className = 'sr-only';
+      sr.textContent = ` ${span.detail}`;
+      li.append(sr);
+      list.append(li);
+    }
+    const small = document.createElement('small');
+    small.textContent = note.counted;
+    box.append(title, list, small);
+    host.hidden = false;
+    host.replaceChildren(box);
+  }, []);
+
   const reportShown = useShownHour();
   const reportShownRef = useRef(reportShown);
   reportShownRef.current = reportShown;
+
+  const boundsKey = bounds ? `${bounds[0]}:${bounds[1]}` : '';
+  const isStatic = staticSources !== null;
+  const effectiveQueryKey = queryKey ?? `${subsReady}|${pin ?? ''}|${boundsKey}|${isStatic ? 1 : 0}`;
 
   const surfaceRef = useRef<MountedFamilyCanvas | null>(null);
   const latestRef = useRef({
@@ -397,9 +368,11 @@ export default function FamilyLogHost<TOptions>({
     theme,
     reducedMotion,
     staticSources,
+    queryKey: effectiveQueryKey,
     exactSources,
     onLoadScrollPage,
     onLimitChange,
+    onRowTags,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -415,9 +388,11 @@ export default function FamilyLogHost<TOptions>({
     theme,
     reducedMotion,
     staticSources,
+    queryKey: effectiveQueryKey,
     exactSources,
     onLoadScrollPage,
     onLimitChange,
+    onRowTags,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -437,12 +412,16 @@ export default function FamilyLogHost<TOptions>({
 
     let auditId: number | undefined;
     if (perfLog && cur.captureActive && cur.exactSources) {
-      const frozenKey = frozen ? `${frozen.gen}:${frozen.hour}:${frozen.offset}:${frozen.pageSize}` : 'live';
-      const snapKey = `${cur.projection.kind}|${cur.density}|${cur.months ? 1 : 0}|${Math.round(scrollTop)}|${h}|${limitRef.current}|${frozenKey}|${cur.staticSources ? 1 : 0}`;
+      const pagesKey = frozen ? frozen.loadedPages.map(p => `${p.pageIndex}:${p.offset}:${p.limit}`).join(',') : '';
+      const frozenKey = frozen
+        ? `${frozen.gen}:${frozen.hour}:${frozen.offset}:${frozen.pageSize}:${frozen.visibleStart}:${frozen.visibleEnd}:${pagesKey}`
+        : 'live';
+      const snapKey = `${cur.queryKey}|${cur.projection.kind}|${cur.density}|${cur.months ? 1 : 0}|${Math.round(scrollTop)}|${h}|${limitRef.current}|${frozenKey}|${cur.staticSources ? 1 : 0}`;
       if (lastAuditRef.current && lastAuditRef.current.key === snapKey && lastAuditRef.current.options === cur.options) {
         auditId = lastAuditRef.current.id;
       } else {
         auditId = audit.capture({
+          queryKey: cur.queryKey,
           projection: cur.projection,
           options: cur.options,
           density: cur.density,
@@ -457,8 +436,11 @@ export default function FamilyLogHost<TOptions>({
             hour: frozen.hour,
             baseOrdinal: frozen.baseOrdinal,
             total: frozen.total,
-            offset: frozen.offset,
             pageSize: frozen.pageSize,
+            offset: frozen.offset,
+            visibleStart: frozen.visibleStart,
+            visibleEnd: frozen.visibleEnd,
+            loadedPages: [...frozen.loadedPages],
           } : null,
         }, verifyLogAuditSnapshot);
         lastAuditRef.current = { id: auditId, key: snapKey, options: cur.options };
@@ -478,6 +460,7 @@ export default function FamilyLogHost<TOptions>({
       ...(frozen ? {
         frozenGen: frozen.gen,
         frozenHour: frozen.hour,
+        frozenLiveSeq: frozen.liveSeq,
         frozenTotal: frozen.total,
         ...(frozen.panels ? { frozenPanels: frozen.panels } : {}),
       } : {}),
@@ -534,62 +517,68 @@ export default function FamilyLogHost<TOptions>({
     if (box) focusAnchorRef.current = { x: box.left + Math.min(240, box.width / 2), y: box.top + 56 };
   }, []);
 
-  const requestScrollPage = useCallback((req: ScrollPageRequest) => {
+  const abortFrozenFlights = useCallback((frozen: FrozenViewState | null) => {
+    if (!frozen) return;
+    for (const controller of frozen.inFlight.values()) controller.abort();
+    frozen.inFlight.clear();
+  }, []);
+
+  const requestPageIndex = useCallback((frozen: FrozenViewState, pageIndex: number) => {
     const loader = latestRef.current.onLoadScrollPage;
     if (!loader) return;
-    if (scrollPageFlightRef.current && scrollPageFlightRef.current.gen === req.gen && scrollPageFlightRef.current.offset === req.offset) return;
-    scrollPageFlightRef.current = { gen: req.gen, offset: req.offset };
-    setPageError(null);
-    void loader(req.frozenHour, req.offset, req.pageSize, req.baseOrdinal, req.total).then(
+    if (frozen.pages.has(pageIndex) || frozen.inFlight.has(pageIndex)) return;
+    const offset = pageIndex * frozen.pageSize;
+    if (offset >= frozen.total) return;
+    const controller = new AbortController();
+    frozen.inFlight.set(pageIndex, controller);
+    frozen.errors.delete(pageIndex);
+    const { gen, queryKey: reqQueryKey } = frozen;
+    void loader(frozen.hour, offset, frozen.pageSize, frozen.baseOrdinal, frozen.total, controller.signal).then(
       pageTail => {
-        if (scrollPageFlightRef.current?.gen === req.gen && scrollPageFlightRef.current.offset === req.offset) {
-          scrollPageFlightRef.current = null;
-        }
-        if (req.gen !== frozenGenRef.current) return;
+        if (frozen.inFlight.get(pageIndex) === controller) frozen.inFlight.delete(pageIndex);
+        if (controller.signal.aborted) return;
         const curFrozen = frozenRef.current;
-        if (!curFrozen || curFrozen.gen !== req.gen || !pageTail) return;
-        curFrozen.offset = req.offset;
-        curFrozen.pageSize = req.pageSize;
-        curFrozen.panels = { tail: pageTail, __offset: req.offset };
+        if (!curFrozen || curFrozen.gen !== gen || curFrozen.queryKey !== reqQueryKey) return;
+        if (!isLogTailReply(pageTail)) return;
+        curFrozen.pages.set(pageIndex, pageTail);
+        curFrozen.errors.delete(pageIndex);
+        const { activeError } = reconcileFrozenView(curFrozen);
+        setPageError(activeError ? { ...activeError, gen: curFrozen.gen } : null);
         bindRef.current();
       },
       error => {
-        if (scrollPageFlightRef.current?.gen === req.gen && scrollPageFlightRef.current.offset === req.offset) {
-          scrollPageFlightRef.current = null;
-        }
-        if (req.gen !== frozenGenRef.current) return;
-        setPageError({ failure: asFailure(error), req });
+        if (frozen.inFlight.get(pageIndex) === controller) frozen.inFlight.delete(pageIndex);
+        if (controller.signal.aborted) return;
+        const curFrozen = frozenRef.current;
+        if (!curFrozen || curFrozen.gen !== gen || curFrozen.queryKey !== reqQueryKey) return;
+        curFrozen.errors.set(pageIndex, asFailure(error));
+        const { activeError } = reconcileFrozenView(curFrozen);
+        setPageError(activeError ? { ...activeError, gen: curFrozen.gen } : null);
       },
     );
   }, []);
 
   const ensureRangeLoaded = useCallback((wantStart: number, wantEnd: number) => {
     const frozen = frozenRef.current;
-    const metaNow = lastMetaRef.current;
-    if (!frozen || !metaNow || frozen.total <= 0) return;
-    const loadedStart = metaNow.offset;
-    const loadedEnd = metaNow.offset + metaNow.loadedCount;
+    if (!frozen || frozen.total <= 0) return;
     const clampedStart = Math.max(0, Math.min(frozen.total - 1, wantStart));
     const clampedEnd = Math.max(clampedStart + 1, Math.min(frozen.total, wantEnd));
-    if (clampedStart >= loadedStart && clampedEnd <= loadedEnd) return;
-    const pageSize = Math.max(limitRef.current, 128);
-    const margin = Math.floor(pageSize / 4);
-    const pageOffset = Math.max(0, Math.min(Math.max(0, frozen.total - pageSize), clampedStart - margin));
-    if (pageOffset === loadedStart && loadedEnd >= clampedEnd) return;
-    requestScrollPage({
-      gen: frozen.gen,
-      frozenHour: frozen.hour,
-      offset: pageOffset,
-      pageSize,
-      baseOrdinal: frozen.baseOrdinal,
-      total: frozen.total,
-    });
-  }, [requestScrollPage]);
+    frozen.visibleStart = clampedStart;
+    frozen.visibleEnd = clampedEnd;
+    const needed = visiblePageIndices(clampedStart, clampedEnd, frozen.pageSize, frozen.total);
+    for (const pageIndex of needed) {
+      if (frozen.pages.has(pageIndex)) continue;
+      if (pageIndex === 0 && clampedEnd <= frozen.tailLoadedCount) continue;
+      requestPageIndex(frozen, pageIndex);
+    }
+    const { activeError } = reconcileFrozenView(frozen);
+    setPageError(activeError ? { ...activeError, gen: frozen.gen } : null);
+  }, [requestPageIndex]);
 
   const jumpToLatest = useCallback(() => {
+    abortFrozenFlights(frozenRef.current);
     frozenGenRef.current++;
     frozenRef.current = null;
-    scrollPageFlightRef.current = null;
     pendingFocusOrdinalRef.current = null;
     lastJumpCountRef.current = 0;
     setPageError(null);
@@ -599,18 +588,15 @@ export default function FamilyLogHost<TOptions>({
     viewportRef.current.scrollTop = 0;
     viewportRef.current.physicalTop = 0;
     bindRef.current();
-  }, []);
+  }, [abortFrozenFlights]);
 
-  const boundsKey = bounds ? `${bounds[0]}:${bounds[1]}` : '';
-  const isStatic = staticSources !== null;
-  const resetScopeKey = `${subsReady}|${pin ?? ''}|${boundsKey}|${isStatic ? 1 : 0}`;
-  const prevResetScopeRef = useRef(resetScopeKey);
+  const prevResetScopeRef = useRef(effectiveQueryKey);
   useLayoutEffect(() => {
-    if (prevResetScopeRef.current === resetScopeKey) return;
-    prevResetScopeRef.current = resetScopeKey;
+    if (prevResetScopeRef.current === effectiveQueryKey) return;
+    prevResetScopeRef.current = effectiveQueryKey;
+    abortFrozenFlights(frozenRef.current);
     frozenGenRef.current++;
     frozenRef.current = null;
-    scrollPageFlightRef.current = null;
     pendingFocusOrdinalRef.current = null;
     lastJumpCountRef.current = 0;
     setPageError(null);
@@ -618,7 +604,29 @@ export default function FamilyLogHost<TOptions>({
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
     viewportRef.current.scrollTop = 0;
     viewportRef.current.physicalTop = 0;
-  }, [resetScopeKey]);
+  }, [effectiveQueryKey, abortFrozenFlights]);
+
+  const createFrozenFromMeta = useCallback((m: LogMetaField): FrozenViewState => {
+    const pageSize = Math.max(limitRef.current, 128);
+    return {
+      gen: ++frozenGenRef.current,
+      queryKey: latestRef.current.queryKey,
+      hour: m.hour!,
+      liveSeq: m.liveSeq,
+      baseOrdinal: m.baseOrdinal,
+      total: m.total,
+      tailLoadedCount: m.loadedCount,
+      pageSize,
+      pages: new Map(),
+      inFlight: new Map(),
+      errors: new Map(),
+      visibleStart: 0,
+      visibleEnd: Math.max(1, m.loadedCount),
+      offset: 0,
+      loadedPages: [],
+      panels: null,
+    };
+  }, []);
 
   const scrollToLogicalTop = useCallback((logicalTop: number) => {
     const node = scrollRef.current;
@@ -630,27 +638,18 @@ export default function FamilyLogHost<TOptions>({
     viewportRef.current.physicalTop = physical;
     viewportRef.current.scrollTop = clamped;
     if (clamped > 0 && !frozenRef.current && lastMetaRef.current && lastMetaRef.current.hour !== null) {
-      const m = lastMetaRef.current;
-      frozenRef.current = {
-        gen: ++frozenGenRef.current,
-        hour: m.hour!,
-        baseOrdinal: m.baseOrdinal,
-        total: m.total,
-        offset: m.offset,
-        pageSize: m.loadedCount,
-        panels: null,
-      };
+      frozenRef.current = createFrozenFromMeta(lastMetaRef.current);
       lastJumpCountRef.current = 0;
       setScrolledBack(true);
     } else if (clamped === 0 && frozenRef.current) {
+      abortFrozenFlights(frozenRef.current);
       frozenGenRef.current++;
       frozenRef.current = null;
-      scrollPageFlightRef.current = null;
       lastJumpCountRef.current = 0;
       setPageError(null);
       setScrolledBack(false);
     }
-  }, []);
+  }, [abortFrozenFlights, createFrozenFromMeta]);
 
   const focusRowByKey = useCallback((key: string) => {
     focusedKeyRef.current = key;
@@ -675,13 +674,15 @@ export default function FamilyLogHost<TOptions>({
   paintMirrorRef.current = paintMirror;
   const paintPillsRef = useRef(paintPills);
   paintPillsRef.current = paintPills;
+  const paintGapsRef = useRef(paintGaps);
+  paintGapsRef.current = paintGaps;
   const ensureRangeLoadedRef = useRef(ensureRangeLoaded);
   ensureRangeLoadedRef.current = ensureRangeLoaded;
   const refreshFocusAnchorRef = useRef(refreshFocusAnchor);
   refreshFocusAnchorRef.current = refreshFocusAnchor;
 
   const focusByOrdinal = useCallback((ordinal: number) => {
-    const match = navEntriesRef.current.find(item => item.ordinal === ordinal);
+    const match = navEntriesRef.current.find(item => item.ordinal >= 0 && item.ordinal === ordinal);
     if (match) {
       pendingFocusOrdinalRef.current = null;
       focusRowByKey(match.key);
@@ -741,6 +742,7 @@ export default function FamilyLogHost<TOptions>({
       auditWatch.settleIfReady(visible, viewMode, shown?.installedBinding, shown?.fields);
 
       if (rawMeta) lastMetaRef.current = rawMeta;
+      paintGapsRef.current(rawMeta?.missing ?? [], isPictureWithModel && rawMeta.hour !== null ? rawMeta.hour : lastHourRef.current);
       const prevMetaKey = lastMetaKeyRef.current;
       if (
         !prevMetaKey
@@ -751,13 +753,11 @@ export default function FamilyLogHost<TOptions>({
       ) {
         lastMetaKeyRef.current = { mode: effectiveMode, reason, failureOrigin, rawMeta };
         const empty = rawMeta?.mode === 'empty' ? rawMeta.empty : null;
-        const missing = rawMeta?.missing ?? [];
         const warnings = rawMeta?.warnings ?? [];
-        const missingKey = missing.map(g => `${g.firstHour}-${g.lastHour}:${g.reason}`).join('|');
-        const nextMetaSig = JSON.stringify([effectiveMode, reason, failureOrigin, empty?.kind ?? '', empty?.message ?? '', empty?.detail ?? '', missingKey, warnings]);
+        const nextMetaSig = JSON.stringify([effectiveMode, reason, failureOrigin, empty?.kind ?? '', empty?.message ?? '', empty?.detail ?? '', warnings]);
         if (nextMetaSig !== metaSigRef.current) {
           metaSigRef.current = nextMetaSig;
-          setMeta({ mode: effectiveMode, reason, failureOrigin, empty, missing, warnings });
+          setMeta({ mode: effectiveMode, reason, failureOrigin, empty, warnings });
         }
       }
 
@@ -769,6 +769,13 @@ export default function FamilyLogHost<TOptions>({
       }
 
       if (rawMeta.facetPills) paintPillsRef.current(rawMeta.facetPills);
+      if (rawMeta.rowTags && latestRef.current.onRowTags) {
+        const sig = rawMeta.rowTags.join(',');
+        if (sig !== lastRowTagsSigRef.current) {
+          lastRowTagsSigRef.current = sig;
+          latestRef.current.onRowTags(rawMeta.rowTags);
+        }
+      }
 
       const extH = Math.max(viewportRef.current.height, rawMeta.physicalHeight);
       if (extH !== lastExtentHeightRef.current) {
@@ -882,9 +889,9 @@ export default function FamilyLogHost<TOptions>({
 
       if (logicalTop === 0) {
         if (frozenRef.current) {
+          abortFrozenFlights(frozenRef.current);
           frozenGenRef.current++;
           frozenRef.current = null;
-          scrollPageFlightRef.current = null;
           pendingFocusOrdinalRef.current = null;
           lastJumpCountRef.current = 0;
           setPageError(null);
@@ -892,16 +899,7 @@ export default function FamilyLogHost<TOptions>({
         }
       } else {
         if (!frozenRef.current && lastMetaRef.current && lastMetaRef.current.hour !== null) {
-          const m = lastMetaRef.current;
-          frozenRef.current = {
-            gen: ++frozenGenRef.current,
-            hour: m.hour!,
-            baseOrdinal: m.baseOrdinal,
-            total: m.total,
-            offset: m.offset,
-            pageSize: m.loadedCount,
-            panels: null,
-          };
+          frozenRef.current = createFrozenFromMeta(lastMetaRef.current);
           lastJumpCountRef.current = 0;
           setScrolledBack(true);
         }
@@ -943,6 +941,7 @@ export default function FamilyLogHost<TOptions>({
     bindRef.current();
 
     return () => {
+      abortFrozenFlights(frozenRef.current);
       auditWatch.dispose();
       stopInstall();
       stopPointer();
@@ -953,11 +952,15 @@ export default function FamilyLogHost<TOptions>({
       lastExtentHeightRef.current = -1;
       holdElement(frameRef.current, false);
     };
-  }, [pipeline, pipe, tooltips]);
+  }, [pipeline, pipe, tooltips, abortFrozenFlights, createFrozenFromMeta]);
+
+  useLayoutEffect(() => {
+    paintGaps(lastMetaRef.current?.missing ?? [], lastHourRef.current);
+  }, [gapsSubject, paintGaps]);
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
-  }, [pipe, enabled, bind, options, density, months, theme, reducedMotion, staticSources, selectedKey, subsReady, auditable, exactSources, audit.captureActive]);
+  }, [pipe, enabled, bind, options, density, months, theme, reducedMotion, staticSources, effectiveQueryKey, selectedKey, subsReady, auditable, exactSources, audit.captureActive]);
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;
@@ -989,6 +992,15 @@ export default function FamilyLogHost<TOptions>({
       onFocusOrdinal: focusByOrdinal,
       onActivate: entry => {
         const navEntry = navEntriesRef.current.find(item => item.key === entry[0]);
+        const builder = latestRef.current.contextMenuItems;
+        if (builder) {
+          const items = builder(entry[0], navEntry?.hour ?? lastHourRef.current ?? 0, entry[5]);
+          if (items.length) {
+            refreshFocusAnchor();
+            contextMenuRef.current.open(focusAnchorRef.current.x, focusAnchorRef.current.y, items);
+            return;
+          }
+        }
         latestRef.current.onActivate?.(entry[0], entry[5], navEntry?.hour ?? lastHourRef.current ?? undefined);
       },
       onContextMenu: entry => {
@@ -1015,20 +1027,25 @@ export default function FamilyLogHost<TOptions>({
 
   const onRetryLocal = useCallback(() => {
     if (pageError) {
-      const req = pageError.req;
+      const frozen = frozenRef.current;
+      if (frozen && frozen.gen === pageError.gen) {
+        const idx = pageError.pageIndex;
+        frozen.errors.delete(idx);
+        setPageError(null);
+        requestPageIndex(frozen, idx);
+        return;
+      }
       setPageError(null);
-      requestScrollPage(req);
-      return;
     }
     retryLocal(() => bindRef.current());
-  }, [pageError, requestScrollPage, retryLocal]);
+  }, [pageError, requestPageIndex, retryLocal]);
 
   if (blockedState) return <>{blockedState}</>;
 
   const hasControls = !!controls && ((controls.chipGroups?.length ?? 0) > 0 || (controls.pickers?.length ?? 0) > 0);
   const pillsNode = <span ref={pillsRef} className="family-log-pills" />;
 
-  const bodyStateNode = renderFamilyBodyState({
+  const bodyStateNode = bodyBlockedState ?? renderFamilyBodyState({
     mode: meta.mode,
     reason: meta.reason,
     failureOrigin: meta.failureOrigin,
@@ -1075,7 +1092,7 @@ export default function FamilyLogHost<TOptions>({
         </div>
       )}
       {note && <p className="family-log-note">{note}</p>}
-      {gapsSubject && meta.missing.length > 0 && <LogGaps missing={dedupeMissingSpans(meta.missing)} until={lastHourRef.current} subject={gapsSubject} />}
+      <div ref={gapsRef} className="family-log-gaps-slot" hidden />
       <div className="family-log-body">
         <div
           ref={scrollRef}

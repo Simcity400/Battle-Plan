@@ -1,8 +1,8 @@
 
-use dashboard_base::{Source, catalogue::Catalogue, products::{LoadContext, Product, log_page::{self as logs, LogCaches, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel}}, queries::country_ids::Names};
+use dashboard_base::{Source, catalogue::Catalogue, products::{LoadContext, Product, log_page::{self as logs, LogCaches, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel, quiet_tail_missing}}, queries::country_ids::Names};
 use dashboard_follow::panel::Panel;
 use dashboard_world::products::equipment_names as names;
-use dashboard_query::{Query, log::{Cell, FacetFilter}};
+use dashboard_query::{Query, log::{self, Cell, FacetFilter}};
 use replay_data::rows::{MarketEventRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -349,6 +349,7 @@ impl Product for MarketLedger {
         pageSize,
         "facets[].countries[]",
         "facets[].values[]",
+        "facets[].membership[].country",
         "facets[].membership[].firstHour": Start,
         "facets[].membership[].lastHour": End,
         "facets[].unobserved[].firstHour": Start,
@@ -413,6 +414,9 @@ pub struct MarketLedgerTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub hour: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub offset: Option<String>,
     pub limit: u32,
     #[serde(default)]
     pub count_facets: Vec<LogFacetCountAsk>,
@@ -431,17 +435,20 @@ fn load_tail_at(
 ) -> io::Result<LogTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
-    let (page, rows, facet_totals, missing) = logs::tail_with(query, LOG, &params.facets, params.from, hour, params.limit, &params.count_facets, log_caches, |paged, tag| {
+    let offset = params.offset.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid offset"))?;
+    let (page, rows, facet_totals, missing) = logs::tail_with(query, LOG, &params.facets, params.from, hour, offset, params.limit, &params.count_facets, log_caches, |paged, tag| {
         (paged.row.clone(), paged.ordinal, paged.own, tag.cloned())
     })?;
     let (reply_rows, warnings) = enrich_rows(query, links, context, name_cache, rows, tagged, cancelled)?;
+    let first_ordinal = reply_rows.first().map_or_else(|| page.base.to_string(), |row| row.ordinal.clone());
     Ok(LogTailReply {
         branch_id: params.branch_id.clone(),
         log: LOG.to_owned(),
         columns: COLUMNS.iter().map(|column| (*column).to_owned()).collect(),
         base_ordinal: page.base.to_string(),
-        first_ordinal: page.first.to_string(),
-        total: page.total().to_string(),
+        first_ordinal,
+        offset: page.offset.to_string(),
+        total: page.total.to_string(),
         rows: reply_rows,
         facet_totals,
         missing,
@@ -461,16 +468,19 @@ impl Product for MarketLedgerTail {
         facets,
         from: Start,
         hour: Read,
+        offset,
         limit,
         countFacets,
         "facets[].countries[]",
         "facets[].values[]",
+        "facets[].membership[].country",
         "facets[].membership[].firstHour": Start,
         "facets[].membership[].lastHour": End,
         "facets[].unobserved[].firstHour": Start,
         "facets[].unobserved[].lastHour": End,
         "countFacets[].facets[].countries[]",
         "countFacets[].facets[].values[]",
+        "countFacets[].facets[].membership[].country",
         "countFacets[].facets[].membership[].firstHour": Start,
         "countFacets[].facets[].membership[].lastHour": End,
         "countFacets[].facets[].unobserved[].firstHour": Start,
@@ -511,12 +521,36 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     let context = Arc::new(names::context(source, load).map_err(|error| error.to_string())?);
     let cache = source.state::<VariantNameCache>();
     let log_caches = dashboard_base::queries::log_caches(source);
+    let declared = dashboard_declare::log(LOG).ok_or_else(|| format!("No declared log {LOG}"))?;
+    let pre_reader = log::Reader::with_cache(&query, declared, Arc::clone(&log_caches.buckets)).map_err(|error| error.to_string())?;
+    let selection = Arc::new(pre_reader.select(&params.facets, query.timeline.first, query.timeline.last).map_err(|error| error.to_string())?);
+    let count_selections: Arc<Vec<log::Selection>> = Arc::new(
+        params
+            .count_facets
+            .iter()
+            .map(|ask| pre_reader.select(&ask.facets, query.timeline.first, query.timeline.last))
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?,
+    );
     let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
     let params = Arc::new(params);
-    Ok(dated_tail_panel(executable, move |hour, cancelled| {
-        let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
-        load_tail_at(&query, &links, &context, Some(&cache), Some(&log_caches), &params, hour, cancelled)
-    }))
+    let q_replay = Arc::clone(&replay);
+    let q_timeline = timeline.clone();
+    let q_holders = Arc::clone(&holders);
+    let q_params = Arc::clone(&params);
+    let q_caches = log_caches.clone();
+    Ok(dated_tail_panel(
+        executable,
+        move |prev_hour, hour, prev_reply, cancelled| {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let query = Query { replay: &q_replay, timeline: q_timeline.clone(), holders: q_holders.clone() };
+            quiet_tail_missing(&query, LOG, &q_caches, &selection, &count_selections, &q_params.facets, q_params.from, prev_hour, hour, prev_reply)
+        },
+        move |hour, cancelled| {
+            let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
+            load_tail_at(&query, &links, &context, Some(&cache), Some(&log_caches), &params, hour, cancelled)
+        },
+    ))
 }
 
 fn plain_names_with_seeker<'r>(
@@ -641,7 +675,7 @@ mod tests {
         .unwrap();
         let tail = MarketLedgerTail::load(
             &source,
-            &MarketLedgerTailParams { branch_id: "1".into(), facets: facets.clone(), from: None, hour: Some(110), limit: 64, count_facets: Vec::new() },
+            &MarketLedgerTailParams { branch_id: "1".into(), facets: facets.clone(), from: None, hour: Some(110), offset: None, limit: 64, count_facets: Vec::new() },
             &load,
             &AtomicBool::new(false),
         )
@@ -661,7 +695,7 @@ mod tests {
         let context = names::context(&source, &load).unwrap();
         let cache = source.state::<VariantNameCache>();
         let log_caches = dashboard_base::queries::log_caches(&source);
-        let tail_params = MarketLedgerTailParams { branch_id: "1".into(), facets, from: None, hour: None, limit: 64, count_facets: Vec::new() };
+        let tail_params = MarketLedgerTailParams { branch_id: "1".into(), facets, from: None, hour: None, offset: None, limit: 64, count_facets: Vec::new() };
         for hour in [110, 104, 112, 110] {
             let cached = load_tail_at(&query, &links, &context, Some(&cache), Some(&log_caches), &tail_params, hour, &AtomicBool::new(false)).unwrap();
             let uncached = load_tail_at(&query, &links, &context, None, None, &tail_params, hour, &AtomicBool::new(false)).unwrap();
@@ -676,7 +710,7 @@ mod tests {
         use replay_data::rows::{LexicalTokenRow, TableRows, VariantDefinitionRow};
         use replay_frame::frame::TableView;
 
-        let (cat, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        let (cat, _folder) = dashboard_base::catalogue::tests::localisation_catalogue(&[
             ("hoi4.exe", "test"),
             ("user/settings.txt", "language=l_english force_pow2_textures=no"),
             ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
@@ -720,7 +754,7 @@ mod tests {
         let query = dashboard_base::queries::query(&source, 1).unwrap();
         let links = links_by_run(&source, &query).unwrap();
         let facets = vec![FacetFilter { name: "kind".into(), values: vec![20], ..Default::default() }];
-        let tail_params = MarketLedgerTailParams { branch_id: "1".into(), facets: facets.clone(), from: None, hour: None, limit: 64, count_facets: Vec::new() };
+        let tail_params = MarketLedgerTailParams { branch_id: "1".into(), facets: facets.clone(), from: None, hour: None, offset: None, limit: 64, count_facets: Vec::new() };
         let source_cache = source.state::<VariantNameCache>();
 
         let whole_tail = load_tail_at(&query, &links, &context, Some(&source_cache), None, &tail_params, 110, &AtomicBool::new(false)).unwrap();

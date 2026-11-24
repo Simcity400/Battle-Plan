@@ -1,4 +1,4 @@
-import { Profiler } from 'react';
+import { Profiler, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -13,7 +13,8 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { PlaybackController } from '../../dashboard/playback.ts';
 import { FrameEngine } from '../../engine/frame.ts';
 import type { LogCell, LogPageRow } from '../../generated/dashboard';
-import { divisionLogProjection, type DivisionLogProjectionOptions } from '../../widgets/division-log/divisionLogProjection.ts';
+import { marketLedgerProjection, type MarketLedgerProjectionOptions } from '../../widgets/market-ledger/marketLedgerProjection.ts';
+import WidgetState from '../../components/WidgetState.tsx';
 import FamilyLogHost from './FamilyLogHost.tsx';
 import type { LogMetaField } from './laneView.ts';
 import type { LogTailReplyWire } from './tailReply.ts';
@@ -21,11 +22,9 @@ import '../../styles.css';
 
 const ROUTE = 11;
 const BASE_HOUR = HOUR_EPOCH + 1939 * 365 * 24;
-const DIV_COLUMNS = [
-  'division', 'kind', 'status', 'hour', 'by', 'afterHour', 'tag', 'name', 'nameMissing',
-  'icon', 'iconMissing', 'presentationHour', 'template', 'templateName', 'templateMissing',
-  'province', 'placeHour', 'placeAtEvent', 'killerTag', 'killerDivision', 'matchedDeaths',
-  'readHour', 'placeName', 'placeMissing',
+const MARKET_COLUMNS = [
+  'id', 'occurrence', 'kind', 'mode', 'contract', 'seller', 'buyer', 'variant',
+  'equipment', 'equipmentMissing', 'amountRaw', 'auxiliaryRaw', 'totalRaw', 'lostTotalRaw', 'reason',
 ];
 
 const numCell = (value: string | number): LogCell => ({ kind: 'number', value: String(value) });
@@ -33,40 +32,31 @@ const txtCell = (value: string): LogCell => ({ kind: 'text', value });
 
 function makeRow(ordinal: number, hour: number): LogPageRow {
   const map: Record<string, LogCell> = {
-    division: txtCell(String(ordinal)),
-    kind: numCell(ordinal % 2),
-    status: txtCell(ordinal % 2 === 0 ? 'first_observed' : 'division_destroyed'),
-    hour: numCell(hour),
-    by: numCell(0),
-    afterHour: { kind: 'missing' },
-    tag: txtCell('GER'),
-    name: txtCell(`Division ${ordinal}`),
-    nameMissing: { kind: 'missing' },
-    icon: { kind: 'missing' },
-    iconMissing: { kind: 'missing' },
-    presentationHour: numCell(hour),
-    template: txtCell('31'),
-    templateName: txtCell('Infantry'),
-    templateMissing: { kind: 'missing' },
-    province: numCell(42),
-    placeHour: numCell(hour),
-    placeAtEvent: numCell(1),
-    killerTag: ordinal % 2 === 1 ? txtCell('SOV') : { kind: 'missing' },
-    killerDivision: { kind: 'missing' },
-    matchedDeaths: { kind: 'missing' },
-    readHour: numCell(hour),
-    placeName: txtCell('Berlin'),
-    placeMissing: { kind: 'missing' },
+    id: txtCell(String(ordinal)),
+    occurrence: numCell(ordinal),
+    kind: numCell(ordinal % 2 === 0 ? 20 : 21),
+    mode: numCell(ordinal % 2 === 0 ? 20 : 21),
+    contract: txtCell(`000000000000${String(ordinal).padStart(4, '0')}`),
+    seller: txtCell('GER'),
+    buyer: txtCell('FRA'),
+    variant: txtCell('7'),
+    equipment: txtCell('Infantry Equipment I'),
+    equipmentMissing: { kind: 'missing' },
+    amountRaw: numCell(String(1000 * (ordinal + 1))),
+    auxiliaryRaw: { kind: 'missing' },
+    totalRaw: numCell(String(1000 * (ordinal + 1))),
+    lostTotalRaw: { kind: 'missing' },
+    reason: { kind: 'missing' },
   };
   return {
     hour,
-    key: `d:${ordinal}`,
+    key: `m:${ordinal}`,
     ordinal: String(ordinal),
-    cells: DIV_COLUMNS.map(col => map[col] ?? { kind: 'missing' }),
+    cells: MARKET_COLUMNS.map(col => map[col] ?? { kind: 'missing' }),
   };
 }
 
-function makeTailReply(total: number, upToHour: number): LogTailReplyWire {
+function makeTailReply(total: number, upToHour: number, gapUntil?: number): LogTailReplyWire {
   const count = Math.min(64, total);
   const rows: LogPageRow[] = [];
   for (let i = 0; i < count; i++) {
@@ -75,19 +65,15 @@ function makeTailReply(total: number, upToHour: number): LogTailReplyWire {
   }
   return {
     branchId: '1',
-    log: 'division-events',
-    columns: DIV_COLUMNS,
+    log: 'market-events',
+    columns: MARKET_COLUMNS,
     baseOrdinal: '0',
     firstOrdinal: String(total - count),
+    offset: '0',
     total: String(total),
     rows,
-    facetTotals: [
-      { key: 'created', total: String(Math.ceil(total / 2)) },
-      { key: 'lost', total: String(Math.floor(total / 2)) },
-      { key: 'transfer', total: '0' },
-      { key: 'vanished', total: '0' },
-    ],
-    missing: [],
+    facetTotals: [],
+    missing: gapUntil !== undefined ? [{ firstHour: BASE_HOUR + 100, lastHour: gapUntil, reason: 'Ongoing coverage gap' }] : [],
     warnings: [],
   };
 }
@@ -202,27 +188,22 @@ const runtime = {
 } as unknown as WidgetRuntime;
 
 const widget: WidgetSpec = {
-  id: 'w-div-log',
-  kind: 'division-log',
+  id: 'w-market-ledger',
+  kind: 'market-ledger',
   configVersion: 1,
-  title: 'Division log',
+  title: 'Market ledger',
   trackIds: ['t1'],
   time: { mode: 'follow' },
   countries: { kind: 'all' },
   options: {},
 } as unknown as WidgetSpec;
 
-const OPTIONS: DivisionLogProjectionOptions = {
-  events: 'both',
-  showTotals: true,
-  lossesAvailable: true,
+const OPTIONS: MarketLedgerProjectionOptions = {
   fromHour: BASE_HOUR,
   looks: {
     GER: [{ from: 0, name: 'Germany' }],
-    SOV: [{ from: 0, name: 'Soviet Union' }],
+    FRA: [{ from: 0, name: 'France' }],
   },
-  manifestWarnings: [],
-  manifestGaps: [],
 };
 
 const SUBSCRIPTIONS = [
@@ -231,9 +212,9 @@ const SUBSCRIPTIONS = [
     source,
     branch: '1',
     offset: 0,
-    query: { panel: 'division-log-tail', branchId: '1', facets: [{ name: 'kind', values: [0, 1, 2], countries: [] }], limit: 64, countFacets: [] },
+    query: { panel: 'market-ledger-tail', branchId: '1', facets: [{ name: 'kind', values: [20, 21], countries: [] }], limit: 64, countFacets: [] },
     channel: 'panel' as const,
-    product: 'division-log-tail',
+    product: 'market-ledger-tail',
   },
 ];
 
@@ -245,6 +226,7 @@ let hostNode: HTMLDivElement | null = null;
 let subId = -1;
 let pipeId = -1;
 let flushWrapped = false;
+let toggleChipExternal: ((on: boolean) => void) | null = null;
 
 function waitForInstall(predicate: () => boolean): Promise<void> {
   if (predicate()) return Promise.resolve();
@@ -279,7 +261,7 @@ function measureLayoutReadsDuring<T>(fn: () => T): { result: T; reads: number } 
   const clientHeightDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')!;
   const offsetWidthDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')!;
   const offsetHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')!;
-  const scrollHeightDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')!;
+  const scrollHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')!;
 
   Element.prototype.getBoundingClientRect = function (this: Element) { reads++; return origGetRect.call(this); };
   window.getComputedStyle = function (...args: Parameters<typeof window.getComputedStyle>) { reads++; return origComputed.apply(window, args); };
@@ -287,7 +269,7 @@ function measureLayoutReadsDuring<T>(fn: () => T): { result: T; reads: number } 
   Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get() { reads++; return clientHeightDesc.get!.call(this); } });
   Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { reads++; return offsetWidthDesc.get!.call(this); } });
   Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { reads++; return offsetHeightDesc.get!.call(this); } });
-  Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, get() { reads++; return scrollHeightDesc.get!.call(this); } });
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { reads++; return scrollHeightDesc.get!.call(this); } });
 
   try {
     const result = fn();
@@ -299,7 +281,7 @@ function measureLayoutReadsDuring<T>(fn: () => T): { result: T; reads: number } 
     Object.defineProperty(Element.prototype, 'clientHeight', clientHeightDesc);
     Object.defineProperty(HTMLElement.prototype, 'offsetWidth', offsetWidthDesc);
     Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeightDesc);
-    Object.defineProperty(Element.prototype, 'scrollHeight', scrollHeightDesc);
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDesc);
   }
 }
 
@@ -313,6 +295,54 @@ function ensureFlushInstrumentation() {
     totalInstallReads += reads;
   };
   pipeline.onInstall(pipeId, () => { installs++; });
+}
+
+function FixtureHarness() {
+  const [chipOn, setChipOn] = useState(true);
+  toggleChipExternal = setChipOn;
+  return (
+    <FollowedWidgetKey.Provider value="dom-market-ledger">
+      <Profiler id="log-family" onRender={() => { commits++; }}>
+        <FamilyLogHost
+          projection={marketLedgerProjection}
+          options={OPTIONS}
+          label="Market ledger"
+          subject="market activity"
+          widget={widget}
+          runtime={runtime}
+          active
+          density="comfortable"
+          months
+          twoLine
+          subscriptions={chipOn ? SUBSCRIPTIONS : []}
+          queryKey={`dom-market:${chipOn ? 'on' : 'off'}`}
+          onLoadScrollPage={async (frozenHour, offset, pageSize) => {
+            scrollPageFetches++;
+            return makeTailReply(Math.max(1, 200 - offset), frozenHour - pageSize);
+          }}
+          controls={{
+            chipGroups: [{
+              key: 'kinds',
+              label: 'Market occurrences',
+              chips: [{ value: 'deliveries', label: 'Deliveries' }],
+              selected: chipOn ? ['deliveries'] : [],
+              max: 1,
+              onToggle: () => setChipOn(v => !v),
+            }],
+          }}
+          contextMenuItems={(_key, hour) => [
+            { label: 'Show contract', run: () => {} },
+            { label: `Jump to ${hour}`, run: () => {} },
+          ]}
+          gapsSubject="Market activity"
+          bodyBlockedState={!chipOn ? <WidgetState kind="empty" icon="history" message="Choose the occurrences to show in the widget settings." /> : null}
+          offset={0}
+          pin={null}
+          bounds={[BASE_HOUR, BASE_HOUR + 4000]}
+        />
+      </Profiler>
+    </FollowedWidgetKey.Provider>
+  );
 }
 
 declare global {
@@ -331,31 +361,7 @@ window.logFamilyDom = {
     hostNode.style.cssText = 'width:520px;height:280px;display:flex;flex-direction:column;';
     document.body.append(hostNode);
     const root = createRoot(hostNode);
-    flushSync(() => root.render(
-      <FollowedWidgetKey.Provider value="dom-div-log">
-        <Profiler id="log-family" onRender={() => { commits++; }}>
-          <FamilyLogHost
-            projection={divisionLogProjection}
-            options={OPTIONS}
-            label="Division log"
-            subject="divisions"
-            widget={widget}
-            runtime={runtime}
-            active
-            density="comfortable"
-            months
-            subscriptions={SUBSCRIPTIONS}
-            onLoadScrollPage={async (frozenHour, offset, pageSize) => {
-              scrollPageFetches++;
-              return makeTailReply(Math.max(1, 200 - offset), frozenHour - pageSize);
-            }}
-            offset={0}
-            pin={null}
-            bounds={[BASE_HOUR, BASE_HOUR + 4000]}
-          />
-        </Profiler>
-      </FollowedWidgetKey.Provider>,
-    ));
+    flushSync(() => root.render(<FixtureHarness />));
 
     await waitForDom(hostNode, () => {
       const canvas = hostNode?.querySelector<HTMLCanvasElement>('canvas.family-log-canvas');
@@ -381,13 +387,12 @@ window.logFamilyDom = {
     await firstPaintDone;
     ensureFlushInstrumentation();
     const afterMeta = pipeline.view(pipeId)?.fields?.meta as LogMetaField | undefined;
-    const pillsText = hostNode.querySelector('.family-log-pills')?.textContent ?? '';
     return {
       painted: true,
       initialHour,
       afterFirstHour: afterMeta?.hour ?? null,
       expectedFirstHour: BASE_HOUR + 100,
-      pillsText,
+      initialTotal: afterMeta?.total ?? 0,
     };
   },
 
@@ -403,7 +408,7 @@ window.logFamilyDom = {
     const feed = (hour: number) => {
       while (sentThrough < hour + 6) {
         sentThrough++;
-        send(datedPanel(subId, sentThrough, makeTailReply(totalFor(sentThrough), sentThrough), seek, ROUTE));
+        send(datedPanel(subId, sentThrough, makeTailReply(totalFor(sentThrough), sentThrough, sentThrough), seek, ROUTE));
       }
     };
     feed(startHour);
@@ -425,35 +430,38 @@ window.logFamilyDom = {
         }
       }
       const playingBeforePause = clock.getSnapshot().playing;
-      const playCommits = commits;
       const playReads = totalInstallReads;
       const playInstalls = installs;
-      const pillsAfterPlay = hostNode?.querySelector('.family-log-pills')?.textContent ?? '';
 
       totalInstallReads = 0;
       const expectedHour = clock.getHour();
-      const expectedTopKey = `d:${totalFor(expectedHour) - 1}`;
+      const expectedTotal = totalFor(expectedHour);
+      const expectedTopKey = `m:${expectedTotal - 1}`;
       const mirrorUpdated = waitForDom(
         hostNode!,
-        () => hostNode?.querySelector<HTMLDivElement>('.family-log-mirror [role="option"]')?.dataset.rowKey === expectedTopKey,
+        () => hostNode?.querySelector<HTMLDivElement>('.family-log-mirror [role="option"][data-row-key^="m:"]')?.dataset.rowKey === expectedTopKey,
       );
       clock.setPlaying(false);
       await mirrorUpdated;
       const pausedHour = Math.floor(clock.getHour());
       const pauseReads = totalInstallReads;
+      const commitsThroughPause = commits;
       const afterMeta = pipeline.view(pipeId)?.fields?.meta as LogMetaField | undefined;
+      const gapsText = hostNode?.querySelector('.family-log-gaps-slot')?.textContent ?? '';
       return {
         playingDuringAdvance,
         playingBeforePause,
-        playCommits,
+        commitsThroughPause,
         playReads,
         pauseReads,
         playInstalls,
         scrollPageFetches,
-        pillsAfterPlay,
-        flushedOnPause: hostNode?.querySelector<HTMLDivElement>('.family-log-mirror [role="option"]')?.dataset.rowKey === expectedTopKey,
-        mirrorTopKey: hostNode?.querySelector<HTMLDivElement>('.family-log-mirror [role="option"]')?.dataset.rowKey ?? null,
+        gapsVisible: gapsText.includes('Not recorded'),
+        flushedOnPause: hostNode?.querySelector<HTMLDivElement>('.family-log-mirror [role="option"][data-row-key^="m:"]')?.dataset.rowKey === expectedTopKey,
+        mirrorTopKey: hostNode?.querySelector<HTMLDivElement>('.family-log-mirror [role="option"][data-row-key^="m:"]')?.dataset.rowKey ?? null,
         expectedTopKey,
+        finalTotal: afterMeta?.total ?? 0,
+        expectedTotal,
         finalHour: afterMeta?.hour ?? null,
         pausedHour,
       };
@@ -505,25 +513,54 @@ window.logFamilyDom = {
     return { jumpBefore, jumpAfter, jumpUpdateCommits, scrollAfterJump };
   },
 
+  async testEnterMenuAndLastChipToolbar() {
+    const scrollEl = hostNode?.querySelector<HTMLDivElement>('.family-log-scroll');
+    if (!scrollEl) throw new Error('Missing scroll container');
+    scrollEl.focus();
+    scrollEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await waitForDom(document.body, () => document.body.textContent?.includes('Show contract') ?? false);
+    const hasContractAction = document.body.textContent?.includes('Show contract') ?? false;
+    const hasJumpAction = document.body.textContent?.includes('Jump to ') ?? false;
+    scrollEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    flushSync(() => toggleChipExternal?.(false));
+    const toolbarStillMounted = !!hostNode?.querySelector('.family-log-toolbar');
+    const emptyVisible = hostNode?.querySelector('.family-log-state-overlay')?.textContent?.includes('Choose the occurrences') ?? false;
+    flushSync(() => toggleChipExternal?.(true));
+    await waitForDom(hostNode!, () => {
+      const canvas = hostNode?.querySelector<HTMLCanvasElement>('canvas.family-log-canvas');
+      const nextPipe = canvas?.dataset.placement ? Number(canvas.dataset.placement) : 0;
+      if (!nextPipe) return false;
+      pipeId = nextPipe;
+      return true;
+    });
+    const internal = pipeline as unknown as { widgets: Map<number, { subs: Map<object, number> }> };
+    subId = [...(internal.widgets.get(pipeId)?.subs.values() ?? [])][0]!;
+    pipeline.onInstall(pipeId, () => { installs++; });
+    return { hasContractAction, hasJumpAction, toolbarStillMounted, emptyVisible };
+  },
+
   async testDualPlacementAndDrillSurvival() {
     const drillHost = document.createElement('div');
     drillHost.style.cssText = 'width:400px;height:200px;display:flex;flex-direction:column;';
     document.body.append(drillHost);
     const drillRoot = createRoot(drillHost);
-    const drillWidget: WidgetSpec = { ...widget, id: 'w-div-log-drill' };
+    const drillWidget: WidgetSpec = { ...widget, id: 'w-market-drill' };
     flushSync(() => drillRoot.render(
-      <FollowedWidgetKey.Provider value="dom-div-log">
+      <FollowedWidgetKey.Provider value="dom-market-ledger">
         <FamilyLogHost
-          projection={divisionLogProjection}
+          projection={marketLedgerProjection}
           options={OPTIONS}
           label="Deliveries"
-          subject="divisions"
+          subject="market activity"
           widget={drillWidget}
           runtime={runtime}
           active
           density="compact"
           months={false}
+          twoLine
           subscriptions={SUBSCRIPTIONS}
+          queryKey="dom-market-drill"
           offset={0}
           pin={null}
           bounds={[BASE_HOUR, BASE_HOUR + 4000]}

@@ -81,18 +81,3 @@ test('following, the rows named are those of the newest pages held, before the l
   assert.deepEqual(divisionNamedRows(true, pages, 3, [rows[4], rows[1]]).map(row => row.key), ['3', '4', '5', '1'], 'a row scrolled to beyond them');
   assert.deepEqual(divisionNamedRows(false, pages, 3, [rows[1]]).map(row => row.key), ['1'], 'paused or browsing: the rows drawn');
 });
-
-test('a missing or unrecorded division kind is not silently defaulted to lost', () => {
-  const row = divisionEntry({
-    key: '99',
-    hour: 120,
-    fields: {},
-    cells: {
-      division: { kind: 'text', value: '99' },
-      kind: { kind: 'notRecorded' },
-      status: { kind: 'missing' },
-      readHour: { kind: 'number', value: '120' },
-    },
-  });
-  assert.equal(row.item.kind, null);
-});

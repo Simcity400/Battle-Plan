@@ -20,7 +20,7 @@ import type { LogCut } from '../../dashboard/useLogPages';
 import { coverageOf, useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import type { LogControlsSpec } from '../../families/log/declaration.ts';
 import { logFamilySettings } from '../../families/log/options.ts';
-import { boundMembershipScope, type CountryScopeFilter } from '../division-log/divisionLogData.ts';
+import { boundMembershipScope, type CountryScopeFilter } from '../../families/log/scope.ts';
 import { DETAILS, OPTIONS } from './definition';
 import './marketLedger.css';
 

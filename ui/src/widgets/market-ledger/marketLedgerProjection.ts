@@ -40,8 +40,8 @@ export interface MarketLedgerProjectionOptions {
 const COLUMNS: readonly LogColumnTrack[] = [
   { id: 'date', width: 58 },
   { id: 'art', width: 28 },
-  { id: 'body', flex: 1, minWidth: 160 },
-  { id: 'figure', width: 76, align: 'end', priority: 2 },
+  { id: 'body', flex: 1, minWidth: 80 },
+  { id: 'figure', width: 76, align: 'end' },
 ];
 
 const KIND_CATEGORY: Readonly<Record<number, number>> = {
@@ -140,15 +140,17 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
     }
 
     const index = columnIndex(rawTail.columns);
+    const columnsKey = rawTail.columns.join('\x1f');
     const total = parseOrdinal(rawTail.total);
     const baseOrdinal = parseOrdinal(rawTail.baseOrdinal);
     const firstOrdinal = parseOrdinal(rawTail.firstOrdinal);
+    const effectiveOffset = rawTail.offset !== undefined ? parseOrdinal(rawTail.offset) : offset;
 
     const orderedRows = newestFirstWireRows(rawTail.rows);
     const rows: LogRowSpec[] = new Array(orderedRows.length);
     for (let i = 0; i < orderedRows.length; i++) {
       const wire = orderedRows[i]!;
-      rows[i] = rowCache.getOrProject(options.looks, wire, () => {
+      rows[i] = rowCache.getOrProject(options.looks, columnsKey, wire, () => {
         const sellerCell = cellAt(wire, index, 'seller');
         const buyerCell = cellAt(wire, index, 'buyer');
         const amountCell = cellAt(wire, index, 'amountRaw');
@@ -271,8 +273,10 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
             const tipRows: LogTooltipField[] = [
               { label: 'Seller', value: seller.value },
               ...(item.seller && seller.value.kind !== 'known' ? [{ label: 'Seller tag', value: knownValue(item.seller), tone: 'muted' as const }] : []),
+              ...(item.seller && seller.look?.flagReason ? [{ label: 'Seller flag', value: notRecorded(seller.look.flagReason), tone: 'muted' as const }] : []),
               { label: 'Buyer', value: buyer.value },
               ...(item.buyer && buyer.value.kind !== 'known' ? [{ label: 'Buyer tag', value: knownValue(item.buyer), tone: 'muted' as const }] : []),
+              ...(item.buyer && buyer.look?.flagReason ? [{ label: 'Buyer flag', value: notRecorded(buyer.look.flagReason), tone: 'muted' as const }] : []),
             ];
             if (item.variant !== '0') {
               tipRows.push({ label: 'Equipment', value: equipmentVal });
@@ -297,12 +301,13 @@ export const marketLedgerProjection: LogProjection<MarketLedgerProjectionOptions
       total,
       baseOrdinal,
       firstOrdinal,
-      offset,
+      offset: effectiveOffset,
       layout: 'row',
       twoLine: true,
       columns: COLUMNS,
       rows,
       gaps: rawTail.missing,
+      ...(rawTail.inlineMissing ? { inlineGaps: rawTail.inlineMissing } : {}),
       empty: { kind: 'empty', message: emptyMessage },
       warnings: rawTail.warnings,
     };

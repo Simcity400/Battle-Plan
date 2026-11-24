@@ -495,7 +495,23 @@ impl Product for EventFeed {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     type Params = FeedPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "scope[].firstHour": Start, "scope[].lastHour": End, "facets[].countries[]", "facets[].values[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        to: End,
+        cursor,
+        pageSize,
+        "scope[].firstHour": Start,
+        "scope[].lastHour": End,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "facets[].membership[].country",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End
+    ];
     type Reply = EventFeedPage;
 
     #[cfg(any(test, feature = "export-types"))]

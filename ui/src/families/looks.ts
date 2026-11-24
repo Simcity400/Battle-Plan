@@ -2,6 +2,7 @@ export interface CountryLook {
   from: number;
   name: string | null;
   flag?: string;
+  flagReason?: string;
   color?: string;
   status?: string;
 }

@@ -22,7 +22,7 @@ import {
 } from './model.ts';
 import { collectLogIcons, createLogPicture, drawLog, hitLogItem, type LogPicture, type LogTheme } from './painter.ts';
 import { logProjection } from './registry.ts';
-import { isLogTailReply, mergeFrozenPageIntoTail, parseOrdinal } from './tailReply.ts';
+import { isLogTailReply, mergeFrozenPageIntoTail, parseOrdinal, type LogTailReplyWire } from './tailReply.ts';
 
 export const LOG_FADE_MAX_SPEED = 48;
 export const LOG_FADE_DURATION_MS = 180;
@@ -43,6 +43,7 @@ export interface FamilyLogBinding<TOptions = unknown> {
   readonly staticHour?: number | null;
   readonly frozenGen?: number;
   readonly frozenHour?: number | null;
+  readonly frozenLiveSeq?: number | null;
   readonly frozenTotal?: number | null;
   readonly frozenPanels?: Readonly<Record<string, unknown>>;
   readonly width: number;
@@ -67,6 +68,7 @@ export interface LogMetaField {
   readonly reason: string | null;
   readonly empty: { readonly kind: 'empty' | 'unavailable'; readonly message: string; readonly detail?: string } | null;
   readonly hour: number | null;
+  readonly liveSeq: number;
   readonly baseOrdinal: number;
   readonly total: number;
   readonly liveTotal: number;
@@ -80,6 +82,7 @@ export interface LogMetaField {
   readonly facetPills: readonly LogFacetPill[];
   readonly missing: readonly MissingSpan[];
   readonly warnings: readonly string[];
+  readonly rowTags?: readonly string[];
 }
 
 export interface LogPhasesField {
@@ -89,6 +92,8 @@ export interface LogPhasesField {
   incrementalFrames: number;
   fullFrames: number;
   paintedRows: number;
+  paintedItems: number;
+  scannedItems: number;
   visitedItems: number;
   tailAdvanceFrames: number;
   tailAdvanceVisitedItems: number;
@@ -143,6 +148,10 @@ interface HeldFamilyLog {
   prevFrozenGen: number;
   installedLiveTail: unknown;
   installedLiveTotal: number;
+  liveSeq: number;
+  lastRecordedLiveTail: unknown;
+  lastRecordedLiveHour: number | null;
+  recentLiveTails: Map<number, LogTailReplyWire>;
   frozenSnapTail: unknown;
   prevHour: number | null;
   cachedModel: LogModel | null;
@@ -342,6 +351,10 @@ export function familyLogLaneView(
           prevFrozenGen: -1,
           installedLiveTail: null,
           installedLiveTotal: 0,
+          liveSeq: 0,
+          lastRecordedLiveTail: null,
+          lastRecordedLiveHour: null,
+          recentLiveTails: new Map(),
           frozenSnapTail: null,
           prevHour: null,
           cachedModel: null,
@@ -375,6 +388,8 @@ export function familyLogLaneView(
             incrementalFrames: 0,
             fullFrames: 0,
             paintedRows: 0,
+            paintedItems: 0,
+            scannedItems: 0,
             visitedItems: 0,
             tailAdvanceFrames: 0,
             tailAdvanceVisitedItems: 0,
@@ -407,7 +422,10 @@ export function familyLogLaneView(
       const isFrozen = binding.frozenHour !== null && binding.frozenHour !== undefined;
       if (isFrozen) {
         if (held.prevFrozenHour === null || held.prevFrozenGen !== frozenGen) {
-          held.frozenSnapTail = held.installedLiveTail;
+          const acknowledgedTail = binding.frozenLiveSeq !== null && binding.frozenLiveSeq !== undefined
+            ? held.recentLiveTails.get(binding.frozenLiveSeq)
+            : undefined;
+          held.frozenSnapTail = acknowledgedTail ?? held.installedLiveTail;
         }
       } else {
         held.frozenSnapTail = null;
@@ -451,6 +469,7 @@ export function familyLogLaneView(
           reason: null,
           empty: null,
           hour: null,
+          liveSeq: held.liveSeq,
           baseOrdinal: 0,
           total: 0,
           liveTotal: 0,
@@ -512,9 +531,19 @@ export function familyLogLaneView(
         held.focusTipGate.invalidate();
       }
 
-      if (!isFrozen && liveTail !== undefined) {
+      if (!isFrozen && isLogTailReply(liveTail)) {
         held.installedLiveTail = liveTail;
         held.installedLiveTotal = liveTotal;
+        if (liveTail !== held.lastRecordedLiveTail || effectiveHour !== held.lastRecordedLiveHour) {
+          held.liveSeq++;
+          held.lastRecordedLiveTail = liveTail;
+          held.lastRecordedLiveHour = effectiveHour;
+          held.recentLiveTails.set(held.liveSeq, liveTail);
+          if (held.recentLiveTails.size > 8) {
+            const oldest = held.recentLiveTails.keys().next().value;
+            if (oldest !== undefined) held.recentLiveTails.delete(oldest);
+          }
+        }
       }
 
       const layoutValid = held.cachedLayout !== null
@@ -590,11 +619,26 @@ export function familyLogLaneView(
         .join('|');
       const warnSig = (model.warnings ?? []).join('|');
       const missingSig = model.gaps.map(g => `${g.firstHour}-${g.lastHour}:${g.reason}`).join('|');
+      const tagSet = new Set<string>();
+      for (let i = 0; i < model.rows.length; i++) {
+        const mags = model.rows[i]!.rawMagnitudes;
+        if (!mags) continue;
+        const s = mags.sellerTag;
+        if (s && s.kind === 'known' && typeof s.value === 'string') tagSet.add(s.value);
+        const b = mags.buyerTag;
+        if (b && b.kind === 'known' && typeof b.value === 'string') tagSet.add(b.value);
+        const c = mags.countryTag;
+        if (c && c.kind === 'known' && typeof c.value === 'string') tagSet.add(c.value);
+      }
+      const rowTags = tagSet.size > 0 ? [...tagSet].sort() : undefined;
+      const tagsSig = rowTags ? rowTags.join(',') : '';
+
       const meta: LogMetaField = {
         mode: isEmpty ? 'empty' : 'picture',
         reason: null,
         empty: isEmpty ? model.empty : null,
         hour: model.hour,
+        liveSeq: held.liveSeq,
         baseOrdinal: model.baseOrdinal,
         total: model.total,
         liveTotal,
@@ -608,8 +652,9 @@ export function familyLogLaneView(
         facetPills: model.facetPills ?? [],
         missing: model.gaps,
         warnings: model.warnings ?? [],
+        ...(rowTags ? { rowTags } : {}),
       };
-      const metaSig = `${meta.mode}|${meta.hour}|${meta.baseOrdinal}|${meta.total}|${meta.loadedCount}|${meta.offset}|${meta.logicalHeight}|${meta.physicalHeight}|${meta.rowHeight}|${pillsSig}|${missingSig}|${warnSig}|${isEmpty ? model.empty.message : ''}`;
+      const metaSig = `${meta.mode}|${meta.hour}|${meta.liveSeq}|${meta.baseOrdinal}|${meta.total}|${meta.loadedCount}|${meta.offset}|${meta.logicalHeight}|${meta.physicalHeight}|${meta.rowHeight}|${pillsSig}|${missingSig}|${warnSig}|${tagsSig}|${isEmpty ? model.empty.message : ''}`;
       if (metaSig !== held.metaSig || !held.metaField) {
         held.metaSig = metaSig;
         held.metaField = { value: meta, content: content() };
@@ -633,11 +678,14 @@ export function familyLogLaneView(
         const visibleIcons = collectLogIcons(model, visStart, visEnd, layout.items);
         held.art.requestVisible(visibleIcons);
         const canBlit = held.picture.lastSlice !== null;
-        if (canBlit) {
-          held.backCtx.setTransform(1, 0, 0, 1, 0, 0);
-          held.backCtx.clearRect(0, 0, held.backCanvas.width, held.backCanvas.height);
-          held.backCtx.drawImage(held.canvas, 0, 0);
-        }
+        const preparePrevCanvas = canBlit
+          ? () => {
+            held.backCtx.setTransform(1, 0, 0, 1, 0, 0);
+            held.backCtx.clearRect(0, 0, held.backCanvas.width, held.backCanvas.height);
+            held.backCtx.drawImage(held.canvas, 0, 0);
+            return held.backCanvas;
+          }
+          : undefined;
         const drawn = drawLog(held.ctx, held.picture, {
           model,
           layout,
@@ -652,23 +700,25 @@ export function familyLogLaneView(
           selectedKey,
           icons: held.art.map,
           dpr,
-          prevCanvas: canBlit ? held.backCanvas : null,
+          preparePrevCanvas,
           wantAudit: binding.audit === true,
           newRowCount: liveNewCount,
           rowAlphas,
         });
         paintedResult = drawn;
         auditRows = drawn.auditRows;
+        held.phases.scannedItems += drawn.scannedItems;
         if (drawn.drew) {
           held.content = content();
           held.phases.drew++;
           if (drawn.incremental) held.phases.incrementalFrames++;
           else held.phases.fullFrames++;
           held.phases.paintedRows += drawn.paintedRows;
-          held.phases.visitedItems += drawn.visitedItems;
+          held.phases.paintedItems += drawn.paintedItems;
+          held.phases.visitedItems += drawn.paintedItems;
           if (tailAdvanced) {
             held.phases.tailAdvanceFrames++;
-            held.phases.tailAdvanceVisitedItems += drawn.visitedItems;
+            held.phases.tailAdvanceVisitedItems += drawn.paintedItems;
             held.phases.tailAdvancePaintedRows += drawn.paintedRows;
           }
         }
@@ -750,10 +800,15 @@ export function familyLogLaneView(
       const pauseFlushed = (binding.pauseFlush ?? 0) !== held.lastPauseFlush;
       if (pauseFlushed) held.lastPauseFlush = binding.pauseFlush ?? 0;
 
-      const mirrorKey = `${Math.floor(binding.scrollTop / Math.max(1, layout.rowHeight))}|${focusedKey ?? ''}|${selectedKey ?? ''}`;
+      const [mirrorVisStart, mirrorVisEnd] = visibleItemRange(layout.items, binding.scrollTop, surface.height);
+      const mirrorKey = `${mirrorVisStart}|${mirrorVisEnd}|${focusedKey ?? ''}|${selectedKey ?? ''}`;
       if (!held.mirrorField || held.mirrorGate.due(now, speed, mirrorKey, pauseFlushed)) {
-        const firstRowIdx = Math.max(0, Math.floor((binding.scrollTop - layout.offsetTop) / Math.max(1, layout.rowHeight)));
-        const mirrorItems: ListboxMirrorItem[] = deriveLogMirrorItems(layout.items, firstRowIdx, MIRROR_ROWS, selectedKey);
+        const mirrorItems: ListboxMirrorItem[] = deriveLogMirrorItems(
+          layout.items,
+          mirrorVisStart,
+          Math.max(MIRROR_ROWS, mirrorVisEnd - mirrorVisStart),
+          selectedKey,
+        );
         const mSig = JSON.stringify([model.total, mirrorItems]);
         if (mSig !== held.mirrorSig || !held.mirrorField) {
           held.mirrorSig = mSig;
@@ -771,8 +826,9 @@ export function familyLogLaneView(
             navEntries.push({ key: item.row.key, hour: item.row.hour, top: item.top, height: item.height, ordinal: item.index, meta: item.row.meta });
             navSig += `${item.row.key}@${item.top}|`;
           } else if (item.kind === 'gap') {
-            navTuples.push([item.key, `${item.label} — ${item.span.reason}`, model.offset + i, -1, '', null]);
-            navEntries.push({ key: item.key, hour: item.span.lastHour, top: item.top, height: item.height, ordinal: model.offset + i });
+            const gapOrdinal = -(i + 1);
+            navTuples.push([item.key, `${item.label} — ${item.span.reason}`, gapOrdinal, -1, '', null]);
+            navEntries.push({ key: item.key, hour: item.span.lastHour, top: item.top, height: item.height, ordinal: gapOrdinal });
             navSig += `${item.key}@${item.top}|`;
           }
         }
@@ -796,7 +852,7 @@ export function familyLogLaneView(
         const activeEntry: LogNavEntry | null = item
           ? (item.kind === 'row'
             ? { key: item.row.key, hour: item.row.hour, top: item.top, height: item.height, ordinal: item.index, meta: item.row.meta }
-            : { key: item.key, hour: item.span.lastHour, top: item.top, height: item.height, ordinal: model.offset })
+            : { key: item.key, hour: item.span.lastHour, top: item.top, height: item.height, ordinal: -1 })
           : null;
         const activeSig = activeEntry ? `${activeEntry.key}@${activeEntry.hour}` : '';
         if (activeSig !== held.activeNavSig || !held.activeNavField) {

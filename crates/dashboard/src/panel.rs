@@ -33,7 +33,6 @@ pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Opt
         "lend-lease-balance" => dashboard_economy::registrations::EXACT_LENDLEASEBALANCE(source, load, asked),
         "occupied-states" => dashboard_wars::registrations::EXACT_OCCUPIEDSTATES(source, load, asked),
         "log-tail" => dashboard_politics::products::logs::dated_panel(source, load, asked),
-        "division-log-tail" => dashboard_land::products::division_log::dated_panel(source, load, asked),
         "market-ledger-tail" => dashboard_economy::products::economy::market::ledger::dated_panel(source, load, asked),
         _ => return None,
     })

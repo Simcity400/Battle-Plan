@@ -106,6 +106,7 @@ export interface LogModel {
   readonly columns: readonly LogColumnTrack[];
   readonly rows: readonly LogRowSpec[];
   readonly gaps: readonly MissingSpan[];
+  readonly inlineGaps?: readonly MissingSpan[];
   readonly facetPills?: readonly LogFacetPill[];
   readonly empty: LogEmptyState;
   readonly warnings?: readonly string[];
@@ -326,35 +327,31 @@ export function spokenLogRow(row: LogRowSpec): string {
 
 export function deriveLogMirrorItems(
   items: readonly FlatLogItem[],
-  first: number,
+  startItemIndex: number,
   count: number,
   selectedKey: string | null = null,
 ): ListboxMirrorItem[] {
   const out: ListboxMirrorItem[] = [];
-  let rowOrdinal = 0;
-  for (let i = 0; i < items.length; i++) {
+  const start = Math.max(0, Math.min(items.length, Math.floor(startItemIndex)));
+  for (let i = start; i < items.length && out.length < count; i++) {
     const item = items[i]!;
     if (item.kind === 'month') continue;
-    if (rowOrdinal >= first && out.length < count) {
-      if (item.kind === 'gap') {
-        out.push({
-          key: item.key,
-          role: 'option',
-          index: rowOrdinal,
-          spoken: `${item.label} — ${item.span.reason}`,
-        });
-      } else {
-        out.push({
-          key: item.row.key,
-          role: 'option',
-          index: item.index,
-          selected: selectedKey !== null && selectedKey === item.row.key,
-          spoken: spokenLogRow(item.row),
-        });
-      }
+    if (item.kind === 'gap') {
+      out.push({
+        key: item.key,
+        role: 'option',
+        index: -(i + 1),
+        spoken: `${item.label} — ${item.span.reason}`,
+      });
+    } else {
+      out.push({
+        key: item.row.key,
+        role: 'option',
+        index: item.index,
+        selected: selectedKey !== null && selectedKey === item.row.key,
+        spoken: spokenLogRow(item.row),
+      });
     }
-    rowOrdinal++;
-    if (out.length >= count) break;
   }
   return out;
 }

@@ -16,6 +16,10 @@
   flex: 0 0 auto;
 }
 
+.family-log-toolbar .chip-set {
+  gap: 5px;
+}
+
 .family-log-toolbar > * {
   flex: 0 0 auto;
 }

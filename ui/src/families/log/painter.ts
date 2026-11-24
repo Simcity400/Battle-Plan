@@ -15,7 +15,6 @@ import {
   type ResolvedLogColumn,
 } from './layout.ts';
 import {
-  canonicalLogRowAudit,
   deriveLogAuditRows,
   type FlatLogItem,
   type LogBand,
@@ -107,6 +106,7 @@ export interface DrawLogInput {
   readonly icons: ReadonlyMap<string, ImageBitmap | null>;
   readonly dpr: number;
   readonly prevCanvas?: CanvasImageSource | null;
+  readonly preparePrevCanvas?: () => CanvasImageSource | null;
   readonly wantAudit?: boolean;
   readonly newRowCount?: number;
   readonly rowAlphas?: ReadonlyMap<string, number>;
@@ -117,6 +117,8 @@ export interface DrawLogResult {
   readonly incremental: boolean;
   readonly auditRows: AuditRow[];
   readonly paintedRows: number;
+  readonly paintedItems: number;
+  readonly scannedItems: number;
   readonly visitedItems: number;
   readonly visibleStart: number;
   readonly visibleEnd: number;
@@ -430,48 +432,117 @@ function drawBand(
       return;
     }
     case 'rich': {
-      let x = left;
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'left';
-      for (let i = 0; i < band.parts.length && x < right - 4; i++) {
+      type RichToken =
+        | { readonly kind: 'flag'; readonly look: LogCountryLook | null | undefined; readonly width: number }
+        | { readonly kind: 'missing'; readonly font: string; readonly width: number }
+        | { readonly kind: 'dot'; readonly width: number }
+        | { readonly kind: 'text'; readonly text: string; readonly font: string; readonly tone: LogTone | undefined; readonly width: number };
+      const tokens: RichToken[] = [];
+      let totalWidth = 0;
+      const smallFont = fontOf(theme, theme.fontSize.small, LABEL_WEIGHT);
+      const baseFont = fontOf(theme, size, LABEL_WEIGHT);
+      for (let i = 0; i < band.parts.length; i++) {
         const part = band.parts[i]!;
         if (part.flag !== undefined) {
-          if (x + FLAG_W > right) break;
-          x += drawFlag(ctx, part.flag, x, middleY, theme, icons) + 5;
+          const w = FLAG_W + 5;
+          tokens.push({ kind: 'flag', look: part.flag, width: w });
+          totalWidth += w;
         }
         const formatted = formatValueState(part.text);
         if (formatted.kind === 'notRecorded') {
-          if (x + MISSING_BOX_SIZE > right) break;
-          drawHatchRect(ctx, x, Math.round(middleY - MISSING_BOX_SIZE / 2), MISSING_BOX_SIZE, MISSING_BOX_SIZE, 2, theme);
-          x += MISSING_BOX_SIZE + 4;
-          const font = fontOf(theme, theme.fontSize.small, LABEL_WEIGHT);
-          const word = fit(NOT_RECORDED_LABEL, font, right - x);
-          if (word) {
-            ctx.font = font;
-            ctx.fillStyle = theme.muted;
-            ctx.fillText(word, x, middleY);
-            x += measure(word, font) + 4;
-          }
+          const w = MISSING_BOX_SIZE + 4 + measure(NOT_RECORDED_LABEL, smallFont) + 4;
+          tokens.push({ kind: 'missing', font: smallFont, width: w });
+          totalWidth += w;
           continue;
         }
         const partText = formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
         if (!partText) continue;
         if (formatted.kind === 'partial') {
-          if (x + 6 > right) break;
+          tokens.push({ kind: 'dot', width: 7 });
+          totalWidth += 7;
+        }
+        const font = fontOf(theme, size, part.weight === 'bold' ? VALUE_WEIGHT : LABEL_WEIGHT);
+        const w = measure(partText, font);
+        tokens.push({ kind: 'text', text: partText, font, tone: part.tone, width: w });
+        totalWidth += w;
+      }
+
+      let x = left;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+
+      const drawToken = (tok: RichToken) => {
+        if (tok.kind === 'flag') {
+          x += drawFlag(ctx, tok.look, x, middleY, theme, icons) + 5;
+        } else if (tok.kind === 'missing') {
+          drawHatchRect(ctx, x, Math.round(middleY - MISSING_BOX_SIZE / 2), MISSING_BOX_SIZE, MISSING_BOX_SIZE, 2, theme);
+          x += MISSING_BOX_SIZE + 4;
+          ctx.font = tok.font;
+          ctx.fillStyle = theme.muted;
+          ctx.fillText(NOT_RECORDED_LABEL, x, middleY);
+          x += measure(NOT_RECORDED_LABEL, tok.font) + 4;
+        } else if (tok.kind === 'dot') {
           ctx.fillStyle = theme.warning;
           ctx.beginPath();
           ctx.arc(x + 2.5, middleY, 2.5, 0, Math.PI * 2);
           ctx.fill();
           x += 7;
+        } else {
+          ctx.font = tok.font;
+          ctx.fillStyle = toneColor(theme, tok.tone);
+          ctx.fillText(tok.text, x, middleY);
+          x += tok.width;
         }
-        const font = fontOf(theme, size, part.weight === 'bold' ? VALUE_WEIGHT : LABEL_WEIGHT);
-        const avail = right - x;
-        const text = fit(partText, font, avail);
-        if (!text) break;
-        ctx.font = font;
-        ctx.fillStyle = toneColor(theme, part.tone);
-        ctx.fillText(text, x, middleY);
-        x += measure(text, font);
+      };
+
+      if (totalWidth <= width) {
+        for (let i = 0; i < tokens.length; i++) drawToken(tokens[i]!);
+        return;
+      }
+
+      const ellipsis = '…';
+      const ellipsisW = measure(ellipsis, baseFont);
+      if (ellipsisW > width) return;
+      const limitX = right - ellipsisW;
+
+      for (let i = 0; i < tokens.length; i++) {
+        const tok = tokens[i]!;
+        if (x + tok.width <= limitX) {
+          drawToken(tok);
+          continue;
+        }
+        const avail = limitX - x;
+        if (tok.kind === 'text') {
+          let low = 0;
+          let high = tok.text.length;
+          while (low < high) {
+            const mid = (low + high + 1) >> 1;
+            if (measure(tok.text.slice(0, mid), tok.font) <= avail) low = mid;
+            else high = mid - 1;
+          }
+          ctx.font = tok.font;
+          ctx.fillStyle = toneColor(theme, tok.tone);
+          ctx.fillText(`${tok.text.slice(0, low)}${ellipsis}`, x, middleY);
+        } else if (tok.kind === 'missing' && avail >= MISSING_BOX_SIZE + 4) {
+          drawHatchRect(ctx, x, Math.round(middleY - MISSING_BOX_SIZE / 2), MISSING_BOX_SIZE, MISSING_BOX_SIZE, 2, theme);
+          x += MISSING_BOX_SIZE + 4;
+          const wordAvail = limitX - x;
+          let low = 0;
+          let high = NOT_RECORDED_LABEL.length;
+          while (low < high) {
+            const mid = (low + high + 1) >> 1;
+            if (measure(NOT_RECORDED_LABEL.slice(0, mid), tok.font) <= wordAvail) low = mid;
+            else high = mid - 1;
+          }
+          ctx.font = tok.font;
+          ctx.fillStyle = theme.muted;
+          ctx.fillText(`${NOT_RECORDED_LABEL.slice(0, low)}${ellipsis}`, x, middleY);
+        } else {
+          ctx.font = baseFont;
+          ctx.fillStyle = theme.muted;
+          ctx.fillText(ellipsis, x, middleY);
+        }
+        return;
       }
       return;
     }
@@ -503,21 +574,65 @@ export function collectLogIcons(_model: LogModel, start: number, end: number, it
   return [...urls];
 }
 
-function itemIconSig(item: FlatLogItem, icons: ReadonlyMap<string, ImageBitmap | null>): string {
-  if (item.kind !== 'row') return '';
-  let sig = '';
-  const row = item.row;
-  if (row.art?.icon) sig += icons.get(row.art.icon) ? '1' : '0';
-  for (let s = 0; s < row.slots.length; s++) {
-    const band = row.slots[s]!;
-    if (band.kind === 'flags') {
-      for (const look of band.looks) if (look?.flag) sig += icons.get(look.flag) ? '1' : '0';
-    } else if (band.kind === 'rich') {
-      for (const part of band.parts) if (part.flag?.flag) sig += icons.get(part.flag.flag) ? '1' : '0';
+function bandPaintSig(band: LogBand | undefined, icons: ReadonlyMap<string, ImageBitmap | null>): string {
+  if (!band) return '';
+  switch (band.kind) {
+    case 'text': {
+      const v = band.text;
+      const body = v.kind === 'known' || v.kind === 'zero' || v.kind === 'partial' ? v.value : v.kind;
+      return `t:${v.kind}:${body}:${band.tone ?? ''}:${band.weight ?? ''}`;
     }
+    case 'value': {
+      const v = band.value;
+      const body = v.kind === 'known' || v.kind === 'zero' || v.kind === 'partial' ? String(v.value) : v.kind;
+      const fmt = typeof band.format === 'string'
+        ? band.format
+        : band.format
+          ? `${band.format.decimals}:${band.format.percent ? 1 : 0}:${band.format.unit ?? ''}:${band.format.signed ? 1 : 0}:${band.format.maxDecimals ?? ''}`
+          : '';
+      return `v:${v.kind}:${body}:${fmt}:${band.tone ?? ''}:${band.align ?? ''}`;
+    }
+    case 'pill': {
+      const v = band.label;
+      const body = v.kind === 'known' || v.kind === 'zero' || v.kind === 'partial' ? v.value : v.kind;
+      return `p:${v.kind}:${body}:${band.tone ?? ''}:${band.liveDot ? 1 : 0}`;
+    }
+    case 'flags': {
+      let s = 'f:';
+      for (let i = 0; i < band.looks.length; i++) {
+        const l = band.looks[i];
+        s += `${l?.name ?? ''}:${l?.flag ? (icons.get(l.flag) ? '1' : '0') : ''},`;
+      }
+      return s;
+    }
+    case 'rich': {
+      let s = 'r:';
+      for (let i = 0; i < band.parts.length; i++) {
+        const p = band.parts[i]!;
+        const v = p.text;
+        const body = v.kind === 'known' || v.kind === 'zero' || v.kind === 'partial' ? v.value : v.kind;
+        const fl = p.flag ? (p.flag.flag ? (icons.get(p.flag.flag) ? '1' : '0') : 'n') : '';
+        s += `${fl}|${v.kind}:${body}:${p.tone ?? ''}:${p.weight ?? ''};`;
+      }
+      return s;
+    }
+    case 'meter':
+    case 'bar-pair':
+    case 'chips':
+      return band.kind;
   }
-  if (row.subline?.kind === 'rich') {
-    for (const part of row.subline.parts) if (part.flag?.flag) sig += icons.get(part.flag.flag) ? '1' : '0';
+}
+
+function rowPaintSig(row: LogRowSpec, icons: ReadonlyMap<string, ImageBitmap | null>): string {
+  const art = row.art
+    ? `${row.art.icon ? (icons.get(row.art.icon) ? '1' : '0') : ''}:${row.art.glyph ?? ''}:${row.art.color ?? ''}`
+    : '';
+  let sig = `${row.key}@${row.hour}:${row.by ? 1 : 0}:${art}`;
+  for (let i = 0; i < row.slots.length; i++) {
+    sig += `|${bandPaintSig(row.slots[i], icons)}`;
+  }
+  if (row.subline) {
+    sig += `^${bandPaintSig(row.subline, icons)}`;
   }
   return sig;
 }
@@ -618,15 +733,15 @@ function paintItem(
     const yearFont = fontOf(theme, Math.max(10, theme.fontSize.small - 1), LABEL_WEIGHT);
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
-    if (twoLine || density === 'comfortable') {
+    if (density === 'comfortable') {
       ctx.font = dayFont;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fitText(ctx, picture, dayText, dayFont, dateCol.width), dateCol.left, y + h * 0.35);
+      ctx.fillText(fitText(ctx, picture, dayText, dayFont, dateCol.width), dateCol.left, y + h * 0.34);
       ctx.font = yearFont;
       ctx.fillStyle = theme.muted;
       const curAlpha = ctx.globalAlpha;
       ctx.globalAlpha = curAlpha * 0.8;
-      ctx.fillText(parts.year, dateCol.left, y + h * 0.69);
+      ctx.fillText(parts.year, dateCol.left, y + h * 0.7);
       ctx.globalAlpha = curAlpha;
     } else {
       const line = `${dayText} ${parts.year}`;
@@ -636,18 +751,53 @@ function paintItem(
     }
   }
 
-  if (artCol && width >= 360) {
+  if (artCol) {
     drawArt(ctx, row, artCol, middleY, theme, icons);
   }
 
+  const compactSideBySide = density === 'compact' && twoLine;
   for (let s = 0; s < contentCols.length && s < row.slots.length; s++) {
     const col = contentCols[s]!;
     const band = row.slots[s]!;
     if (s === 0 && twoLine && row.subline) {
-      drawBand(ctx, picture, band, col.left, col.width, y + h * 0.33, col.align, false, theme, icons);
-      drawBand(ctx, picture, row.subline, col.left, col.width, y + h * 0.7, col.align, true, theme, icons);
+      if (compactSideBySide) {
+        if (band.kind === 'text') {
+          const formatted = formatValueState(band.text);
+          if (formatted.kind === 'known' || formatted.kind === 'zero') {
+            const titleFont = fontOf(theme, theme.fontSize.small, band.weight === 'bold' ? VALUE_WEIGHT : LABEL_WEIGHT);
+            const fullTitleW = measureText(ctx, picture, formatted.text, titleFont);
+            const gapPx = 8;
+            const minSublineW = 48;
+            const maxTitleW = fullTitleW + gapPx + minSublineW <= col.width
+              ? fullTitleW
+              : Math.min(fullTitleW, Math.max(0, col.width - gapPx - minSublineW));
+            const titleW = maxTitleW >= 24 ? maxTitleW : col.width;
+            const fittedTitle = fitText(ctx, picture, formatted.text, titleFont, titleW);
+            if (fittedTitle) {
+              ctx.font = titleFont;
+              ctx.fillStyle = toneColor(theme, band.tone);
+              ctx.textBaseline = 'middle';
+              ctx.textAlign = 'left';
+              ctx.fillText(fittedTitle, col.left, middleY);
+            }
+            const usedW = fittedTitle ? measureText(ctx, picture, fittedTitle, titleFont) : 0;
+            const subLeft = col.left + usedW + gapPx;
+            const subWidth = col.left + col.width - subLeft;
+            if (subWidth > 8) {
+              drawBand(ctx, picture, row.subline, subLeft, subWidth, middleY, 'start', true, theme, icons);
+            }
+          } else {
+            drawBand(ctx, picture, band, col.left, col.width, middleY, col.align, true, theme, icons);
+          }
+        } else {
+          drawBand(ctx, picture, band, col.left, col.width, middleY, col.align, true, theme, icons);
+        }
+      } else {
+        drawBand(ctx, picture, band, col.left, col.width, y + h * 0.34, col.align, false, theme, icons);
+        drawBand(ctx, picture, row.subline, col.left, col.width, y + h * 0.72, col.align, true, theme, icons);
+      }
     } else {
-      drawBand(ctx, picture, band, col.left, col.width, middleY, col.align, false, theme, icons);
+      drawBand(ctx, picture, band, col.left, col.width, middleY, col.align, density === 'compact', theme, icons);
     }
   }
   if (alpha < 1) ctx.globalAlpha = prevAlpha;
@@ -685,6 +835,7 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
     icons,
     dpr,
     prevCanvas,
+    preparePrevCanvas,
     wantAudit = false,
     newRowCount = 0,
     rowAlphas,
@@ -713,25 +864,47 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
     const alphaRaw = item.kind === 'row' && rowAlphas ? (rowAlphas.get(item.row.key) ?? 1) : 1;
     const alphaPart = alphaRaw < 1 ? `#a${Math.round(alphaRaw * 255)}` : '';
     const base = item.kind === 'row'
-      ? `${canonicalLogRowAudit(item.row)}#${hl}#${itemIconSig(item, icons)}${alphaPart}`
+      ? `${rowPaintSig(item.row, icons)}#${hl}${alphaPart}`
       : item.kind === 'month'
         ? `m:${item.label}`
         : `g:${item.label}#${hl}`;
     visSigs.push(base);
   }
+  const scannedItems = visKeys.length;
 
-  const themeKey = `${theme.surface}|${theme.surfaceAlt}|${theme.text}|${theme.muted}|${theme.accent}|${theme.font}|${theme.fontSize.body}`;
+  const themeKey = [
+    theme.surface,
+    theme.surfaceAlt,
+    theme.hover,
+    theme.selected,
+    theme.text,
+    theme.muted,
+    theme.line,
+    theme.lineSoft,
+    theme.accent,
+    theme.positive,
+    theme.negative,
+    theme.warning,
+    theme.hatch,
+    theme.hatchEdge ?? '',
+    String(theme.hatchSpacing),
+    theme.font,
+    String(theme.fontSize.small),
+    String(theme.fontSize.body),
+    theme.categories.join(','),
+  ].join('|');
   const geomKey = `${width}x${height}@${dpr}|${density}|${showMonths ? 1 : 0}|${model.twoLine ? 1 : 0}|${themeKey}`;
   const sig = `${geomKey}|${sticky ?? ''}|${visKeys.length}|${visTops.join(',')}|${visKeys.join(',')}|${visSigs.join(';')}`;
 
   if (picture.signature === sig) {
-    return { drew: false, incremental: false, auditRows, paintedRows: 0, visitedItems: 0, visibleStart: start, visibleEnd: end };
+    return { drew: false, incremental: false, auditRows, paintedRows: 0, paintedItems: 0, scannedItems, visitedItems: 0, visibleStart: start, visibleEnd: end };
   }
 
   const prev = picture.lastSlice;
+  const hasPrev = prevCanvas !== undefined ? prevCanvas !== null : preparePrevCanvas !== undefined;
   let shiftPrefix = -1;
   let shiftPrevAnchor = 0;
-  if (prev && prevCanvas && prev.geomKey === geomKey && prev.stickyH === stickyH && prev.keys.length > 0 && visKeys.length > 1) {
+  if (prev && hasPrev && prev.geomKey === geomKey && prev.stickyH === stickyH && prev.keys.length > 0 && visKeys.length > 1) {
     const maxAnchor = Math.min(2, prev.keys.length);
     for (let p = 0; p < maxAnchor && shiftPrefix < 0; p++) {
       const anchorKey = prev.keys[p]!;
@@ -777,14 +950,14 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
   const dateCol = colById.get('date');
   const artCol = colById.get('art');
   const contentCols = columns.filter(col => col.id !== 'date' && col.id !== 'art');
-  const twoLine = model.twoLine === true && width >= 300;
+  const twoLine = model.twoLine === true;
 
   let paintedRows = 0;
-  let visitedItems = 0;
+  let paintedItems = 0;
   let incremental = false;
 
   ctx.save();
-  if (shiftPrefix > 0 && prevCanvas && prev) {
+  if (shiftPrefix > 0 && prev) {
     const copyStartLogical = prev.tops[shiftPrevAnchor]!;
     const dstStartLogical = visTops[shiftPrefix]!;
     const srcY = Math.round(copyStartLogical * dpr);
@@ -792,12 +965,15 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
     const physW = Math.round(width * dpr);
     const physH = Math.round(height * dpr);
     const copyH = physH - dstY;
-    if (srcY >= 0 && dstY > srcY && copyH > 0 && srcY + copyH <= physH) {
+    const blitSource = srcY >= 0 && dstY > srcY && copyH > 0 && srcY + copyH <= physH
+      ? (prevCanvas ?? preparePrevCanvas?.() ?? null)
+      : null;
+    if (blitSource) {
       incremental = true;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.fillStyle = theme.surface;
       ctx.fillRect(0, 0, physW, dstY);
-      ctx.drawImage(prevCanvas, 0, srcY, physW, copyH, 0, dstY, physW, copyH);
+      ctx.drawImage(blitSource, 0, srcY, physW, copyH, 0, dstY, physW, copyH);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       let visIdx = 0;
@@ -807,7 +983,7 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
         if (y + item.height <= stickyH || y >= height) continue;
         const alpha = item.kind === 'row' && rowAlphas ? (rowAlphas.get(item.row.key) ?? 1) : 1;
         paintItem(ctx, picture, item, y, width, density, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons, alpha);
-        visitedItems++;
+        paintedItems++;
         if (item.kind === 'row') paintedRows++;
         visIdx++;
       }
@@ -831,7 +1007,7 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
       if (y + h <= stickyH || y >= height) continue;
       const alpha = item.kind === 'row' && rowAlphas ? (rowAlphas.get(item.row.key) ?? 1) : 1;
       paintItem(ctx, picture, item, y, width, density, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons, alpha);
-      visitedItems++;
+      paintedItems++;
       if (item.kind === 'row') paintedRows++;
     }
 
@@ -851,7 +1027,7 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
     heights: visHeights,
     sigs: visSigs,
   };
-  return { drew: true, incremental, auditRows, paintedRows, visitedItems, visibleStart: start, visibleEnd: end };
+  return { drew: true, incremental, auditRows, paintedRows, paintedItems, scannedItems, visitedItems: paintedItems, visibleStart: start, visibleEnd: end };
 }
 
 export function hitLogItem(layout: LogLayout, scrollTop: number, y: number, stickyHeight: number): FlatLogItem | null {

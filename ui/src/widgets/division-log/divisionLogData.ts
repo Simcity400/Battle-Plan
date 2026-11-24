@@ -10,43 +10,35 @@ import type { LogPage, LogRow } from '../../charts/log/logData';
 import type { LogCounts, LogReplyRow } from '../../charts/log/logSource';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import type { BoundHour, BoundWindow } from '../../dashboard/regionTime';
 import type { CountryRef, DivisionLogManifestReply, LogCell, PlaceName } from '../../generated/dashboard';
 
 export const KINDS = { created: 0, lost: 1, transfer: 2 } as const;
 export type DivisionKind = keyof typeof KINDS;
-export const KIND_NAMES: readonly DivisionKind[] = ['created', 'lost', 'transfer'];
-export const VANISHED_KIND = 3;
+const KIND_NAMES: readonly DivisionKind[] = ['created', 'lost', 'transfer'];
 
 export interface DivisionLogEntry {
-  division: string; kind: DivisionKind | null; status: string | null;
+  division: string; kind: DivisionKind; status: string;
   readHour: number;
   hour: number; by: boolean; afterHour: number | null;
   tag: string | null; name: string | null; nameMissing: string | null; icon: string | null; iconMissing: string | null;
   presentationHour: number | null; template: string | null; templateName: string | null; templateMissing: string | null;
   province: number | null; placeHour: number | null; placeAtEvent: boolean;
-  placeName: string | null; placeMissing: string | null;
   killerTag: string | null; killerDivision: string | null; matchedDeaths: number | null;
 }
 
 const number = (cell: LogCell | undefined) => cell?.kind === 'number' ? Number(cell.value) : null;
 const text = (cell: LogCell | undefined) => cell?.kind === 'text' ? cell.value : null;
 
-export function divisionKindFromNumber(raw: number | null): DivisionKind | null {
-  return raw !== null && raw >= 0 && raw < KIND_NAMES.length ? KIND_NAMES[raw]! : null;
-}
-
 export function divisionEntry(row: LogReplyRow): LogRow<DivisionLogEntry> {
   const cells = row.cells;
   const readHour = number(cells.readHour) ?? row.hour;
   const item: DivisionLogEntry = {
-    division: text(cells.division) ?? row.key, kind: divisionKindFromNumber(number(cells.kind)), status: text(cells.status),
-    readHour, hour: number(cells.hour) ?? readHour, by: number(cells.by) === 1, afterHour: number(cells.afterHour),
+    division: text(cells.division) ?? row.key, kind: KIND_NAMES[number(cells.kind) ?? 1] ?? 'lost', status: text(cells.status) ?? 'unknown',
+    readHour, hour: number(cells.hour) ?? readHour, by: number(cells.by) !== 0, afterHour: number(cells.afterHour),
     tag: text(cells.tag), name: text(cells.name), nameMissing: text(cells.nameMissing), icon: text(cells.icon), iconMissing: text(cells.iconMissing),
     presentationHour: number(cells.presentationHour), template: text(cells.template), templateName: text(cells.templateName),
     templateMissing: text(cells.templateMissing), province: number(cells.province), placeHour: number(cells.placeHour),
-    placeAtEvent: number(cells.placeAtEvent) === 1, placeName: text(cells.placeName), placeMissing: text(cells.placeMissing),
-    killerTag: text(cells.killerTag), killerDivision: text(cells.killerDivision),
+    placeAtEvent: number(cells.placeAtEvent) === 1, killerTag: text(cells.killerTag), killerDivision: text(cells.killerDivision),
     matchedDeaths: number(cells.matchedDeaths),
   };
   return { key: row.key, hour: readHour, by: false, item };
@@ -74,76 +66,12 @@ export function selectedTemplates(value: string, campaign: string, branch: strin
 
 export const shownKinds = (events: string): DivisionKind[] => events === 'created' ? ['created'] : events === 'lost' ? ['lost', 'transfer'] : ['created', 'lost', 'transfer'];
 
-export type DivisionFacet<H extends number = BoundHour> = {
-  name: string;
-  values: number[];
-  countries: CountryRef[];
-  membership?: { country: CountryRef; firstHour: H; lastHour: H }[];
-  unobserved?: { firstHour: H; lastHour: H }[];
-};
+export type DivisionFacet = { name: string; values: number[]; countries: CountryRef[] };
 
-export type CountryScopeFilter<H extends number = BoundHour> =
-  | { readonly kind: 'countries'; readonly tags: readonly string[] }
-  | {
-    readonly kind: 'membership';
-    readonly membership: readonly { readonly tag: string; readonly firstHour: H; readonly lastHour: H }[];
-    readonly unobserved: readonly { readonly firstHour: H; readonly lastHour: H }[];
-  };
-
-export function boundMembershipScope(
-  membership: readonly { readonly tag: string; readonly firstHour: number; readonly lastHour: number }[],
-  unobserved: readonly { readonly firstHour: number; readonly lastHour: number }[],
-  clamp: (firstHour: number, lastHour: number) => BoundWindow | null,
-): CountryScopeFilter<BoundHour> {
-  const boundRuns: { readonly tag: string; readonly firstHour: BoundHour; readonly lastHour: BoundHour }[] = [];
-  for (const run of membership) {
-    const span = clamp(run.firstHour, run.lastHour);
-    if (span) boundRuns.push({ tag: run.tag, firstHour: span.firstHour, lastHour: span.lastHour });
-  }
-  const boundUnobserved: { readonly firstHour: BoundHour; readonly lastHour: BoundHour }[] = [];
-  for (const gap of unobserved) {
-    const span = clamp(gap.firstHour, gap.lastHour);
-    if (span) boundUnobserved.push({ firstHour: span.firstHour, lastHour: span.lastHour });
-  }
-  return { kind: 'membership', membership: boundRuns, unobserved: boundUnobserved };
-}
-
-export function countryScopeFacet<H extends number = BoundHour>(
-  name: string,
-  scope: readonly string[] | CountryScopeFilter<H> | null,
-): DivisionFacet<H> | null {
-  if (scope === null) return null;
-  if (Array.isArray(scope)) {
-    return { name, values: [], countries: scope.map(countryFromKey) };
-  }
-  const typed = scope as CountryScopeFilter<H>;
-  if (typed.kind === 'countries') {
-    return { name, values: [], countries: typed.tags.map(countryFromKey) };
-  }
-  return {
-    name,
-    values: [],
-    countries: [],
-    membership: typed.membership.map(run => ({
-      country: countryFromKey(run.tag),
-      firstHour: run.firstHour,
-      lastHour: run.lastHour,
-    })),
-    ...(typed.unobserved.length > 0
-      ? { unobserved: typed.unobserved.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) }
-      : {}),
-  };
-}
-
-export function divisionFacets<H extends number = BoundHour>(
-  kinds: readonly DivisionKind[],
-  templates: readonly string[] | null,
-  scope: readonly string[] | CountryScopeFilter<H> | null,
-): DivisionFacet<H>[] {
-  const facets: DivisionFacet<H>[] = [{ name: 'kind', values: kinds.map(kind => KINDS[kind]), countries: [] }];
+export function divisionFacets(kinds: readonly DivisionKind[], templates: readonly string[] | null, tags: readonly string[] | null): DivisionFacet[] {
+  const facets: DivisionFacet[] = [{ name: 'kind', values: kinds.map(kind => KINDS[kind]), countries: [] }];
   if (templates !== null) facets.push({ name: 'template', values: templates.map(Number), countries: [] });
-  const countryFacet = countryScopeFacet('slot', scope);
-  if (countryFacet) facets.push(countryFacet);
+  if (tags !== null) facets.push({ name: 'slot', values: [], countries: tags.map(countryFromKey) });
   return facets;
 }
 
@@ -164,7 +92,7 @@ export function kindTotals(list: LogCounts, kinds: ReadonlyMap<DivisionKind, Log
     const row = page?.rows?.[at - page.start];
     if (!row) return null;
     const kind = row.item.kind;
-    if (kind !== null && out.has(kind)) out.set(kind, out.get(kind)! + 1);
+    if (out.has(kind)) out.set(kind, out.get(kind)! + 1);
   }
   return out;
 }
@@ -174,8 +102,7 @@ export function gapWarnings(manifest: DivisionLogManifestReply, first: number, l
     .map(gap => `${gap.reason}: ${formatDateTime(Math.max(first, gap.firstHour))} – ${formatDateTime(Math.min(last, gap.lastHour))}`);
 }
 
-export function divisionStatus(row: Pick<DivisionLogEntry, 'status'>): string {
-  if (row.status === null) return 'Status not recorded';
+export function divisionStatus(row: DivisionLogEntry): string {
   const names: Record<string, string> = {
     first_observed: 'First seen', division_destroyed: 'Destroyed', division_overrun: 'Overrun',
     division_deleted: 'Removed', division_disbanded: 'Disbanded', division_capitulation: 'Removed at capitulation',

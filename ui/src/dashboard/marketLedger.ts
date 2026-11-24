@@ -2,7 +2,7 @@ import type { LogRow } from '../charts/log/logData';
 import type { LogReplyRow } from '../charts/log/logSource';
 import type { LogCell } from '../generated/dashboard';
 import type { BoundHour } from './regionTime';
-import { countryScopeFacet, type CountryScopeFilter, type DivisionFacet } from '../widgets/division-log/divisionLogData.ts';
+import { countryScopeFacet, type CountryScopeFilter, type LogFacet } from '../families/log/scope.ts';
 import { FUEL_QUANTITY, fixedText } from './market.ts';
 
 export const MARKET_LOG = 'market-events';
@@ -73,8 +73,8 @@ export function ledgerEntry(row: LogReplyRow): LogRow<LedgerItem> {
 export function ledgerFacets<H extends number = BoundHour>(
   kinds: readonly number[],
   scope: readonly string[] | CountryScopeFilter<H> | null,
-): DivisionFacet<H>[] {
-  const facets: DivisionFacet<H>[] = [{ name: 'kind', values: [...kinds], countries: [] }];
+): LogFacet<H>[] {
+  const facets: LogFacet<H>[] = [{ name: 'kind', values: [...kinds], countries: [] }];
   const countryFacet = countryScopeFacet('country|receiver', scope);
   if (countryFacet) facets.push(countryFacet);
   return facets;

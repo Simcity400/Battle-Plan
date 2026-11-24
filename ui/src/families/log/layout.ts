@@ -8,8 +8,8 @@ export const LOG_ROW_HEIGHT: Record<LogDensity, number> = {
 };
 
 export const LOG_TWO_LINE_HEIGHT: Record<LogDensity, number> = {
-  comfortable: 44,
-  compact: 34,
+  comfortable: 38,
+  compact: 28,
 };
 
 export const LOG_MONTH_HEIGHT: Record<LogDensity, number> = {
@@ -29,8 +29,8 @@ const MAX_PHYSICAL_SCROLL_HEIGHT = 1_000_000;
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
-export function nominalRowHeight(density: LogDensity, twoLine: boolean): number {
-  return twoLine ? LOG_TWO_LINE_HEIGHT[density] : LOG_ROW_HEIGHT[density];
+export function nominalRowHeight(density: LogDensity, _twoLine = false): number {
+  return LOG_ROW_HEIGHT[density];
 }
 
 export function tailLimitForViewport(viewportHeight: number, density: LogDensity, twoLine: boolean): number {
@@ -156,15 +156,16 @@ export function buildLogLayout(model: LogModel, density: LogDensity, showMonths:
   const rowTops: number[] = [];
 
   const relevantGaps: MissingSpan[] = [];
-  if (model.gaps.length > 0) {
+  const sourceGaps = model.inlineGaps ?? model.gaps;
+  if (sourceGaps.length > 0) {
     const rangeMin = model.fromHour ?? -Infinity;
     const rangeMax = model.hour;
     const hasMoreNewer = model.offset > 0;
     const hasMoreOlder = model.offset + model.rows.length < model.total;
     const sliceNewest = hasMoreNewer && model.rows.length > 0 ? model.rows[0]!.hour : rangeMax;
     const sliceOldest = hasMoreOlder && model.rows.length > 0 ? model.rows[model.rows.length - 1]!.hour : rangeMin;
-    for (let i = model.gaps.length - 1; i >= 0; i--) {
-      const span = model.gaps[i]!;
+    for (let i = sourceGaps.length - 1; i >= 0; i--) {
+      const span = sourceGaps[i]!;
       const firstHour = Math.max(span.firstHour, rangeMin);
       const lastHour = Math.min(span.lastHour, rangeMax);
       if (firstHour > lastHour) continue;
@@ -306,37 +307,18 @@ export interface ResolvedLogColumn {
 
 export function resolveLogColumns(tracks: readonly LogColumnTrack[], totalWidth: number, padX = 10, gap = 8): ResolvedLogColumn[] {
   const inner = Math.max(0, totalWidth - padX * 2);
-  let active = [...tracks];
-  const minNeeded = (list: readonly LogColumnTrack[]) => {
-    let sum = Math.max(0, list.length - 1) * gap;
-    for (const track of list) sum += track.width ?? track.minWidth ?? 64;
-    return sum;
-  };
-  while (active.length > 2 && minNeeded(active) > inner) {
-    let dropAt = -1;
-    let lowestPriority = Infinity;
-    for (let i = 0; i < active.length; i++) {
-      const prio = active[i]!.priority ?? 0;
-      if (prio > 0 && prio < lowestPriority) {
-        lowestPriority = prio;
-        dropAt = i;
-      }
-    }
-    if (dropAt < 0) break;
-    active.splice(dropAt, 1);
-  }
-  let fixed = Math.max(0, active.length - 1) * gap;
+  let fixed = Math.max(0, tracks.length - 1) * gap;
   let flexSum = 0;
-  for (const track of active) {
+  for (const track of tracks) {
     if (track.flex && track.flex > 0) flexSum += track.flex;
     else fixed += track.width ?? track.minWidth ?? 64;
   }
   const flexPool = Math.max(0, inner - fixed);
   const out: ResolvedLogColumn[] = [];
   let x = padX;
-  for (const track of active) {
+  for (const track of tracks) {
     const width = track.flex && track.flex > 0
-      ? Math.max(track.minWidth ?? 48, (flexPool * track.flex) / flexSum)
+      ? Math.max(0, (flexPool * track.flex) / flexSum)
       : (track.width ?? track.minWidth ?? 64);
     out.push({ id: track.id, left: x, width, align: track.align ?? 'start' });
     x += width + gap;

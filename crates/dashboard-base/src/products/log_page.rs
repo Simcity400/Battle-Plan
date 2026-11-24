@@ -118,6 +118,9 @@ pub struct LogTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub hour: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub offset: Option<String>,
     pub limit: u32,
     #[serde(default)]
     pub columns: Option<Vec<String>>,
@@ -134,6 +137,7 @@ pub struct LogTailReply {
     pub columns: Vec<String>,
     pub base_ordinal: String,
     pub first_ordinal: String,
+    pub offset: String,
     pub total: String,
     pub rows: Vec<LogPageRow>,
     pub facet_totals: Vec<LogFacetTotal>,
@@ -302,7 +306,7 @@ pub fn page_with<R>(
     }
     let cursor = params.cursor.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| invalid("Invalid cursor"))?;
     let selection = reader.select(&params.facets, query.timeline.first, to)?;
-    let page = reader.page(&selection.patterns, selection.groups.len(), from, to, cursor, params.page_size)?;
+    let page = reader.page_with(&selection.patterns, selection.groups.len(), from, to, cursor, params.page_size, selection.overlap)?;
     let rows = page.rows.iter().map(|paged| map(paged, selection.groups[paged.group].as_ref())).collect();
     let coverage_from = if page.first > page.base { page.rows.first().map_or(from, |paged| paged.row.hour) } else { from };
     let coverage_to = if page.end < page.last { page.rows.last().map_or(to, |paged| paged.row.hour) } else { to };
@@ -311,32 +315,34 @@ pub fn page_with<R>(
     Ok((page, rows, gaps))
 }
 
-#[allow(clippy::too_many_arguments, reason = "a log tail request names its log, filters, range, limit, facet counts and row mapper")]
+#[allow(clippy::too_many_arguments, reason = "a log tail request names its log, filters, range, offset, limit, facet counts and row mapper")]
 pub fn tail<R>(
     query: &Query<'_>,
     log_name: &str,
     facets: &[FacetFilter],
     from: Option<f64>,
     to: i32,
+    offset: u64,
     limit: u32,
     count_facets: &[LogFacetCountAsk],
     map: impl FnMut(&log::Paged, Option<&dashboard_query::identity::Country>) -> R,
-) -> io::Result<(log::Page, Vec<R>, Vec<LogFacetTotal>, Vec<MissingSpan>)> {
-    tail_with(query, log_name, facets, from, to, limit, count_facets, None, map)
+) -> io::Result<(log::NewestPage, Vec<R>, Vec<LogFacetTotal>, Vec<MissingSpan>)> {
+    tail_with(query, log_name, facets, from, to, offset, limit, count_facets, None, map)
 }
 
-#[allow(clippy::too_many_arguments, reason = "a log tail request names its log, filters, range, limit, facet counts, caches and row mapper")]
+#[allow(clippy::too_many_arguments, reason = "a log tail request names its log, filters, range, offset, limit, facet counts, caches and row mapper")]
 pub fn tail_with<R>(
     query: &Query<'_>,
     log_name: &str,
     facets: &[FacetFilter],
     from: Option<f64>,
     to: i32,
+    offset: u64,
     limit: u32,
     count_facets: &[LogFacetCountAsk],
     caches: Option<&LogCaches>,
     mut map: impl FnMut(&log::Paged, Option<&dashboard_query::identity::Country>) -> R,
-) -> io::Result<(log::Page, Vec<R>, Vec<LogFacetTotal>, Vec<MissingSpan>)> {
+) -> io::Result<(log::NewestPage, Vec<R>, Vec<LogFacetTotal>, Vec<MissingSpan>)> {
     let log = declared(log_name)?;
     let reader = reader_for(query, log, caches)?;
     let from = from.map(|from| hour_of(Some(from), "from")).transpose()?.unwrap_or(query.timeline.first);
@@ -345,43 +351,161 @@ pub fn tail_with<R>(
     }
     if from > to {
         let totals = count_facets.iter().map(|ask| LogFacetTotal { key: ask.key.clone(), total: "0".into() }).collect();
-        return Ok((log::Page { base: 0, first: 0, end: 0, last: 0, rows: Vec::new() }, Vec::new(), totals, Vec::new()));
+        return Ok((log::NewestPage { base: 0, offset: 0, total: 0, rows: Vec::new() }, Vec::new(), totals, Vec::new()));
     }
     let selection = reader.select(facets, query.timeline.first, to)?;
-    let page = reader.tail(&selection.patterns, selection.groups.len(), from, to, limit)?;
+    let page = reader.newest_page_with(&selection.patterns, selection.groups.len(), from, to, offset, limit, selection.overlap)?;
     let rows = page.rows.iter().map(|paged| map(paged, selection.groups[paged.group].as_ref())).collect();
     let mut totals = Vec::with_capacity(count_facets.len());
     for ask in count_facets {
         let count_selection = reader.select(&ask.facets, from, to)?;
-        let count = reader.total(&count_selection.patterns, from, to)?;
+        let count = reader.total_with(&count_selection.patterns, from, to, count_selection.overlap)?;
         totals.push(LogFacetTotal { key: ask.key.clone(), total: count.to_string() });
     }
-    let coverage_from = if count_facets.is_empty() && page.first > page.base {
+    let covers_end = page.offset + page.rows.len() as u64 >= page.total;
+    let coverage_from = if offset > 0 || (count_facets.is_empty() && !covers_end) {
         page.rows.last().map_or(from, |paged| paged.row.hour)
     } else {
         from
     };
-    let mut gaps = missing_with(query, log, coverage_from, to, caches.map(|c| c.coverage.as_ref()))?;
-    append_unobserved(&mut gaps, facets, coverage_from, to);
+    let coverage_to = if offset > 0 {
+        page.rows.first().map_or(to, |paged| paged.row.hour)
+    } else {
+        to
+    };
+    let mut gaps = missing_with(query, log, coverage_from, coverage_to, caches.map(|c| c.coverage.as_ref()))?;
+    append_unobserved(&mut gaps, facets, coverage_from, coverage_to);
     Ok((page, rows, totals, gaps))
 }
 
-pub fn dated_tail_panel<F>(executable: Option<engine_executable::executable_tables::Tables>, read: F) -> Box<dyn Panel>
+#[allow(clippy::too_many_arguments, reason = "checking whether a log tail is unchanged across quiet hours names its query, log, selections, filters, caches, previous reply and hour span")]
+pub fn quiet_tail_missing(
+    query: &Query<'_>,
+    log_name: &str,
+    caches: &LogCaches,
+    selection: &log::Selection,
+    count_selections: &[log::Selection],
+    facets: &[FacetFilter],
+    from: Option<f64>,
+    prev_hour: i32,
+    hour: i32,
+    prev_reply: &LogTailReply,
+) -> io::Result<Option<Vec<MissingSpan>>> {
+    if hour <= prev_hour {
+        return Ok(None);
+    }
+    let log = declared(log_name)?;
+    let from = from.map(|from| hour_of(Some(from), "from")).transpose()?.unwrap_or(query.timeline.first);
+    if hour < from {
+        return Ok(Some(Vec::new()));
+    }
+    let reader = reader_for(query, log, Some(caches))?;
+    let check_from = (prev_hour + 1).max(from);
+    if reader.has_any_with(&selection.patterns, check_from, hour, selection.overlap)? {
+        return Ok(None);
+    }
+    for cs in count_selections {
+        if reader.has_any_with(&cs.patterns, check_from, hour, cs.overlap)? {
+            return Ok(None);
+        }
+    }
+    let total: u64 = prev_reply.total.parse().unwrap_or(0);
+    let offset: u64 = prev_reply.offset.parse().unwrap_or(0);
+    let covers_end = offset + prev_reply.rows.len() as u64 >= total;
+    let coverage_from = if offset > 0 || (count_selections.is_empty() && !covers_end) {
+        prev_reply.rows.last().map_or(from, |row| row.hour)
+    } else {
+        from
+    };
+    let coverage_to = if offset > 0 {
+        prev_reply.rows.first().map_or(hour, |row| row.hour)
+    } else {
+        hour
+    };
+    let mut gaps = missing_with(query, log, coverage_from, coverage_to, Some(caches.coverage.as_ref()))?;
+    append_unobserved(&mut gaps, facets, coverage_from, coverage_to);
+    Ok(Some(gaps))
+}
+
+struct TailSeed {
+    hour: i32,
+    reply: LogTailReply,
+    value: Arc<dashboard_follow::panel::PanelData>,
+    rows: u64,
+}
+
+pub fn dated_tail_panel<F, Q>(
+    executable: Option<engine_executable::executable_tables::Tables>,
+    quiet: Q,
+    read: F,
+) -> Box<dyn Panel>
 where
+    Q: Fn(i32, i32, &LogTailReply, &AtomicBool) -> io::Result<Option<Vec<MissingSpan>>> + Send + Sync + 'static,
     F: Fn(i32, &AtomicBool) -> io::Result<LogTailReply> + Send + Sync + 'static,
 {
     let read = Arc::new(read);
     let step_read = Arc::clone(&read);
-    let advance: ProductReader = Arc::new(move |hour, _seed, cancelled, _step| {
+    let held: Arc<Mutex<Option<TailSeed>>> = Arc::new(Mutex::new(None));
+    let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _step| {
+        if seed {
+            let guard = held.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(prev) = guard.as_ref() {
+                if hour == prev.hour {
+                    return ProductRead { value: Arc::clone(&prev.value), rows: prev.rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
+                }
+                if hour > prev.hour {
+                    let prev_hour = prev.hour;
+                    let prev_reply = prev.reply.clone();
+                    let prev_value = Arc::clone(&prev.value);
+                    let prev_rows = prev.rows;
+                    drop(guard);
+                    let checked = engine_executable::executable_tables::scope(executable, || quiet(prev_hour, hour, &prev_reply, cancelled));
+                    match checked {
+                        Ok(Some(gaps)) => {
+                            if gaps == prev_reply.missing {
+                                let mut guard = held.lock().unwrap_or_else(PoisonError::into_inner);
+                                if let Some(slot) = guard.as_mut()
+                                    && slot.hour == prev_hour
+                                {
+                                    slot.hour = hour;
+                                }
+                                return ProductRead { value: prev_value, rows: prev_rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
+                            }
+                            let mut next_reply = prev_reply;
+                            next_reply.missing = gaps;
+                            let value = Arc::new(serde_json::to_value(&next_reply).map_err(|error| error.to_string()));
+                            *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(TailSeed {
+                                hour,
+                                reply: next_reply,
+                                value: Arc::clone(&value),
+                                rows: prev_rows,
+                            });
+                            return ProductRead { value, rows: prev_rows, fresh: true, pending: false, live: None, lanes: Vec::new() };
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            return ProductRead { value: Arc::new(Err(error.to_string())), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() };
+                        }
+                    }
+                }
+            }
+        }
         let made = engine_executable::executable_tables::scope(executable, || step_read(hour, cancelled));
         let (rows, value) = match made {
             Ok(reply) => {
                 let count = reply.rows.len() as u64;
-                (count, serde_json::to_value(reply).map_err(|error| error.to_string()))
+                let value = Arc::new(serde_json::to_value(&reply).map_err(|error| error.to_string()));
+                *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(TailSeed {
+                    hour,
+                    reply,
+                    value: Arc::clone(&value),
+                    rows: count,
+                });
+                (count, value)
             }
-            Err(error) => (0, Err(error.to_string())),
+            Err(error) => (0, Arc::new(Err(error.to_string()))),
         };
-        ProductRead { value: Arc::new(value), rows, fresh: true, pending: false, live: None, lanes: Vec::new() }
+        ProductRead { value, rows, fresh: true, pending: false, live: None, lanes: Vec::new() }
     });
     let cold: ExactReader = Arc::new(move |hour, cancelled| {
         let reply = engine_executable::executable_tables::scope(executable, || read(hour, cancelled)).map_err(|error| error.to_string())?;
