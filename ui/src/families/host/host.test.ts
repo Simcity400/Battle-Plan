@@ -1,16 +1,36 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AuditSnapshotStore } from '../audit.ts';
-import type { FamilyTheme } from '../contract.ts';
-import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
-import { handleFamilyKeyDown, type FamilyNavTuple } from './keyboard.ts';
-import { optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
-import { parseDefaultRowHit } from './pointer.ts';
-import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
+import { tooltipStore } from '../../charts/tooltip.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
+import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.ts';
+import { Page, type Bitmap } from '../../dashboard/follow/page.ts';
+import { Lane, type LaneView } from '../../draw/lane.ts';
+import { AuditSnapshotStore } from '../audit.ts';
+import { barsHostAdapter, parseBarsHit } from '../bars/hostAdapter.ts';
+import { displayedHour } from '../boundedView.ts';
+import type { FamilyTheme, InstalledAction, InstalledPicture } from '../contract.ts';
+import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
+import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
+import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
+import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
+import {
+  handleFamilyGridKeyDown,
+  handleFamilyKeyDown,
+  handleFamilyPointsKeyDown,
+  type FamilyNavTuple,
+} from './keyboard.ts';
+import { optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
+import { bindFamilyPointer, CLICK_CANCEL_PX, parseDefaultRowHit } from './pointer.ts';
+import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
 import { reportFamilyShownHour } from './shownHour.ts';
 import { reducedMotionEnabled, sameFamilyTheme } from './theme.ts';
-import { buildTooltipContent, resolveTooltipEntryContent, type FamilyActionPayload, type FamilyTooltipEntry } from './tooltips.ts';
+import {
+  buildTooltipContent,
+  FamilyTooltipController,
+  resolveTooltipEntryContent,
+  type FamilyActionPayload,
+  type FamilyTooltipEntry,
+} from './tooltips.ts';
 import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts';
 
 const mkEvent = (key: string, extra: Partial<KeyboardEvent> = {}) => {
@@ -481,5 +501,354 @@ test('syncTableMirror updates existing table rows and cells in place without rec
   } finally {
     (globalThis as { document: unknown }).document = prevDoc;
   }
+});
+
+test('quiet playback tick inside validInterval performs zero projections, zero paints, and zero host installs', async () => {
+  let projections = 0;
+  let paints = 0;
+  let installs = 0;
+  let surfaceInstalls = 0;
+
+  const fakeBitmap: Bitmap = { width: 100, close() {} };
+  const laneView: LaneView = {
+    next: () => 50,
+    paint(input, _state, content) {
+      projections++;
+      paints++;
+      return {
+        mode: 'picture',
+        nextChangeAt: 50,
+        surfaces: [{ source: { width: 100 } as unknown as OffscreenCanvas, content: content() }],
+        fields: { meta: { value: { empty: null, notes: [], warnings: [] }, content: 'meta-1' } },
+        motion: false,
+        hit: () => `row:GER`,
+      };
+    },
+  };
+
+  let page!: Page<Bitmap>;
+  const lane = new Lane<Bitmap>(0, {
+    views: () => laneView,
+    crop: async sources => sources.map(() => fakeBitmap),
+    emit: presentation => page.present(presentation),
+  });
+  page = new Page<Bitmap>({
+    lanes: 1,
+    seek: 1,
+    post: (_lane, message) => {
+      if (message.type === 'frame') void lane.frame(message);
+    },
+  });
+
+  page.mount(1, {
+    route: 1,
+    lane: 0,
+    owner: 'camp-1',
+    surfaces: [{ install() { surfaceInstalls++; }, clear() {} }],
+    changed: () => { installs++; },
+  });
+  lane.bind(1, {
+    route: 1,
+    view: 'bars',
+    owner: 'camp-1',
+    binding: 1,
+    subs: [],
+    surfaces: [{ width: 200, height: 100, dpr: 1 }],
+    dated: { h: 20, c: 45 },
+    model: { family: 'bars', kind: 'test' },
+  });
+
+  page.publish(20, { playing: true, speed: 24, step: 1 });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(page.view(1)?.mode, 'picture');
+  assert.equal(projections, 1);
+  assert.equal(paints, 1);
+  assert.equal(surfaceInstalls, 1);
+  const installsAfterFirst = installs;
+
+  for (const quietHour of [21, 25, 30, 40, 44]) {
+    page.publish(quietHour, { playing: true, speed: 24, step: 1 });
+  }
+  await new Promise(resolve => setTimeout(resolve, 20));
+
+  assert.equal(projections, 1, 'quiet ticks inside validInterval do zero projections');
+  assert.equal(paints, 1, 'quiet ticks inside validInterval do zero paints');
+  assert.equal(surfaceInstalls, 1, 'quiet ticks inside validInterval do zero surface installs');
+  assert.equal(installs, installsAfterFirst, 'quiet ticks inside validInterval trigger zero host installs / React commits');
+});
+
+test('bindFamilyPointer resolves actions against the installed picture, rejects stale owners, separates click from drag pan, and keeps continuous hover flicker-free', () => {
+  type Listener = (event: unknown) => void;
+  const makeTarget = () => {
+    const listeners = new Map<string, Set<Listener>>();
+    return {
+      addEventListener(type: string, fn: Listener) {
+        let set = listeners.get(type);
+        if (!set) listeners.set(type, set = new Set());
+        set.add(fn);
+      },
+      removeEventListener(type: string, fn: Listener) {
+        listeners.get(type)?.delete(fn);
+      },
+      dispatch(type: string, event: Record<string, unknown>) {
+        for (const fn of listeners.get(type) ?? []) fn(event);
+      },
+      getBoundingClientRect: () => ({ left: 10, top: 20, width: 400, height: 200 }),
+      contains: () => false,
+    };
+  };
+
+  const body = makeTarget();
+  const menuHost = makeTarget();
+  const nav: readonly FamilyNavTuple[] = [['GER', 'Germany', 0, -1, '', { tag: 'GER' }]];
+  let installed: InstalledPicture | null = {
+    id: 7,
+    owner: 'owner-A',
+    generation: { seek: 1, reset: 0, binding: 1 },
+    factRevisions: {},
+    validInterval: [100, 120],
+    through: 100,
+    hour: displayedHour(100),
+    viewport: { width: 200, height: 100, dpr: 1, scrollLeft: 0, scrollTop: 0 },
+    optionsRevision: '',
+    themeRevision: '',
+    actionKeys: lazyActionKeys(nav, displayedHour(100)),
+    accessibleDescription: null,
+  };
+
+  let hitReply: { key: string | null; meta?: PointerHitMeta } = { key: 'row:GER', meta: { installedId: 7, owner: 'owner-A' } };
+  const inspectedTokens: (string | null)[] = [];
+  const pointerPoints: (readonly [number, number] | null)[] = [];
+  const fakePipeline = {
+    pointer(_pipe: number, _slot: number, pt: readonly [number, number] | null, cb?: (key: string | null, meta?: PointerHitMeta) => void) {
+      pointerPoints.push(pt);
+      cb?.(hitReply.key, hitReply.meta);
+    },
+    inspect(_pipe: number, token: string | null) {
+      inspectedTokens.push(token);
+    },
+    view() { return null; },
+  } as unknown as Pipeline;
+
+  const tooltips = new FamilyTooltipController('test-host');
+  const activations: InstalledAction[] = [];
+  const hoverHits: (ParsedFamilyHit | null)[] = [];
+  const dragEvents: string[] = [];
+  let doubleClicks = 0;
+
+  const stop = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement,
+    menuHost: menuHost as unknown as HTMLElement,
+    pipeline: fakePipeline,
+    pipe: 1,
+    tooltips,
+    inspectedKeyRef: { current: null },
+    inspectedHitRef: { current: null },
+    lastPointerRef: { current: null },
+    focusInsideRef: { current: false },
+    focusedKeyRef: { current: null },
+    focusAnchorRef: { current: { x: 0, y: 0 } },
+    accessibleRef: { current: null },
+    pointerMode: 'continuous',
+    isBlocked: () => !installed,
+    getInstalled: () => installed,
+    getViewportHeight: () => 800,
+    parseHit: (hitKey, inst) => parseTimeChartHit(hitKey) ?? parseDefaultRowHit(hitKey) ?? (inst ? null : null),
+    onHoverChange: hit => hoverHits.push(hit),
+    gestures: {
+      onDragStart: () => dragEvents.push('start'),
+      onDragMove: (_pt, delta) => dragEvents.push(`move:${delta[0]},${delta[1]}`),
+      onDragEnd: () => dragEvents.push('end'),
+      onDoubleClick: () => { doubleClicks++; return true; },
+    },
+    onActivate: (_key, _toggle, action) => { if (action) activations.push(action); },
+  });
+
+  body.dispatch('pointerdown', { button: 0, clientX: 110, clientY: 70, pointerId: 1 });
+  body.dispatch('pointerup', { button: 0, clientX: 110, clientY: 70, pointerId: 1 });
+  assert.deepEqual(pointerPoints[0], [50, 25], 'client point scales through installed viewport (200x100 vs DOM 400x200)');
+  assert.equal(activations.length, 1);
+  assert.equal(activations[0]!.installedId, 7);
+  assert.equal(activations[0]!.owner, 'owner-A');
+  assert.equal(activations[0]!.subject, 'GER');
+  assert.equal(activations[0]!.hour, 100);
+
+  hitReply = { key: 'row:GER', meta: { installedId: 6, owner: 'owner-OLD' } };
+  body.dispatch('pointerdown', { button: 0, clientX: 110, clientY: 70, pointerId: 1 });
+  body.dispatch('pointerup', { button: 0, clientX: 110, clientY: 70, pointerId: 1 });
+  assert.equal(activations.length, 1, 'stale owner/installedId hit is rejected');
+
+  hitReply = { key: 'plot:150', meta: { installedId: 7, owner: 'owner-A' } };
+  body.dispatch('pointerdown', { button: 0, clientX: 100, clientY: 70, pointerId: 2 });
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 2 });
+  body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 2 });
+  assert.equal(activations.length, 1, 'drag past CLICK_CANCEL_PX cancels click activation');
+  assert.deepEqual(dragEvents, ['start', `move:${CLICK_CANCEL_PX + 10},0`, 'end']);
+
+  let dblPrevented = false;
+  body.dispatch('dblclick', { clientX: 100, clientY: 70, preventDefault() { dblPrevented = true; } });
+  assert.equal(doubleClicks, 1);
+  assert.equal(dblPrevented, true);
+
+  hitReply = { key: 'line:GER@150', meta: { installedId: 7, owner: 'owner-A' } };
+  body.dispatch('pointermove', { isTrusted: true, clientX: 120, clientY: 80 });
+  hitReply = { key: 'line:GER@151', meta: { installedId: 7, owner: 'owner-A' } };
+  body.dispatch('pointermove', { isTrusted: true, clientX: 122, clientY: 80 });
+  assert.deepEqual(hoverHits.slice(-2).map(h => h?.hour), [150, 151]);
+  assert.equal(inspectedTokens.at(-1), 'line:GER@151');
+
+  const tip150: FamilyTooltipEntry = { hour: 150, rowKey: 'line:GER@150', payload: { title: 'Germany', hour: 150 } };
+  tooltips.syncFromInstall({
+    dim: false,
+    held: false,
+    inspectedKey: 'line:GER@150',
+    inspectedToken: 'line:GER@150',
+    pointerPos: { x: 120, y: 80 },
+    hoverTip: tip150,
+    hoverFieldKey: 'line:GER@150',
+    keepHoverWhilePending: true,
+    focusInside: false,
+    focusedKey: null,
+    focusAnchor: { x: 0, y: 0 },
+    focusTip: null,
+    viewportHeight: 800,
+  });
+  assert.equal(tooltipStore.get()?.content.title, 'Germany');
+  tooltips.syncFromInstall({
+    dim: false,
+    held: false,
+    inspectedKey: 'line:GER@151',
+    inspectedToken: 'line:GER@151',
+    pointerPos: { x: 122, y: 80 },
+    hoverTip: tip150,
+    hoverFieldKey: 'line:GER@150',
+    keepHoverWhilePending: true,
+    focusInside: false,
+    focusedKey: null,
+    focusAnchor: { x: 0, y: 0 },
+    focusTip: null,
+    viewportHeight: 800,
+  });
+  assert.equal(tooltipStore.get()?.content.title, 'Germany', 'continuous hover keeps previous tooltip while adjacent hour renders');
+  tooltips.syncFromInstall({
+    dim: false,
+    held: false,
+    inspectedKey: 'line:GER@151',
+    inspectedToken: 'line:GER@151',
+    pointerPos: { x: 122, y: 80 },
+    hoverTip: null,
+    hoverFieldKey: 'line:GER@151',
+    keepHoverWhilePending: true,
+    focusInside: false,
+    focusedKey: null,
+    focusAnchor: { x: 0, y: 0 },
+    focusTip: null,
+    viewportHeight: 800,
+  });
+  assert.equal(tooltipStore.get(), null, 'explicit null tooltip for current token hides immediately');
+
+  stop();
+  tooltips.dispose();
+});
+
+test('grid and points keyboard navigation and family host adapters cover all four ported families', () => {
+  const cells: string[] = [];
+  const gridActivated: string[] = [];
+  handleFamilyGridKeyDown(mkEvent('ArrowRight').event, {
+    rows: 3,
+    columns: 4,
+    current: { row: 1, column: 1 },
+    pageStep: 2,
+    blocked: false,
+    isPinnedTooltip: () => false,
+    onFocusCell: (r, c) => cells.push(`${r}:${c}`),
+    onActivate: (r, c) => gridActivated.push(`${r}:${c}`),
+  });
+  handleFamilyGridKeyDown(mkEvent('End', { ctrlKey: true }).event, {
+    rows: 3,
+    columns: 4,
+    current: { row: 1, column: 1 },
+    pageStep: 2,
+    blocked: false,
+    isPinnedTooltip: () => false,
+    onFocusCell: (r, c) => cells.push(`${r}:${c}`),
+    onActivate: (r, c) => gridActivated.push(`${r}:${c}`),
+  });
+  handleFamilyGridKeyDown(mkEvent('Enter').event, {
+    rows: 3,
+    columns: 4,
+    current: { row: 2, column: 3 },
+    pageStep: 2,
+    blocked: false,
+    isPinnedTooltip: () => false,
+    onFocusCell: (r, c) => cells.push(`${r}:${c}`),
+    onActivate: (r, c) => gridActivated.push(`${r}:${c}`),
+  });
+  assert.deepEqual(cells, ['1:2', '2:3']);
+  assert.deepEqual(gridActivated, ['2:3']);
+
+  const pointsNav: FamilyNavTuple[] = [
+    ['plot:100', 'Jan 1936', 0, -1, ''],
+    ['plot:200', 'Feb 1936', 1, -1, ''],
+    ['plot:300', 'Mar 1936', 2, -1, ''],
+  ];
+  const focusedPts: string[] = [];
+  const activatedPts: string[] = [];
+  handleFamilyPointsKeyDown(mkEvent('ArrowRight').event, {
+    nav: pointsNav,
+    focusedKey: 'plot:100',
+    pageStep: 2,
+    blocked: false,
+    isPinnedTooltip: () => false,
+    onFocusKey: key => focusedPts.push(key),
+    onActivate: entry => activatedPts.push(entry[0]),
+  });
+  handleFamilyPointsKeyDown(mkEvent('End').event, {
+    nav: pointsNav,
+    focusedKey: 'plot:100',
+    pageStep: 2,
+    blocked: false,
+    isPinnedTooltip: () => false,
+    onFocusKey: key => focusedPts.push(key),
+    onActivate: entry => activatedPts.push(entry[0]),
+  });
+  handleFamilyPointsKeyDown(mkEvent('Enter').event, {
+    nav: pointsNav,
+    focusedKey: 'plot:200',
+    pageStep: 2,
+    blocked: false,
+    isPinnedTooltip: () => false,
+    onFocusKey: key => focusedPts.push(key),
+    onActivate: entry => activatedPts.push(entry[0]),
+  });
+  assert.deepEqual(focusedPts, ['plot:200', 'plot:300']);
+  assert.deepEqual(activatedPts, ['plot:200']);
+
+  assert.deepEqual(parseBarsHit('right:GER'), { key: 'GER', subject: 'GER', kind: 'right-row', toggle: false, inspectToken: 'right:GER' });
+  assert.deepEqual(parseBarsHit('remove:reg1'), { key: 'reg1', subject: 'reg1', kind: 'remove-region', toggle: true, inspectToken: 'remove:reg1' });
+  assert.deepEqual(parseHeatMatrixHit('cell:2:5'), { key: '2:5', subject: '2:5', toggle: false, inspectToken: 'cell:2:5' });
+  assert.equal(parseHeatLanesHit('lane:0@144')?.hour, 144);
+  assert.equal(parseTimeChartHit('line:GER@512')?.hour, 512);
+  assert.equal(parseTimeChartHit('line:GER@512')?.subject, 'GER');
+  assert.equal(barsHostAdapter.family, 'bars');
+  assert.equal(heatMatrixHostAdapter.family, 'heat-matrix');
+  assert.equal(heatLanesHostAdapter.family, 'heat-lanes');
+  assert.equal(timeChartHostAdapter.family, 'time-chart');
+
+  let zoomWindow: readonly [number, number] | null = null;
+  const gCtx = {
+    installed: null,
+    fields: { meta: { plotRect: { left: 50, top: 10, width: 400, height: 200 } } },
+    viewport: { width: 500, height: 240, dpr: 1, scrollLeft: 0, scrollTop: 0, logicalScrollTop: 0, zoomWindow: null as readonly [number, number] | null },
+    extent: [0, 1000] as readonly [number, number],
+    options: {},
+    extra: {} as Record<string, never>,
+    setZoomWindow: (next: readonly [number, number] | null) => { zoomWindow = next; },
+    requestBind: () => {},
+  };
+  assert.equal(timeChartHostAdapter.gestures!.onWheel!({ deltaY: -120 } as WheelEvent, [250, 100], gCtx), true);
+  assert.ok(zoomWindow !== null && zoomWindow[1] - zoomWindow[0] < 1000, 'wheel in zooms window');
+  assert.equal(timeChartHostAdapter.gestures!.onDoubleClick!([250, 100], { ...gCtx, viewport: { ...gCtx.viewport, zoomWindow } }), true);
+  assert.equal(zoomWindow, null, 'double-click resets zoom window');
 });
 

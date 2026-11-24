@@ -31,7 +31,7 @@ export {
   type DeclaredProjectionExtra,
   type ManifestFamilyHostProps,
 } from './DeclaredFamilyWidget.tsx';
-export { default as FamilyHost, lazyActionKeys, type FamilyHostProps } from './FamilyHost.tsx';
+export { default as FamilyHost, lazyActionKeys, type FamilyHostComponentProps } from './FamilyHost.tsx';
 export {
   centerWindowPosition,
   clampWindowPosition,
@@ -40,7 +40,14 @@ export {
   type DetailWindowClock,
   type DetailWindowHostProps,
 } from './DetailWindowHost.tsx';
-export { familyHost, registerFamilyHost, registeredFamilyHosts, type FamilyHostProps } from './registry.tsx';
+export {
+  familyAdapter,
+  familyHost,
+  registerFamilyAdapter,
+  registerFamilyHost,
+  registeredFamilyHosts,
+  type FamilyHostProps,
+} from './registry.tsx';
 export { renderFamilyBodyState, renderFamilyStatus, type FamilyBodyStateProps } from './FamilyBodyState.tsx';
 export {
   useFamilyPlan,

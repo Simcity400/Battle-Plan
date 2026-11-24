@@ -20,7 +20,59 @@ import type {
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyAuditVerifier } from './auditBinding.ts';
+import type { FamilyNavTuple } from './keyboard.ts';
 import type { ListboxMirrorItem } from './mirror.ts';
+
+const navActionIndexCache = new WeakMap<readonly FamilyNavTuple[], Map<string, FamilyNavTuple>>();
+
+export function lazyActionKeys(
+  nav: readonly FamilyNavTuple[],
+  hour: DisplayedHour,
+): ReadonlyMap<string, InstalledActionTarget> {
+  let materialized: Map<string, InstalledActionTarget> | null = null;
+  const toTarget = (entry: FamilyNavTuple): InstalledActionTarget => ({
+    subject: entry[0],
+    hour,
+    ...(entry[3] >= 0 ? { toggle: true } : {}),
+    label: entry[1],
+    meta: entry[5],
+  });
+  const index = () => {
+    let idx = navActionIndexCache.get(nav);
+    if (!idx) {
+      idx = new Map();
+      for (let i = 0; i < nav.length; i++) {
+        const e = nav[i]!;
+        idx.set(e[0], e);
+      }
+      navActionIndexCache.set(nav, idx);
+    }
+    return idx;
+  };
+  const ensureAll = () => {
+    if (!materialized) {
+      materialized = new Map();
+      for (let i = 0; i < nav.length; i++) {
+        const e = nav[i]!;
+        materialized.set(e[0], toTarget(e));
+      }
+    }
+    return materialized;
+  };
+  return {
+    get size() { return nav.length; },
+    has(key: string) { return index().has(key); },
+    get(key: string) {
+      const entry = index().get(key);
+      return entry ? toTarget(entry) : undefined;
+    },
+    forEach(cb, thisArg) { ensureAll().forEach(cb, thisArg); },
+    entries() { return ensureAll().entries(); },
+    keys() { return ensureAll().keys(); },
+    values() { return ensureAll().values(); },
+    [Symbol.iterator]() { return ensureAll()[Symbol.iterator](); },
+  };
+}
 
 export type FamilyPointerMode = 'discrete' | 'continuous';
 export type FamilyScrollMode = 'none' | 'vertical' | 'horizontal' | 'both';

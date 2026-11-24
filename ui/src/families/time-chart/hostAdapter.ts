@@ -1,11 +1,5 @@
 import type { TiledLine } from '../../dashboard/tiles/view';
-import {
-  createDeclaredFamilyWidget,
-  createManifestFamilyHost,
-  type FamilyGestureContext,
-  type FamilyHostAdapter,
-  type ParsedFamilyHit,
-} from '../host/index.ts';
+import type { FamilyGestureContext, FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { SerializedTiledLine, TimeChartBinding } from './declaration.ts';
 import { parseChartInspect } from './hitTest.ts';
 import type { TimeChartModel } from './model.ts';
@@ -195,6 +189,3 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
     };
   },
 };
-
-export const DeclaredTimeChartWidget = createDeclaredFamilyWidget(timeChartHostAdapter);
-export const TimeChartManifestHost = createManifestFamilyHost(timeChartHostAdapter);

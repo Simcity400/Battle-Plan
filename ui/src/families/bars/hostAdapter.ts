@@ -1,9 +1,4 @@
-import {
-  createDeclaredFamilyWidget,
-  createManifestFamilyHost,
-  type FamilyHostAdapter,
-  type ParsedFamilyHit,
-} from '../host/index.ts';
+import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { FamilyBarsBinding } from './laneView.ts';
 import { deriveBarsAudit, type BarsModel } from './model.ts';
 
@@ -71,6 +66,3 @@ export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBi
     };
   },
 };
-
-export const DeclaredBarsWidget = createDeclaredFamilyWidget(barsHostAdapter);
-export const BarsManifestHost = createManifestFamilyHost(barsHostAdapter);

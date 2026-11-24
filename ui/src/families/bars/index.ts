@@ -77,7 +77,5 @@ export {
 } from './declaration.ts';
 export {
   barsHostAdapter,
-  BarsManifestHost,
-  DeclaredBarsWidget,
   parseBarsHit,
 } from './hostAdapter.ts';
