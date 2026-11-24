@@ -16,8 +16,10 @@ import { laneDispatch } from '../../draw/laneDispatch.ts';
 import type { CadenceTimers } from '../cadence.ts';
 import { familyTableLaneView } from './laneView.ts';
 import { tableSettingsOf } from './settings.ts';
-import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDomShared.ts';
-import FamilyTableHost from './FamilyTableHost.tsx';
+import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDom.fixture.ts';
+import FamilyHost from '../host/FamilyHost.tsx';
+import { tableHostAdapter } from './hostAdapter.ts';
+import TableChrome from './TableChrome.tsx';
 import '../../styles.css';
 
 const NATIVE = 7;
@@ -150,7 +152,7 @@ const LOOKS = {
 
 const SPECS = scoreboardColumnsSpec(SCOREBOARD_FIXTURE_COLUMNS, null);
 const SETTINGS = {
-  ...tableSettingsOf(undefined, SPECS, { density: 'comfortable', overflow: 'scroll', sort: { column: 'factories', direction: 'descending' } }),
+  ...tableSettingsOf(undefined, SPECS, { density: 'comfortable', sort: { column: 'factories', direction: 'descending' } }),
   order: SPECS.map(s => s.key),
   sort: { column: 'factories', direction: 'descending' as const },
 };
@@ -268,7 +270,10 @@ window.tableFamilyDom = {
     flushSync(() => root.render(
       <FollowedWidgetKey.Provider value="dom-scoreboard">
         <Profiler id="table-family" onRender={() => { commits++; }}>
-          <FamilyTableHost
+          <FamilyHost
+            adapter={tableHostAdapter}
+            chrome={TableChrome}
+            view="default"
             declaration={scoreboardProjection}
             options={OPTIONS}
             label="Scoreboard"
@@ -276,14 +281,13 @@ window.tableFamilyDom = {
             widget={widget}
             runtime={runtime}
             active
-            columns={SPECS}
             settings={SETTINGS}
             subscriptions={SUBSCRIPTIONS}
             offset={0}
             pin={null}
             bounds={[0, 2000]}
-            onActivate={key => { activated.push(key); }}
-            contextMenuItems={(key, _name, hour) => [{ label: `Jump to date (${key ?? 'empty'}@${hour})`, run: () => {} }]}
+            onActivate={action => { activated.push(action.subject); }}
+            contextMenuItems={hit => [{ label: `Jump to date (${hit.key ?? 'empty'}@${hit.hour})`, run: () => {} }]}
           />
           <TooltipLayer />
         </Profiler>
@@ -291,7 +295,7 @@ window.tableFamilyDom = {
     ));
 
     const ready = await until(() => {
-      const canvas = hostNode?.querySelector<HTMLCanvasElement>('canvas.tf-canvas');
+      const canvas = hostNode?.querySelector<HTMLCanvasElement>('canvas.fh-canvas');
       if (!canvas?.dataset.placement) return false;
       pipeId = Number(canvas.dataset.placement);
       return pipeId > 0;
@@ -308,10 +312,10 @@ window.tableFamilyDom = {
     sendHour(10, [50n, 40n, 30n, -1n], [0n, 100n, 200n, 0n], true);
     const painted = await until(() => {
       const view = pipeline.view(pipeId);
-      return view?.mode === 'picture' && !view.dim && (hostNode?.querySelectorAll('.table-accessibility tbody tr').length ?? 0) === 4;
+      return view?.mode === 'picture' && !view.dim && (hostNode?.querySelectorAll('table tbody tr').length ?? 0) === 4;
     });
     ensureFlushInstrumentation();
-    return { painted, initialRows: [...hostNode.querySelectorAll('.table-accessibility tbody tr')].map(tr => tr.getAttribute('data-row-key')) };
+    return { painted, initialRows: [...hostNode.querySelectorAll('table tbody tr')].map(tr => tr.getAttribute('data-row-key')) };
   },
 
   async playLive(targetHour: number) {
@@ -358,23 +362,23 @@ window.tableFamilyDom = {
       feed(pauseHour);
       const reachedFlip = await until(() => (pipeline.view(pipeId)?.h ?? 0) >= pauseHour && !pipeline.view(pipeId)?.dim, 4000);
       if (!reachedFlip) throw new Error(`Live playback did not reach flipped hour ${pauseHour} (at ${pipeline.view(pipeId)?.h})`);
-      const beforePauseTop = hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') ?? null;
+      const beforePauseTop = hostNode?.querySelector('table tbody tr')?.getAttribute('data-row-key') ?? null;
       const pendingTimersBeforePause = heldTimers.size;
       const timerFiredBeforePause = timerFiredCount;
 
       clock.setPlaying(false);
       const flushedOnPause = await until(
-        () => hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') === wantTop,
+        () => hostNode?.querySelector('table tbody tr')?.getAttribute('data-row-key') === wantTop,
         800,
       );
       if (!flushedOnPause) {
-        throw new Error(`Mirror did not flush to ${wantTop} on pause (top=${hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key')})`);
+        throw new Error(`Mirror did not flush to ${wantTop} on pause (top=${hostNode?.querySelector('table tbody tr')?.getAttribute('data-row-key')})`);
       }
       const timerFiredAfterPause = timerFiredCount;
       const pendingTimersAfterPause = heldTimers.size;
 
       const view = pipeline.view(pipeId);
-      const mirrorRows = [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => ({
+      const mirrorRows = [...(hostNode?.querySelectorAll('table tbody tr') ?? [])].map(tr => ({
         key: tr.getAttribute('data-row-key'),
         cells: [...tr.querySelectorAll('td')].map(td => td.textContent),
       }));
@@ -405,7 +409,7 @@ window.tableFamilyDom = {
 
   async verifyRepaintAndHeld() {
     const hashCanvas = async () => {
-      const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.tf-canvas')!;
+      const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.fh-canvas')!;
       const bitmap = await createImageBitmap(canvas);
       const out = new OffscreenCanvas(bitmap.width, bitmap.height);
       const ctx = out.getContext('2d')!;
@@ -444,7 +448,7 @@ window.tableFamilyDom = {
   },
 
   bodyBox() {
-    const box = hostNode!.querySelector<HTMLDivElement>('.tf-body')!.getBoundingClientRect();
+    const box = hostNode!.querySelector<HTMLDivElement>('.fh-body')!.getBoundingClientRect();
     return { left: box.left, top: box.top, width: box.width, height: box.height };
   },
 
@@ -467,9 +471,9 @@ window.tableFamilyDom = {
     sendHour(nextHour, [20n, 90n, 80n, -1n], [1n, 2n, 3n, 4n]);
     clock.step(1);
     await until(() => pipeline.view(pipeId)?.h === nextHour && !pipeline.view(pipeId)?.dim);
-    await until(() => hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') === 'FRA');
+    await until(() => hostNode?.querySelector('table tbody tr')?.getAttribute('data-row-key') === 'FRA');
     const hashCanvas = async () => {
-      const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.tf-canvas')!;
+      const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.fh-canvas')!;
       const bitmap = await createImageBitmap(canvas);
       const out = new OffscreenCanvas(bitmap.width, bitmap.height);
       const ctx = out.getContext('2d')!;
@@ -488,7 +492,7 @@ window.tableFamilyDom = {
       if (curHash === prevHash) stableCount++;
       else { stableCount = 0; prevHash = curHash; }
     }
-    return [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => tr.getAttribute('data-row-key'));
+    return [...(hostNode?.querySelectorAll('table tbody tr') ?? [])].map(tr => tr.getAttribute('data-row-key'));
   },
 
   readActivated() {
@@ -496,7 +500,7 @@ window.tableFamilyDom = {
   },
 
   async focusFirstAndWaitTooltip() {
-    const firstRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr')!;
+    const firstRow = hostNode!.querySelector<HTMLTableRowElement>('table tbody tr')!;
     const key = firstRow.getAttribute('data-row-key')!;
     firstRow.focus();
     const ready = await until(() => {
@@ -563,7 +567,7 @@ window.tableFamilyDom = {
 
   async testKeyboardAndNarrow() {
     activated = [];
-    const firstRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr')!;
+    const firstRow = hostNode!.querySelector<HTMLTableRowElement>('table tbody tr')!;
     const firstKey = firstRow.getAttribute('data-row-key');
     firstRow.focus();
     firstRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
@@ -576,16 +580,14 @@ window.tableFamilyDom = {
     document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     const didActivate = await until(() => activated.length === 1, 2000);
     if (!didActivate) throw new Error('Enter did not activate focused row');
-    const liveStatus = hostNode!.querySelector('.tf-live-region')?.textContent ?? '';
+    const liveStatus = hostNode!.querySelector('[role="status"]')?.textContent ?? '';
 
     hostNode!.style.width = '210px';
     const scrollsSideways = await until(() => !!hostNode!.querySelector('.tf-edges[data-right]'), 3000);
-    const moreButton = !!hostNode!.querySelector('.tf-more-cols');
-    return { firstKey, afterDown, activated: [...activated], liveStatus, scrollsSideways, moreButton, totalInstallReads };
+    return { firstKey, afterDown, activated: [...activated], liveStatus, scrollsSideways, totalInstallReads };
   },
 
   async testEmptySpaceContextMenuAndValueStateTooltip() {
-    document.querySelector<HTMLElement>('.tf-chooser:popover-open')?.hidePopover?.();
     hostNode!.style.width = '460px';
     const nextHour = Math.floor(clock.getSnapshot().hour) + 2;
     clock.seek(nextHour);
@@ -596,10 +598,10 @@ window.tableFamilyDom = {
       return view?.mode === 'picture' && view.h === nextHour && !view.dim;
     }, 2000);
     (document.activeElement as HTMLElement | null)?.blur?.();
-    const bodyEl = hostNode!.querySelector<HTMLElement>('.tf-body')!;
+    const bodyEl = hostNode!.querySelector<HTMLElement>('.fh-body')!;
     bodyEl.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
     await until(() => pipeline.view(pipeId)?.fields?.tooltip == null, 1500);
-    const frameEl = hostNode!.querySelector<HTMLElement>('.tf-frame')!;
+    const frameEl = hostNode!.querySelector<HTMLElement>('.fh-frame')!;
     const box = frameEl.getBoundingClientRect();
     const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: box.left + 12, clientY: box.bottom - 8 });
     frameEl.dispatchEvent(ev);
@@ -607,7 +609,7 @@ window.tableFamilyDom = {
     const menuLabel = document.querySelector('[role="menu"]:popover-open [role="menuitem"]')?.textContent ?? null;
     document.querySelector<HTMLElement>('[role="menu"]:popover-open')?.hidePopover?.();
 
-    const engRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr[data-row-key="ENG"]')!;
+    const engRow = hostNode!.querySelector<HTMLTableRowElement>('table tbody tr[data-row-key="ENG"]')!;
     engRow.focus();
     const tipShown = await until(() => !!document.querySelector('.chart-tooltip [data-value-state="missing"]'), 2000);
     const hasMissingState = !!document.querySelector('.chart-tooltip [data-value-state="missing"]');

@@ -1,46 +1,23 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import {
+  DEFAULT_FAMILY_THEME,
   drawArtSlot,
   drawCrosshairLine,
   drawDateTab,
   drawFlagSlot,
   drawGapBand,
-  drawLegendEntry,
+  drawLegendStrip,
   drawPlayheadLine,
   drawSeriesMissingStrip,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { parseColor } from '../../shell/appearance/color.ts';
+import { rgbaColor } from '../../shell/appearance/color.ts';
 import { toArtSlotState, toFlagSlotState } from '../art/adapters.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { ChartArtSlot, TimeChartModel, TimeChartSeriesModel } from './model.ts';
-
-const DEFAULT_THEME: FamilyTheme = {
-  surface: '#111111',
-  raised: '#262626',
-  dark: true,
-  text: '#f5f5f5',
-  muted: '#929292',
-  line: 'rgba(245, 245, 245, 0.18)',
-  lineSoft: 'rgba(245, 245, 245, 0.055)',
-  accent: '#4f86f7',
-  blue: '#4f86f7',
-  red: CHART_MEASURE_COLOURS.short,
-  shortage: CHART_MEASURE_COLOURS.shortInk,
-  amber: CHART_MEASURE_COLOURS.politicalPower,
-  green: CHART_MEASURE_COLOURS.supplyOk,
-  grey: '#929292',
-  hatch: 'rgba(245, 245, 245, 0.17)',
-  hatchEdge: 'rgba(245, 245, 245, 0.12)',
-  font: "'Segoe UI', system-ui, sans-serif",
-  fontSize: { small: 11, body: 12 },
-  lineWidth: 1,
-  hatchSpacing: 5,
-};
 
 function artUrl(slot: ChartArtSlot | undefined): string | null {
   return slot?.art.status === 'ready' && slot.art.url ? slot.art.url : null;
@@ -224,7 +201,7 @@ export function drawTimeChart(
   inspectKey: string | null | undefined,
   dpr: number,
 ): void {
-  const theme = themeInput ?? DEFAULT_THEME;
+  const theme = themeInput ?? DEFAULT_FAMILY_THEME;
   const tokens = resolveKitTokens(theme);
   const parsedInspect = parseChartInspect(inspectKey);
   const hoverHour = parsedInspect?.kind === 'plot' || parsedInspect?.kind === 'line'
@@ -243,19 +220,20 @@ export function drawTimeChart(
   const labelNameFont = `500 ${theme.fontSize.body}px ${theme.font}`;
   const labelValueFont = `600 ${theme.fontSize.body}px ${theme.font}`;
   const overlayFont = `${theme.fontSize.body}px ${theme.font}`;
-  const textSecondary = tokens.dark ? '#d4d4d4' : theme.muted;
+  const textSecondary = tokens.textSecondary;
 
   if (layout.legendTop !== null && model.legend && model.legend.length > 0) {
-    let lx = layout.left;
-    const ly = layout.legendTop + 7;
-    for (const item of model.legend) {
-      const drawn = drawLegendEntry(ctx, lx, ly, item.label, item.color ?? '', theme, {
+    drawLegendStrip(ctx, layout.left, layout.legendTop, layout.width - layout.left, 14, {
+      entries: model.legend.map(item => ({
+        label: item.label,
+        color: item.color,
         dash: item.dash,
         hatch: item.hatch,
         flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
-      });
-      lx += drawn.width + 14;
-    }
+        muted: false,
+      })),
+      entryGap: 14,
+    }, theme);
   }
 
   for (const v of layout.yTicks) {
@@ -321,7 +299,7 @@ export function drawTimeChart(
     const { hours, bands, total, step } = model.stack;
     let count = 0;
     while (count < hours.length && hours[count]! <= model.hour) count++;
-    if (count > 0) {
+    if (count > 0 && step) {
       const gapBetween = (a: number, b: number) =>
         model.gaps?.some(g => g.firstHour > a && g.firstHour < b) ?? false;
       const isNullAt = (i: number) => total ? total.values[i] == null : bands.every(b => b.values[i] == null);
@@ -347,83 +325,177 @@ export function drawTimeChart(
         const trailingGap = model.gaps?.find(g => g.firstHour > hours[count - 1]! && g.firstHour <= model.hour);
         runs.push({ start: runStart, end: count - 1, endHour: trailingGap ? trailingGap.firstHour : Math.min(layout.xDomain[1], model.hour) });
       }
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
-      ctx.clip();
-      for (const run of runs) {
-        const len = run.end - run.start + 1;
-        const acc = new Float64Array(len);
-        const endX = layout.toX(Math.min(run.endHour, layout.xDomain[1], model.hour));
-        for (const band of bands) {
-          const topVals = new Float64Array(len);
-          let anyValid = false;
-          for (let k = 0; k < len; k++) {
-            const v = band.values[run.start + k];
-            if (v != null && Number.isFinite(v)) anyValid = true;
-            topVals[k] = acc[k]! + (v ?? 0);
-          }
-          if (anyValid) {
-            ctx.beginPath();
+      if (runs.length > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
+        ctx.clip();
+        for (const run of runs) {
+          const len = run.end - run.start + 1;
+          const acc = new Float64Array(len);
+          const endX = layout.toX(Math.min(run.endHour, layout.xDomain[1], model.hour));
+          for (const band of bands) {
+            const topVals = new Float64Array(len);
+            let anyValid = false;
             for (let k = 0; k < len; k++) {
-              const x = layout.toX(hours[run.start + k]!);
-              const y = layout.toY(topVals[k]!);
-              if (k === 0) ctx.moveTo(x, y);
-              else if (step) {
-                ctx.lineTo(x, layout.toY(topVals[k - 1]!));
-                ctx.lineTo(x, y);
-              } else ctx.lineTo(x, y);
+              const v = band.values[run.start + k];
+              if (v != null && Number.isFinite(v)) anyValid = true;
+              topVals[k] = acc[k]! + (v ?? 0);
             }
-            if (step && endX > layout.toX(hours[run.end]!)) {
-              ctx.lineTo(endX, layout.toY(topVals[len - 1]!));
-              ctx.lineTo(endX, layout.toY(acc[len - 1]!));
-            }
-            for (let k = len - 1; k >= 0; k--) {
-              const x = layout.toX(hours[run.start + k]!);
-              const y = layout.toY(acc[k]!);
-              if (step && k < len - 1) {
-                ctx.lineTo(layout.toX(hours[run.start + k + 1]!), y);
+            if (anyValid) {
+              ctx.beginPath();
+              for (let k = 0; k < len; k++) {
+                const x = layout.toX(hours[run.start + k]!);
+                const y = layout.toY(topVals[k]!);
+                if (k === 0) ctx.moveTo(x, y);
+                else {
+                  ctx.lineTo(x, layout.toY(topVals[k - 1]!));
+                  ctx.lineTo(x, y);
+                }
               }
-              ctx.lineTo(x, y);
+              if (endX > layout.toX(hours[run.end]!)) {
+                ctx.lineTo(endX, layout.toY(topVals[len - 1]!));
+                ctx.lineTo(endX, layout.toY(acc[len - 1]!));
+              }
+              for (let k = len - 1; k >= 0; k--) {
+                const x = layout.toX(hours[run.start + k]!);
+                const y = layout.toY(acc[k]!);
+                if (k < len - 1) {
+                  ctx.lineTo(layout.toX(hours[run.start + k + 1]!), y);
+                }
+                ctx.lineTo(x, y);
+              }
+              ctx.closePath();
+              ctx.fillStyle = band.color;
+              ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
+              ctx.fill();
+              ctx.globalAlpha = 0.9;
+              ctx.strokeStyle = theme.surface;
+              ctx.lineWidth = 0.8;
+              ctx.stroke();
+            }
+            acc.set(topVals);
+          }
+          if (total) {
+            ctx.beginPath();
+            let started = false;
+            let prevY = 0;
+            for (let k = 0; k < len; k++) {
+              const tv = total.values[run.start + k];
+              if (tv == null) continue;
+              const x = layout.toX(hours[run.start + k]!);
+              const y = layout.toY(tv);
+              if (!started) { ctx.moveTo(x, y); started = true; }
+              else { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
+              prevY = y;
+            }
+            if (started && endX > layout.toX(hours[run.end]!)) {
+              ctx.lineTo(endX, prevY);
+            }
+            if (started) {
+              ctx.globalAlpha = 1;
+              ctx.strokeStyle = total.color ?? theme.text;
+              ctx.lineWidth = 1.6;
+              ctx.lineJoin = 'round';
+              ctx.stroke();
+            }
+          }
+        }
+        ctx.restore();
+      }
+    } else if (count > 0 && bands.length > 0) {
+      const segments: [number, number][] = [];
+      let segStart = -1;
+      for (let i = 0; i < count; i++) {
+        const valid = bands.every(band => {
+          const v = band.values[i];
+          return v !== null && v !== undefined && Number.isFinite(v);
+        });
+        if (valid) {
+          if (segStart < 0) segStart = i;
+        } else if (segStart >= 0) {
+          segments.push([segStart, i - 1]);
+          segStart = -1;
+        }
+      }
+      if (segStart >= 0) segments.push([segStart, count - 1]);
+
+      if (segments.length > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
+        ctx.clip();
+        for (const [start, end] of segments) {
+          const len = end - start + 1;
+          const acc = new Float64Array(len);
+          for (let bandIdx = 0; bandIdx < bands.length; bandIdx++) {
+            const band = bands[bandIdx]!;
+            const topVals = new Float64Array(len);
+            for (let k = 0; k < len; k++) {
+              topVals[k] = acc[k]! + (band.values[start + k] ?? 0);
+            }
+            ctx.beginPath();
+            if (len === 1) {
+              const x0 = layout.toX(hours[start]!);
+              const x1 = Math.min(layout.playheadX, x0 + 1);
+              const yTop = layout.toY(topVals[0]!);
+              const yBot = layout.toY(acc[0]!);
+              ctx.moveTo(x0, yTop);
+              ctx.lineTo(x1, yTop);
+              ctx.lineTo(x1, yBot);
+              ctx.lineTo(x0, yBot);
+            } else {
+              for (let k = 0; k < len; k++) {
+                const x = layout.toX(hours[start + k]!);
+                const y = layout.toY(topVals[k]!);
+                if (k === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+              }
+              for (let k = len - 1; k >= 0; k--) {
+                ctx.lineTo(layout.toX(hours[start + k]!), layout.toY(acc[k]!));
+              }
             }
             ctx.closePath();
             ctx.fillStyle = band.color;
             ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
             ctx.fill();
-            ctx.globalAlpha = 0.9;
-            ctx.strokeStyle = theme.surface;
-            ctx.lineWidth = 0.8;
-            ctx.stroke();
+            if (bandIdx < bands.length - 1 && len > 1) {
+              ctx.beginPath();
+              for (let k = 0; k < len; k++) {
+                const x = layout.toX(hours[start + k]!);
+                const y = layout.toY(topVals[k]!);
+                if (k === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+              }
+              ctx.globalAlpha = 0.9;
+              ctx.strokeStyle = theme.surface;
+              ctx.lineWidth = 0.8;
+              ctx.stroke();
+            }
+            acc.set(topVals);
           }
-          acc.set(topVals);
         }
         if (total) {
-          ctx.beginPath();
-          let started = false;
-          let prevY = 0;
-          for (let k = 0; k < len; k++) {
-            const tv = total.values[run.start + k];
-            if (tv == null) continue;
-            const x = layout.toX(hours[run.start + k]!);
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = total.color ?? theme.text;
+          ctx.lineWidth = 1.6;
+          ctx.lineJoin = 'round';
+          let open = false;
+          for (let i = 0; i < count; i++) {
+            const tv = total.values[i];
+            if (tv == null || !Number.isFinite(tv)) {
+              if (open) { ctx.stroke(); open = false; }
+              continue;
+            }
+            const x = layout.toX(hours[i]!);
             const y = layout.toY(tv);
-            if (!started) { ctx.moveTo(x, y); started = true; }
-            else if (step) { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
+            if (!open) { ctx.beginPath(); ctx.moveTo(x, y); open = true; }
             else ctx.lineTo(x, y);
-            prevY = y;
           }
-          if (started && step && endX > layout.toX(hours[run.end]!)) {
-            ctx.lineTo(endX, prevY);
-          }
-          if (started) {
-            ctx.globalAlpha = 1;
-            ctx.strokeStyle = total.color ?? theme.text;
-            ctx.lineWidth = 1.6;
-            ctx.lineJoin = 'round';
-            ctx.stroke();
-          }
+          if (open) ctx.stroke();
         }
+        ctx.restore();
       }
-      ctx.restore();
     }
     drawPlayheadLine(ctx, layout.playheadX, layout.top - 2, layout.baseY + layout.markerLaneHeight, theme);
   } else {
@@ -456,10 +528,10 @@ export function drawTimeChart(
           ctx.lineTo(pts[0]![0], baselineY);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, layout.top, 0, baselineY);
-          const rgb = parseColor(s.color);
-          if (rgb) {
-            grad.addColorStop(0, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(0.26 * opacity).toFixed(3)})`);
-            grad.addColorStop(1, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(0.02 * opacity).toFixed(3)})`);
+          const topStop = rgbaColor(s.color, Number((0.26 * opacity).toFixed(3)), '');
+          if (topStop) {
+            grad.addColorStop(0, topStop);
+            grad.addColorStop(1, rgbaColor(s.color, Number((0.02 * opacity).toFixed(3)), s.color));
             ctx.globalAlpha = 1;
           } else {
             grad.addColorStop(0, s.color);
@@ -629,7 +701,7 @@ export function drawTimeChart(
       drawArtSlot(ctx, m.x - 9, m.y - 9, 18, 18, toArtSlotState(m.marker.icon.art, m.marker.icon.label), theme, { radius: 0 });
     } else {
       ctx.save();
-      ctx.strokeStyle = m.marker.tickColor ?? (tokens.dark ? 'rgba(245, 245, 245, 0.42)' : 'rgba(15, 23, 42, 0.42)');
+      ctx.strokeStyle = m.marker.tickColor ?? tokens.markerTick;
       ctx.lineWidth = 1.6;
       ctx.lineCap = 'round';
       ctx.beginPath();

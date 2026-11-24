@@ -1,4 +1,4 @@
-import { nudgeApart, readableColour } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey } from '../../charts/live.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -24,8 +24,8 @@ export interface WorldTensionChartOptions {
   readonly gaps: readonly ChartGap[];
 }
 
-const OTHER_COLOR = '#6e727c';
-const FALLBACK_COLOR = '#8a8f98';
+const OTHER_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
+const FALLBACK_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
 
 export function validateWorldTensionStack(raw: unknown): WorldTensionStackReply {
   const reply = raw as WorldTensionStackReply;
@@ -345,7 +345,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         bands: orderedBands,
         step: true,
         total: {
-          color: '#f5f5f5',
+          color: CHART_MEASURE_COLOURS.lightInk,
           values: reply.total,
           endLabel: lastTotal !== null ? { icon: worldIcon, value: formatPct(lastTotal) } : null,
         },

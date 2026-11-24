@@ -80,9 +80,22 @@ export const AFTER_PLAYHEAD_OPTION: OptionField = { key: 'afterPlayhead', sectio
 
 export const MAX_OPTION_KEYS = 48;
 const KEY = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+const VIEW = /^[a-zA-Z][a-zA-Z0-9_-]{0,31}$/;
 const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
 
-const validKey = (key: string) => KEY.test(key) && !RESERVED.has(key);
+export function scopedOptionKey(key: string, view: string): string {
+  return `${key}@${view}`;
+}
+
+export function parseOptionKey(stored: string): { readonly key: string; readonly view: string | null } | null {
+  const at = stored.indexOf('@');
+  const key = at < 0 ? stored : stored.slice(0, at);
+  const view = at < 0 ? null : stored.slice(at + 1);
+  if (!KEY.test(key) || RESERVED.has(key) || (view !== null && !VIEW.test(view))) return null;
+  return { key, view };
+}
+
+const validKey = (key: string) => parseOptionKey(key) !== null;
 
 export function parseStoredOptions(input: unknown): WidgetOptions | null {
   if (typeof input !== 'object' || input == null || Array.isArray(input)) return null;

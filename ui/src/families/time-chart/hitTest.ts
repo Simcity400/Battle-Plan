@@ -1,6 +1,7 @@
+import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { FamilyTooltipEntry, TooltipListItem } from '../host/tooltips.ts';
 import type { BoundedSeries } from '../plan.ts';
-import { formatDateOnly, notRecordedLabel } from '../valueFormat.ts';
+import { formatDateOnly, formatScalar, notRecordedLabel } from '../valueFormat.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
@@ -189,6 +190,24 @@ export function hitTestTimeChart(
       }
     }
     if (bestId) return `line:${bestId}@${clampedHour}`;
+  } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
+    let at = -1;
+    for (let i = 0; i < model.stack.hours.length; i++) {
+      if (model.stack.hours[i]! <= clampedHour) at = i;
+      else break;
+    }
+    if (at >= 0 && model.stack.bands.every(b => b.values[at] != null && Number.isFinite(b.values[at]!))) {
+      let acc = 0;
+      for (const band of model.stack.bands) {
+        const v = band.values[at]!;
+        const yBot = layout.toY(acc);
+        const yTop = layout.toY(acc + v);
+        acc += v;
+        if (py >= Math.min(yTop, yBot) && py <= Math.max(yTop, yBot)) {
+          return `line:${band.id}@${clampedHour}`;
+        }
+      }
+    }
   }
 
   return `plot:${clampedHour}`;
@@ -200,15 +219,13 @@ function formatExactFigure(value: number, model: TimeChartModel): string {
   }
   if (model.yAxis.format === 'signed1') {
     if (Math.abs(value) < 1e-9) return '0';
-    return `${value < 0 ? '\u2212' : '+'}${Math.abs(value).toFixed(2).replace(/\.?0+$/, '')}`;
+    return formatScalar(value, { decimals: 0, maxDecimals: 2, signed: true });
   }
   const decimals = model.yAxis.decimals ?? 0;
-  const sign = value < 0 ? '\u2212' : '';
-  const abs = Math.abs(value);
-  if (decimals > 0 && abs < 1000) {
-    return `${sign}${abs.toLocaleString('en-US', { maximumFractionDigits: decimals })}`;
+  if (decimals > 0 && Math.abs(value) < 1000) {
+    return formatScalar(value, { decimals: 0, maxDecimals: decimals });
   }
-  return `${sign}${Math.round(abs).toLocaleString('en-US')}`;
+  return formatScalar(value, { decimals: 0, maxDecimals: 0 });
 }
 
 function artUrlOf(slot: { readonly art: { readonly status: string; readonly url?: string } } | undefined): string | undefined {
@@ -274,7 +291,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
             item: {
               label: s.name,
               value: formatExactFigure(s.exact.value, model),
-              swatch: negative ? '#ff6b6f' : s.color,
+              swatch: negative ? CHART_MEASURE_COLOURS.shortInk : s.color,
               tone: negative ? 'negative' : undefined,
               ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
               ...(iconUrl ? { icon: iconUrl } : {}),
@@ -321,7 +338,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number): TooltipListI
         item: {
           label: s.name,
           value: text,
-          swatch: s.negRed && sampled.value < 0 ? '#ff6b6f' : s.color,
+          swatch: s.negRed && sampled.value < 0 ? CHART_MEASURE_COLOURS.shortInk : s.color,
           tone: s.negRed && sampled.value < 0 ? 'negative' : undefined,
           ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           ...(iconUrl ? { icon: iconUrl } : {}),
@@ -470,13 +487,26 @@ export function deriveTimeChartTooltip(
       };
     }
     const s = model.series.find(item => item.id === parsed.seriesId);
-    if (!s) return null;
-    const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === s.name);
+    if (s) {
+      const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === s.name);
+      return {
+        hour: model.hour,
+        rowKey: inspectKey,
+        payload: {
+          title: s.endLabel?.fullName ?? s.name,
+          subtitle: model.measureTitle,
+          items,
+        },
+      };
+    }
+    const band = model.mode === 'stack' ? model.stack?.bands.find(item => item.id === parsed.seriesId) : undefined;
+    if (!band) return null;
+    const items = seriesTooltipItemsAt(model, model.hour).filter(r => r.label === band.name);
     return {
       hour: model.hour,
       rowKey: inspectKey,
       payload: {
-        title: s.endLabel?.fullName ?? s.name,
+        title: band.endLabel?.fullName ?? band.name,
         subtitle: model.measureTitle,
         items,
       },

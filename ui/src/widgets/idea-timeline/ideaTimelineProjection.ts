@@ -4,7 +4,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { ideaNameMissing, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { inHourSpans, nextBoundaryAfter, sortedBoundaries, timelineModel, urlArtHandle, spanStart } from '../../families/timeline/helpers.ts';
+import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, urlArtHandle, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerTimelineProjection } from '../../families/timeline/registry.ts';
 import type { IdeaHistoryReply, IdeaSpan } from '../../generated/dashboard';
@@ -58,12 +58,13 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
     if (!category) {
       return timelineModel({ ...base, empty: opt.category ? 'Category not in this recording' : 'No idea categories recorded', emptyKind: 'unavailable', warnings: reply.warnings, nextChangeAt });
     }
-    const seen = { ...reply, spans: bridgedSpans(reply.spans.filter(span => span.firstHour <= hour), reply.unobserved) };
+    const gaps = clipSpansToHour(reply.unobserved, hour);
+    const seen = { ...reply, spans: bridgedSpans(boundedRuns(reply.spans, hour), gaps) };
     const slotOrdinal = new Map(category.slots.map((slot, index) => [slot.token, index]));
-    const gapNow = inHourSpans(reply.unobserved, hour);
+    const gapNow = inHourSpans(gaps, hour);
     const lanes: TimelineLane[] = lanesFor(seen, category).map(group => {
       const fill = colour(opt.surface, slotOrdinal.get(group.slot) ?? 0);
-      const held = bridgeGaps(group.spans, reply.unobserved, (a, b) => a.token === b.token && a.label === b.label);
+      const held = bridgeGaps(group.spans, gaps, (a, b) => a.token === b.token && a.holder === b.holder);
       const spans = held.map(stretch => {
         const span = { ...stretch.runs[0]!, lastHour: stretch.lastHour };
         const open = span.lastHour >= hour;
@@ -75,8 +76,8 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
           label: span.label,
           icon: urlArtHandle(span.icon),
           iconMissing: !span.icon,
-          ...spanStart(span.firstHour, opt.firstHour, reply.unobserved),
-          endUnseen: !open && inHourSpans(reply.unobserved, span.lastHour + 1),
+          ...spanStart(span.firstHour, opt.firstHour, gaps),
+          endUnseen: !open && inHourSpans(gaps, span.lastHour + 1),
           open,
           meta: { token: span.token },
         };
@@ -117,7 +118,7 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
       hour: hit.hour ?? model.hour,
       items: [
         { label: span.heldBefore ? 'Held before' : 'Since', value: `${span.startBy ? 'By ' : ''}${formatDateOnly(span.firstHour)}` },
-        { label: 'Until', value: span.open ? 'Held now' : span.endUnseen ? `By ${formatDateOnly(span.lastHour + 1)}` : formatDateOnly(span.lastHour) },
+        untilItem(span, model.unobserved, hit.hour ?? model.hour, { held: 'Held now', until: 'Until' }),
       ],
       ...(art?.description ? { description: art.description } : {}),
       ...(why ? { note: why } : {}),
@@ -151,6 +152,7 @@ export const ideaTimelineDeclaration: TimelineWidgetDeclaration<IdeaTimelineOpti
             followQuery: null,
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
             buildSpanParams: params => params,
+            provenInterval: wholeBranchProof,
             validate: validateIdeaHistoryReply,
           },
         }]
@@ -160,7 +162,7 @@ export const ideaTimelineDeclaration: TimelineWidgetDeclaration<IdeaTimelineOpti
   projectionOptions: (ctx, extra) => ({
     category: String(ctx.options.category ?? ''),
     iconsOnBars: ctx.options.iconsOnBars !== false,
-    firstHour: ctx.branch.firstHour,
+    firstHour: extra.extent[0],
     surface: extra.surface,
   }),
 };

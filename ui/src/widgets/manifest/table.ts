@@ -1,9 +1,12 @@
+import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { AnyTableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { familyTableLaneView } from '../../families/table/laneView.ts';
 import type { TableProjection } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
+import * as DIVISION_EQUIPMENT from '../division-equipment/definition.ts';
+import { MARKET_TABS, VIEWS, marketTableOptions } from '../international-market/definition.ts';
 import { EVENTS_TABLE_OPTIONS, OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
 
 const WORLD_TENSION_EVENTS_SCOPED_OPTIONS = [
@@ -23,6 +26,7 @@ function tableSpec<TModule>(
   });
 }
 
+const DIVISION_EQUIPMENT_SHARED = DIVISION_EQUIPMENT.OPTIONS.filter(field => field.key === 'country' || field.key === 'view' || field.key === 'countFor');
 const GAME_SCORE_TABLE_OPTION_KEYS = new Set(['view', 'factions', 'topMeasure', 'rankMarkers', TABLE_SETTINGS_KEY]);
 const GAME_SCORE_TABLE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_TABLE_OPTION_KEYS.has(field.key));
 
@@ -141,6 +145,31 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'production-lines',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'production-lines',
+      DEFAULT_VIEW,
+      () => import('../production-lines/productionLinesProjection.ts'),
+      mod => ({ projection: mod.productionLinesProjection, declaration: mod.productionLinesDeclaration }),
+    ),
+  },
+  ...MARKET_TABS.map((view): FamilyViewEntry => ({
+    kind: 'international-market',
+    view,
+    label: VIEWS.find(choice => choice.value === view)!.label,
+    family: 'table',
+    viewOption: 'view',
+    options: marketTableOptions(view),
+    loadSpec: tableSpec(
+      'international-market',
+      view,
+      () => import('../international-market/internationalMarketProjection.ts'),
+      mod => ({ projection: mod.internationalMarketProjection, declaration: mod.MARKET_DECLARATIONS[view] }),
+    ),
+  })),
+  {
     kind: 'industrial-organisations',
     view: DEFAULT_VIEW,
     family: 'table',
@@ -171,6 +200,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../equipment-designs/designsProjection.ts'),
       mod => ({ projection: mod.designsProjection, declaration: mod.designsDeclaration }),
+    ),
+  },
+  {
+    kind: 'next-elections',
+    view: DEFAULT_VIEW,
+    family: 'table',
+    loadSpec: tableSpec(
+      'next-elections',
+      DEFAULT_VIEW,
+      () => import('../next-elections/electionsProjection.ts'),
+      mod => ({ projection: mod.electionsProjection, declaration: mod.electionsDeclaration }),
     ),
   },
   {
@@ -218,6 +258,34 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'division-equipment',
+    view: 'equipment',
+    label: 'By equipment',
+    family: 'table',
+    viewOption: 'view',
+    options: [...DIVISION_EQUIPMENT_SHARED, DIVISION_EQUIPMENT.TYPE_TABLE_OPTION],
+    loadSpec: tableSpec(
+      'division-equipment',
+      'equipment',
+      () => import('../division-equipment/divisionEquipmentProjection.ts'),
+      mod => ({ projection: mod.equipmentTypeProjection, declaration: mod.equipmentTypeDeclaration }),
+    ),
+  },
+  {
+    kind: 'division-equipment',
+    view: 'template',
+    label: 'By template',
+    family: 'table',
+    viewOption: 'view',
+    options: [...DIVISION_EQUIPMENT_SHARED, DIVISION_EQUIPMENT.TEMPLATE_TABLE_OPTION],
+    loadSpec: tableSpec(
+      'division-equipment',
+      'template',
+      () => import('../division-equipment/divisionEquipmentProjection.ts'),
+      mod => ({ projection: mod.equipmentTemplateProjection, declaration: mod.equipmentTemplateDeclaration }),
+    ),
+  },
+  {
     kind: 'aces',
     view: DEFAULT_VIEW,
     family: 'table',
@@ -251,6 +319,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'trade-flows',
+    view: 'table',
+    label: 'Table',
+    family: 'table',
+    viewOption: 'view',
+    loadSpec: () => import('../trade-flows/tradeFlowsProjection.ts').then(mod => ({
+      family: 'table', kind: 'trade-flows', view: 'table',
+      projection: mod.tradeTableProjection, declaration: mod.tradeTableDeclaration,
+    })),
+  },
+  {
     kind: 'world-tension',
     view: 'events',
     label: 'Threat events',
@@ -270,4 +349,5 @@ export const tableFamilyManifest: FamilyManifestModule = {
   family: 'table',
   laneView: familyTableLaneView,
   views: TABLE_VIEWS,
+  hostAdapter: tableHostAdapter,
 };

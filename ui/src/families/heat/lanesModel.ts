@@ -152,13 +152,6 @@ export function laneIdentities(rows: readonly HeatLaneRow[]): readonly HeatLaneI
   return rows.map(row => ({ id: row.id, label: row.label, ...(row.meta !== undefined ? { meta: row.meta } : {}) }));
 }
 
-export function lanesExtentSignature(
-  layout: { readonly totalHeight: number; readonly rowStride: number; readonly plotTop: number; readonly plotHeight: number },
-  rows: readonly HeatLaneRow[],
-): string {
-  return JSON.stringify([layout.totalHeight, layout.rowStride, layout.plotTop, layout.plotHeight, rows.map(row => [row.id, row.label])]);
-}
-
 export function findRunAtHour(runs: readonly HeatLaneRun[], hour: number, maxHour: number): HeatLaneRun | null {
   if (hour > maxHour || !runs.length) return null;
   let lo = 0;

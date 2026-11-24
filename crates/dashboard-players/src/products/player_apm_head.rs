@@ -440,7 +440,7 @@ fn tile_from_index(
         let buckets: Vec<Option<ChartBucket>> = vec![None; ask.countries.len() * tile::BINS];
         let (bins, raw_values, hour_bytes) = tile::encode(&buckets, first, ask.bin_hours, 1.0);
         return Ok(SeriesTileReply { branch_id: branch.to_string(), measure: family.value.clone(), decimals: 0, bin_hours: ask.bin_hours, index: ask.index, first_hour: first,
-            immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins) });
+            immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins), ranking: None });
     }
     let reply = query(held, &ApmParams {
         branch_id: branch.to_string(),
@@ -480,7 +480,7 @@ fn tile_from_index(
     let (immutable, filled) = tile::closure(first, last, timeline_last);
     let (bins, raw_values, hour_bytes) = tile::encode(&buckets, first, ask.bin_hours, 1.0);
     Ok(SeriesTileReply { branch_id: branch.to_string(), measure: family.value.clone(), decimals: 0, bin_hours: ask.bin_hours, index: ask.index, first_hour: first,
-        immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins) })
+        immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins), ranking: None })
 }
 
 #[cfg(test)]

@@ -12,6 +12,8 @@ pub struct Medal {
     pub leader: Modifiers,
     pub ship: Modifiers,
     pub officer_xp: Option<Value>,
+    pub icon: Option<Vec<u8>>,
+    pub frame: Option<u32>,
     pub on_grant: Vec<Item>,
     pub refusals: Vec<String>,
 }
@@ -102,6 +104,8 @@ impl Medals {
                             .on_grant
                             .extend_from_slice(item.value.items().unwrap_or_default()),
                         Some(b"officer_xp") => medal.officer_xp = Some(item.value.clone()),
+                        Some(b"icon") => medal.icon = item.value.scalar().map(|icon| c_string(icon).to_vec()),
+                        Some(b"frame") => medal.frame = item.value.scalar().and_then(|frame| std::str::from_utf8(c_string(frame)).ok()?.parse().ok()),
                         _ => {}
                     }
                 }
@@ -143,7 +147,7 @@ mod tests {
     fn medal_content_keeps_order_repetitions_variables_and_all_modifier_domains() {
         content_reader_script::test_game::enter();
         let mut medals = Medals::default();
-        medals.read("synthetic", br"@a=0.2 unit_medals={ MOD={unit_modifiers={army_morale_factor=@a} leader_modifiers={army_attack_factor=0.1} ship_modifiers={naval_morale_factor=0.3} officer_xp=37 one_time_effect={add_manpower=12}} MOD={unit_modifiers={max_dig_in=4}}}", &KeyNames::default(), &|_| Some(true));
+        medals.read("synthetic", br"@a=0.2 unit_medals={ MOD={unit_modifiers={army_morale_factor=@a} leader_modifiers={army_attack_factor=0.1} ship_modifiers={naval_morale_factor=0.3} officer_xp=37 one_time_effect={add_manpower=12} icon=GFX_medal_strip frame=3} MOD={unit_modifiers={max_dig_in=4}}}", &KeyNames::default(), &|_| Some(true));
         assert_eq!(medals.definitions.len(), 2);
         assert!(medals.get(0, b"mod").is_err());
         let first = medals.get(1, b"mod").unwrap();
@@ -151,6 +155,8 @@ mod tests {
         assert_eq!(first.leader.values[0].value, 10_000);
         assert_eq!(first.ship.values[0].value, 30_000);
         assert_eq!(first.on_grant.len(), 1);
+        assert_eq!((first.icon.as_deref(), first.frame), (Some(&b"GFX_medal_strip"[..]), Some(3)));
+        assert_eq!((medals.get(2, b"mod").unwrap().icon.as_deref(), medals.get(2, b"mod").unwrap().frame), (None, None));
         assert_eq!(medals.get(2, b"mod").unwrap().unit.values[0].value, 400_000);
     }
 }

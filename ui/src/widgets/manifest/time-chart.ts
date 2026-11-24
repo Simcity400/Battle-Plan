@@ -21,6 +21,19 @@ function timeChartSpec<TModule>(
 
 export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'air-force-size',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    loadSpec: timeChartSpec(
+      'air-force-size',
+      'lines',
+      () => import('../air-force-size/airForceLinesProjection.ts'),
+      mod => ({ projection: mod.airForceLinesProjection, declaration: mod.airForceLinesDeclaration }),
+    ),
+  },
+  {
     kind: 'apm-graph',
     view: DEFAULT_VIEW,
     family: 'time-chart',
@@ -43,14 +56,16 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
-    kind: 'political-power',
-    view: DEFAULT_VIEW,
+    kind: 'army-size',
+    view: 'lines',
+    label: 'Lines',
     family: 'time-chart',
+    viewOption: 'view',
     loadSpec: timeChartSpec(
-      'political-power',
-      DEFAULT_VIEW,
-      () => import('../political-power/politicalPowerProjection.ts'),
-      mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
+      'army-size',
+      'lines',
+      () => import('../army-size/armyLinesProjection.ts'),
+      mod => ({ projection: mod.armyLinesProjection, declaration: mod.armyLinesDeclaration }),
     ),
   },
   {
@@ -65,17 +80,6 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
-    kind: 'stability',
-    view: DEFAULT_VIEW,
-    family: 'time-chart',
-    loadSpec: timeChartSpec(
-      'stability',
-      DEFAULT_VIEW,
-      () => import('../stability/stabilityProjection.ts'),
-      mod => ({ projection: mod.stabilityProjection, declaration: mod.stabilityDeclaration }),
-    ),
-  },
-  {
     kind: 'experience',
     view: DEFAULT_VIEW,
     family: 'time-chart',
@@ -87,6 +91,19 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
     ),
   },
   {
+    kind: 'factories',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    loadSpec: timeChartSpec(
+      'factories',
+      'lines',
+      () => import('../factories/factoriesLinesProjection.ts'),
+      mod => ({ projection: mod.factoriesLinesProjection, declaration: mod.factoriesLinesDeclaration }),
+    ),
+  },
+  {
     kind: 'fuel',
     view: DEFAULT_VIEW,
     family: 'time-chart',
@@ -95,6 +112,63 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('../fuel/fuelProjection.ts'),
       mod => ({ projection: mod.fuelProjection, declaration: mod.fuelDeclaration }),
+    ),
+  },
+  {
+    kind: 'navy-size',
+    view: 'lines',
+    label: 'Lines',
+    family: 'time-chart',
+    viewOption: 'view',
+    loadSpec: timeChartSpec(
+      'navy-size',
+      'lines',
+      () => import('../navy-size/navyLinesProjection.ts'),
+      mod => ({ projection: mod.navyLinesProjection, declaration: mod.navyLinesDeclaration }),
+    ),
+  },
+  {
+    kind: 'political-power',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'political-power',
+      DEFAULT_VIEW,
+      () => import('../political-power/politicalPowerProjection.ts'),
+      mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
+    ),
+  },
+  {
+    kind: 'ruling-party',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'ruling-party',
+      DEFAULT_VIEW,
+      () => import('../ruling-party/rulingPartyProjection.ts'),
+      mod => ({ projection: mod.rulingPartyProjection, declaration: mod.rulingPartyDeclaration }),
+    ),
+  },
+  {
+    kind: 'stability',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'stability',
+      DEFAULT_VIEW,
+      () => import('../stability/stabilityProjection.ts'),
+      mod => ({ projection: mod.stabilityProjection, declaration: mod.stabilityDeclaration }),
+    ),
+  },
+  {
+    kind: 'supply-health',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'supply-health',
+      DEFAULT_VIEW,
+      () => import('../supply-health/supplyHealthProjection.ts'),
+      mod => ({ projection: mod.supplyHealthProjection, declaration: mod.supplyHealthDeclaration }),
     ),
   },
   {

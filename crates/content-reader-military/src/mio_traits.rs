@@ -53,11 +53,20 @@ pub struct ParentGroup {
     pub required: i32,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeHeaderText {
+    pub text: String,
+    pub x: i32,
+}
+
 pub struct Tree<'a> {
     pub available: &'a [Item],
     pub visible: &'a [Item],
     pub equipment_types: &'a [Vec<u8>],
     pub research_categories: &'a [Vec<u8>],
+    pub background: Option<&'a str>,
+    pub icon: Option<&'a str>,
+    pub tree_header_texts: &'a [TreeHeaderText],
     pub initial: Option<&'a TraitName>,
     pub traits: &'a [TraitName],
 }
@@ -218,6 +227,9 @@ impl TraitName {
 struct Organisation {
     token: String,
     include: Option<String>,
+    background: Option<String>,
+    icon: Option<String>,
+    tree_header_texts: Vec<TreeHeaderText>,
     available: Vec<Item>,
     visible: Vec<Item>,
     inherited_available: Vec<Item>,
@@ -262,6 +274,9 @@ impl Catalog {
                 },
                 equipment_types: &row.equipment_types,
                 research_categories: &row.research_categories,
+                background: row.background.as_deref(),
+                icon: row.icon.as_deref(),
+                tree_header_texts: &row.tree_header_texts,
                 initial: row.initial.as_ref(),
                 traits: &row.traits,
             }))
@@ -374,6 +389,9 @@ impl Catalog {
             let visible = self.organisations[parent].visible.clone();
             let equipment_types = self.organisations[parent].equipment_types.clone();
             let research_categories = self.organisations[parent].research_categories.clone();
+            let background = self.organisations[parent].background.clone();
+            let icon = self.organisations[parent].icon.clone();
+            let tree_header_texts = self.organisations[parent].tree_header_texts.clone();
             let child = &mut self.organisations[index];
             if child.available.is_empty() && !child.deleted.contains(&Token::c_str(b"available")) {
                 child.inherited_available = available;
@@ -392,6 +410,19 @@ impl Catalog {
                     .contains(&Token::c_str(b"research_categories"))
             {
                 child.research_categories = research_categories;
+            }
+            if child.background.is_none()
+                && !child.deleted.contains(&Token::c_str(b"background"))
+            {
+                child.background = background;
+            }
+            if child.icon.is_none() && !child.deleted.contains(&Token::c_str(b"icon")) {
+                child.icon = icon;
+            }
+            if child.tree_header_texts.is_empty()
+                && !child.deleted.contains(&Token::c_str(b"tree_header_text"))
+            {
+                child.tree_header_texts = tree_header_texts;
             }
             if !child.delete_initial
                 && let Some(initial) = initial
@@ -752,6 +783,28 @@ fn parse(
                 row.research_categories.extend(raw_tokens(field));
             } else if field.keyword_is("include") {
                 row.include = Some(string(field, false)?);
+            } else if field.keyword_is("background") {
+                row.background = Some(string(field, true)?);
+            } else if field.keyword_is("icon") {
+                row.icon = Some(string(field, true)?);
+            } else if field.keyword_is("tree_header_text") {
+                let mut text = String::new();
+                let mut x = 0i32;
+                for entry in field.value.items().unwrap_or_default() {
+                    if entry.keyword_is("text") {
+                        text = string(entry, true)?;
+                    } else if entry.keyword_is("x")
+                        && let Some(val) = entry
+                            .value
+                            .scalar()
+                            .and_then(|v| content_reader_parser::crt::scan_i32(v).stored())
+                    {
+                        x = val;
+                    }
+                }
+                if !text.is_empty() {
+                    row.tree_header_texts.push(TreeHeaderText { text, x });
+                }
             } else if field.keyword_is("trait") || field.keyword_is("add_trait") {
                 row.traits
                     .push(trait_name(field.value.items().unwrap_or_default())?);

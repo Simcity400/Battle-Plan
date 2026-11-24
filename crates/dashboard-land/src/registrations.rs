@@ -4,6 +4,7 @@ dashboard_base::register_products! {
     FORCES_AIRFORCESIZE => crate::products::forces::AirForceSize,
     FORCES_NAVYSIZE => crate::products::forces::NavySize,
     LEADERS_LEADERPORTRAITS => crate::products::leaders::LeaderPortraits,
+    LEADER_NAME_RUNS_LEADERNAMERUNS => crate::products::leader_name_runs::LeaderNameRuns,
     LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareer,
     LEADERS_CAREER_LEADERCHOICES => crate::products::leaders::career::LeaderChoices,
     DIVISION_LOG_DIVISIONLOG => crate::products::division_log::DivisionLog,
@@ -18,7 +19,6 @@ dashboard_base::register_products! {
 
 dashboard_base::register_hourly_products! {
     ARMY_TEMPLATEROSTER => crate::products::army::TemplateRoster,
-    EXPERIENCE_COUNTRYEXPERIENCE => crate::products::experience::CountryExperience,
     TRAINING_QUEUE_TRAININGQUEUE => crate::products::training_queue::TrainingQueue,
     DOCTRINE_MASTERY_DOCTRINEMASTERY => crate::products::doctrine_mastery::DoctrineMastery,
     DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => crate::products::doctrine_mastery::rewards::DoctrineRewards,
@@ -29,6 +29,8 @@ dashboard_base::register_hourly_products! {
     DIVISIONS_CAREERS_DIVISIONRECORD => crate::products::divisions::careers::DivisionRecord,
     DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => crate::products::divisions::equipment::DivisionEquipment,
     ARMY_LOSSES_ARMYLOSSES => crate::products::army_losses::ArmyLosses,
+    FORCES_AIRFORCEAT => crate::products::forces::AirForceAt,
+    FORCES_NAVYAT => crate::products::forces::NavyAt,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};
@@ -39,3 +41,5 @@ use serde_json::Value;
 type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
 
 pub const EXACT_DOCTRINEMASTERY: ExactPanel = exact_panel::<crate::products::doctrine_mastery::DoctrineMastery>;
+pub const EXACT_AIRFORCEAT: ExactPanel = exact_panel::<crate::products::forces::AirForceAt>;
+pub const EXACT_NAVYAT: ExactPanel = exact_panel::<crate::products::forces::NavyAt>;

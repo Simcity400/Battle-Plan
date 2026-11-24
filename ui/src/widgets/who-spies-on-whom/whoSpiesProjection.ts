@@ -4,7 +4,7 @@ import { countryRowPresentation } from '../../families/bars/model.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
-import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell, MatrixMarginCell } from '../../families/heat/matrixModel.ts';
+import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell, type MatrixMarginCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
@@ -56,7 +56,7 @@ function sources(form: OperativeMatrixForm) {
 }
 
 function blank(hour: number, extra: Partial<HeatMatrixModel>): HeatMatrixModel {
-  return { hour, rows: [], columns: [], cell: () => ({ kind: 'empty' }), ...extra };
+  return { hour, rows: [], columns: [], cells: NO_CELLS, ...extra };
 }
 
 export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixModel {
@@ -91,17 +91,23 @@ export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixMod
   const hasMissing = reply.rows.some(row => row.missing !== null || row.capacity.kind === 'missing');
   const readHour = reply.readHour ?? hour;
 
-  const cell = (r: number, c: number): MatrixCell => {
-    const found = byPair.get(r * width + c);
-    if (rows[r]!.id === columns[c]!.id) {
-      return { kind: 'diagonal', outlined: true, ...(found ? { text: String(found.operatives.length) } : {}) };
-    }
-    if (found) {
-      const count = found.operatives.length;
-      return { kind: 'value', intensity: count / most, text: String(count), value: count, selectable: true };
-    }
-    const missing = reply.rows[r]!.missing;
-    return missing ? { kind: 'missing', reason: missing } : { kind: 'empty', label: 'No operatives', audit: '0' };
+  const present = new Map<number, MatrixCell>();
+  for (const [at, found] of byPair) {
+    const r = Math.floor(at / width);
+    const c = at % width;
+    const count = found.operatives.length;
+    present.set(at, rows[r]!.id === columns[c]!.id
+      ? { kind: 'diagonal', outlined: true, text: String(count) }
+      : { kind: 'value', intensity: count / most, text: String(count), value: count, selectable: true });
+  }
+  const noOperatives: MatrixCell = { kind: 'empty', label: 'No operatives', audit: '0' };
+  const cells = {
+    present,
+    absent: (r: number): MatrixCell => {
+      const missing = reply.rows[r]!.missing;
+      return missing ? { kind: 'missing', reason: missing } : noOperatives;
+    },
+    self: { kind: 'diagonal', outlined: true } as MatrixCell,
   };
 
   const margin = (r: number): MatrixMarginCell => {
@@ -119,7 +125,7 @@ export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixMod
     hour,
     rows,
     columns,
-    cell,
+    cells,
     shape: 'wide',
     ramp: 'accent',
     corner: 'Spy ↓ · target →',

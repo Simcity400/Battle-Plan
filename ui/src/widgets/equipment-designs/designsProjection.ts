@@ -1,12 +1,12 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { gameWindow } from '../../dashboard/gameWindows';
+import { gameWindow } from '../../dashboard/gameWindows.ts';
 import { object } from '../../dashboard/validation.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artNameCell } from '../../families/table/identityCell.ts';
+import { artKindCell, urlArtHandle } from '../../families/table/identityCell.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notRecorded } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import type { EquipmentDesignsReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -34,11 +34,15 @@ export function validateDesigns(value: unknown): EquipmentDesignsReply {
   return reply;
 }
 
-const PRIORITY: Readonly<Record<string, number>> = { design: 0, state: 1, type: 2 };
+const PRIORITY: Readonly<Record<string, number>> = { kind: 0, design: 0, state: 1, type: 2, view: 3 };
 export const DESIGN_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column => ({
   ...column,
   priority: PRIORITY[column.key] ?? 9,
   text: true,
+  ...(column.key === 'kind' ? { cellKind: 'kind' as const, sortable: false, pinned: true } : {}),
+  ...(column.key === 'design' ? { cellKind: 'item' as const, pinned: true } : {}),
+  ...(column.key === 'state' ? { cellKind: 'status' as const } : {}),
+  ...(column.key === 'view' ? { cellKind: 'action' as const, sortable: false } : {}),
 }));
 
 export const designsProjection: TableProjection<DesignsProjectionOptions> = registerTableProjection({
@@ -62,9 +66,11 @@ export const designsProjection: TableProjection<DesignsProjectionOptions> = regi
         key: design.id,
         name: design.name ?? design.id,
         cells: {
-          design: artNameCell(readView, design.name, image ? { kind: 'url', url: image } : null, design.nameUnknown ?? 'Design name not recorded'),
+          kind: artKindCell(readView, urlArtHandle(image), 'equipment', design.name),
+          design: { value: design.name ? knownValue(design.name) : notRecorded(design.nameUnknown ?? 'Design name not recorded') },
           type: { value: design.typeName ? knownValue(design.typeName) : notRecorded(design.nameUnknown ?? 'Equipment type name not recorded') },
-          state: { value: knownValue(obsolete ? 'Obsolete' : 'Current'), status: 'dot', tone: obsolete ? 'grey' : 'blue', sortValue: knownValue(obsolete ? 1 : 0) },
+          state: { value: knownValue(obsolete ? 'Obsolete' : 'Current'), statusKind: obsolete ? 'ended' : 'running', sortValue: knownValue(obsolete ? 1 : 0) },
+          view: { value: options.canOpen ? knownValue('View') : notApplicable('The equipment designer is not available') },
         },
         ...(options.canOpen ? { tooltipAction: 'Open in the designer' } : {}),
         meta,

@@ -1,4 +1,4 @@
-import { nudgeApart, readableColour } from '../../charts/palette.ts';
+import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { TRAILING_HOURS } from '../../dashboard/model.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -18,7 +18,6 @@ import { apmHeadQuery, apmHeadRows } from '../player-apm/apmHead.ts';
 
 const TOP_NAMED = 8;
 const NOT_RECORDED_CAMPAIGN = 'Player orders were not recorded in this campaign.';
-const FALLBACK_COLORS = ['#4f86f7', '#4e9e6d', '#e3a83b', '#c76a90', '#9c6fe0', '#56b0b0', '#d88450', '#9e8855'] as const;
 
 export interface ApmGraphOptions {
   readonly group: 'country' | 'player';
@@ -54,7 +53,8 @@ function resolveSeriesColors(
     }
   }
   const nudged = raw.length > 0 ? nudgeApart(raw, surfaceRgb) : [];
-  const out: string[] = rows.map((_, i) => FALLBACK_COLORS[i % FALLBACK_COLORS.length]!);
+  const fallbacks = categoricalPalette(surface);
+  const out: string[] = rows.map((_, i) => fallbacks[i % fallbacks.length]!);
   for (let j = 0; j < indices.length; j++) {
     out[indices[j]!] = toHex(nudged[j]!);
   }
@@ -144,7 +144,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
         : (identity?.name.status === 'ready' ? identity.name.value : row.tag ?? row.id);
       const bounded = tiled?.get(row.id) ?? null;
       const headValue = row.summary.apm;
-      const color = isTop ? topColors[rank]! : '#8a8f98';
+      const color = isTop ? topColors[rank]! : CHART_MEASURE_COLOURS.mutedFallback;
       return {
         id: row.id,
         key: row.id,

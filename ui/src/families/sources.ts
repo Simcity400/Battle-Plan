@@ -1,5 +1,6 @@
 import type { CountrySelection } from '../dashboard/model';
 import type { Gate } from '../dashboard/regionGate';
+import { authoredHex } from '../charts/palette.ts';
 import type { CountryFlagChoice, CountryGroupReply, HourSpan } from '../generated/dashboard';
 import { nextFactionsChange, type FamilyFactionRun, type HourRanges } from './holders.ts';
 import { countryTagKey, type DrawnFlagEntry, type IdentityIndex } from './identity/index.ts';
@@ -19,78 +20,6 @@ export function freezeGate(
   recordedRun?: (hour: number) => readonly [number, number],
 ): FrozenGate {
   return recordedRun ? { recorded: gate.recorded, span: gate.span, recordedRun } : { recorded: gate.recorded, span: gate.span };
-}
-
-export function resolveRetainedHeadSpan(
-  moment: string | undefined,
-  fallback: readonly [number, number] | null,
-): readonly [number, number] | null {
-  if (moment) {
-    try {
-      const parsed = JSON.parse(moment) as unknown;
-      if (Array.isArray(parsed) && typeof parsed[0] === 'number' && typeof parsed[1] === 'number') {
-        return [parsed[0], parsed[1]] as const;
-      }
-    } catch {
-      return fallback;
-    }
-  }
-  return fallback;
-}
-
-export interface DisplayedStaticSnapshot<TContext = unknown, TExtra = unknown> {
-  readonly data: unknown;
-  readonly moment: string | undefined;
-  readonly requestKey: string | null;
-  readonly anchorHour: number | null;
-  readonly span: readonly [number, number] | null;
-  readonly context: TContext;
-  readonly gate: FrozenGate;
-  readonly extra: TExtra;
-}
-
-export interface DisplayedStaticInput<TContext, TExtra> {
-  readonly data: unknown;
-  readonly moment: string | undefined;
-  readonly requestKey: string | null;
-  readonly anchorHour?: number | null;
-  readonly satisfiesCurrent: boolean;
-  readonly requestedSpan: readonly [number, number] | null;
-  readonly context: TContext;
-  readonly gate: FrozenGate;
-  readonly extra: TExtra;
-}
-
-export function resolveDisplayedStaticSnapshot<TContext, TExtra = undefined>(
-  previous: DisplayedStaticSnapshot<TContext, TExtra> | null,
-  input: DisplayedStaticInput<TContext, TExtra>,
-): DisplayedStaticSnapshot<TContext, TExtra> | null {
-  if (input.data === undefined) return null;
-  if (input.satisfiesCurrent) {
-    return {
-      data: input.data,
-      moment: input.moment,
-      requestKey: input.requestKey,
-      anchorHour: input.anchorHour ?? null,
-      span: resolveRetainedHeadSpan(input.moment, input.requestedSpan),
-      context: input.context,
-      gate: input.gate,
-      extra: input.extra,
-    };
-  }
-  if (previous && previous.data === input.data && previous.moment === input.moment) {
-    return previous;
-  }
-  return {
-    data: input.data,
-    moment: input.moment,
-    requestKey: input.requestKey,
-    anchorHour: input.anchorHour ?? null,
-    span: resolveRetainedHeadSpan(input.moment, input.requestedSpan),
-    context: input.context,
-    gate: input.gate,
-    extra: input.extra,
-  };
 }
 
 export function effectiveCountryUnobserved(
@@ -157,15 +86,6 @@ export function extractFactionData(groups: CountryGroupReply | undefined, enable
   return { runs, unobserved, incomplete };
 }
 
-export function colourStringFromPacked(packed: number | undefined): string | undefined {
-  if (packed === undefined || packed < 0) return undefined;
-  return `rgb(${(packed >> 16) & 255}, ${(packed >> 8) & 255}, ${packed & 255})`;
-}
-
-export function colourStringFromRgb(rgb: readonly [number, number, number]): string {
-  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
-}
-
 export function buildCountryLooksFromIdentity(
   index: IdentityIndex | null,
   tags: readonly string[],
@@ -192,7 +112,7 @@ export function buildCountryLooksFromIdentity(
             : res.name.kind === 'pending'
               ? 'Loading…'
               : undefined;
-        const color = includeColours && res.color.kind === 'known' ? colourStringFromRgb(res.color.value) : undefined;
+        const color = includeColours && res.color.kind === 'known' ? authoredHex(res.color.value) : undefined;
         let flag: string | undefined;
         let flagPending = false;
         if (res.flagChoice.kind === 'known') {

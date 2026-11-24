@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import type { IconName } from '../../components/Icons';
 import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
+import { DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
-import type { ArtResolution } from '../art/types.ts';
 import { useArtHandleResolutions } from '../art/react.ts';
 import type {
   AuxProductSpec,
@@ -24,11 +24,12 @@ import type {
   FamilyContextHit,
   FamilyHostAdapter,
   FamilyStaticSources,
+  FamilyRowWindow,
   FamilyViewportChange,
 } from './adapter.ts';
 import { DEFAULT_VIEW, viewOwnedFields } from '../manifest.ts';
 import { renderFamilyStatus } from './FamilyBodyState.tsx';
-import FamilyHost from './FamilyHost.tsx';
+import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
 
@@ -69,8 +70,11 @@ export interface DeclaredFamilyWidgetProps<
   TProjectionOptions = unknown,
   TBinding = unknown,
   TAux = unknown,
+  TSettings = unknown,
 > extends WidgetProps {
-  readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding>;
+  readonly adapter: FamilyHostAdapter<TModel, TProjectionOptions, TBinding, TSettings>;
+  readonly chrome?: ComponentType<FamilyChromeProps<TSettings>>;
+  readonly onWindowChange?: (window: FamilyRowWindow, hour: number | null) => void;
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
   readonly view?: string;
   readonly selectedKey?: string | null;
@@ -81,7 +85,6 @@ export interface DeclaredFamilyWidgetProps<
   readonly onHoverHour?: (hour: number | null) => void;
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
   readonly extraWarnings?: readonly string[];
-  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
 }
 
 export default function DeclaredFamilyWidget<
@@ -89,8 +92,11 @@ export default function DeclaredFamilyWidget<
   TProjectionOptions = unknown,
   TBinding = unknown,
   TAux = unknown,
+  TSettings = unknown,
 >({
   adapter,
+  chrome,
+  onWindowChange,
   declaration,
   view = DEFAULT_VIEW,
   widget,
@@ -107,8 +113,7 @@ export default function DeclaredFamilyWidget<
   onHoverHour: externalHoverHour,
   onArtDemands: externalArtDemands,
   extraWarnings,
-  artResolutions,
-}: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux>) {
+}: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
@@ -124,7 +129,13 @@ export default function DeclaredFamilyWidget<
     () => (declaration.optionFields ? viewOwnedFields(declaration.optionFields, view) : undefined),
     [declaration.optionFields, view],
   );
-  const plan = useFamilyPlan<TAux>({
+  const settingsPolicy = adapter.settings;
+  const captureSettings = useCallback(
+    (ctx: FamilyPlanContext<TAux>) => settingsPolicy!.resolve(declaration, ctx as FamilyPlanContext<unknown>, ctx.options),
+    [settingsPolicy, declaration],
+  );
+  const plan = useFamilyPlan<TAux, TSettings | undefined>({
+    ...(settingsPolicy ? { captureExtra: captureSettings } : {}),
     kind: declaration.kind,
     subject: declaration.subject,
     emptyCampaign: declaration.emptyCampaign,
@@ -142,11 +153,7 @@ export default function DeclaredFamilyWidget<
 
   const { theme } = useFamilyTheme(undefined, plan.displayedCountryLooks);
 
-  const { resolutions: demandedResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
-  const shownArtResolutions = useMemo(
-    () => (artResolutions ? { ...artResolutions, ...demandedResolutions } : demandedResolutions),
-    [artResolutions, demandedResolutions],
-  );
+  const { resolutions: shownArtResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
 
   const extent = useMemo<readonly [number, number]>(() => {
     const span = plan.displayedCtx?.staticSpan;
@@ -184,8 +191,23 @@ export default function DeclaredFamilyWidget<
     if (lastViewportRef.current) pushSeriesViewport(lastViewportRef.current);
   }, [pushSeriesViewport]);
 
-  const displayedCtx = plan.displayedCtx;
-  const surfaceColor = theme?.surface ?? '#111111';
+  const liveSettings = useMemo(
+    () => settingsPolicy?.resolve(declaration, plan.ctx as FamilyPlanContext<unknown> | null, plan.options),
+    [settingsPolicy, declaration, plan.ctx, plan.options],
+  );
+  const settings = plan.displayedExtra ?? liveSettings;
+  const planCtx = plan.ctx;
+  const onSettings = useCallback((next: TSettings) => {
+    if (!setOption || !planCtx || !settingsPolicy?.store || liveSettings === undefined) return;
+    settingsPolicy.store(declaration, next, liveSettings, planCtx as FamilyPlanContext<unknown>, setOption);
+  }, [setOption, planCtx, settingsPolicy, liveSettings, declaration]);
+  const editableSettings = !!setOption && !!settingsPolicy?.store && (settingsPolicy.editable?.(declaration) ?? true);
+
+  const displayedCtx = useMemo(
+    () => (plan.displayedCtx && settingsPolicy ? { ...plan.displayedCtx, settings } : plan.displayedCtx),
+    [plan.displayedCtx, settingsPolicy, settings],
+  );
+  const surfaceColor = theme?.surface ?? DEFAULT_DARK_SURFACE;
   const projectionOptions = useMemo(
     () => (displayedCtx ? declaration.projectionOptions(displayedCtx, { extent, surface: surfaceColor }) : ({} as TProjectionOptions)),
     [displayedCtx, declaration.projectionOptions, extent, surfaceColor],
@@ -242,6 +264,11 @@ export default function DeclaredFamilyWidget<
     <FamilyHost
       key={branchKey}
       adapter={adapter}
+      settings={settings}
+      {...(editableSettings ? { onSettings } : {})}
+      editableSettings={editableSettings}
+      {...(chrome ? { chrome } : {})}
+      {...(onWindowChange ? { onWindowChange } : {})}
       declaration={declaration.projection}
       view={view}
       options={projectionOptions}

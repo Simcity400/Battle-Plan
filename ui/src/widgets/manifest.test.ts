@@ -12,7 +12,9 @@ import {
   type FamilyViewEntry,
   type LegacyWidgetEntry,
 } from '../families/manifest.ts';
-import { bindFamilyManifest, ensureFamilyProjection, familyProjection } from '../families/registry.ts';
+import { bindFamilyManifest, ensureBoundProjection, ensureFamilyProjection, familyProjection, registeredFamilyProjections } from '../families/registry.ts';
+import { familyBinding, type FamilyBindingContext, type FamilyBindingIdentity } from '../families/host/adapter.ts';
+import type { FamilyTheme } from '../families/contract.ts';
 import {
   BARS_BEHIND_CHOICES,
   ROW_HEIGHT_CHOICES,
@@ -55,12 +57,44 @@ test('manifest accounts for every widget kind once across family views and legac
   }
 });
 
+test('every manifest view reaches its own projection through the binding the host builds, and nothing registers under an undeclared view', async () => {
+  const declared = new Set(FAMILY_VIEWS.map(entry => `${entry.family}\u0000${entry.kind}\u0000${normalizeView(entry.view)}`));
+  for (const manifest of FAMILY_MANIFESTS) {
+    assert.ok(manifest.hostAdapter, `${manifest.family} has a host adapter`);
+    for (const entry of manifest.views) {
+      const view = normalizeView(entry.view);
+      const spec = await entry.loadSpec();
+      const declaration = spec.declaration as { readonly kind?: string } | undefined;
+      assert.equal(declaration?.kind ?? entry.kind, entry.kind, `${entry.kind}/${view}: the declaration is for its own kind`);
+      const ctx: FamilyBindingContext<unknown, unknown> = {
+        kind: declaration?.kind ?? entry.kind, view, options: {}, settings: {}, window: null, sources: {}, extent: [0, 100], plan: null,
+        viewport: { width: 400, height: 300, dpr: 1, scrollLeft: 0, scrollTop: 0, zoomWindow: null }, theme: {} as FamilyTheme, reducedMotion: false,
+        identitySnapshot: null, selectedKey: null, focusedKey: null, expanded: {}, audit: false, auditId: undefined, pauseFlush: 0,
+      };
+      const binding: FamilyBindingIdentity | null = familyBinding(manifest.hostAdapter!, ctx);
+      assert.ok(binding, `${entry.kind}/${view}: the ${manifest.family} adapter builds a binding`);
+      const lookup = (onReady: () => void): ReturnType<typeof ensureBoundProjection> => ensureBoundProjection(binding, onReady);
+      const found = await new Promise<ReturnType<typeof ensureBoundProjection>>(resolve => {
+        const first = lookup(() => resolve(lookup(() => {})));
+        if (first !== 'loading') resolve(first);
+      });
+      assert.equal(found, spec.projection, `${entry.kind}/${view}: the worker finds this view's projection`);
+    }
+  }
+  const kinds = new Set(FAMILY_VIEWS.map(entry => entry.kind));
+  const stray = registeredFamilyProjections()
+    .filter(entry => kinds.has(entry.kind) && !declared.has(`${entry.family}\u0000${entry.kind}\u0000${entry.view}`))
+    .map(entry => `${entry.family}/${entry.kind}/${entry.view}`);
+  assert.deepEqual(stray, [], 'every registered projection is under a view the manifest declares');
+});
+
 test('multi-view widget routes each (kind, view) to its own family or legacy entry with scoped options', () => {
   assert.equal(resolveWidgetActiveView('game-score'), 'table');
   assert.equal(isFamilyWidgetView('game-score'), true);
   assert.equal(activeFamilyView('game-score')?.family, 'table');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'race' }), 'race');
-  assert.equal(isFamilyWidgetView('game-score', { view: 'race' }), false);
+  assert.equal(isFamilyWidgetView('game-score', { view: 'race' }), true);
+  assert.equal(activeFamilyView('game-score', { view: 'race' })?.family, 'bars');
   assert.equal(resolveWidgetActiveView('game-score', { view: 'lines' }), 'lines');
   assert.equal(isFamilyWidgetView('game-score', { view: 'lines' }), false);
 
@@ -96,7 +130,7 @@ test('playback placeholder gate uses the manifest as its single switch', () => {
     assert.equal(isPlaybackDatedView(entry.kind, opts, meta), true, `(${entry.kind}, ${entry.view ?? DEFAULT_VIEW}) plays back live`);
   }
   assert.equal(isPlaybackDatedView('research', undefined, metaOf('research')), true);
-  assert.equal(isPlaybackDatedView('casualties', undefined, metaOf('casualties')), false);
+  assert.equal(isPlaybackDatedView('map', undefined, metaOf('map')), false);
   assert.equal(isPlaybackDatedView('game-score', { view: 'table' }), true);
   assert.equal(isPlaybackDatedView('game-score', { view: 'race' }), true);
 });
@@ -212,7 +246,7 @@ test('worker projection registry loads table and bars projections lazily on dema
   const lanesWakes: number[] = [];
   const lanesView = drawnViews('heat-lanes', wid => lanesWakes.push(wid))!;
   const lanesBinding = { family: 'heat-lanes', kind: 'synthetic-heat-lanes', options: {}, sources: {}, width: 100, height: 100, scrollTop: 0 };
-  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), 51);
+  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), Infinity, 'a loading projection answers no boundary, so the lane walks no history');
   for (let i = 0; i < 16 && !lanesWakes.length; i++) await Promise.resolve();
   assert.equal(heatLanesLoads, 1);
   assert.deepEqual(lanesWakes, [9]);
@@ -220,9 +254,9 @@ test('worker projection registry loads table and bars projections lazily on dema
 
   assert.deepEqual(
     FAMILY_MANIFESTS.map(entry => entry.family),
-    ['bars', 'breakdown', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
+    ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
   );
-  for (const family of ['bars', 'breakdown', 'card', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
+  for (const family of ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
     assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
   }
 });
@@ -232,7 +266,7 @@ test('shared data-driven settings controls expose bars-behind, three row heights
     { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName', 'name'] },
     { key: 'factories', label: 'Factories', as: 'faint', offered: ['plain', 'faint'] },
   ];
-  const base: TableBase = { density: 'normal', barsBehind: 'sorted', overflow: 'tooltip', sort: { column: 'factories', direction: 'descending' } };
+  const base: TableBase = { density: 'normal', barsBehind: 'sorted', sort: { column: 'factories', direction: 'descending' } };
   const fields = [
     viewSwitchControl([{ value: 'rows', label: 'Rows' }, { value: 'bars', label: 'Bars' }], 'rows'),
     rowHeightControl('normal'),
@@ -327,4 +361,23 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
     option: 'view',
     choices: [{ value: 'table', label: 'Table' }, { value: 'bars', label: 'Bars' }],
   });
+});
+
+test('two table views of one kind each draw their own projection, and a missing view is refused, never the first view', async () => {
+  const projection = (view: string) => ({ family: 'table' as const, kind: 'synthetic-same-family', project: () => ({ columns: [], rows: [], hour: 0, empty: view }) });
+  const shares = projection('shares');
+  const totals = projection('totals');
+  bindFamilyManifest([
+    { kind: 'synthetic-same-family', view: 'shares', family: 'table', loadSpec: async () => ({ family: 'table', kind: 'synthetic-same-family', view: 'shares', projection: shares }) },
+    { kind: 'synthetic-same-family', view: 'totals', family: 'table', loadSpec: async () => ({ family: 'table', kind: 'synthetic-same-family', view: 'totals', projection: totals }) },
+  ]);
+  const drain = async (done: () => boolean) => { for (let i = 0; i < 16 && !done(); i++) await Promise.resolve(); };
+  let woken = 0;
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'totals', () => { woken++; }), 'loading');
+  await drain(() => woken > 0);
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'totals', () => {}), totals, 'the totals view draws the totals projection');
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => { woken++; }), 'loading', 'switching to the shares view loads its own projection');
+  await drain(() => woken > 1);
+  assert.equal(ensureFamilyProjection('table', 'synthetic-same-family', 'shares', () => {}), shares);
+  assert.equal(familyProjection('table', 'synthetic-same-family'), undefined, 'a kind with named views has no default view to fall back to');
 });

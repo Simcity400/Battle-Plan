@@ -11,6 +11,7 @@ import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHe
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { lazyActionKeys, type ParsedFamilyHit } from './adapter.ts';
 import { createBoundAuditReader, type BoundAuditEntry } from './auditBinding.ts';
+import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
   handleFamilyGridKeyDown,
@@ -344,6 +345,8 @@ test('toggleExpansion flips the installed tree state of a row and ignores rows t
   assert.deepEqual(opened?.next, { 'war:1': false, 'war:2': true });
   assert.equal(toggleExpansion(NO_EXPANSION, nav, 'war:2:GER'), null);
   assert.equal(toggleExpansion(NO_EXPANSION, nav, 'missing'), null);
+  assert.deepEqual(toggleExpansion(NO_EXPANSION, nav, 'war:2', true)?.next, { 'war:1': false, 'war:2': true }, 'exclusive: opening one closes the one that was open');
+  assert.deepEqual(toggleExpansion(NO_EXPANSION, nav, 'war:1', true)?.next, { 'war:1': false }, 'closing touches nothing else');
 });
 
 test('reportFamilyShownHour prefers explicit installedHour over view.through', () => {
@@ -780,7 +783,7 @@ test('grid and points keyboard navigation and family host adapters cover all fou
   assert.deepEqual(parseBarsHit('right:GER'), { key: 'GER', subject: 'GER', kind: 'right-row', toggle: false, inspectToken: 'right:GER' });
   assert.deepEqual(parseBarsHit('remove:reg1'), { key: 'reg1', subject: 'reg1', kind: 'remove-region', toggle: true, inspectToken: 'remove:reg1' });
   assert.deepEqual(parseHeatMatrixHit('cell:2:5'), { key: '2:5', subject: '2:5', toggle: false, inspectToken: 'cell:2:5' });
-  assert.equal(parseHeatLanesHit('lane:0@144')?.hour, 144);
+  assert.equal(parseHeatLanesHit('lane:#0@144')?.hour, 144);
   assert.equal(parseTimeChartHit('line:GER@512')?.hour, 512);
   assert.equal(parseTimeChartHit('line:GER@512')?.subject, 'GER');
   assert.equal(barsHostAdapter.family, 'bars');
@@ -905,4 +908,12 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
 
   stop();
   tooltips.dispose();
+});
+
+test('a followed bounded read dates its picture by its proof even when the widget also has subscriptions', () => {
+  const followed = { hour: 120, follows: true, provenInterval: [100, 140] as const };
+  assert.deepEqual(boundDated(followed, true, false, null), { h: 100, c: 140 }, 'held back between a seek back and the new bounded reply');
+  assert.equal(boundDated({ hour: 120 }, true, false, null), undefined, 'a pinned read beside subscriptions is dated by the stream');
+  assert.deepEqual(boundDated({ hour: 120 }, false, false, null), { h: 120, c: 120 });
+  assert.deepEqual(boundDated(null, false, true, [0, 500]), { h: 0, c: 500 });
 });

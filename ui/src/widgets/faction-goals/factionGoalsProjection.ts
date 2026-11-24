@@ -8,7 +8,8 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { CountryFactionGoalsReply, FactionDetailReply, FactionGoalDefinition } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import type { StatusMarkKind } from '../../draw/kit.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 export type GoalFilter = 'all' | 'inProgress' | 'completed';
 export interface FactionGoalsOptions { readonly goals: GoalFilter }
@@ -28,6 +29,7 @@ const NATIVE_STATES: readonly (readonly [GoalState, string])[] = [
   ['inProgress', 'In progress'], ['completed', 'Completed'], ['cancelled', 'Cancelled'], ['inProgress', 'Completing'], ['inProgress', 'Cancelling'],
 ];
 const STATE_TONE: Readonly<Record<GoalState, string>> = { inProgress: 'blue', completed: 'green', cancelled: 'grey' };
+const STATE_MARK: Readonly<Record<GoalState, StatusMarkKind>> = { inProgress: 'running', completed: 'succeeded', cancelled: 'ended' };
 const UNMEASURED = 92233720124192;
 const PERCENT = { decimals: 0, maxDecimals: 1, percent: true } as const;
 
@@ -77,14 +79,16 @@ function goalRows(detail: FactionDetailReply, readView: BoundedReadView, filter:
   return filter === 'all' ? rows : rows.filter(item => filter === 'completed' ? item.state === 'completed' : item.state === 'inProgress');
 }
 
-const [GOAL, PROGRESS, STATE] = COLUMNS;
+const [ICON, GOAL, PROGRESS, STATE] = COLUMNS;
 
 const GOAL_COLUMNS: readonly DeclarativeColumnSpec<GoalRow, FactionGoalsOptions>[] = [
-  { ...GOAL!, priority: 0, text: true, hideable: false, widest: ['Conquest and Domination'], iconSlot: true, icon: row => row.icon, value: row => goalName(row.definition) },
+  { ...ICON!, priority: 3, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.icon, extra: row => ({ artShape: 'square', ...(row.definition.name ? { artName: row.definition.name } : {}) }),
+    value: row => goalName(row.definition) },
+  { ...GOAL!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Conquest and Domination'], value: row => goalName(row.definition) },
   { ...PROGRESS!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],
     value: (row, live) => goalProgress(live, row.ordinal, row.state),
     bar: (row, live) => ({ fraction: fraction(goalProgress(live, row.ordinal, row.state)) }) },
-  { ...STATE!, priority: 2, text: true, widest: ['In progress'], tone: 'blue', status: () => 'dot', cellTone: row => STATE_TONE[row.state], value: row => knownValue(row.stateText) },
+  { ...STATE!, priority: 2, text: true, widest: ['In progress'], tone: 'blue', status: () => 'dot', cellTone: row => STATE_TONE[row.state], cellKind: 'status', extra: row => ({ statusKind: STATE_MARK[row.state] }), value: row => knownValue(row.stateText) },
 ];
 
 export const factionGoalsProjection: TableProjection<FactionGoalsOptions> = registerTableProjection(
@@ -125,7 +129,8 @@ export const factionGoalsDeclaration: TableWidgetDeclaration<FactionGoalsOptions
   label: 'Faction goals',
   subject: 'faction goals',
   emptyCampaign: 'Load a campaign to see faction goals.',
-  icon: 'target',
+  icon: 'globe',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its faction’s goals.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

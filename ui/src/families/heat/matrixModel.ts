@@ -73,6 +73,28 @@ export interface MatrixLegend {
 
 export type MatrixRamp = 'accent' | 'red' | 'amber';
 
+export interface MatrixCells {
+  readonly present: ReadonlyMap<number, MatrixCell>;
+  readonly absent: MatrixCell | ((rowIndex: number) => MatrixCell);
+  readonly self?: MatrixCell;
+}
+
+const SELF: MatrixCell = { kind: 'diagonal' };
+
+export const NO_CELLS: MatrixCells = { present: new Map(), absent: { kind: 'empty' } };
+
+export function matrixPairIndex(columnCount: number, rowIndex: number, columnIndex: number): number {
+  return rowIndex * columnCount + columnIndex;
+}
+
+export function matrixCellAt(model: Pick<HeatMatrixModel, 'rows' | 'columns' | 'cells'>, rowIndex: number, columnIndex: number): MatrixCell {
+  const present = model.cells.present.get(rowIndex * model.columns.length + columnIndex);
+  if (present) return present;
+  if (model.rows[rowIndex]?.id === model.columns[columnIndex]?.id) return model.cells.self ?? SELF;
+  const absent = model.cells.absent;
+  return typeof absent === 'function' ? absent(rowIndex) : absent;
+}
+
 export type MatrixMarginCell =
   | { readonly kind: 'value'; readonly fraction: number; readonly text: string; readonly exact?: string; readonly color?: string }
   | { readonly kind: 'missing'; readonly reason: string }
@@ -89,7 +111,7 @@ export interface HeatMatrixModel {
   readonly summaryText?: string;
   readonly rows: readonly MatrixAxisEntity[];
   readonly columns: readonly MatrixAxisEntity[];
-  readonly cell: (rowIndex: number, columnIndex: number) => MatrixCell;
+  readonly cells: MatrixCells;
   readonly shape?: 'square' | 'wide';
   readonly ramp?: MatrixRamp;
   readonly margin?: MatrixMargin;
@@ -155,7 +177,7 @@ export function deriveMatrixTooltip(
   if (row && model.margin && columnIndex === model.columns.length) return marginTooltip(model, model.margin, row, rowIndex);
   const col = model.columns[columnIndex];
   if (!row || !col) return null;
-  const cell = model.cell(rowIndex, columnIndex);
+  const cell = matrixCellAt(model, rowIndex, columnIndex);
   if (model.tooltip) {
     const built = model.tooltip(row, col, cell, rowIndex, columnIndex);
     if (built) return built;
@@ -204,25 +226,37 @@ export function deriveMatrixAudit(
   model: HeatMatrixModel,
   window?: { readonly firstRow: number; readonly endRow: number; readonly firstCol: number; readonly endCol: number },
 ): readonly AuditRow[] {
-  const firstRow = window ? Math.max(0, window.firstRow) : 0;
-  const endRow = window ? Math.min(model.rows.length, window.endRow) : model.rows.length;
-  const firstCol = window ? Math.max(0, window.firstCol) : 0;
-  const endCol = window ? Math.min(model.columns.length, window.endCol) : model.columns.length;
   const out: AuditRow[] = [];
-  for (let r = firstRow; r < endRow; r++) {
+  const push = (r: number, c: number, cell: MatrixCell) => {
+    if (cell.kind === 'diagonal' && cell.text === undefined) return;
     const row = model.rows[r]!;
-    for (let c = firstCol; c < endCol; c++) {
-      const col = model.columns[c]!;
-      const cell = model.cell(r, c);
-      if (cell.kind === 'diagonal' && cell.text === undefined) continue;
-      out.push({
-        key: `${row.id}->${col.id}`,
-        row: `${row.label} → ${col.label}`,
-        value: cellAuditValue(cell),
-      });
+    const col = model.columns[c]!;
+    out.push({ key: `${row.id}->${col.id}`, row: `${row.label} → ${col.label}`, value: cellAuditValue(cell) });
+  };
+  if (!window) {
+    const width = model.columns.length;
+    for (const [index, cell] of model.cells.present) push(Math.floor(index / width), index % width, cell);
+    const absent = model.cells.absent;
+    if (typeof absent === 'function') {
+      for (let r = 0; r < model.rows.length; r++) out.push({ key: `${model.rows[r]!.id}->rest`, row: `${model.rows[r]!.label} → every other column`, value: cellAuditValue(absent(r)) });
+    } else if (model.cells.present.size < model.rows.length * model.columns.length) {
+      out.push({ key: 'rest', row: 'Every other cell', value: cellAuditValue(absent) });
     }
     if (model.margin) {
-      out.push({ key: `${row.id}->margin`, row: `${row.label} · ${model.margin.header}`, value: marginAuditValue(model.margin.cell(r)) });
+      for (let r = 0; r < model.rows.length; r++) {
+        out.push({ key: `${model.rows[r]!.id}->margin`, row: `${model.rows[r]!.label} · ${model.margin.header}`, value: marginAuditValue(model.margin.cell(r)) });
+      }
+    }
+    return out;
+  }
+  const firstRow = Math.max(0, window.firstRow);
+  const endRow = Math.min(model.rows.length, window.endRow);
+  const firstCol = Math.max(0, window.firstCol);
+  const endCol = Math.min(model.columns.length, window.endCol);
+  for (let r = firstRow; r < endRow; r++) {
+    for (let c = firstCol; c < endCol; c++) push(r, c, matrixCellAt(model, r, c));
+    if (model.margin) {
+      out.push({ key: `${model.rows[r]!.id}->margin`, row: `${model.rows[r]!.label} · ${model.margin.header}`, value: marginAuditValue(model.margin.cell(r)) });
     }
   }
   return out;
@@ -245,7 +279,7 @@ export function deriveMatrixMirror(
     const cells = [{ column: 'Country', spoken: entity.label }];
     for (let c = c0; c < c1; c++) {
       const col = model.columns[c]!;
-      const cell = model.cell(r, c);
+      const cell = matrixCellAt(model, r, c);
       cells.push({
         column: col.label,
         spoken: `${col.label}: ${cellAuditValue(cell)}`,

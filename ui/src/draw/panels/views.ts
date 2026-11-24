@@ -1,23 +1,14 @@
 import type { LiveValues } from '../../charts/live';
 import type { PanelGeometry, PanelView } from './view';
 import type { Structure } from '../views/fields';
-import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails, WargoalsReply } from '../../generated/dashboard';
-import { arsenalNotice, arsenalStructure, arsenalStructureRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
+import type { DoctrineMasteryReply, ResearchSlotsReply, WargoalsReply } from '../../generated/dashboard';
 import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
 import { validateResearchSlots } from '../../widgets/research/researchData.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import { REWARDS_PANEL, detailTexts, detailsStructure, effectsStructure, rewardsStructure, validateProjectDetails, validateProjectEffects } from '../../widgets/special-projects/projectDetailsData.ts';
 import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
 import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
-import { HISTORY_PANEL, historyStructure, projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
-
-function detailValues(reply: SpecialProjectDetails) {
-  const values = detailTexts(reply);
-  if (reply.scientists) values.set('Scientists', String(reply.scientists.length));
-  if (reply.programs) values.set('Facility assignments', String(reply.programs.length));
-  return values;
-}
+import { HISTORY_PANEL, historyStructure, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
 
 function recordView<T extends object>(validate: (raw: unknown) => T, shapeOf: (record: T) => string,
   fields: (record: T, values: LiveValues<number>, hour: number) => Map<string, string>, geometry: PanelGeometry, nextChange?: (reply: T, hour: number) => number) {
@@ -53,7 +44,6 @@ const logTailStructure = (raw: unknown): string => {
 };
 
 const tableStructures: Readonly<Record<string, (raw: unknown, hour: number) => string>> = {
-  'special-project-effects': raw => effectsStructure(validateProjectEffects(raw)),
   'technology-effects': raw => technologyEffectsStructure(validateTechnologyEffects(raw)),
   'content-entity-stats': raw => entityStatsStructure(validateEntityStats(raw)),
   [HISTORY_PANEL]: (raw, hour) => historyStructure(validateSpecialProjectsReply(raw), hour),
@@ -79,7 +69,6 @@ export function panelValues(product: string, raw: unknown, live: LiveValues<numb
 }
 
 export function recordedPanelRows(product: string, raw: unknown): string[] {
-  if (product === 'nuclear-arsenal') return arsenalStructureRows(validateNuclearArsenal(raw));
   if (product === 'wargoals') {
     const r = raw as WargoalsReply;
     return [...r.goals.map(g => JSON.stringify(['goal', g.handle, g.actor, g.recipient, g.name, g.available, g.expires])),
@@ -94,16 +83,6 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
       ...f.tracks.flatMap(t => [JSON.stringify([f.id, t.ordinal, t.sub?.id]), ...t.rewards.map(r => JSON.stringify([f.id, t.ordinal, r.id])),
         ...t.rewards.slice(0, t.unlocked ?? 0).map(r => JSON.stringify(['unlocked', f.id, t.ordinal, r.id]))])]);
   }
-  if (product === 'special-project-details') {
-    const r = raw as SpecialProjectDetails;
-    return [...(r.scientists ?? []).flatMap(s => ['scientist:' + s.character, ...(s.skills ?? []).map(k => JSON.stringify([s.character, k.specialization.token])),
-      ...(s.traits ?? []).map(t => JSON.stringify([s.character, t.token]))]), ...(r.breakthroughs ?? []).map(b => 'breakthrough:' + b.specialization.token),
-      ...(r.programs ?? []).flatMap(p => ['facility:' + p.id, ...(p.assignments ?? []).map(a => JSON.stringify([p.id, a.ordinal, a.reference])),
-        ...(p.facility?.sources ?? []).map(s => JSON.stringify([p.id, s.kind, s.label?.token, s.assignment, s.scientistReference]))]),
-      ...(r.projects ?? []).flatMap(p => [JSON.stringify([p.owner, p.id]), ...(p.variables ?? []).map(v => JSON.stringify([p.owner, p.id, v.name])),
-        ...(p.pending?.options ?? []).map(o => JSON.stringify([p.owner, p.id, p.pending?.label.token, o.label.token])),
-        ...(p.choices ?? []).map(c => JSON.stringify([p.owner, p.id, c.ordinal, c.reward.token, c.option.token]))])];
-  }
   if (product === 'log-tail' || product === 'market-ledger-tail') {
     const r = raw as { total?: string | number; rows?: readonly { hour?: number; key?: string }[]; missing?: readonly { firstHour?: number; lastHour?: number; reason?: string }[] };
     return [
@@ -116,17 +95,8 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
 }
 
 const nextDay = (hour: number) => (Math.floor(hour / 24) + 1) * 24;
-const extendInline = '.project-details [data-paint]:last-child';
 
 export const panelViews: Readonly<Record<string, PanelView>> = {
-  'nuclear-arsenal': {
-    nextChange: (_reply, hour) => nextDay(hour),
-    structure: raw => arsenalStructure(validateNuclearArsenal(raw)),
-    values(raw, _live, hour) {
-      const reply = validateNuclearArsenal(raw);
-      return new Map([['empty', arsenalNotice(reply, hour)]]);
-    },
-  },
   'research-slots': recordView(validateResearchSlots, slotsStructure, (reply, source, hour) =>
     slotValues(reply, hour, slot => source.get(liveKey(String(slot), 'progress'))),
     { rowAttribute: 'data-research-slot', layers: '.research-lanes,.active-rows', meters: '.research-now-meter' },
@@ -137,56 +107,4 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
       }
       return next;
     }),
-  'special-project-details': recordView(validateProjectDetails, detailsStructure, detailValues, { extendInline }),
-  [REWARDS_PANEL]: recordView(validateProjectDetails, rewardsStructure, detailValues, { extendInline }),
-  'special-projects': {
-    structure: (raw, hour) => projectStructure(projectHistory(raw), hour),
-    nextChange: (raw, hour) => projectChangeAfter(projectHistory(raw), hour),
-    geometry: { rowAttribute: 'data-project', extraFields: '.special-project-progress > span', meters: '.special-project-progress',
-      barVariable: { host: '[data-project]', name: '--project-progress' } },
-    values(raw, _live, hour, shape) {
-      const reply = projectHistory(raw);
-      if (currentKey(reply, hour) !== shape && projectStructure(reply, hour) !== shape) return null;
-      const cells = new Map<string, string>();
-      const { running, completed } = currentProjects(reply, hour);
-      if (!running.length) cells.set('none', 'No projects in progress.');
-      for (const card of completed) cells.set(card.project.id, card.info.name);
-      for (const { project } of running) {
-        const at = runningValues(project, hour);
-        if (!at) continue;
-        cells.set(project.id + ':bar', String(at.fill));
-        cells.set(project.id + ':progress', at.progress);
-        cells.set(project.id + ':iterations', at.iterations);
-      }
-      return cells;
-    },
-  },
 };
-
-const histories = new WeakMap<object, SpecialProjectsReply>();
-function projectHistory(raw: unknown) {
-  let reply = histories.get(raw as object);
-  if (!reply) { reply = validateSpecialProjectsReply(raw); histories.set(raw as object, reply); }
-  return reply;
-}
-
-const boundaries = new WeakMap<SpecialProjectsReply, number[]>();
-export function projectChangeAfter(reply: SpecialProjectsReply, hour: number) {
-  let edges = boundaries.get(reply);
-  if (!edges) {
-    const all = new Set<number>();
-    for (const spans of [reply.available, reply.reads, ...reply.projects.map(p => p.statuses)]) {
-      for (const span of spans) { all.add(span.firstHour); all.add(span.lastHour + 1); }
-    }
-    for (const read of reply.reads) all.add(read.readHour + 1);
-    for (const run of reply.projects.flatMap(p => p.statuses)) if (run.scientistRead !== null) all.add(run.scientistRead + 1);
-    edges = Array.from(all).sort((a, b) => a - b);
-    boundaries.set(reply, edges);
-  }
-  let lo = 0, hi = edges.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (edges[mid]! <= hour) lo = mid + 1; else hi = mid;
-  }
-  return edges[lo] ?? Infinity;
-}

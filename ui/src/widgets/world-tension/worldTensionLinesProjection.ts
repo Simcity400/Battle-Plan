@@ -1,4 +1,4 @@
-import { nudgeApart, readableColour } from '../../charts/palette.ts';
+import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
@@ -13,7 +13,6 @@ import type { WorldTensionStackReply } from '../../generated/dashboard';
 import { validateWorldTensionStack } from './worldTensionProjection.ts';
 
 const TOP_NAMED = 8;
-const FALLBACK_COLORS = ['#4f86f7', '#4e9e6d', '#e3a83b', '#c76a90', '#9c6fe0', '#56b0b0', '#d88450', '#9e8855'] as const;
 
 export interface WorldTensionLinesOptions {
   readonly extent: readonly [number, number];
@@ -38,7 +37,8 @@ function resolveLineColors(rawColors: readonly (string | null)[], surface: strin
     }
   }
   const nudged = parsed.length > 0 ? nudgeApart(parsed, surfaceRgb) : [];
-  const out: string[] = rawColors.map((_, i) => FALLBACK_COLORS[i % FALLBACK_COLORS.length]!);
+  const fallbacks = categoricalPalette(surface);
+  const out: string[] = rawColors.map((_, i) => fallbacks[i % fallbacks.length]!);
   for (let j = 0; j < indices.length; j++) {
     out[indices[j]!] = toHex(nudged[j]!);
   }
@@ -127,7 +127,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         id: band.tag ?? `slot:${band.slot}`,
         key: band.tag ?? `slot:${band.slot}`,
         name: info.fullName,
-        color: isTop ? topColors[rank]! : 'rgba(245, 245, 245, 0.22)',
+        color: isTop ? topColors[rank]! : CHART_MEASURE_COLOURS.tailLine,
         role: isTop ? 'primary' : 'tail',
         step: true,
         points,

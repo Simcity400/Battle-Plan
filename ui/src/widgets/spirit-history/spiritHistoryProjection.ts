@@ -4,15 +4,14 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { inHourSpans, nextBoundaryAfter, sortedBoundaries, timelineModel, urlArtHandle, spanStart } from '../../families/timeline/helpers.ts';
+import { boundedRuns, clipSpansToHour, inHourSpans, nextBoundaryAfter, sortedBoundaries, spanStart, timelineModel, untilItem, urlArtHandle, wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerTimelineProjection } from '../../families/timeline/registry.ts';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
-import { endedBy, spirits, type SpiritSort } from '../national-spirits/spiritsData.ts';
+import { spirits, spiritsShown } from '../national-spirits/spiritsData.ts';
 import { OPTIONS } from './definition.ts';
 
 export interface SpiritHistoryOptions {
-  readonly sort: SpiritSort;
   readonly showEnded: boolean;
   readonly iconsOnBars: boolean;
   readonly firstHour: number;
@@ -48,24 +47,19 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
     const base = { hour, firstHour: opt.firstHour, labelWidth: 220, iconsOnBars: opt.iconsOnBars };
     if (!reply) return timelineModel(base);
     const nextChangeAt = nextBoundaryAfter(boundaries(reply), hour);
-    const seen = spirits(reply).filter(spirit => {
-      const first = spirit.spans[0]?.firstHour ?? Infinity;
-      return first <= hour && (opt.showEnded || endedBy(spirit, hour, reply.unobserved) === null);
-    });
+    const gaps = clipSpansToHour(reply.unobserved, hour);
+    const seen = spiritsShown(spirits({ ...reply, spans: boundedRuns(reply.spans, hour) }), hour, opt.showEnded, gaps);
     if (!seen.length) {
-      return timelineModel({ ...base, empty: 'No national spirits recorded yet', warnings: reply.warnings, nextChangeAt });
+      const classified = new Set(reply.ideas.filter(info => info.category).map(info => info.token));
+      const unclassified = reply.spans.some(span => span.firstHour <= hour && !classified.has(span.token));
+      return timelineModel(unclassified
+        ? { ...base, empty: 'National spirits not recorded: some held ideas could not be classified', emptyKind: 'unavailable', warnings: reply.warnings, nextChangeAt }
+        : { ...base, empty: 'No national spirits recorded yet', warnings: reply.warnings, nextChangeAt });
     }
-    const gained = (s: (typeof seen)[number]) => s.spans[0]?.firstHour ?? Infinity;
-    const ended = (s: (typeof seen)[number]) => endedBy(s, hour, reply.unobserved) ?? Infinity;
-    seen.sort(opt.sort === 'name'
-      ? (a, b) => a.name.localeCompare(b.name)
-      : opt.sort === 'ended'
-        ? (a, b) => ended(a) - ended(b) || gained(a) - gained(b)
-        : (a, b) => gained(a) - gained(b) || a.name.localeCompare(b.name));
     const fill = colour(opt.surface, 0);
     const lanes: TimelineLane[] = seen.map(spirit => {
       const icon = urlArtHandle(spirit.icon);
-      const spans = bridgeGaps(spirit.spans.filter(span => span.firstHour <= hour), reply.unobserved).map(span => {
+      const spans = bridgeGaps(spirit.spans, gaps).map(span => {
         const open = span.lastHour >= hour;
         return {
           id: `${spirit.token}:${span.firstHour}`,
@@ -75,12 +69,12 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
           label: spirit.name,
           icon,
           iconMissing: !icon,
-          ...spanStart(span.firstHour, opt.firstHour, reply.unobserved),
-          endUnseen: !open && inHourSpans(reply.unobserved, span.lastHour + 1),
+          ...spanStart(span.firstHour, opt.firstHour, gaps),
+          endUnseen: !open && inHourSpans(gaps, span.lastHour + 1),
           open,
         };
       });
-      const subtitle = describeRun(spirit.spans, hour, WORDS, reply.unobserved, opt.firstHour) ?? '';
+      const subtitle = describeRun(spirit.spans, hour, WORDS, gaps, opt.firstHour) ?? '';
       return {
         key: spirit.token,
         kind: 'item' as const,
@@ -92,14 +86,14 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
         auditValue: `${spirit.name}|${subtitle}`,
       };
     });
-    return timelineModel({ ...base, lanes, unobserved: reply.unobserved, warnings: reply.warnings, nextChangeAt });
+    return timelineModel({ ...base, lanes, unobserved: gaps, warnings: reply.warnings, nextChangeAt });
   },
 
   tooltip(model, hit, readView) {
     const reply = readView.panel<IdeaHistoryReply>('main');
     const lane = laneByKey(model, hit.laneKey);
     if (!lane) return null;
-    const span = spanAt(lane, hit) ?? lane.spans.at(-1);
+    const span = spanAt(lane, hit);
     const art = reply?.artwork.find(item => item.token === lane.key);
     return {
       title: lane.label,
@@ -108,9 +102,9 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
       items: span
         ? [
             { label: span.heldBefore ? 'Held before' : 'Since', value: `${span.startBy ? 'By ' : ''}${formatDateOnly(span.firstHour)}` },
-            { label: 'Until', value: span.open ? 'Held now' : span.endUnseen ? `By ${formatDateOnly(span.lastHour + 1)}` : formatDateOnly(span.lastHour) },
+            untilItem(span, model.unobserved, hit.hour ?? model.hour, { held: 'Held now', until: 'Until' }),
           ]
-        : [{ label: 'Status', value: lane.subtitle || 'Not held' }],
+        : [{ label: 'Held', value: inHourSpans(model.unobserved, hit.hour ?? model.hour) ? 'Not recorded' : 'Not held' }],
       ...(art?.description ? { description: art.description } : {}),
     };
   },
@@ -142,6 +136,7 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
             followQuery: null,
             params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
             buildSpanParams: params => params,
+            provenInterval: wholeBranchProof,
             validate: validateIdeaHistoryReply,
           },
         }]
@@ -149,10 +144,9 @@ export const spiritHistoryDeclaration: TimelineWidgetDeclaration<SpiritHistoryOp
   }),
   projection: spiritHistoryProjection,
   projectionOptions: (ctx, extra) => ({
-    sort: (ctx.options.sort as SpiritSort) ?? 'gained',
     showEnded: ctx.options.ended !== 'hidden',
     iconsOnBars: ctx.options.iconsOnBars !== false,
-    firstHour: ctx.branch.firstHour,
+    firstHour: extra.extent[0],
     surface: extra.surface,
   }),
 };

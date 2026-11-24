@@ -1,22 +1,21 @@
-import { colour } from '../../charts/palette.ts';
-import { validateRankReply } from '../../charts/race/measureRaceData.ts';
-import { countryFromKey, countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
-import { CELL, cellNumber, cellState, cellValue, rowName, type FollowedAnswer } from '../../dashboard/follow/message.ts';
+import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { seriesStateProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { contentSet } from '../../dashboard/options.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
-import { compareTags } from '../../dashboard/tagOrder.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
+import { countryRowPresentation, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerBarsProjection } from '../../families/bars/registry.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourceEntry, SourcePlan } from '../../families/contract.ts';
-import { holderTagAt, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
+import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import { knownValue, notRecorded, valueFromNamedAnswer, valueFromRawBigInt, zeroValue, type Value } from '../../families/value.ts';
-import type { FactoryGroupsReply, SeriesStateReply } from '../../generated/dashboard';
+import { knownValue, notRecorded, valueFromRawBigInt, zeroValue, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
+import type { FactoryGroupsReply, SeriesState, SeriesStateReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
-import { COUNT_MODES, chosenGroups, countMode, factoryMeasure, groupName, validateFactoryGroups, type CountMode } from './factoriesData.ts';
+import { COUNT_MODES, FACTORY_GROUPS, chosenGroups, countMode, damagedMeasure, factoryMeasure, groupName, validateFactoryGroups, type CountMode } from './factoriesData.ts';
 
-const PART_SURFACE = '#1e1e1e';
+const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
 export interface FactoryPartSpec {
   readonly id: string;
@@ -31,7 +30,7 @@ export interface FactoriesProjectionOptions {
   readonly modeLabel: string;
   readonly split: boolean;
   readonly parts: readonly FactoryPartSpec[];
-  readonly candidates: readonly string[];
+  readonly damagedSource?: string;
   readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
   readonly membership?: Readonly<Record<string, HourRanges>> | null;
   readonly unobserved?: HourRanges;
@@ -59,30 +58,68 @@ function damagedSourceKey(id: string): string {
   return `damaged:${id}`;
 }
 
+const DAMAGED_SOURCE = 'damaged';
+
 function partSpecs(mode: CountMode, types: readonly string[], groups: FactoryGroupsReply | undefined): FactoryPartSpec[] {
-  return chosenGroups(types).map((group, index) => ({
+  return chosenGroups(types).map(group => ({
     id: group.value,
     label: groupName(group.value, groups),
     source: partSourceKey(group.value),
     ...(mode === 'built' ? { damagedSource: damagedSourceKey(group.value) } : {}),
-    color: colour(PART_SURFACE, index),
+    color: colour(PART_SURFACE, FACTORY_GROUPS.indexOf(group)),
   }));
+}
+
+function activeTags(cfg: FactoriesExactBase, hour: number): readonly string[] {
+  return cfg.membership
+    ? cfg.tags.filter(tag => inHourRanges(cfg.membership![tag], hour))
+    : cfg.tags;
 }
 
 function buildFactoriesExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
   const cfg = base as unknown as FactoriesExactBase;
   const family = { kind: 'country-factories', measure: cfg.measure };
-  if (cfg.top != null) {
-    return { branchId: cfg.branchId, family, hour, top: cfg.top };
-  }
-  const activeTags = cfg.membership
-    ? cfg.tags.filter(tag => cfg.membership![tag]?.some(([first, last]) => first <= hour && hour <= last))
-    : cfg.tags;
-  return {
-    branchId: cfg.branchId,
-    family,
-    reads: activeTags.map(tag => ({ country: countryFromKey(tag), hour })),
+  if (cfg.top != null) return { branchId: cfg.branchId, family, hour, top: cfg.top };
+  const tags = activeTags(cfg, hour);
+  if (!tags.length) return null;
+  return { branchId: cfg.branchId, family, reads: tags.map(tag => ({ country: countryFromKey(tag), hour })), top: tags.length };
+}
+
+function buildPartParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
+  const cfg = base as unknown as FactoriesExactBase;
+  const family = { kind: 'country-factories', measure: cfg.measure };
+  const tags = activeTags(cfg, hour);
+  if (!tags.length) return null;
+  return { branchId: cfg.branchId, family, reads: tags.map(tag => ({ country: countryFromKey(tag), hour })) };
+}
+
+const PART_NOT_READ = 'Not recorded at this hour';
+
+type PanelIndex = (source: string) => ReadonlyMap<string, SeriesState> | null;
+
+function panelIndex(readView: BoundedReadView): PanelIndex {
+  const held = new Map<string, ReadonlyMap<string, SeriesState> | null>();
+  return source => {
+    let index = held.get(source);
+    if (index === undefined) {
+      const panel = readView.panel(source);
+      index = panel === undefined ? null : new Map(validateRankReply(panel).states.map(state => [countryKey(state.country), state]));
+      held.set(source, index);
+    }
+    return index;
   };
+}
+
+function partValue(index: PanelIndex, source: string, key: string): Value<bigint | number> | null {
+  const states = index(source);
+  if (states === null) return null;
+  const state = states.get(key);
+  if (!state) return notRecorded(PART_NOT_READ);
+  return valueFromRawBigInt(state.run?.valueRaw ?? null, { kind: 'notRecorded', reason: state.missing ?? PART_NOT_READ });
+}
+
+function reasonOf(value: Value<bigint | number>): string {
+  return value.kind === 'notRecorded' || value.kind === 'notApplicable' ? value.reason : PART_NOT_READ;
 }
 
 function numericOf(value: Value<bigint | number>): number | null {
@@ -95,8 +132,16 @@ function scalarOf(raw: bigint | number): Value<bigint | number> {
   return raw === 0 || raw === 0n ? zeroValue() : knownValue(raw);
 }
 
+function countText(amount: number): string {
+  return formatScalar(amount, { decimals: 0 });
+}
+
+function segment(key: string, label: string, amount: number, total: number, color: string, hatched = false): BarsSegment {
+  return { key, label, share: amount / total, value: scalarOf(amount), format: { decimals: 0 }, color, ...(hatched ? { hatched } : {}) };
+}
+
 function buildPartSegments(
-  readView: BoundedReadView,
+  index: PanelIndex,
   wireName: string,
   total: number,
   options: FactoriesProjectionOptions,
@@ -106,90 +151,58 @@ function buildPartSegments(
   if (total <= 0) return { tooltipItems: [] };
 
   const tooltipItems: TooltipListItem[] = [];
-  if (!options.split && options.mode === 'built') {
-    let damagedTotal = 0;
-    let sawAny = false;
-    for (const part of options.parts) {
-      if (!part.damagedSource) continue;
-      const ans = readView.answer(part.damagedSource);
-      if (!ans) continue;
-      const val = valueFromNamedAnswer(ans, wireName);
-      const n = numericOf(val);
-      if (n !== null) {
-        sawAny = true;
-        damagedTotal += Math.max(0, n);
-      }
+  if (!options.split) {
+    const damaged = options.damagedSource ? partValue(index, options.damagedSource, wireName) : null;
+    if (damaged === null) return { tooltipItems };
+    const amount = numericOf(damaged);
+    if (amount === null) {
+      tooltipItems.push({ label: 'Damaged', missingReason: reasonOf(damaged) });
+      return { tooltipItems };
     }
-    if (!sawAny || damagedTotal <= 0) return { tooltipItems };
-    const clampedDamaged = Math.min(total, damagedTotal);
-    const healthy = Math.max(0, total - clampedDamaged);
+    const hurt = Math.min(total, Math.max(0, amount));
+    tooltipItems.push({ label: 'Damaged', value: countText(hurt) });
+    if (hurt <= 0) return { tooltipItems };
     const fill = baseColor ?? colour(PART_SURFACE, 0);
     const segments: BarsSegment[] = [];
-    if (healthy > 0) {
-      segments.push({ key: 'healthy', label: 'Undamaged', share: healthy / total, value: scalarOf(healthy), format: { decimals: 0 }, color: fill });
-    }
-    segments.push({ key: 'damaged', label: 'Damaged', share: clampedDamaged / total, value: scalarOf(clampedDamaged), format: { decimals: 0 }, color: fill, hatched: true });
-    tooltipItems.push({ label: 'Damaged', value: Math.round(clampedDamaged).toLocaleString('en-US') });
+    if (total > hurt) segments.push(segment('healthy', 'Undamaged', total - hurt, total, fill));
+    segments.push(segment('damaged', 'Damaged', hurt, total, fill, true));
     return { segments, tooltipItems };
   }
 
   const segments: BarsSegment[] = [];
-  let sumParts = 0;
-  const rawParts: { readonly spec: FactoryPartSpec; readonly amount: number; readonly damaged: number }[] = [];
+  let known = 0;
+  let unknownReason: string | null = null;
   for (const spec of options.parts) {
-    const ans = readView.answer(spec.source);
-    if (!ans) continue;
-    const val = valueFromNamedAnswer(ans, wireName);
-    const amount = numericOf(val);
+    const value = partValue(index, spec.source, wireName);
+    if (value === null) return { tooltipItems };
+    const amount = numericOf(value);
     if (amount === null) {
-      tooltipItems.push({ label: spec.label, swatch: spec.color, missingReason: val.kind === 'notRecorded' ? val.reason : 'Not recorded' });
+      unknownReason ??= reasonOf(value);
+      tooltipItems.push({ label: spec.label, swatch: spec.color, missingReason: reasonOf(value) });
       continue;
     }
-    let damaged = 0;
-    if (spec.damagedSource) {
-      const dmgAns = readView.answer(spec.damagedSource);
-      if (dmgAns) {
-        const dmgVal = valueFromNamedAnswer(dmgAns, wireName);
-        damaged = Math.max(0, numericOf(dmgVal) ?? 0);
-      }
+    const whole = Math.max(0, amount);
+    known += whole;
+    tooltipItems.push({ label: spec.label, swatch: spec.color, value: countText(whole) });
+    if (whole <= 0) continue;
+    const damagedValue = spec.damagedSource ? partValue(index, spec.damagedSource, wireName) : null;
+    const damaged = damagedValue === null ? null : numericOf(damagedValue);
+    if (damagedValue !== null && damaged === null) {
+      tooltipItems.push({ label: `Damaged ${spec.label}`, swatch: spec.color, missingReason: reasonOf(damagedValue) });
     }
-    const clamped = Math.max(0, amount);
-    sumParts += clamped;
-    rawParts.push({ spec, amount: clamped, damaged: Math.min(clamped, damaged) });
-    tooltipItems.push({ label: spec.label, swatch: spec.color, value: Math.round(clamped).toLocaleString('en-US') });
+    const hurt = damaged === null ? 0 : Math.min(whole, Math.max(0, damaged));
+    if (whole > hurt) segments.push(segment(spec.id, spec.label, whole - hurt, total, spec.color));
+    if (hurt > 0) segments.push(segment(`damaged:${spec.id}`, `Damaged ${spec.label}`, hurt, total, spec.color, true));
   }
-  const denom = sumParts > 0 ? sumParts : total;
-  if (denom <= 0 || !rawParts.length) return { tooltipItems };
-  for (const item of rawParts) {
-    if (item.amount <= 0) continue;
-    const healthy = Math.max(0, item.amount - item.damaged);
-    if (healthy > 0) {
-      segments.push({
-        key: item.spec.id,
-        label: item.spec.label,
-        share: healthy / denom,
-        value: scalarOf(healthy),
-        format: { decimals: 0 },
-        color: item.spec.color,
-      });
-    }
-    if (item.damaged > 0) {
-      segments.push({
-        key: `damaged:${item.spec.id}`,
-        label: `Damaged ${item.spec.label}`,
-        share: item.damaged / denom,
-        value: scalarOf(item.damaged),
-        format: { decimals: 0 },
-        color: item.spec.color,
-        hatched: true,
-      });
-    }
+  if (unknownReason !== null && total > known) {
+    segments.push({ key: 'unrecorded', label: 'Not recorded', share: (total - known) / total, value: notRecorded(unknownReason), color: PART_SURFACE, hatched: true });
   }
   return { ...(segments.length ? { segments } : {}), tooltipItems };
 }
 
 function makeRow(
   readView: BoundedReadView,
+  index: PanelIndex,
   key: string,
   displayTag: string,
   wireName: string,
@@ -198,12 +211,12 @@ function makeRow(
 ): BarsDataRow {
   const pres = countryRowPresentation(readView, displayTag);
   const numeric = numericOf(value);
-  const parts = numeric !== null ? buildPartSegments(readView, wireName, numeric, options, pres.color) : { tooltipItems: [] };
+  const parts = numeric !== null ? buildPartSegments(index, wireName, numeric, options, pres.color) : { tooltipItems: [] };
   const totalItem: TooltipListItem = value.kind === 'notRecorded'
     ? { label: options.modeLabel, missingReason: value.reason }
     : value.kind === 'notApplicable'
       ? { label: options.modeLabel, value: '\u2014' }
-      : { label: options.modeLabel, value: Math.round(Number(value.kind === 'zero' ? 0 : value.value)).toLocaleString('en-US') };
+      : { label: options.modeLabel, value: formatBarsValueField({ value, format: { decimals: 0 } }).text };
   const meta: FactoriesRowMeta = { tag: displayTag, key };
   return {
     kind: 'data',
@@ -227,38 +240,6 @@ function makeRow(
     },
     meta,
   };
-}
-
-function compareExplicitRows(a: BarsDataRow, b: BarsDataRow): number {
-  const aMissing = a.numeric === null || a.numeric === undefined;
-  const bMissing = b.numeric === null || b.numeric === undefined;
-  if (aMissing !== bMissing) return aMissing ? 1 : -1;
-  if (!aMissing && !bMissing && a.numeric !== b.numeric) return b.numeric! - a.numeric!;
-  return compareTags(a.subject ?? a.key, b.subject ?? b.key);
-}
-
-function rowsFromFollowedTop(
-  answer: FollowedAnswer,
-  readView: BoundedReadView,
-  options: FactoriesProjectionOptions,
-): BarsDataRow[] {
-  if (answer.kind === 'notRecorded') return [];
-  const rows: BarsDataRow[] = [];
-  for (let i = 0; i < answer.rows; i++) {
-    const at = i * answer.columns;
-    const tag = rowName(answer, i);
-    if (!tag) continue;
-    const state = cellState(answer, at);
-    let value: Value<bigint | number>;
-    if (state === CELL.value) {
-      const safe = cellNumber(answer, at);
-      value = scalarOf(safe ?? cellValue(answer, at));
-    } else {
-      value = notRecorded('Not recorded at this hour');
-    }
-    rows.push(makeRow(readView, tag, tag, tag, value, options));
-  }
-  return rows;
 }
 
 export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = registerBarsProjection({
@@ -292,96 +273,55 @@ export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = r
       };
     }
 
+    if (options.top == null && options.membership && !Object.values(options.membership).some(ranges => inHourRanges(ranges, hour))) {
+      return { ...baseModel, rows: [], empty: 'No country of this group at this date.', emptyKind: 'empty' };
+    }
+
     const panel = readView.panel('main');
     if (panel !== undefined) {
       const reply: SeriesStateReply = validateRankReply(panel);
+      const index = panelIndex(readView);
       const rows: BarsDataRow[] = [];
       for (const state of reply.states) {
         const key = countryKey(state.country);
         const displayTag = options.holders ? (holderTagAt(options.holders[key], hour) ?? key) : key;
         if (options.top == null && options.membership) {
-          const inMember = options.membership[key]?.some(([first, last]) => first <= hour && hour <= last)
-            || options.membership[displayTag]?.some(([first, last]) => first <= hour && hour <= last);
+          const inMember = inHourRanges(options.membership[key], hour) || inHourRanges(options.membership[displayTag], hour);
           if (!inMember) continue;
         }
         const value = valueFromRawBigInt(
           state.run?.valueRaw ?? null,
           { kind: 'notRecorded', reason: state.missing ?? 'Not recorded at this hour' },
         );
-        rows.push(makeRow(readView, key, displayTag, key, value, options));
+        rows.push(makeRow(readView, index, key, displayTag, key, value, options));
       }
-      if (options.top == null) rows.sort(compareExplicitRows);
+      const ordered = [...rows.filter(row => row.numeric != null), ...rows.filter(row => row.numeric == null)];
       return {
         ...baseModel,
-        rows,
-        ...(!rows.length ? { empty: 'No factories recorded at this date.', emptyKind: 'empty' as const } : {}),
+        rows: ordered,
+        ...(!ordered.length ? { empty: 'No factories recorded at this date.', emptyKind: 'empty' as const } : {}),
       };
     }
-
-    const answer = readView.answer('main');
-    if (!answer) {
-      return { ...baseModel, rows: [] };
-    }
-    if (answer.kind === 'notRecorded') {
-      return {
-        ...baseModel,
-        rows: [],
-        empty: answer.reason,
-        emptyKind: 'unavailable',
-      };
-    }
-
-    let rows: BarsDataRow[];
-    if (options.top != null) {
-      rows = rowsFromFollowedTop(answer, readView, options);
-    } else {
-      rows = [];
-      for (const candidate of options.candidates) {
-        const datedTag = options.holders
-          ? holderTagAt(options.holders[candidate], hour)
-          : (isSlotKey(candidate) ? null : candidate);
-        if (datedTag === null) continue;
-        if (options.membership) {
-          const inMember = options.membership[candidate]?.some(([first, last]) => first <= hour && hour <= last)
-            || options.membership[datedTag]?.some(([first, last]) => first <= hour && hour <= last);
-          if (!inMember) continue;
-        }
-        const value = valueFromNamedAnswer(answer, candidate);
-        rows.push(makeRow(readView, candidate, datedTag, candidate, value, options));
-      }
-      rows.sort(compareExplicitRows);
-    }
-
-    return {
-      ...baseModel,
-      rows,
-      ...(!rows.length ? { empty: 'No factories recorded at this date.', emptyKind: 'empty' as const } : {}),
-    };
+    const refused = readView.refused('main');
+    if (refused) return { ...baseModel, rows: [], empty: refused, emptyKind: 'unavailable' };
+    return { ...baseModel, rows: [] };
   },
-});
+}, 'race');
 
 function factoriesSources(ctx: FamilyPlanContext<FactoryGroupsReply>): SourcePlan {
   const mode = countMode(ctx.options.count);
   const types = contentSet(ctx.options.types);
   const measureName = factoryMeasure(mode, types);
-  const family = { kind: 'country-factories', measure: measureName };
   const top = ctx.countries.top;
   const split = ctx.options.split === true;
   const owner = `factories:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${measureName}:${split ? 1 : 0}`;
   const coverage: SourceCoverage = top != null
     ? { mode: 'population', form: 'top', limit: top }
     : { mode: 'keyed', keys: ctx.countries.tags };
-
-  const exactBase: FactoriesExactBase = {
-    branchId: ctx.branch.id,
-    measure: measureName,
-    top,
-    tags: ctx.countries.tags,
-    membership: ctx.countries.membership,
-  };
-
-  const exactEntry: SourceEntry = {
-    name: 'main',
+  const tags = top != null ? ctx.countries.every : ctx.countries.tags;
+  const membership = top != null ? null : ctx.countries.membership;
+  const read = (name: string, base: FactoriesExactBase, build: typeof buildFactoriesExactParams): SourceEntry => ({
+    name,
     source: ctx.track.source,
     branch: ctx.branch.id,
     offset: ctx.track.axisOffset,
@@ -392,106 +332,25 @@ function factoriesSources(ctx: FamilyPlanContext<FactoryGroupsReply>): SourcePla
       product: 'series-state',
       exactProduct: 'series-state',
       followQuery: null,
-      params: exactBase as unknown as Readonly<Record<string, unknown>>,
-      buildExactParams: buildFactoriesExactParams,
+      params: base as unknown as Readonly<Record<string, unknown>>,
+      buildExactParams: build,
       dynamicKeys: ['hour', 'reads'],
+      ...(base.top == null ? { provenInterval: seriesStateProvenInterval } : {}),
       validate: validateRankReply,
     },
-  };
-
-  const entries: SourceEntry[] = [];
-  if (top != null) {
-    entries.push({
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'followed',
-        coverage,
-        product: 'series-state',
-        followQuery: { product: 'series-state', params: { branchId: ctx.branch.id, family, top } },
-        params: null,
-      },
-    });
-  } else if (ctx.countries.tags.length) {
-    entries.push({
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'followed',
-        coverage,
-        product: 'series-state',
-        followQuery: {
-          product: 'series-state',
-          coverage: 'row',
-          params: { branchId: ctx.branch.id, family, reads: ctx.countries.tags.map(tag => ({ country: countryFromKey(tag) })) },
-        },
-        params: null,
-      },
-    });
-  }
-
-  if (split || mode === 'built') {
-    const reads = top != null ? 'every' : ctx.countries.tags.length ? ctx.countries.tags.map(tag => ({ country: countryFromKey(tag) })) : null;
-    const rowCoverage = top == null ? { coverage: 'row' } : {};
-    if (reads) {
-      for (const group of chosenGroups(types)) {
-        if (split) {
-          entries.push({
-            name: partSourceKey(group.value),
-            source: ctx.track.source,
-            branch: ctx.branch.id,
-            offset: ctx.track.axisOffset,
-            read: {
-              shape: 'point',
-              channel: 'followed',
-              coverage,
-              product: 'series-state',
-              followQuery: {
-                product: 'series-state',
-                ...rowCoverage,
-                params: { branchId: ctx.branch.id, family: { kind: 'country-factories', measure: `${mode}${group.bit}` }, reads },
-              },
-              params: null,
-            },
-          });
-        }
-        if (mode === 'built') {
-          entries.push({
-            name: damagedSourceKey(group.value),
-            source: ctx.track.source,
-            branch: ctx.branch.id,
-            offset: ctx.track.axisOffset,
-            read: {
-              shape: 'point',
-              channel: 'followed',
-              coverage,
-              product: 'series-state',
-              followQuery: {
-                product: 'series-state',
-                ...rowCoverage,
-                params: { branchId: ctx.branch.id, family: { kind: 'country-factories', measure: `damaged${group.bit}` }, reads },
-              },
-              params: null,
-            },
-          });
-        }
-      }
+  });
+  const main = read('main', { branchId: ctx.branch.id, measure: measureName, top, tags, membership }, buildFactoriesExactParams);
+  const entries: SourceEntry[] = [main];
+  const part = (name: string, measure: string) => read(name, { branchId: ctx.branch.id, measure, top: null, tags, membership }, buildPartParams);
+  if (split) {
+    for (const group of chosenGroups(types)) {
+      entries.push(part(partSourceKey(group.value), `${mode}${group.bit}`));
+      if (mode === 'built') entries.push(part(damagedSourceKey(group.value), `damaged${group.bit}`));
     }
+  } else if (mode === 'built') {
+    entries.push(part(DAMAGED_SOURCE, damagedMeasure(types)));
   }
-
-  return {
-    owner,
-    entries,
-    staticEntry: exactEntry,
-    exactEntry,
-    allowEmptyFollow: top == null && entries.length === 0,
-  };
+  return { owner, entries };
 }
 
 export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOptions, FactoryGroupsReply> = {
@@ -527,7 +386,7 @@ export const factoriesDeclaration: BarsWidgetDeclaration<FactoriesProjectionOpti
       modeLabel: `Factories, ${modeTitle}`,
       split: ctx.options.split === true,
       parts: partSpecs(mode, types, ctx.aux),
-      candidates: top != null ? ctx.countries.every : ctx.countries.tags,
+      ...(mode === 'built' ? { damagedSource: DAMAGED_SOURCE } : {}),
       holders: top == null ? ctx.countries.holders : null,
       membership: top == null ? ctx.countries.membership : null,
       unobserved: top == null ? ctx.countries.unobserved : [],

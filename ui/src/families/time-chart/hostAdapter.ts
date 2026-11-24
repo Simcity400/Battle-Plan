@@ -174,21 +174,28 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
       }
     }
 
-    let headSourceBySeries: Record<string, { readonly answerName: string; readonly tags: readonly string[] }> | undefined;
+    let headSourceBySeries: TimeChartBinding['headSourceBySeries'];
     if (ctx.plan) {
-      const map: Record<string, { readonly answerName: string; readonly tags: readonly string[] }> = {};
+      const map: Record<string, {
+        readonly answerName: string;
+        readonly tags: readonly string[];
+        readonly keys?: readonly { readonly tag: string; readonly part: string }[];
+        readonly partBits?: number;
+      }> = {};
       for (const entry of ctx.plan.entries) {
         if (entry.read.shape === 'pixel-binned' && entry.read.headQuery) {
-          map[entry.name] = { answerName: entry.name, tags: entry.read.tags };
+          map[entry.name] = {
+            answerName: entry.name,
+            tags: entry.read.tags,
+            ...(entry.read.keys ? { keys: entry.read.keys } : {}),
+            ...(entry.read.partBits !== undefined ? { partBits: entry.read.partBits } : {}),
+          };
         }
       }
       if (Object.keys(map).length) headSourceBySeries = map;
     }
 
     return {
-      family: 'time-chart',
-      kind: ctx.kind,
-      viewId: ctx.view,
       options: ctx.options,
       sources: ctx.sources,
       extent: ctx.extent,
@@ -197,7 +204,7 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
       theme: ctx.theme,
       identitySnapshot: ctx.identitySnapshot,
       ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
-      ...(ctx.viewport.zoomWindow ? { view: { x: ctx.viewport.zoomWindow } } : {}),
+      ...(ctx.viewport.zoomWindow ? { zoom: { x: ctx.viewport.zoomWindow } } : {}),
       ...(tiledLines.length ? { tiledLines } : {}),
       keepTiled,
       tiledBySource,

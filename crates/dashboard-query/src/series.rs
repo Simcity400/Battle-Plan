@@ -137,24 +137,6 @@ pub struct SeriesKeyReply {
     pub hour: Option<f64>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct SeriesEvent {
-    pub country: Country,
-    pub hour: i32,
-    pub ordinal: String,
-    pub row: SeriesDrop,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct SeriesEventPage {
-    pub first_ordinal: String,
-    pub total: String,
-    pub rows: Vec<SeriesEvent>,
-    pub cursor: Option<String>,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 pub enum NavigationKey {
     ArrowLeft,
@@ -214,7 +196,7 @@ pub const FIELDS: crate::fields::Fields = {
     use crate::fields::HourRole::{End, Read, Start, Undated};
     &[
         ("branchId", Undated), ("family", Undated), ("countries", Undated), ("lines", Undated), ("reads[].hour", Read), ("from", Start), ("to", End),
-        ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("cursor", Undated), ("pageSize", Undated), ("top", Undated),
+        ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("top", Undated),
         ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
         ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
         ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated),
@@ -243,9 +225,8 @@ struct Params {
     measures: Vec<String>,
     first_hour: Option<f64>,
     last_hour: Option<f64>,
-    cursor: Option<String>,
-    page_size: Option<u32>,
     top: Option<u32>,
+    least: Option<bool>,
     hour: Option<f64>,
     width: Option<u32>,
     #[serde(default)]
@@ -356,7 +337,7 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
             decimals: measure.decimals,
             states: match ranking {
                 Some(n) if params.reads.is_empty() => ranked::states(&line, params.hour, n)?,
-                Some(_) => return Err(invalid(format!("A ranked {} state names an hour, not reads", series.kind))),
+                Some(n) => ranked::among(&line, &params.reads, n, params.least == Some(true))?,
                 None => line.states(&params.reads, params.top.map(|top| top as usize))?,
             },
         })?,
@@ -387,13 +368,6 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
             let (from, to) = (hour_of(params.from, "from")?, hour_of(params.to, "to")?);
             let part_bits = series.parts.ok_or_else(|| invalid(format!("{} has no parts", series.kind)))?.bits;
             serde_json::to_value(SeriesPartsReply { branch_id: params.branch_id.clone(), part_bits, owners: line.part_lives(&params.countries, from, to)? })?
-        }
-        "events-page" if series.drops => {
-            let to = hour_of(params.to, "to")?;
-            let from = params.from.map(|from| hour_of(Some(from), "from")).transpose()?.unwrap_or(query.timeline.first);
-            let cursor = params.cursor.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| invalid("Invalid cursor"))?;
-            let size = params.page_size.filter(|size| (1..=PAGE_LIMIT).contains(size)).ok_or_else(|| invalid("Invalid page size"))?;
-            serde_json::to_value(line.page(&params.countries, from, to, cursor, size)?)?
         }
         crate::tile::PRODUCT => serde_json::to_value(crate::tile::reply(&line, &params.branch_id, value)?)?,
         _ => return Err(invalid(format!("{} does not answer {product}", series.kind))),
@@ -2366,26 +2340,6 @@ impl<'q, 'a> Line<'q, 'a> {
         let patterns = self.drop_patterns(tags, self.query.timeline.first, last)?;
         let counts = self.drops_log()?.counts(&patterns, tags.len(), first, last, bin_hours)?;
         Ok(counts.into_iter().map(|counts| (counts.before, counts.bins)).collect())
-    }
-
-    pub fn page<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32, cursor: u64, size: u32) -> io::Result<SeriesEventPage> {
-        let patterns = self.drop_patterns(tags, self.query.timeline.first, to)?;
-        let page = self.drops_log()?.page(&patterns, tags.len(), from, to, cursor, size)?;
-        let cell = |row: &log::Row, at: usize| match row.cells.get(at) {
-            Some(log::Cell::Number(value)) => Ok(value.to_string()),
-            _ => Err(invalid("A balance drop's value was not recorded")),
-        };
-        let mut rows = Vec::with_capacity(page.rows.len());
-        for paged in &page.rows {
-            let hour = paged.row.hour;
-            rows.push(SeriesEvent {
-                country: tags[paged.group].clone().into(),
-                hour,
-                ordinal: paged.own.to_string(),
-                row: SeriesDrop { hour, before_raw: cell(&paged.row, 0)?, after_raw: cell(&paged.row, 1)? },
-            });
-        }
-        Ok(SeriesEventPage { first_ordinal: page.first.to_string(), total: page.total().to_string(), rows, cursor: page.cursor().map(|cursor| cursor.to_string()) })
     }
 
     pub fn marks_of<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32, width: u32) -> io::Result<Vec<MarkSummary>> {

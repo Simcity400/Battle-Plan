@@ -82,29 +82,29 @@ async function openSources(...ids: string[]) {
 }
 const FIXTURES = {
   'national-focus': { branchId: '1', country: 'GER' },
-  'focus-artwork': { branchId: '1', hour: gatedHour(100), country: 'GER', database: 'national', tokens: ['synthetic-focus'] },
+  'country-styles': { branchId: '1', hour: gatedHour(100), tags: ['GER'] },
   'technology-artwork': { tokens: ['synthetic-technology'] },
   'land-owners': {},
 } as const satisfies Partial<Record<DeclaredProduct, Readonly<Record<string, unknown>>>>;
 const query = (product: keyof typeof FIXTURES, sourceId = 'scheduler-source'): import('./client').ProductRequest => (forwardRequest({ id: sourceId, revision: 'v1' }, product,
   FIXTURES[product] as unknown as ParamsFor<typeof product>));
 
-test('actual browser transport reserves focus capacity while five histories wait and eventually returns every history', async () => {
+test('actual browser transport reserves interactive capacity while five histories wait and eventually returns every history', async () => {
   const { browserDashboardClient: client } = await import('./browserClient.ts');
   const { INTERACTIVE_PRODUCTS } = await import('../generated/dashboard.ts');
-  assert.ok(INTERACTIVE_PRODUCTS.includes('focus-artwork'));
+  assert.ok(INTERACTIVE_PRODUCTS.includes('country-styles'));
   await openSources('scheduler-source');
   const transport = pendingTransport();
   try {
     const histories = Array.from({ length: 5 }, () => client.product(query('national-focus'), new AbortController().signal));
     await tick();
     assert.equal(transport.requests.length, 2, 'ordinary reads leave the interactive connections free before fetch');
-    const focus = client.product<{ name: string }>(query('focus-artwork'), new AbortController().signal);
+    const style = client.product<{ name: string }>(query('country-styles'), new AbortController().signal);
     await tick();
-    const http = transport.requests.find(request => request.body.request?.product === 'focus-artwork')!;
+    const http = transport.requests.find(request => request.body.request?.product === 'country-styles')!;
     assert.ok(http, 'dated text reaches fetch without waiting for a history reply');
     http.finish({ name: 'Localized title immediately available' });
-    assert.equal((await focus).data.name, 'Localized title immediately available');
+    assert.equal((await style).data.name, 'Localized title immediately available');
     assert.ok(transport.requests.filter(request => request.body.request?.product === 'national-focus').every(request => !request.done));
     await transport.drain();
     assert.equal((await Promise.all(histories)).length, 5, 'admission queues work without omitting histories');
@@ -129,11 +129,11 @@ test('actual transport cancels queued reads without fetch, holds an aborted body
     assert.equal(transport.requests.length, 2, 'cancellation alone does not overbook the still-unsettled HTTP body');
     transport.requests[0].finish(); await activeFailure; await tick();
     assert.equal(transport.requests.length, 3);
-    const text = client.product<{ name: string }>(query('focus-artwork'), new AbortController().signal);
+    const text = client.product<{ name: string }>(query('country-styles'), new AbortController().signal);
     const image = client.product(query('technology-artwork'), new AbortController().signal);
     const imageFailure = assert.rejects(image, /Synthetic image refusal/);
     await tick();
-    transport.requests.find(request => request.body.request?.product === 'focus-artwork')!.finish({ name: 'Independent localized title' });
+    transport.requests.find(request => request.body.request?.product === 'country-styles')!.finish({ name: 'Independent localized title' });
     transport.requests.find(request => request.body.request?.product === 'technology-artwork')!.finish({ error: { kind: 'failed', message: 'Synthetic image refusal' } }, false);
     assert.equal((await text).data.name, 'Independent localized title'); await imageFailure;
     await transport.drain();
@@ -148,7 +148,7 @@ test('source release bypasses histories and cancels only its queued and active r
   try {
     const released = Array.from({ length: 4 }, () => client.product(query('national-focus', 'released-source'), new AbortController().signal));
     const failures = released.map(promise => assert.rejects(promise, { name: 'AbortError' }));
-    const other = client.product(query('focus-artwork', 'other-source'), new AbortController().signal);
+    const other = client.product(query('country-styles', 'other-source'), new AbortController().signal);
     await tick();
     const release = client.releaseSource('released-source');
     await tick();

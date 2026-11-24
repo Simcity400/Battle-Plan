@@ -1,4 +1,4 @@
-import { gameWindow } from '../../dashboard/gameWindows';
+import { gameWindow } from '../../dashboard/gameWindows.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
@@ -6,7 +6,8 @@ import { identityCell, identityName, newIdentityBoundary } from '../../families/
 import type { TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { Agency, AgencyComparisonReply, Upgrades } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -42,15 +43,19 @@ export function validateAgencies(value: unknown): AgencyComparisonReply {
   return value as unknown as AgencyComparisonReply;
 }
 
-const PRIORITY: Readonly<Record<string, number>> = { agency: 0, defense: 1, country: 2, operatives: 3, upgrades: 4 };
+const PRIORITY: Readonly<Record<string, number>> = { agency: 0, defense: 1, country: 2, operatives: 3, upgrades: 4, view: 5 };
 const FIXED5_DECIMALS = { decimals: 5 } as const;
 export const AGENCY_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(column => ({
   ...column,
   priority: PRIORITY[column.key] ?? 9,
   numeric: column.key === 'upgrades' || column.key === 'defense' || column.key === 'operatives',
   text: column.key === 'country' || column.key === 'agency',
-  ...(column.key === 'defense' ? { format: FIXED5_DECIMALS, widest: ['99.99'] } : {}),
-  ...(column.key === 'operatives' ? { widest: ['99 / 99'] } : {}),
+  ...(column.key === 'country' ? { pinned: true } : {}),
+  ...(column.key === 'agency' ? { cellKind: 'item' as const, pinned: true } : {}),
+  ...(column.key === 'upgrades' ? { barEligible: true } : {}),
+  ...(column.key === 'defense' ? { format: FIXED5_DECIMALS, barEligible: false, widest: ['99.99'] } : {}),
+  ...(column.key === 'operatives' ? { cellKind: 'outOf' as const, barEligible: false, unit: 'active / maximum', format: 'integer' as const, widest: ['99 / 99'] } : {}),
+  ...(column.key === 'view' ? { cellKind: 'action' as const, sortable: false } : {}),
 }));
 
 const passes = (filter: DeclaredCountryFilter, tag: string | null, hour: number): boolean =>
@@ -114,9 +119,10 @@ export const agencyProjection: TableProjection<AgencyProjectionOptions> = regist
           upgrades: { value: upgradesValue(agency, reply.upgradesMissing), format: 'integer' },
           defense: defenseCell(agency),
           operatives: {
-            value: knownValue(`${agency.activeCount.toLocaleString('en-US')} / ${agency.maximum.toLocaleString('en-US')}`),
-            sortValue: agency.activeCount === 0 ? zeroValue(0) : knownValue(agency.activeCount),
+            value: agency.activeCount === 0 ? zeroValue(0) : knownValue(agency.activeCount),
+            secondaryValue: knownValue(formatScalar(agency.maximum, 'integer')),
           },
+          view: { value: options.canOpen && meta ? knownValue('View') : notApplicable('The agency window is not available yet') },
         },
         tooltipExtra: () => [
           ...(agency.created ? [] : [{ label: 'Agency', value: knownValue('Not created'), tone: 'muted' as const }]),

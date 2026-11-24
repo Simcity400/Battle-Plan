@@ -33,6 +33,7 @@ import {
   formatDateValue,
   formatOutOf,
   formatScalar,
+  formatShare,
   formatValueState,
   notRecordedLabel,
   spokenValue,
@@ -258,6 +259,7 @@ test('M1: every value format avoids exponent notation for 1e21, 1e-7, and MAX_SA
   assert.equal(formatScalar(1e21, { decimals: 0, maxDecimals: 2 }), '1,000,000,000,000,000,000,000');
   assert.equal(formatScalar(1e-7, { decimals: 2 }), '0');
   assert.equal(formatScalar(1e-7, 'decimal1'), '0');
+  assert.deepEqual([420000000n, 248975000n, 400000n, 170000n].map(raw => formatScalar(raw, 'fixed5Amount')), ['4,200', '2,489.75', '4', '1.7'], 'fixed5 amounts group thousands and show decimals only where they exist');
   assert.equal(formatScalar(1e-7, 'percent2'), '0.00%');
   assert.equal(formatScalar(1e-7, { decimals: 0, maxDecimals: 2 }), '0');
   assert.equal(formatScalar(Number.MAX_SAFE_INTEGER + 2, 'integer'), '9,007,199,254,740,992');
@@ -335,4 +337,19 @@ test('text from a product that is blank or absent is not recorded, with the reas
   assert.deepEqual(textValue('  ', 'Name not localised'), notRecorded('Name not localised'));
   assert.deepEqual(textValue(null, 'Name not localised'), notRecorded('Name not localised'));
   assert.deepEqual(textValue('Brest', 'Name not localised'), knownValue('Brest'));
+});
+
+test('fixedDecimals and formatShare preserve exact temperature, modifier, and share formatting', () => {
+  assert.equal(formatScalar(0, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '0.0 °C');
+  assert.equal(formatScalar(-5.2, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '−5.2 °C');
+  assert.equal(formatScalar(12, { decimals: 0, maxDecimals: 1, fixedDecimals: true, unit: '°C' }), '12.0 °C');
+  assert.equal(formatScalar(15.5, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '+15.5%');
+  assert.equal(formatScalar(-10.2, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '−10.2%');
+  assert.equal(formatScalar(0, { decimals: 0, maxDecimals: 1, percent: true, signed: true }), '0%');
+  assert.equal(formatShare(0), '0%');
+  assert.equal(formatShare(0.0001), '<0.1%');
+  assert.equal(formatShare(0.042), '4.2%');
+  assert.equal(formatShare(0.334), '33%');
+  assert.equal(formatShare(0.9999), '100%');
+  assert.equal(formatShare(null), '');
 });

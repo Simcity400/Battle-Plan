@@ -30,13 +30,10 @@ import {
 } from './boundedView.ts';
 import {
   assertValidCoverage,
-  boundedEntries,
   buildPlaybackBoundedRequest,
-  composeProof,
   compileFollowPlan,
   CoverageContractError,
   FamilySourceBroker,
-  needsPlaybackBoundedRead,
   currentHovers,
   hoverAsks,
   planQueryKey,
@@ -57,9 +54,10 @@ import type {
   EntityKind,
   IdentityProvider,
   InstalledPicture,
+  SourceEntry,
   SourcePlan,
 } from './plan.ts';
-import { resolveDisplayedStaticSnapshot, type FrozenGate } from './sources.ts';
+import type { FrozenGate } from './sources.ts';
 import { TailWindowController, type DatedLogRow, type TableRowSource } from './table/rowSource.ts';
 import { knownValue } from './value.ts';
 
@@ -749,6 +747,20 @@ test('held reply during a resize maps stationary client clicks through installed
     pipeline.page.frame();
     assert.equal(pipeline.view(wid)?.installedOwner, 'country:GER');
 
+    const posted: unknown[] = [];
+    worker.postMessage = message => { posted.push(message); };
+    const clicked: (string | null)[] = [];
+    pipeline.pointer(wid, 0, [50, 50], key => { clicked.push(key); });
+    assert.equal((posted.at(-1) as { installed?: number }).installed, 1, 'the pointer names the picture the page shows');
+    pipeline.page.offer({
+      lane: 0,
+      serial: 2,
+      entries: [makeEntry({ widget: wid, id: 2, owner: 'country:GER', h: 0, c: 100, lo: 0, hi: 100, surfaces: [] }) as unknown as Entry<ImageBitmap>],
+    });
+    pipeline.page.frame();
+    worker.onmessage?.({ data: { type: 'hit', widget: wid, key: 'row:SOV', installedId: 1, owner: 'country:GER' } } as MessageEvent<FromLane>);
+    assert.deepEqual(clicked, ['row:SOV'], 'a click answered for the picture shown when it was made stands though a repaint installed since');
+
     pipeline.retime(wid, { owner: 'country:SOV' });
     assert.equal(pipeline.view(wid)?.mode, 'reading', 'owner change clears installed picture immediately');
 
@@ -927,7 +939,7 @@ test('a recording ending in a trailing gap resolves campaign mode and end pins t
   assert.equal(lastRecordedBranchHour(allGapBranch), null);
 });
 
-test('no-follow reads during playback ask nothing after the displayed hour, prove only what the reply evidences, and a reply stays bound to the request that produced it', () => {
+test('no-follow reads during playback ask nothing after the displayed hour and prove only what the reply evidences', () => {
   const src = fakeSource();
   const gate: FrozenGate = {
     recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
@@ -949,8 +961,6 @@ test('no-follow reads during playback ask nothing after the displayed hour, prov
   });
   const compiled = compileFollowPlan(branchPlan, () => ({ query: null, refused: null }));
   assert.equal(compiled.subscriptions.length, 0);
-  assert.equal(needsPlaybackBoundedRead(branchPlan, compiled.subscriptions), true);
-  assert.equal(needsPlaybackBoundedRead({ ...branchPlan, allowEmptyFollow: true }, []), false);
 
   const atFifty = ask(branchPlan, 50);
   assert.ok(atFifty);
@@ -982,7 +992,6 @@ test('no-follow reads during playback ask nothing after the displayed hour, prov
     followQuery: null,
     params: { branchId: '1' },
   });
-  assert.equal(needsPlaybackBoundedRead(trailingPlan, []), true);
   assert.deepEqual(ask(trailingPlan, 200)?.span, [33, 200]);
 
   const rangePlan = planOf({
@@ -993,7 +1002,6 @@ test('no-follow reads during playback ask nothing after the displayed hour, prov
     lastHour: 500,
     params: { branchId: '1' },
   });
-  assert.equal(needsPlaybackBoundedRead(rangePlan, []), true);
   assert.equal(ask(rangePlan, 50), null, 'nothing is asked before a fixed range starts');
   assert.deepEqual(playbackIdleInterval(rangePlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 50, gate }), [-Infinity, 99], 'before the range the next boundary is its first hour');
   const rangeInside = ask(rangePlan, 250)!;
@@ -1001,7 +1009,7 @@ test('no-follow reads during playback ask nothing after the displayed hour, prov
   assert.deepEqual(resolvePlaybackProvenInterval(rangeInside.entry.read, {}, rangeInside, 1000), [250, 250]);
   const rangeDone = ask(rangePlan, 700)!;
   assert.deepEqual(rangeDone.span, [100, 500]);
-  assert.deepEqual(resolvePlaybackProvenInterval(rangeDone.entry.read, {}, rangeDone, 1000), [700, Infinity], 'a finished range never re-arms its boundary');
+  assert.deepEqual(resolvePlaybackProvenInterval(rangeDone.entry.read, {}, rangeDone, 1000), [500, Infinity], 'a finished range holds from its last hour on and never re-arms its boundary');
 
   const pastEnd = ask(branchPlan, 1200, 900)!;
   assert.deepEqual(pastEnd.span, [0, 900]);
@@ -1023,41 +1031,6 @@ test('no-follow reads during playback ask nothing after the displayed hour, prov
   };
   assert.equal(buildPlaybackBoundedRequest(pointPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), null);
   assert.deepEqual(playbackIdleInterval(pointPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), [300, 340], 'inside a gap the next boundary is the gap end, not the next hour');
-
-  const followedHead: SourcePlan['entries'][number] = {
-    name: 'head',
-    source: src,
-    branch: '1',
-    offset: 0,
-    read: { shape: 'point', channel: 'followed', coverage: { mode: 'population', form: 'all' }, product: 'scoreboard', followQuery: { product: 'scoreboard', params: { branchId: '1' } }, params: { branchId: '1' } },
-  };
-  const history = { ...rangePlan.entries[0]!, name: 'history' };
-  const mixed: SourcePlan = { owner: 'mixed:1', entries: [followedHead, history] };
-  const headFollowed = [{ name: 'head', source: src, branch: '1', offset: 0, query: {} as never, channel: 'followed' as const }];
-  assert.deepEqual(boundedEntries(mixed, true, headFollowed).map(entry => entry.name), ['history'], 'a followed point never stops an independent range from loading');
-  assert.equal(needsPlaybackBoundedRead(mixed, headFollowed), true);
-  assert.deepEqual(boundedEntries(mixed, false, []).map(entry => entry.name), ['head', 'history'], 'pinned, the range is read beside the primary');
-  assert.deepEqual(boundedEntries(mixed, true, []).map(entry => entry.name), ['history'], 'an entry with a follow query is never read by the bounded path while following');
-  assert.deepEqual(boundedEntries({ ...mixed, refused: 'no' }, true, headFollowed), []);
-  const exactPrimary: SourcePlan = { owner: 'exact:1', entries: [followedHead], staticEntry: pointPlan.entries[0]! };
-  assert.deepEqual(boundedEntries(exactPrimary, true, headFollowed), [], 'a static entry standing in for followed entries is not read while they follow');
-  assert.deepEqual(boundedEntries(exactPrimary, false, []).map(entry => entry.name), ['main']);
-
-  assert.deepEqual(composeProof([{ anchorHour: 50, proof: [50, 80] }, { anchorHour: 60, proof: [60, 60] }]), [60, 60], 'each entry keeps its own proof; the picture holds where all of them do');
-  assert.deepEqual(composeProof([{ anchorHour: 50, proof: [50, 80] }, { anchorHour: 90, proof: [90, 90] }]), null, 'a reply proven only before another entry’s asked hour is not installed with it');
-  assert.equal(composeProof([]), null);
-
-  const ctx = { owner: 'a' };
-  const held = resolveDisplayedStaticSnapshot(null, {
-    data: { rows: [{ hour: 480 }] }, moment: JSON.stringify([0, 500]), requestKey: 'asked-at-500', anchorHour: 500, satisfiesCurrent: true,
-    requestedSpan: [0, 500], context: ctx, gate, extra: undefined,
-  });
-  const afterSeekBack = resolveDisplayedStaticSnapshot(held, {
-    data: { rows: [{ hour: 480 }] }, moment: JSON.stringify([0, 500]), requestKey: 'asked-at-500', anchorHour: 500, satisfiesCurrent: false,
-    requestedSpan: [0, 100], context: ctx, gate, extra: undefined,
-  });
-  assert.equal(afterSeekBack?.anchorHour, 500, 'after a seek back the held reply keeps the hour it answered, not the new request’s');
-  assert.deepEqual(afterSeekBack?.span, [0, 500]);
 });
 
 test('a family cannot reach data after the displayed hour through a slice, a tile status or a frozen row source', () => {
@@ -1159,6 +1132,42 @@ test('the exact read of a pixel-binned chart asks its exact product at the hour,
   assert.equal(view?.panel('main'), reply);
 });
 
+test('the exact read answers every entry the picture reads, not only the first', async () => {
+  const src = fakeSource();
+  const asked: string[] = [];
+  const client = {
+    product: async (request: { product: string; params: Record<string, unknown> }) => {
+      asked.push(String((request.params as { family: { measure: string } }).family.measure));
+      return { data: { measure: (request.params as { family: { measure: string } }).family.measure } };
+    },
+  } as unknown as DashboardClient;
+  const point = (name: string, measure: string, followed: boolean): SourceEntry => ({
+    name,
+    source: src,
+    branch: '1',
+    offset: 0,
+    read: {
+      shape: 'point' as const,
+      channel: 'followed' as const,
+      coverage: { mode: 'keyed' as const, keys: ['GER'] },
+      product: 'series-state' as const,
+      exactProduct: 'series-state' as const,
+      followQuery: followed ? { product: 'series-state' as const, params: { branchId: '1', family: { kind: 'k', measure } } } : null,
+      params: { branchId: '1', family: { kind: 'k', measure } },
+      buildExactParams: (base: Readonly<Record<string, unknown>>, hour: unknown) => ({ ...base, hour }),
+    },
+  });
+  const plan: SourcePlan = { owner: 'parts', entries: [point('main', 'total', false), point('part:a', 'a', false), point('live', 'followed', true)] };
+  const gate: FrozenGate = {
+    recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
+    span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
+  };
+  const view = await readPlanExact(plan, 120, { client, following: false, timeMode: 'pin', branch: { firstHour: 0, lastHour: 1000 }, window: null, staticSpan: null, gate });
+  assert.deepEqual(asked.sort(), ['a', 'total'], 'a followed entry is stood in for by the primary, as in a pinned read');
+  assert.deepEqual(view?.panel('part:a'), { measure: 'a' });
+  assert.deepEqual(view?.panel('main'), { measure: 'total' });
+});
+
 test('advancing through an open bucket and a growing mark cluster costs what changed, and replaced prefix points are never served from the cache', () => {
   const runs: Run[] = [];
   for (let h = 0; h < 1024; h++) runs.push({ firstHour: h, lastHour: h, value: h % 97 });
@@ -1192,6 +1201,12 @@ test('advancing through an open bucket and a growing mark cluster costs what cha
   assert.ok(worst <= 48, `one more hour inside an open bucket visits a constant number of items, not the bucket: ${worst}`);
   const fresh = boundTiledSeries(line, displayedHour(900));
   assert.deepEqual(fresh.buckets.at(0), cursor.advance(line, 900).buckets.at(0));
+
+  const brokenRuns: Run[] = [{ firstHour: 0, lastHour: 9, value: 1, breakBefore: true }, { firstHour: 10, lastHour: 19, value: 2 }];
+  const brokenLine: TiledLine = { ...line, summary: { ...line.summary, runs: brokenRuns } };
+  const brokenCursor = new BoundedSeriesCursor();
+  brokenCursor.advance(brokenLine, 3);
+  assert.deepEqual(brokenCursor.advance(brokenLine, 4).buckets.at(0), boundTiledSeries(brokenLine, displayedHour(4)).buckets.at(0), 'a resumed cut observes a run’s break once, as a fresh cut does');
 
   const pointLine: TiledLine = { ...line, summary: { ...line.summary, runs: undefined } };
   const pointCursor = new BoundedSeriesCursor();
@@ -1244,13 +1259,13 @@ test('canvas pixel dimensions stay stable across sub-pixel jitter without changi
 test('FieldStatus failed distinguishes retryable transport errors and non-retryable refusals from genuine absence', () => {
   const scope = { sourceId: 's1', revision: 'r1', branchId: '1', content: 1 };
   const retryableIndex = new IdentityIndex(scope, [0, 500]);
-  retryableIndex.setFactsFailure(new Error('IPC timeout'));
+  retryableIndex.setReadFailure('facts', new Error('IPC timeout'));
   const retryableRes = identityResultFromIndex(retryableIndex, 'country', 'GER', displayedHour(100));
   assert.deepEqual(retryableRes.name, { status: 'failed', reason: 'IPC timeout', retryable: true });
   assert.deepEqual(retryableRes.holder, { status: 'failed', reason: 'IPC timeout', retryable: true });
 
   const refusedIndex = new IdentityIndex(scope, [0, 500]);
-  refusedIndex.setFactsFailure(new RefusedError('Unsupported mod table'));
+  refusedIndex.setReadFailure('facts', new RefusedError('Unsupported mod table'));
   const refusedRes = identityResultFromIndex(refusedIndex, 'country', 'GER', displayedHour(100));
   assert.deepEqual(refusedRes.name, { status: 'failed', reason: 'Unsupported mod table', retryable: false });
 

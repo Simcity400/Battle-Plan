@@ -1,12 +1,10 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField } from '../../dashboard/options';
-import { DATE_OVERLAY_OPTION } from '../../charts/race/options.ts';
 import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
 const tension = (options: Readonly<Record<string, unknown>>) => (options.view ?? 'tension') === 'tension';
 const events = (options: Readonly<Record<string, unknown>>) => options.view === 'events';
-const race = (options: Readonly<Record<string, unknown>>) => options.view === 'race';
 
 export const EVENTS_TABLE_BASE: TableBase = {
   density: 'compact',
@@ -44,7 +42,6 @@ export const OPTIONS: readonly OptionField[] = [
   ] },
   ...TENSION_CHART_OPTIONS,
   ...EVENTS_TABLE_OPTIONS,
-  { ...DATE_OVERLAY_OPTION, visibleWhen: race },
 ];
 
 export const definition = {

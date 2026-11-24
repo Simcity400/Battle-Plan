@@ -189,9 +189,10 @@ export function* armyTooltips(model: CountryValuesModel, name: string, at: Count
 
 const METADATA_MEASURE: ArmyMeasure = 'divisions';
 
+export const armyMetadataParams = (branchId: string) => armySizeRequest(branchId, { tags: [] }, METADATA_MEASURE, 'owner', false);
+
 export const armyMetadataRequest = (track: BoundTrack | undefined) => track ? productRequest({
-  sourceId: track.source.id, revision: track.source.revision, product: 'army-size',
-  params: armySizeRequest(track.branch.id, { tags: [] }, METADATA_MEASURE, 'owner', false),
+  sourceId: track.source.id, revision: track.source.revision, product: 'army-size', params: armyMetadataParams(track.branch.id),
 }) : null;
 
 export const armyAbsent = (manifest: ArmySizeReply) => !manifest.available;

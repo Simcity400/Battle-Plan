@@ -64,6 +64,11 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
       || !(entry.presentation === null || entry.counted && presentation(entry.presentation))) return bad();
     for (const attempt of project.attempts) if (!object(attempt) || !integer(attempt.ordinal) || !integer(attempt.date) || !integer(attempt.readHour) || !nullableInteger(attempt.sinceRead)) return bad();
   }
+  const shown = input.shown;
+  const index = (value: unknown) => integer(value) && value >= 0 && value < (input.projects as unknown[]).length;
+  if (!object(shown) || !nullableInteger(shown.through) || !Array.isArray(shown.running) || !shown.running.every(index)
+    || !Array.isArray(shown.completed) || !shown.completed.every(item => object(item) && index(item.project) && nullableInteger(item.date))
+    || !integer(shown.undated) || shown.undated < 0 || shown.undated > shown.completed.length) return bad();
   return input as unknown as SpecialProjectsReply;
 }
 
@@ -147,23 +152,14 @@ export const lastScientist = (data: SpecialProjectsReply, info: ProjectPresentat
   info.lastScientist === null || run.lastScientistRead === null ? null : `${data.people[info.lastScientist].name ?? 'Name unavailable'} (read ${formatDateTime(run.lastScientistRead)})`;
 export const iterationCount = (iterations: number | null) =>
   iterations === null ? 'Iterations not recorded' : `${usNumber.format(iterations)} ${iterations === 1 ? 'iteration' : 'iterations'}`;
-export const endedCount = (run: ProjectStatus) => iterationCount(run.iterations);
-export const iterationMark = (iterations: number | null) => iterations === null ? '—' : `×${usNumber.format(iterations)}`;
 export interface ProjectCard { project: ProjectRecord; run: ProjectStatus; info: ProjectPresentation }
-
-export function iterationTooltip(data: SpecialProjectsReply, card: ProjectCard): TooltipContent {
-  const { iterations } = card.run;
-  const text = iterations === null ? null : data.iterationTexts[iterations] ?? null;
-  return { title: 'Iterations', subtitle: card.info.name,
-    rows: [{ label: 'Prototype iterations', value: iterations === null ? 'Not recorded' : usNumber.format(iterations) }], ...(text ? { description: text } : {}) };
-}
 
 export function shownCard(data: SpecialProjectsReply, hour: number, id: string): ProjectCard | null {
   const { running, completed, earlier } = currentProjects(data, hour);
   return running.find(card => card.project.id === id) ?? completed.find(card => card.project.id === id) ?? earlier.find(card => card.project.id === id) ?? null;
 }
 
-export interface EpisodeBound { through: number; open: boolean }
+interface EpisodeBound { through: number; open: boolean }
 
 export function episodeBound(reply: SpecialProjectsReply, project: ProjectRecord, through: number | null): EpisodeBound {
   const last = project.statuses[project.statuses.length - 1].lastHour;
@@ -198,12 +194,6 @@ export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard
   if (found.readHour > bound.through) return 'Project rewards and output were read after this project was last recorded.';
   if (!inStatuses(card.project, bound, found.readHour)) return 'Project rewards and output were read while this project was not recorded.';
   return { project: found, choices: recordedChoices(card.project, bound, found) };
-}
-
-export function joinDue(details: SpecialProjectDetails, card: ProjectCard, hour: number, bound: EpisodeBound): { hour: number; list: boolean } | null {
-  const found = joined(details, card);
-  if (listStale(found, bound)) return { hour: found!.readHour, list: true };
-  return details.hour > hour ? { hour: details.hour, list: false } : null;
 }
 
 const shownRuns = (project: ProjectRecord, hour: number, membership?: readonly HourSpan[]) => {
@@ -257,28 +247,8 @@ export function currentProjects(data: SpecialProjectsReply, hour: number): Curre
   return groups;
 }
 
-export function currentKey(data: SpecialProjectsReply, hour: number): string {
-  if (!observedAt(data, hour)) return `unobserved${unobservedReason(data, hour)}`;
-  const { running, completed, earlier } = currentProjects(data, hour);
-  const part = (cards: readonly ProjectCard[], extra: (card: ProjectCard) => string) =>
-    JSON.stringify(cards.map(card => [card.project.id, card.info, data.people[card.info.scientist], extra(card)]));
-  const shown = (read: number | null) => `${read}\u0001${readLabel(read, hour) !== null}`;
-  const read = (card: ProjectCard) => [card.run.state, card.run.iterations, shown(statusRead(data, card.project, hour)), shown(card.run.scientistRead), card.run.lastScientistRead].join('\u0001');
-  return [part(running, read), part(completed, read), part(earlier, read)].join('\u0003');
-}
 
-export function projectStructure(reply: SpecialProjectsReply, hour: number) {
-  return JSON.stringify([currentKey(reply, hour), reply.unavailable, reply.warnings, reply.projects.map(project => completions(project, hour).map(entry => entry.date))]);
-}
-
-export function runningValues(project: ProjectRecord, hour: number): { progress: string; fill: number; iterations: string } | null {
-  const run = runAt(project.statuses, hour);
-  return run ? { progress: `${run.progress}%`, fill: Math.max(0, run.progress) / 100, iterations: iterationMark(run.iterations) } : null;
-}
-
-export const earlierBound = (cards: readonly ProjectCard[]) => cards.reduce((bound, card) => Math.max(bound, card.project.firstRead), -Infinity);
-
-export interface ProjectHistory {
+interface ProjectHistory {
   lanes: TimelineLane[];
   completed: number; cancelled: number;
   by: number | null;
@@ -399,5 +369,3 @@ export function historyTooltip(data: SpecialProjectsReply, id: string, span: Tim
   return projectTooltip(data, { project, run, info: data.presentations[run.presentation] }, at);
 }
 
-export const progressStyle = (progress: number, painted: boolean): Readonly<Record<string, number>> | undefined =>
-  painted ? undefined : { '--project-progress': Math.max(0, progress) / 100 };

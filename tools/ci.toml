@@ -158,8 +158,16 @@ name = "widget-manifest"
 group = "linux"
 tier = "check"
 toolchain = "node"
-inputs = ["ui/src/widgets/**", "ui/src/families/**", "ui/src/dashboard/definitions.ts", "ui/src/dashboard/options.ts", "ui/src/draw/views/drawn.ts", "tools/check-widget-manifest.mjs"]
+inputs = ["ui/src/widgets/**", "ui/src/families/**", "ui/src/dashboard/definitions.ts", "ui/src/dashboard/options.ts", "ui/src/draw/views/drawn.ts", "tools/check-widget-manifest.mjs", "tools/ui-import-graph.mjs"]
 command = ["{node}", "tools/check-widget-manifest.mjs"]
+
+[[job]]
+name = "dead-code"
+group = "linux"
+tier = "check"
+toolchain = "node"
+inputs = ["ui/**", "crates/**", "tools/check-dead-code.mjs", "tools/ui-import-graph.mjs", "tools/legacy-widgets-ratchet.json"]
+command = ["{node}", "tools/check-dead-code.mjs"]
 
 [[job]]
 name = "ui-tests"

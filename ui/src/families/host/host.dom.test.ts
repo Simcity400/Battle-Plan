@@ -61,6 +61,11 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.equal(generic.activatedSubject, 'GER', 'Enter activates the focused row from the installed picture');
     assert.equal(generic.activatedMatchesInstalled, true, 'the action carries the installed picture id');
 
+    const still = await act<{ shown: boolean; installs: number; storeUpdates: number; commits: number }>('testGenericStationaryTooltip()');
+    assert.equal(still.shown, true, 'the focused row shows its tooltip');
+    assert.ok(still.installs >= 20, `twenty same-hour installs happened (${still.installs})`);
+    assert.deepEqual([still.storeUpdates, still.commits], [0, 0], `a stationary tooltip across installs: no tooltip-store update, no React render including TooltipLayer (${still.installs} installs)`);
+
     const tuple = await act<{
       blockedMeasured: boolean;
       blockedShown: boolean;

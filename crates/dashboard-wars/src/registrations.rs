@@ -1,10 +1,7 @@
 dashboard_base::register_products! {
     FACTIONS_FACTIONLINES => crate::products::factions::FactionLines,
-    VOLUNTEERS_VOLUNTEERSEXPEDITIONARIES => crate::products::volunteers::VolunteersExpeditionaries,
     DIPLOMACY_DIPLOMATICPACTS => crate::products::diplomacy::DiplomaticPacts,
-    CASUALTIES_CASUALTYPAIRS => crate::products::casualties::CasualtyPairs,
     CASUALTIES_CASUALTYBREAKDOWN => crate::products::casualties::CasualtyBreakdown,
-    CASUALTIES_CASUALTYLABELS => crate::products::casualties::CasualtyLabels,
     PEACE_PEACEDEALS => crate::products::peace::PeaceDeals,
     TERRITORY_TRANSFERS_TERRITORYTRANSFERS => crate::products::territory_transfers::TerritoryTransfers,
     OCCUPATION_RESERVE_RESERVEHISTORY => crate::products::occupation_reserve::ReserveHistory,
@@ -18,6 +15,7 @@ dashboard_base::register_products! {
 dashboard_base::register_hourly_products! {
     FACTIONS_FACTIONROSTERS => crate::products::factions::FactionRosters,
     DIPLOMACY_DIPLOMATICRELATIONS => crate::products::diplomacy::DiplomaticRelations,
+    VOLUNTEERS_VOLUNTEERFLOW => crate::products::volunteers::VolunteerFlow,
     CASUALTY_MATRIX_CASUALTYMATRIX => crate::products::casualty_matrix::CasualtyMatrix,
     WARGOALS_WARGOALS => crate::products::wargoals::Wargoals,
     OCCUPATION_RESERVE_OCCUPATIONRESERVE => crate::products::occupation_reserve::OccupationReserve,
@@ -26,7 +24,6 @@ dashboard_base::register_hourly_products! {
     FACTION_STATE_COUNTRY_GOALS_COUNTRYFACTIONGOALS => crate::products::faction_state::country_goals::CountryFactionGoals,
     FACTION_STATE_DETAILS_FACTIONDETAILS => crate::products::faction_state::details::FactionDetails,
     WARS_CONTRIBUTIONS_WARCONTRIBUTIONS => crate::products::wars::contributions::WarContributions,
-    FACTION_STATE_REWARDS_FACTIONGOALREWARDS => crate::products::faction_state::rewards::FactionGoalRewards,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};

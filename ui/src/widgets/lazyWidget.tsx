@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
+import DefaultCountryChip from '../dashboard/CountryChip';
 import type { FamilyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
 import { familyHost } from '../families/host/registry';
 import type { FamilyViewModule } from '../families/manifest';
@@ -10,10 +11,12 @@ import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
 type Slot = 'render' | 'countryChip';
 const nothing = () => null;
-const declaredRenderers = new WeakMap<object, ComponentType<WidgetProps>>();
+const declaredRenderers = new WeakMap<object, Map<string, ComponentType<WidgetProps>>>();
 
 function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: string): ComponentType<WidgetProps> {
-  let held = declaredRenderers.get(declaration);
+  let byView = declaredRenderers.get(declaration);
+  if (!byView) declaredRenderers.set(declaration, byView = new Map());
+  let held = byView.get(view);
   if (!held) {
     const spec: FamilyViewModule = {
       family: declaration.family,
@@ -26,7 +29,21 @@ function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: stri
       const Host = familyHost(spec.family);
       return Host ? <Host spec={spec} {...props} /> : <WidgetState kind="unavailable" message={`Family host unavailable: ${spec.family}`} />;
     };
-    declaredRenderers.set(declaration, held);
+    byView.set(view, held);
+  }
+  return held;
+}
+
+const viewedRenderers = new WeakMap<ComponentType<WidgetProps>, Map<string, ComponentType<WidgetProps>>>();
+
+function rendererForView(render: ComponentType<WidgetProps>, view: string): ComponentType<WidgetProps> {
+  let byView = viewedRenderers.get(render);
+  if (!byView) viewedRenderers.set(render, byView = new Map());
+  let held = byView.get(view);
+  if (!held) {
+    const Render = render;
+    held = (props: WidgetProps) => <Render {...props} view={view} />;
+    byView.set(view, held);
   }
   return held;
 }
@@ -38,6 +55,10 @@ export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer
       if (slot === 'render' && !loaded?.render && loaded?.declaration) {
         return rendererForDeclaration(loaded.declaration, view) as ComponentType<object>;
       }
+      if (slot === 'countryChip' && !loaded?.countryChip) {
+        return DefaultCountryChip as ComponentType<object>;
+      }
+      if (slot === 'render' && loaded?.render) return rendererForView(loaded.render, view) as ComponentType<object>;
       return (loaded?.[slot] as ComponentType<object> | undefined) ?? nothing;
     };
     const byView = new Map<string, ComponentType<object>>();

@@ -1,10 +1,10 @@
 import { liveKey } from '../../charts/live.ts';
-import { usNumber } from '../../charts/numberFormat.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, gameDate, monthAt, monthIndex, monthNames } from '../../dashboard/calendar.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import {
   registerTimeChart,
   type TimeChartProjection,
@@ -43,11 +43,11 @@ const CATEGORY_COLORS = [
   CHART_MEASURE_COLOURS.politicalPower,
   CHART_MEASURE_COLOURS.commandPower,
   CHART_MEASURE_COLOURS.fuel,
-  '#d88450',
-  '#56b0b0',
+  CHART_MEASURE_COLOURS.warSupport,
+  CHART_MEASURE_COLOURS.intelCoverage,
 ] as const;
 
-const OTHER_COLOR = '#6e727c';
+const OTHER_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
 
 export interface ArmyLossesChartOptions {
   readonly measure: LossMeasure;
@@ -78,7 +78,7 @@ export function formatMonthTitle(month: number): string {
 }
 
 export function formatLossRaw(raw: string | bigint, measure: LossMeasure): string {
-  return measure === 'manpower' ? usNumber.format(typeof raw === 'bigint' ? raw : BigInt(raw)) : formatFixed(String(raw), 5, 0);
+  return measure === 'manpower' ? formatScalar(typeof raw === 'bigint' ? raw : BigInt(raw), 'integer') : formatFixed(String(raw), 5, 0);
 }
 
 function chartView(measure: LossMeasure, ledger: LossLedger): LossView {

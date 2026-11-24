@@ -28,11 +28,23 @@ impl Replay {
         session: replay_data::identity::SessionStart,
         branch: replay_frame::branches::BranchStart,
         last: Hour,
+        write: impl FnMut(&mut replay_journal::synthetic::Synthetic, Hour) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        let first = branch.first_hour;
+        Self::from_synthetic_runs(writers, campaign_id, session, branch, &[first..=last], write)
+    }
+
+    pub fn from_synthetic_runs(
+        writers: Writers,
+        campaign_id: Vec<u8>,
+        session: replay_data::identity::SessionStart,
+        branch: replay_frame::branches::BranchStart,
+        runs: &[std::ops::RangeInclusive<Hour>],
         mut write: impl FnMut(&mut replay_journal::synthetic::Synthetic, Hour) -> io::Result<()>,
     ) -> io::Result<Self> {
         use replay_journal::synthetic::Synthetic;
 
-        let (id, first) = (branch.id, branch.first_hour);
+        let id = branch.id;
         let mode = session.capture_mode;
         let format = FormatVersion::CURRENT.version();
         let in_scope: Vec<_> = TableId::ALL.into_iter().filter(|&table| {
@@ -42,12 +54,15 @@ impl Replay {
         let identity = identity_of(campaign_id, &records)?;
         let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
         let mut file = HourWriter::new(file, LEVEL, writers)?;
-        let mut synthetic = Synthetic::new(id, first)?;
-        file.start_run(id, envelope::epoch::START, first)?;
-        for hour in first..=last {
-            write(&mut synthetic, hour)?;
-            synthetic.unavailable_unwritten(&in_scope, b"outside the fixture")?;
-            synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections))??;
+        for (at, hours) in runs.iter().enumerate() {
+            let (first, last) = (*hours.start(), *hours.end());
+            let mut synthetic = Synthetic::new(id, first)?;
+            file.start_run(id, if at == 0 { envelope::epoch::START } else { envelope::epoch::GAP }, first)?;
+            for hour in first..=last {
+                write(&mut synthetic, hour)?;
+                synthetic.unavailable_unwritten(&in_scope, b"outside the fixture")?;
+                synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections))??;
+            }
         }
         let mut file = file.finish()?;
         add_records(&mut file, &records, FormatVersion::CURRENT)?;

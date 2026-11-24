@@ -4,9 +4,11 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
-import { fraction, shipLabel, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { fraction, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
+import type { ArtState } from '../../families/table/identityCell.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 const ON_PORT = 'Shown on the port';
@@ -15,33 +17,37 @@ const PERCENT = { decimals: 0, maxDecimals: 1, percent: true } as const;
 
 type DockRow =
   | { readonly kind: 'port'; readonly key: string; readonly port: RepairPort; readonly children: readonly DockRow[] }
-  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip };
+  | { readonly kind: 'ship'; readonly key: string; readonly ship: YardShip; readonly picture: ArtState };
 
 const portName = (port: RepairPort): Value<string> => textValue(port.name, 'Port name unavailable');
 
 const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
 
 const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never>>[] = [
-  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Wilhelmshaven harbour'],
-    value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name) },
+  { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Wilhelmshaven harbour'],
+    value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name),
+    extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
   { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
+    extra: row => (row.kind === 'port' ? { blank: true } : {}),
     bar: (row, live) => row.kind === 'ship' ? { fraction: fraction(shipStrength(row.ship, live)) } : null },
   { ...PRIORITY!, priority: 2, numeric: true, format: 'integer', widest: ['9'],
     value: row => row.kind === 'port'
       ? valueFromNullable(row.port.priority, { kind: 'notRecorded', reason: 'Repair priority not recorded' })
-      : notApplicable(ON_PORT) },
-  { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'], hint: 'repairing',
+      : notApplicable(ON_PORT),
+    extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
+  { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'], unit: 'repairing',
     value: row => row.kind === 'port'
       ? valueFromNullable(row.port.dockyards, { kind: 'notRecorded', reason: 'Dockyards repairing not recorded' })
-      : notApplicable(ON_PORT) },
+      : notApplicable(ON_PORT),
+    extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
 ];
 
 function summary(reply: NavalRepairsReply): string | null {
   const parts: string[] = [];
-  if (reply.queuedShips !== null) parts.push(`${reply.queuedShips.toLocaleString('en-US')} ${reply.queuedShips === 1 ? 'ship' : 'ships'} waiting`);
+  if (reply.queuedShips !== null) parts.push(`${formatScalar(reply.queuedShips, 'integer')} ${reply.queuedShips === 1 ? 'ship' : 'ships'} waiting`);
   if (reply.usedDockyards !== null && reply.repairLimit !== null) {
-    parts.push(`${reply.usedDockyards.toLocaleString('en-US')} / ${reply.repairLimit.toLocaleString('en-US')} repair dockyards in use`);
+    parts.push(`${formatScalar(reply.usedDockyards, 'integer')} / ${formatScalar(reply.repairLimit, 'integer')} repair dockyards in use`);
   }
   return parts.length ? parts.join(' · ') : null;
 }
@@ -51,12 +57,12 @@ export const dockyardsProjection: TableProjection<Record<string, never>> = regis
     kind: 'dockyards-and-repairs',
     validate: validateRepairs,
     columns: DOCK_COLUMNS,
-    rows: reply => {
+    rows: (reply, _live, _hour, _options, readView) => {
       const rows: DockRow[] = reply.ports.map(port => ({
         kind: 'port',
         key: String(port.province),
         port,
-        children: port.queue.map((ship, index) => ({ kind: 'ship', key: `${port.province}|${index}|${ship.handle}`, ship })),
+        children: port.queue.map((ship, index) => ({ kind: 'ship', key: `${port.province}|${index}|${ship.handle}`, ship, picture: shipPicture(ship, readView) })),
       }));
       return {
         rows,
@@ -77,7 +83,7 @@ export const dockyardsProjection: TableProjection<Record<string, never>> = regis
       ? shipTooltip(row.ship)
       : [
           { label: 'Repair priority', value: textValue(row.port.policy, 'Repair priority name not localised'), divider: true },
-          { label: 'Ships waiting', value: knownValue(row.port.queue.length.toLocaleString('en-US')) },
+          { label: 'Ships waiting', value: knownValue(formatScalar(row.port.queue.length, 'integer')) },
         ],
   }),
 );
@@ -88,7 +94,8 @@ export const dockyardsDeclaration: TableWidgetDeclaration<Record<string, never>>
   label: 'Dockyards and repairs',
   subject: 'repair ports',
   emptyCampaign: 'Load a campaign to see dockyards and repairs.',
-  icon: 'anchor',
+  icon: 'cube',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its dockyards.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

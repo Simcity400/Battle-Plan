@@ -61,6 +61,7 @@ pub(super) struct NamedItem {
     pub unknown: Option<String>,
     pub group: String,
     pub idea: Option<(IdeaInfo, Option<String>)>,
+    pub kind: Option<Result<(String, String), String>>,
 }
 
 pub(super) struct Context {
@@ -424,6 +425,42 @@ pub(super) fn cause_category(cause: PowerCause) -> (&'static str, &'static str) 
     }
 }
 
+fn advisor_kind(content: &PoliticsContent, seat: &str) -> (String, String) {
+    let key = content.ideas.tags.categories().0.iter().find(|category| category.slots.iter().any(|slot| slot == seat)).map_or(seat, |category| category.name.as_str());
+    (format!("advisor:{key}"), content.localised(key, View::Plain).unwrap_or_else(|| key.to_owned()))
+}
+
+pub(super) fn kind_of(row: &PowerItemRow, category: &str, token: Option<&str>, content: Option<&PoliticsContent>) -> Option<Result<(String, String), String>> {
+    let decision = match (row.cause, category) {
+        (PowerCause::Decision | PowerCause::TargetedDecision | PowerCause::DecisionTimeout, "decisions") => true,
+        (PowerCause::Advisor | PowerCause::AdvisorRemoval, "advisors") => false,
+        _ => return None,
+    };
+    let Some(content) = content else { return Some(Err(NO_CONTENT.into())) };
+    let seat = std::str::from_utf8(&row.slot_key).ok().filter(|seat| !seat.is_empty());
+    if !decision && let Some(seat) = seat {
+        return Some(Ok(advisor_kind(content, seat)));
+    }
+    let Some(token) = token else {
+        return Some(Err(if decision { "The decision was not recorded" } else { "The advisor's role was not recorded" }.into()));
+    };
+    let key = if decision {
+        match content.power_content().and_then(|power| power.decisions.decision(token.as_bytes())) {
+            Err(reason) => return Some(Err(reason)),
+            Ok(None) => return Some(Err(format!("Decision {token} is not defined in the installed content"))),
+            Ok(Some(found)) => String::from_utf8_lossy(&found.category).into_owned(),
+        }
+    } else {
+        match content.idea(token) {
+            Err(reason) => return Some(Err(reason)),
+            Ok(None) => return Some(Err(format!("Advisor role {token} is not defined in the installed content"))),
+            Ok(Some(idea)) => return Some(Ok(advisor_kind(content, &idea.group))),
+        }
+    };
+    let name = content.localised(&key, View::Plain).unwrap_or_else(|| key.clone());
+    Some(Ok((format!("decision:{key}"), name)))
+}
+
 pub(super) fn category_of(row: &PowerItemRow, token: Option<&str>, content: Option<&PoliticsContent>) -> (String, String) {
     if row.kind == PowerItemRow::COST && row.cause == PowerCause::DailyGain {
         return match row.component.and_then(|component| PowerDailyCostKind::try_from(component as u8).ok()) {
@@ -703,6 +740,7 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
         unknown: None,
         group: String::new(),
         idea: None,
+        kind: kind_of(row, &category.0, token.as_deref(), content),
     };
     let mut art = None;
     match content {
@@ -975,6 +1013,10 @@ pub(super) fn ledger_item(id: String, row: &PowerItemRow, named: NamedItem) -> S
         target_name: named.target_name,
         unknown: named.unknown,
         tooltip_token: named.idea.map(|(info, _)| info.token),
+        kind: named.kind.map(|kind| match kind {
+            Ok((id, name)) => super::SpendKind { id: Some(id), name: Some(name), unknown: None },
+            Err(reason) => super::SpendKind { id: None, name: None, unknown: Some(reason) },
+        }),
     }
 }
 

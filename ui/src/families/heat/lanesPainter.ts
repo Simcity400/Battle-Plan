@@ -2,12 +2,12 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
+  computeTimeAxisTicks,
+  contrastInkForFill,
   drawCrosshairLine,
-  drawDateTab,
   drawFlagSlot,
   drawGapBand,
-  drawGradientLegend,
-  drawLegendEntry,
+  drawLegendStrip,
   drawMissingMark,
   drawNameSlot,
   drawPlayheadLine,
@@ -15,20 +15,19 @@ import {
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
+  drawTimeAxis,
   FLAG_SLOT_HEIGHT,
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { mix, parseColor, readableText } from '../../shell/appearance/color.ts';
+import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
-import type { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle } from '../art/provider.ts';
 import type { ArtProvider, FamilyTheme } from '../contract.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import {
-  computeAxisTicks,
   hourToLaneX,
   LANE_PAD,
   LANE_ROW_GAP,
@@ -37,14 +36,6 @@ import {
 } from './lanesLayout.ts';
 import type { HeatLaneRow, HeatLanesModel } from './lanesModel.ts';
 import { marginColour, splitStripes } from './scale.ts';
-
-export interface HeatLanesPicture {
-  signature: string;
-}
-
-export function createLanesPicture(): HeatLanesPicture {
-  return { signature: '' };
-}
 
 export interface DrawHeatLanesInput {
   readonly model: HeatLanesModel;
@@ -56,7 +47,6 @@ export interface DrawHeatLanesInput {
   readonly selectedRowId: string | null;
   readonly focusedRowId: string | null;
   readonly artProvider?: ArtProvider;
-  readonly artCache?: LaneArtCache;
   readonly identityIndex?: IdentityIndex | null;
 }
 
@@ -73,66 +63,6 @@ export function collectVisibleLaneArt(
     if (url) urls.add(url);
   }
   return [...urls];
-}
-
-function drawLanesLegend(
-  ctx: Canvas2D,
-  model: HeatLanesModel,
-  layout: HeatLanesLayout,
-  theme: FamilyTheme,
-): void {
-  const legend = model.legend;
-  if (!legend || layout.legendHeight <= 0) return;
-  const middleY = Math.round(layout.legendHeight / 2);
-  let cursor = LANE_PAD;
-  if (legend.gradient) {
-    const drawn = drawGradientLegend(
-      ctx,
-      cursor,
-      middleY,
-      legend.gradient.lowLabel,
-      legend.gradient.highLabel,
-      legend.gradient.stops,
-      theme,
-    );
-    cursor += drawn.width + 14;
-  }
-  if (legend.entries) {
-    for (const entry of legend.entries) {
-      if (cursor > layout.width - 40) break;
-      if (entry.hatched) {
-        drawHatchRect(ctx, cursor, Math.round(middleY - 4.5), 9, 9, 2, theme);
-        ctx.save();
-        ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-        ctx.fillStyle = theme.muted;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(entry.label, cursor + 15, middleY);
-        cursor += 15 + textWidth(ctx, entry.label) + 12;
-        ctx.restore();
-      } else {
-        const drawn = drawLegendEntry(ctx, cursor, middleY, entry.label, entry.color, theme, {
-          ...(entry.dashed ? { dash: [4, 2] } : {}),
-          ...(entry.muted ? { muted: true } : {}),
-          maxWidth: Math.max(40, layout.width - cursor - LANE_PAD),
-        });
-        cursor += drawn.width + 12;
-      }
-    }
-  }
-  if (legend.rightNote) {
-    ctx.save();
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-    ctx.fillStyle = theme.muted;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    const maxW = Math.max(0, layout.width - cursor - LANE_PAD);
-    if (maxW >= 24) {
-      ctx.fillText(ellipsise(legend.rightNote, maxW, s => textWidth(ctx, s)), layout.width - LANE_PAD, middleY);
-    }
-    ctx.restore();
-  }
-  drawRowHairline(ctx, 0, layout.width, layout.legendHeight - 1, theme, 'normal');
 }
 
 function drawRowFlag(
@@ -271,50 +201,36 @@ function drawInRunLabel(
     ctx.restore();
     return;
   }
-  const rgb = parseColor(bgColor);
-  ctx.fillStyle = explicitTextColor ?? (rgb ? readableText(rgb) : theme.text);
+  ctx.fillStyle = explicitTextColor ?? contrastInkForFill(bgColor, theme);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x + 8, y + height / 2 + 0.5);
   ctx.restore();
 }
 
-export function drawHeatLanes(
-  ctx: Canvas2D,
-  input: DrawHeatLanesInput,
-  picture?: HeatLanesPicture,
-): { readonly drew: boolean } {
-  const { model, layout, theme, scrollTop, hoveredRow, hoveredHour, selectedRowId, focusedRowId, artProvider, artCache } = input;
+export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
+  const { model, layout, theme, scrollTop, hoveredRow, hoveredHour, selectedRowId, focusedRowId, artProvider } = input;
   const tokens = resolveKitTokens(theme);
-
-  const artRev = artCache ? `${artCache.revision}:${artCache.cachedCount}:${artCache.failedCount}` : '';
-  const sig = JSON.stringify([
-    model.hour,
-    layout.width,
-    layout.height,
-    layout.firstRow,
-    layout.endRow,
-    Math.round(scrollTop),
-    hoveredRow ?? -1,
-    hoveredHour ?? -1,
-    selectedRowId ?? '',
-    focusedRowId ?? '',
-    model.playhead ?? -1,
-    theme.surface,
-    theme.text,
-    theme.accent,
-    artRev,
-  ]);
-  if (picture && picture.signature === sig) {
-    return { drew: false };
-  }
-  if (picture) picture.signature = sig;
 
   ctx.save();
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, layout.width, layout.height);
 
-  drawLanesLegend(ctx, model, layout, theme);
+  if (model.legend && layout.legendHeight > 0) {
+    drawLegendStrip(ctx, 0, 0, layout.width, layout.legendHeight, {
+      gradient: model.legend.gradient,
+      entries: model.legend.entries?.map(entry => ({
+        label: entry.label,
+        color: entry.color,
+        ...(entry.hatched ? { hatch: true } : {}),
+        ...(entry.dashed ? { dash: [4, 2] } : {}),
+        ...(entry.muted ? { muted: true } : {}),
+      })),
+      rightNote: model.legend.rightNote,
+      padX: LANE_PAD,
+      hairline: true,
+    }, theme);
+  }
 
   const bodyBottom = layout.height - layout.axisHeight;
   ctx.save();
@@ -461,39 +377,26 @@ export function drawHeatLanes(
   ctx.restore();
 
   drawRowHairline(ctx, 0, layout.width, bodyBottom, theme, 'normal');
-  const ticks = computeAxisTicks(
-    layout.firstHour,
-    layout.lastHour,
-    model.dayHours,
-    layout.plotLeft,
-    layout.plotWidth,
-  );
-  ctx.save();
-  ctx.font = `${LABEL_WEIGHT} 10.5px ${theme.font}`;
-  ctx.fillStyle = theme.muted;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const axisMidY = bodyBottom + layout.axisHeight / 2;
-  const tabX = model.playhead !== null && model.playhead >= layout.firstHour && model.playhead <= layout.lastHour
-    ? hourToLaneX(model.playhead, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth)
-    : null;
-  const tabHalf = tabX === null ? 0 : textWidth(ctx, formatDateOnly(model.playhead!)) / 2 + 14;
-  for (const tick of ticks) {
-    if (tabX !== null && Math.abs(tick.x - tabX) < tabHalf + textWidth(ctx, tick.label) / 2) continue;
-    ctx.fillText(tick.label, tick.x, axisMidY);
-  }
-  ctx.restore();
-
-  const tabBounds = { left: layout.plotLeft, right: layout.plotLeft + layout.plotWidth };
-  if (model.playhead !== null && model.playhead >= layout.firstHour && model.playhead <= layout.lastHour) {
-    const px = hourToLaneX(model.playhead, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
-    drawDateTab(ctx, formatDateOnly(model.playhead), px, bodyBottom + 1, theme, 'playhead', tabBounds);
-  }
-  if (hoveredHour !== null && hoveredHour >= layout.firstHour && hoveredHour <= layout.displayedHour) {
-    const hx = hourToLaneX(hoveredHour, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
-    drawDateTab(ctx, formatDateOnly(hoveredHour), hx, bodyBottom + 1, theme, 'hover', tabBounds);
-  }
+  const ticks = computeTimeAxisTicks(layout.firstHour, layout.lastHour, layout.plotWidth, model.dayHours);
+  const playheadInRange = model.playhead !== null && model.playhead >= layout.firstHour && model.playhead <= layout.lastHour;
+  const hoverInRange = hoveredHour !== null && hoveredHour >= layout.firstHour && hoveredHour <= layout.displayedHour;
+  drawTimeAxis(ctx, ticks, {
+    plotLeft: layout.plotLeft,
+    plotRight: layout.plotLeft + layout.plotWidth,
+    startHour: layout.firstHour,
+    endHour: layout.lastHour,
+    axisTop: bodyBottom,
+    labelY: bodyBottom + layout.axisHeight / 2,
+    tabY: bodyBottom + 1,
+    playhead: playheadInRange ? model.playhead : null,
+    playheadLabel: playheadInRange ? formatDateOnly(model.playhead!) : '',
+    hover: hoverInRange ? hoveredHour : null,
+    hoverLabel: hoverInRange ? formatDateOnly(hoveredHour!) : undefined,
+    playheadLineTop: null,
+    hairline: 'none',
+    tickMarks: false,
+    theme,
+  });
 
   ctx.restore();
-  return { drew: true };
 }

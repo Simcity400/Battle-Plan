@@ -19,8 +19,6 @@ export function validateAirMissions(value: unknown): AirMissionsReply {
   return reply;
 }
 
-export const regionLabel = (id: string, name: string | null) => name ?? `Region ${id}`;
-
 export function theatreRegions(theatres: readonly AirMissionTheatre[] | null | undefined, chosen: readonly string[]): Set<string> | null {
   if (!chosen.length) return null;
   return new Set((theatres ?? []).filter(theatre => chosen.includes(theatre.id)).flatMap(theatre => theatre.regions));

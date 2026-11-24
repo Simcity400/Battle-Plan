@@ -23,6 +23,7 @@ export const BREAKDOWN_FAMILY_VIEWS: readonly FamilyViewEntry[] = [
     'political-power-spending-breakdown',
     () => import('../political-power-spending-breakdown/ppSpendingProjection.ts').then(mod => mod.ppSpendingBreakdown),
   ),
+  breakdownView('construction-spending', () => import('../construction-spending/constructionProjection.ts').then(mod => mod.constructionBreakdown)),
 ];
 
 export const breakdownFamilyManifest: FamilyManifestModule = {

@@ -1,16 +1,20 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
+import { formatDateRange } from '../../dashboard/calendar.ts';
 import {
   drawChildRowTint,
   drawClockSummary,
+  drawGapBand,
   drawRowFocusRing,
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
+  resolveKitTokens,
   type ClockSummaryData,
 } from '../../draw/kit.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { hasMeasuredValue, type Value } from '../value.ts';
+import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
 import { drawApprovedCell, TREE_CHEVRON_LANE, TREE_INDENT_PX, type CellRenderContext } from './cellPainters.ts';
 import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
@@ -42,6 +46,10 @@ export const FAST_GLIDE_MS = 120;
 export const TOP_RANK_HOLD_MS = 1500;
 export const WATCHING_RANK_HOLD_MS = 2500;
 const GROUP_HEADER_HEIGHT = 30;
+const GAP_ROW_HEIGHT = 30;
+const REFUSED_ROW_HEIGHT = 32;
+const LOADING_ROW_HEIGHT = 32;
+const LIVE_END_GAP = 9;
 const HAIRLINE_INSET = 10;
 
 export function glideDurationForSpeed(speed: number, reducedMotion = false): number {
@@ -65,8 +73,11 @@ export function rowHeightOf(
   mode: 'standard' | 'media' = 'standard',
 ): number {
   if (item.kind === 'group-header') return GROUP_HEADER_HEIGHT;
-  if (item.level > 1) return CHILD_ROW_HEIGHT;
-  return mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density];
+  if (item.kind === 'gap') return GAP_ROW_HEIGHT;
+  if (item.kind === 'refused') return REFUSED_ROW_HEIGHT;
+  if (item.kind === 'loading') return LOADING_ROW_HEIGHT;
+  const base = item.level > 1 ? CHILD_ROW_HEIGHT : (mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density]);
+  return item.isLiveEnd ? base + LIVE_END_GAP : base;
 }
 
 export function computeRowLayout(
@@ -150,6 +161,7 @@ export interface DrawFamilyTableInput {
   readonly artCache?: LaneArtCache;
   readonly dpr?: number;
   readonly hasGroupHeaders?: boolean;
+  readonly dateGrouped?: boolean;
   readonly precomputedMaxima?: Map<string, number>;
   readonly staticRowLooks?: boolean;
   readonly rowHeightMode?: 'standard' | 'media';
@@ -174,11 +186,33 @@ function colorOf(theme: TableTheme, tone: string | undefined, countryColor: stri
   return theme.text;
 }
 
-function rowMarkState(key: string, inspectedKey: string | null | undefined, selectedKey: string | null | undefined, focusedKey: string | null | undefined): string {
-  const i = inspectedKey === key ? 1 : 0;
-  const s = selectedKey === key ? 2 : 0;
-  const f = focusedKey === key ? 4 : 0;
-  return String(i | s | f);
+function rowMarkState(
+  item: Extract<FlatTableRow, { kind: 'data' }>,
+  inspectedKey: string | null | undefined,
+  selectedKey: string | null | undefined,
+  focusedKey: string | null | undefined,
+  lastChild: boolean,
+): string {
+  const i = inspectedKey === item.key ? 1 : 0;
+  const s = selectedKey === item.key ? 2 : 0;
+  const f = focusedKey === item.key ? 4 : 0;
+  const d = item.isDayEnd ? 8 : 0;
+  const l = item.isLiveEnd ? 16 : 0;
+  const c = lastChild ? 32 : 0;
+  const sd = item.showDate === false ? 64 : 0;
+  return String(i | s | f | d | l | c | sd);
+}
+
+function nonDataMark(item: Exclude<FlatTableRow, { kind: 'data' }>): string {
+  if (item.kind === 'group-header') return `g:${item.label}`;
+  if (item.kind === 'gap') return `gap:${item.firstHour}:${item.lastHour}:${item.reason}`;
+  if (item.kind === 'refused') return `ref:${item.reason}`;
+  return `load:${item.key}`;
+}
+
+export function treeColumnOf(columns: readonly Pick<FamilyColumnLayout, 'cellKind'>[]): number {
+  const at = columns.findIndex(col => col.cellKind !== 'kind');
+  return at < 0 ? 0 : at;
 }
 
 function barSpanOf(column: FamilyColumnLayout): number {
@@ -191,27 +225,32 @@ function paintRowBackground(
   rowWidth: number,
   y: number,
   rowH: number,
+  contentH: number,
   isChild: boolean,
   inspected: boolean,
   selected: boolean,
   focused: boolean,
-  strongDivider: boolean,
+  hairlineKind: 'normal' | 'strong' | 'band',
+  hairlineLeft: number,
 ): void {
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, y, rowWidth, rowH);
-  if (isChild) drawChildRowTint(ctx, 0, y, rowWidth, rowH, theme);
+  if (isChild) drawChildRowTint(ctx, 0, y, rowWidth, contentH, theme);
   const plateX = ROW_MARGIN_X;
   const plateW = Math.max(1, rowWidth - ROW_MARGIN_X * 2);
   if (selected) {
-    drawRowSelected(ctx, plateX, y + 1, plateW, Math.max(1, rowH - 2), theme);
+    drawRowSelected(ctx, plateX, y + 1, plateW, Math.max(1, contentH - 2), theme);
   } else if (inspected) {
-    drawRowHover(ctx, plateX, y + 1, plateW, Math.max(1, rowH - 2), theme);
+    drawRowHover(ctx, plateX, y + 1, plateW, Math.max(1, contentH - 2), theme);
   }
   if (focused) {
-    drawRowFocusRing(ctx, plateX, y + 1, plateW, Math.max(1, rowH - 2), theme);
+    drawRowFocusRing(ctx, plateX, y + 1, plateW, Math.max(1, contentH - 2), theme);
   }
-  if (!selected && !inspected) {
-    drawRowHairline(ctx, HAIRLINE_INSET, rowWidth - HAIRLINE_INSET, y + rowH - 1, theme, strongDivider ? 'strong' : 'normal');
+  if (hairlineKind === 'band') {
+    const bandY = y + contentH + Math.floor((rowH - contentH) / 2);
+    drawRowHairline(ctx, HAIRLINE_INSET, rowWidth - HAIRLINE_INSET, bandY, theme, 'band');
+  } else if (!selected && !inspected) {
+    drawRowHairline(ctx, hairlineLeft, rowWidth - HAIRLINE_INSET, y + contentH - 1, theme, hairlineKind);
   }
 }
 
@@ -222,14 +261,17 @@ function paintCellSliceGround(
   y: number,
   cellWidth: number,
   rowH: number,
+  contentH: number,
   rowWidth: number,
   isChild: boolean,
-  strongDivider: boolean,
+  hairlineKind: 'normal' | 'strong' | 'band',
+  hairlineLeft: number,
 ): void {
   ctx.fillStyle = theme.surface;
   ctx.fillRect(x, y, cellWidth, rowH);
-  if (isChild) drawChildRowTint(ctx, x, y, cellWidth, rowH, theme);
-  drawRowHairline(ctx, Math.max(x, HAIRLINE_INSET), Math.min(x + cellWidth, rowWidth - HAIRLINE_INSET), y + rowH - 1, theme, strongDivider ? 'strong' : 'normal');
+  if (isChild) drawChildRowTint(ctx, x, y, cellWidth, contentH, theme);
+  const lineY = hairlineKind === 'band' ? y + contentH + Math.floor((rowH - contentH) / 2) : y + contentH - 1;
+  drawRowHairline(ctx, Math.max(x, hairlineLeft), Math.min(x + cellWidth, rowWidth - HAIRLINE_INSET), lineY, theme, hairlineKind);
 }
 
 function isLastChildRow(rows: readonly FlatTableRow[], index: number): boolean {
@@ -270,6 +312,7 @@ export function drawFamilyTable(
     dpr = 1,
     precomputedMaxima,
     staticRowLooks,
+    dateGrouped = false,
     rowHeightMode = 'standard',
     rowGeom = null,
     rowIndex,
@@ -416,8 +459,21 @@ export function drawFamilyTable(
       const col = layout.columns[c]!;
       colKey += `${col.key}:${col.width}:${col.display}:${col.tone ?? ''}:${col.barEligible ? 1 : 0}|`;
     }
-    frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${settings.barsBehind ?? 'all'}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${colKey}`;
+    frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${dateGrouped ? 1 : 0}|${settings.barsBehind ?? 'all'}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${colKey}`;
   }
+
+  const intraDayLeftBase = dateGrouped && layout.columns[0]?.cellKind === 'date'
+    ? rank + layout.columns[0].width
+    : HAIRLINE_INSET;
+  const hairlineSpec = (item: Extract<FlatTableRow, { kind: 'data' }>, index: number, pinned: boolean) => {
+    if (item.isLiveEnd) return { kind: 'band' as const, left: HAIRLINE_INSET };
+    if (item.isDayEnd || isLastChildRow(rows, index)) return { kind: 'strong' as const, left: HAIRLINE_INSET };
+    if (dateGrouped && intraDayLeftBase > HAIRLINE_INSET) {
+      const shifted = pinned ? intraDayLeftBase : Math.max(HAIRLINE_INSET, intraDayLeftBase - bounds.left);
+      return { kind: 'normal' as const, left: shifted };
+    }
+    return { kind: 'normal' as const, left: HAIRLINE_INSET };
+  };
 
   const renderCtx: CellRenderContext = {
     ctx,
@@ -425,6 +481,7 @@ export function drawFamilyTable(
     density: settings.density,
     barsMode: settings.barsBehind ?? 'all',
     sortedColumn: settings.sort.column,
+    treeColumn: treeColumnOf(layout.columns),
     icons,
     artCache,
     measure,
@@ -473,7 +530,7 @@ export function drawFamilyTable(
   const computeLook = (item: Extract<FlatTableRow, { kind: 'data' }>, column: FamilyColumnLayout) => {
     const cell = item.row.cells[column.key];
     const paintModel = resolveCellPaintModel(cell, column, hour, maxima, theme);
-    const formatted = formatValueState(paintModel.value, paintModel.format);
+    const formatted = formatValueState(paintModel.value, paintModel.format, cell?.missingFigure ? { figure: cell.missingFigure } : undefined);
     const span = Math.max(1, barSpanOf(column) * dpr);
     const pixels = paintModel.bar.fraction === null ? -1 : Math.round(paintModel.bar.fraction * span);
     const fraction = paintModel.bar.fraction === null ? null : pixels / span;
@@ -484,7 +541,9 @@ export function drawFamilyTable(
     const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);
     const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
     const secVal = cell?.secondaryValue ? (cell.secondaryValue.kind === 'known' || cell.secondaryValue.kind === 'zero' ? String(cell.secondaryValue.value) : cell.secondaryValue.kind) : '';
-    const extraSig = `${cell?.blank ? 'blank' : ''}${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? JSON.stringify(cell.stockpile) : ''}\u0004${cell ? cellListSignature(cell) : ''}`;
+    const unitArt = cell?.unitIcon ? `${cell.unitIcon}\u0005${artStateOf(cell.unitIcon)}` : (cell?.unitIconPending ? 'p' : '');
+    const splitSig = cell?.splitBar ? cell.splitBar.map(s => `${s.fraction}:${s.fill}:${s.hatched ? 1 : 0}`).join(',') : '';
+    const extraSig = `${cell?.blank ? 'blank' : ''}${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? JSON.stringify(cell.stockpile) : ''}\u0004${cell ? cellListSignature(cell) : ''}\u0004${cell?.statusKind ?? ''}\u0004${cell?.actionLabel ?? ''}\u0004${cell?.inlinePrefix ?? ''}\u0004${cell?.inlineSubtext ?? ''}\u0004${cell?.unitSuffix ?? ''}\u0004${unitArt}\u0004${cell?.boundedDate ?? ''}\u0004${cell?.missingFigure ?? ''}\u0004${splitSig}\u0004${item.showDate === false ? 0 : 1}`;
     const key = `${formatted.kind}\u0002${textVal}\u0002${paintModel.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${paintModel.countryColor ?? ''}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}\u0002${extraSig}`;
     return { paintModel, formatted, fraction, fill, key };
   };
@@ -501,6 +560,72 @@ export function drawFamilyTable(
     ctx.fillText(fit(item.label, smallFont, Math.max(1, width - 20)), CELL_INSET, y + rowH / 2);
   };
 
+  const drawGapRow = (item: Extract<FlatTableRow, { kind: 'gap' }>, y: number, rowH: number) => {
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, y, rowWidth, rowH);
+    const bandW = Math.max(1, rowWidth - HAIRLINE_INSET * 2);
+    drawGapBand(ctx, HAIRLINE_INSET, y + 3, bandW, Math.max(1, rowH - 6), theme);
+    const smallFont = fontOf(theme, 11.5, LABEL_WEIGHT);
+    const label = fit(`Not recorded · ${formatDateRange(item.firstHour, item.lastHour)} · ${item.reason}`, smallFont, Math.max(1, width - HAIRLINE_INSET * 2 - 20));
+    const labelW = measure(label, smallFont);
+    const padX = 7;
+    const chipX = HAIRLINE_INSET + 8;
+    const chipH = Math.max(14, rowH - 10);
+    const chipY = Math.round(y + (rowH - chipH) / 2);
+    ctx.save();
+    ctx.fillStyle = theme.surface;
+    ctx.beginPath();
+    ctx.roundRect(chipX - padX, chipY, labelW + padX * 2, chipH, 3);
+    ctx.fill();
+    ctx.font = smallFont;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, chipX, y + rowH / 2);
+    ctx.restore();
+    drawRowHairline(ctx, HAIRLINE_INSET, rowWidth - HAIRLINE_INSET, y + rowH - 1, theme, 'strong');
+  };
+
+  const drawRefusedRow = (item: Extract<FlatTableRow, { kind: 'refused' }>, y: number, rowH: number) => {
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, y, rowWidth, rowH);
+    const middle = y + rowH / 2;
+    const boxX = HAIRLINE_INSET + 4;
+    drawHatchRect(ctx, boxX, Math.round(middle - MISSING_BOX_SIZE / 2), MISSING_BOX_SIZE, MISSING_BOX_SIZE, 2, theme);
+    const smallFont = fontOf(theme, 12, LABEL_WEIGHT);
+    ctx.save();
+    ctx.font = smallFont;
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const textX = boxX + MISSING_BOX_SIZE + 8;
+    ctx.fillText(fit(item.reason, smallFont, Math.max(1, width - textX - HAIRLINE_INSET)), textX, middle);
+    ctx.restore();
+    drawRowHairline(ctx, HAIRLINE_INSET, rowWidth - HAIRLINE_INSET, y + rowH - 1, theme, 'strong');
+  };
+
+  const drawLoadingRow = (y: number, rowH: number) => {
+    const tokens = resolveKitTokens(theme);
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, y, rowWidth, rowH);
+    const barW = Math.min(180, Math.max(48, width - HAIRLINE_INSET * 2 - 40));
+    const barH = 10;
+    ctx.save();
+    ctx.fillStyle = tokens.headerBand;
+    ctx.beginPath();
+    ctx.roundRect(HAIRLINE_INSET + 4, Math.round(y + (rowH - barH) / 2), barW, barH, 3);
+    ctx.fill();
+    ctx.restore();
+    drawRowHairline(ctx, HAIRLINE_INSET, rowWidth - HAIRLINE_INSET, y + rowH - 1, theme, 'normal');
+  };
+
+  const drawNonDataRow = (item: Exclude<FlatTableRow, { kind: 'data' }>, y: number, rowH: number) => {
+    if (item.kind === 'group-header') drawGroupHeaderRow(item, y, rowH);
+    else if (item.kind === 'gap') drawGapRow(item, y, rowH);
+    else if (item.kind === 'refused') drawRefusedRow(item, y, rowH);
+    else drawLoadingRow(y, rowH);
+  };
+
   const paintPinnedOverlayForRow = (
     item: Extract<FlatTableRow, { kind: 'data' }>,
     index: number,
@@ -511,13 +636,14 @@ export function drawFamilyTable(
     const selected = selectedKey === item.key;
     const focused = focusedKey === item.key;
     const isChild = item.level > 1;
-    const strong = isLastChildRow(rows, index);
+    const contentH = item.isLiveEnd ? rowH - LIVE_END_GAP : rowH;
+    const hl = hairlineSpec(item, index, true);
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, y, layout.pinnedWidth, rowH);
     ctx.clip();
-    paintRowBackground(ctx, theme, rowWidth, y, rowH, isChild, inspected, selected, focused, strong);
-    if (rank > 0) drawRankContent(item, 0, y, rowH);
+    paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, isChild, inspected, selected, focused, hl.kind, hl.left);
+    if (rank > 0) drawRankContent(item, 0, y, contentH);
     let px = rank;
     const limit = Math.min(layout.pinnedCount, layout.columns.length);
     for (let c = 0; c < limit; c++) {
@@ -529,7 +655,7 @@ export function drawFamilyTable(
         colIndex: c,
         x: px,
         y,
-        rowHeight: rowH,
+        rowHeight: contentH,
         paintModel: look.paintModel,
         formatted: look.formatted,
         fraction: look.fraction,
@@ -557,14 +683,14 @@ export function drawFamilyTable(
     if (canFastSkip) {
       for (let index = first; index < last; index++) {
         const item = rows[index]!;
-        if (item.kind === 'group-header') {
-          if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === `g:${item.label}`) {
+        if (item.kind !== 'data') {
+          if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === nonDataMark(item)) {
             skipRow[index - first] = 1;
           }
           continue;
         }
         if (picture.rowRefs[index] !== item.row || picture.rowKeys[index] !== item.key) continue;
-        const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
+        const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
         if (picture.rowMarks[index] !== mark) continue;
         if (rank > 0) {
           const rSig = `${rankSignature(item)}\u0001${mark}`;
@@ -577,20 +703,20 @@ export function drawFamilyTable(
     for (let index = first; index < last; index++) {
       if (skipRow[index - first]) continue;
       const item = rows[index]!;
-      if (item.kind === 'group-header') {
-        const gMark = `g:${item.label}`;
-        if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === gMark) continue;
-        drawGroupHeaderRow(item, index * uniformRowHeight - scrollTop, uniformRowHeight);
+      if (item.kind !== 'data') {
+        const nMark = nonDataMark(item);
+        if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === nMark) continue;
+        drawNonDataRow(item, index * uniformRowHeight - scrollTop, uniformRowHeight);
         picture.rowKeys[index] = item.key;
         picture.rowRefs[index] = undefined;
-        picture.rowMarks[index] = gMark;
+        picture.rowMarks[index] = nMark;
         picture.ranks[index] = undefined;
         dirtyRows.add(index);
         drew = true;
         continue;
       }
-      const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
-      if (mark !== '0' || picture.rowMarks[index] !== mark || picture.rowKeys[index] !== item.key) {
+      const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
+      if (inspectedKey === item.key || selectedKey === item.key || focusedKey === item.key || picture.rowMarks[index] !== mark || picture.rowKeys[index] !== item.key) {
         fullRepaintRows.add(index);
       }
     }
@@ -602,8 +728,9 @@ export function drawFamilyTable(
       const inspected = inspectedKey === item.key;
       const selected = selectedKey === item.key;
       const focused = focusedKey === item.key;
-      const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
-      paintRowBackground(ctx, theme, rowWidth, y, uniformRowHeight, item.level > 1, inspected, selected, focused, isLastChildRow(rows, index));
+      const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
+      const hl = hairlineSpec(item, index, false);
+      paintRowBackground(ctx, theme, rowWidth, y, uniformRowHeight, uniformRowHeight, item.level > 1, inspected, selected, focused, hl.kind, hl.left);
       let x = rank - bounds.left;
       for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
         const column = layout.columns[colIndex]!;
@@ -646,12 +773,13 @@ export function drawFamilyTable(
         if (skipRow[index - first] || fullRepaintRows.has(index)) continue;
         const item = rows[index]!;
         if (item.kind !== 'data') continue;
-        const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
+        const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
         const look = computeLook(item, column);
         const cellSig = `${look.key}\u0001${mark}`;
         if (drawn[index] === cellSig) continue;
         const y = index * uniformRowHeight - scrollTop;
-        paintCellSliceGround(ctx, theme, x, y, column.width, uniformRowHeight, rowWidth, item.level > 1, isLastChildRow(rows, index));
+        const hl = hairlineSpec(item, index, false);
+        paintCellSliceGround(ctx, theme, x, y, column.width, uniformRowHeight, uniformRowHeight, rowWidth, item.level > 1, hl.kind, hl.left);
         drawApprovedCell(renderCtx, {
           item,
           column,
@@ -680,12 +808,13 @@ export function drawFamilyTable(
         if (skipRow[index - first] || fullRepaintRows.has(index)) continue;
         const item = rows[index]!;
         if (item.kind !== 'data') continue;
-        const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
+        const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
         const rSig = `${rankSignature(item)}\u0001${mark}`;
         if (picture.ranks[index] === rSig && !dirtyRows.has(index)) continue;
         const rx = layout.scrollable ? 0 : -bounds.left;
         const y = index * uniformRowHeight - scrollTop;
-        paintCellSliceGround(ctx, theme, rx, y, rank, uniformRowHeight, rowWidth, item.level > 1, isLastChildRow(rows, index));
+        const hl = hairlineSpec(item, index, false);
+        paintCellSliceGround(ctx, theme, rx, y, rank, uniformRowHeight, uniformRowHeight, rowWidth, item.level > 1, hl.kind, hl.left);
         drawRankContent(item, rx, y, uniformRowHeight);
         picture.ranks[index] = rSig;
         dirtyRows.add(index);
@@ -707,10 +836,10 @@ export function drawFamilyTable(
       picture.rowKeys[index] = item.key;
       if (item.kind === 'data') {
         picture.rowRefs[index] = item.row;
-        picture.rowMarks[index] = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
+        picture.rowMarks[index] = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
       } else {
         picture.rowRefs[index] = undefined;
-        picture.rowMarks[index] = `g:${item.label}`;
+        picture.rowMarks[index] = nonDataMark(item);
       }
     }
     picture.lastMaximaSig = maximaSig;
@@ -777,13 +906,13 @@ export function drawFamilyTable(
       const item = rows[index]!;
       const y = rowY(item, index);
       const rowH = heightAt(index);
-      if (item.kind === 'group-header') {
+      if (item.kind !== 'data') {
         if (!pinnedOnly) {
-          drawGroupHeaderRow(item, y, rowH);
+          drawNonDataRow(item, y, rowH);
           if (picture) {
             picture.rowKeys[index] = item.key;
             picture.rowRefs[index] = undefined;
-            picture.rowMarks[index] = `g:${item.label}`;
+            picture.rowMarks[index] = nonDataMark(item);
           }
         }
         continue;
@@ -791,10 +920,12 @@ export function drawFamilyTable(
       const inspected = inspectedKey === item.key;
       const selected = selectedKey === item.key;
       const focused = focusedKey === item.key;
-      const mark = rowMarkState(item.key, inspectedKey, selectedKey, focusedKey);
-      paintRowBackground(ctx, theme, rowWidth, y, rowH, item.level > 1, inspected, selected, focused, isLastChildRow(rows, index));
+      const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
+      const contentH = item.isLiveEnd ? rowH - LIVE_END_GAP : rowH;
+      const hl = hairlineSpec(item, index, pinnedOnly);
+      paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, item.level > 1, inspected, selected, focused, hl.kind, hl.left);
       if (rank > 0) {
-        drawRankContent(item, pinnedOnly ? 0 : -bounds.left, y, rowH);
+        drawRankContent(item, pinnedOnly ? 0 : -bounds.left, y, contentH);
         if (picture && !pinnedOnly) picture.ranks[index] = `${rankSignature(item)}\u0001${mark}`;
       }
       let x = pinnedOnly ? rank : rank - bounds.left;
@@ -807,7 +938,7 @@ export function drawFamilyTable(
           colIndex,
           x,
           y,
-          rowHeight: rowH,
+          rowHeight: contentH,
           paintModel: look.paintModel,
           formatted: look.formatted,
           fraction: look.fraction,
@@ -920,7 +1051,9 @@ export function hitFamilyTable(
     const index = Math.floor((point.y + scrollTop) / rowHeight);
     item = rows[index];
   }
-  if (!item || item.kind !== 'data') return { kind: 'empty' };
+  if (!item) return { kind: 'empty' };
+  if (item.kind === 'gap' || item.kind === 'refused') return { kind: 'row', rowKey: item.key };
+  if (item.kind !== 'data') return { kind: 'empty' };
   const rank = rankShown ? rankWidth : 0;
   const pinned = layout.scrollable && point.x < layout.pinnedWidth;
   const bodyX = pinned ? point.x : point.x + scrollLeft;
@@ -928,7 +1061,7 @@ export function hitFamilyTable(
   for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
     const col = layout.columns[colIndex]!;
     if (bodyX >= x && bodyX < x + col.width) {
-      const toggle = colIndex === 0 && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 8;
+      const toggle = colIndex === treeColumnOf(layout.columns) && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 8;
       const action = col.cellKind === 'action';
       return { kind: 'row', rowKey: item.key, column: col.key, toggle, action };
     }
@@ -965,6 +1098,7 @@ export function collectVisibleCellIcons(
         for (const ic of cell.icons) if (ic.url) urls.add(ic.url);
       }
       if (cell.icon) urls.add(cell.icon);
+      if (cell.unitIcon) urls.add(cell.unitIcon);
       if (cell.iconSlot && showsIcon(col.display)) {
         const resolved = resolveCellAtHour(cell, hour);
         if (resolved.icon) urls.add(resolved.icon);
@@ -981,6 +1115,7 @@ export function collectCellIcons(rows: readonly FlatTableRow[]): string[] {
     for (const key in item.row.cells) {
       const cell = item.row.cells[key]!;
       if (cell.icon) urls.add(cell.icon);
+      if (cell.unitIcon) urls.add(cell.unitIcon);
       if (cell.flags) for (const fl of cell.flags) if (fl.icon) urls.add(fl.icon);
       if (cell.icons) for (const ic of cell.icons) if (ic.url) urls.add(ic.url);
       if (cell.looks) for (const look of cell.looks) if (look.flag) urls.add(look.flag);
