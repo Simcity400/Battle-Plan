@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { assertFreshPaint, assertQuietFrames, LaneTransport } from '../laneRuntime.fixture.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LaneTransport } from '../laneRuntime.fixture.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
@@ -46,7 +46,10 @@ import { TREE_CHEVRON_LANE } from './layout.ts';
 import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 import { createLaneView } from '../laneRuntime.ts';
+import { PayloadSender } from '../../dashboard/follow/payloads.ts';
 
+const NO_OPTIONS = {};
+const NO_SOURCES = {};
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
 const floatBits = (value: number): bigint => {
@@ -707,6 +710,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
   let wakes = 0;
   try {
     const view = createLaneView(tableLane, () => { wakes++; });
+    const transport = new LaneTransport();
     const settings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
@@ -714,9 +718,9 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
     const makeModel = (rows: { id: string; v: number }[], focusedKey: string | null = null, extra: Record<string, unknown> = {}) => ({
       family: 'table' as const, theme: TEST_THEME,
       kind: 'test-lane-cache',
-      options: {},
+      options: NO_OPTIONS,
       settings,
-      sources: {},
+      sources: NO_SOURCES,
       staticPanels: { main: { rows } },
       width: 320,
       height: 200,
@@ -734,7 +738,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
         widget: 1,
         subs: [],
         pictures: [],
-        model: makeModel(rows, focusedKey, extra),
+        model: transport.carry(makeModel(rows, focusedKey, extra)),
         hour: 10,
         seek: 0,
         speed,
@@ -862,7 +866,7 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   assert.throws(() => store.require(undefined), /Not auditable/);
   assert.throws(() => store.require(999), /Not auditable/);
 
-  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), []);
+  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), []);
   assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), [[10, 20]]);
 
   const gate = new CadenceGate(20);
@@ -967,26 +971,27 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   try {
     const laneView = createLaneView(tableLane, () => {});
     const laneState = new Map<string, unknown>();
+    const transport = new LaneTransport();
     let seq = 1;
     const mk = (designer: string, priority: number) => laneView.paint({
       widget: 1,
       subs: [],
       pictures: [],
-      model: {
+      model: transport.carry({
         family: 'table', theme: TEST_THEME,
         kind: 'test-meta-priority-inv',
-        options: {},
+        options: NO_OPTIONS,
         settings: tableSettingsOf(undefined, [
           { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
           { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
         ], { density: 'comfortable', sort: { column: 'name', direction: 'ascending' } }),
-        sources: {},
+        sources: NO_SOURCES,
         staticPanels: { main: { designer, priority } },
         width: 320,
         height: 200,
         scrollLeft: 0,
         scrollTop: 0,
-      },
+      }),
       hour: 10,
       seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
@@ -1074,7 +1079,6 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
     'M4: membership ever refuses when unobserved gaps make campaign membership incomplete',
   );
   assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
-  assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
 
   const ctxA = { tag: 'A', role: 'occupier', settings: 'sA', looks: 'lA' };
   const ctxB = { tag: 'B', role: 'occupied', settings: 'sB', looks: 'lB' };
@@ -1172,12 +1176,13 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
   try {
     const laneView = createLaneView(tableLane, () => {});
     const laneState = new Map<string, unknown>();
+    const transport = new LaneTransport();
     let seq = 1;
     const refusedPaint = laneView.paint({
       widget: 1,
       subs: [{ id: 7, channel: 'panel' }],
       pictures: [{ parts: [{ value: { kind: 'panel', data: null, refused: 'Game score panel refused by recording' } }] }],
-      model: {
+      model: transport.carry({
         family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
@@ -1188,7 +1193,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         height: 200,
         scrollLeft: 0,
         scrollTop: 0,
-      },
+      }),
       hour: 10,
       seek: 0, speed: 0,
       binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
@@ -1203,19 +1208,19 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       widget: 2,
       subs: [],
       pictures: [],
-      model: {
+      model: transport.carry({
         family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
-        sources: {},
+        sources: NO_SOURCES,
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
         width: 320,
         height: 200,
         scrollLeft: 0,
         scrollTop: 0,
-      },
+      }),
       hour: 10,
       seek: 0,
       speed: 24,
@@ -1244,13 +1249,13 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       widget: 2,
       subs: [],
       pictures: [],
-      model: {
+      model: transport.carry({
         family: 'table', theme: TEST_THEME,
         kind: 'game-score',
         view: 'table',
         options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', sort: { column: 'total', direction: 'descending' } }),
-        sources: {},
+        sources: NO_SOURCES,
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
         width: 320,
         height: 200,
@@ -1258,7 +1263,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
         scrollTop: 0,
         audit: true,
         auditId: 42,
-      },
+      }),
       hour: 10,
       seek: 0,
       speed: 24,
@@ -1448,11 +1453,13 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
 
     const flushTicks = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
+    const sender = new PayloadSender(message => lane.payloads(structuredClone(message)));
+    const wired = (model: unknown) => structuredClone(sender.acquire(model).wire);
     page.mount(1, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
     lane.mount(1, [], 'table');
-    lane.bind(1, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 10, c: 100 } }, {
-      family: 'table', theme: TEST_THEME, kind: 'test-r5-reveal', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
-    });
+    lane.bind(1, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 10, c: 100 } }, wired({
+      family: 'table', theme: TEST_THEME, kind: 'test-r5-reveal', options: NO_OPTIONS, settings, sources: NO_SOURCES, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+    }));
     page.publish(10, { playing: false });
     await flushTicks();
     assert.equal((page.view(1).fields?.nav as readonly unknown[]).length, 1, 'F5: at hour 10 only parent is visible');
@@ -1466,9 +1473,9 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
     page.mount(2, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
     lane.mount(2, [], 'table');
     const viewportHeight20Rows = 20 * ROW_HEIGHT[settings.density];
-    lane.bind(2, { generation: 1, surfaces: [{ width: 320, height: viewportHeight20Rows, dpr: 1 }], offset: 0, pin: null, dated: { h: 120, c: 120 } }, {
-      family: 'table', theme: TEST_THEME, kind: 'test-r5-art-1500', options: {}, settings, sources: {}, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
-    });
+    lane.bind(2, { generation: 1, surfaces: [{ width: 320, height: viewportHeight20Rows, dpr: 1 }], offset: 0, pin: null, dated: { h: 120, c: 120 } }, wired({
+      family: 'table', theme: TEST_THEME, kind: 'test-r5-art-1500', options: NO_OPTIONS, settings, sources: NO_SOURCES, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
+    }));
     page.publish(120, { playing: false });
     await flushTicks();
     assert.equal(requestedArt.length, 6, `F6: 1500-country model starts bounded maxConcurrent=6 visible flags (got ${requestedArt.length})`);
@@ -1684,68 +1691,57 @@ test('incremental row resolution, column maxima, scrollable/grouped dirty painti
   assert.equal(visRes.paintedCells, 1, 'scrollable grouped single-cell change repaints only 1 dirty cell');
   assert.ok(counts().fillTextCalls - fillsAfterFull < fillsAfterFull, `scrollable grouped single-cell change draws fewer texts (${counts().fillTextCalls - fillsAfterFull} vs full ${fillsAfterFull})`);
 
-  const prevOffscreen = globalThis.OffscreenCanvas;
-  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
-    width: number;
-    height: number;
-    constructor(w: number, h: number) { this.width = w; this.height = h; }
-    getContext() {
-      const c = instrumentedContext().ctx as unknown as Record<string, unknown>;
-      c.setTransform = () => {};
-      return c;
-    }
-    transferToImageBitmap() { return { close() {} }; }
-  };
-  let wakes = 0;
-  let scheduledMs: number | null = null;
-  let timerCb: (() => void) | null = null;
+  registerFamilyProjection(declareTableProjection<{ rows: { id: string; v: number }[] }, { id: string; v: number }, Record<string, never>>({
+    kind: 'test-rank-marker-timer',
+    rank: true,
+    rankMarkers: true,
+    columns: [
+      { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, field: 'id', text: true },
+      { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, field: 'v', numeric: true },
+    ],
+    rows: reply => ({ rows: reply.rows }),
+    rowKey: r => r.id,
+    rowName: r => r.id,
+  }));
+  const recording = installRecordingCanvas();
   try {
-    registerFamilyProjection(declareTableProjection<{ rows: { id: string; v: number }[] }, { id: string; v: number }, Record<string, never>>({
-      kind: 'test-rank-marker-timer',
-      rank: true,
-      rankMarkers: true,
-      columns: [
-        { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, field: 'id', text: true },
-        { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, field: 'v', numeric: true },
-      ],
-      rows: reply => ({ rows: reply.rows }),
-      rowKey: r => r.id,
-      rowName: r => r.id,
-    }));
-    let clockNow = 1000;
-    const laneView = createLaneView(tableLane, () => { wakes++; }, {
+    const armed: number[] = [];
+    let due: (() => void) | null = null;
+    let wakes = 0;
+    const view = createLaneView(tableLane, () => { wakes++; }, {
       timers: {
-        set: (fn, ms) => { timerCb = fn; scheduledMs = ms; return 1 as unknown as ReturnType<typeof setTimeout>; },
-        clear: () => { timerCb = null; },
+        set: (fn, ms) => { due = fn; armed.push(ms); return armed.length as unknown as ReturnType<typeof setTimeout>; },
+        clear: () => { due = null; },
       },
     });
+    const lane = driveLane(view, recording.canvases, { width: 320, height: 180, dpr: 1 });
     const rmSettings = tableSettingsOf(undefined, [
       { key: 'name', label: 'Name', as: 'plain', offered: ['plain'] },
       { key: 'v', label: 'Val', as: 'plain', offered: ['plain'] },
-    ], { density: 'compact', sort: { column: 'v', direction: 'descending' } });
-    const state = new Map<string, unknown>();
-    let seq = 1;
-    const paintRows = (list: { id: string; v: number }[], hour: number) => laneView.paint({
-      widget: 1,
-      subs: [],
-      pictures: [],
-      model: { family: 'table' as const, kind: 'test-rank-marker-timer', options: {}, settings: rmSettings, sources: {}, staticPanels: { main: { rows: list } }, width: 320, height: 180, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
-      hour,
-      seek: 0, speed: 24,
-      binding: { generation: 1, surfaces: [{ width: 320, height: 180, dpr: 1 }], offset: 0, pin: null },
-      inspect: null,
-      now: clockNow,
-    }, state, () => `c${seq++}`);
-    paintRows([{ id: 'A', v: 20 }, { id: 'B', v: 10 }], 1);
-    clockNow = 1050;
-    const swapped = paintRows([{ id: 'A', v: 5 }, { id: 'B', v: 30 }], 2);
-    assert.equal(swapped.motion, false, 'rank marker expiry does not hold 60 FPS motion loop');
-    assert.ok(scheduledMs !== null && scheduledMs > 0, 'schedules one-shot wake timer for marker expiry');
-    (timerCb as (() => void) | null)?.();
-    assert.ok(wakes >= 1, 'one-shot timer wakes widget when markers expire');
-    laneView.unmount?.(1, state);
+    ], { density: 'compact', sort: { column: 'v', direction: 'descending' }, showRank: true });
+    const options = {};
+    const sources = {};
+    const bound = (rows: { id: string; v: number }[]) => ({ family: 'table' as const, kind: 'test-rank-marker-timer', options, settings: rmSettings, sources, staticPanels: { main: { rows } }, width: 320, height: 180, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true });
+    const arrow = () => lane.picture().some(mark => mark.includes('▲'));
+    const swappedRows = bound([{ id: 'A', v: 5 }, { id: 'B', v: 30 }]);
+    lane.paint({ label: 'before', binding: bound([{ id: 'A', v: 20 }, { id: 'B', v: 10 }]), hour: 1, speed: 24, seek: 1, now: 1000 });
+    const swapped = lane.paint({ label: 'swapped', binding: swappedRows, hour: 2, speed: 24, seek: 1, now: 1050 });
+    assert.ok(arrow(), 'the forward swap draws the rank arrow');
+    assert.equal(swapped.motion, false, 'rank marker expiry does not hold the 60 FPS motion loop');
+    assert.equal(swapped.fields.mirror, undefined, 'the mirror is withheld until its cadence is due');
+    assert.deepEqual(armed, [950], 'one timer, for the mirror, which is due before the arrow expires');
+    (due as (() => void) | null)?.();
+    const mirrored = lane.paint({ label: 'mirror wake', binding: swappedRows, hour: 2, speed: 24, seek: 1, now: 2000 });
+    assert.ok(mirrored.fields.mirror, 'the mirror wake publishes the mirror');
+    assert.ok(arrow(), 'the arrow survives the earlier mirror wake');
+    assert.deepEqual(armed, [950, 1550], 'then one timer for the arrow’s own deadline');
+    (due as (() => void) | null)?.();
+    lane.paint({ label: 'arrow expired', binding: swappedRows, hour: 2, speed: 24, seek: 1, now: 3550 });
+    assert.equal(arrow(), false, 'the arrow disappears at its own deadline');
+    assert.deepEqual([wakes, armed.length], [2, 2], 'one wake per deadline and no timer after it');
+    view.unmount?.(1, lane.state);
   } finally {
-    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+    recording.restore();
   }
 });
 
@@ -1787,9 +1783,6 @@ function gridContext(width: number, height: number) {
   return { ctx, marks };
 }
 
-const FRESH_OPTIONS = {};
-const FRESH_SOURCES = {};
-
 test('an incremental table paint after a seek back, a same-hour correction and a reorder equals a fresh paint, cell by cell', () => {
   type Row = { id: string; v: number; flag: string };
   const columns: TableColumnSpec[] = [
@@ -1801,9 +1794,10 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     kind: 'test-fresh-equals-incremental',
     family: 'table', theme: TEST_THEME,
     project: readView => {
-      const reply = readView.panel('main') as { rows: Row[] };
+      const reply = readView.panel('main') as { rows: Row[]; refused?: string };
       return {
         hour: readView.hour,
+        ...(reply.refused ? { refused: reply.refused } : {}),
         rank: true,
         defaultRankShown: true,
         rankMarkers: true,
@@ -1841,7 +1835,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
         widget: 1,
         subs: [],
         pictures: [],
-        model: transport.carry({ family: 'table' as const, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true }),
+        model: transport.carry({ family: 'table' as const, kind: 'test-fresh-equals-incremental', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: { rows } }, width: 360, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true }),
         hour,
         seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 360, height: 200, dpr: 1 }], offset: 0, pin: null },
@@ -1888,9 +1882,9 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     }, descending);
     assert.deepEqual(grouped.map(item => item.kind), ['data'], 'a group revealed later adds no heading before its hour');
 
-    const laneBinding = (rows: Row[], settings: TableSettings, scrollTop = 0) => ({
-      family: 'table' as const, theme: TEST_THEME, kind: 'test-fresh-equals-incremental', options: FRESH_OPTIONS, settings, sources: FRESH_SOURCES, staticPanels: { main: { rows } },
-      width: 360, height: 200, scrollLeft: 0, scrollTop, reducedMotion: true,
+    const laneBinding = (rows: Row[], settings: TableSettings, scrollTop = 0, reducedMotion = true) => ({
+      family: 'table' as const, theme: TEST_THEME, kind: 'test-fresh-equals-incremental', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: { rows } },
+      width: 360, height: 200, scrollLeft: 0, scrollTop, reducedMotion,
     });
     const tableSurface = { width: 360, height: 200, dpr: 1 };
     const heldOne = laneBinding(atOne, descending);
@@ -1903,6 +1897,14 @@ test('an incremental table paint after a seek back, a same-hour correction and a
       { label: 'reorder', binding: laneBinding(corrected, ascending), hour: 1, check: true },
       { label: 'scrolled', binding: laneBinding(corrected, ascending, 10), hour: 1, check: true },
     ], tableSurface);
+    const refusedBinding = { ...laneBinding([], descending), staticPanels: { main: { rows: [], refused: 'Scores were not recorded at this hour' } } };
+    for (const reducedMotion of [true, false]) {
+      assertContinuity(() => createLaneView(tableLane, () => {}), {
+        from: { label: `at one${reducedMotion ? '' : ', gliding'}`, binding: laneBinding(atOne, descending, 0, reducedMotion), hour: 1 },
+        refused: { label: 'a refused hour', binding: refusedBinding, hour: 2 },
+        to: { label: `rank markers at three${reducedMotion ? '' : ' with a glide'}`, binding: laneBinding(atTwo, descending, 0, reducedMotion), hour: 3 },
+      }, tableSurface);
+    }
     type Side = { key: string; lead: string; total: number; rows: Row[] };
     const shareColumns: TableColumnSpec[] = [
       { key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true },
@@ -1937,11 +1939,12 @@ test('an incremental table paint after a seek back, a same-hour correction and a
       const state = new Map<string, unknown>();
       let seq = 1;
       const before = contexts.length;
+      const transport = new LaneTransport();
       const paint = (sides: Side[], hour: number, settings: TableSettings, scrollLeft = 0) => view.paint({
         widget: 2,
         subs: [],
         pictures: [],
-        model: { family: 'table' as const, kind: 'test-panes-fresh', options: {}, settings, sources: {}, staticPanels: { main: { sides } }, width: 700, height: 240, scrollLeft, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+        model: { family: 'table' as const, kind: 'test-panes-fresh', options: transport.carry({}), settings, sources: {}, staticPanels: { main: { sides } }, width: 700, height: 240, scrollLeft, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
         hour,
         seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 700, height: 240, dpr: 1 }], offset: 0, pin: null },
@@ -2066,9 +2069,10 @@ test('cell kinds for converted tables: an item column takes the spare width, two
     const state = new Map<string, unknown>();
     let seq = 1;
     const settings = tableSettingsOf(undefined, [{ key: 'name', label: 'Country', as: 'plain', offered: ['plain'] }], { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+    const transport = new LaneTransport();
     const paint = () => view.paint({
       widget: 1, subs: [], pictures: [],
-      model: { family: 'table' as const, kind: 'test-names-arrive', options: {}, settings, sources: {}, staticPanels: { main: { at: seq } }, width: 120, height: 80, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+      model: { family: 'table' as const, kind: 'test-names-arrive', options: transport.carry({}), settings, sources: {}, staticPanels: { main: { at: seq } }, width: 120, height: 80, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
       hour: 1, seek: 0, speed: 0, binding: { generation: 1, surfaces: [{ width: 120, height: 80, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
     }, state, () => `c${seq++}`);
     const widthOf = (painted: ReturnType<typeof paint>) => (painted.fields.widths?.value as { widths: Record<string, number> }).widths.name!;
@@ -2395,16 +2399,17 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
       const state = new Map<string, unknown>();
       let seq = 1;
       const idx = grids.length;
+      const transport = new LaneTransport();
       const paint = (scene: LogScene, hour: number, settings: TableSettings, expanded?: Readonly<Record<string, boolean>>) => view.paint({
         widget: 1,
         subs: [],
         pictures: [],
-        model: {
+        model: transport.carry({
           family: 'table' as const,
           kind: 'test-log-fresh-equals-incremental',
-          options: {},
+          options: NO_OPTIONS,
           settings,
-          sources: {},
+          sources: NO_SOURCES,
           staticPanels: { main: scene },
           width: 640,
           height: 360,
@@ -2413,7 +2418,7 @@ test('log capability: headerless widths, date-grouped boundaries, gap/refused/lo
           expanded,
           theme: TEST_THEME,
           reducedMotion: true,
-        },
+        }),
         hour,
         seek: 0, speed: 24,
         binding: { generation: 1, surfaces: [{ width: 640, height: 360, dpr: 1 }], offset: 0, pin: null },

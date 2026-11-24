@@ -118,7 +118,7 @@ export function askUnits(entries: readonly SourceEntry[], ask: UnitAsk): readonl
     }
     const own = ask.track?.(entry);
     const pinned = own ? { ...ask.pinned, branch: own.branch, gate: own.gate } : ask.pinned;
-    const pinHour = pinned.pinHour === null ? null : shift === 0 ? pinned.pinHour : pinned.gate.recorded(pinned.pinHour + shift);
+    const pinHour = pinned.pinHour === null ? null : shift === 0 && !own ? pinned.pinHour : pinned.gate.recorded(pinned.pinHour + shift);
     const window = pinned.window && shift !== 0
       ? { firstHour: pinned.window.firstHour + shift, lastHour: pinned.window.lastHour + shift }
       : pinned.window;
