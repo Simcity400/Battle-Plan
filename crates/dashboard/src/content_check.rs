@@ -441,7 +441,13 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             dashboard_base::content::strategic_regions(&catalogue.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes resolve recorded class tokens through the sub-unit database, sea zones through the strategic regions; ship, cause and fleet names are the text the game stored, shown in its recorded language.".into())
         }
-        feed::EventFeed::KEY | feed::EventChoices::KEY | feed::Decisions::KEY | feed::EventFeedSpan::KEY => {
+        feed::EventFeed::KEY
+        | feed::EventFeedTail::KEY
+        | feed::EventChoices::KEY
+        | feed::EventChoicesTail::KEY
+        | feed::Decisions::KEY
+        | feed::DecisionsTail::KEY
+        | feed::EventFeedSpan::KEY => {
             let catalogue = content.catalogue()?;
             catalogue.scripted_content()?.effects()?;
             take(catalogue, "event feed text", findings);

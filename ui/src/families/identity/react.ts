@@ -9,6 +9,8 @@ import { PENDING_ART, missingArt } from '../art/types.ts';
 import { identityBrokerFor } from './broker.ts';
 import { IdentityIndex } from './index.ts';
 import {
+  countrySlotKey,
+  countryTagKey,
   identityKeyString,
   type CountryIdentityResult,
   type DrawnFlagEntry,
@@ -219,6 +221,16 @@ export function subscribeIdentityAtHead(
   const stopAnchor = clock.subscribe(changed);
   const stopBroker = broker.subscribe(scope, changed, recording ?? undefined, bounds);
   return () => { stopClock(); stopAnchor(); stopBroker(); };
+}
+
+export function countryPickerKeys(
+  selectedSlot: number | null,
+  selectedTag: string | null | undefined,
+  shownTags: readonly string[],
+): IdentityKey[] {
+  const keys: IdentityKey[] = selectedSlot !== null ? [countrySlotKey(selectedSlot)] : selectedTag ? [countryTagKey(selectedTag)] : [];
+  for (const tag of shownTags) keys.push(countryTagKey(tag));
+  return keys;
 }
 
 export type HeldHeadHour =
