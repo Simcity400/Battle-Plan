@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { projectLaneRunsToPixels } from '../../families/heat/lanesLayout.ts';
+import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
 import type { RegionalWeatherReply } from '../../generated/dashboard';
 import { projectWeather } from './weatherProjection.ts';
 
@@ -103,7 +104,7 @@ test('a temperature column shows the mean of its days and a missing reading name
   });
   const model = projectWeather(view(48, data), { show: 'temperature', modifier: null, surface: SURFACE });
   const [first, second] = model.rows[0]!.runs;
-  assert.equal(first!.tooltip!.items![0]!.value, '12.5 °C');
+  assert.equal(deriveLanesTooltip(model, 0, first!.firstHour)!.items![0]!.value, '12.5 °C');
   assert.deepEqual(second!.cell, { kind: 'missing', reason: 'Weather reading was not recorded' });
   assert.deepEqual(model.rows[0]!.readout, { kind: 'missing', reason: 'Weather reading was not recorded at this hour' });
 });
