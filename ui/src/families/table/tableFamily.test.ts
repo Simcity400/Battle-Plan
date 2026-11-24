@@ -34,7 +34,8 @@ import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partia
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
-import { TREE_CHEVRON_LANE, treeLevelsOf, treeTextStart } from './cellPainters.ts';
+import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
+import { TREE_CHEVRON_LANE } from './layout.ts';
 import { computeRowLayout, TABLE_WINDOW_OVERSCAN, tableRowWindow } from './layout.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 

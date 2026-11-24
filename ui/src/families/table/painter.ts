@@ -16,8 +16,8 @@ import type { LaneArtCache } from '../art/laneCache.ts';
 import { hasMeasuredValue, type Value } from '../value.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
 import { formatValueState } from '../valueFormat.ts';
-import { drawApprovedCell, TREE_CHEVRON_LANE, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
-import { LIVE_END_GAP, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
+import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
+import { LIVE_END_GAP, treeColumnOf, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry } from './layout.ts';
 import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
 import {
   CELL_INSET,
@@ -35,7 +35,7 @@ import {
   type TableTheme,
 } from './settings.ts';
 
-export { computeColumnMaxima, TREE_CHEVRON_LANE };
+export { computeColumnMaxima };
 
 export const WATCHING_SPEED = 24;
 export const FAST_SPEED = 168;
@@ -165,11 +165,6 @@ function nonDataMark(item: Exclude<FlatTableRow, { kind: 'data' }>): string {
   if (item.kind === 'gap') return `gap:${item.firstHour}:${item.lastHour}:${item.reason}`;
   if (item.kind === 'refused') return `ref:${item.reason}`;
   return `load:${item.key}`;
-}
-
-export function treeColumnOf(columns: readonly Pick<FamilyColumnLayout, 'cellKind'>[]): number {
-  const at = columns.findIndex(col => col.cellKind !== 'kind');
-  return at < 0 ? 0 : at;
 }
 
 function barSpanOf(column: FamilyColumnLayout): number {

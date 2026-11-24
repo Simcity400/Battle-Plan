@@ -27,7 +27,7 @@ import {
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { formatDateParts, formatScalar, formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
-import { SHARE_FIGURE_SLOT, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, type FamilyColumnLayout } from './layout.ts';
+import { SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, type FamilyColumnLayout } from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
   CELL_INSET,
@@ -46,7 +46,6 @@ function signedText(text: string, signed: number): string {
   if (signed < 0) return text.replace(/^-/, '−');
   return text;
 }
-export const TREE_CHEVRON_LANE = 18;
 
 const TREE_LEVEL_LIMIT = 30;
 const treeLevelCache = new WeakMap<readonly FlatTableRow[], number>();
