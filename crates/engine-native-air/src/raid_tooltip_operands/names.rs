@@ -223,7 +223,10 @@ fn independent_string(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the scalar, group, custom and cached kinds of one member are separate fields, and the sink is caller-owned"
+)]
 fn member(
     m: &impl Memory,
     base: usize,

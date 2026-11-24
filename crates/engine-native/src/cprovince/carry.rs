@@ -168,7 +168,10 @@ pub(super) struct Hour<'a> {
     pub take: Option<[u64; 2]>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the array locates the provinces, and the hour, output, controller areas, conflict buffers, state and state cache are caller-owned"
+)]
 pub(super) fn walk(
     hour: &mut Hour<'_>,
     memory: &impl Memory,
@@ -284,7 +287,10 @@ enum Kind {
     },
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the array locates the provinces, the store, output, controller areas, conflict buffers, state and state cache are caller-owned, and bunkers is a flag"
+)]
 fn carry(
     store: &mut RowStore,
     memory: &impl Memory,

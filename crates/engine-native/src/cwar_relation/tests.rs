@@ -1032,7 +1032,7 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
         fn protect(&self, protection: u32) -> u32 {
             let mut previous = 0;
             assert_ne!(
-                unsafe { VirtualProtect(self.page, PAGE, protection, &mut previous) },
+                unsafe { VirtualProtect(self.page, PAGE, protection, &raw mut previous) },
                 0
             );
             previous

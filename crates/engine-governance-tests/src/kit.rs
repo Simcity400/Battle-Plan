@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use engine_focus::cnational_focus_progress as focus;
 use engine_native_memory::Memory;
 use engine_native::{ccountry, cgame_state};

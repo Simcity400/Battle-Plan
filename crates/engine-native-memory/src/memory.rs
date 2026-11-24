@@ -553,14 +553,14 @@ fn copy_scalar<T: Raw>(memory: &(impl Memory + ?Sized), address: usize) -> Optio
     let mut value = T::ZERO;
     // SAFETY: Raw is sealed to initialized, padding-free, all-bit-pattern types.
     let bytes = unsafe {
-        std::slice::from_raw_parts_mut((&mut value as *mut T).cast::<u8>(), size_of::<T>())
+        std::slice::from_raw_parts_mut((&raw mut value).cast::<u8>(), size_of::<T>())
     };
     memory.copy(address, bytes).then_some(value)
 }
 
 #[inline]
 pub fn scalar_bytes<T: Raw>(value: &T) -> &[u8] {
-    unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
+    unsafe { std::slice::from_raw_parts(std::ptr::from_ref(value).cast::<u8>(), size_of::<T>()) }
 }
 
 #[inline]
@@ -572,7 +572,7 @@ pub fn scalar_from_bytes<T: Raw>(source: &[u8]) -> Option<T> {
     // SAFETY: Raw has no padding or invalid bit patterns; the exact destination
     // is initialized, writable and cannot overlap the borrowed source.
     let destination = unsafe {
-        std::slice::from_raw_parts_mut((&mut value as *mut T).cast::<u8>(), size_of::<T>())
+        std::slice::from_raw_parts_mut((&raw mut value).cast::<u8>(), size_of::<T>())
     };
     destination.copy_from_slice(source);
     Some(value)
@@ -900,7 +900,7 @@ impl Memory for LiveMemory {
                 native.hints.len(),
                 plan.expected().as_ptr(),
                 destination.as_mut_ptr(),
-                &mut completed,
+                &raw mut completed,
             )
         };
         Some(match result {

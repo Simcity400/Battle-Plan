@@ -325,7 +325,10 @@ pub fn row_demand(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the caller's prepare and select callbacks share its state, and the rows and memo are caller-owned"
+)]
 pub fn walk_prepared<T>(
     memory: &impl Memory,
     base: usize,
@@ -349,7 +352,10 @@ pub fn walk_prepared<T>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the caller's prepare, select and group callbacks share its state, and the rows and memo are caller-owned"
+)]
 pub fn walk_prepared_observed<T>(
     memory: &impl Memory,
     base: usize,
@@ -374,7 +380,10 @@ pub fn walk_prepared_observed<T>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the caller's prepare, select and group callbacks share its state, and the rows buffer and memo are caller-owned"
+)]
 fn walk_prepared_buffer<T>(
     memory: &impl Memory,
     base: usize,
@@ -524,7 +533,6 @@ fn for_each_manager<M: Memory, T>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn read_groups_observed(
     memory: &impl Memory,
     vtables: &Vtables,

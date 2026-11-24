@@ -630,7 +630,10 @@ fn faults_are_scoped_to_the_table_that_reads_the_field() {
         assert_eq!(result.edges, edges, "refused {address:#x}");
     }
 }
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the reference keeps the same inputs as the edge reader it checks"
+)]
 fn fresh_scratch_reference_edges(
     memory: &impl Memory,
     provinces: Array,
@@ -757,7 +760,6 @@ fn many_edge_pairs(count: usize) -> (Vec<u8>, Array, Array) {
     (bytes, provinces, pairs)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compare_reused_edge_scratch(
     bytes: &[u8],
     blocked: Option<usize>,

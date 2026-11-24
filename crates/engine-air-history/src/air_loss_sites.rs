@@ -95,7 +95,10 @@ pub struct Change {
     pub fields: [i64; 2],
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the receiver, region, enemy, cause and family base are separate facts of one air loss"
+)]
 pub fn before(
     memory: &impl Memory,
     base: usize,
@@ -258,7 +261,10 @@ pub struct Gathered {
     pub opponent: Option<u32>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the singleton, receiver, wing, region, enemy, cause and tags are separate facts of one air loss"
+)]
 pub fn gather(
     memory: &impl Memory,
     base: usize,

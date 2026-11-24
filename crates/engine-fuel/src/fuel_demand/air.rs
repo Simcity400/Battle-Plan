@@ -257,7 +257,10 @@ pub(super) fn context(
     result.reason.map_or(Ok((index, result)), Err)
 }
 
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    reason = "the inputs, the name span, the optional location and the optional fuel ratio are returned together from one wing read"
+)]
 fn inputs<M: Memory>(
     memory: &M,
     base: usize,
@@ -417,7 +420,10 @@ fn inputs<M: Memory>(
     Ok((result, weather, context_index, Some((raw, overridden))))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the state, country reader, country and pointer locate one site, and the row and buffers are caller-owned"
+)]
 fn site<M: Memory>(
     memory: &M,
     base: usize,

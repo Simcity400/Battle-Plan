@@ -910,7 +910,7 @@ fn the_root_out_key_is_resolved_by_name_only_for_root_out_missions() {
             Some((HANDLE, 1))
         )
     );
-    let mut other = bytes.clone();
+    let mut other = bytes;
     mission(
         &mut other,
         operative_action::BUILD_NETWORK,

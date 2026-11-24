@@ -252,7 +252,10 @@ pub fn walk_carried(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the wings come from the caller, and the output, failure context, transport observer and carry are caller-owned"
+)]
 fn walk_buffer(
     memory: &impl Memory,
     base: usize,
@@ -431,7 +434,10 @@ fn inactive_regions(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one root's missions write the shared output, counts, failure context, observer and carry"
+)]
 fn root_missions<M: Memory>(
     memory: &M,
     countries: &ccountry::Reader<'_, M>,

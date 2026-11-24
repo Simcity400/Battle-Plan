@@ -740,7 +740,10 @@ pub fn walk_trains(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, entries, access and runs arenas are caller-owned, and the selection picks the trains"
+)]
 pub fn walk_trains_selected(
     memory: &impl Memory,
     base: usize,
@@ -763,7 +766,10 @@ pub fn walk_trains_selected(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the output, entries, access and runs buffers are caller-owned, and the selection picks the trains"
+)]
 pub fn walk_trains_buffer(
     memory: &impl Memory,
     base: usize,

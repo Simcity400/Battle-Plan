@@ -56,7 +56,7 @@ impl Pages {
                     self.at(page) as *mut c_void,
                     PAGE,
                     protection,
-                    &mut previous,
+                    &raw mut previous,
                 )
             },
             0

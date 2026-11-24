@@ -443,7 +443,10 @@ impl Scratch {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the army, handle and base speed identify one share, and the sources and scratch are caller-owned"
+)]
 pub fn capture_share(
     memory: &impl Memory,
     base: usize,
@@ -468,7 +471,10 @@ struct Observation {
     starts: [usize; 4],
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the army, handle and base speed identify one share, and the sources, scratch and arena starts are caller-owned"
+)]
 fn observe(
     memory: &impl Memory,
     base: usize,
@@ -565,7 +571,10 @@ impl Observations {
         self.scratch.allocated_bytes() + self.rows.capacity() * size_of::<Observation>()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the army, handle and base speed identify one entry, and the sources are caller-owned"
+    )]
     pub fn acquire(
         &mut self,
         memory: &impl Memory,

@@ -431,7 +431,10 @@ struct Target<'a> {
 }
 
 impl Target<'_> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the slot, pair, spotting scale, read and held row are separate facts of one score, and the output and length are caller-owned"
+    )]
     fn push(
         &self,
         slot: usize,
@@ -713,7 +716,10 @@ fn read_all(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the scores, target, slots, held rows and phase come from the caller, and the scratch, output and length are caller-owned"
+)]
 fn carry(
     memory: &impl Memory,
     scores: Array,

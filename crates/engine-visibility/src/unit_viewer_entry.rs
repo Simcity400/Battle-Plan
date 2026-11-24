@@ -325,7 +325,10 @@ impl<M: Memory> Reader<'_, M> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the primary, handle and header bytes, vtable and first block describe one entry, and the output and counter are caller-owned"
+    )]
     fn unit_fields(
         &self,
         primary: [u8; 8],
