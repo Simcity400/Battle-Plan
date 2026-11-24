@@ -18,7 +18,6 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { valueFromNamedAnswer, valueFromWireCell, type Value } from '../../families/value.ts';
 import { formatValueState } from '../../families/valueFormat.ts';
 import type { NavalAttribution, NavalKind, NavalLossesAtReply, NavalPeriod } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 import { navalAttribution, navalKind, navalMeasure, navalPeriod } from './navalLossesData.ts';
 
 const NOTE = 'Counted when the game lists a sinking; a country is named as it was when the sinking was read.';
@@ -296,7 +295,6 @@ export const navalLossesRaceDeclaration: BarsWidgetDeclaration<NavalLossesRaceOp
   subject: 'naval losses',
   emptyCampaign: 'Load a campaign to see its naval losses.',
   icon: 'shield',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,

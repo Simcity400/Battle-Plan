@@ -374,6 +374,7 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   ], THEME, { kind: 'traits' });
   assert.equal(res.drawnCount + res.overflowCount, 4);
   assert.ok(res.overflowCount > 0);
+  assert.ok(!strip.ops.some(op => op.op === 'fillText' && String(op.args[0]).startsWith('+')), 'a strip that does not fit draws what fits, never a +N mark');
 
   const act = makeFakeCtx();
   const restBox = drawActionButton(act.ctx, 100, 18, 'View', false, THEME);

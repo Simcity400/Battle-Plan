@@ -1573,24 +1573,10 @@ export function drawIconStrip(
       countW = textWidth(ctx, countText) + 3;
       ctx.restore();
     }
-    const needW = size + countW;
-    const moreAfter = i < items.length - 1;
-    const reserve = moreAfter ? 26 : 0;
-    if (cursor + needW + reserve > right && drawnCount > 0) {
-      const overflowCount = items.length - drawnCount;
-      ctx.save();
-      ctx.font = `500 11.5px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`+${overflowCount}`, cursor, middleY);
-      ctx.restore();
-      return { drawnCount, overflowCount };
-    }
-    if (cursor + size > right) break;
+    if (cursor + size + countW > right) break;
     drawArtSlot(ctx, cursor, y, size, size, item.state, theme, { radius: 3 });
     cursor += size;
-    if (countText && cursor + countW <= right) {
+    if (countText) {
       ctx.save();
       ctx.font = `600 11px ${theme.font}`;
       ctx.fillStyle = theme.text;

@@ -17,8 +17,7 @@ import {
 } from '../../draw/kit.ts';
 import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
-import type { LaneArtCache } from '../art/laneCache.ts';
-import { artUrlForHandle } from '../art/provider.ts';
+import { collectArtUrls } from '../art/provider.ts';
 import type { ArtProvider, FamilyTheme } from '../contract.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
@@ -30,14 +29,6 @@ const MARK_SQUARE_PX = 14;
 const MARK_RING_RADIUS_PX = 6.2;
 const MARK_DOT_RADIUS_PX = 1.2;
 
-export interface HeatMatrixPicture {
-  signature: string;
-}
-
-export function createMatrixPicture(): HeatMatrixPicture {
-  return { signature: '' };
-}
-
 export interface DrawHeatMatrixInput {
   readonly model: HeatMatrixModel;
   readonly layout: HeatMatrixLayout;
@@ -47,7 +38,6 @@ export interface DrawHeatMatrixInput {
   readonly hoveredCell: { readonly row: number; readonly column: number } | null;
   readonly focusedCell: { readonly row: number; readonly column: number } | null;
   readonly artProvider?: ArtProvider;
-  readonly artCache?: LaneArtCache;
   readonly identityIndex?: IdentityIndex | null;
 }
 
@@ -56,21 +46,16 @@ export function collectVisibleMatrixArt(
   layout: HeatMatrixLayout,
   identityIndex?: IdentityIndex | null,
 ): readonly string[] {
-  const urls = new Set<string>();
-  const add = (entity: MatrixAxisEntity) => {
-    if (!entity.flag) return;
-    const url = artUrlForHandle(entity.flag, identityIndex);
-    if (url) urls.add(url);
-  };
+  const handles = [];
   for (let r = layout.firstRow; r < layout.endRow; r++) {
     const entity = model.rows[r];
-    if (entity) add(entity);
+    if (entity?.flag) handles.push(entity.flag);
   }
   for (let c = layout.firstCol; c < layout.endCol; c++) {
     const entity = model.columns[c];
-    if (entity) add(entity);
+    if (entity?.flag) handles.push(entity.flag);
   }
-  return [...urls];
+  return collectArtUrls(handles, identityIndex);
 }
 
 function resolveEntityFlag(
@@ -172,41 +157,9 @@ function drawColumnName(ctx: Canvas2D, label: string, x: number, bottom: number,
   ctx.restore();
 }
 
-export function drawHeatMatrix(
-  ctx: Canvas2D,
-  input: DrawHeatMatrixInput,
-  picture?: HeatMatrixPicture,
-): { readonly drew: boolean } {
-  const { model, layout, theme, scrollLeft, scrollTop, hoveredCell, focusedCell, artProvider, artCache } = input;
+export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void {
+  const { model, layout, theme, scrollLeft, scrollTop, hoveredCell, focusedCell, artProvider } = input;
   const tokens = resolveKitTokens(theme);
-
-  const artRev = artCache ? `${artCache.revision}:${artCache.cachedCount}:${artCache.failedCount}` : '';
-  const sig = JSON.stringify([
-    model.hour,
-    layout.width,
-    layout.height,
-    layout.cellWidth,
-    layout.cellHeight,
-    layout.marginWidth,
-    layout.firstRow,
-    layout.endRow,
-    layout.firstCol,
-    layout.endCol,
-    Math.round(scrollLeft),
-    Math.round(scrollTop),
-    hoveredCell?.row ?? -1,
-    hoveredCell?.column ?? -1,
-    focusedCell?.row ?? -1,
-    focusedCell?.column ?? -1,
-    theme.surface,
-    theme.text,
-    theme.accent,
-    artRev,
-  ]);
-  if (picture && picture.signature === sig) {
-    return { drew: false };
-  }
-  if (picture) picture.signature = sig;
 
   ctx.save();
   ctx.fillStyle = theme.surface;
@@ -521,5 +474,4 @@ export function drawHeatMatrix(
   }
 
   ctx.restore();
-  return { drew: true };
 }

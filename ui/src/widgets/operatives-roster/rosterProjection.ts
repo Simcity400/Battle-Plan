@@ -1,7 +1,8 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, artState, identityFlags, identityName, newIdentityBoundary, urlArtHandle, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artKindCell, artState, identityFlags, identityName, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableCellIconItem, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';

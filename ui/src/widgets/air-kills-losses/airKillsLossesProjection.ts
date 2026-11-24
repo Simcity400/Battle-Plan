@@ -4,7 +4,6 @@ import { registerBarsProjection } from '../../families/bars/registry.ts';
 import type { FamilyPlanContext } from '../../families/contract.ts';
 import { contentKey, contentSet, type OptionValue } from '../../dashboard/options.ts';
 import { militaryAirModel, militaryAirParams, militaryAirSources, type MilitaryAirAtOptions } from '../bombing-damage/militaryAirAt.ts';
-import { OPTIONS } from './definition.ts';
 
 export const airKillsLossesProjection: BarsProjection<MilitaryAirAtOptions> = registerBarsProjection({
   kind: 'air-kills-losses',
@@ -34,7 +33,6 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
   subject: 'aircraft losses',
   emptyCampaign: 'Load a campaign to see aircraft losses.',
   icon: 'target',
-  optionFields: OPTIONS,
   countries: {
     mode: 'multi',
     labels: true,
