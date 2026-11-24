@@ -419,6 +419,19 @@ window.tableFamilyDom = {
     }
   },
 
+  async mirrorSyncsOverFrames(frames: number) {
+    const body = hostNode?.querySelector('table tbody');
+    if (!body) throw new Error('No accessible mirror body');
+    let mutations = 0;
+    const observer = new MutationObserver(records => { mutations += records.length; });
+    observer.observe(body, { subtree: true, childList: true, attributes: true, characterData: true });
+    const installsBefore = installs;
+    const paintsBefore = pipeline.view(pipeId)?.id ?? null;
+    for (let i = 0; i < frames; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    observer.disconnect();
+    return { mutations, installs: installs - installsBefore, samePicture: (pipeline.view(pipeId)?.id ?? null) === paintsBefore };
+  },
+
   async verifyRepaintAndHeld() {
     const hashCanvas = async () => {
       const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.fh-canvas')!;
