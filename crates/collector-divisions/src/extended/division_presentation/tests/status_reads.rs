@@ -123,29 +123,3 @@ fn division_presentation_rows_share_one_experience_certificate() {
     }
 }
 
-#[test]
-#[ignore = "synthetic watch timing; run explicitly with --nocapture"]
-fn bench_division_presentation_experience_certificate() {
-    use std::{hint::black_box, time::Instant};
-    const DIVISIONS: usize = 5_000;
-    let changes = Watches::enabled(2 * DIVISIONS);
-    let receivers: Vec<_> = (1..=DIVISIONS).map(|index| index * 0x2000).collect();
-    for &receiver in &receivers {
-        assert!(changes.experience_sequence(receiver).is_some());
-    }
-    let mut samples = Vec::new();
-    for run in 0..28 {
-        let begin = Instant::now();
-        for &receiver in &receivers {
-            let _ = black_box(changes.experience_sequence(black_box(receiver)));
-        }
-        if run >= 3 {
-            samples.push(begin.elapsed().as_nanos() as f64 / DIVISIONS as f64);
-        }
-    }
-    samples.sort_by(f64::total_cmp);
-    println!(
-        "DIVISION_STATUS_EXPERIENCE divisions={DIVISIONS} p50_ns_per_certificate={:.1}",
-        samples[samples.len() / 2]
-    );
-}

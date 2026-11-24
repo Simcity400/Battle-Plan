@@ -1055,7 +1055,6 @@ fn growth_keeps_primary_membership_scratch_and_source_capacity_in_step() {
     assert_eq!(captured.allocated_bytes(), before);
 }
 
-
 const E_BASE: usize = 0;
 const E_GAME: usize = 0x1000;
 const E_COUNTRIES: usize = 0x1500;

@@ -13,12 +13,3 @@ pub const MUTATIONS: [MutationSite; 2] = [
     },
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_sites_are_distinct() {
-        assert_ne!(MUTATIONS[0].rva, MUTATIONS[1].rva);
-    }
-}

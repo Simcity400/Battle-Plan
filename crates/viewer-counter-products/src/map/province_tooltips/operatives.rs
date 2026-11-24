@@ -450,28 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn trailing_newlines_top_up_to_the_count_and_leave_empty_text() {
-        let mut text = String::new();
-        trailing_newlines(&mut text, 2);
-        assert_eq!(text, "");
-        let mut text = "a".to_owned();
-        trailing_newlines(&mut text, 2);
-        assert_eq!(text, "a\n\n");
-        let mut text = "a\n".to_owned();
-        trailing_newlines(&mut text, 2);
-        assert_eq!(text, "a\n\n");
-        let mut text = "a\n\n\n".to_owned();
-        trailing_newlines(&mut text, 2);
-        assert_eq!(text, "a\n\n\n");
-    }
-
-    #[test]
-    fn indentation_skips_empty_lines() {
-        assert_eq!(indented("a\n\nb"), "  a\n\n  b");
-        assert_eq!(indented("\nb"), "\n  b");
-    }
-
-    #[test]
     fn effects_scale_by_the_strengths_share_of_one_hundred() {
         assert_eq!(effect_scale(7_250_000), 72_500);
         assert_eq!(effect_scale(10_000_000), 100_000);

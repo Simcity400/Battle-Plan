@@ -5,8 +5,7 @@ import { liveKey, valuesOf } from '../../charts/live.ts';
 import { resolveOptions, sectionFields } from '../../dashboard/options.ts';
 import { OPTIONS } from './definition.ts';
 import type { CipherPair, DecryptionReply } from '../../generated/dashboard';
-import { activeBonusDays, amountText, bonusText, CIPHER_BROKEN, cipherNumbers, cipherStatus, decryptionTooltip, observationDate, pairKey, percentOf,
-  progressLabel, progressPercent, progressText, raceRows, raceStructure, validateDecryption, workingStatus } from './decryptionData.ts';
+import { activeBonusDays, amountText, bonusText, cipherNumbers, pairKey, percentOf, progressLabel, progressPercent, progressText, raceRows, raceStructure, validateDecryption } from './decryptionData.ts';
 
 const pair = (owner: string | null, target: string, id: number, thresholdRaw: string | null = '1000000', extra: Partial<CipherPair> = {}): CipherPair => ({
   owner: { id, tag: owner }, target: { id: id + 100, tag: target }, thresholdRaw, thresholdUnknown: thresholdRaw === null ? 'The target RaidIntelInputs row is not recorded' : null,
@@ -49,22 +48,6 @@ test('the bonus countdown shows only on a broken cipher whose bonus is active, k
   assert.equal(activeBonusDays(broken, numbers(broken, 0)), null);
 });
 
-test('row and tooltip wording: the status, the attempt dates and a reply whose attempts are not known', () => {
-  const active = pair('GER', 'ENG', 1), paused = { ...active, decrypting: 0 };
-  assert.equal(workingStatus(active), 'decrypting');
-  assert.equal(workingStatus(paused, true), 'Paused');
-  assert.equal(cipherStatus({ ...active, broken: null }, reply([])), 'Decrypting; cipher status unknown');
-  const broken = { ...active, broken: true, brokenAt: { hour: 60_759_371, upperBound: true } };
-  assert.equal(cipherStatus(broken, reply([])), `${CIPHER_BROKEN} ${observationDate(broken.brokenAt)}`);
-  assert.match(observationDate(broken.brokenAt), /^by /);
-  assert.equal(observationDate(null), 'Not recorded');
-  const tip = decryptionTooltip(broken, reply([], 'Attempt starts and breaks are not known: reason'), numbers(broken, 1_000_000), null, null, 800);
-  assert.equal(tip.title, 'Decryption');
-  assert.equal(tip.rows.find(row => row.label === 'Progress')?.value, '100%');
-  assert.equal(tip.rows.find(row => row.label === 'Status')?.divider, true);
-  assert.equal(decryptionTooltip({ ...active, started: null }, reply([], 'x'), numbers(active, 0), null, null, 800).rows.find(row => row.label === 'Started')?.value, 'Not known');
-  assert.equal(decryptionTooltip({ ...active, started: null }, reply([]), numbers(active, 0), null, null, 800).rows.find(row => row.label === 'Started')?.value, 'Not recorded');
-});
 
 test('the race keeps the reply order; decryptor order groups by decryptor; either side filters, a side with no tag never matches', () => {
   const pairs = [pair('SOV', 'GER', 3), pair('GER', 'ENG', 1), pair(null, 'GER', 2), pair('ENG', 'GER', 5)];

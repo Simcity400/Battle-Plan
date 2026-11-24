@@ -215,22 +215,6 @@ type={
     }
 
     #[test]
-    fn a_block_without_scale_or_flags_takes_the_defaults() {
-        content_reader_script::test_game::enter();
-        let types = parse(
-            b"type={ type=\"a\" object={ position={ 1 2 3 } } }",
-            &KeyNames::default(),
-        )
-        .unwrap();
-        assert_eq!(types[0].scale, 1.0);
-        assert!(!types[0].always_visible && types[0].use_animation);
-        assert_eq!(types[0].duration, 0.);
-        assert_eq!(types[0].max_visible, -1);
-        assert_eq!(types[0].objects[0].position, [1.0, 2.0, 3.0]);
-        assert_eq!(types[0].objects[0].name, "");
-    }
-
-    #[test]
     fn several_objects_of_one_type_are_all_kept() {
         content_reader_script::test_game::enter();
         let types = parse(

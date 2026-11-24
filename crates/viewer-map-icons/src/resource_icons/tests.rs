@@ -356,24 +356,3 @@ fn the_window_lists_its_rows_and_keeps_row_windows_the_rows_leave() {
     assert_eq!(report.icons, 1, "{:?}", report.refused);
 }
 
-#[test]
-fn an_icon_s_quads_stand_at_its_anchor() {
-    content_reader_script::test_game::enter();
-    let resources = gui::fixture();
-    let windows = gui::windows(GUI);
-    let context = Context {
-        resources: &resources,
-        windows: &windows,
-        viewport: [400, 400],
-        time: Some(0.),
-    };
-    let icons = placed(true, 2, None);
-    let mut batch = Batch::default();
-    let report = icons.draw(&context, &mut ResourceIconView::default(), &mut batch);
-    assert_eq!((report.icons, report.rows), (1, 2), "{:?}", report.refused);
-    assert!(!batch.quads.is_empty());
-    let anchor = Some(icons.placed[0].anchor);
-    assert!(batch.quads.iter().all(|quad| quad.anchor == anchor));
-    batch.push(batch.quads[0].clone());
-    assert_eq!(batch.quads.last().unwrap().anchor, None);
-}

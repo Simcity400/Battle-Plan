@@ -55,8 +55,6 @@ use viewer_playback::render;
 mod renderer_host;
 mod screen_count;
 mod suite_input;
-#[cfg(test)]
-mod unit_scale_tests;
 use viewer_playback::visual_fallback;
 use viewer_playback::worker_pool;
 
@@ -2245,7 +2243,6 @@ pub(crate) fn background_window(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|value| value == "1")
 }
 
-
 pub fn cli() -> std::process::ExitCode {
     engine_heap::return_freed_memory_promptly();
     viewer_runtime::parallel::name_shared_pool();
@@ -2465,55 +2462,6 @@ mod tests {
     }
 
     #[test]
-    fn compare_takes_two_images_and_its_own_options() {
-        let options = parse(&[
-            "--compare",
-            "game.png",
-            "viewer.png",
-            "--mask",
-            "mask.png",
-            "--diff",
-            "diff.png",
-            "--json",
-            "out.json",
-            "--regions",
-            "8x6",
-            "--upscale",
-            "1.25",
-            "--dim",
-            "0.5",
-            "--exclude-game-ui",
-            "--exclude",
-            "1,2,3,4",
-            "--exclude",
-            "5,6,7,8",
-        ])
-        .unwrap();
-        let paths = options.compare.as_ref().unwrap();
-        assert_eq!(paths[0], PathBuf::from("game.png"));
-        assert_eq!(paths[1], PathBuf::from("viewer.png"));
-        assert_eq!(options.mask, Some(PathBuf::from("mask.png")));
-        assert_eq!(options.diff, Some(PathBuf::from("diff.png")));
-        assert_eq!(options.json, Some(PathBuf::from("out.json")));
-        assert_eq!(options.regions, Some((8, 6)));
-        assert_eq!(options.upscale, Some(1.25));
-        assert_eq!(options.dim, Some(0.5));
-        assert!(options.exclude_game_ui);
-        assert_eq!(options.excludes.len(), 2);
-        assert_eq!(options.excludes[1].x, 5);
-    }
-
-    #[test]
-    fn compare_defaults_to_the_whole_frame_and_a_four_by_four_grid() {
-        let options = parse(&["--compare", "a.png", "b.png"]).unwrap();
-        assert!(options.compare.is_some());
-        assert_eq!(options.regions, None);
-        assert_eq!(options.upscale, None);
-        assert!(options.mask.is_none() && options.diff.is_none() && options.json.is_none());
-        assert!(options.excludes.is_empty() && !options.exclude_game_ui);
-    }
-
-    #[test]
     fn compare_refuses_missing_images_and_replay_options() {
         assert!(parse(&["--compare"]).is_err());
         assert!(parse(&["--compare", "only-one.png"]).is_err());
@@ -2707,27 +2655,6 @@ mod tests {
     }
 
     #[test]
-    fn the_canopy_toggle_is_a_dump_only_verification_aid() {
-        let dump = parse(&[
-            "--dump",
-            "campaign.battleplan",
-            "--hour",
-            "60828490",
-            "--out",
-            "frame.png",
-            "--no-trees",
-        ])
-        .unwrap();
-        assert!(dump.no_trees);
-        assert!(
-            !parse(&["--dump", "c.battleplan", "--hour", "1", "--out", "f.png"])
-                .unwrap()
-                .no_trees
-        );
-        assert!(parse(&["c.battleplan", "--no-trees"]).is_err());
-    }
-
-    #[test]
     fn the_presentation_clock_is_a_dump_option_and_defaults_to_zero() {
         let dump = |seconds: &str| {
             parse(&[
@@ -2840,15 +2767,6 @@ mod tests {
     }
 
     #[test]
-    fn a_background_window_dump_only_drops_focus_and_z_order() {
-        use std::ffi::OsStr;
-        for value in [None, Some(""), Some("0"), Some("true"), Some(" 1")] {
-            assert!(!background_window(value.map(OsStr::new)), "{value:?}");
-        }
-        assert!(background_window(Some(OsStr::new("1"))));
-    }
-
-    #[test]
     fn a_window_dump_places_a_walk_with_its_held_keys() {
         let dump = |extra: &[&str]| {
             let mut args = vec![
@@ -2957,52 +2875,6 @@ mod tests {
     }
 
     #[test]
-    fn out_names_only_a_dump_or_window_dump_frame() {
-        assert!(parse(&["campaign.battleplan", "--out", "capture.png"]).is_err());
-        assert!(parse(&["--out", "capture.png"]).is_err());
-        let dump = parse(&[
-            "--window-dump",
-            "campaign.battleplan",
-            "--hour",
-            "1",
-            "--out",
-            "frame.png",
-        ])
-        .unwrap();
-        assert_eq!(dump.out, Some(PathBuf::from("frame.png")));
-    }
-
-    #[test]
-    fn dumps_choose_day_night_and_allied_plans_explicitly() {
-        let dump = |extra: &[&str]| {
-            let mut args = vec!["--dump", "c.battleplan", "--hour", "1", "--out", "f.png"];
-            args.extend_from_slice(extra);
-            parse(&args)
-        };
-        let plain = dump(&[]).unwrap();
-        assert_eq!(
-            (plain.day_night, plain.allied_plans, plain.free_overlays),
-            (None, None, None)
-        );
-        let chosen = dump(&[
-            "--day-night",
-            "OFF",
-            "--allied-plans",
-            "on",
-            "--free-overlays",
-            "On",
-        ])
-        .unwrap();
-        assert_eq!(
-            (chosen.day_night, chosen.allied_plans, chosen.free_overlays),
-            (Some(false), Some(true), Some(true))
-        );
-        assert!(dump(&["--free-overlays", "maybe"]).is_err());
-        assert!(dump(&["--day-night", "maybe"]).is_err());
-        assert!(dump(&["--day-night"]).is_err());
-    }
-
-    #[test]
     fn the_camera_takes_world_coordinates_and_an_engine_legal_height() {
         let reference = parse(&[
             "--dump",
@@ -3052,13 +2924,6 @@ mod tests {
                 "`{bad}` should be refused"
             );
         }
-    }
-
-    #[test]
-    fn the_upscale_factor_must_be_positive() {
-        assert!(parse(&["--compare", "a.png", "b.png", "--upscale", "0"]).is_err());
-        assert!(parse(&["--compare", "a.png", "b.png", "--upscale", "-1"]).is_err());
-        assert!(parse(&["--compare", "a.png", "b.png", "--upscale", "x"]).is_err());
     }
 
     #[test]

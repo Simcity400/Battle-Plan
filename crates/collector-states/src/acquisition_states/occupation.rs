@@ -2135,17 +2135,6 @@ mod tests {
     }
 
     #[test]
-    fn occupation_country_source_cache_reuses_the_same_key_without_a_second_native_read() {
-        let mut cache = SourceCache::default();
-        cache.entries.insert(
-            (91, 42),
-            Cached::shared(91, (3, 7), Some(123), vec![], vec![], &cache.bytes),
-        );
-        cache.ensure(&NoReads, 0, 91, &[42], (3, 7), 91).unwrap();
-        assert_eq!(cache.entries[&(91, 42)].total, Some(123));
-        assert_eq!(cache.entries.len(), 1);
-    }
-    #[test]
     fn occupation_source_cache_supports_demanded_countries_without_hourly_allocation() {
         let mut cache = SourceCache::default();
         for country in 1..=40 {

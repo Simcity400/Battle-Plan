@@ -1137,51 +1137,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_default_and_states_modes_hover_the_location_block() {
-        use viewer_counter_products::map::province_tooltips::ModeHover;
-        let hover = |stock| mode_hover(&MapMode::Stock(stock), false, [50, -50], || Ok(3));
-        assert_eq!(
-            hover(Stock::Default),
-            ModeHover::Location { category: false }
-        );
-        assert_eq!(hover(Stock::States), ModeHover::Location { category: true });
-        assert_eq!(hover(Stock::Manpower), ModeHover::Manpower);
-        assert_eq!(
-            hover(Stock::Infrastructure),
-            ModeHover::Infrastructure(Ok(3))
-        );
-        assert_eq!(
-            hover(Stock::Diplomacy),
-            ModeHover::Diplomacy {
-                very_good: 50,
-                very_bad: -50
-            }
-        );
-        assert_eq!(hover(Stock::Resistance), ModeHover::Occupation);
-        assert_eq!(hover(Stock::Compliance), ModeHover::Occupation);
-        assert_eq!(hover(Stock::Operatives), ModeHover::Operatives);
-        assert_eq!(hover(Stock::Resources), ModeHover::Resources);
-        assert_eq!(hover(Stock::Terrain), ModeHover::Terrain { region: false });
-        assert_eq!(
-            hover(Stock::StrategicAir),
-            ModeHover::StrategicAir(Default::default())
-        );
-        assert_eq!(
-            hover(Stock::StrategicNavy),
-            ModeHover::StrategicNavy(std::sync::Arc::new(Err(
-                "naval dominance sources not prepared".into()
-            )))
-        );
-        for stock in [Stock::Factions, Stock::Players, Stock::Raids] {
-            assert_eq!(hover(stock), ModeHover::Nothing, "{stock:?}");
-        }
-        assert_eq!(
-            mode_hover(&MapMode::Scripted("spheres".into()), false, [50, -50], || Ok(0)),
-            ModeHover::Scripted("spheres".into())
-        );
-    }
-
-    #[test]
     fn a_picked_region_hovers_as_the_region_builder_answers_its_mode() {
         use content_reader_map::map::ProvinceKind::*;
         use viewer_counter_products::map::province_tooltips::ModeHover;

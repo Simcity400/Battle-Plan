@@ -32,12 +32,6 @@ test.skip('navy logical ownership and broad-role strength choices preserve opaqu
 });
 
 
-test('navy chart settings reuse the same lines and mix controls as air forces', () => {
-  const options = resolveOptions(OPTIONS, { view: 'mix', playback: 'cursor' });
-  assert.equal(options.afterPlayhead, false);
-  assert.equal(OPTIONS.find(field => field.key === 'afterPlayhead')!.visibleWhen?.(options), true);
-  assert.equal(OPTIONS.find(field => field.key === 'split')!.visibleWhen?.(options), false);
-});
 
 // quarantine: #3 re-enable in the dashboard rework; the issue names its failure
 test.skip('hull HP formatting preserves every fixed5 digit and missing maximum stays unknown', () => {

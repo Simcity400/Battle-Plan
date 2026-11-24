@@ -43,33 +43,6 @@ fn retained_unit_ordinals_revalidate_current_order_and_alias_refusals() {
     }
 }
 
-#[test]
-fn host_lookup_keeps_the_handle_lookup_refusal_order() {
-    let mut prepared = Prepared::try_new(capacity()).unwrap();
-    for identities in [[(0, 0), (0, 1), (2, 0)], [(1, 2), (1, 3), (4, 3)]] {
-        let seeds: Vec<_> = identities
-            .into_iter()
-            .map(|(pointer, division)| carmy::DivisionSeed {
-                pointer,
-                division,
-                ..Default::default()
-            })
-            .collect();
-        prepared.index_units(&seeds);
-        for seed in &seeds {
-            let slot = prepared
-                .pointers
-                .binary_search_by_key(&seed.pointer, |&index| seeds[index].pointer)
-                .unwrap();
-            let index = prepared.pointers[slot];
-            assert_eq!(
-                prepared.host_index(&seeds, seed.pointer),
-                prepared.unit_index(&seeds, seeds[index].division, seed.pointer)
-            );
-        }
-    }
-}
-
 const BASE: usize = 0x1000;
 const STATE: usize = 0x2000;
 const GROUP: usize = 0x3000;

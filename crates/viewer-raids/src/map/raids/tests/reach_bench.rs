@@ -1,5 +1,4 @@
 
-use std::time::Instant;
 
 use content_reader_map::province_graph::ProvinceGraph;
 use replay_data::{
@@ -11,7 +10,6 @@ use super::*;
 
 pub(super) const WIDTH: u32 = 120;
 pub(super) const HEIGHT: u32 = 110;
-const HOURS: usize = 96;
 const BASES: usize = 300;
 pub(super) const MARINES: usize = 20;
 const MEMBERS: u32 = 300;
@@ -218,45 +216,3 @@ fn bases(countries: u32) -> Vec<NavalBaseRow> {
         .collect()
 }
 
-#[test]
-#[ignore = "release bench"]
-fn army_reach_bench() {
-    use launch::RaidPaths;
-    let (graph, geometry) = grid();
-    let mut assets = assets();
-    assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
-        &graph, &geometry,
-    ));
-    assets.geometry = geometry;
-    assets.paths = Ok(paths::PathSearch::new(graph));
-    let sources = base_provinces();
-    let hours = std::env::var("BATTLEPLAN_REACH_BENCH_HOURS").or_else(|_| std::env::var("HOI4_REACH_BENCH_HOURS"))
-        .ok()
-        .and_then(|hours| hours.parse().ok())
-        .unwrap_or(HOURS);
-    for countries in [1_500, 5_000] {
-        let frame = hour(countries);
-        let mut answers = [0_usize; 3];
-        let started = Instant::now();
-        for _ in 0..hours {
-            let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
-            let paths = paths::HourPaths::new(&assets, &frame);
-            answers = [0; 3];
-            for &source in &sources {
-                for division in 1..=MARINES as u64 {
-                    answers[match paths.army_reaches(&world, division, source) {
-                        Eval::True => 0,
-                        Eval::False => 1,
-                        Eval::Unknown(_) => 2,
-                    }] += 1;
-                }
-            }
-        }
-        let elapsed = started.elapsed();
-        println!(
-            "BENCH army reach: {countries} countries, {BASES} bases x {MARINES} marines, {hours} hours: {:.3} s total, {:.2} ms/hour; reached/not/unknown per hour {answers:?}",
-            elapsed.as_secs_f64(),
-            elapsed.as_secs_f64() * 1_000.0 / hours as f64,
-        );
-    }
-}

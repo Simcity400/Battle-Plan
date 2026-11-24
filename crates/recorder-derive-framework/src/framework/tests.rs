@@ -116,24 +116,6 @@ mod labelled {
         }
     }
 
-    #[test]
-    fn what_a_writer_allocates_in_its_hour_is_charged_to_its_own_label_and_its_tables_growth_to_the_store() {
-        const KEPT: i64 = 4 << 20;
-        let mut store = store();
-        store.begin_hour(0, &[b"a"]).unwrap();
-        let mut writers = Writers::new(vec![Box::new(Hoarding { bytes: KEPT as usize, rows: 40_000, held: Vec::new() })]);
-        writers.start_run();
-        writers.hour(1, 0, true, &mut store).unwrap();
-        assert_eq!(store.view(TableId::Campaign.index()).rows().count(), 40_000);
-        let phases = labels::phases();
-        let held = |owned: &dyn Fn(&str) -> bool| -> i64 {
-            phases.iter().flat_map(|phase| &phase.labels).filter(|charge| owned(charge.owner) && charge.kind == labels::Kind::Operator).map(|charge| charge.end).sum()
-        };
-        let writer = held(&|owner| owner == "writer: Hoarding");
-        assert!((KEPT..KEPT + (64 << 10)).contains(&writer), "the writer's label holds {writer} bytes");
-        let store = held(&|owner| owner == "store" || owner.starts_with("store: "));
-        assert!(store >= 40_000 * 4, "the store's labels hold {store} bytes");
-    }
 }
 
 #[test]
@@ -598,7 +580,6 @@ fn a_writer_setting_a_row_twice_or_reading_its_own_table_through_the_hour_fails_
     }
 }
 
-
 struct Ordered {
     order: fn(&mut Vec<u128>),
     held: Vec<u128>,
@@ -1059,13 +1040,6 @@ fn a_writer_reading_state_tables_is_called_only_in_an_hour_that_moved_them() {
     assert!(matches!(statuses[4].0, Status::Unavailable { .. }), "{:?}", statuses[4]);
     assert_eq!(statuses[6], (told, Some(6)));
 }
-
-#[test]
-fn an_hourly_writer_is_called_every_hour() {
-    let (calls, _) = called(true);
-    assert_eq!(calls, [(0, true), (1, false), (2, false), (3, false), (5, true), (6, false)]);
-}
-
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Toyed {

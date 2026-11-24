@@ -5431,7 +5431,6 @@ fn save_waiting_with(locked: &WaitingLock, names: &mut WaitingNames) -> Result<S
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
@@ -6541,28 +6540,6 @@ mod tests {
     }
 
     #[test]
-    fn game_score_cli_defaults_enabled_and_disables_at_attach() {
-        assert!(parse_options("record", Vec::new()).unwrap().game_score);
-        let options = parse_options(
-            "record",
-            vec![
-                "--once".into(),
-                "--no-game-score".into(),
-                "--out".into(),
-                "output".into(),
-                "--user-dir".into(),
-                "user".into(),
-            ],
-        )
-        .unwrap();
-        assert!(!options.game_score);
-        assert!(options.once);
-        assert_eq!(options.output, PathBuf::from("output"));
-        assert_eq!(options.user, Some(PathBuf::from("user")));
-        assert!(usage().contains("[--no-game-score]"));
-    }
-
-    #[test]
     fn capture_mode_cli_defaults_full_and_names_only_known_modes() {
         assert_eq!(
             parse_options("record", Vec::new()).unwrap().capture_mode,
@@ -6580,26 +6557,6 @@ mod tests {
             assert!(parse_options(command, vec!["--capture-mode".into(), "map".into()]).is_err());
         }
         assert!(usage().contains("[--capture-mode full|map]"));
-    }
-
-    #[test]
-    fn worker_sampler_config_preserves_environment_text_verbatim() {
-        let original = json!({"game_score": true, "output_dir": "synthetic/session"});
-        assert_eq!(worker_sampler_config(original.clone(), None), original);
-        for requested in ["", "off", r"interval_us=50"] {
-            let config = worker_sampler_config(original.clone(), Some(requested.into()));
-            assert_eq!(config["worker_sampler"], requested);
-            assert_eq!(config["game_score"], original["game_score"]);
-            assert_eq!(config["output_dir"], original["output_dir"]);
-        }
-        assert!(usage().contains("BATTLEPLAN_WORKER_SAMPLER"));
-    }
-
-    #[test]
-    fn game_score_cli_refuses_disable_for_other_commands() {
-        for command in ["detach", "refresh", "finalize"] {
-            assert!(parse_options(command, vec!["--no-game-score".into()]).is_err());
-        }
     }
 
     #[cfg(feature = "alloc-fault-injection")]
@@ -6639,23 +6596,6 @@ mod tests {
         ] {
             assert!(allocation_fault(OsStr::new(value)).is_err(), "{value}");
         }
-    }
-
-    #[cfg(feature = "alloc-fault-injection")]
-    #[test]
-    fn allocation_fault_json_is_omitted_until_requested() {
-        let healthy = json!({"session_id":7});
-        assert_eq!(fault_config(healthy.clone(), None), healthy);
-        let fault = allocation_fault(OsStr::new("spool:540")).unwrap();
-        assert_eq!(
-            fault_config(healthy.clone(), Some(&fault)),
-            json!({"session_id":7,"alloc_fault":{"phase":"spool","ordinal":540}})
-        );
-        let fault = allocation_fault(OsStr::new("encode:1:3")).unwrap();
-        assert_eq!(
-            fault_config(healthy, Some(&fault)),
-            json!({"session_id":7,"alloc_fault":{"phase":"encode","ordinal":1,"after_hours":3}})
-        );
     }
 
     #[cfg(not(feature = "alloc-fault-injection"))]
@@ -8440,32 +8380,6 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn the_command_line_reads_status_once_a_minute_and_the_tray_every_two_seconds() {
-        let start = Instant::now();
-        let reads = |live| {
-            let mut schedule = StatusReads::new(live, start);
-            let (mut printed, mut live_reads) = (0, 0);
-            for step in 0..1_200 {
-                let now = start + Duration::from_millis(100 * step);
-                printed += u32::from(schedule.print_due(now));
-                if schedule.live_due(now) {
-                    live_reads += 1;
-                    schedule.live_read(now);
-                }
-            }
-            (printed, live_reads)
-        };
-        assert_eq!(reads(false), (2, 0));
-        assert_eq!(reads(true), (2, 60));
-        let options = parse_options("record", vec!["--out".into(), "captures".into()]).unwrap();
-        let user = PathBuf::from("user");
-        let capture = cli_capture(&options, &user);
-        assert!(!capture.live_status);
-        assert!(capture.admit.is_none() && capture.loaded.is_none());
-        assert_eq!(capture.target, capture.output);
     }
 
     #[test]

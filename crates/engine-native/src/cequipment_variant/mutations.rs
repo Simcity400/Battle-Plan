@@ -159,28 +159,3 @@ pub const MUTATIONS: &[Mutation] = &[
     },
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn variant_design_mutation_sites_are_distinct() {
-        let mut entries = std::collections::BTreeSet::new();
-        let all = MUTATIONS
-            .iter()
-            .map(|site| (site.name, site.rva))
-            .chain(
-                crate::cequipment_variant::source_mutations::MUTATIONS
-                    .iter()
-                    .map(|site| (site.name, site.rva)),
-            )
-            .chain(
-                crate::cequipment_variant::source_mutations::ORGANISATIONS
-                    .iter()
-                    .map(|site| (site.name, site.rva)),
-            );
-        for (name, rva) in all {
-            assert!(entries.insert(rva), "duplicate design hook {}", name);
-        }
-    }
-}

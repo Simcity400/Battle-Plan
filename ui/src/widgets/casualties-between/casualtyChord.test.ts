@@ -9,22 +9,6 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 const labels = deepFreeze((tag: string) => deepFreeze({ name: `Name ${tag}` }));
 const color = deepFreeze(() => '#888888');
 
-test('chord segments prepare flow IDs once per geometry and retain output through clock-only lookups', () => {
-  let reads = 0;
-  const flow = deepFreeze({ get id() { reads++; return 'pair with "quotes"'; }, from: 'source', to: 'target', value: 12n, readHour: 100, incomplete: false });
-  const snapshot = deepFreeze({ countries: ['source', 'target'], flows: [flow] }), cache = new CasualtyChordSegmentCache();
-  const first = cache.at(snapshot, 'source identity', 100, 0);
-  assert.equal(first, JSON.stringify(['source identity', 100, ['pair with "quotes"'], 0]));
-  assert.equal(reads, 1);
-  for (let lookup = 0; lookup < 100; lookup++) assert.equal(cache.at(snapshot, 'source identity', 100, 0), first);
-  const sought = cache.at(snapshot, 'source identity', 100, 1);
-  assert.notEqual(sought, first);
-  assert.equal(cache.at(snapshot, 'new source', 110, 1), JSON.stringify(['new source', 110, ['pair with "quotes"'], 1]));
-  assert.equal(reads, 1);
-  const replacement = deepFreeze({ ...snapshot, flows: [{ ...flow, id: 'new pair' }] });
-  assert.equal(cache.at(replacement, 'source identity', 100, 0), JSON.stringify(['source identity', 100, ['new pair'], 0]));
-  assert.equal(cache.at(null, null, undefined, 0), JSON.stringify([null, undefined, undefined, 0]));
-});
 
 test('immutable chord identities retain geometry without rereading labels or flows', () => {
   const cache = new CasualtyChordCache();

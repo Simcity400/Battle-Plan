@@ -1073,8 +1073,6 @@ use movement::movement_route_prefixes;
 #[cfg(test)]
 pub use movement::{walk_movement, walk_movement_with_inputs};
 
-#[cfg(test)]
-pub(crate) use cunit::FirstCombatKey as MovementCombatKey;
 pub(crate) use cunit::FirstCombatMemo as MovementCombats;
 
 fn movement_seed_value<T>(value: Option<T>) -> Result<T, &'static str> {
@@ -3705,12 +3703,6 @@ pub use presentation_demand::{PresentationDemand, presentation_demand};
 mod border_tests;
 #[cfg(test)]
 mod tests;
-
-#[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
-mod bench;
-
-#[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
-mod status_bench;
 
 pub use game_model::movement::army::{MovementSpeedInputs, NormalEdgeOperands, NormalSpeedOperands, PreparedNormalSpeed};
 

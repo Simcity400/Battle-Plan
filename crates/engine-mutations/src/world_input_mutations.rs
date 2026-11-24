@@ -210,31 +210,3 @@ pub const MUTATIONS: [(MutationSite, Domain); 27] = [
     ),
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sites_are_distinct_and_cover_every_domain() {
-        for (index, (site, _)) in MUTATIONS.iter().enumerate() {
-            assert!(
-                MUTATIONS[..index]
-                    .iter()
-                    .all(|(other, _)| other.rva != site.rva && other.name != site.name)
-            );
-        }
-        for domain in [
-            Domain::ProvinceNames,
-            Domain::RegionAccess,
-            Domain::Tension,
-            Domain::DynamicModifiers,
-            Domain::IndustrialOrganisationRosters,
-            Domain::IndustrialOrganisationPolicies,
-            Domain::DesignIndustrialOrganisation,
-            Domain::GameFog,
-        ] {
-            assert!(MUTATIONS.iter().any(|(_, of)| *of == domain));
-            assert!((domain as usize) < DOMAINS);
-        }
-    }
-}

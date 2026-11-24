@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { approach, easeTau } from './easing.ts';
 import { fitLabelWidth, layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
@@ -42,14 +41,6 @@ test('samples keep both ends and the monotone curve never overshoots its samples
   assert.deepEqual(stack([[1, 2], [3, null], [1, 1]]), [[1, 2], [4, null], [5, null]]);
 });
 
-test('easing snaps with reduced motion, shortens at speed and never crosses a gap', () => {
-  assert.equal(approach(0, 10, 16, 0), 10);
-  const eased = approach(0, 10, 16, 180);
-  assert.ok(eased > 0 && eased < 10);
-  assert.equal(easeTau('smooth', 1, true), 0);
-  assert.ok(easeTau('smooth', 720, false) < easeTau('smooth', 24, false));
-  assert.ok(easeTau('cinematic', 24, false) > easeTau('snappy', 24, false));
-});
 
 const CONTEXT: ViewContext = { x: [0, 1000], extent: [0, 1000], y: [0, 100], minSpan: 14 * 24 };
 

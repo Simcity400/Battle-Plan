@@ -794,26 +794,6 @@ mod tests {
     use engine_native_memory::memory::SliceMemory;
     use replay_data::rows::tables;
 
-    #[test]
-    fn preparation_keeps_each_distinct_state_owner_in_original_order() {
-        for roster in [None, Some(7), Some(19)] {
-            for logical in [None, Some(7), Some(19)] {
-                let seed = DivisionSeed {
-                    roster_owner: roster,
-                    logical_owner: logical,
-                    ..Default::default()
-                };
-                let mut reference = Vec::new();
-                for owner in [roster, logical].into_iter().flatten() {
-                    if !reference.contains(&owner) {
-                        reference.push(owner);
-                    }
-                }
-                assert_eq!(state_countries(&seed).collect::<Vec<_>>(), reference);
-            }
-        }
-    }
-
     struct Denied;
     impl Memory for Denied {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {

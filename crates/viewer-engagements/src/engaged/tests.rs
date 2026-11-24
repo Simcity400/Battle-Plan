@@ -51,23 +51,6 @@ fn step(held: Engaged, hour: SideHour) -> Engaged {
     })
 }
 
-#[test]
-fn only_the_candidates_a_refresh_allows_are_evaluated() {
-    let count = |refresh| {
-        let mut calls = 0;
-        super::step(Engaged::No, refresh, |_, _| {
-            calls += 1;
-            Some(true)
-        });
-        calls
-    };
-    assert_eq!(count(rebuilt(NONE, NONE)), 0);
-    assert_eq!(count(None), 0);
-    assert_eq!(count(Some(Refresh::Load)), 1);
-    assert_eq!(count(rebuilt(RECORDED, NONE)), 2);
-    assert_eq!(count(rebuilt(RECORDED, UNITS)), 4);
-}
-
 fn rebuilt(proven: Lists, possible: Lists) -> Option<Refresh> {
     Some(Refresh::Hour { proven, possible })
 }

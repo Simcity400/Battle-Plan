@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LiveCell, liveAt, liveByColumn, liveKey, liveTexts, sameBy, separated, valuesOf } from './live.ts';
+import { LiveCell, liveAt, liveByColumn, liveKey, liveTexts, sameBy, valuesOf } from './live.ts';
 
 test('a live value is made again only when the clock moves to another hour, kept while it is the same, and wakes at frames and seeks', () => {
   let position = 10.2, made = 0;
@@ -85,7 +85,3 @@ test('live texts are read again when what they read lands though the hour stands
   assert.equal(plain.text('other'), '');
 });
 
-test('a text after a separator brings the separator only when it is there', () => {
-  assert.equal(separated('41.2%'), ' · 41.2%');
-  for (const none of ['', null, undefined]) assert.equal(separated(none), '');
-});

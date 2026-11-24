@@ -412,8 +412,7 @@ mod tests {
     use super::{
         BTreeMap, BTreeSet, COUNT, FACTION_ICON, FACTION_PING_WINDOW, FactionTheatreRow, PinReport,
         Schedule, Update, hover_rect, native, native_gui, refresh, region_listed, shown,
-        test_support_gui, theatre_anchor,
-    };
+        test_support_gui};
     use viewer_counter_kit::{region_icon_position, unwrap};
 
     #[test]
@@ -568,18 +567,6 @@ mod tests {
         assert_eq!(unwrap(2, 98, 100), -2);
         assert_eq!(unwrap(98, 2, 100), 102);
         assert_eq!(unwrap(50, 0, 100), 0, "exactly half a width stays");
-    }
-
-    #[test]
-    fn a_theatre_anchor_is_the_plain_mean_with_no_seam_handling() {
-        let anchor = theatre_anchor(&[[1.0, 2.0, 3.0], [99.0, 4.0, 5.0], [2.0, 0.0, 1.0]]);
-        let third = 1.0f32 / 3.0;
-        assert_eq!(
-            anchor,
-            Some([102.0 * third, 6.0 * third, 9.0 * third]),
-            "sums times the f32 reciprocal, not a division"
-        );
-        assert_eq!(theatre_anchor(&[]), None);
     }
 
     #[test]

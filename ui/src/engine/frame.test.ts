@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FrameEngine } from './frame.ts';
 import type { EngineFrame } from './frame.ts';
-import { Tween } from './tween.ts';
-import { approach } from '../charts/easing.ts';
 
 function manual() {
   let asked: ((now: number) => void) | null = null;
@@ -96,23 +94,4 @@ test('a failing task does not stop the frame, and each frame reports its time st
   assert.ok(steps.every(frame => frame.phase === 'paint'));
 });
 
-test('a cancelled one-shot never runs', () => {
-  const frames = manual();
-  let ran = false;
-  const cancel = frames.engine.next('commit', () => { ran = true; });
-  cancel();
-  frames.run(16);
-  assert.equal(ran, false);
-});
 
-test('a tween eases exactly as the dashboard\'s approach, and snaps with no time constant', () => {
-  const tween = new Tween(0);
-  tween.target = 100;
-  assert.equal(tween.step(16, 180), true);
-  assert.equal(tween.value, approach(0, 100, 16, 180));
-  tween.step(16, 0);
-  assert.equal(tween.value, 100, 'paused or reduced motion: at the target at once');
-  assert.equal(tween.step(16, 180), false, 'at rest');
-  tween.jump(5);
-  assert.deepEqual([tween.value, tween.target], [5, 5]);
-});

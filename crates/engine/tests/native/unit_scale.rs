@@ -133,44 +133,6 @@ fn run(shape: Shape, timed: bool) {
 }
 
 #[test]
-#[ignore = "release unit scaling benchmark"]
-fn unit_scale_combat() {
-    use engine_native::cland_combat;
-    for shape in fixture::shapes() {
-        let world = fixture::build_with_activity(shape, true);
-        let memory = world.live();
-        let count = shape.divisions / 20;
-        let mut rows = vec![cland_combat::Row::default(); count];
-        let mut members = vec![0; count * 2];
-        let mut classes = vec![0; count * 2];
-        let mut work = || {
-            let walk = cland_combat::walk(
-                &memory,
-                world.base,
-                world.state,
-                &mut rows,
-                &mut members,
-                &mut classes,
-            );
-            assert_eq!(walk.outcome, Outcome::Rows { len: count });
-            assert_eq!(walk.participants_len, count * 2);
-        };
-        ReadCounts::take_current();
-        work();
-        let counts = ReadCounts::take_current();
-        let (p50, p95) = fixture::time(&mut work);
-        println!(
-            "UNIT_SCALE name=LandCombatCensus divisions={} combats={count} participants={} p50_ms={p50:.6} p95_ms={p95:.6} read_bytes={} calls={} output_bytes={}",
-            shape.divisions,
-            count * 2,
-            counts.bytes,
-            counts.copy_calls + counts.scattered_calls + counts.record_calls + counts.plan_calls,
-            std::mem::size_of_val(rows.as_slice()) + std::mem::size_of_val(members.as_slice())
-        );
-    }
-}
-
-#[test]
 fn unit_population_is_complete() {
     run(
         Shape {
@@ -184,10 +146,3 @@ fn unit_population_is_complete() {
     );
 }
 
-#[test]
-#[ignore = "release unit scaling benchmark"]
-fn unit_scale() {
-    for shape in fixture::shapes() {
-        run(shape, true);
-    }
-}

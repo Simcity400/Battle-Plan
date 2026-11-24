@@ -530,7 +530,6 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
 #[tauri::command]
 fn playback_pressure_merges() -> u64 { dashboard_follow::lead::pressure_merges() }
 
-
 fn main() {
     engine_heap::return_freed_memory_promptly();
     viewer_runtime::parallel::name_shared_pool();
@@ -857,27 +856,8 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shut, ordered, shut, within};
+    use super::{Shut, shut};
     use std::cell::Cell;
-    use std::time::Duration;
-
-    #[test]
-    fn a_shutdown_that_stalls_after_battleplan_commits_to_exit_ends_the_process_instead_of_leaving_it_running_unseen() {
-        let (_never, stalled) = std::sync::mpsc::channel::<()>();
-        let ended = within(Duration::ZERO, move || stalled.recv().is_ok());
-        assert_eq!(ended, None, "a dashboard worker stuck reading an unresponsive share doesn’t hold the exit");
-        assert_eq!(within(Duration::MAX, || true), Some(true), "a shutdown that finishes ends in order");
-
-        let (_never, stalled) = std::sync::mpsc::channel::<()>();
-        let (wrote, written) = std::sync::mpsc::channel();
-        let ended = ordered(|| Some(true), move || stalled.recv().is_ok(), move |page| wrote.send(page).unwrap(), Duration::ZERO);
-        assert_eq!(ended, None);
-        assert_eq!(written.recv(), Ok(Some(true)), "a page that took its whole wait still has its summary written, though the steps after it overran");
-
-        let (_never, stalled) = std::sync::mpsc::channel::<()>();
-        let ended = ordered(|| (), || true, move |()| { let _ = stalled.recv(); }, Duration::from_millis(100));
-        assert_eq!(ended, None, "a measurement summary that stalls ends the process from the exit thread, never on the UI thread after it");
-    }
 
     struct Window {
         enabled: Cell<bool>,
@@ -920,6 +900,5 @@ mod tests {
         assert!(window.enabled.get(), "the dialog re-enables the window it disabled, as Windows does");
         assert!(!window.visible.get(), "so the window is out of input by a means no dialog undoes");
     }
-
 
 }

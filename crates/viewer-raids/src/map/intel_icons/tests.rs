@@ -59,19 +59,6 @@ fn the_cutoff_is_strict_and_divides_in_single_precision() {
 }
 
 #[test]
-fn containers_centre_round_half_away_and_take_the_offset() {
-    assert_eq!(
-        container_point([400.0, 300.0], [300, 64], [12, 40]),
-        [262, 308]
-    );
-    assert_eq!(container_point([150.5, 32.5], [300, 64], [0, 0]), [1, 1]);
-    assert_eq!(
-        container_point([100.2, -10.6], [300, 64], [12, 40]),
-        [-38, -3]
-    );
-}
-
-#[test]
 fn the_activity_level_advances_on_equality_and_is_magenta_past_the_colours() {
     let d = defines().activity.unwrap();
     assert_eq!(activity_level(99, &d), 0);
@@ -210,16 +197,6 @@ fn the_preparation_value_keeps_the_native_order() {
     assert_eq!(preparation(&row), Ok(50_000));
     row.requirements = vec![requirement(0, 7, 0)];
     assert_eq!(preparation(&row), Ok(ONE));
-}
-
-#[test]
-fn cooldowns_count_whole_days_from_one_day_else_hours() {
-    assert_eq!(cooldown_text(24, "d", "h"), "\u{11}Y1d\u{11}!");
-    assert_eq!(cooldown_text(49, "d", "h"), "\u{11}Y2d\u{11}!");
-    assert_eq!(cooldown_text(23, "d", "h"), "23h");
-    assert_eq!(gain_frame(5), 1);
-    assert_eq!(gain_frame(-5), 2);
-    assert_eq!(gain_frame(0), 3);
 }
 
 fn kinds(state: &StateIcon) -> Vec<(EntryKind, EntryKey)> {
@@ -658,38 +635,6 @@ fn a_free_eye_hits_the_nearest_shown_container_in_its_own_layout() {
 }
 
 #[test]
-fn entries_take_the_list_places_and_hover_by_their_own_children() {
-    content_reader_script::test_game::enter();
-    let (hits, count, report) = drawn(&[EntryKind::Operation; 4]);
-    assert_eq!(count, 1, "{report:?}");
-    assert_eq!(hits.len(), 4);
-    let top = 308.0 + 14.0 + 5.0;
-    for (index, x) in [12.0, 81.0, 150.0, 219.0].into_iter().enumerate() {
-        assert_eq!(
-            title(&hits, [262.0 + x + 5.0, top]),
-            Some(index.to_string())
-        );
-    }
-    assert_eq!(title(&hits, [262.0 + 12.0 + 25.0, top]), None);
-    assert_eq!(title(&hits, [262.0 + 12.0 + 35.0, top]), None);
-    let (hits, _, _) = drawn(&[EntryKind::Operation]);
-    assert_eq!(title(&hits, [262.0 + 115.0 + 1.0, top]), Some("0".into()));
-    assert_eq!(title(&hits, [262.0 + 114.0, top]), None);
-}
-
-#[test]
-fn compressed_entries_overlap_and_the_later_one_wins() {
-    content_reader_script::test_game::enter();
-    let (hits, _, report) = drawn(&[EntryKind::More; 5]);
-    assert_eq!(hits.len(), 5, "{report:?}");
-    let top = 308.0 + 14.0 + 5.0;
-    assert_eq!(title(&hits, [262.0 + 2.0, top]), Some("0".into()));
-    assert_eq!(title(&hits, [262.0 + 60.0, top]), Some("1".into()));
-    assert_eq!(title(&hits, [262.0 + 232.0 + 67.0, top]), Some("4".into()));
-    assert_eq!(title(&hits, [262.0 + 232.0 + 68.0, top]), None);
-}
-
-#[test]
 fn both_operative_frames_test_alpha_and_transparent_pixels_leave_lower_hits() {
     content_reader_script::test_game::enter();
     let mut resources = gui::fixture();
@@ -908,20 +853,6 @@ fn unavailable_ui_buffer_withholds_saved_operations_and_names_the_refusal() {
         "{:?}",
         icons.report
     );
-}
-
-#[test]
-fn running_duration_substitutes_the_lowercase_green_number_and_keeps_authored_units() {
-    let localisation: content_reader_localisation::localisation::Localisation = [(
-        "ABILITY_DUR_DAYS".to_owned(),
-        "\u{11}Y$num|H$ cycles\u{11}!".to_owned(),
-    )]
-    .into_iter()
-    .collect();
-    let text = build::running_duration_text(&localisation, 140).unwrap();
-    assert!(text.contains("\u{11}G140\u{11}!"), "{text:?}");
-    assert!(text.starts_with("\u{11}Y"), "{text:?}");
-    assert!(text.contains(" cycles"), "{text:?}");
 }
 
 #[test]

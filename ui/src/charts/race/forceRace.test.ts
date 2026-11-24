@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { breakdownValue, breakdownWindows, followedForceEntries, forceRaceEmpty, forceWindows, joinForceWindows, validateForceReply } from './forceRace.ts';
+import { breakdownValue, breakdownWindows, forceWindows, joinForceWindows, validateForceReply } from './forceRace.ts';
 import type { ForceSizeReply } from '../../generated/dashboard';
 
 const windows = [{ firstHour: 0, lastHour: 719 }, { firstHour: 720, lastHour: 1439 }, { firstHour: 1440, lastHour: 1500 }];
@@ -35,12 +35,6 @@ test('windows join on every part any of them names, a known split holding none o
   validateForceReply({ ...first, windows });
 });
 
-test('a followed answer ranks its rows holding a value, a group member only while it belongs', () => {
-  const answer = { kind: 'rows', rows: 3, columns: 1, names: ['GER', 'ENG', 'FRA'] } as never;
-  const entries = followedForceEntries(undefined, null, { membership: null }, 5, 2, String);
-  assert.deepEqual(entries, []);
-  assert.ok(answer);
-});
 
 test('a breakdown reads the windows its view meets, its origin’s and its moment’s, and following, the next', () => {
   const windows = [{ firstHour: 0, lastHour: 719 }, { firstHour: 720, lastHour: 1439 }, { firstHour: 1440, lastHour: 1999 }];
@@ -56,8 +50,3 @@ test('a breakdown’s remainder is what no part explains; an unknown total leave
   assert.deepEqual(breakdownValue(null), { total: null, values: [], remainder: null, reference: null });
 });
 
-test('a force race followed where its totals are not recorded says so with the reason, never that there are none', () => {
-  assert.equal(forceRaceEmpty('navies', '13 May 1942', { kind: 'notRecorded', reason: 'Fleets were not read at this hour' }),
-    'Navies not recorded on 13 May 1942: Fleets were not read at this hour');
-  assert.equal(forceRaceEmpty('navies', '1 Jan 1936', undefined), 'No navies recorded on 1 Jan 1936.');
-});

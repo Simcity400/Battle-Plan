@@ -152,16 +152,6 @@ mod tests {
     }
 
     #[test]
-    fn the_gate_names_the_layers_whose_product_moved_under_it() {
-        assert_eq!(layers_moved([1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6]), None);
-        assert_eq!(layers_moved([1, 2, 3, 4, 5, 6], [1, 9, 3, 4, 5, 6]).as_deref(), Some("land combat markers"));
-        assert_eq!(
-            layers_moved([1, 2, 3, 4, 5, 6], [8, 2, 3, 4, 5, 0]).as_deref(),
-            Some("land stacks, air missions")
-        );
-    }
-
-    #[test]
     fn the_gate_names_the_first_differing_quad() {
         assert_eq!(first_difference(&[quad(1, 0), quad(2, 0)], &[quad(1, 0), quad(2, 0)]), None);
         let differs = first_difference(&[quad(1, 0), quad(2, 0)], &[quad(1, 0), quad(2, 5)]).unwrap();

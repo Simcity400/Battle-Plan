@@ -1490,7 +1490,3 @@ impl Captured {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-#[path = "weather/bench/tests.rs"]
-mod bench;

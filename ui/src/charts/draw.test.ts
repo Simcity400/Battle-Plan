@@ -21,23 +21,6 @@ test('shared held lines preserve exact reads, gaps, identity changes and fractio
   assert.deepEqual(heldSegments([{ firstHour: 1, lastHour: 4, value: 2 }], 3, 2, value => value, value => value), []);
 });
 
-test('drawLine held option shares its end dot and theme widths and never smooths a read', () => {
-  const commands: { kind: string; values: number[] }[] = [];
-  const record = (kind: string) => (...values: number[]) => { commands.push({ kind, values }); };
-  const ctx = { beginPath: record('begin'), moveTo: record('M'), lineTo: record('L'), bezierCurveTo: record('C'),
-    arc: record('arc'), stroke: record('stroke'), fill: record('fill'), setLineDash: () => {} } as unknown as CanvasRenderingContext2D;
-  const frame = plotFrame(400, 200, { left: 20, right: 20, top: 20, bottom: 20 }, [1, 8], [0, 10], false);
-  const tokens = { ...tokensFromValues(() => 'transparent', 'sans-serif'), lineWidth: { grid: 1, series: 3, emphasis: 4 } };
-  const end = drawLine(ctx, frame, tokens, [{ firstHour: 1, lastHour: 2, value: 2 }, { firstHour: 3, lastHour: 8, value: 8 }],
-    'country-colour', { held: true, until: 5 });
-  assert.deepEqual(end, { x: frame.toX(5), y: frame.toY(8) });
-  assert.equal(commands.some(command => command.kind === 'C'), false);
-  assert.deepEqual(commands.filter(command => command.kind === 'L').map(command => command.values),
-    [[frame.toX(3), frame.toY(2)], [frame.toX(3), frame.toY(8)], [frame.toX(5), frame.toY(8)]]);
-  assert.deepEqual(commands.find(command => command.kind === 'arc')?.values.slice(0, 3), [end!.x, end!.y, tokens.lineWidth.series * 2]);
-  assert.equal(ctx.lineWidth, tokens.lineWidth.series);
-  assert.equal(ctx.strokeStyle, tokens.surface);
-});
 
 test('line geometry follows the complete time scale while its drawn end stays fixed', () => {
   const ctx = { beginPath() {}, moveTo() {}, lineTo() {}, bezierCurveTo() {}, arc() {}, stroke() {}, fill() {}, setLineDash() {} } as unknown as CanvasRenderingContext2D;

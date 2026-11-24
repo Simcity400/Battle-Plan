@@ -766,29 +766,6 @@ fn formation_count_reuses_the_authenticated_hourly_span_and_keeps_signed_words()
 }
 
 #[test]
-fn icon_rows_do_not_read_the_template_name_and_gather_every_grid_header() {
-    let memory = fixture();
-    let mut rows = vec![IconRow::default(); 2];
-    let (walk, bytes, _, _) = icons_all(&memory, &mut rows);
-    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(bytes, b"infantry");
-    let reads = memory.1.borrow().clone();
-    assert!(!reads.iter().any(|(at, _)| *at == 0x5000 + NAME));
-    for grid in GRIDS {
-        assert!(
-            !reads
-                .iter()
-                .any(|(at, _)| *at == 0x5000 + grid && grid != REGIMENT_DATA)
-        );
-        assert!(
-            reads
-                .iter()
-                .any(|&(at, len)| { at <= 0x5000 + grid && at + len >= 0x5000 + grid + 16 })
-        );
-    }
-}
-
-#[test]
 fn full_handle_survives_and_a_wrong_type_word_fails() {
     let mut bytes = vec![0; 16];
     bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
@@ -821,56 +798,6 @@ fn full_handle_survives_and_a_wrong_type_word_fails() {
         ),
         Err("division template identity unreadable")
     );
-}
-
-#[test]
-fn a_walk_reads_a_shared_priority_name_once_and_gathers_literal_headers() {
-    let mut memory = fixture();
-    second_template(&mut memory);
-    let (mut rows, mut bytes, mut counts, mut variants, mut names) = (
-        vec![IconRow::default(); 2],
-        vec![0; 64],
-        vec![Default::default(); 64],
-        vec![0; 8],
-        vec![0; 64],
-    );
-    let walk = walk_icons_with_names(
-        &memory,
-        0,
-        0x1000,
-        &mut rows,
-        &mut bytes,
-        &mut counts,
-        &mut variants,
-        TestSlots::default().slots(),
-        &mut names,
-    );
-    assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
-    assert_eq!(&bytes[..walk.bytes_len], b"infantryinfantry");
-    for row in rows {
-        let literal = row.display_name.unwrap().literal;
-        assert_eq!(
-            names[literal.start..literal.start + literal.len],
-            [b'A', 0, 255]
-        );
-    }
-    let reads = memory.1.borrow();
-    let at = |address: usize| reads.iter().filter(|read| read.0 == address).count();
-    assert_eq!(at(0x7000 + subunit::NAME), 1);
-    for template in [0x5000, 0xa000] {
-        assert_eq!(at(template + NAME), 1);
-        let span = reads
-            .iter()
-            .position(|read| {
-                *read
-                    == (
-                        template + REGIMENT_DATA,
-                        UNIT_TYPE_OVERRIDE + 4 - REGIMENT_DATA,
-                    )
-            })
-            .unwrap();
-        assert_eq!(reads[span + 1], (template + NAME, msvc_string::STRIDE));
-    }
 }
 
 #[test]

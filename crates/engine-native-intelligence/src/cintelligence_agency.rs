@@ -678,19 +678,6 @@ pub(crate) mod test_support {
         w
     }
 
-    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-    pub(crate) fn intel_arena(
-        countries: usize,
-        states: u32,
-    ) -> (engine_native::crelation::status::bench::Arena, usize) {
-        use engine_native::crelation::status::bench::{Arena, countries as census};
-        let object = ccountry::INTELLIGENCE_AGENCY + 8;
-        let per_country = 12 + object + 16 + 0x160 + 0x40 + states as usize * state::STRIDE + 48;
-        let mut arena = Arena::new(0x10_0000 + (countries + 1) * per_country);
-        let (game_state, objects) = census(&mut arena, countries, object);
-        populate(&mut arena, &objects, states);
-        (arena, game_state)
-    }
 }
 
 #[cfg(test)]
@@ -878,52 +865,6 @@ mod tests {
                 matches!(batched.0.outcome, Outcome::Rows { len: 6 }),
                 site == 0,
                 "site {site}"
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "synthetic acquisition cost; release, affinity 0xF"]
-    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-    fn acquisition_cost() {
-        use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
-        let countries = std::env::var("BATTLEPLAN_INTEL_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_INTEL_COST_COUNTRIES"))
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5_000_u32);
-        let (arena, state) = test_support::intel_arena(countries as usize, 3);
-        let offset = arena.base();
-        let memory = CountedMemory::new(unsafe { LiveMemory::new() });
-        let mut rows = vec![Row::default(); countries as usize];
-        let mut names = vec![0; countries as usize * 6];
-        for (label, gathered) in [("serial", false), ("batched", true)] {
-            let mut samples = Vec::new();
-            let mut reads = ReadCounts::ZERO;
-            for _ in 0..40 {
-                ReadCounts::take_current();
-                let start = std::time::Instant::now();
-                let walk = if gathered {
-                    super::walk_shared(&memory, offset, state, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut names), |_, _| {})
-                } else {
-                    baseline::walk(&memory, offset, state, &mut rows, &mut names)
-                };
-                samples.push(start.elapsed().as_nanos() as f64);
-                reads = ReadCounts::take_current();
-                assert_eq!(
-                    walk.outcome,
-                    Outcome::Rows {
-                        len: countries as usize
-                    }
-                );
-                std::hint::black_box((&rows, &names));
-            }
-            samples.sort_by(f64::total_cmp);
-            println!(
-                "intelligence_agencies {label} countries={countries} median_ns_per_country={:.1} copy_calls={} record_calls={} spans={}",
-                samples[20] / f64::from(countries),
-                reads.copy_calls,
-                reads.record_calls,
-                reads.spans
             );
         }
     }

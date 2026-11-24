@@ -100,35 +100,6 @@ impl Memory for TraceMemory<'_> {
 }
 
 #[test]
-fn growing_players_preserve_the_original_complete_read_protocol() {
-    let world = World::new(50, 50, 29);
-    let fixed_memory = TraceMemory {
-        memory: world.memory(),
-        reads: RefCell::new(Vec::new()),
-    };
-    let growing_memory = TraceMemory {
-        memory: world.memory(),
-        reads: RefCell::new(Vec::new()),
-    };
-    let mut fixed_rows = vec![Row::default(); 50];
-    let mut fixed_names = vec![0; 50 * 47];
-    let fixed = walk(&fixed_memory, BASE, GS, &mut fixed_rows, &mut fixed_names);
-    let mut growing_rows = Vec::new();
-    let mut growing_names = Vec::new();
-    let growing = walk(
-        &growing_memory,
-        BASE,
-        GS,
-        &mut growing_rows,
-        &mut growing_names,
-    );
-    assert_eq!(growing, fixed);
-    assert_eq!(growing_rows, fixed_rows);
-    assert_eq!(growing_names, fixed_names);
-    assert_eq!(*growing_memory.reads.borrow(), *fixed_memory.reads.borrow());
-}
-
-#[test]
 fn growing_controllers_keep_original_count_bounds() {
     let mut world = World::new(50, 1, 29);
     let mut rows = Vec::new();

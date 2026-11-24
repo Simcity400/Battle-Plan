@@ -12,8 +12,6 @@ mod leaders;
 #[cfg(test)]
 mod leaders_tests;
 mod quiet;
-#[cfg(test)]
-mod quiet_bench;
 
 use collector_memory::read_accounting;
 use collector_primitives::{

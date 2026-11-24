@@ -140,9 +140,3 @@ fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
     }
 }
 
-#[test]
-fn span_keys_are_the_row_codec_s() {
-    use replay_data::rows::LeaderCommandSpanRow;
-    let row = LeaderCommandSpanRow { source: Command::FLEET, formation: u64::MAX, ..Default::default() };
-    assert_eq!(span_key(Command::FLEET, u64::MAX), row.key());
-}

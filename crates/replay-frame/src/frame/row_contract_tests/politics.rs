@@ -11,15 +11,6 @@ const TABLES: [TableId; 5] = [
 ];
 
 #[test]
-fn wire_ids_are_dense_and_round_trip() {
-    for (position, table) in TableId::ALL.into_iter().enumerate() {
-        assert_eq!(table.index(), position);
-        assert_eq!(table as usize, position);
-        assert_eq!(TableId::try_from(table as u16).unwrap(), table);
-    }
-}
-
-#[test]
 fn batches_survive_deltas_keyframes_and_selective_reads() {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();

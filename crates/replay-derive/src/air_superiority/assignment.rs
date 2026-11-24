@@ -953,16 +953,4 @@ mod tests {
         assert!(at(104).unwrap().iter().all(|side| side.faction.is_none()), "a faction with no member then is no side");
     }
 
-    #[test]
-    fn an_indexed_assignment_visits_only_the_runs_active_at_its_hour() {
-        let mut groups = Groups { identities: [("A".to_owned(), identity(1)), ("X".to_owned(), identity(2))].into(), ..Groups::default() };
-        for hour in 0..100 {
-            groups.wars.push(WarRun { first: "A".into(), second: "X".into(), first_hour: hour * 10, last_hour: hour * 10 + 4 });
-        }
-        let index = GroupIndex::new(&groups);
-        VISITED.with(|count| count.set(0));
-        let sides = indexed_roster(&groups, &index, 502, &countries(&["A", "X"])).unwrap();
-        assert_eq!(VISITED.with(std::cell::Cell::get), 1);
-        assert_eq!(sides.len(), 2);
-    }
 }

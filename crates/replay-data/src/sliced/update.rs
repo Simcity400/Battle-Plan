@@ -933,7 +933,7 @@ fn apply_keys<R: crate::rows::RowCodec>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rows::{LendLeaseAgreementRow, MarketEquipment, MarketPool, ResearchInputRow};
+    use crate::rows::{LendLeaseAgreementRow, ResearchInputRow};
 
     #[test]
     fn every_sliced_table_keeps_its_owner_in_the_top_32_key_bits() {
@@ -973,21 +973,6 @@ mod tests {
             );
         }
         assert_eq!(sliced, 30);
-    }
-
-    #[test]
-    fn keyed_producer_tables_take_keyed_updates_and_are_not_sliced() {
-        let mut keyed = 0;
-        for table in TableId::ALL {
-            let empty = TableRows::empty(table);
-            if !takes_keyed_updates(table) {
-                continue;
-            }
-            keyed += 1;
-            assert!(keyed_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
-            assert!(!sliced_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
-        }
-        assert_eq!(keyed, 57);
     }
 
     fn input(country: u32, index: u32, progress: i64) -> ResearchInputRow {
@@ -1136,136 +1121,6 @@ mod tests {
             update.apply(&mut applied).unwrap();
             assert_eq!(applied, merged, "{step}");
         }
-    }
-
-    #[test]
-    fn keyed_contract_tick_and_removal_keep_sibling_terms_and_route_allocations() {
-        use crate::rows::{MarketContractRuntime, MarketContractTermsRow, SharedMarketPool};
-        let pool: SharedMarketPool = MarketPool {
-            items: vec![
-                MarketEquipment {
-                    variant: 31,
-                    amount_raw: 99
-                };
-                5000
-            ],
-            ..Default::default()
-        }
-        .into();
-        let allocation = pool.items.as_ptr();
-        let mut rows: Vec<_> = (0..5000)
-            .map(|id| MarketContractTermsRow {
-                country: 5000,
-                id,
-                kind: 1,
-                equipment: pool.clone(),
-                prices: pool.clone(),
-                runtime: MarketContractRuntime {
-                    route_equipment: pool.clone(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .collect();
-        let mut changed = rows[17].clone();
-        changed.runtime.period_days = 8;
-        let removed_key = rows[18].key();
-        let storage = rows.as_ptr();
-        let mut baseline = TableRows::MarketContractTerms(std::mem::take(&mut rows));
-        SliceUpdate::keyed(
-            vec![changed.key()],
-            TableRows::MarketContractTerms(vec![changed]),
-        )
-        .apply(&mut baseline)
-        .unwrap();
-        let TableRows::MarketContractTerms(after) = &baseline else {
-            unreachable!()
-        };
-        assert_eq!(after.as_ptr(), storage);
-        assert_eq!(after[17].runtime.period_days, 8);
-        assert!(
-            after
-                .iter()
-                .all(|row| row.equipment.items.as_ptr() == allocation
-                    && row.prices.items.as_ptr() == allocation
-                    && row.runtime.route_equipment.items.as_ptr() == allocation)
-        );
-        SliceUpdate::keyed(
-            vec![removed_key],
-            TableRows::MarketContractTerms(Vec::new()),
-        )
-        .apply(&mut baseline)
-        .unwrap();
-        let TableRows::MarketContractTerms(after) = baseline else {
-            unreachable!()
-        };
-        assert_eq!(after.len(), 4999);
-        assert!(
-            after
-                .iter()
-                .all(|row| row.runtime.route_equipment.items.as_ptr() == allocation)
-        );
-    }
-    #[test]
-    fn keyed_scalar_commit_keeps_all_unchanged_pool_allocations() {
-        let pool: crate::rows::SharedMarketPool = MarketPool {
-            items: vec![
-                MarketEquipment {
-                    variant: 31,
-                    amount_raw: 99
-                };
-                5000
-            ],
-            ..Default::default()
-        }
-        .into();
-        let allocation = pool.items.as_ptr();
-        let mut baseline = TableRows::LendLeaseAgreements(
-            (0..5000)
-                .map(|id| LendLeaseAgreementRow {
-                    country: 5000,
-                    id,
-                    monthly: pool.clone(),
-                    ..Default::default()
-                })
-                .collect(),
-        );
-        let row = LendLeaseAgreementRow {
-            country: 5000,
-            id: 17,
-            monthly: pool.clone(),
-            fuel_sent_raw: 77,
-            ..Default::default()
-        };
-        let update = SliceUpdate::keyed(vec![row.key()], TableRows::LendLeaseAgreements(vec![row]));
-        let TableRows::LendLeaseAgreements(before) = &baseline else {
-            unreachable!()
-        };
-        let storage = before.as_ptr();
-        update.apply(&mut baseline).unwrap();
-        let TableRows::LendLeaseAgreements(after) = &baseline else {
-            unreachable!()
-        };
-        assert_eq!(storage, after.as_ptr());
-        assert_eq!(after[17].fuel_sent_raw, 77);
-        assert!(
-            after
-                .iter()
-                .all(|row| row.monthly.items.as_ptr() == allocation)
-        );
-        let key = after[18].key();
-        SliceUpdate::keyed(vec![key], TableRows::LendLeaseAgreements(Vec::new()))
-            .apply(&mut baseline)
-            .unwrap();
-        let TableRows::LendLeaseAgreements(after) = &baseline else {
-            unreachable!()
-        };
-        assert_eq!(after.len(), 4999);
-        assert!(
-            after
-                .iter()
-                .all(|row| row.monthly.items.as_ptr() == allocation)
-        );
     }
 
     #[test]

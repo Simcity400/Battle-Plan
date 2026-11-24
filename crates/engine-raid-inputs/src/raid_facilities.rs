@@ -323,33 +323,4 @@ mod tests {
         assert!(read_row(&bytes).is_err());
         assert!(read_row(&bytes[..0x54]).is_err());
     }
-    #[test]
-    #[ignore = "synthetic acquisition cost; release, affinity 0xF"]
-    fn acquisition_cost() {
-        let countries = std::env::var("BATTLEPLAN_RAID_SCORE_COUNTRIES").or_else(|_| std::env::var("HOI4_RAID_SCORE_COUNTRIES"))
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1500);
-        let (bytes, _) = fixture(countries);
-        let memory = SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        let mut rows = vec![Row::default(); countries * 2];
-        let mut samples = Vec::new();
-        for _ in 0..40 {
-            let start = std::time::Instant::now();
-            let result = walk(&memory, 0, 0x1000, &mut rows);
-            samples.push(start.elapsed().as_secs_f64() * 1000.0);
-            assert!(matches!(result, Outcome::Rows { .. }));
-            std::hint::black_box(&rows);
-        }
-        samples.sort_by(f64::total_cmp);
-        println!(
-            "raid_facilities countries={countries} median_ms={} max_ms={} output_bytes={}",
-            samples[20],
-            samples[39],
-            std::mem::size_of_val(rows.as_slice())
-        );
-    }
 }

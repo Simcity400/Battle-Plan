@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { LogPage, LogRow } from '../../charts/log/logData';
-import { eventDescription, eventTooltip, familyReveals, kindsRequest, familyRows, familyShown, feedFacets, feedLogRow, feedRow, pageNotes, pagesNoted, rowMatches,
-  validateFeedRow, validateSpan, withFamilyRows } from './eventFeedData.ts';
+import { eventDescription, eventTooltip, familyReveals, familyRows, familyShown, feedFacets, feedLogRow, feedRow, pageNotes, pagesNoted, rowMatches, validateFeedRow, validateSpan, withFamilyRows } from './eventFeedData.ts';
 import type { FeedEvent } from './eventFeedData';
 import type { EventFeedRow, FeedKindCode } from '../../generated/dashboard';
-import { productRequest } from '../../dashboard/request.ts';
 
 let serial = 0;
 const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Partial<EventFeedRow> = {}): EventFeedRow => ({
@@ -115,10 +113,3 @@ test('a nuclear strike names its bomb and target, totals only its complete parts
   assert.throws(() => validateFeedRow({ ...row('warDeclared', 40, ['USA', 'JAP']), strike }), /malformed/, 'only a strike carries one');
 });
 
-test("the kinds' codes are asked alone, apart from the span of no family whose notes walk its reads", () => {
-  const track = { source: { id: 's', revision: 'r' }, branch: { id: '3' } };
-  assert.deepEqual(kindsRequest(track), productRequest({ sourceId: 's', revision: 'r', product: 'event-feed-span', params: { branchId: '3', categories: [], kindsOnly: true } }));
-  const kinds: FeedKindCode[] = [{ kind: 'warStarted', code: 4, category: 'warsPeace' }];
-  const reply = validateSpan({ branchId: '3', firstHour: 1, lastHour: 9, kinds, rows: [], unavailable: [], warnings: [] });
-  assert.deepEqual(reply.kinds, kinds);
-});

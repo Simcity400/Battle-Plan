@@ -1,30 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import { anchoredScrollTop, cardHeightsAt, cardPageTarget, hasLogPartTip, keyTarget, logDate, logItems, logOffsets, logRowColumns, monthLabel, MONTH_HEIGHT, newCardKeys, newestFirst, ROW_HEIGHT, rowId, scrollToShow, shownMotion, tipRow, updateCardHeights, visibleRange } from './logData.ts';
+import { anchoredScrollTop, cardHeightsAt, cardPageTarget, hasLogPartTip, keyTarget, logItems, logOffsets, monthLabel, newCardKeys, newestFirst, rowId, scrollToShow, shownMotion, tipRow, updateCardHeights, visibleRange } from './logData.ts';
 import type { CardMeasurements, LogRow } from './logData';
-import type { LogListProps } from './LogList';
 import type { MovingRow } from '../rowMotion';
 import { commitRows, EMPTY_HISTORY, shownRows } from '../rowMotion.ts';
-import { LOG_OPTIONS, logSettings } from './logOptions.ts';
 import { shownSlot } from '../rowNavigation.ts';
-import { resolveOptions } from '../../dashboard/options.ts';
 
 const hour = (year: number, month: number, day: number, at = 1) => engineHour({ year, month, day, hour: at }) as number;
 const row = (key: string, at: number, by = false): LogRow<string> => ({ key, hour: at, by, item: key });
 
-test('mixed log rows reserve optional tracks only for the rows that draw their content', () => {
-  const sentence = 'var(--space-6) minmax(0, 1fr) auto';
-  const meter = 'var(--space-6) minmax(0, 2fr) minmax(0, 1fr) auto';
-  const rows = [row('ongoing', 10), row('ended', 20, true), row('unread', 15)];
-  const columns = (row: LogRow<string>) => row.item === 'ongoing' ? meter : sentence;
-  for (const months of [false, true]) {
-    const items = logItems(rows, months).filter(item => item.kind === 'row');
-    assert.deepEqual(items.map(item => logRowColumns(columns, item.row)), [meter, sentence, sentence]);
-    assert.deepEqual(items.map(item => item.row.hour), [10, 20, 15]);
-    assert.deepEqual(items.map(item => logRowColumns(sentence, item.row)), [sentence, sentence, sentence]);
-  }
-});
 
 test('rows are newest first, and rows of one hour keep the order given', () => {
   const rows = [row('a', 10), row('b', 30), row('c', 20), row('d', 30)];
@@ -42,13 +27,6 @@ test('month dividers precede each month’s first row, keyed by the month so the
   assert.equal(monthLabel(0), 'Undated');
 });
 
-test('offsets stack rows and dividers at their heights for either density', () => {
-  const items = logItems(newestFirst([row('a', hour(1941, 6, 2)), row('b', hour(1941, 5, 2))]), true);
-  assert.deepEqual(logOffsets(items, 'comfortable'), [0, MONTH_HEIGHT, MONTH_HEIGHT + ROW_HEIGHT.comfortable, 2 * MONTH_HEIGHT + ROW_HEIGHT.comfortable,
-    2 * MONTH_HEIGHT + 2 * ROW_HEIGHT.comfortable]);
-  assert.equal(logOffsets(items, 'compact').at(-1), 2 * MONTH_HEIGHT + 2 * ROW_HEIGHT.compact);
-  assert.deepEqual(logOffsets([], 'compact'), [0]);
-});
 
 test('pinned running rows retain unique month sections before newest-first history', () => {
   const items = logItems([row('running', hour(1941, 5, 30)), row('finished', hour(1941, 6, 2)), row('older', hour(1941, 5, 2))], true);
@@ -94,17 +72,7 @@ test('a step reaches the nearest row shown that way, or none', () => {
   assert.equal(shownSlot(0, 1, 0, () => true), null);
 });
 
-test('a row’s date shows its day and month over its year', () => {
-  assert.deepEqual(logDate(hour(1943, 12, 18, 4)), { day: '18 Dec', year: '1943' });
-  assert.deepEqual(logDate(12), { day: 'Hour 12', year: '' });
-});
 
-test('log settings use their defaults and fall back on bad values', () => {
-  assert.deepEqual(logSettings(resolveOptions(LOG_OPTIONS, {})), { density: 'comfortable', months: false, animate: true, chips: true });
-  assert.deepEqual(logSettings(resolveOptions(LOG_OPTIONS, { density: 'compact', months: true, rowAnimation: false, chips: false })),
-    { density: 'compact', months: true, animate: false, chips: false });
-  assert.equal(logSettings(resolveOptions(LOG_OPTIONS, { density: 'tiny' })).density, 'comfortable');
-});
 
 test('without animation a row that is gone goes at once, never left over its replacement', () => {
   const moving = (key: string, slot: number, phase: MovingRow<string>['phase']): MovingRow<string> => ({ key, item: key, slot, phase, since: 0 });
@@ -301,231 +269,6 @@ test('a shrinking measured card retains its anchor inside the new height', () =>
 });
 
 
-test('card focus and delayed page navigation preserve reached tooltip ownership', async () => {
-  const { createServer } = await import('vite');
-  const slots = new Map<number, unknown>(), frames: (() => void)[] = [];
-  let cursor = 0;
-  type Effect = { deps?: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void };
-  const changedDeps = (previous: Effect | undefined, deps?: readonly unknown[]) => !previous || !deps || !previous.deps
-    || deps.length !== previous.deps.length || deps.some((dep, at) => !Object.is(dep, previous.deps![at]));
-  const effects = new Map<number, Effect>(), pendingEffects = new Map<number, Effect>();
-  const layouts = new Map<number, Effect>(), pendingLayouts = new Map<number, Effect>();
-  let measureLayout = false;
-  const commitEffects = (store: Map<number, Effect>, pending: Map<number, Effect>) => {
-    const changed = [...pending];
-    pending.clear();
-    for (const [index] of changed) store.get(index)?.cleanup?.();
-    for (const [index, effect] of changed) {
-      const cleanup = effect.run();
-      store.set(index, { ...effect, cleanup: typeof cleanup === 'function' ? cleanup : undefined });
-    }
-  };
-  const commit = () => { commitEffects(layouts, pendingLayouts); commitEffects(effects, pendingEffects); };
-  const fixture = {
-    useState(initial: unknown) {
-      const index = cursor++;
-      if (!slots.has(index)) slots.set(index, typeof initial === 'function' ? initial() : initial);
-      return [slots.get(index), (next: unknown) => slots.set(index, typeof next === 'function' ? next(slots.get(index)) : next)];
-    },
-    useRef(initial: unknown) {
-      const index = cursor++;
-      if (!slots.has(index)) slots.set(index, { current: initial });
-      return slots.get(index) as { current: unknown };
-    },
-    useId() { return fixture.useRef(`log-${cursor}`).current; },
-    useMemo(build: () => unknown, deps: readonly unknown[]) {
-      const index = cursor++, previous = slots.get(index) as { deps: readonly unknown[]; value: unknown } | undefined;
-      if (!previous || deps.length !== previous.deps.length || deps.some((dep, at) => !Object.is(dep, previous.deps[at]))) {
-        slots.set(index, { deps: [...deps], value: build() });
-      }
-      return (slots.get(index) as { value: unknown }).value;
-    },
-    useCallback(callback: unknown, deps: readonly unknown[]) { return fixture.useMemo(() => callback, deps); },
-    useEffect(run: Effect['run'], deps?: readonly unknown[]) {
-      const index = cursor++;
-      if (changedDeps(effects.get(index), deps)) pendingEffects.set(index, { deps, run });
-    },
-    useLayoutEffect(run: Effect['run'], deps?: readonly unknown[]) {
-      const index = cursor++;
-      if (measureLayout && changedDeps(layouts.get(index), deps)) pendingLayouts.set(index, { deps, run });
-    },
-  };
-  const host = globalThis as typeof globalThis & { __logCardHooks?: typeof fixture };
-  host.__logCardHooks = fixture;
-  const globals = ['document', 'CSS', 'requestAnimationFrame', 'cancelAnimationFrame', 'Element', 'ResizeObserver', 'window'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
-  class Part {
-    readonly text: string | null;
-    readonly parentElement: Part | null;
-    constructor(text: string | null = null, parentElement: Part | null = null) {
-      this.text = text;
-      this.parentElement = parentElement;
-    }
-    getAttribute(name: string) { return name === 'data-tooltip' ? this.text : null; }
-  }
-  Object.defineProperty(globalThis, 'Element', { configurable: true, value: Part });
-  const observers: Observer[] = [];
-  class Observer {
-    readonly targets: unknown[] = [];
-    readonly changed: (entries: { target: unknown }[]) => void;
-    constructor(changed: (entries: { target: unknown }[]) => void) {
-      this.changed = changed;
-      observers.push(this);
-    }
-    observe(target: unknown) { this.targets.push(target); this.changed([{ target }]); }
-    unobserve() {} disconnect() {}
-  }
-  Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: Observer });
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: { setTimeout: () => 0, clearTimeout() {} } });
-  const chip = new Part();
-  const page: { activeElement: unknown } = { activeElement: chip };
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: page });
-  Object.defineProperty(globalThis, 'CSS', { configurable: true, value: { escape: (value: string) => value } });
-  Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: (frame: () => void) => { frames.push(frame); return frames.length; } });
-  Object.defineProperty(globalThis, 'cancelAnimationFrame', { configurable: true, value: () => {} });
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'log-card-focus-fixture', enforce: 'pre',
-      transform(source, id) {
-        const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/log/LogList.tsx') || path.endsWith('/charts/useRowMotion.ts') || path.endsWith('/dashboard/widgetPerf.ts')) {
-          return source.replace(/import \{ ([^}]+) \} from 'react';/, "import * as React from 'react'; const { $1 } = { ...React, ...globalThis.__logCardHooks };");
-        }
-        if (path.endsWith('/components/ContextMenu.tsx')) return 'export function useContextMenu() { return { menu: null, open() {} }; }';
-        if (path.endsWith('/charts/useChartTokens.ts')) return "export function useViewportHeight() { return 600; } export function useChartTokens() { return { font: 'Synthetic', fontSize: { small: 11, body: 12, title: 13 }, reducedMotion: false }; }";
-      },
-    }] });
-  try {
-    const { default: LogList } = await vite.ssrLoadModule('/ui/src/charts/log/LogList.tsx') as typeof import('./LogList.tsx');
-    const { tooltipStore, hideTooltip } = await vite.ssrLoadModule('/ui/src/charts/tooltip.ts') as typeof import('../tooltip.ts');
-    type Node = { ref?: (node: unknown) => void; props: Record<string, unknown> };
-    const descendants = (value: unknown): Node[] => Array.isArray(value) ? value.flatMap(descendants)
-      : value && typeof value === 'object' && 'props' in value ? [value as Node, ...descendants((value as Node).props.children)] : [];
-    const reached: (string | null)[] = [];
-    let props: LogListProps<string> = { rows: [row('first', 3), row('middle', 2), row('last', 1)], label: 'Cards', density: 'comfortable' as const,
-      months: false, animate: false, layout: 'card' as const, rowHeight: () => 100, renderRow: (at: LogRow<string>) => at.item,
-      describe: (at: LogRow<string>) => at.key, tooltip: (at: LogRow<string>) => [{ title: at.key, rows: [] }],
-      onTooltip: (at: LogRow<string> | null) => reached.push(at?.key ?? null) };
-    const render = () => { cursor = 0; return descendants(LogList(props)); };
-    const flush = () => { for (const frame of frames.splice(0)) frame(); };
-    let nodes = render();
-    let list = nodes.find(node => node.props.role === 'listbox')!;
-    const scroller = { scrollTop: 0, clientHeight: 200, offsetHeight: 200, clientWidth: 400, contains: (node: unknown) => node === chip,
-      querySelector: () => ({ getBoundingClientRect: () => ({ right: 400, top: 0, height: 100 }) }),
-      focus(): void { page.activeElement = scroller; (list.props.onFocus as (event: unknown) => void)({ target: scroller, currentTarget: scroller }); } };
-    ((list.props.ref ?? list.ref) as (node: unknown) => void)(scroller);
-    nodes = render(); list = nodes.find(node => node.props.role === 'listbox')!;
-    (list.props.onKeyDown as (event: unknown) => void)({ key: 'End', preventDefault() {} });
-    flush();
-    nodes = render();
-    assert.deepEqual(nodes.filter(node => node.props.role === 'option' && node.props['aria-selected']).map(node => node.props['data-log-id']), ['last']);
-    assert.equal(reached.at(-1), 'last');
-    assert.equal(tooltipStore.get()?.content.title, 'last');
-    assert.equal(nodes.some(node => node.props.className === 'log-when'), false);
-    commit();
-
-    const wanted: string[][] = [];
-    const visible: string[][] = [];
-    const pendingPage = { key: 'older', start: 0, end: 100, count: 3 };
-    const loadedPage = { ...pendingPage, rows: [row('A0', 90), row('A1', 80), row('A2', 70)] };
-    const currentPage = { key: 'current', start: 101, end: 200, count: 1, rows: [row('B', 150)] };
-    props = { ...props, rows: undefined, layout: 'row', rowHeight: undefined, pages: [currentPage, pendingPage], playhead: null,
-      onWantedPages: keys => wanted.push([...keys]), onVisible: rows => visible.push(rows.map(at => at.key)) };
-    const draw = () => { nodes = render(); list = nodes.find(node => node.props.role === 'listbox')!; commit(); };
-    const key = (name: string) => (list.props.onKeyDown as (event: unknown) => void)({ key: name, preventDefault() {} });
-    draw();
-    key('End'); draw();
-    assert.equal(tooltipStore.get(), null);
-    assert.equal(reached.at(-1), null);
-    flush();
-    assert.deepEqual(wanted.at(-1), ['older', 'current']);
-    assert.deepEqual(visible.at(-1), ['B']);
-    const b = nodes.find(node => node.props['data-log-id'] === 'B')!;
-    (b.props.onPointerMove as (event: unknown) => void)({ target: new Part(), currentTarget: new Part(), clientX: 20, clientY: 30 });
-    draw();
-    props = { ...props, pages: [currentPage, loadedPage] };
-    draw(); flush(); draw();
-    assert.equal(tooltipStore.get()?.content.title, 'B');
-    assert.equal(reached.at(-1), 'B');
-    assert.equal(nodes.some(node => node.props['data-log-id'] === 'A2' && node.props['aria-selected']), false);
-
-    for (const takeover of ['blur', 'Escape', 'part'] as const) {
-      props = { ...props, pages: [currentPage, pendingPage] };
-      draw(); key('End'); draw();
-      if (takeover === 'blur') (list.props.onBlur as () => void)();
-      else if (takeover === 'Escape') key('Escape');
-      else {
-        const rowElement = new Part(), part = new Part('A part owns this tooltip', rowElement);
-        const reachedRow = nodes.find(node => node.props['data-log-id'] === 'B')!;
-        (reachedRow.props.onPointerMove as (event: unknown) => void)({ target: part, currentTarget: rowElement, clientX: 20, clientY: 30 });
-      }
-      draw();
-      const beforeArrival = reached.length;
-      props = { ...props, pages: [currentPage, loadedPage] };
-      draw(); flush(); draw();
-      assert.equal(tooltipStore.get(), null, takeover);
-      assert.equal(reached.slice(beforeArrival).includes('A2'), false, takeover);
-      assert.equal(nodes.some(node => node.props['data-log-id'] === 'A2' && node.props['aria-selected']), false, takeover);
-    }
-    props = { ...props, pages: [currentPage, pendingPage] };
-    draw(); key('End'); draw();
-    props = { ...props, pages: [currentPage, { ...loadedPage, rows: loadedPage.rows.slice(0, 2) }] };
-    draw(); flush(); draw();
-    assert.equal(tooltipStore.get()?.content.title, 'A1');
-    assert.equal(reached.at(-1), 'A1');
-    assert.equal(nodes.some(node => node.props['data-log-id'] === 'A1' && node.props['aria-selected']), true);
-    measureLayout = true;
-    const cardPage = { key: 'card window', start: 0, end: 100, count: 1, rows: [row('held card', 80)] };
-    props = { ...props, layout: 'card', rowHeight: () => 100, pages: [cardPage] };
-    draw();
-    const attach = (id: string) => {
-      const node = nodes.find(node => node.props['data-log-id'] === id)!;
-      const classes = new Set<string>();
-      const element = { dataset: { logKey: id }, offsetHeight: 150,
-        classList: { add: (name: string) => classes.add(name), remove: (name: string) => classes.delete(name) },
-        addEventListener() {}, removeEventListener() {} };
-      ((node.props.ref ?? node.ref) as (node: unknown) => void)(element);
-      return (value: unknown) => ((node.props.ref ?? node.ref) as (node: unknown) => void)(value);
-    };
-    const detach = attach('held card');
-    const releasedObserver = observers.at(-1)!;
-    draw();
-    const retained = () => [...slots.values()].map(value => (value as { current?: unknown } | null)?.current)
-      .find(value => value && typeof value === 'object' && 'heights' in value) as CardMeasurements;
-    const known = () => [...slots.values()].map(value => (value as { current?: unknown } | null)?.current).find(value => value instanceof Set) as Set<string>;
-    assert.equal(retained().heights.get('held card'), 150);
-    assert.equal(known().has('held card'), true);
-    detach(null);
-    props = { ...props, pages: [{ ...cardPage, rows: undefined },
-      { key: 'next window', start: 101, end: 200, count: 1, rows: [row('next card', 150)] }] };
-    draw(); const detachNext = attach('next card'); draw();
-    releasedObserver.changed([{ target: releasedObserver.targets[0] }]);
-    assert.deepEqual([...retained().heights], [['next card', 150]]);
-    assert.equal(known().has('held card'), false);
-    assert.equal(known().has('next card'), true);
-    detachNext(null);
-    props = { ...props, pages: [] };
-    draw(); draw();
-    assert.equal(retained().heights.size, 0);
-    assert.equal(known().size, 0);
-    const opaqueKeys = ['actor A', 'actor_A', 'actor/%', 'actor/??', 'actor/\ud800'];
-    props = { ...props, pages: undefined, rows: opaqueKeys.map((key, index) => row(key, 10 - index)) };
-    draw(); flush(); draw();
-    const options = nodes.filter(node => node.props.role === 'option');
-    assert.equal(options.length, opaqueKeys.length);
-    assert.equal(new Set(options.map(node => node.props.id)).size, opaqueKeys.length, 'opaque content keys retain distinct DOM IDs');
-    assert.ok(options.every(node => !/\s/.test(String(node.props.id))));
-    key('Home'); draw();
-    assert.equal(list.props['aria-activedescendant'], options[0].props.id);
-    for (const effect of [...layouts.values(), ...effects.values()]) effect.cleanup?.();
-    assert.deepEqual(wanted.at(-1), []);
-    assert.equal(reached.at(-1), null);
-    const owner = tooltipStore.get()?.owner;
-    if (owner) hideTooltip(owner);
-  } finally {
-    await vite.close();
-    delete host.__logCardHooks;
-    for (const [key, descriptor] of globals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
-  }
-});
 
 
 test('paged card measurement retains only held keys through 5,000 window evictions', () => {

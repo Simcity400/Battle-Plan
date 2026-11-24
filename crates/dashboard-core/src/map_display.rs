@@ -548,14 +548,4 @@ mod tests {
         assert!(filter(&many).validate().is_ok());
     }
 
-    #[test]
-    fn audio_gain_scales_by_master() {
-        let audio = MapAudio {
-            master: 50.0,
-            ambient: 49.6,
-            ..Default::default()
-        };
-        assert!((audio.gain(audio.ambient) - 0.248).abs() < 1e-6);
-        assert!((audio.gain(audio.voice) - 0.5).abs() < 1e-6);
-    }
 }

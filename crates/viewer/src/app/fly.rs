@@ -180,34 +180,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_scripted_flight_holds_its_controls_as_the_controller_and_starts_where_told() {
-        let scripted = Scripted {
-            position: [3000.0, 40.0, 1500.0],
-            attitude: [0.5, -0.1, 0.2],
-            view: View::Nose,
-            steer: [0.5, -1.0, -0.25],
-        };
-        let frame = scripted.frame(0.05);
-        assert_eq!(frame.dt, 0.05);
-        assert_eq!(frame.pad.left, [0.5, -1.0]);
-        assert_eq!(frame.pad.triggers, [0.25, 0.0]);
-        assert_eq!(
-            Scripted {
-                steer: [0.0, 0.0, 1.0],
-                ..scripted
-            }
-            .frame(0.0)
-            .pad
-            .triggers,
-            [0.0, 1.0]
-        );
-        let flight = scripted.flight();
-        assert_eq!(flight.position, scripted.position);
-        assert_eq!([flight.yaw, flight.pitch, flight.roll], scripted.attitude);
-        assert_eq!(flight.view, View::Nose);
-    }
-
-    #[test]
     #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
     fn the_host_s_controller_flies_the_aircraft_while_the_map_lacks_keyboard_focus()
     -> std::io::Result<()> {

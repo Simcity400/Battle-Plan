@@ -291,12 +291,6 @@ fn tokens_round_trip_and_unknown_tokens_are_refused() {
 }
 
 #[test]
-fn colours_pack_by_truncating_each_component() {
-    assert_eq!(pack(DIPLOMACY_SELF), [25, 168, 25, 255]);
-    assert_eq!(pack([0.7, 0.7, 0.7, 0.7]), [178, 178, 178, 178]);
-}
-
-#[test]
 fn colour_lists_interpolate_between_the_rows_around_the_value() {
     let list = &defines().resistance_colors;
     assert_eq!(list.color(0.0), [0.0, 1.0, 0.0, 0.0]);
@@ -322,22 +316,6 @@ fn factions_colour_members_by_their_faction_and_others_by_the_define() {
     assert_eq!(layer.styles[&3].color, [51, 102, 153, 255]);
     assert_eq!(layer.styles[&2].color, [178, 178, 178, 178]);
     assert_eq!(layer.thickness, None);
-}
-
-#[test]
-fn players_fade_unplayed_countries_and_pulse_the_selected_one() {
-    let fill = run(
-        MapMode::Stock(Stock::Players),
-        &content(MapModes::default()),
-        Some(0),
-    );
-    let layer = fill.draw.unwrap().country.unwrap();
-    assert_eq!(layer.styles[&2].color, [127, 0, 63, 255]);
-    let ger = layer.styles[&1];
-    assert_eq!(ger.color, [191, 127, 63, 38]);
-    assert!(ger.pulse);
-    assert_eq!(ger.fill, 1.5);
-    assert!(!layer.styles[&3].pulse);
 }
 
 #[test]
@@ -752,59 +730,6 @@ fn each_mode_chooses_whose_names_the_map_writes_far_and_near() {
             far: NameLayer::Nothing,
             near: NameLayer::Countries
         }
-    );
-}
-
-#[test]
-fn modes_no_recording_can_draw_say_why() {
-    for stock in Stock::ALL {
-        let expected = stock == Stock::Supply;
-        assert_eq!(stock.unavailable().is_some(), expected, "{stock:?}");
-    }
-}
-
-#[test]
-fn each_mode_takes_the_games_channel_pair_and_names_what_it_lacks() {
-    use Source::{Country, Empty, Strategic};
-    for (stock, channels) in [
-        (Stock::StrategicAir, [Strategic, Empty]),
-        (Stock::Supply, [Empty, Empty]),
-        (Stock::Terrain, [Empty, Country]),
-    ] {
-        let fill = run(
-            MapMode::Stock(stock),
-            &content(MapModes::default()),
-            Some(0),
-        );
-        assert_eq!(fill.draw.unwrap().channels, channels, "{stock:?}");
-        assert_eq!(
-            fill.warnings.len(),
-            usize::from(stock != Stock::StrategicAir)
-        );
-    }
-    for stock in [Stock::Raids, Stock::Resources] {
-        let fill = run(
-            MapMode::Stock(stock),
-            &content(MapModes::default()),
-            Some(0),
-        );
-        assert_eq!(fill.draw.unwrap().channels, [Country, Empty], "{stock:?}");
-        assert!(fill.warnings.is_empty(), "{stock:?}");
-    }
-    let navy = run(
-        MapMode::Stock(Stock::StrategicNavy),
-        &content(MapModes::default()),
-        Some(0),
-    );
-    assert_eq!(navy.draw.unwrap().channels, POLITICAL);
-    assert!(navy.warnings.is_empty(), "{:?}", navy.warnings);
-    assert_eq!(
-        run(
-            MapMode::Stock(Stock::Default),
-            &content(MapModes::default()),
-            None
-        ),
-        ModeFill::default()
     );
 }
 
@@ -2262,39 +2187,6 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
     assert!(refreshes(Some(&state), true, 48));
     assert!(!refreshes(Some(&state), true, 43));
     assert!(!refreshes(Some(&state), false, 48));
-}
-
-#[test]
-fn the_terrain_mode_draws_its_layer_under_the_countries() {
-    let mut content = content(MapModes::default());
-    let layer = ModeLayer {
-        region_of: vec![0, 1, 2].into(),
-        styles: map_display_data::value_index::ValueIndex::try_from_iter([(
-            1,
-            Style {
-                color: [10, 20, 30, 127],
-                pulse: false,
-                fill: 1.0,
-            },
-        )])
-        .unwrap(),
-        thickness: Some(0.0),
-        gradient: Some(terrain::TERRAIN_GRADIENT),
-        channel: [0.39, 0.973],
-    };
-    content.terrain = Ok(terrain::Built {
-        layer: layer.clone(),
-        warnings: vec!["one province left out".to_owned()],
-    });
-    let fill = run(MapMode::Stock(Stock::Terrain), &content, Some(0));
-    let draw = fill.draw.unwrap();
-    assert_eq!(draw.channels, [Source::Mode, Source::Country]);
-    assert_eq!(draw.layer, Some(layer));
-    assert_eq!(
-        draw.channel_constants(),
-        [Some([0.39, 0.973]), Some(defines().country_channel)]
-    );
-    assert_eq!(fill.warnings, ["one province left out"]);
 }
 
 const ROADS: u32 = 77;

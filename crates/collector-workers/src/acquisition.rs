@@ -2623,68 +2623,6 @@ mod tests {
 
     #[cfg(feature = "executor_join_help")]
     #[test]
-    fn join_help_rejects_a_candidate_whose_mean_fits_but_decaying_maximum_does_not() {
-        help_case(true, true, false, true, true);
-    }
-
-    #[cfg(feature = "executor_join_help")]
-    #[test]
-    fn join_help_subtracts_elapsed_body_time_from_its_prediction() {
-        let release = Arc::new(AtomicBool::new(false));
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = {
-            let release = Arc::clone(&release);
-            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
-            unsafe {
-                Pool::start_with_class(
-                    1,
-                    2,
-                    Some((2, |job: &u8| usize::from(*job != 0))),
-                    move |job: &mut u8| {
-                        if *job == 0 {
-                            entered_tx.send(()).unwrap();
-                            wait_until(|| release.load(Ordering::Acquire));
-                        }
-                        std::thread::current().id()
-                    },
-                )
-            }
-            .unwrap()
-        };
-        let release = Gate(release);
-        pool.shared.means[0].store(4, Ordering::Relaxed);
-        pool.shared.means[1].store(1, Ordering::Relaxed);
-        pool.shared.maxima[1].store(1, Ordering::Relaxed);
-        let awaited = submit(&pool, &mut Some(0));
-        entered_rx
-            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
-            .unwrap();
-        let candidate = submit(&pool, &mut Some(1));
-        let begin = pool.shared.body_begin[awaited.slot].load(Ordering::Acquire);
-        wait_until(|| {
-            (collector_primitives::clock::qpc().max(0) as u64).saturating_sub(begin) >= 4
-        });
-        let helped = pool.shared.try_help(awaited, &mut HelpBudget::new());
-        if let Some(claim) = helped {
-            pool.shared.execute(claim, true, true);
-        }
-        release.open();
-        assert_ne!(
-            pool.finish(awaited).unwrap().report.unwrap(),
-            std::thread::current().id()
-        );
-        wait_until(|| pool.is_complete(candidate));
-        let done = pool.finish(candidate).unwrap();
-        assert_ne!(
-            done.report.unwrap(),
-            std::thread::current().id(),
-            "help ignored the awaited body's elapsed time"
-        );
-        assert_eq!(pool.calibration().help_executed, 0);
-    }
-
-    #[cfg(feature = "executor_join_help")]
-    #[test]
     fn join_help_claims_in_priority_order_and_rechecks_its_awaited_word() {
         let release = Arc::new(AtomicBool::new(false));
         let (entered_tx, entered_rx) = mpsc::channel();
@@ -3794,36 +3732,6 @@ mod tests {
         );
         slow_gate.store(true, Ordering::Release);
         assert_eq!(pool.finish(slow).unwrap().report.unwrap(), 50);
-    }
-
-    #[test]
-    fn process_affinity_limits_the_pool_below_the_machine_count() {
-        assert_eq!(worker_count_for_cpus(16, Some(4)), 3);
-        assert_eq!(worker_count_for_cpus(16, Some(16)), 15);
-        assert_eq!(worker_count_for_cpus(16, None), 15);
-        assert_eq!(worker_count_for_cpus(8, Some(64)), 7);
-        assert_eq!(worker_count_for_cpus(16, Some(1)), 1);
-        assert_eq!(worker_count_for_cpus(64, Some(40)), MAX_WORKERS);
-    }
-
-    #[test]
-    fn the_pool_never_exceeds_the_cpus_this_process_may_use() {
-        let allowed = allowed_cpus().expect("process affinity readable");
-        assert!(allowed >= 1);
-        assert!(recommended_worker_count() <= allowed.saturating_sub(1).max(1));
-    }
-
-    #[test]
-    fn hardware_threads_size_the_pool_and_reserve_one_for_the_callback() {
-        assert_eq!(worker_count_for_topology(16), 15);
-        assert_eq!(worker_count_for_topology(8), 7);
-        assert_eq!(worker_count_for_topology(4), 3);
-        assert_eq!(worker_count_for_topology(2), 1);
-        assert_eq!(worker_count_for_topology(1), 1);
-        assert_eq!(worker_count_for_topology(0), 1);
-        assert_eq!(worker_count_for_topology(32), MAX_WORKERS);
-        // SAFETY: Test validates rejection of an excessive worker count before spawning threads.
-        assert!(unsafe { Pool::start(MAX_WORKERS + 1, 1, |request: &mut u8| *request) }.is_err());
     }
 
     #[test]

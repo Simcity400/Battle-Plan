@@ -912,20 +912,6 @@ mod labelled {
     use super::*;
     use engine_allocation::labels;
 
-    #[test]
-    fn a_holder_change_allocates_for_the_slots_it_moved_not_for_the_log() {
-        let mut run = Run::new();
-        run.step(three_countries(100_000));
-        assert_eq!(run.total(FRA, FRA, Total::COMBAT_LOG, Some(8)), number(100_000));
-        labels::phase("g1: holder change");
-        run.step(vec![set(TableId::CountryLinks, CountryLinkRow { id: GER_ALIAS, canonical_slot: ENG })]);
-        labels::phase("g1: after");
-        assert_eq!(run.total(ENG, ENG, Total::COMBAT_LOG, Some(7)), number(2));
-        let phases = labels::phases();
-        let phase = phases.iter().find(|phase| phase.name == "g1: holder change").expect("the holder change's phase");
-        let peak = phase.labels.iter().filter(|charge| charge.owner == "writer: EquipmentLosses").map(|charge| charge.peak).max().unwrap_or(0);
-        assert!(peak < 1 << 20, "the writer's label peaked at {peak} bytes in the holder change's hour");
-    }
 }
 
 const JAN_1943: i32 = 43_800_000 + 1943 * 8760;

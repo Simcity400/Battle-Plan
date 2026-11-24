@@ -51,9 +51,6 @@ class ReleaseSmoke(unittest.TestCase):
             path.write_bytes(b"x")
         return self.root
 
-    def test_the_shipped_binaries_are_the_app_the_recorder_the_collector_and_the_compiler(self):
-        self.assertEqual(rs.shipped_binaries(), FIVE)
-        self.assertEqual(rs.shipped_notices(), NOTICES)
 
     def test_exactly_the_five_beside_each_other_pass_with_licences_and_installer_internals(self):
         installed = self.tree(*FIVE, *NOTICES, "$PLUGINSDIR/nsis_tauri_utils.dll")

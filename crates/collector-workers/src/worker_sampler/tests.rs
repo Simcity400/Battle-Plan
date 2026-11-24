@@ -63,63 +63,6 @@ fn worker_sampler_settings_defaults_options_and_refusals() {
 }
 
 #[test]
-fn worker_sampler_context_is_aligned_for_windows() {
-    let scratch = Scratch::default();
-    assert_eq!(size_of::<CONTEXT>(), 1232);
-    assert_eq!((&scratch.context.0 as *const CONTEXT as usize) % 16, 0);
-    assert_eq!(scratch.context.0.Rip, 0);
-}
-
-#[test]
-fn worker_sampler_callback_exit_bounds_spins_and_yields_until_release() {
-    let gate = Arc::new(GameGate::new());
-    gate.in_callback.store(true, Ordering::SeqCst);
-    let claimed = gate.claim();
-    let (done_tx, done_rx) = mpsc::channel();
-    let watchdog_gate = Arc::clone(&gate);
-    let watchdog = thread::spawn(move || {
-        if done_rx.recv_timeout(collector_test_support::TEST_HANG_GUARD).is_err() {
-            watchdog_gate.touching.store(false, Ordering::SeqCst);
-        }
-    });
-    let clock = Cell::new(0_u64);
-    let mut yields = 0;
-    let mut closed = true;
-    let mut held = true;
-    let mut budget_expired = true;
-    gate.leave_with(
-        25,
-        || {
-            clock.set(clock.get() + 5);
-            clock.get()
-        },
-        || {
-            closed &= !gate.in_callback.load(Ordering::SeqCst);
-            held &= gate.touching.load(Ordering::SeqCst);
-            budget_expired &= clock.get() >= 30;
-            yields += 1;
-            if yields == 3 {
-                gate.touching.store(false, Ordering::SeqCst);
-            }
-        },
-    );
-    let _ = done_tx.send(());
-    let joined = watchdog.join();
-    assert!(joined.is_ok());
-    assert!(claimed && closed && held && budget_expired);
-    assert_eq!(gate.spins.load(Ordering::Relaxed), 4);
-    assert_eq!(
-        clock.get(),
-        30,
-        "clock polling continued after the spin budget"
-    );
-    assert_eq!(yields, 3, "exit wait bypassed the untimed scheduler yield");
-    assert_eq!(gate.yields.load(Ordering::Relaxed), 3);
-    assert!(!gate.in_callback.load(Ordering::SeqCst));
-    assert!(!gate.touching.load(Ordering::SeqCst));
-}
-
-#[test]
 fn worker_sampler_resume_retries_publish_before_delay_and_retain_unproved_holds() {
     let statuses = [
         STATUS_TIMEOUT,

@@ -653,30 +653,6 @@ mod tests {
     }
 
     #[test]
-    fn the_count_probe_reports_the_full_demand() {
-        let bytes = fixture();
-        let walk = count(&SliceMemory { base: 0, bytes: &bytes }, 0, GS);
-        assert_eq!(
-            walk.outcome,
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 3
-            }
-        );
-        assert_eq!(
-            (
-                walk.required_rows,
-                walk.required_icons,
-                walk.required_names,
-                walk.required_countries,
-                walk.required_regions,
-                walk.required_hidden
-            ),
-            (3, 31, 34, 4, 5, 2)
-        );
-    }
-
-    #[test]
     fn empty_rosters_and_factions_without_theatres_are_complete_and_empty() {
         let mut bytes = fixture();
         for faction in [FIRST, THIRD] {

@@ -111,30 +111,6 @@ fn a_dirty_leader_alone_is_read_and_the_country_follows_the_census() {
     assert_eq!(captured.tables()[1], expected(&world));
 }
 
-#[test]
-fn set_ideology_and_invalidation_read_every_leader() {
-    let _globals = crate::extended::characters::test_globals();
-    let world = small();
-    let characters = world.characters as u64;
-    let watches = Watches::enabled(world.characters);
-    let mut cache = LeaderCache::default();
-    hour(&mut cache, &world, &world, &watches);
-    drop(watches.notify(
-        None,
-        engine_mutations::character_role_mutations::COUNTRY_LEADER_IDEOLOGY,
-    ));
-    hour(&mut cache, &world, &world, &watches);
-    assert_eq!((cache.counts.read, cache.counts.reused), (characters, 0));
-    watches.boundary(true);
-    hour(&mut cache, &world, &world, &watches);
-    assert_eq!((cache.counts.read, cache.counts.reused), (characters, 0));
-    cache.forget();
-    hour(&mut cache, &world, &world, &watches);
-    assert_eq!(cache.counts.reused, 0);
-    hour(&mut cache, &world, &world, &watches);
-    assert_eq!(cache.counts.read, 0);
-}
-
 fn leader_role(index: usize) -> usize {
     assert!(World::leader(index));
     World::leader_role(index)
@@ -190,21 +166,3 @@ fn quiet_hours_look_up_no_character_and_carry_the_whole_table() {
     );
 }
 
-#[test]
-fn recycling_keeps_a_leader_job_that_carried_from_the_census() {
-    let _globals = crate::extended::characters::test_globals();
-    let world = small();
-    let owner = census_of(&world);
-    let loan = owner.role_census().unwrap();
-    let mut job = CharactersJob::new_part(1);
-    let report = copy_characters(
-        &world,
-        context(PART_MASKS[1]),
-        &mut job,
-        Roles::Borrow(&loan),
-    );
-    assert!(report.raw_ok && job.leader_cached);
-    job.clear();
-    assert!(job.has_storage(), "the held rows are the job's storage");
-    assert!(CharactersJob::vacant(1).leader_cache.is_some());
-}

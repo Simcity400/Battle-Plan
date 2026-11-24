@@ -197,53 +197,6 @@ mod tests {
     }
 
     #[test]
-    fn the_passes_keep_native_local_coordinates_and_the_flag_binds_the_vertex_stage_only() {
-        let passes = shield(Some([8, 6]), [3, 4]).passes(&flag());
-        let [flag_pass, overlay] = &passes[..] else {
-            panic!("two passes")
-        };
-        assert_eq!(flag_pass.effect, b"gfx/FX/fixture_flag.lua");
-        assert_eq!(overlay.effect, SHIELD_OVERLAY_EFFECT.as_bytes());
-        assert_eq!([flag_pass.size, overlay.size], [[8, 6]; 2]);
-        assert_eq!(flag_pass.vertices[0][..2], [2.5, 0.0]);
-        assert_eq!(flag_pass.vertices[3][..2], [5.5, 4.0]);
-        assert_eq!(overlay.vertices[0][..2], [0.0, -1.0]);
-        assert_eq!(overlay.vertices[3][..2], [8.0, 5.0]);
-        let c0 = &flag_pass.constants[0].1;
-        assert_eq!(c0.len(), 24);
-        assert_eq!(c0[..16], overlay.constants[0].1[..16]);
-        assert_eq!([c0[12], c0[13], c0[14]], [-1.0, -1.0 + 2.0 / 6.0, -1.0]);
-        assert_eq!(&c0[16..], [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
-        assert_eq!(flag_pass.constants[0].2, [0..96]);
-        assert!(!flag_pass.pixel_constants);
-        assert_eq!(flag_pass.textures.len(), 2);
-        let c0 = &overlay.constants[0].1;
-        assert_eq!(
-            &c0[16..],
-            [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        );
-        assert_eq!(overlay.constants[0].2, [0..104]);
-        assert!(overlay.pixel_constants);
-    }
-
-    #[test]
-    fn a_mask_wider_than_its_overlay_widens_the_image_and_keeps_the_overlay_on_whole_pixels() {
-        let passes = shield(Some([4, 4]), [7, 4]).passes(&flag());
-        assert_eq!(passes[0].size, [8, 4]);
-        assert_eq!(passes[0].vertices[0][0], -1.5);
-        assert_eq!(passes[0].constants[0].1[12], -1.0 + 2.0 * 2.0 / 8.0);
-    }
-
-    #[test]
-    fn a_shield_without_an_overlay_frames_the_flag_pass_alone() {
-        let passes = shield(None, [4, 2]).passes(&flag());
-        assert_eq!(passes.len(), 1);
-        assert_eq!(passes[0].size, [4, 2]);
-        assert_eq!(passes[0].vertices[0][..2], [-2.0, -2.0]);
-        assert_eq!(passes[0].vertices[3][..2], [2.0, 0.0]);
-    }
-
-    #[test]
     #[ignore = "requires DXC and a GPU; synthetic content only"]
     fn shields_composite_the_flag_and_overlay_passes_with_their_authored_blend() {
         use super::super::texture_tests::{
@@ -353,27 +306,6 @@ mod tests {
                 && why.contains("rectangle"),
             "{why}"
         );
-    }
-
-    #[test]
-    #[ignore = "requires DXC and a GPU; reads the installation"]
-    fn the_installed_flag_program_maps_its_coordinate_through_the_rectangle_alone() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let game = std::path::PathBuf::from(std::env::var_os("BATTLEPLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
-        let layers = ResolvedLayers::from_folders(&[(game.as_path(), &[][..])]).unwrap();
-        let sprites = content_reader_gfx::gfx::read(&layers).unwrap();
-        let SpriteKind::MaskedShield { shield, .. } =
-            &sprites.lookup("GFX_shield_medium").unwrap().facts.kind
-        else {
-            panic!("the installed top-bar shield is a masked shield")
-        };
-        shader_pipeline::artwork::flag_rectangle_mapped(
-            &layers,
-            &shield.effect_file,
-            Decode::default(),
-        )
-        .unwrap();
     }
 
     #[test]

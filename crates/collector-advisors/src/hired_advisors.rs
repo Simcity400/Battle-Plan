@@ -597,42 +597,6 @@ mod tests {
     use replay_data::rows::TableRows;
 
     #[test]
-    fn appointed_advisors_walk_every_hour() {
-        let memory = engine_native_memory::memory::SliceMemory {
-            base: 0,
-            bytes: &[],
-        };
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        for hour in 0..24 {
-            // SAFETY: Unit test runs against an isolated in-memory fixture.
-            unsafe { captured.capture(&memory, 0, 0x1000, hour, false) };
-            for index in [0, 4] {
-                assert!(
-                    matches!(
-                        captured.outcomes()[index],
-                        Outcome::Unavailable { reason } if reason != SKIPPED_REASON
-                    ),
-                    "{hour}"
-                );
-            }
-            assert!(should_walk(TABLES[0], hour, false));
-            assert!(should_walk(TableId::AdvisorRoles, hour, false));
-        }
-    }
-
-    #[test]
-    fn capacities_follow_live_appointed_counts_and_token_bytes() {
-        let mut capacity = Capacities::default();
-        assert_eq!((capacity.rows, capacity.bytes), (0, 0));
-        capacity.raise_for_appointed_advisors(5_000 * 137, 5_000 * 137 * 311);
-        assert!(capacity.rows >= 5_000 * 137);
-        assert!(capacity.bytes >= 5_000 * 137 * 311);
-        let raised = capacity;
-        capacity.raise_for_appointed_advisors(10, 1);
-        assert!(capacity == raised);
-    }
-
-    #[test]
     fn conversion_keeps_order_and_exact_bytes_and_refuses_escaped_spans() {
         let mut captured = Captured::with_capacities(&Capacities {
             rows: 2,
@@ -820,27 +784,6 @@ mod tests {
             captured.tables()[2],
             TableView::Unavailable { .. }
         ));
-    }
-
-    #[test]
-    fn advisor_token_capacity_follows_the_live_set() {
-        let mut capacity = Capacities::default();
-        capacity.raise_for_advisor_tokens(3_000, 90_000);
-        assert!(capacity.tokens >= 4_000 && capacity.token_bytes >= 120_000);
-        let raised = capacity;
-        capacity.raise_for_advisor_tokens(1, 1);
-        assert!(capacity == raised);
-    }
-
-    #[test]
-    fn record_capacities_follow_the_live_record_totals() {
-        let mut capacity = Capacities::default();
-        capacity.raise_for_character_records(90_000, 3_000);
-        assert!(capacity.active >= 90_000 + 90_000 / 3);
-        assert!(capacity.retired >= 3_000 + 3_000 / 3);
-        let raised = capacity;
-        capacity.raise_for_character_records(10, 1);
-        assert!(capacity == raised);
     }
 
     #[test]

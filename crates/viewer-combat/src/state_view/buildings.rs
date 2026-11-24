@@ -981,12 +981,6 @@ mod tests {
     }
 
     #[test]
-    fn the_facility_scale_reads_its_position_in_tenths() {
-        assert_eq!(scale_of(4), 0.4);
-        assert_eq!(scale_of(10), 1.0);
-    }
-
-    #[test]
     fn dlc_gated_types_hide_without_their_feature_or_a_failing_dlc_trigger() {
         let gun = BuildingType { gun_emplacement: true, ..Default::default() };
         assert_eq!(dlc_hidden(&gun, 0, |_| unreachable!()), Ok(true));

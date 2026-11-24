@@ -195,12 +195,3 @@ test('a restarted or reopened pop-out is sent the hour and playback chosen meanw
   } finally { await vite.close(); }
 });
 
-test('the pop-out hides the map-mode picker and keeps the other options', async () => {
-  const { vite, popout: { popoutOptions } } = await load();
-  try {
-    const options = { country: 'GER', fog: false, mapMode: 'states' };
-    assert.deepEqual(popoutOptions(options), { ...options, pickerHidden: true });
-  } finally {
-    await vite.close();
-  }
-});

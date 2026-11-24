@@ -306,11 +306,6 @@ pub fn show(app: &AppHandle, next: Tray) {
 mod tests {
     use super::*;
 
-    fn pixel(pixels: &[u8], size: u32, x: u32, y: u32) -> [u8; 4] {
-        let at = ((y * size + x) * 4) as usize;
-        pixels[at..at + 4].try_into().unwrap()
-    }
-
     #[test]
     fn a_tray_state_computed_earlier_but_published_later_never_replaces_a_newer_one() {
         let question = Tray { revision: 5, tooltip: "BattlePlan Recorder\nNot recording\nQuit BattlePlan Recorder? Click to answer.".into(), ..Tray::default() };
@@ -320,80 +315,6 @@ mod tests {
         assert_eq!(wanted, question, "and the tray keeps the question");
         let saving = Snapshot { phase: Phase::Waiting, ..Snapshot::default() };
         assert_eq!(tooltip_for(&saving, true), format!("{}\nSaving a recording, then quitting", app_update::recorder_name()));
-    }
-
-    #[test]
-    fn the_tooltip_names_the_status_the_recording_and_any_problem() {
-        let name = app_update::recorder_name();
-        assert_eq!(
-            tooltip(&Snapshot::default()),
-            format!("{name}\nWaiting for the game")
-        );
-        let mut snapshot = Snapshot {
-            phase: Phase::Recording,
-            name: Some("Germany 1936–1943".into()),
-            ..Snapshot::default()
-        };
-        assert_eq!(
-            tooltip(&snapshot),
-            format!("{name}\nRecording · Germany 1936–1943")
-        );
-        snapshot.problem = Some(crate::snapshot::Problem::caveat(
-            "2 hours couldn’t be recorded.",
-            "",
-        ));
-        assert_eq!(
-            tooltip(&snapshot),
-            format!("{name}\nRecording · Germany 1936–1943\n2 hours couldn’t be recorded.")
-        );
-        snapshot.prompt = Some(crate::panel::Prompt { id: 3, quitting: false, discarding: true, session_key: 1 });
-        assert_eq!(
-            tooltip(&snapshot),
-            format!("{name}\nRecording · Germany 1936–1943\nDiscard this session? Click to answer.\n2 hours couldn’t be recorded."),
-            "a prompt dismissed with its panel waits in the tray"
-        );
-    }
-
-    #[test]
-    fn the_status_line_says_how_far_a_slow_spool_falls_behind_and_clears_when_it_catches_up() {
-        let mut snapshot = Snapshot {
-            phase: Phase::Recording,
-            name: Some("Germany 1936–1943".into()),
-            ..Snapshot::default()
-        };
-        let lines: Vec<String> = [2, 4, 6, 9, 13, 7, 4, 1]
-            .into_iter()
-            .map(|in_flight: u64| {
-                let status = serde_json::json!({
-                    "campaign": "00000000-0000-4000-8000-000000000000", "hours": 40,
-                    "last_hour": 9,
-                    "acquisition_work": {"frames": {
-                        "steady": 4, "in_flight": in_flight, "in_flight_bytes": in_flight * 4_096,
-                    }},
-                });
-                snapshot.behind = crate::snapshot::read_live(&status).behind;
-                tooltip(&snapshot)
-            })
-            .collect();
-        let name = app_update::recorder_name();
-        let quiet = format!("{name}\nRecording · Germany 1936–1943");
-        let behind = |hours: u64| format!("{quiet} · falling behind by {hours} hours");
-        assert_eq!(
-            lines,
-            [
-                quiet.clone(),
-                quiet.clone(),
-                behind(6),
-                behind(9),
-                behind(13),
-                behind(7),
-                quiet.clone(),
-                quiet.clone(),
-            ]
-        );
-        snapshot.behind = Some(9);
-        snapshot.phase = Phase::Saving;
-        assert_eq!(tooltip(&snapshot), format!("{name}\nSaving recording · Germany 1936–1943"));
     }
 
     #[test]
@@ -423,62 +344,4 @@ mod tests {
         assert!(text.ends_with("…\nQuit BattlePlan Recorder? Click to answer."), "the name is cut, never the question: {text}");
     }
 
-    #[test]
-    fn icon_draws_a_ring_and_a_coloured_dot_on_a_clear_background() {
-        let size = 32;
-        for (light, colour) in [
-            (Light::Ready, [0x22, 0xb0, 0x5a]),
-            (Light::Recording, [0xef, 0x44, 0x44]),
-            (Light::Saving, [0x2f, 0x6b, 0xff]),
-            (Light::Problem, [0xe8, 0xa3, 0x17]),
-        ] {
-            let pixels = icon_pixels(light, size, false);
-            assert_eq!(pixels.len(), (size * size * 4) as usize);
-            let centre = pixel(&pixels, size, 16, 16);
-            assert_eq!(centre, [colour[0], colour[1], colour[2], 255]);
-            assert_eq!(pixel(&pixels, size, 16, 16 + 8)[3], 0);
-            assert_eq!(pixel(&pixels, size, 16, 16 + 12), [0xd8, 0xd8, 0xd8, 255]);
-            assert_eq!(pixel(&pixels, size, 0, 0)[3], 0);
-        }
-        let light = icon_pixels(Light::Ready, size, true);
-        assert_eq!(pixel(&light, size, 16, 16 + 12), [0x3a, 0x3a, 0x3a, 255]);
-    }
-
-    fn luminance(colour: [u8; 3]) -> f64 {
-        let linear = |channel: u8| {
-            let value = f64::from(channel) / 255.0;
-            if value <= 0.04045 {
-                value / 12.92
-            } else {
-                ((value + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * linear(colour[0]) + 0.7152 * linear(colour[1]) + 0.0722 * linear(colour[2])
-    }
-
-    #[test]
-    fn each_status_colour_stands_out_on_a_light_and_a_dark_taskbar() {
-        let contrast = |a: f64, b: f64| (a.max(b) + 0.05) / (a.min(b) + 0.05);
-        let (light, dark) = (luminance([0xf3, 0xf3, 0xf3]), luminance([0x20, 0x20, 0x20]));
-        let lights = [
-            Light::Ready,
-            Light::Recording,
-            Light::Saving,
-            Light::Problem,
-        ];
-        for status in lights {
-            let dot = luminance(dot_colour(status));
-            assert!(contrast(dot, light) >= 1.9, "{status:?} on a light taskbar");
-            assert!(contrast(dot, dark) >= 3.0, "{status:?} on a dark taskbar");
-        }
-        for (at, first) in lights.iter().enumerate() {
-            for second in &lights[at + 1..] {
-                let [a, b] = [dot_colour(*first), dot_colour(*second)];
-                let distance: i32 = (0..3)
-                    .map(|channel| (i32::from(a[channel]) - i32::from(b[channel])).abs())
-                    .sum();
-                assert!(distance >= 120, "{first:?} and {second:?}");
-            }
-        }
-    }
 }

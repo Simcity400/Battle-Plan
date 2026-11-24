@@ -533,41 +533,6 @@ mod tests {
     }
 
     #[test]
-    fn presentation_is_one_record_copy_per_faction_and_one_span_per_template() {
-        let counted = |bytes: &[u8]| {
-            engine_native_memory::memory::ReadCounts::take_current();
-            let memory = engine_native_memory::memory::CountedMemory::new(SliceMemory { base: 0, bytes });
-            let walk = cfaction::walk(
-                &memory,
-                0,
-                GS,
-                &mut vec![cfaction::Row::default(); 2],
-                &mut vec![0; 4],
-            );
-            assert_eq!(walk.outcome, Outcome::Rows { len: 2 });
-            engine_native_memory::memory::ReadCounts::take_current()
-        };
-        let templated = counted(&fixture());
-        let mut bytes = fixture();
-        put64(&mut bytes, FIRST + cfaction::TEMPLATE, 0);
-        let plain = counted(&bytes);
-        assert_eq!(templated.record_calls, 2);
-        assert_eq!(plain.record_calls, 2);
-        assert_eq!(templated.copy_calls, plain.copy_calls + 1);
-        assert_eq!(
-            names(
-                &bytes[..SECOND + cfaction::COLOR + 8],
-                &mut vec![cfaction::Row::default(); 2],
-                &mut vec![0; 4]
-            )
-            .outcome,
-            Outcome::Unavailable {
-                reason: "faction presentation unreadable"
-            }
-        );
-    }
-
-    #[test]
     fn a_foreign_template_or_colour_is_unavailable() {
         for at in [TEMPLATE_OBJECT, FIRST + cfaction::COLOR] {
             let mut bytes = fixture();

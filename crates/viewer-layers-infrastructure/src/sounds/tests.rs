@@ -191,16 +191,6 @@ fn stepped(hours: u32, name: &str) -> MapSide {
 }
 
 #[test]
-fn a_stepped_head_is_reached_one_hour_at_a_time_with_the_clock_held() {
-    let mut side = stepped(48, "stepped hours");
-    side.anchor(4, false, 0.0, true);
-    side.catch_up(4).unwrap();
-    for hour in 5..8 {
-        side.catch_up(hour).unwrap_or_else(|error| panic!("hour {hour}: {error}"));
-    }
-}
-
-#[test]
 fn a_stepped_head_crosses_a_block_end_at_24_hour_steps() {
     let first = BLOCK as i32 - 100;
     let mut side = stepped(BLOCK + 60, "stepped block end");

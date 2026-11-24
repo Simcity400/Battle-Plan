@@ -327,10 +327,6 @@ impl KeptNaming {
         self.0.push((run, hour, readers));
     }
 
-    #[cfg(test)]
-    pub(super) fn positions(&self) -> Vec<(u32, i32)> {
-        self.0.iter().map(|(run, hour, _)| (*run, *hour)).collect()
-    }
 }
 
 pub(crate) fn kept_naming(source: &dashboard_base::Source) -> Arc<Mutex<KeptNaming>> {

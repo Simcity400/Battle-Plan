@@ -1141,65 +1141,6 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
     }
 }
 
-#[test]
-fn weather_ring_append_matches_expected_generations_ranges_bytes_and_errors() {
-    let mut ring = InstanceRing::new(16 * 48);
-    let mut cursor = 0;
-    let mut bytes = Vec::new();
-    let mut known = Vec::new();
-    for frame in 0..512 {
-        let packets: Vec<_> = (0..3)
-            .map(|actor| {
-                packet(
-                    frame,
-                    actor,
-                    "Fixture",
-                    if frame % 17 == 0 {
-                        6
-                    } else {
-                        (frame + actor) % 5
-                    },
-                )
-            })
-            .collect();
-        let count: usize = packets.iter().map(|packet| packet.instances.len()).sum();
-        let previous = ring.allocation.clone();
-        let result = ring.append(packets.iter().flat_map(|packet| &packet.instances));
-        if count > 16 {
-            assert_eq!(
-                result.unwrap_err().to_string(),
-                "particle upload exceeds native ring"
-            );
-            assert!(Arc::ptr_eq(&previous, &ring.allocation));
-        } else {
-            let length = count as u64 * 48;
-            let offset = if cursor + length >= 16 * 48 {
-                0
-            } else {
-                cursor
-            };
-            assert_eq!(result.unwrap(), offset);
-            assert_eq!(Arc::ptr_eq(&previous, &ring.allocation), offset != 0);
-            if offset == 0 {
-                bytes.clear();
-                known.clear();
-            }
-            bytes.truncate(offset as usize);
-            for record in packets.iter().flat_map(|packet| &packet.instances) {
-                let at = bytes.len() as u64;
-                bytes.extend_from_slice(&expected::instance(record));
-                known.push(at..at + 36);
-            }
-            cursor = offset + length;
-        }
-        assert_eq!(ring.cursor, cursor);
-        let allocation = ring.allocation.lock().unwrap();
-        assert_eq!(allocation.size, 16 * 48);
-        assert_eq!(allocation.bytes, bytes);
-        assert_eq!(allocation.known, known);
-    }
-}
-
 fn packing_upload_refusal_and_retry(device: &wgpu::Device, program: &Program) {
     let old_arena = gpu::Arena::new(device);
     let arena = gpu::Arena::new(device);

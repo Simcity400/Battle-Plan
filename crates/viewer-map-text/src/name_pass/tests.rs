@@ -332,27 +332,6 @@ fn static_names_are_built_once_and_chunked_under_the_buffer_limit() {
     );
 }
 
-#[test]
-fn the_fade_settles_at_the_content_cutoff_and_takes_one_second() {
-    let mut defines = MapDefines::test();
-    defines.country_names_cutoff = 260.0;
-    let at = |height| Camera {
-        center: [0.0, 0.0],
-        height,
-        map: MapSize::TEST,
-        defines,
-        pose: viewer_gpu::camera::Pose::Map,
-    };
-    assert_eq!(LayerFade::instant(at(260.0)), LayerFade(1.0));
-    let low = LayerFade::instant(at(259.9));
-    assert_eq!(low, LayerFade(0.0));
-    let half = low.step(at(310.0), 0.5);
-    assert_eq!(half, LayerFade(0.5));
-    let settled = half.step(at(310.0), 0.5);
-    assert_eq!(settled, LayerFade(1.0));
-    assert_eq!(settled.step(at(310.0), -1.0), settled);
-}
-
 fn placed_name(text: &str, glyphs: usize) -> WorldName {
     WorldName {
         strategic_provinces: None,

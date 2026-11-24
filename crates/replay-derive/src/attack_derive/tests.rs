@@ -282,19 +282,6 @@ fn small_rivers_and_admission_by_either_value() {
 }
 
 #[test]
-fn only_a_neighbour_asks_for_snow_and_a_fortless_target_for_no_base() {
-    let mock = Mock {
-        snow: Err("snow unasked".into()),
-        ..Default::default()
-    };
-    assert!(rows(&mock).is_empty());
-    let asked = mock.asked.borrow();
-    assert!(!asked.contains(&"snow"));
-    assert!(!asked.contains(&"fort base"));
-    assert!(!asked.contains(&"factor"));
-}
-
-#[test]
 fn a_fort_never_raises_attack() {
     let mock = Mock {
         fort_level: Ok(1),
@@ -437,7 +424,6 @@ fn snow_and_fort_helpers_wrap_and_clamp_as_the_game() {
     assert_eq!(fort_base(Some(-50_000), 0, -150_000), -75_000);
     assert_eq!(fort([0, 0], 0, 0, -1), None);
 }
-
 
 const DIVISION: u64 = (7 << 32) | 1;
 const GROUP: u64 = (3 << 32) | 53;

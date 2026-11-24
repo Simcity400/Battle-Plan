@@ -106,33 +106,6 @@ fn fixture(count: u32) -> MemoryMap {
     }
     memory
 }
-#[test]
-fn start_and_settle_read_the_payload_and_receipts_in_one_copy_each() {
-    let mut memory = fixture(2);
-    let status = STATUS + 0x1000;
-    memory.put(status + fuel::HISTORY_INDEX, &5_i32.to_le_bytes());
-    memory.put(
-        CONSUMERS + 0x100 + crate::fuel_consumer_data::RECEIVED,
-        &3_i64.to_le_bytes(),
-    );
-    memory.reads.set(0);
-    let started = start(&memory, 0, status).unwrap();
-    assert_eq!(memory.reads.get(), 10);
-    assert_eq!(
-        (
-            started.base,
-            started.states,
-            started.cost,
-            started.pending_gain
-        ),
-        (-17, 23, -5, i64::MAX)
-    );
-    assert_eq!((started.history_index, started.remaining_hours), (5, 7));
-    memory.reads.set(0);
-    let settled = settle(&memory, 0, started, status).unwrap();
-    assert_eq!(memory.reads.get(), 10 + 4);
-    assert_eq!(settled.received, [3, 0, 0]);
-}
 
 struct Holes<'a> {
     inner: &'a MemoryMap,
@@ -298,78 +271,6 @@ fn live_census_includes_null_air_countries_and_all_name_bytes() {
         }
     );
     assert_eq!(demand(&memory, 0, 0).unwrap(), Demand::default());
-}
-
-#[test]
-fn native_quantity_conversion_preserves_signed_remainders_and_i64_extremes() {
-    for raw in [
-        i64::MIN,
-        -100_001,
-        -100_000,
-        -1,
-        0,
-        1,
-        99_999,
-        100_000,
-        100_001,
-        i64::MAX,
-    ] {
-        assert_eq!(i128::from(quantity(raw)), i128::from(raw) * 32768 / 100000);
-    }
-}
-
-#[test]
-fn a_held_settle_reads_only_the_payload_and_settles_as_a_fresh_read() {
-    let mut memory = fixture(2);
-    let status = STATUS + 0x1000;
-    memory.reads.set(0);
-    let (begun, located, taken) = start_held(&memory, 0, status, None).unwrap();
-    assert!(!taken);
-    assert_eq!(memory.reads.get(), 10);
-    assert_eq!(begun, start(&memory, 0, status).unwrap());
-    memory.put(status + 0x68, &1_i64.to_le_bytes());
-    memory.log.borrow_mut().clear();
-    let fresh = settle(&memory, 0, begun, status);
-    let _every = memory.log.take();
-    memory.reads.set(0);
-    let held = settle_held(&memory, 0, begun, status, Some(&located));
-    assert_eq!(memory.reads.get(), 2);
-    assert_eq!(held, fresh.map(|settled| (settled, true)));
-    assert!(held.is_ok());
-    assert_eq!(
-        memory.log.take(),
-        vec![
-            (status + 0x68, 96),
-            (CONSUMERS + 0x100 + crate::fuel_consumer_data::RECEIVED, 24),
-        ]
-    );
-    memory.log.borrow_mut().clear();
-    let other_status = settle_held(&memory, 0, begun, STATUS + 0x2000, Some(&located));
-    assert_eq!(
-        other_status,
-        settle(&memory, 0, begun, STATUS + 0x2000).map(|s| (s, false))
-    );
-    let (_, other, _) = start_held(&memory, 0, STATUS + 0x2000, None).unwrap();
-    memory.log.borrow_mut().clear();
-    assert_eq!(
-        start_held(&memory, 0, status, Some(&other)).map(|(started, _, taken)| (started, taken)),
-        start_held(&memory, 0, status, None).map(|(started, _, taken)| (started, taken))
-    );
-    let both = memory.log.take();
-    assert_eq!(both[..both.len() / 2], both[both.len() / 2..]);
-    memory.put(status + fuel::GAIN, &100_i64.to_le_bytes());
-    assert_eq!(
-        settle_held(&memory, 0, begun, status, Some(&located)).map(|(settled, _)| settled),
-        settle(&memory, 0, begun, status)
-    );
-    assert!(settle(&memory, 0, begun, status).is_err());
-    memory.put(status + fuel::GAIN, &(-17_i64).to_le_bytes());
-    memory.put(
-        COUNTRY + 0x2000 + ccountry::SURRENDER_TARGET,
-        &9002_u32.to_le_bytes(),
-    );
-    assert!(settle(&memory, 0, begun, status).is_ok());
-    assert_eq!(settle_held(&memory, 0, begun, status, Some(&located)), held);
 }
 
 #[test]

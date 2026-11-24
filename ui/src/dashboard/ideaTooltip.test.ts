@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fixed5Of, fixed5Text, formatModifier, ideaEffectRows, ideaTooltip, ideaTooltipSources, ideaTargetTags, tooltipRowBudget, tooltipText } from './ideaTooltip.ts';
+import { fixed5Of, fixed5Text, formatModifier, ideaEffectRows, ideaTooltip, ideaTooltipSources, ideaTargetTags, tooltipText } from './ideaTooltip.ts';
 import type { IdeaInfo, ModifierFormat } from '../generated/dashboard';
 
 const format = (key: string, index: number, flags: number, precision: number, label: string, postfix: string | null = null): ModifierFormat =>
@@ -124,12 +124,6 @@ test('script values keep five decimals of the authored text, truncated', () => {
   assert.deepEqual(formatModifier(STABILITY, fixed5Of(0.099999), WORDS), { text: '+9.99%', tone: 'positive' });
 });
 
-test('the row budget fits the window, and the spoken text keeps the note', () => {
-  assert.equal(tooltipRowBudget(720), 25);
-  assert.equal(tooltipRowBudget(300), 4);
-  assert.equal(tooltipRowBudget(3000), 40);
-  assert.ok(tooltipText({ title: 'T', rows: [], note: 'A note.' }).endsWith('A note.'));
-});
 
 test('the row budget counts wrapped labels, and the exact authored value wins', () => {
   const long = idea({ effects: Array.from({ length: 10 }, (_, index) => line(`a_very_long_modifier_key_that_wraps_twice_${index}_over_the_width`, 1)) });

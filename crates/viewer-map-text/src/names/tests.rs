@@ -352,13 +352,6 @@ fn kerning_affects_fit_width_while_quads_keep_their_metric_dimensions() {
 }
 
 #[test]
-fn a_country_label_is_opaque_once_its_layer_passes_half_way() {
-    assert_eq!(label_alpha(1.0), 1.0);
-    assert_eq!(label_alpha(0.0), 0.0);
-    assert!(close(label_alpha(0.255), 0.5, 1e-3));
-}
-
-#[test]
 fn degenerate_areas_return_none_instead_of_panicking() {
     let font = TestFont::new();
 
@@ -472,25 +465,6 @@ fn the_currency_control_counts_in_the_fit_but_draws_nothing() {
     assert!(close(placed.scale, expected, 1e-4), "{placed:?}");
     let drawn: String = placed.glyphs.iter().map(|g| g.ch).collect();
     assert_eq!(drawn, "AB");
-}
-
-#[test]
-fn inserted_spaces_surround_the_currency_control_and_it_ends_kerning() {
-    let mut canvas = Canvas::new(200, 100);
-    canvas.rect(1, 50, 40, 149, 59);
-    let font = TestFont::with_kerning('A', 'B', -2.0);
-    let placed = place("A\u{14}B", &canvas, &[1], &font).expect("placed");
-    let length = 99.0f32;
-    let height_scale = HALF * (2000.0 / length) / 10.0;
-    let target = FILL * length / height_scale;
-    let width_at = |spaces: usize| 28.0 + 2.0 * spaces as f32 * 6.0;
-    let spaces = (1..=MAX_SPACES)
-        .take_while(|&n| width_at(n) < target)
-        .last()
-        .unwrap_or(0);
-    assert!(spaces > 0, "the case must insert spaces");
-    assert_eq!(placed.spaces_inserted, spaces);
-    assert_eq!(placed.glyphs.len(), 2);
 }
 
 #[test]

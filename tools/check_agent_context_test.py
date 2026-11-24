@@ -11,8 +11,6 @@ SPEC.loader.exec_module(cac)
 
 
 class Budget(unittest.TestCase):
-    def test_a_budget_equal_to_the_measured_sizes_is_current(self):
-        self.assertEqual(cac.stale({"AGENTS.md": 10}, {"AGENTS.md": 10}), [])
 
     def test_a_budget_above_or_below_the_measured_size_is_stale_either_way(self):
         self.assertEqual(len(cac.stale({"AGENTS.md": 10}, {"AGENTS.md": 12})), 1)

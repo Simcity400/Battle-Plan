@@ -280,24 +280,6 @@ fn air_loss_reload_cursor_record_and_signed_delta_changes_refuse_the_event() {
 }
 
 #[test]
-fn air_loss_current_record_reads_the_selected_words_in_one_copy() {
-    let mut f = Fixture::new();
-    f.value(30, 7);
-    f.value(31, 9);
-    let memory = engine_native_memory::memory::CountingMemory {
-        inner: f.memory(),
-        calls: std::cell::Cell::new(0),
-        bytes: std::cell::Cell::new(0),
-    };
-    let current = current(&memory, BASE, HISTORY, 30, 1).unwrap();
-    assert_eq!(
-        (current.record, current.slot, current.fields),
-        (RECORD, 29, [7, 9])
-    );
-    assert_eq!((memory.calls.get(), memory.bytes.get()), (15, 125));
-}
-
-#[test]
 fn air_loss_after_an_existing_history_reads_only_the_witnesses_and_words() {
     let mut f = Fixture::new();
     let snapshot = f.before(0, 1);
@@ -666,46 +648,3 @@ fn air_loss_gathered_faults_fall_back_to_the_serial_reads() {
     assert_eq!(f.call(&f.memory(), 1, 0, 1), None);
 }
 
-#[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-#[test]
-#[ignore = "release synthetic guarded-read cost; not gameplay wall time"]
-fn air_loss_live_memory_five_thousand_country_cost() {
-    use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
-
-    let f = ScaleFixture::new(5_000);
-    let memory = CountedMemory::new(unsafe { LiveMemory::new() });
-    let prior_counts = ReadCounts::take_current();
-    let census_started = std::time::Instant::now();
-    assert_eq!(wing_count(&memory, BASE, f.address), Ok(5_000));
-    let census_ms = census_started.elapsed().as_secs_f64() * 1_000.0;
-    let census_counts = ReadCounts::take_current();
-    let mut times = Vec::with_capacity(7);
-    let mut event_counts = ReadCounts::ZERO;
-    for _ in 0..7 {
-        let started = std::time::Instant::now();
-        for ordinal in 0..f.airs.len() {
-            let snapshot = before(&memory, BASE, f.address, f.airs[ordinal], 1, 0, 1, 30).unwrap();
-            assert_eq!(selected_family(&memory, BASE, f.wings[ordinal], 0), Ok(30));
-            let change = after(&memory, BASE, f.address, &snapshot).unwrap();
-            assert_eq!(change.country, ordinal as u32 + 1);
-            assert_eq!(change.fields, [0; 2]);
-        }
-        times.push(started.elapsed().as_secs_f64() * 1_000.0);
-        let counts = ReadCounts::take_current();
-        if event_counts != ReadCounts::ZERO {
-            assert_eq!(counts, event_counts);
-        }
-        event_counts = counts;
-    }
-    prior_counts.add_current();
-    times.sort_by(f64::total_cmp);
-    eprintln!(
-        "air loss LiveMemory synthetic: 5000 countries, {} arena bytes; census {:.3} ms {:?}; 5000 before/family/after pairs median {:.3} ms ({:.3} us/pair) {:?}",
-        f.bytes.len(),
-        census_ms,
-        census_counts,
-        times[3],
-        times[3] * 1_000.0 / 5_000.0,
-        event_counts,
-    );
-}

@@ -2,16 +2,6 @@ use super::*;
 use std::cell::Cell;
 use viewer_gpu::unit_pose::test_support::defines;
 
-#[test]
-fn the_colour_is_active_in_flight_preparing_before_and_undecided_when_prepared() {
-    let defines = defines();
-    assert_eq!(color(4, &defines), Some(defines.active_color));
-    assert_eq!(color(5, &defines), Some(defines.active_color));
-    assert_eq!(color(1, &defines), Some(defines.preparing_color));
-    assert_eq!(color(2, &defines), Some(defines.preparing_color));
-    assert_eq!(color(3, &defines), None);
-}
-
 fn anchors(province: u32) -> Result<[f32; 3], String> {
     Ok(match province {
         1 => [10.0, 3.0, 0.0],

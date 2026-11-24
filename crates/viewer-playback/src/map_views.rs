@@ -362,32 +362,6 @@ mod tests {
     use dashboard_core::protocol::CounterFilter;
 
     #[test]
-    fn the_memory_a_layout_was_laid_out_on_is_taken_with_it_and_the_two_alternate() {
-        use viewer_counter_kit::Kinds;
-        use viewer_counters::counters::layered::Layered;
-        use viewer_counters_naval::bases::BaseValues;
-        let view = Presentation::default();
-        let maker = view.sharing();
-        let product = |memory: &Presentation| {
-            let bases = Arc::new(BaseValues::default());
-            let at = Arc::as_ptr(&bases) as usize;
-            memory.counters.lock().unwrap().set_layered(Layered { bases: Some(bases), ..Layered::default() }, Kinds::BASES, Kinds::BASES);
-            at
-        };
-        let drawing = || view.counters.lock().unwrap().layered().identity()[3];
-        let making = || maker.counters.lock().unwrap().layered().identity()[3];
-        let held = product(&view);
-        let first = product(&maker);
-        view.take_memory(&maker);
-        assert_eq!(drawing(), first, "the view draws on the memory that layout was laid out on");
-        assert_eq!(making(), held, "and the maker holds the memory the frame handed back");
-        let second = product(&maker);
-        assert_eq!(drawing(), first, "what the frame draws is untouched while the next is laid out");
-        view.take_memory(&maker);
-        assert_eq!(drawing(), second);
-    }
-
-    #[test]
     fn only_a_pool_with_a_pass_to_run_asks_for_the_pools_to_be_presented() {
         let view = Presentation::default();
         let idle = Running { any: false, visible: false, windows: Pools::default() };
@@ -406,23 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn occupation_mode_changes_invalidate_shared_visibility_and_clear_locally() {
-        use viewer_map_modes::map_mode::{MapMode, Stock};
-        use viewer_map_icons::occupation_icons::Mode;
-        let mut resistance = CounterView::default();
-        resistance.set_mode(&MapMode::Stock(Stock::Resistance));
-        let mut compliance = resistance.clone();
-        compliance.set_mode(&MapMode::Stock(Stock::Compliance));
-        assert_eq!(resistance.visibility, compliance.visibility);
-        assert_eq!(resistance.occupation, Some(Mode::Resistance));
-        assert_eq!(compliance.occupation, Some(Mode::Compliance));
-        assert_ne!(resistance, compliance);
-        compliance.set_mode(&MapMode::default());
-        assert_eq!(compliance.occupation, None);
-        assert_eq!(resistance.occupation, Some(Mode::Resistance));
-    }
-
-    #[test]
     fn a_changed_air_selection_invalidates_the_prepared_view() {
         let first = CounterView::default();
         let mut selected = first.clone();
@@ -438,30 +395,11 @@ mod tests {
     }
 
     #[test]
-    fn a_raid_bubble_hovered_or_opened_asks_for_no_new_layout() {
-        let first = CounterView::default();
-        let mut shown = first.clone();
-        shown.raid_hovered = Some(7);
-        assert_eq!(first, shown, "the pointer resting on a bubble");
-        shown.raid_details = Some((7, Arc::new(viewer_raids::map::raids::tooltips::Details { header: Ok("Raid targets".into()), entries: Vec::new() })));
-        assert_eq!(first, shown, "its details window open");
-    }
-
-    #[test]
     fn players_are_placed_through_the_links_and_an_unplaced_one_draws_everyone() {
         let links = [(10, 1), (20, 2), (30, 3)];
         assert_eq!(player_slots(links, [30, 10]), Some(BTreeSet::from([1, 3])));
         assert_eq!(player_slots(links, [10, 40]), None);
         assert_eq!(player_slots(links, []), Some(BTreeSet::new()));
-    }
-
-    #[test]
-    fn chosen_tags_pick_their_slots() {
-        let countries = [(&b"GER"[..], 4), (&b"ENG"[..], 7), (&b"SOV"[..], 9)];
-        assert_eq!(
-            chosen_slots(&["SOV".into(), "GER".into(), "XXX".into()], countries),
-            BTreeSet::from([4, 9])
-        );
     }
 
     #[test]

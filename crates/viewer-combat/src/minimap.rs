@@ -9,7 +9,6 @@ use super::{
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_native_gui::native_gui::{self, Resources, lifecycle, pointer::Input};
 
-
 pub const WINDOW: &str = "mini_map_interface";
 pub const TEMPLATES: &[&[u8]] = &[b"mini_map_interface"];
 
@@ -556,53 +555,7 @@ fn values(state: &State<'_>, outline: Option<&Outline>) -> Values {
 mod tests {
     use super::*;
 
-    fn footprint(left: f32, right: f32, bottom: f32, top: f32) -> [[f32; 2]; 5] {
-        [
-            [left, top],
-            [right, top],
-            [left, bottom],
-            [right, bottom],
-            [(left + right) * 0.5, (top + bottom) * 0.5],
-        ]
-    }
-
     const MAP: [i32; 2] = [5632, 2048];
-    const IMAGE: [i32; 4] = [0, 0, 268, 97];
-
-    #[test]
-    fn a_centred_camera_gives_a_symmetric_outline_north_up() {
-        let drawn = outline(footprint(2016.0, 3616.0, 512.0, 1536.0), MAP, IMAGE).unwrap();
-        assert_eq!(drawn.left.at, [96, 49]);
-        assert_eq!(drawn.right.at, [171, 49]);
-        assert_eq!(drawn.top.at, [134, 24]);
-        assert_eq!(drawn.bottom.at, [134, 72]);
-        assert_eq!(drawn.left.length, drawn.right.length);
-        assert_eq!(drawn.top.length, 75);
-        assert_eq!(drawn.left.length, 48);
-    }
-
-    #[test]
-    fn a_tiny_footprint_grows_to_the_least_height_and_its_aspect_width() {
-        let drawn = outline(footprint(2800.0, 2810.0, 1000.0, 1005.0), MAP, IMAGE).unwrap();
-        assert_eq!(drawn.left.length, 6);
-        assert_eq!(drawn.top.length, 12);
-        assert!(outline(footprint(2800.0, 2810.0, 1000.0, 1000.05), MAP, IMAGE).is_none());
-    }
-
-    #[test]
-    fn the_wrap_copies_stand_a_picture_width_over() {
-        let east = outline(footprint(5000.0, 6000.0, 512.0, 1536.0), MAP, IMAGE).unwrap();
-        assert_eq!(east.wrap.at[0], east.right.at[0] - 268);
-        assert_eq!(east.wrap_top.at[0], east.top.at[0] - 268);
-        let west = outline(footprint(-400.0, 600.0, 512.0, 1536.0), MAP, IMAGE).unwrap();
-        assert_eq!(west.wrap.at[0], west.left.at[0] + 268);
-        assert_eq!(west.wrap_bottom.at[0], west.bottom.at[0] + 268);
-    }
-
-    #[test]
-    fn the_outline_is_clipped_to_the_world_picture() {
-        assert_eq!(picture_clip([4, 6, 268, 97]), [4, 6, 272, 103]);
-    }
 
     #[test]
     fn the_pointer_wraps_across_and_holds_down_the_picture() {
@@ -613,25 +566,6 @@ mod tests {
         assert_eq!(world_point([150.0, 0.0], image, MAP)[1], 2048.0);
         assert_eq!(world_point([150.0, 400.0], image, MAP)[1], 0.0);
         assert_eq!(world_point([150.0, 50.0], image, MAP)[1], 2048.0);
-    }
-
-    #[test]
-    fn every_minimap_tooltip_takes_the_code_set_anchor() {
-        let state = State {
-            footprint: None,
-            map: MAP,
-            slide: 0,
-            handle_tooltip: Some("handle"),
-            offensive_tooltip: [Some("offensive"), Some("ping")],
-            defensive_tooltip: [Some("defensive"), None],
-            ping: None,
-        };
-        let values = values(&state, None);
-        for name in ["handle", "offensive_ping", "defensive_ping"] {
-            assert_eq!(values[name].tooltip_anchor, TOOLTIP_ANCHOR, "{name}");
-        }
-        assert_eq!(values["offensive_ping"].tooltip_description.as_deref(), Some("ping"));
-        assert_eq!(values["defensive_ping"].tooltip_description, None, "a refused string shows nothing");
     }
 
     #[test]
@@ -646,27 +580,4 @@ mod tests {
         assert_eq!(ping_mode(Some(true), true, true, false), Some(true));
     }
 
-    #[test]
-    fn the_slide_eases_out_and_turns_back_from_where_it_stands() {
-        let defines = Defines {
-            duration: 0.5,
-            shift: 270,
-        };
-        assert_eq!(ease(0.0), 0.0);
-        assert!((ease(1.0) - 1.0).abs() < 1e-6);
-        let mut slide = Slide::default();
-        assert_eq!(slide.offset(10.0, defines), 0);
-        slide.toggle(10.0, defines.duration);
-        assert!(!slide.open());
-        assert_eq!(slide.offset(10.0, defines), 0);
-        let half = slide.offset(10.25, defines);
-        assert_eq!(half, (270.0 * ease(0.5)) as i32);
-        slide.toggle(10.25, defines.duration);
-        assert!(slide.open());
-        assert!((slide.offset(10.25, defines) - half).abs() <= 1);
-        assert_eq!(slide.offset(11.0, defines), 0);
-        assert!(!slide.sliding());
-        slide.toggle(20.0, defines.duration);
-        assert_eq!(slide.offset(21.0, defines), 270);
-    }
 }

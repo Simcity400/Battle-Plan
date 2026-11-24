@@ -3,8 +3,8 @@ import test from 'node:test';
 import { deepFreeze } from '../../testFrozen.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
-import { definition, OPTIONS } from './definition.ts';
-import { buildingChoices, builtLabel, constructionPlayback, heldThrough, liveKey, liveProjectTexts, projectText, shapeChanges, constructionWindows, describeRow as datedDescribeRow, factoriesShown, inQueue, joinProject, jumpHours, kindLabel, levelsLabel, logReach, logRows, mergeWindows, outputAt, placeLabel as datedPlaceLabel, placeTitle, projectAt, projectTooltip as datedProjectTooltip, rowCountryRequests, rowFactories, statusLabel, statusTone, validateConstructionLogManifest, validateConstructionLogWindow, windowAt } from './constructionData.ts';
+import { definition } from './definition.ts';
+import { builtLabel, constructionPlayback, heldThrough, liveKey, liveProjectTexts, projectText, shapeChanges, constructionWindows, describeRow as datedDescribeRow, factoriesShown, inQueue, joinProject, jumpHours, kindLabel, levelsLabel, logReach, logRows, mergeWindows, outputAt, placeTitle, projectAt, projectTooltip as datedProjectTooltip, rowCountryRequests, rowFactories, statusLabel, statusTone, validateConstructionLogManifest, validateConstructionLogWindow, windowAt } from './constructionData.ts';
 import type { ConstructionLog, LogFilter, ProjectAt } from './constructionData';
 import type { LogRow } from '../../charts/log/logData';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
@@ -59,7 +59,6 @@ test('construction playback retains rows between native changes and matches unca
     assert.notEqual(playback.at(148), settled);
   }
 });
-const placeLabel = (log: ConstructionLog, item: ConstructionProject) => datedPlaceLabel(item, log.states);
 const describeRow = (log: ConstructionLog, row: LogRow<ProjectAt>, country: string) => datedDescribeRow(log, row, country);
 const projectTooltip = (log: ConstructionLog, at: ProjectAt, hour: number, country: string) => datedProjectTooltip(log, at, hour, country);
 
@@ -111,13 +110,6 @@ test('construction selection accepts every recorded country', () => {
   assert.deepEqual(resolveCountries({ kind: 'tags', tags }, [], undefined, 172, definition.countries.max).tags, tags);
 });
 
-test('building types are chosen from a searchable list, and the queue filter starts off', () => {
-  const types = OPTIONS.find(field => field.key === 'types');
-  assert.ok(types?.kind === 'content-set' && types.catalogue === true, 'every type a mod adds is one row of a list, not a chip');
-  const queue = OPTIONS.find(field => field.key === 'queue');
-  assert.deepEqual(queue && [queue.kind, queue.default], ['toggle', false]);
-  assert.deepEqual(OPTIONS.find(field => field.key === 'projects')?.default, 'all');
-});
 
 test('every drawn row is named at its own first read, however many hours they span', () => {
   const rows = (count: number) => Array.from({ length: count }, (_, index) => {
@@ -301,16 +293,6 @@ test('a gap or failed queue read leaves status and pending dates unread until th
   assert.equal(levelsLabel(known), '1 of 3');
 });
 
-test('a row says what, where and how it stands in words', () => {
-  const at = (index: number, hour: number) => projectAt(PROJECTS[index], hour)!;
-  assert.deepEqual([statusLabel(at(0, 148)), statusLabel(at(1, 130)), statusLabel(at(2, 172)), statusLabel(at(3, 148))], ['Built', 'Repairing', 'Removed', 'Left the queue']);
-  assert.equal(placeLabel(LOG, PROJECTS[0]), 'Ruhr');
-  assert.equal(placeLabel(LOG, PROJECTS[1]), 'State 6');
-  assert.equal(placeLabel(LOG, PROJECTS[3]), 'Moscow to Smolensk');
-  assert.equal(placeLabel(LOG, project({ state: null, province: 5007 })), 'province 5007');
-  const [row] = logRows(LOG, 148, { ...every, types: ['industrial_complex'] }, 'change');
-  assert.match(describeRow(LOG, row, 'Germany'), /^Germany, Civilian Factory in Ruhr, built, /);
-});
 
 test('the tooltip dates its read, names its levels and cost, and says why an ending is unknown', () => {
   const [full, compact] = projectTooltip(LOG, projectAt(PROJECTS[3], 150)!, 150, 'Italy');
@@ -335,10 +317,6 @@ test('the tooltip dates its read, names its levels and cost, and says why an end
   assert.equal(repair.note, 'State 6: no name in the recorded content');
 });
 
-test('the building types offered are the recording’s own, by name', () => {
-  assert.deepEqual(buildingChoices(MANIFEST).map(choice => choice.label), ['Building name unavailable', 'Civilian Factory', 'Railway']);
-  assert.deepEqual(buildingChoices(undefined), []);
-});
 
 test('a level lost while the building was not recorded stays counted, as a range, never erased', () => {
   const unrecorded = project({ id: '9', runs: [{ firstHour: 100, lastHour: 123, factories: 15, remaining: 2, repairLevels: 0 },

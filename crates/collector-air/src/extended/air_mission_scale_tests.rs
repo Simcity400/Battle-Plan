@@ -716,36 +716,6 @@ fn mission_pack(scale: &Scale, memory: &impl Memory) -> Captured {
 }
 
 #[test]
-fn the_mission_joins_take_country_bytes_from_the_hours_snapshot() {
-    let scale = Scale::new();
-    let game_state = scale.world.game_state;
-    let mut storage = engine_allocation::shared(
-        engine_native_intelligence::country_memory::Cache::try_with_capacity(1 << 18).unwrap(),
-    ).unwrap();
-    let snapshot = engine_native_intelligence::country_memory::Cache::prepare_shared(
-        &mut storage,
-        &scale.world,
-        BASE,
-        game_state,
-    )
-    .unwrap();
-    let mut native = mission_pack(&scale, &scale.world);
-    let counted = Counted::new(&scale.world);
-    native.join_missions(&counted, BASE, game_state, None);
-    let native_copies = counted.copies.get();
-    let mut loaned = mission_pack(&scale, &scale.world);
-    let counted = Counted::new(&scale.world);
-    loaned.join_missions(&snapshot.bytes_view(&counted), BASE, game_state, None);
-    assert!(
-        counted.copies.get() < native_copies,
-        "{} {native_copies}",
-        counted.copies.get()
-    );
-    assert_eq!(loaned.outcomes(), native.outcomes());
-    assert_eq!(loaned.tables()[6..12], native.tables()[6..12]);
-}
-
-#[test]
 fn the_mission_job_leaves_the_joins_complete_for_the_late_capture() {
     let scale = Scale::new();
     let mut reference = Captured::with_capacities(&ample());
@@ -915,17 +885,3 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
     );
 }
 
-#[test]
-fn retired_air_mine_table_has_no_producer_metadata_or_output() {
-    let scale = Scale::new();
-    let mut air = Captured::with_capacities(&ample());
-    let outcomes = scale.hour(&scale.census, &mut air);
-    assert_eq!(outcomes.len(), TABLES.len());
-    assert!(!TABLES.contains(&TableId::NavalMineLevels));
-    assert_eq!(TABLES[7], TableId::AirMissionInputs);
-    for view in air.tables() {
-        if let TableView::Complete(rows) = view {
-            assert_ne!(rows.table(), TableId::NavalMineLevels);
-        }
-    }
-}

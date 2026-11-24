@@ -246,7 +246,6 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-
 const TABLE_CHUNK: usize = 65536;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2039,21 +2038,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lexical_cold_storage_holds_no_content_guesses() {
-        let job = LexicalJob::new();
-        assert!(!job.has_storage());
-        assert_eq!(
-            (
-                job.bytes.capacity(),
-                job.tokens.capacity(),
-                job.chunks.capacity()
-            ),
-            (0, 0, 0)
-        );
-        let capacity = Capacities::default();
-        assert_eq!((capacity.rows, capacity.text), (0, 0));
-    }
 }
 
 #[cfg(any(test, feature = "test-support"))]

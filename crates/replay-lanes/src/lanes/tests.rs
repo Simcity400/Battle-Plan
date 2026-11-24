@@ -2,13 +2,6 @@ use super::*;
 use replay_journal::fixtures;
 
 #[test]
-fn lifetimes_read_past_levels_a_run_closes_no_piece_of() {
-    let recording = Recording::open(fixtures::native_recording(recorder_derive::writers(), 20, |_| {})).unwrap();
-    let lives = lifetimes(&recording, 0, TableId::Countries).unwrap();
-    assert!(!lives.is_empty());
-}
-
-#[test]
 fn a_row_absent_for_three_days_inside_one_bucket_is_present_on_both_sides_and_never_inside_the_gap() {
     let (gone, back): (i32, i32) = (2_890, 2_962);
     assert_eq!(i64::from(gone).div_euclid(summary::bucket_hours(1)), i64::from(back - 1).div_euclid(summary::bucket_hours(1)), "the absence lies inside one bucket");

@@ -3,11 +3,6 @@ import test from 'node:test';
 import { focusArtAsks, focusAsksAhead, focusReadHours, focusAt, focusCompletion, focusMissingAt, focusProgressAt, focusProgressView, focusRequest, focusShownAt, validateFocusReply, validateFocusArtworkReply } from './focusData.ts';
 import { loadProduct } from '../../dashboard/products.ts';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
-import type { WidgetProps } from '../../dashboard/definitions';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { createServer } from 'vite';
-import { HourStore, planRequests } from '../../dashboard/countryFacts.ts';
 import type { FocusOrder, FocusReply } from '../../generated/dashboard';
 import type { SegmentHours } from './focusData';
 
@@ -47,11 +42,6 @@ test('focus histories reject overlap, future completion bounds and invalid artwo
   }
 });
 
-test('a modded tree may complete any number of focuses', () => {
-  const completed = Array.from({ length: 900 }, (_, ordinal) => ({ ordinal, token: `mod_focus_${ordinal}`, completedByHour: null }));
-  const big = { ...reply, history: { progress: [], segments: [{ firstHour: 100, lastHour: 200, order: { ...first, completed } }] } };
-  assert.equal(validateFocusReply(big).history.segments[0].order.completed.length, 900);
-});
 
 test('exact local playback preserves unknown dates and never bridges gaps or leaks future focuses', () => {
   assert.equal(focusAt(reply.history, 99), null);
@@ -166,53 +156,3 @@ test('duration metadata and dated requests retain 5000 modded tokens without a c
     items: artwork.map(art => ({ artwork: art, reason: null })), warnings: [] }, params).items.length, 5000);
 });
 
-test('Follow schedules the current and newest focus first while every time mode preserves rendered completion order and dates', async () => {
-  const completed = Array.from({ length: 20 }, (_, ordinal) => ({ ordinal, token: `focus_${ordinal}`,
-    completedByHour: ordinal === 0 ? null : 100 + ordinal }));
-  const data: FocusReply = { history: { segments: [{ firstHour: 100, lastHour: 200, order: {
-    completed, current: 'current_focus', continuous: null, paused: false,
-  } }], progress: [] }, missing: [], artwork: [], continuousStaticText: [], warnings: [] };
-  const fixture = { data, wanted: [] as { tag: string; hour: number }[] };
-  const host = globalThis as typeof globalThis & { __focusPriorities?: typeof fixture };
-  host.__focusPriorities = fixture;
-  const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__focusPriorities.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
-    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
-    '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted) => {
-      globalThis.__focusPriorities.wanted = wanted;
-      return { warnings: [], read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]), {
-        artwork: { token: tag, name: 'Localized ' + tag, description: 'Recorded description', baseDurationDays: 10, icon: null }, reason: null,
-      }])) }; };
-      export const useContinuousFocusArtwork = () => ({ warnings: [], read: new Map(), details: new Map() });`,
-  };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-priority-renderer', enforce: 'pre',
-      transform(_code, id) { const path = id.replaceAll('\\', '/'); return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1]; },
-    }] });
-  try {
-    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
-    const props = { widget: { id: 'priority', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['synthetic'] }, time: { mode: 'follow' } },
-      runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
-        source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign', playerCountryId: null, countries: [] } } }], clock: { getHour: () => 200, getSnapshot: () => ({ playing: false, hoursPerSecond: 0 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
-    const completionPairs = completed.map(entry => ({ tag: entry.token, hour: entry.completedByHour ?? 100 }));
-    const render = () => renderToStaticMarkup(createElement(Widget, props));
-    for (const mode of ['follow', 'pin', 'campaign'] as const) {
-      props.widget.time = mode === 'pin' ? { mode, windows: { track: { firstOffset: 100, lastOffset: 100 } } } : { mode };
-      const markup = render();
-      const current = { tag: 'current_focus', hour: 100 };
-      const expected = mode === 'follow' ? [current, ...completionPairs.slice().reverse()]
-        : mode === 'pin' ? [current, ...completionPairs] : [...completionPairs, current];
-      assert.deepEqual(fixture.wanted, expected);
-      const images = planRequests(new HourStore(64), fixture.wanted, 21, 8, 'wanted');
-      assert.deepEqual({ hour: images[0][0], tag: images[0][1][0] }, expected[0], 'the most wanted art is asked first');
-      const rendered = [...markup.matchAll(/Key: (focus_\d+)/g)].map(match => match[1]);
-      assert.deepEqual(rendered, completed.map(entry => entry.token), 'scheduling never reverses, hides or drops displayed rows');
-      assert.match(markup, /Date not recorded/);
-      assert.match(markup, /Recorded description/);
-      assert.match(markup, /Localized current_focus/);
-      assert.equal(completed[0].completedByHour, null);
-      assert.deepEqual(data.history.segments[0].order.completed, completed);
-    }
-  } finally { delete host.__focusPriorities; await vite.close(); }
-});

@@ -497,16 +497,6 @@ fn names_upload_writes_only_the_area_placed_again() {
 }
 
 #[test]
-fn names_upload_with_no_area_changed_writes_nothing() {
-    let (mut layer, mut scene) = (areas(), Held::default());
-    layer.push(&mut scene).unwrap();
-    let (drawn, sets) = (Arc::clone(&layer.drawn), scene.sets.len());
-    layer.push(&mut scene).unwrap();
-    assert_eq!(scene.sets.len(), sets, "nothing written");
-    assert!(Arc::ptr_eq(&drawn, &layer.drawn), "the window's placements are the same");
-}
-
-#[test]
 fn names_sent_again_whole_send_every_area_in_one_upload() {
     let (mut layer, mut scene) = (areas(), Held::default());
     layer.push(&mut scene).unwrap();

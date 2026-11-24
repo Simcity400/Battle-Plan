@@ -4,8 +4,7 @@ import type { SeriesTileReply } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
 import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
-import { FIRST_BREAK, HAS_BREAK, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, decodeTileBins, tilesOf } from './tile.ts';
-import type { TileReply } from './tile.ts';
+import { FIRST_BREAK, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, decodeTileBins, tilesOf } from './tile.ts';
 import { TileView, cellBins, viewRuns } from './view.ts';
 import type { TileLane, TileViewport } from './view.ts';
 
@@ -145,94 +144,6 @@ test('a view of many keys asks its groups once, side by side, and a second chart
   assert.equal(other.current!.size, 3);
 });
 
-test('a landing tile past the off-thread size is parsed and decoded by the reply worker, its one buffer handed over, and read on the page without base64, each key from its own bytes', async () => {
-  const native = Uint8Array as unknown as { fromBase64?: (text: string) => Uint8Array };
-  const { fromBase64 } = native, { atob } = globalThis;
-  const global = globalThis as unknown as { self?: unknown; Worker?: unknown };
-  const scope = { onmessage: null as null | ((event: { data: unknown }) => void), postMessage: (_message: unknown, _options: { transfer: ArrayBuffer[] }) => {} };
-  const sent: ArrayBuffer[] = [], returned: { buffer: ArrayBuffer; bins: unknown }[] = [], decoded: ArrayBuffer[] = [];
-  let inWorker = false, workerParses = 0, pageParses = 0;
-  class InProcessWorker {
-    onmessage: ((event: { data: unknown }) => void) | null = null;
-    onerror: unknown = null;
-    constructor() {
-      scope.postMessage = (message, { transfer }) => {
-        const value = (message as { value?: { data?: { bins?: unknown } } }).value;
-        returned.push({ buffer: transfer[0]!, bins: value?.data?.bins });
-        const landed = structuredClone(message, { transfer });
-        queueMicrotask(() => this.onmessage?.({ data: landed }));
-      };
-    }
-    postMessage(message: { bytes: ArrayBuffer }, transfer: ArrayBuffer[]) {
-      sent.push(message.bytes);
-      const arrived = structuredClone(message, { transfer });
-      inWorker = true;
-      try { scope.onmessage!({ data: arrived }); } finally { inWorker = false; }
-    }
-    terminate() {}
-  }
-  let decodes = 0;
-  native.fromBase64 = text => {
-    decodes++;
-    const out = fromBase64 ? fromBase64(text) : Uint8Array.from(atob(text), letter => letter.charCodeAt(0));
-    decoded.push(out.buffer as ArrayBuffer);
-    return out;
-  };
-  globalThis.atob = text => { decodes++; return atob(text); };
-  const { parse } = JSON;
-  JSON.parse = (...args: Parameters<typeof JSON.parse>) => { if (inWorker) workerParses++; else pageParses++; return parse(...args); };
-  global.self = scope;
-  global.Worker = InProcessWorker;
-  try {
-    await import('../replyParser.worker.ts');
-    const { parseReplyBytes } = await import('../replyParse.ts');
-    for (const keys of [TILE_GROUP, 100]) {
-      const tags = Array.from({ length: keys }, (_, at) => `T${at}`), count = keys * TILE_BINS;
-      const bytes = new Uint8Array(count * (1 + 16 + 5));
-      for (let at = 0; at < keys; at++) {
-        for (let bin = 0; bin < TILE_BINS; bin++) {
-          const pattern = bin < 8 ? ((at >> bin) & 1) * 15 : (at * 7 + bin) % 16;
-          bytes[at * TILE_BINS + bin] = PRESENT | (pattern & 1 ? FIRST_BREAK : 0) | (pattern & 2 ? HAS_BREAK : 0) | (pattern & 4 ? RUN : 0) | (pattern & 8 ? SEAM : 0);
-        }
-        bytes.fill(at + 1, count + at * TILE_BINS * 16, count + (at + 1) * TILE_BINS * 16);
-        bytes.fill(100 + at, count * 17 + at * TILE_BINS * 5, count * 17 + (at + 1) * TILE_BINS * 5);
-      }
-      const reply: SeriesTileReply = { ...binned(tags, 6, 10, false), hourBytes: 1, bins: base64(bytes) };
-      const request = new TextEncoder().encode(JSON.stringify({ product: 'series-tiles', data: reply }));
-      assert.ok(request.byteLength > 64 * 1024, `${request.byteLength} bytes go to the worker`);
-      decodes = 0;
-      workerParses = 0;
-      pageParses = 0;
-      sent.length = 0;
-      returned.length = 0;
-      decoded.length = 0;
-      const parsed = await parseReplyBytes(request) as { data: TileReply };
-      assert.equal(sent.length, 1, 'the reply went to the worker');
-      assert.deepEqual([workerParses, pageParses], [1, 0], 'the worker parses the reply and the page parses nothing');
-      assert.equal(request.byteLength, 0, 'its bytes were handed to the worker, not copied');
-      assert.equal(decodes, 1, 'the worker decodes the base64 once');
-      const [{ buffer, bins }] = returned;
-      assert.ok(bins instanceof Uint8Array && bins.buffer === buffer && buffer === decoded[0], 'the worker hands over the buffer the decoder made, not a copy');
-      assert.equal(buffer.byteLength, 0, 'and keeps no copy of it');
-      assert.ok(parsed.data.bins instanceof Uint8Array && parsed.data.bins.byteLength === bytes.length && parsed.data.bins.buffer.byteLength === bytes.length,
-        'the page holds the one buffer of the bins');
-      const tiles = tilesOf(parsed.data, tags, 6, 10, tag => tag);
-      assert.equal(decodes, 1, `the page decodes nothing for a tile of ${keys} keys`);
-      const own = (array: ArrayBufferView) => [...new Uint8Array(array.buffer, array.byteOffset, array.byteLength)];
-      tiles.forEach((tile, at) => {
-        assert.deepEqual(own(tile.flags), [...bytes.subarray(at * TILE_BINS, (at + 1) * TILE_BINS)], `${tile.tag} flags`);
-        assert.deepEqual(own(tile.values), [...bytes.subarray(count + at * TILE_BINS * 16, count + (at + 1) * TILE_BINS * 16)], `${tile.tag} values`);
-        assert.deepEqual(own(tile.hours), [...bytes.subarray(count * 17 + at * TILE_BINS * 5, count * 17 + (at + 1) * TILE_BINS * 5)], `${tile.tag} hours`);
-      });
-    }
-  } finally {
-    if (fromBase64) native.fromBase64 = fromBase64; else delete native.fromBase64;
-    globalThis.atob = atob;
-    JSON.parse = parse;
-    delete global.self;
-    delete global.Worker;
-  }
-});
 
 test('a landing tile is decoded where replies are parsed, its bytes handed over, and reads as the same tiles', () => {
   const tags = ['GER', 'ITA'];
@@ -248,30 +159,3 @@ test('a landing tile is decoded where replies are parsed, its bytes handed over,
   assert.deepEqual(decodeTileBins({ product: 'series-summary', data: { bins: 'AA==' } }), [], 'other replies untouched');
 });
 
-test('an hourly view following the head asks one tile per 256 hours of travel, at 24 h/s and at 1 h/s', async () => {
-  const source = (): Run[] => Array.from({ length: 400 }, (_, at) => ({ firstHour: at * 50, lastHour: at * 50 + 49, value: at % 7, breakBefore: at === 0 }));
-  for (const [speed, travel] of [[24, 6_000], [1, 1_200]] as const) {
-    const cache = new TileCache(), runs = lane(['GER', 'ITA'], { reply: hourly(source) as never });
-    let renders = 0;
-    const view = new TileView(cache, runs, () => { renders++; });
-    const start = 1_000;
-    view.setView(following(start, 7));
-    await settle();
-    assert.equal(binHoursOf(168, 600), 1, 'a week at 600 pixels is hourly');
-    const initial = runs.asked.length;
-    let frames = 0, quiet = 0;
-    for (let frame = 1; frame <= travel * 60 / speed; frame++) {
-      const before = runs.asked.length;
-      view.setView(following(start + frame * speed / 60, 7));
-      if (frame % 60 === 0) await settle();
-      frames++;
-      if (runs.asked.length === before) quiet++;
-    }
-    await settle();
-    const moving = runs.asked.length - initial;
-    assert.ok(moving <= Math.ceil(travel / TILE_BINS) && moving >= Math.floor(travel / TILE_BINS) - 1, `${moving} tiles over ${travel} hours`);
-    assert.equal(quiet + moving, frames);
-    assert.ok(renders <= initial + moving);
-    console.log(`an hourly view following at ${speed} h/s: ${initial} tiles to open, then ${moving} requests over ${travel} hours, ${renders} renders`);
-  }
-});

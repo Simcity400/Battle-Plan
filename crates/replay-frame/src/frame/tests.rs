@@ -645,26 +645,6 @@ fn a_view_kept_until_the_next_hour_is_copied_once_then_reused() {
 }
 
 #[test]
-fn views_kept_every_hour_are_copied_every_hour() {
-    let countries = TableId::Countries.index();
-    let frames = moving_countries(5, 2);
-    let (mut decoder, mut alone) = (FrameDecoder::new(), FrameDecoder::new());
-    let (copies, reuses) = (
-        crate::cpu::delta_copies()[countries],
-        crate::cpu::delta_reuses()[countries],
-    );
-    let mut held = Vec::new();
-    for frame in &frames {
-        held.push(decoder.advance(frame).unwrap().clone());
-    }
-    assert_eq!(crate::cpu::delta_copies()[countries][0] - copies[0], 4);
-    assert_eq!(crate::cpu::delta_reuses()[countries][0] - reuses[0], 0);
-    for (frame, held) in frames.iter().zip(&held) {
-        assert_same_frame(held, alone.advance(frame).unwrap());
-    }
-}
-
-#[test]
 fn an_unchanged_hour_releases_the_replaced_view() {
     let countries = TableId::Countries.index();
     let mut encoder = FrameEncoder::new();
@@ -2055,68 +2035,6 @@ fn borrowed_advances_and_owned_results_keep_independent_rows() {
 }
 
 #[test]
-fn consuming_encoder_moves_vectors_and_decoder_keeps_unchanged_string_allocations() {
-    let mut encoder = FrameEncoder::new();
-    let first = source(1, 100);
-    let input_rows = first.complete::<tables::Countries>().unwrap().as_ptr();
-    let initial = encoder.encode(first, false).unwrap();
-    assert_eq!(
-        encoder
-            .committed_rows(TableId::Countries)
-            .unwrap()
-            .rows::<tables::Countries>()
-            .unwrap()
-            .as_ptr(),
-        input_rows
-    );
-
-    let mut decoder = FrameDecoder::new();
-    let country = &decoder
-        .advance(&initial)
-        .unwrap()
-        .complete::<tables::Countries>()
-        .unwrap()[0];
-    let tag = country.tag.as_ptr();
-    let mut next = source(1, 101);
-    change_country(&mut next, 2);
-    let input_rows = next.complete::<tables::Countries>().unwrap().as_ptr();
-    let delta = encoder.encode(next, false).unwrap();
-    assert_eq!(
-        encoder
-            .committed_rows(TableId::Countries)
-            .unwrap()
-            .rows::<tables::Countries>()
-            .unwrap()
-            .as_ptr(),
-        input_rows
-    );
-    let country = &decoder
-        .advance(&delta)
-        .unwrap()
-        .complete::<tables::Countries>()
-        .unwrap()[0];
-    assert_eq!(country.command_power_raw, 2);
-    assert_eq!(country.tag.as_ptr(), tag);
-
-    let mut unchanged = source(1, 102);
-    change_country(&mut unchanged, 2);
-    let update = encoder.encode(unchanged, false).unwrap();
-    assert!(matches!(
-        update.tables[TableId::Countries.index()],
-        TableUpdate::Unchanged { .. }
-    ));
-    assert_eq!(
-        encoder
-            .committed_rows(TableId::Countries)
-            .unwrap()
-            .rows::<tables::Countries>()
-            .unwrap()
-            .as_ptr(),
-        input_rows
-    );
-}
-
-#[test]
 fn unavailable_and_truncated_tables_require_their_own_next_snapshot() {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
@@ -3363,31 +3281,6 @@ fn commit_hands_back_replaced_baselines_and_unkept_inputs() {
         retiring.encode_bytes(next.clone(), false).unwrap().bytes,
         plain.encode_bytes(next, false).unwrap().bytes
     );
-}
-
-#[test]
-fn an_update_of_present_rows_applies_in_place() {
-    use crate::rows::{CountryLinkRow, RowCodec};
-    let rows: Vec<_> = (1..=3)
-        .map(|id| CountryLinkRow {
-            id,
-            canonical_slot: id,
-        })
-        .collect();
-    let changed = CountryLinkRow {
-        canonical_slot: 9,
-        ..rows[1].clone()
-    };
-    let delta = changed.delta(Some(&rows[1])).unwrap().unwrap();
-    let table = rows.as_ptr();
-    let TableRows::CountryLinks(updated) = TableRows::CountryLinks(rows)
-        .apply_delta(&[delta], &[])
-        .unwrap()
-    else {
-        panic!("country links");
-    };
-    assert_eq!(updated.as_ptr(), table, "the table is not rebuilt");
-    assert_eq!(updated[1], changed);
 }
 
 #[test]

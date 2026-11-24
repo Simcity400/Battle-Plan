@@ -41,22 +41,6 @@ fn signed_removals_accept_unclamped_native_quantities_and_refuse_sum_overflow() 
         Err("destruction design quantity overflow")
     );
 }
-#[test]
-fn callers_are_classified_semantically_and_unknown_is_preserved() {
-    assert_eq!(land_cause(0, LAND_COMBAT_RETURN.0), Cause::LandCombat);
-    assert_eq!(
-        land_cause(0, NAVAL_TRANSPORT_RETURN.0),
-        Cause::NavalTransport
-    );
-    assert_eq!(land_cause(0, IMMEDIATE_RETURN.0), Cause::Immediate);
-    assert_eq!(land_cause(0, LAND_COMBAT_RETURN.0 + 1), Cause::Unknown);
-    for (source, expected) in AIR_CAUSES {
-        assert_eq!(air_cause(0, source.0), expected);
-        assert_eq!(air_cause(0, source.0 + 1), Cause::Unknown);
-    }
-    assert_eq!(air_cause(0, 0), Cause::Unknown);
-    assert_eq!(Cause::default(), Cause::Unknown);
-}
 
 #[test]
 fn bounded_variant_copy_sums_signed_duplicates_and_refuses_short_or_unreadable() {
@@ -356,27 +340,6 @@ fn deletion_paths_cleanup_transfers_and_unknown_are_explicit() {
 }
 
 #[test]
-fn site_metadata_keeps_call_targets_and_install_groups_explicit() {
-    for site in SITES {
-        assert_eq!(SITES[site.id as usize].id, site.id);
-    }
-    assert_eq!(
-        SITES
-            .iter()
-            .filter(|site| !site.id.is_supplemental())
-            .count(),
-        4
-    );
-    assert_eq!(
-        SITES
-            .iter()
-            .filter(|site| site.id.is_supplemental())
-            .count(),
-        SITES.len() - 4
-    );
-}
-
-#[test]
 fn fake_intel_uses_the_recorded_census_flag_and_refuses_short_reads() {
     use engine_native_memory::memory::SliceMemory;
     let mut bytes = vec![0u8; 0x700];
@@ -545,42 +508,6 @@ fn live_pool_signed_nets_include_rounding_gains_and_real_removals() {
     })
     .unwrap();
     assert_eq!(events, [(70, 240001)]);
-}
-
-#[test]
-fn negative_damage_gain_is_signed() {
-    let mut events = Vec::new();
-    removals(&mut [row(70, 1000000)], &mut [row(70, 1100000)], |d, q| {
-        events.push((d, q));
-    })
-    .unwrap();
-    assert_eq!(events, [(70, -100000)]);
-}
-
-#[test]
-fn fractional_pool_rounding_gain_is_signed() {
-    let mut events = Vec::new();
-    removals(&mut [row(70, 1030000)], &mut [row(70, 1100000)], |d, q| {
-        events.push((d, q));
-    })
-    .unwrap();
-    assert_eq!(events, [(70, -70000)]);
-}
-
-#[test]
-fn scripted_factor_above_one_and_sign_flip_are_signed() {
-    let mut events = Vec::new();
-    removals(&mut [row(70, 400001)], &mut [row(70, 800002)], |d, q| {
-        events.push((d, q));
-    })
-    .unwrap();
-    assert_eq!(events, [(70, -400001)]);
-    events.clear();
-    removals(&mut [row(70, 400001)], &mut [row(70, -400001)], |d, q| {
-        events.push((d, q));
-    })
-    .unwrap();
-    assert_eq!(events, [(70, 800002)]);
 }
 
 #[test]

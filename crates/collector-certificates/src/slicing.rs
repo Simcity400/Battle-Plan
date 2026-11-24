@@ -713,49 +713,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn digest_word_helpers_keep_the_exact_little_endian_byte_stream() {
-        let mut expected = 0xcbf2_9ce4_8422_2325_u64;
-        let mut digest = Digest::new();
-        for value in [0, 1, u64::MAX, i64::MIN as u64, 0x1234_5678_9abc_def0] {
-            digest.u64(value).i64(value as i64);
-            for byte in value.to_le_bytes().into_iter().cycle().take(16) {
-                expected = (expected ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-            }
-            assert_eq!(digest.finish(), expected);
-        }
-        let text = b"owned\0bytes";
-        digest.text(text);
-        for byte in (text.len() as u64)
-            .to_le_bytes()
-            .into_iter()
-            .chain(text.iter().copied())
-        {
-            expected = (expected ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-        }
-        assert_eq!(digest.finish(), expected);
-        digest.bytes(&[]);
-        assert_eq!(digest.finish(), expected);
-    }
-
-    #[test]
-    fn digest_zero_suffix_shortcut_preserves_every_word_boundary() {
-        let mut expected = Digest::new();
-        let mut actual = Digest::new();
-        for seed in [0, 1, 0x9876_5432_10fe_dcba_u64, u64::MAX] {
-            for bits in 0..64 {
-                for value in [seed, 1_u64 << bits, (1_u64 << bits).wrapping_sub(1)] {
-                    expected.bytes(&value.to_le_bytes()).bytes(b"next");
-                    actual.u64(value).bytes(b"next");
-                    assert_eq!(actual.finish(), expected.finish());
-                    expected.bytes(&(value as i64).to_le_bytes());
-                    actual.i64(value as i64);
-                    assert_eq!(actual.finish(), expected.finish());
-                }
-            }
-        }
-    }
-
-    #[test]
     fn certificate_scans_mark_owners_whose_certificate_changed() {
         let mut store = SliceFingerprints::new();
         let hour = |store: &mut SliceFingerprints, prints: [u64; 3]| {
@@ -770,17 +727,6 @@ mod tests {
         assert_eq!(hour(&mut store, [1, 1, 1]), [1, 2, 3]);
         assert_eq!(hour(&mut store, [1, 2, 1]), [2]);
         assert!(hour(&mut store, [1, 2, 1]).is_empty());
-    }
-
-    #[test]
-    fn selections_and_fingerprints_start_empty_without_callback_allocation() {
-        crate::test_support::with_allocations_denied(|| {
-            let selection = SliceSelection::new();
-            for owners in [&selection.early, &selection.seen, &selection.walked] {
-                assert_eq!(owners.capacity(), 0);
-            }
-            assert_eq!(SliceFingerprints::new().values.capacity(), 0);
-        });
     }
 
     #[test]

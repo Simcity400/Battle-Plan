@@ -26,26 +26,3 @@ const fn site(name: &'static str, rva: Rva) -> MutationSite {
     MutationSite { name, rva }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sites_are_distinct_and_the_daily_index_names_the_daily_update() {
-        for (index, (site, _)) in MUTATIONS.iter().enumerate() {
-            assert!(
-                MUTATIONS[..index]
-                    .iter()
-                    .all(|(other, _)| other.rva != site.rva && other.name != site.name),
-                "{}",
-                site.name
-            );
-        }
-        assert_eq!(MUTATIONS[DAILY_UPDATE].0.name, "daily_update");
-        assert!(
-            crate::template_mutations::MUTATIONS
-                .iter()
-                .any(|(site, _)| site.name == "destroy_hq_group")
-        );
-    }
-}

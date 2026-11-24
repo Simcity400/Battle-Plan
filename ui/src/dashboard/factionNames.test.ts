@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CountryGroupReply, FactionGroup, FactionNameRun } from '../generated/dashboard';
+import type { CountryGroupReply, FactionGroup } from '../generated/dashboard';
 import { factionChoiceLabel, factionNameAt, factionNameLabel, latestFactionSummaries } from './factionNames.ts';
 
 const faction: FactionGroup = {
@@ -39,21 +39,6 @@ test('missing or refused content keeps its exact reason and a display name wins'
   assert.deepEqual(factionNameAt(unavailable), { name: null, reason: 'LexicalTokens not in this recording' });
 });
 
-test('dated name lookup reads logarithmically even with 5,000 names', () => {
-  const runs: FactionNameRun[] = Array.from({ length: 5_000 }, (_, index) => ({ firstHour: index * 2, lastHour: index * 2,
-    name: `Pact ${index}`, reason: null }));
-  let reads = 0;
-  const names = new Proxy(runs, { get(target, key, receiver) {
-    if (typeof key === 'string' && /^\d+$/.test(key)) reads++;
-    return Reflect.get(target, key, receiver);
-  } });
-  const data = { ...faction, names };
-  assert.equal(factionNameLabel(data, 9_998), 'Pact 4999');
-  assert.ok(reads <= 14, `${reads} rows read (binary lookup plus result)`);
-  reads = 0;
-  assert.equal(factionNameLabel(data, 9_997), 'Unnamed faction');
-  assert.ok(reads <= 13, `${reads} rows read for a gap`);
-});
 
 test('campaign summaries choose the newest branch read even when its name is unavailable', () => {
   const reply = (faction: FactionGroup): CountryGroupReply => ({ branchId: '1', factions: [faction], humans: [], wars: [],

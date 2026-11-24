@@ -32,7 +32,7 @@ mod tests {
         modifier_definition,
     };
     use engine_native::{ccountry, cgame_state, crelation};
-    use engine_native_politics::{cdiplomacy_status, cpolitical_party, cpolitical_status};
+    use engine_native_politics::cpolitical_status;
     use engine_stability::{cmodifier, country_stability as native, cworld_threat};
     use replay_data::rows::{CountryStabilityLineRow, TableRows};
     use replay_frame::frame::{Metrics, TableInput};

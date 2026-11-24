@@ -139,7 +139,6 @@ pub fn record(counts: &Counts) {
     GROUPS.fetch_max((counts.carried + counts.read) as usize, Ordering::Relaxed);
 }
 
-
 fn observe() {
     let enabled = PATCHED.load(Ordering::SeqCst) && FORWARDED.load(Ordering::SeqCst);
     WATCHES.registry.set_enabled(enabled);
@@ -292,14 +291,6 @@ callback!(clear_hq_provider, 5);
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn site_refusals_identify_the_exact_site_before_any_patch_is_built() {
-        let error = validate_sites(0).unwrap_err();
-        assert!(error.contains("orders_group_changes"));
-        assert!(error.contains(MUTATIONS[0].0.name));
-        assert!(error.contains("sentinel validation"));
-    }
 
     #[test]
     fn writers_move_only_their_groups_certificates() {

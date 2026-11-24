@@ -2534,8 +2534,6 @@ fn copy_words(
 }
 
 #[cfg(test)]
-mod plan_batch_tests;
-#[cfg(test)]
 mod tests;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

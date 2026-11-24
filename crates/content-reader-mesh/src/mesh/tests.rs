@@ -1998,33 +1998,6 @@ fn bound_sampled_pose_matches_name_join_for_reordered_partial_and_duplicate_join
 }
 
 #[test]
-fn animation_sample_storage_observes_borrowed_banks_without_changes() {
-    let mut translations = Vec::with_capacity(17);
-    translations.extend([1.0, -0.0, 3.0]);
-    let animation = Animation {
-        translations,
-        rotations: vec![0.0, 0.0, 0.0, 1.0],
-        ..Default::default()
-    };
-    let before = animation.clone();
-    let banks = animation.sample_storage();
-    for ((values, capacity), original) in banks.into_iter().zip([
-        &animation.translations,
-        &animation.rotations,
-        &animation.scales,
-    ]) {
-        assert_eq!(values.as_ptr(), original.as_ptr());
-        assert_eq!(values.len(), original.len());
-        assert_eq!(capacity, original.capacity());
-        assert_eq!(
-            values.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-            original.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
-        );
-    }
-    assert_eq!(animation, before);
-}
-
-#[test]
 fn a_mesh_s_cull_distance_is_squared_after_each_assignment_and_is_the_engine_s_when_unset() {
     let parsed = parse_descriptors(
         b"objectTypes = { pdxmesh = { name = plain file = p.mesh }

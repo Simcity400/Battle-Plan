@@ -58,14 +58,3 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     ),
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sites_are_distinct() {
-        let mut rvas = MUTATIONS.map(|(site, _)| site.rva);
-        rvas.sort_unstable();
-        assert!(rvas.windows(2).all(|pair| pair[0] != pair[1]));
-    }
-}

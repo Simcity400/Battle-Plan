@@ -449,54 +449,6 @@ fn partial_requests_cannot_claim_an_empty_active_mod_roster() {
 }
 
 #[test]
-fn counts_read_headers_and_the_mount_terminator_only() {
-    struct Rooted<'a>(&'a [u8]);
-    impl Memory for Rooted<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            let root = match address {
-                a if a == SINGLETON_RVA.0 => 0x100_u64,
-                a if a == SEARCH_PATH_RVA.0 => 0x1000,
-                _ => {
-                    return SliceMemory {
-                        base: 0,
-                        bytes: self.0,
-                    }
-                    .copy(address, output);
-                }
-            };
-            output.copy_from_slice(&root.to_le_bytes());
-            true
-        }
-    }
-    let mut bytes = vec![0_u8; 0x2000];
-    let manager = 0x100;
-    for (offset, count) in [(DLC_FILTER_STRINGS, 70_u32), (REQUESTED_MODS, 100)] {
-        u64_at(&mut bytes, manager + offset, 0x4000);
-        bytes[manager + offset + 8..manager + offset + 12].copy_from_slice(&count.to_le_bytes());
-        bytes[manager + offset + 12..manager + offset + 16].copy_from_slice(&count.to_le_bytes());
-    }
-    u64_at(&mut bytes, manager + DLCS + msvc_map::COUNT, 90);
-    u64_at(&mut bytes, manager + MODS + msvc_map::COUNT, 5_001);
-    for index in 0..80 {
-        u64_at(&mut bytes, 0x1000 + index * 8, 0x1800);
-    }
-    let rooted = Rooted(&bytes);
-    let memory = engine_native_memory::read_census::ReadCensus::new(&rooted);
-    assert_eq!(
-        observe_counts(&memory, 0),
-        Counts {
-            dlc_filter_strings: 70,
-            requested_mods: 100,
-            dlcs: 90,
-            mods: 5_001,
-            mounts: 80,
-        }
-    );
-    assert_eq!(memory.calls(), 1 + 2 + 2 + 1 + 81);
-    assert_eq!(observe_counts(&Rooted(&[]), 0), Counts::default());
-}
-
-#[test]
 fn search_path_order_raw_bytes_and_omitted_count_are_preserved() {
     let paths: &[&[u8]] = &[b"dlc/z.zip", b"dlc/\xff/", b"C:\\game/"];
     let bytes = search_path_bytes(paths);

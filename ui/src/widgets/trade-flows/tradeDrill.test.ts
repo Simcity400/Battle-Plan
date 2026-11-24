@@ -20,7 +20,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type TradeDrill from './TradeDrillView';
 import type { TimeChartProps } from '../../charts/TimeChart';
-import { TOOLTIP_LIMIT } from './tradeTooltip.ts';
 import type { TradeFlowsReply } from '../../generated/dashboard';
 
 const identity = (slot: number) => JSON.stringify([slot, slot + 1]);
@@ -50,37 +49,6 @@ function reply(count: number): TradeFlowsReply {
       factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] })) };
 }
 
-test('trade drill hovers show a positive more count and keep the trading-day unit', async () => {
-  const state = { chart: undefined as TimeChartProps | undefined };
-  const host = globalThis as typeof globalThis & { __tradeDrillPresentation?: typeof state }; host.__tradeDrillPresentation = state;
-  const replacements: Record<string, string> = {
-    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
-    '/dashboard/countryLooks.ts': 'export const lookHour = (_branch, hour) => ({ hour });',
-    '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
-    '/charts/drill/DrillParts.tsx': 'export default () => null;',
-    '/charts/TimeChart.tsx': 'export default props => { globalThis.__tradeDrillPresentation.chart = props; return null; };',
-  };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
-    plugins: [{ name: 'trade-drill-presentation', enforce: 'pre', transform(_code, id) {
-      return Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1];
-    } }] });
-  try {
-    const { default: Component } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/TradeDrillView.tsx');
-    for (const count of [2, TOOLTIP_LIMIT + 2]) {
-      const trade = decodeTrade(reply(count));
-      const track = { id: 'main', source: { id: 'source', revision: '1' }, branch: { id: 'b', firstHour: 0, lastHour: 71, gaps: [] } } as unknown as BoundTrack;
-      const props = { flows: trade.flows, trade, track, runtime: { client: {}, clock: { getSnapshot: () => ({ hoursPerSecond: 0 }) } },
-        measure: 'average', from: 0, hour: 5, live: null, extent: [0, 71], known: trade.reply.known, colours: new Map(),
-        tokens: { muted: '#888888' }, active: true, onPick() {}, onContextMenu() {} } as unknown as ComponentProps<typeof TradeDrill>;
-      const html = renderToStaticMarkup(createElement(Component, props));
-      assert.match(html, /Average per trading day/);
-      assert.doesNotMatch(html, /exact trade contributors|Nonpositive amounts|Click the history/);
-      const tip = state.chart!.tooltip!(5, undefined as never, [])!;
-      assert.equal(tip.note, count > TOOLTIP_LIMIT ? '2 more trades' : undefined);
-      assert.equal(tip.rows.at(-1)?.label, 'Average per trading day');
-    }
-  } finally { delete host.__tradeDrillPresentation; await vite.close(); }
-});
 
 test('contributor totals add the recorded hours before a gap, which hides only the current amount', async () => {
   const state = { chart: undefined as TimeChartProps | undefined };

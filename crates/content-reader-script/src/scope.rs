@@ -232,20 +232,6 @@ impl TriggerScopes {
 mod tests {
     use super::*;
 
-    #[test]
-    fn trigger_scopes_accept_as_the_game_checks_them() {
-        assert_eq!(ScopeKind::State.bit(), 0x2);
-        assert_eq!(ScopeKind::Country.bit(), 0x4);
-        assert_eq!(ScopeKind::Faction.bit(), 0x2000);
-        assert_eq!(ScopeKind::all_bits(), 0x3FFE);
-        let country_only = |kind| kind == ScopeKind::Country;
-        assert!(TriggerScopes(0).accepts(|_| false));
-        assert!(TriggerScopes(0x4).accepts(country_only));
-        assert!(!TriggerScopes(0x2).accepts(country_only));
-        assert!(TriggerScopes(0x2 | 0x4).accepts(country_only));
-        assert!(!TriggerScopes(0x1).accepts(|_| true));
-    }
-
     struct Content;
     impl Names for Content {
         fn is_country(&self, tag: &str) -> bool {

@@ -287,7 +287,6 @@ mod tests {
     use engine_native_parts::cconvoys;
     use engine_native::cgame_state;
     use engine_native_memory::{memory::SliceMemory, msvc_string};
-    use engine_native_politics::cpolitical_status;
     use std::cell::RefCell;
 
     const STATE: usize = 0x1000;

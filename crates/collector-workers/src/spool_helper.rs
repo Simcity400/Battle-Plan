@@ -302,33 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn jobs_run_on_one_persistent_thread_and_join_waits_for_both_shares() {
-        let helper =
-        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-        unsafe { SpoolHelper::start(None) }.unwrap();
-        let ran_on = AtomicU32::new(0);
-        let total = AtomicUsize::new(0);
-        for round in 1..=5 {
-            let job = || {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                total.fetch_add(round, Ordering::Relaxed);
-                let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
-                let previous = ran_on.swap(id, Ordering::Relaxed);
-                assert!(previous == 0 || previous == id);
-            };
-            let own =
-            // SAFETY: The spool exclusively uses this helper until the job joins.
-            unsafe { helper.join(round % 2 == 0, &job, || round * 10) };
-            assert_eq!(own, round * 10);
-        }
-        assert_eq!(total.load(Ordering::Relaxed), 15);
-        assert_eq!(ran_on.load(Ordering::Relaxed), helper.thread_id());
-        assert_ne!(helper.thread_id(), unsafe {
-            windows_sys::Win32::System::Threading::GetCurrentThreadId()
-        });
-    }
-
-    #[test]
     fn a_helper_panic_is_resumed_and_an_own_panic_still_waits_for_the_job() {
         let helper =
         // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.

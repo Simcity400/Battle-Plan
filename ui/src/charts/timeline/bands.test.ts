@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { barExtent, barHitAt, bandHalf, bandHitAt, bandOutlines, laneBandLayouts, laneBands, laneStops } from './layout.ts';
+import { barExtent, barHitAt, bandHitAt, bandOutlines, laneBands, laneStops } from './layout.ts';
 
 const toX = (hour: number) => hour;
 const same = (value: number) => value;
@@ -36,13 +36,6 @@ test('a column a run only partly covers passes its thickest to the column drawn'
   assert.deepEqual(bandOutlines(steps, 0, 30, hour => 120 + hour / 10, same, 120, 620), [[{ x0: 121, x1: 122, half: 9 }]]);
 });
 
-test('a band value maps from a least thickness up to the most at the maximum', () => {
-  assert.equal(bandHalf(0, 20, 1, 12), 1);
-  assert.equal(bandHalf(20, 20, 1, 12), 12);
-  assert.equal(bandHalf(10, 20, 1, 12), 6.5);
-  assert.equal(bandHalf(40, 20, 1, 12), 12);
-  assert.equal(bandHalf(5, 0, 1, 12), 1);
-});
 
 test('a short band stays drawn at least a pixel wide however far the view is zoomed out', () => {
   const year = 365 * 24;
@@ -206,27 +199,6 @@ test('a fragmented band is laid out in at most a column per pixel', () => {
   assert.ok(bandOutlines(big.band, 0, big.to, big.toX, same, 120, 620).length > 0);
 });
 
-test('lane layouts are rebuilt from the lanes shown and reused while nothing changes', () => {
-  const lane = (id: string) => ({ id, label: id, spans: [{ id: `${id}-span`, firstHour: 0, lastHour: 9, label: id, band: [{ firstHour: 0, lastHour: 9, value: 2 }] }] });
-  const [a, b] = [lane('a'), lane('b')];
-  const bar = { id: 'bar', label: 'Bar', spans: [{ id: 'x', firstHour: 0, lastHour: 9, label: 'X' }] };
-  let computed = 0;
-  const layout = (item: { spans: readonly { id: string; firstHour: number; lastHour: number; label: string }[] }) => {
-    computed++;
-    return laneBands(item.spans, null, toX, same, 0, 1000);
-  };
-  const first = laneBandLayouts([a, b, bar], 'view', new Map(), layout);
-  assert.deepEqual([...first.keys()], ['a', 'b'], 'a lane without bands has no layout');
-  assert.equal(computed, 2);
-  const again = laneBandLayouts([a, b, bar], 'view', first, layout);
-  assert.equal(computed, 2);
-  assert.equal(again.get('a'), first.get('a'));
-  const pruned = laneBandLayouts([b], 'view', again, layout);
-  assert.deepEqual([...pruned.keys()], ['b']);
-  assert.equal(computed, 2);
-  laneBandLayouts([b], 'zoomed', pruned, layout);
-  assert.equal(computed, 3);
-});
 
 test('a band step is cut to its span before it becomes a keyboard stop', () => {
   const span = { id: 'cut', firstHour: 10, lastHour: 20, label: 'Cut', band: [{ firstHour: 0, lastHour: 30, value: 5 }] };

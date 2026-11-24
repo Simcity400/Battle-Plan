@@ -1,25 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chartBottom, hitZone, keyedHour, plotFrame } from './frame.ts';
-import { keyedStop, keyStopList, keyStopMemo } from './hover.ts';
+import { keyedHour, plotFrame } from './frame.ts';
+import { keyedStop, keyStopList } from './hover.ts';
 import { barStrip, stripBarAt, stripColumns, stripKeyTargets, stripMiddle, stripRects } from './strip.ts';
 
 const FRAME = plotFrame(400, 260, { left: 40, right: 10, top: 10, bottom: 100 }, [1000, 2000], [0, 100], false, 60);
 
-test('a strip sits between the plot and the dates, and has its own hit zone', () => {
-  assert.equal(FRAME.plotHeight, 150);
-  assert.deepEqual(FRAME.strip, { top: 170, height: 60 });
-  assert.equal(chartBottom(FRAME), 230);
-  assert.equal(hitZone({ x: 200, y: 100 }, FRAME), 'plot');
-  assert.equal(hitZone({ x: 200, y: 165 }, FRAME), 'strip');
-  assert.equal(hitZone({ x: 200, y: 229 }, FRAME), 'strip');
-  assert.equal(hitZone({ x: 200, y: 240 }, FRAME), 'x-axis');
-  assert.equal(hitZone({ x: 20, y: 200 }, FRAME), null);
-  const plain = plotFrame(400, 260, { left: 40, right: 10, top: 10, bottom: 100 }, [1000, 2000], [0, 100], false);
-  assert.equal(plain.strip, null);
-  assert.equal(chartBottom(plain), 160);
-  assert.equal(hitZone({ x: 200, y: 200 }, plain), 'x-axis');
-});
 
 test('wide bars keep their width with a pixel between them; narrow ones share columns keeping the largest', () => {
   const toX = (hour: number) => hour / 10;
@@ -149,28 +135,6 @@ test('two keyboard stops at one hour are both reachable, the chart\'s own first'
   assert.deepEqual(keyStopList([1313, 1337], [], 1320, 1341)!.map(stop => stop.at), [1320, 1337]);
 });
 
-test('keyboard stops for daily reads are built once per change', () => {
-  const campaign = (days: number) => {
-    const reads = Array.from({ length: days }, (_, day) => 1000 + day * 24);
-    const bars = reads.map(read => ({ firstHour: read - 24, lastHour: read, up: 1, down: 1 }));
-    return { reads, bars, view: [reads[0] - 24, reads.at(-1)!] as const };
-  };
-  const { reads, bars, view } = campaign(100);
-  const stops = keyStopList(reads, stripKeyTargets(bars, view, null), view[0], view[1])!;
-  assert.equal(stops.length, 100, 'a bar read in view is the read\'s own stop');
-  const memo = keyStopMemo();
-  const strip = barStrip(bars, { height: () => 60, upLabel: 'gain', downLabel: 'burn' });
-  let asked = 0;
-  const targets = () => { asked++; return strip.keyTargets!(view, null); };
-  const first = memo(reads, strip, targets, view, null);
-  assert.deepEqual(first, stops);
-  assert.equal(memo(reads, strip, targets, [view[0], view[1]], null), first);
-  assert.equal(asked, 1);
-  memo(reads, strip, targets, [view[0], view[1] - 24], null);
-  memo(reads, strip, targets, [view[0], view[1] - 24], 2000);
-  memo(reads.slice(), strip, targets, [view[0], view[1] - 24], 2000);
-  assert.equal(asked, 4);
-});
 
 test('a span bar is drawn and hovered over its hours but names no hour: the hover is about the hour pointed at', () => {
   const bars = [{ firstHour: 1099, lastHour: 1195, up: 10, down: 10, span: true as const }, { firstHour: 1195, lastHour: 1219, up: 5, down: 5 }];

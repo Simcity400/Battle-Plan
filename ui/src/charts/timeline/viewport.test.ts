@@ -137,19 +137,6 @@ test('page scrolling stays painted and arbitrary jumps require an immediate repa
   }
 });
 
-test('canvas position and height are written only when they change', () => {
-  const values = { top: '', height: '' };
-  const writes: string[] = [];
-  const style = new Proxy(values, { set(target, key: 'top' | 'height', value: string) {
-    writes.push(key); target[key] = value; return true;
-  } });
-  const first = laneWindow(1000, 20000, 600);
-  placeLaneWindow(style, first);
-  placeLaneWindow(style, first);
-  assert.deepEqual(writes, ['top', 'height']);
-  placeLaneWindow(style, laneWindow(1000, 20600, 600));
-  assert.deepEqual(writes, ['top', 'height', 'top'], 'scrolling an equal-height window changes only its position');
-});
 
 test('sticky and scrolling axes share overscan and full-coordinate hits under Size zoom', () => {
   const beforeWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');

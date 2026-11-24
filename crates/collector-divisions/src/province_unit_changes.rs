@@ -212,15 +212,6 @@ mod tests {
     }
 
     #[test]
-    fn a_receiver_names_its_province_through_the_live_object() {
-        let mut province = vec![0_u8; 0x200];
-        assert_eq!(province_id(province.as_ptr() as usize), None);
-        province[engine_native::cprovince::ID..][..4].copy_from_slice(&517_u32.to_le_bytes());
-        assert_eq!(province_id(province.as_ptr() as usize), Some(517));
-        assert_eq!(province_id(0), None);
-    }
-
-    #[test]
     fn each_site_marks_its_province() {
         let domain = Domain::enabled(1024);
         let (epoch, _) = take(&domain);

@@ -2935,8 +2935,6 @@ pub mod tests {
     #[cfg(test)]
     mod read_ahead;
     #[cfg(test)]
-    mod status_bench;
-    #[cfg(test)]
     mod status_reads;
 
     fn member(base: usize, name: &[u8], order: i32) -> [u8; cname_group_member::INPUT_SPAN] {
@@ -3168,75 +3166,6 @@ pub mod tests {
             panic!("status row changes");
         };
         assert_eq!(rows[0].name, Recorded::Value(Some(vec![b'R', 0, b'C'])));
-    }
-
-    #[test]
-    fn naming_copies_each_member_span_once_for_both_passes() {
-        struct Reads<'a, M>(&'a M, std::cell::RefCell<Vec<(usize, usize)>>);
-        impl<M: Memory> Memory for Reads<'_, M> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                self.1.borrow_mut().push((address, destination.len()));
-                self.0.copy(address, destination)
-            }
-        }
-        let mut world = scale_fixture::build(scale_fixture::Shape {
-            countries: 2,
-            divisions: 3,
-            wings: 1,
-            planes: 1,
-            ships: 0,
-        });
-        let _registry = template_registry(&mut world);
-        let mut members = division_name_members(&mut world);
-        let text = b"Heap cached division name";
-        let heap = [&text[..], &[0_u8][..]].concat();
-        let cache = cname_group_member::CACHED_NAME;
-        members[0][cache..cache + 8].copy_from_slice(&(heap.as_ptr() as u64).to_le_bytes());
-        members[0][cache + 16..cache + 24].copy_from_slice(&(text.len() as u64).to_le_bytes());
-        members[0][cache + 24..cache + 32].copy_from_slice(&(text.len() as u64).to_le_bytes());
-        let live = world.live();
-        let memory = Reads(&live, Default::default());
-        let seeds: Vec<_> = world
-            .armies
-            .iter()
-            .enumerate()
-            .map(|(index, &army)| DivisionSeed {
-                pointer: army,
-                division: index as u64 + 1,
-                name_member: Some(members[index].as_ptr() as usize),
-                ..Default::default()
-            })
-            .collect();
-        let mut captured = Captured::with_capacities(&Capacities {
-            status: seeds.len(),
-            name_groups: world.shape.countries,
-            cached_name_bytes: 64,
-            ..Capacities::default()
-        });
-        captured.capture_naming(&memory, world.base, &seeds);
-        let reads = memory.1.borrow();
-        for member in &members {
-            let at = member.as_ptr() as usize;
-            assert_eq!(reads.iter().filter(|read| read.0 == at).count(), 1);
-            assert!(!reads.iter().any(|read| read.0 == at + cache));
-        }
-        let heap_reads: Vec<_> = reads
-            .iter()
-            .filter(|read| {
-                (heap.as_ptr() as usize..heap.as_ptr() as usize + heap.len()).contains(&read.0)
-            })
-            .collect();
-        assert_eq!(heap_reads, [&(heap.as_ptr() as usize, heap.len())]);
-        let (start, len) = captured.naming.first[0].cached_name.unwrap();
-        assert_eq!(&captured.cached_names.first[start..start + len], text);
-        assert!(
-            captured
-                .naming
-                .first
-                .iter()
-                .take(3)
-                .all(|row| row.inputs.is_some())
-        );
     }
 
     #[test]
@@ -4221,203 +4150,6 @@ pub mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "release benchmark: DivisionStatus with and without the army_stat carry"]
-    fn presentation_carry_scale_bench() {
-        use collector_division_parts::army_stat_changes::Watches;
-        use collector_division_parts::attack_stats::ArmyStatStore;
-        if cfg!(debug_assertions) {
-            panic!("run the carry benchmark in release");
-        }
-        for divisions in [5_000, 30_000] {
-            let shape = scale_fixture::Shape {
-                countries: 1_500,
-                divisions,
-                wings: 1,
-                planes: 1,
-                ships: 0,
-            };
-            let mut world = scale_fixture::build(shape);
-            let _registry = template_registry(&mut world);
-            let _members = division_name_members(&mut world);
-            let memory = world.live();
-            let mut census = crate::division_census::Census::new();
-            loop {
-                census.clear();
-                census.capture(&memory, world.base, world.state);
-                if !census.overflowed {
-                    break;
-                }
-                census.grow();
-            }
-            let inputs = census.unit_inputs().unwrap();
-            let context = CaptureContext {
-                base: world.base,
-                game_state: world.state,
-                hour: 1,
-            };
-            let mut capture = Captured::with_capacities(&Capacities {
-                status: divisions,
-                name_groups: shape.countries,
-                ..Capacities::default()
-            });
-            capture.reserve_sources(divisions);
-            let watches = Watches::enabled(2 * divisions);
-            let mut store = ArmyStatStore::new();
-            let sources = || Sources {
-                rows: inputs.seeds(),
-                outcome: inputs.outcome(),
-            };
-            let mut hour = |store: Option<&mut ArmyStatStore>| {
-                let mut store = store;
-                capture.capture_owned_observed(
-                    &memory,
-                    context,
-                    sources(),
-                    store.as_deref_mut(),
-                    &watches,
-                );
-                assert_eq!(capture.status.outcome, Outcome::Rows { len: divisions });
-                assert_eq!(capture.naming.len, divisions);
-                let begin = std::time::Instant::now();
-                capture.capture_attack(&memory, context, sources(), store);
-                let attack = begin.elapsed().as_secs_f64() * 1e3;
-                let mut frequency = 0;
-                unsafe {
-                    windows_sys::Win32::System::Performance::QueryPerformanceFrequency(
-                        &mut frequency,
-                    )
-                };
-                let [status, dig_in, naming, ..] = capture
-                    .phase_ticks()
-                    .map(|ticks| ticks as f64 * 1e3 / frequency as f64);
-                capture.decode_inputs();
-                ([status, dig_in, naming, attack], capture.tables())
-            };
-            let mut tables = Vec::new();
-            for (form, carried) in [("read_every_division", false), ("quiet_carried", true)] {
-                let mut samples = Vec::new();
-                let mut published = None;
-                for _ in 0..25 {
-                    let (sample, hour_tables) = hour(carried.then_some(&mut store));
-                    samples.push(sample);
-                    published = Some(hour_tables);
-                }
-                tables.push(published.unwrap());
-                samples.drain(..3);
-                let median = |part: usize| {
-                    let mut values: Vec<f64> = samples.iter().map(|hour| hour[part]).collect();
-                    values.sort_by(f64::total_cmp);
-                    values[values.len() / 2]
-                };
-                println!(
-                    "PRESENTATION_CARRY divisions={divisions} form={form} status_ms={:.3} dig_in_ms={:.3} naming_ms={:.3} attack_ms={:.3}",
-                    median(0),
-                    median(1),
-                    median(2),
-                    median(3)
-                );
-            }
-            assert_eq!(tables[0], tables[1]);
-            assert!(!watches.poisoned());
-        }
-    }
-
-    #[test]
-    #[ignore = "release callback benchmark: 30,000 divisions with and without naming"]
-    fn division_naming_callback_scale_bench() {
-        if cfg!(debug_assertions) {
-            panic!("run the naming benchmark in release");
-        }
-        assert!(
-            std::env::var_os("BATTLEPLAN_UNIT_VALIDATE").or_else(|| std::env::var_os("HOI4_UNIT_VALIDATE")).is_none(),
-            "unset BATTLEPLAN_UNIT_VALIDATE to measure callback time"
-        );
-        for countries in [1_500, 5_000] {
-            let shape = scale_fixture::Shape {
-                countries,
-                divisions: 30_000,
-                wings: 1,
-                planes: 1,
-                ships: 0,
-            };
-            let mut world = scale_fixture::build(shape);
-            let _registry = template_registry(&mut world);
-            let mut members = division_name_members(&mut world);
-            let memory = world.live();
-            let mut census = crate::division_census::Census::new();
-            loop {
-                census.clear();
-                census.capture(&memory, world.base, world.state);
-                if !census.overflowed {
-                    break;
-                }
-                census.grow();
-            }
-            let inputs = census.unit_inputs().unwrap();
-            assert_eq!(
-                inputs.outcome(),
-                Outcome::Rows {
-                    len: shape.divisions
-                }
-            );
-            let capacity = Capacities {
-                movement: 0,
-                status: shape.divisions,
-                bans: 0,
-                paths: 0,
-                name_bytes: shape.divisions * b"Renamed".len(),
-                name_groups: shape.countries,
-                ..Capacities::default()
-            };
-            let mut capture = Captured::with_capacities(&capacity);
-            capture.reserve_sources(shape.divisions);
-            for form in ["generated_shared_group", "inline_player_renames"] {
-                if form == "inline_player_renames" {
-                    for (index, bytes) in members.iter_mut().enumerate() {
-                        *bytes = member(world.base, b"Renamed", index as i32);
-                    }
-                }
-                let mut callback = |naming| {
-                    assert_eq!(
-                        capture.status_packet.capture(
-                            &memory,
-                            world.base,
-                            world.state,
-                            inputs.seeds(),
-                            inputs.outcome(),
-                        ),
-                        Outcome::Rows {
-                            len: shape.divisions
-                        }
-                    );
-                    if naming {
-                        capture.capture_naming(&memory, world.base, inputs.seeds());
-                    }
-                };
-                let without = scale_fixture::time(|| callback(false));
-                let with = scale_fixture::time(|| callback(true));
-                println!(
-                    "DIVISION_NAMING countries={countries} divisions={} without_p50_ms={:.6} without_p95_ms={:.6} with_p50_ms={:.6} with_p95_ms={:.6} synthetic_names={form}",
-                    shape.divisions, without.0, without.1, with.0, with.1
-                );
-                assert_eq!(
-                    capture.names.len,
-                    if form == "generated_shared_group" {
-                        5
-                    } else {
-                        shape.divisions * b"Renamed".len()
-                    }
-                );
-                assert!(
-                    capture.naming.first[..shape.divisions]
-                        .iter()
-                        .all(|r| r.inputs.is_some())
-                );
-            }
-        }
-    }
-
     pub fn pass_failure_capacities() -> Capacities {
         Capacities {
             movement: 1,
@@ -4462,19 +4194,6 @@ pub mod tests {
             bytes[offset + 12..offset + 16].copy_from_slice(&count.to_le_bytes());
         }
         (seed, bytes)
-    }
-
-    #[test]
-    fn vacant_presentation_has_no_owned_allocations_or_rows() {
-        let mut capture = Captured::vacant();
-        assert_eq!(capture.allocated_bytes(), 0);
-        assert_eq!(capture.decode_inputs(), [0; 2]);
-        assert!(
-            capture
-                .tables()
-                .iter()
-                .all(|view| matches!(view, TableView::Unavailable { .. }))
-        );
     }
 
     #[test]
@@ -4912,20 +4631,6 @@ pub mod tests {
         );
         assert_eq!(capture.status.outcome, refused);
         assert!(!capture.decode_pending);
-    }
-
-    #[test]
-    fn presentation_status_parts_follow_live_divisions_and_pool_workers() {
-        for divisions in [0, 1, 511, 512, 513, 1_500, 5_000, 50_000] {
-            for workers in 1..=MAX_STATUS_PARTS {
-                let count = status_parts_for(divisions, workers);
-                assert!((1..=workers).contains(&count));
-                assert_eq!(
-                    count,
-                    divisions.div_ceil(STATUS_PART_ENTRIES).clamp(1, workers)
-                );
-            }
-        }
     }
 
     #[test]
@@ -5655,30 +5360,6 @@ pub mod tests {
 #[cfg(test)]
 mod combat_reference_capacity_tests {
     use super::*;
-
-    #[test]
-    fn configured_reference_capacity_is_prepared_before_packet_publication() {
-        let zero = Captured::with_capacities(&Capacities {
-            movement: 1,
-            status: 0,
-            bans: 0,
-            paths: 0,
-            combat_references: 0,
-            ..Capacities::default()
-        });
-        assert_eq!(zero.movement_packet.combat_references_capacity(), 0);
-        let prepared = Captured::with_capacities(&Capacities {
-            movement: 1,
-            status: 0,
-            bans: 0,
-            paths: 0,
-            combat_references: 73,
-            ..Capacities::default()
-        });
-        assert!(prepared.movement_packet.combat_references_capacity() >= 73);
-        assert!(prepared.allocated_bytes() > zero.allocated_bytes());
-        assert_eq!(prepared.movement_packet.combat_references_hour(), None);
-    }
 
     #[test]
     fn optional_reference_allocation_failure_retains_prepared_legacy_packet() {

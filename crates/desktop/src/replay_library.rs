@@ -282,25 +282,6 @@ mod tests {
     }
 
     #[test]
-    fn the_stamp_changes_between_two_empty_folders() {
-        let root = std::env::temp_dir().join(format!(
-            "hoi4-library-stamp-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(root.join("A")).unwrap();
-        std::fs::create_dir_all(root.join("B")).unwrap();
-        let first = stamp(&root.join("A")).unwrap();
-        assert_eq!(stamp(&root.join("A")).unwrap(), first);
-        assert_ne!(stamp(&root.join("B")).unwrap(), first);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn library_leaves_out_what_windows_marks_hidden() {
         use std::os::windows::fs::OpenOptionsExt;
         let root = std::env::temp_dir().join(format!(

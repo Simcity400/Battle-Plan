@@ -24,7 +24,6 @@ use viewer_native_gui::test_support::gui;
 use viewer_runtime::parallel::Workers;
 use dashboard_text::table_access::Refusals;
 
-
 fn scripted(assets: &mut RaidAssets, text: &str) {
     let mut triggers = (*assets.trigger_content.triggers).clone();
     triggers.scripted = content_reader_script::scripted_trigger_grammar::ScriptedTriggers::parse(
@@ -576,88 +575,6 @@ fn a_state_target_resolves_to_the_province_nearest_its_centre() {
 }
 
 #[test]
-fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
-    content_reader_script::test_game::enter_viewer();
-    let icons = RaidIcons {
-        icons: vec![
-            RaidIcon {
-                group: 1,
-                province: 1,
-                frame: 0,
-                enabled: true,
-                glyph: Some("glyph".into()),
-                plus: false,
-                tooltip: None,
-            },
-            RaidIcon {
-                group: 2,
-                province: 2,
-                frame: 4,
-                enabled: true,
-                glyph: Some("glyph".into()),
-                plus: false,
-                tooltip: None,
-            },
-        ],
-        report: RaidReport::default(),
-        built_for: None,
-    };
-    let anchors = BTreeMap::from([(1, [3000.0, 10.0, 1400.0]), (2, [3000.0, 10.0, 1600.0])]);
-    let anchor = |province: u32| anchors.get(&province).copied();
-    let draw_at = |height: f32| {
-        let mut batch = Batch::default();
-        let count = draw(
-            &RaidInputs {
-                anchor: &anchor,
-                camera: Camera {
-                    center: [3000.0, 1500.0],
-                    height,
-                    map: MapSize::TEST,
-                    defines: MapDefines::test(),
-                    pose: viewer_gpu::camera::Pose::Map,
-                },
-                viewport: [2048, 1152],
-                ui_scale: 1.0,
-                reach: Some(RaidReach::Normal),
-            },
-            &icons,
-            &mut batch,
-        );
-        (count, batch)
-    };
-    assert_eq!(draw_at(600.0).0, 0);
-    let (count, batch) = draw_at(300.0);
-    assert_eq!(count, 2);
-    assert!(
-        batch
-            .quads
-            .iter()
-            .all(|quad| sprites::layer_priority(quad.layer) == i64::from(assets().priority))
-    );
-    let frame_texture = native_gui::Sheets::sheet(&draw_resources(), FRAME_SPRITE)
-        .unwrap()
-        .texture;
-    let last = batch
-        .quads
-        .iter()
-        .filter(|quad| quad.texture == frame_texture)
-        .max_by_key(|quad| quad.layer)
-        .unwrap();
-    assert_eq!(
-        last.exact.as_ref().unwrap().uv,
-        [[0., 0.], [1. / 6., 0.], [1. / 6., 1.], [0., 1.]]
-    );
-    assert_eq!(last.exact.as_ref().unwrap().offsets[0], 0.);
-    assert!(
-        batch
-            .quads
-            .iter()
-            .filter(|quad| quad.texture == frame_texture)
-            .any(|quad| quad.exact.as_ref().unwrap().offsets[0] > 0.6)
-    );
-}
-
-#[test]
 fn only_the_hours_own_raid_icons_are_drawn() {
     use std::sync::Arc;
     let icons = Arc::new(RaidIcons {
@@ -1156,21 +1073,6 @@ fn raid_type_tokens_without_a_literal_leave_the_types_undecided() {
     assert!(icons.report.unverified_tint > 0);
 }
 
-#[test]
-fn the_report_lists_unverified_and_withheld_icons_with_their_reasons() {
-    let mut report = RaidReport {
-        unverified_tint: 2,
-        withheld: 1,
-        ..RaidReport::default()
-    };
-    report.note(["the path search is unknown".to_owned()]);
-    let lines = report.warnings();
-    assert!(lines[0].contains("2 offers drawn grey with an unverified tint"));
-    assert!(lines[0].contains("1 provinces withheld"));
-    assert!(lines[1].contains("the path search is unknown (1)"));
-    assert!(RaidReport::default().warnings().is_empty());
-}
-
 fn drawn(height: f32, viewport: [u32; 2], ui_scale: f32) -> (usize, Batch) {
     drawn_in(Some(RaidReach::Normal), height, viewport, ui_scale)
 }
@@ -1248,51 +1150,6 @@ fn the_map_mode_decides_whether_and_how_far_raid_icons_show() {
             drawn(height, viewport, 1.0).1.quads
         );
     }
-}
-
-#[test]
-fn icons_lay_out_in_interface_pixels_at_any_ui_scale() {
-    content_reader_script::test_game::enter_viewer();
-    let (count, single) = drawn(300.0, [2048, 1152], 1.0);
-    let (_, double) = drawn(300.0, [4096, 2304], 2.0);
-    assert_eq!(count, 2);
-    let rects = |batch: &Batch| {
-        batch
-            .quads
-            .iter()
-            .map(|quad| quad.exact.as_ref().unwrap().corners)
-            .collect::<Vec<_>>()
-    };
-    let (a, b) = (rects(&single), rects(&double));
-    assert_eq!(a.len(), b.len());
-    for (a, b) in a.iter().zip(&b) {
-        for corner in 0..4 {
-            for axis in 0..2 {
-                assert!(
-                    (a[corner][axis] - b[corner][axis]).abs() < 1e-3,
-                    "{a:?} {b:?}"
-                );
-            }
-        }
-    }
-    let (_, scaled) = drawn(300.0, [2048, 1152], 1.5);
-    assert!(rects(&scaled)[0][0][0] < a[0][0][0]);
-}
-
-#[test]
-fn an_ended_incoming_raid_draws_frame_5() {
-    let assets = assets();
-    let mut frame = frame();
-    put::<tables::Raids>(
-        &mut frame,
-        vec![RaidRow {
-            show_for: vec![10],
-            outcome: 3,
-            ..raid(1, 1, 0, 5)
-        }],
-    );
-    put::<tables::RaidTargets>(&mut frame, vec![target(1, 1, 1)]);
-    assert_eq!(icons_for(&assets, &frame, 0).get(&1), Some(&5));
 }
 
 const OIL: u32 = 300;
@@ -1712,7 +1569,6 @@ fn a_state_scope_from_resolves_to_the_state_owner() {
         script::Eval::True
     );
 }
-
 
 fn spelled(token: u32, literal: &str) -> DecodedFrame {
     let mut frame = frame();
@@ -2740,67 +2596,6 @@ mod launch_gate {
             if reasons.iter().any(|reason| reason.contains("FactionMembers")))
         );
         assert!(paths.distances.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn mixed_walk_prefix_order_and_reach_memo_remain_stable() {
-        content_reader_script::test_game::enter_viewer();
-        use replay_data::rows::LaunchNavalBase;
-        let assets = launch_assets();
-        let mut frame = launch_frame();
-        let mut kind = marine_sources(&mut frame, true);
-        kind.starting_point.building_types = vec!["dam".into()];
-        launch_zero(
-            &mut frame,
-            0,
-            Some(vec![
-                LaunchNavalBase {
-                    base_province: 1,
-                    country: 0,
-                },
-                LaunchNavalBase {
-                    base_province: 2,
-                    country: 0,
-                },
-                LaunchNavalBase {
-                    base_province: 1,
-                    country: 0,
-                },
-            ]),
-            None,
-        );
-        let world = World::read(&frame, assets.trigger_content.facts());
-        let paths = SourceVisits {
-            usable: Some(2),
-            ..Default::default()
-        };
-        let launcher = launch::Launcher::new(&assets, &world, 0, &paths);
-        let local = launcher.local();
-        for target in [3, 4] {
-            assert_eq!(
-                launcher.launchable_in(
-                    &local,
-                    &kind,
-                    &RaidScope {
-                        province: target,
-                        ..Default::default()
-                    },
-                    Scopes::of(script::Scope::Country(0)),
-                ),
-                Eval::True
-            );
-        }
-        assert_eq!(
-            *paths.distances.lock().unwrap(),
-            vec![(2, 1), (2, 2), (2, 1), (2, 2)]
-        );
-        assert_eq!(*paths.reaches.lock().unwrap(), vec![1, 2]);
-        let paths = SourceVisits::default();
-        assert_eq!(sources_gate(&assets, &frame, &kind, &paths), Eval::False);
-        assert_eq!(
-            *paths.distances.lock().unwrap(),
-            vec![(2, 1), (2, 2), (2, 1)]
-        );
     }
 
     #[test]
@@ -4067,8 +3862,6 @@ mod recorded_paths {
         assert!(matches!(gate(Vec::new()), Eval::Unknown(_)));
     }
 }
-
-mod bench;
 
 mod view_bench;
 

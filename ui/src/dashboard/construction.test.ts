@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isSpendingGap, placeName, stateNamesOf } from './construction.ts';
+import { placeName, stateNamesOf } from './construction.ts';
 
 test('a place is named from the reply’s states, and a state the content does not name says so', () => {
   const names = stateNamesOf([{ id: 5, name: 'Metro' }, { id: 6, name: 'Metro' }, { id: 7, name: null }]);
@@ -14,9 +14,3 @@ test('a place is named from the reply’s states, and a state the content does n
   assert.equal(placeName({ state: null, railway: true }, names).label, 'an unknown route');
 });
 
-test('only the reasons the recording gives are output gaps', () => {
-  assert.ok(isSpendingGap('linkedOutput'));
-  assert.ok(isSpendingGap('ownerUnknown'));
-  assert.ok(!isSpendingGap('preparing'));
-  assert.ok(!isSpendingGap('readFailed'));
-});

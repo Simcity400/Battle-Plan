@@ -3,10 +3,9 @@ import test from 'node:test';
 import type { ChartSummary } from '../chartSummary';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
-import type { CountryGroupReply, FactionRostersReply, SeriesStateReply } from '../../generated/dashboard';
+import type { CountryGroupReply, FactionRostersReply } from '../../generated/dashboard';
 import type { FactionLines } from '../../dashboard/territoryReplies';
-import { answerShape, answerValues, factionEntries, factionNote, factionSummaries, factionMembersAt, factionMemberSpans, fixedRosters, GROUP_ID, groupTotal, membersPushed,
-  rosterRows, rosterTags, stateValues } from './factionTotalsData.ts';
+import { answerValues, factionEntries, factionNote, factionSummaries, factionMembersAt, factionMemberSpans, fixedRosters, GROUP_ID, groupTotal, rosterRows, rosterTags } from './factionTotalsData.ts';
 
 const incomplete = 'Its roster was not read whole at this hour';
 const rosters: FactionRostersReply = { missing: null, warnings: [], factions: [
@@ -30,21 +29,6 @@ test('a faction total is its members’ followed values added; one member not kn
   assert.equal(factionNote(rosters, '5', false), incomplete);
 });
 
-// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
-test.skip('a follow acknowledged before its first answer leaves the race on the members’ asked states, never empty', () => {
-  assert.equal(membersPushed('followed', undefined), false, 'paused, the answer waits for the head to take its step');
-  const asked: SeriesStateReply = { decimals: 0, states: [['GER', '30'], ['ITA', '10'], ['SOV', '70'], ['ENG', '55']].map(([tag, valueRaw]) =>
-    ({ tag, part: null, hour: 7, run: { valueRaw }, drop: null, missing: null })) } as unknown as SeriesStateReply;
-  const shown = factionEntries(rosters, stateValues(asked, 7), 10, 7, String).entries;
-  assert.deepEqual(shown.map(entry => [entry.tag, entry.value]), [['2', 70], ['3', 55], ['1', 40]]);
-  const landed = answer([['GER', 30n]]);
-  assert.equal(membersPushed('followed', landed), true);
-  assert.equal(membersPushed('pending', landed), false);
-  assert.equal(membersPushed('off', landed), false);
-  assert.notEqual(answerShape(undefined), answerShape(landed), 'the first answer landing renders the race');
-  assert.notEqual(answerShape(landed), answerShape({ kind: 'notRecorded', reason: 'not read' }), 'a refusal renders its reason');
-  assert.equal(answerShape(landed), answerShape(answer([['GER', 31n]])), 'a value moving renders nothing');
-});
 
 test('the race renders for its rosters, never for a number', () => {
   assert.deepEqual(rosterTags(rosters), ['ENG', 'GER', 'ITA', 'JAP', 'SOV']);

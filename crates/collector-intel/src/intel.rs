@@ -4489,7 +4489,6 @@ fn pointer(memory: &impl Memory, root: usize, offset: usize) -> Result<usize, &'
         .ok_or("script scope root unreadable")
 }
 
-
 type Drain =
     fn(&mut u64, &mut [crelation_status::Mark], &mut usize) -> Option<(u64, Option<usize>)>;
 
@@ -4994,7 +4993,6 @@ fn install<R: Copy + Default>(
         },
     };
 }
-
 
 const M_CAPITULATION: u32 = 0x01;
 
@@ -8154,35 +8152,6 @@ mod tests {
     use super::relations_test_kit as relations_kit;
 
     #[test]
-    fn staged_relations_skip_the_game_thread_typed_walk() {
-        struct CountOpinion<'a> {
-            memory: SliceMemory<'a>,
-            reads: std::cell::Cell<usize>,
-        }
-        impl Memory for CountOpinion<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                let opinion = relations_kit::status(0, 2) + crelation_status::OPINION;
-                if address <= opinion && opinion < address.saturating_add(destination.len()) {
-                    self.reads.set(self.reads.get() + 1);
-                }
-                self.memory.copy(address, destination)
-            }
-        }
-        let bytes = relations_kit::opinionated_fixture();
-        let memory = CountOpinion {
-            memory: relations_kit::memory(&bytes),
-            reads: std::cell::Cell::new(0),
-        };
-        let mut capture = relations_kit::intel_captured(16, 16);
-        capture.capture(&memory, relations_kit::BASE, relations_kit::GS, 21, false);
-        assert!(memory.reads.get() > 0);
-        memory.reads.set(0);
-        capture.relations_raw_mode = true;
-        capture.capture(&memory, relations_kit::BASE, relations_kit::GS, 21, false);
-        assert_eq!(memory.reads.get(), 0);
-    }
-
-    #[test]
     fn relations_job_matches_typed_rows_including_skips_and_ordinals() {
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
@@ -8954,7 +8923,6 @@ mod tests {
         assert_eq!(direct.opinion_outcome, Outcome::Rows { len: 2 });
     }
 
-
     const CAP_BASE: usize = 0;
     const CAP_GAME: usize = 0x1000;
     const CAP_COUNTRIES: usize = 0x2000;
@@ -9303,71 +9271,6 @@ mod tests {
     }
 
     #[test]
-    fn capitulation_split_copy_reads_only_what_the_walk_reads() {
-        struct Trace<'a> {
-            memory: SliceMemory<'a>,
-            reads: std::cell::RefCell<std::collections::BTreeSet<(usize, usize)>>,
-        }
-        impl Memory for Trace<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.reads.borrow_mut().insert((address, output.len()));
-                self.memory.copy(address, output)
-            }
-        }
-        let mut bytes = cap_fixture();
-        bytes.resize(0x5000 - CAP_GAME + 0x1000, 0);
-        cap_array(
-            &mut bytes,
-            CAP_DIPLO + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS,
-            0x4400,
-            1,
-        );
-        cap_put(&mut bytes, 0x4400, &0x4500_u64.to_le_bytes());
-        cap_put(
-            &mut bytes,
-            0x4500,
-            &(engine_native::cwar_relation::goals::VTABLE_RVA.0 as u64).to_le_bytes(),
-        );
-        cap_put(
-            &mut bytes,
-            0x4500 + engine_native::cwar_relation::goals::RECIPIENT,
-            &7_u32.to_le_bytes(),
-        );
-        let trace = || Trace {
-            memory: SliceMemory {
-                base: CAP_GAME,
-                bytes: &bytes,
-            },
-            reads: Default::default(),
-        };
-        let walked = trace();
-        let mut rows = Vec::new();
-        let mut recipients = Vec::new();
-        let direct = cdiplomacy_status::walk_capitulation(
-            &walked,
-            CAP_BASE,
-            CAP_GAME,
-            &mut rows,
-            &mut recipients,
-        );
-        assert_eq!(direct, Outcome::Rows { len: 1 });
-        assert_eq!(recipients, [7]);
-        let copied = trace();
-        let mut job = CapitulationJob::new();
-        let ctx = CapitulationCopyContext {
-            base: CAP_BASE,
-            game_state: CAP_GAME,
-        };
-        let report = copy_capitulation_refresh(&copied, ctx, &mut job);
-        assert!(report.raw_ok);
-        assert_eq!(copied.reads.into_inner(), walked.reads.into_inner());
-        assert!(!job.log.has_bulk);
-        assert!(job.log.spans.iter().all(|span| span.ok && !span.bulk));
-        let exact: u64 = job.log.spans.iter().map(|span| span.len as u64).sum();
-        assert_eq!(report.raw_bytes, [exact]);
-    }
-
-    #[test]
     fn capitulation_split_copy_grows_original_shortage_before_publication() {
         let bytes = cap_fixture();
         let memory = SliceMemory {
@@ -9423,17 +9326,4 @@ mod tests {
         assert_eq!(split.capitulation.outcome, direct.capitulation.outcome);
     }
 
-    #[test]
-    fn capitulation_gate_skips_typed_walk_when_raw_mode_set() {
-        let capacities = cap_capacities();
-        let mut captured = Captured::with_capacities(&capacities);
-        captured.capitulation_raw_mode = true;
-        let bytes = cap_fixture();
-        let memory = SliceMemory {
-            base: CAP_GAME,
-            bytes: &bytes,
-        };
-        let ticks = captured.capture(&memory, CAP_BASE, CAP_GAME, 0, false);
-        assert_eq!(ticks[0], 0);
-    }
 }

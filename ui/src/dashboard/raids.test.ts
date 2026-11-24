@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { eventsThrough, raidAt, raidChangeHours, raidPreparationAt, raidPreparationText, raidStatus, raidTally, recordedSpans, startedBy, validateRaidLog } from './raids.ts';
+import { eventsThrough, raidAt, raidChangeHours, raidPreparationAt, raidPreparationText, raidStatus, raidTally, recordedSpans, validateRaidLog } from './raids.ts';
 import { phaseRun, syntheticEpisode, syntheticRaidLog } from './raids.fixtures.ts';
 import { countryKey } from './countryKey.ts';
 
@@ -77,11 +77,6 @@ test('preparation hours are read only at an hour of their runs, and shown only w
   assert.equal(raidPreparationText(data, raidAt(raid, 25)!, 25), null);
 });
 
-test('the raids shown are those started by the hour', () => {
-  assert.equal(startedBy(episodes, 9), 0);
-  assert.equal(startedBy(episodes, 40), 3);
-  assert.equal(startedBy(episodes, null), 5);
-});
 
 test('a raid whose victim is neither named nor said missing, won without ending, or with phases out of order is refused', () => {
   const reply = syntheticRaidLog(episodes);

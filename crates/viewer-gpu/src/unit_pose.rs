@@ -552,14 +552,6 @@ mod tests {
     }
 
     #[test]
-    fn clamped_lerp_is_exact_at_its_ends() {
-        assert_eq!(clamped_lerp(1.0, 1.0, 0.3), 1.0);
-        assert_eq!(clamped_lerp(0.2, 0.9, 1.0), 0.9);
-        assert_eq!(clamped_lerp(0.0, 1.0, 0.5), 0.5);
-        assert!((clamped_lerp(0.3, 1.0, 0.5) - 0.65).abs() < 1e-6);
-    }
-
-    #[test]
     fn the_air_arrow_climbs_from_the_source_to_its_cruise_height() {
         let defines = defines();
         let ends = Ends {

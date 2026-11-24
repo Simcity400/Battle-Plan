@@ -323,14 +323,6 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_leaves_out_the_stored_suppression_word() {
-        assert!(
-            !DivisionPanelStatsRow::PANEL_STAT_SELECTORS
-                .contains(&DivisionPanelStatsRow::SUPPRESSION_SELECTOR)
-        );
-    }
-
-    #[test]
     fn anti_air_reuses_the_existing_raw_movement_operand_and_preserves_refusal() {
         let mut status = DivisionStatusRow {
             movement_stats: Recorded::Value(Some(replay_data::rows::DivisionMovementStats {

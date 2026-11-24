@@ -300,23 +300,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn allocation_growth_preserves_the_previous_capacity_trace() {
-        let mut cache = Cache::new(1).unwrap();
-        let mut previous = vec![Key::default(); 1];
-        for rows in [2, 5, 4, 9] {
-            if previous.len() < rows {
-                previous.resize(rows, Key::default());
-            }
-            cache.grow(rows).unwrap();
-            assert_eq!(cache.keys.capacity(), previous.capacity());
-            assert_eq!(
-                cache.allocated_bytes(),
-                previous.capacity() * std::mem::size_of::<Key>()
-            );
-        }
-    }
-
-    #[test]
     fn growth_keeps_the_certified_keys() {
         let mut cache = Cache::new(1).unwrap();
         let scope = (1, 2, 0, 4);

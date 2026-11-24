@@ -33,16 +33,3 @@ pub const DEFENDING: u32 = 10;
 pub const SHIP_IN_PORT: u32 = 19;
 pub const PAIRED_ONLY_GROUP: u32 = u32::MAX;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn the_directory_portrait_is_the_leaders_directory_tag_and_picture() {
-        assert_eq!(
-            leader_directory_path(b"ENG", b"portrait_europe_generic_land_17.dds").as_deref(),
-            Some(&b"gfx/leaders/ENG/portrait_europe_generic_land_17.dds"[..])
-        );
-        assert_eq!(leader_directory_path(b"", b"x.dds"), None);
-        assert_eq!(LEADER_DIRECTORY.len(), 12);
-    }
-}

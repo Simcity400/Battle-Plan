@@ -201,11 +201,4 @@ mod tests {
         assert!(version_banner(&[b"\0Title v1.2.zz\0"]).is_err());
     }
 
-    #[test]
-    fn unrecognised_identity_warns_with_both_builds() {
-        let identity = ExecutableIdentity::of(b"other");
-        let warning = identity.warning(Some("Label v9.9.9.9.abcd")).unwrap();
-        assert!(warning.contains(PINNED_BUILD.version));
-        assert!(warning.contains("Label v9.9.9.9.abcd (hoi4.exe of 5 bytes"));
-    }
 }

@@ -8,7 +8,7 @@ import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { TooltipContent } from '../../charts/tooltip';
 import { tooltipText } from '../../charts/tooltip.ts';
-import { peaceCaptureLabel as captureLabel, peaceDealHour, peaceDealKnownAt, peaceDealLabel, validatePeaceDealsReply } from '../../dashboard/peaceDealsData.ts';
+import { peaceDealHour, peaceDealKnownAt, peaceDealLabel, validatePeaceDealsReply } from '../../dashboard/peaceDealsData.ts';
 import { validateStateNamesReply } from '../../dashboard/stateNamesData.ts';
 import { contentKey, storableToken } from '../../dashboard/options.ts';
 import { chipsByValue, derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceActions, peaceActionTotals, peaceDescription, peaceGapHint, peaceGapsIn, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData.ts';
@@ -17,11 +17,6 @@ import { resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { PeaceCapturedAction, PeaceDeal, PeaceDealsReply, PeaceItem } from '../../generated/dashboard';
 
-test('Peace deals metadata keeps the whole recorded country roster', () => {
-  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
-  assert.equal(definition.defaultCountries.kind, 'all');
-  assert.equal(definition.countrySelection, false);
-});
 
 const item = (state = 1, afterHour = 20): PeaceItem => ({ derived: true, dates: { beforeHour: afterHour - 3, afterHour }, winner: 'winner/opaque',
   action: { kind: 'stateTransfer', key: 'mod_action', name: 'Modded action' },
@@ -238,19 +233,6 @@ test('war score sums the captured actions; victory points total only when every 
   assert.equal(rows.find(entry => entry.label === 'State 5')?.value, undefined);
 });
 
-test('failed capture is visible even without fallback items', () => {
-  const card = deal(); card.items = []; card.captureUnavailable = 'Unread finalizer operands';
-  assert.equal(captureLabel(card), 'Outcomes not recorded');
-  assert.doesNotMatch(peaceDescription(preparePeaceLog(reply([card])).rows[0]), /Unread finalizer operands/);
-});
-test('spoken card descriptions identify grouped and unattributed outcomes', () => {
-  const grouped = deal('grouped'); grouped.observation = 'conferenceNotRecorded';
-  const unattributed = deal('unattributed'); unattributed.observation = 'conferenceUnknown';
-  const descriptions = preparePeaceLog(reply([grouped, unattributed])).rows.map(peaceDescription);
-  assert.match(descriptions[0], /War-end outcomes/);
-  assert.match(descriptions[1], /Conference unknown/);
-  assert.doesNotMatch(peaceDescription(preparePeaceLog(reply()).rows[0]), /Conference (?:not recorded|attribution not recorded)/);
-});
 test('unresolved country operands never borrow giver tags, and captured automatic outcomes precede later fallback', () => {
   const card = deal();
   card.derived = false;

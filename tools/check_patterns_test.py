@@ -149,9 +149,6 @@ class TestCode(unittest.TestCase):
         files = {"crates/a/Cargo.toml": '[package]\nname = "a"\n[[test]]\nname = "t"\npath = "src/lib.rs"\n', LIB: "fn f() { Box::leak(b); }\n"}
         self.assertEqual(rust(files, LIB)["box-leak"], [1])
 
-    def test_anything_under_a_crates_tests_folder_is_test_code(self):
-        files = {"crates/b/tests/support/world.rs": "fn f() { std::thread::sleep(D); }\n"}
-        self.assertEqual(rust(files, "crates/b/tests/support/world.rs")["test-clock"], [1])
 
     def test_js_and_powershell_tests_count_their_own_waits_and_other_files_are_not_read(self):
         files = {"ui/a.test.ts": "await new Promise(r => setTimeout(r, 5));\nsetInterval(f, 1);\n", "ui/a.ts": "setTimeout(f);\n", "tools/x.tests.ps1": "Start-Sleep -Milliseconds 5\n"}

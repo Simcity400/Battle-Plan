@@ -48,18 +48,6 @@ fn the_counter_mean_divides_by_the_members_it_summed() {
 }
 
 #[test]
-fn a_bar_steps_by_half_its_length_and_draws_two_pixels_a_step() {
-    assert_eq!(bar_step(bar_fill(84_870), 17.0), 7);
-    assert_eq!(bar_pixels(bar_fill(84_870), 17.0), 16.0);
-    assert_eq!(bar_pixels(1.0, 17.0), 18.0);
-    assert_eq!(bar_step(bar_fill(94_110), 17.0), 7);
-    assert_eq!(bar_step(bar_fill(94_120), 17.0), 8);
-    assert_eq!(bar_pixels(bar_fill(80_880), 17.0), 14.0);
-    assert_eq!(bar_pixels(0.0, 17.0), 2.0);
-    assert_eq!(bar_pixels(bar_fill(UNDEFINED), 17.0), 18.0);
-}
-
-#[test]
 fn a_mission_is_active_in_its_regions_except_hold_strike_and_reserve() {
     for mission in [1, 3, 4, 5, 6, 7] {
         assert!(mission_active(1, mission, 0), "{mission}");

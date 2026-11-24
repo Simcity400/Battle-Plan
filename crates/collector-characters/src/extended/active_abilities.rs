@@ -99,7 +99,6 @@ impl Captured {
 
 #[cfg(test)]
 mod tests {
-    use super::super::characters::walk_abilities;
     use super::*;
     use replay_data::rows::TableRows;
 
@@ -220,54 +219,4 @@ mod tests {
     const DEFINITION: usize = 0x1c0000;
     const WORLD_BYTES: usize = 0x1d0000;
 
-    #[test]
-    fn the_hourly_walk_on_the_cached_roster_view_costs_one_call_per_country() {
-        use engine_native_memory::read_counts::{CountedMemory, ReadCounts};
-        for countries in [150_u32, 500] {
-            let bytes = world(countries, 10);
-            let memory = engine_native_memory::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            let mut storage = engine_allocation::shared(
-                engine_native_intelligence::country_memory::Cache::try_with_capacity(
-                    (countries as usize + 1) * 16,
-                )
-                .unwrap(),
-            ).unwrap();
-            let cache = engine_native_intelligence::country_memory::Cache::prepare_shared(
-                &mut storage,
-                &memory,
-                0,
-                GAME_STATE,
-            )
-            .unwrap();
-            assert!(
-                cache
-                    .roster_view(&memory)
-                    .authenticated_countries(0, GAME_STATE)
-                    .is_some()
-            );
-            let active = (countries / 10) as usize;
-            let mut rows = vec![active_ability_record::Row::default(); active];
-            let mut arena = vec![0; active * 7];
-            ReadCounts::take_current();
-            let counted = CountedMemory::new(memory);
-            let walk = walk_abilities(
-                &cache.roster_view(&counted),
-                0,
-                GAME_STATE,
-                &mut rows,
-                &mut arena,
-            );
-            let reads = ReadCounts::take_current();
-            assert_eq!(walk.outcome, Outcome::Rows { len: active });
-            let calls = reads.copy_calls + reads.scattered_calls;
-            assert_eq!(
-                calls,
-                u64::from(countries) + 3 * active as u64,
-                "{countries} countries"
-            );
-        }
-    }
 }

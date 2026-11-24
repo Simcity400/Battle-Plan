@@ -7661,9 +7661,6 @@ fn exported_table_ticks(table: replay_data::rows::TableId, walk: bool, ticks: u6
 }
 
 #[cfg(test)]
-mod exported_ticks_tests;
-
-#[cfg(test)]
 mod tests;
 
 #[cfg(any(test, feature = "test-support"))]

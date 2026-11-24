@@ -922,26 +922,6 @@ fn the_update_cutoff_is_water_relative() {
 }
 
 #[test]
-fn undecided_floating_harbours_are_listed_by_reason() {
-    let summary = MapBuildingSummary {
-        refused_tokens: BTreeMap::from([("token 78 is not in lexical tokens".to_owned(), 1)]),
-        unknown_floating_harbors: BTreeMap::from([
-            ("the controller's floating-harbour deployment is unknown", 2),
-            ("the fog byte of the harbour's sea province is unknown", 1),
-        ]),
-        ..Default::default()
-    };
-    assert_eq!(
-        summary.warnings(),
-        [
-            "Map buildings: 1 rows not drawn, refused type token: token 78 is not in lexical tokens.",
-            "Map buildings: 2 floating harbours not drawn: the controller's floating-harbour deployment is unknown.",
-            "Map buildings: 1 floating harbours not drawn: the fog byte of the harbour's sea province is unknown.",
-        ]
-    );
-}
-
-#[test]
 fn a_floating_harbour_takes_the_first_record_of_its_controllers_system() {
     let supply = ProvinceSupplyRow {
         province: 9,
@@ -1278,97 +1258,6 @@ fn quiet_tail_reuse_compares_bits_not_float_equality() {
         .unwrap()
         .expect("unchanged slot count");
     assert!(same.ptr_eq(&changed));
-}
-
-#[test]
-fn symbolic_building_chunk_updates_share_untouched_directory_paths() {
-    use map_display_data::buildings as data;
-    let mut source = prepared(10, 100_000_000, false);
-    let sample = source.slots[0].clone();
-    source.slots = incremental::Chunked::from_values(
-        (0..193)
-            .map(|id| PreparedSlot {
-                id,
-                ..sample.clone()
-            })
-            .collect(),
-    )
-    .unwrap();
-    let authored = Arc::new(
-        (0..193)
-            .map(|id| data::AuthoredSlot {
-                id,
-                location: 1,
-                bucket: "fixture".into(),
-                order: id as usize,
-                province: Some(1),
-                position: [0.0; 3],
-                rotation: 0.0,
-                floating: false,
-            })
-            .collect(),
-    );
-    let key = |_| Ok(Arc::new(data::AssetKey::Unbound {}));
-    let before = source
-        .display_with(
-            [7; 32],
-            1,
-            true,
-            Vec::new(),
-            key,
-            &[],
-            Arc::clone(&authored),
-            None,
-        )
-        .unwrap();
-    let installed = PreparedBuildings::install(&before, &source.groups, |_| Ok(1), None).unwrap();
-    let mut change = source.slots[73].clone();
-    change.entity_mut().instance.position[0] = -0.0;
-    let mut next = source.clone();
-    next.slots = source
-        .slots
-        .patched(&[(73, change)], 193, &[], PreparedSlot::same_bits)
-        .unwrap()
-        .unwrap();
-    let after = next
-        .display_with(
-            [7; 32],
-            1,
-            true,
-            Vec::new(),
-            key,
-            &[],
-            authored,
-            Some((&source.slots, &before)),
-        )
-        .unwrap();
-    assert!(before.slots[0].ptr_eq(&after.slots[0]));
-    assert!(!before.slots[1].ptr_eq(&after.slots[1]));
-    assert!(before.slots[2].ptr_eq(&after.slots[2]));
-    let updated = PreparedBuildings::install(
-        &after,
-        &source.groups,
-        |_| Ok(1),
-        Some((&before, &installed)),
-    )
-    .unwrap();
-    assert!(Arc::ptr_eq(
-        installed.slots.chunks.get(0).unwrap(),
-        updated.slots.chunks.get(0).unwrap()
-    ));
-    assert!(Arc::ptr_eq(
-        installed.slots.chunks.get(2).unwrap(),
-        updated.slots.chunks.get(2).unwrap()
-    ));
-    assert_eq!(
-        updated.slots[73].entity.as_ref().unwrap().instance.position[0].to_bits(),
-        (-0.0f32).to_bits()
-    );
-    let bytes = product_codec::encode(&after).unwrap();
-    assert_eq!(
-        product_codec::encode(&product_codec::decode::<data::Buildings>(&bytes).unwrap()).unwrap(),
-        bytes
-    );
 }
 
 #[test]

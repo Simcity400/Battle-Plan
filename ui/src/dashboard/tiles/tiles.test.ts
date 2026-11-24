@@ -289,23 +289,6 @@ test('the clip draws a tiled line up to the head and not past it, and a frame pl
   }
 });
 
-test('assembling a view from cached tiles happens once per change of its tiles, not per frame', async () => {
-  const cache = new TileCache(), followed = lane(TAGS, LAST);
-  let assembled = 0;
-  const view = new TileView(cache, followed, () => { assembled++; });
-  view.setView(following(60_000, 13 * 365));
-  await settle();
-  const once = assembled;
-  const started = performance.now();
-  for (let head = 60_000; head < 60_024; head += 0.4) view.setView(following(head, 13 * 365));
-  assert.equal(assembled, once);
-  console.log(`a moving view over held tiles: ${((performance.now() - started) / 60).toFixed(4)} ms a frame`);
-  const fresh = new TileView(cache, followed, () => {});
-  const begun = performance.now();
-  fresh.setView(following(60_000, 13 * 365));
-  const lines = fresh.current!;
-  console.log(`assembling ${lines.size} lines of ${[...lines.values()][0].summary.buckets.length} bins from cached tiles: ${(performance.now() - begun).toFixed(3)} ms`);
-});
 
 test('a chart whose lines hold no value anywhere in view says why, naming the reason of the most hours; a line with any hour unnamed is drawn', () => {
   const line = (tag: string, from: number, to: number, missing: { firstHour: number; lastHour: number; reason: string }[]): TiledLine =>

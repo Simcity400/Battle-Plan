@@ -170,17 +170,6 @@ fn batched_naming_one_shot_refuses_no_more_and_counts_fallback() {
     assert!(refused(&actual) <= refused(&direct));
     same(&actual, &capture(&reads(&bytes, true, None, false), &seeds));
 }
-#[test]
-fn batched_naming_request_count_is_one_per_sixty_four_rows() {
-    let (bytes, seeds) = fixture(129);
-    let batch = reads(&bytes, false, None, false);
-    assert_eq!(capture(&batch, &seeds).naming.len, 129);
-    assert_eq!(
-        batch.members.get(),
-        3,
-        "old code used 129 guarded member requests"
-    );
-}
 
 #[test]
 fn batched_naming_absent_null_and_duplicate_members_equal_serial() {

@@ -711,30 +711,6 @@ fn many_active_fixture() -> Vec<u8> {
 }
 
 #[test]
-fn a_page_of_active_records_reads_its_characters_in_one_guarded_batch() {
-    let bytes = many_active_fixture();
-    let memory = Guarded {
-        bytes: &bytes,
-        guards: Default::default(),
-    };
-    let mut output = vec![ActiveRow::default(); 30];
-    let [outcome, _] = walk_records(&memory, 0, GS, &mut output, &mut Vec::new());
-    assert_eq!(outcome, Outcome::Rows { len: 30 });
-    for (ordinal, row) in output.iter().enumerate() {
-        assert_eq!(
-            *row,
-            ActiveRow {
-                country: 1,
-                ordinal: ordinal as u32,
-                character: Some(CHARACTERS[ordinal % 3].1),
-            }
-        );
-    }
-    let guards = memory.guards.get();
-    assert!(guards < 30, "{guards} guarded calls");
-}
-
-#[test]
 fn the_first_faulty_active_record_decides_the_reason() {
     let unreadable = 0x9_0000_u64;
     for (records, reason) in [

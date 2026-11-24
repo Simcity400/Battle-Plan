@@ -12,23 +12,6 @@ fn fixture_capacities() -> Capacities {
 }
 
 #[test]
-fn cold_visibility_reserves_only_native_singletons() {
-    let captured = Captured::with_capacities(&Capacities::default());
-    for capacity in [
-        captured.countries.rows.capacity(),
-        captured.states.rows.capacity(),
-        captured.links.rows.capacity(),
-        captured.wars.rows.capacity(),
-        captured.war_links.first.capacity(),
-        captured.naval_access.rows.capacity(),
-    ] {
-        assert_eq!(capacity, 0);
-    }
-    assert_eq!(captured.dlc_mask.rows.len(), 1);
-    assert_eq!(captured.local_player.rows.len(), 1);
-}
-
-#[test]
 fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
     use replay_frame::{
         frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::FrameEncoder, frame::Metrics,

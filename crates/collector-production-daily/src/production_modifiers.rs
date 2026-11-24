@@ -692,24 +692,6 @@ pub mod test_support {
 mod tests {
     use super::*;
     #[test]
-    fn live_factory_headers_presize_the_first_production_modifier_capture() {
-        let mut capacity = Capacities::default();
-        let demand = native::Demand {
-            countries: 5_000,
-            lines: 30_000,
-            efficiencies: 750_000,
-            requests: 5_000 * native::KEYS.len(),
-        };
-        capacity.raise_for_demand(demand);
-        assert!(capacity.countries >= demand.countries);
-        assert!(capacity.lines >= demand.lines);
-        assert!(capacity.efficiencies >= demand.efficiencies);
-        assert!(capacity.requests >= demand.requests);
-        let before = capacity;
-        capacity.raise_for_demand(native::Demand::default());
-        assert!(capacity == before);
-    }
-    #[test]
     fn countries_and_failed_arena_pressure_grow_off_hour() {
         let mut capacity = Capacities::default();
         capacity.raise_for_countries(6);

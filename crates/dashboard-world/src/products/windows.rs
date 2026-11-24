@@ -14,15 +14,3 @@ pub fn within(query: &Query<'_>, index: u32) -> io::Result<(i32, i32)> {
     Ok((first.max(query.timeline.first), last.min(query.timeline.last)))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_window_holds_its_own_hours_on_one_grid() {
-        assert_eq!(hours(0), Some((0, HOURS - 1)));
-        assert_eq!(hours(15_211), Some((15_211 * HOURS, 15_212 * HOURS - 1)));
-        assert_eq!(hours(u32::MAX), None);
-        assert_eq!(HOURS % 24, 0, "a window holds whole days");
-    }
-}

@@ -3,8 +3,23 @@ import test from 'node:test';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { landBattleRows } from './landBattlesData.ts';
 import type { LandBattle, LandBattlesWindow } from './landBattlesData.ts';
-import { battleOutcome, battleTooltip, courseDivisions, courseEquipment, courseExtent, courseManpower, drillChartHour, heldTerrain, lengthText, missingTerrain, paintBattle, sameKnownSides, sideLook,
-  validateLandBattleCourse, validateLandBattleTerrain, winners } from './landBattleCourse.ts';
+import {
+  battleOutcome,
+  battleTooltip,
+  courseDivisions,
+  courseEquipment,
+  courseExtent,
+  courseManpower,
+  drillChartHour,
+  heldTerrain,
+  missingTerrain,
+  paintBattle,
+  sameKnownSides,
+  sideLook,
+  validateLandBattleCourse,
+  validateLandBattleTerrain,
+  winners,
+} from './landBattleCourse.ts';
 
 const run = (firstHour: number, lastHour: number, counts: [number, number], rosterUnknown = false) =>
   ({ firstHour, lastHour, counts, rosterUnknown, countries: [['A'], ['B']] as [string[], string[]], countriesUnknown: [false, false] as [boolean, boolean], duration: 0 });
@@ -70,13 +85,6 @@ test('a course chart spans zero to its largest value, however long the battle', 
   assert.deepEqual(courseExtent([long, [...long, { firstHour: 300_000, lastHour: 300_000, value: 4321 }]]), [0, 4321]);
 });
 
-test('lengths read in days or hours and say "at least" only when asked', () => {
-  assert.equal(lengthText(7, false, false), '7 hours');
-  assert.equal(lengthText(1, false, true), '1 hour');
-  assert.equal(lengthText(2792, false, false), '116 days');
-  assert.equal(lengthText(2792, false, true), '116 days 8 hours');
-  assert.equal(lengthText(48, true, true), 'at least 2 days');
-});
 
 const window = (rows: LandBattle[]): LandBattlesWindow => ({ window: 0, interval: { firstHour: 10, lastHour: 30 }, rows, observed: [[10, 30]], warnings: [], contentWarnings: [] });
 const battle = (patch: Partial<LandBattle> = {}): LandBattle => ({ id: 'b', provinceId: 1, start: { hour: 10, bound: 'exact' }, end: { hour: 21, bound: 'exact' },

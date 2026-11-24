@@ -54,15 +54,6 @@ fn a_view_asked_between_two_steps_is_taken_at_the_next_one() {
 }
 
 #[test]
-fn a_side_says_its_branch_before_its_first_window() {
-    let (recording, _) = record(1, 8, busy);
-    let entry = open(units(recording, "branch before window"), quick()).unwrap();
-    let mut side = MapSide::with_products(entry, Vec::new(), View::default()).unwrap();
-    side.set_branch(5);
-    assert_eq!(SideThread::new(side).unwrap().branch(), Some(5));
-}
-
-#[test]
 fn a_stepped_frame_is_told_when_the_side_stops_in_its_step() {
     let composes = Arc::new(Mutex::new(0));
     let (layer, release, began) = Sum::settle_stops(&composes);

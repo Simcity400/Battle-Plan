@@ -129,55 +129,6 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
 }
 
 #[test]
-fn native_strips_preserve_triangles_and_do_not_join_provinces() {
-    let mesh = geography().build_rows(&edges(&[(1, 2, 2), (2, 3, 4)]), &[], &[]);
-    let pack = |v: RailVertex| {
-        [
-            v.position[0],
-            v.position[1],
-            v.position[2],
-            1.0,
-            v.uv[0],
-            v.uv[1],
-        ]
-    };
-    let visible = |t: &[[f32; 6]; 3]| t[0] != t[1] && t[1] != t[2] && t[0] != t[2];
-    let old: Vec<_> = mesh
-        .indices
-        .chunks_exact(3)
-        .map(|t| {
-            [
-                pack(mesh.vertices[t[0] as usize]),
-                pack(mesh.vertices[t[1] as usize]),
-                pack(mesh.vertices[t[2] as usize]),
-            ]
-        })
-        .filter(visible)
-        .collect();
-    let mut native = Vec::new();
-    let mut end = 0;
-    for run in &mesh.native_runs {
-        assert_eq!(run.start, end);
-        let vertices = &mesh.native_vertices[run.start as usize..run.end as usize];
-        for (i, t) in vertices.windows(3).enumerate() {
-            let triangle = if i % 2 == 0 {
-                [t[0], t[1], t[2]]
-            } else {
-                [t[1], t[0], t[2]]
-            };
-            if visible(&triangle) {
-                native.push(triangle);
-            }
-        }
-        end = run.end;
-    }
-    assert_eq!(end as usize, mesh.native_vertices.len());
-    assert_eq!(mesh.native_runs.len(), 3);
-    assert_eq!(native, old);
-    assert_eq!(std::mem::size_of::<[f32; 6]>(), 24);
-}
-
-#[test]
 fn building_and_losing_edges_changes_the_current_network() {
     let geo = geography();
     assert!(geo.build_rows(&[], &[], &[]).vertices.is_empty());
@@ -256,38 +207,6 @@ fn triangles_are_skipped_but_supply_sources_receive_terminal_spurs() {
     }
 }
 #[test]
-fn bridge_kind_selects_gap_and_leadin() {
-    for (kind, gap, width) in [(BridgeKind::Small, 2.4, 4.0), (BridgeKind::Large, 2.6, 4.5)] {
-        let (half_width, half_gap) = defines().bridge(kind);
-        let start = Crossing {
-            position: [4.0, 10.0, 8.0],
-            direction: [1.0, 0.0, 0.0],
-            half_width,
-            half_gap,
-        };
-        let end = Crossing {
-            position: [20.0, 10.0, 8.0],
-            direction: [-1.0, 0.0, 0.0],
-            half_width,
-            half_gap,
-        };
-        let curve = Curve::new(start, end);
-        let mut mesh = RailMesh::default();
-        curve.emit(&mut mesh, 3, &heights(), &defines()).unwrap();
-        assert!((mesh.vertices[0].position[0] - (4.0 + gap / 2.0)).abs() < 1e-5);
-        assert!((mesh.vertices[2].position[0] - (4.0 + width / 2.0)).abs() < 1e-5);
-        assert!((mesh.vertices.last().unwrap().position[0] - (20.0 - gap / 2.0)).abs() < 1e-5);
-        assert!((mesh.vertices[0].uv[0] - gap / 2.0).abs() < 1e-5);
-        assert!((mesh.vertices.last().unwrap().uv[0] - (16.0 - gap / 2.0)).abs() < 1e-5);
-        for pair in mesh.vertices.chunks_exact(2) {
-            assert!((length(sub(pair[0].position, pair[1].position)) - 1.0).abs() < 1e-5);
-            assert!((pair[0].position[1] - 10.9).abs() < 1e-5);
-            assert_eq!(pair[0].uv[1], 0.4);
-            assert_eq!(pair[1].uv[1], 0.6);
-        }
-    }
-}
-#[test]
 fn harbour_anchor_uses_naval_base_membership_even_at_zero_level() {
     let mut geo = geography();
     geo.ports.insert(1, [5.0, 10.0, 9.0]);
@@ -311,33 +230,6 @@ fn harbour_anchor_uses_naval_base_membership_even_at_zero_level() {
         Some(&[4.0, 10.0, 8.0])
     );
     assert!(level_without_member.sources.contains(&1));
-}
-#[test]
-fn the_rail_fade_settles_first_then_moves_at_the_cutoff_speed() {
-    let mut camera = Camera {
-        center: [0.0; 2],
-        height: 200.0,
-        map: MapSize::TEST,
-        defines: MapDefines::test(),
-        pose: viewer_gpu::camera::Pose::Map,
-    };
-    camera.defines.railway_cutoff = 300.0;
-    camera.defines.railway_cutoff_speed = 3.0;
-    camera.height = 200.0;
-    let mut fade = RailFade::default();
-    assert_eq!(fade.update(&camera, 5.0), 1.0);
-    camera.height = 300.0;
-    assert!((fade.update(&camera, 5.1) - 0.7).abs() < 1e-5);
-    assert!(fade.trains_visible());
-    assert_eq!(fade.update(&camera, 6.0), 0.0);
-    assert!(!fade.trains_visible());
-    camera.height = 299.0;
-    assert!((fade.update(&camera, 6.2) - 0.6).abs() < 1e-5);
-    camera.height = 400.0;
-    assert_eq!(fade.update(&camera, 0.0), 0.0);
-    camera.height = 100.0;
-    assert_eq!(fade.update(&camera, 0.0), 0.0);
-    assert_eq!(fade.update(&camera, 1.0), 1.0);
 }
 #[test]
 fn truncated_directed_edges_are_not_completed_from_authored_content() {

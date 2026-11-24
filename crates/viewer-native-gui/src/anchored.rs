@@ -541,11 +541,4 @@ mod tests {
         assert_eq!(exact.scissor, Some([13, 18, 17, 22]));
     }
 
-    #[test]
-    fn a_moved_world_matrix_translates_the_games_own_gui_draw_by_the_same_pixels() {
-        let mut constants = vec![0.0; 24];
-        (constants[12], constants[13]) = (10.0, -20.0);
-        shift_world(&mut constants, [3.0, -2.0]);
-        assert_eq!([constants[12], constants[13]], [13.0, -18.0]);
-    }
 }

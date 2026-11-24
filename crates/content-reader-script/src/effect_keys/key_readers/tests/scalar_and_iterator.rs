@@ -89,36 +89,6 @@ fn no_skip_unknown_forms_consume_only_the_opening() {
 }
 
 #[test]
-fn iterators_keep_gated_limits_and_localization() {
-    crate::test_game::enter();
-    for effect in [
-        "every_country_with_original_tag",
-        "every_military_industrial_organization",
-        "every_country_division",
-        "every_state_division",
-        "random_country_with_original_tag",
-        "random_country_division",
-        "random_state_division",
-        "random_scope_in_array",
-    ] {
-        let text = format!(
-            "body = {{ {effect} = {{ limit = {{ always = yes }} limit = {{ @hidden = 9 }} @seen = 3 marker = 1 }} }} final = @seen hidden = @hidden"
-        );
-        let result = read(text.as_bytes(), &KeyNames::default());
-        assert_eq!(scalar(&result.items, "final"), b"3", "{effect}: {result:?}");
-        assert_eq!(
-            scalar(&result.items, "hidden"),
-            b"@hidden",
-            "{effect}: {result:?}"
-        );
-        assert!(
-            result.misreads.iter().all(|note| note.count.is_none()),
-            "{effect}: {result:?}"
-        );
-    }
-}
-
-#[test]
 fn effect_key_force_mapmode_limits_are_unconditional_trigger_reads() {
     crate::test_game::enter();
     let result = read(b"body = { force_update_map_mode = { limit = { always = yes } limit = { @seen = 3 always = yes } mapmode = custom } } final = @seen", &KeyNames::default());
@@ -205,27 +175,3 @@ fn effect_key_static_modifiers_read_the_list_after_a_scalar_value() {
     );
 }
 
-#[test]
-fn effect_key_create_entity_position_keys_are_scalar() {
-    crate::test_game::enter();
-    for key in ["x", "y", "z", "state", "province"] {
-        let text = format!(
-            "body = {{ create_entity = {{ {key} = {{ @seen = 3 marker = 1 }} final = @seen"
-        );
-        let result = read(text.as_bytes(), &KeyNames::default());
-        assert_eq!(
-            scalar(block(&result.items, "body"), "final"),
-            b"3",
-            "{key}: {result:?}"
-        );
-        assert_eq!(
-            scalar(block(block(&result.items, "body"), "create_entity"), key),
-            b"{",
-            "{key}: {result:?}"
-        );
-        assert!(
-            result.misreads.iter().all(|note| note.count.is_none()),
-            "{key}: {result:?}"
-        );
-    }
-}

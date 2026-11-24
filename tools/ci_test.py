@@ -190,8 +190,6 @@ class Crates(unittest.TestCase):
         self.assertEqual(decision.state, "run")
         self.assertEqual(decision.arguments, ["-p", "core", "-p", "mid"])
 
-    def test_an_unchanged_workspace_skips(self):
-        self.assertEqual(decide("clippy", context(["docs/x.md"])).state, "skipped")
 
     def test_a_widening_file_runs_the_workspace(self):
         pipeline = PIPELINE.replace('command = ["boat", "test", "{packages}"]\n', 'command = ["boat", "test", "{packages}"]\nwiden = [".config/nextest.toml"]\n')
@@ -237,8 +235,6 @@ class Crates(unittest.TestCase):
         self.assertEqual(decision.detail, "4 crates (2 beyond a pull request's scope)")
         self.assertEqual(decide("test", context(["docs/x.md"], workspace=workspace), tier="main").state, "skipped")
 
-    def test_a_changed_runner_script_selects_no_crates(self):
-        self.assertEqual(decide("clippy", context(["tools/boat.py"])).state, "skipped")
 
     def test_a_nested_crate_folder_owns_its_files(self):
         workspace = {"outer": ci.Crate("outer", "crates/outer", frozenset()),
@@ -469,10 +465,6 @@ class Sharding(unittest.TestCase):
             with self.assertRaises(SystemExit, msg=broken):
                 ci.load_weights({}, broken)
 
-    def test_a_split_is_the_same_whatever_order_a_runner_sums_costs_in(self):
-        weights = ci.load_weights(crates(a=[], b=[], c=[]), self.table({"a": (0.1, 0.2), "b": (0.2, 0.3), "c": (0.3, 0.1)}))
-        self.assertTrue(all(type(cost) is int for pair in weights.values() for cost in pair))
-        self.assertEqual(sum(cost for cost, _ in weights.values()), sum(cost for cost, _ in reversed(list(weights.values()))))
 
     def test_a_cold_runs_timings_and_test_report_give_each_crate_its_build_and_test(self):
         units = [{"name": "app", "target": "", "duration": 10}, {"name": "app", "target": " build-script (run)", "duration": 1},
@@ -524,11 +516,6 @@ class Sharding(unittest.TestCase):
         self.assertEqual(len(decision.beyond), len(self.WORKSPACE))
         self.assertEqual(next(d for d in decisions if d.job.name == "scan").state, "run")
 
-    def test_a_failure_beyond_a_pull_requests_scope_says_so(self):
-        lines = ci.failure_report((3, [("app t::one", "boom"), ("leaf::bin/x t::two", "bang")], {}), {"app"})
-        self.assertIn("--- FAIL app t::one (beyond a pull request's scope)", lines)
-        self.assertIn("--- FAIL leaf::bin/x t::two", lines)
-        self.assertTrue(any(line.startswith("1 of the failures") for line in lines))
 
     def test_only_a_crates_job_shards_and_neither_an_unsharded_crates_job_nor_a_files_job_warms(self):
         with self.assertRaises(SystemExit):

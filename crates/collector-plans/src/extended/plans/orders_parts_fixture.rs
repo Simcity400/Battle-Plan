@@ -18,7 +18,6 @@ use engine_native_parts::{
     creference_registry as registry,
     reference_bucket as bucket,
 };
-use engine_native_politics::cdiplomacy_status;
 
 #[cfg(test)]
 const STATE: usize = 0x10000;

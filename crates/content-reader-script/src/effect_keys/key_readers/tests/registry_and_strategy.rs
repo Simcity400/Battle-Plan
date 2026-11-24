@@ -152,35 +152,6 @@ fn meta_text_reads_raw_characters_without_defining_tokens() {
 }
 
 #[test]
-fn remaining_scalar_forms_no_longer_defer() {
-    crate::test_game::enter();
-    for (effect, key) in [
-        ("activate_targeted_decision", "decision"),
-        ("remove_targeted_decision", "decision"),
-        ("annex_country", "transfer_troops"),
-        ("set_province_name", "name"),
-        ("add_doctrine_cost_reduction", "uses"),
-        ("diplomatic_relation", "active"),
-        ("custom_override_tooltip", "tooltip"),
-        ("random_country", "visible_when_empty"),
-        ("every_army_leader", "include_invisible"),
-        ("add_relation_modifier", "modifier"),
-        ("remove_relation_modifier", "modifier"),
-        ("random_army_leader", "include_invisible"),
-        ("for_each_scope_loop", "break"),
-        ("delete_unit_template_and_units", "disband"),
-        ("add_breakthrough_progress", "value"),
-        ("create_ship", "name"),
-    ] {
-        assert!(crate::effect_keys::registered(effect.as_bytes()).is_some(), "{effect}");
-        let text = format!("body = {{ {effect} = {{ {key} = 1 }} }}");
-        let result = read(text.as_bytes(), &KeyNames::default());
-        assert!(result.unsettled.is_none(), "{effect}: {result:?}");
-        no_deferred(&result);
-    }
-}
-
-#[test]
 fn ai_strategy_helpers_follow_type_and_read_lists_as_values() {
     crate::test_game::enter();
     let result = read(

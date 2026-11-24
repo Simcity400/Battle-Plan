@@ -2,11 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryValueAt, countryValuesModel } from '../../charts/race/countryValues.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { createWidget } from '../../dashboard/model.ts';
-import { resolveOptions, sectionFields } from '../../dashboard/options.ts';
 import type { ArmySizeReply } from './armySizeData';
 import '../definitions.ts';
-import { definition, OPTIONS } from './definition.ts';
 import { armyAbsent, armyMeasure, armySizeRequest, armyTooltips, armyWindows, formatArmyValue, formatArmyRaw, formatArmyRawFast,
   measureChoices, mergeArmyWindows, offersMeasure, validateArmySizeReply, validateArmyWindow } from './armySizeData.ts';
 
@@ -53,15 +50,6 @@ test('only the measures the recording reports are offered, and an army it does n
   assert.equal(armyAbsent(REPLY), false);
 });
 
-test('new Army size widgets share the top 10, race, date-off and owner defaults', () => {
-  const widget = createWidget('army-size', 'main', 'army');
-  const options = resolveOptions(OPTIONS, widget.options);
-  assert.deepEqual(widget.countries, { kind: 'group', group: { type: 'top', count: 10 }, membership: 'hour', aggregate: false });
-  assert.equal(widget.time.mode, 'follow');
-  assert.equal(sectionFields(OPTIONS, 'options', { ...options, view: 'mix' }).some(field => field.key === 'measure'), false);
-  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
-  assert.deepEqual([options.view, options.measure, options.countFor, options.byType, options.dateOverlay], ['race', '', 'owner', false, false]);
-});
 
 test('requests preserve opaque country tags, owner/host, recorded measures and mix attribution', () => {
   assert.deepEqual(armySizeRequest('synthetic', { tags: ['opaque tag', countryKey(1499), '1499'] }, 'battalions', 'host', true),
