@@ -179,7 +179,8 @@ test('heat matrix supports grouped non-square axes, bounded viewport windows, hi
 
   const mirror = deriveMatrixMirror(model, 0, 2, 0, 3);
   assert.equal(mirror.total, 2);
-  assert.equal(mirror.rows[1]!.cells[1]!.spoken, 'Not recorded (Opinions not recorded)');
+  assert.equal(mirror.rows[1]!.cells[0]!.spoken, mirror.rows[1]!.name, 'the row is named for a screen reader');
+  assert.match(mirror.rows[1]!.cells[2]!.spoken, /^.+: Not recorded \(Opinions not recorded\)$/, 'each cell says which column it is');
 
   const fake = makeFakeCtx();
   const picture = createMatrixPicture();
@@ -362,6 +363,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   const mirror = deriveLanesMirror(model, 0, 2);
   assert.equal(mirror.total, 2);
   assert.equal(mirror.rows[0]!.name, 'English Channel');
+  assert.equal(mirror.rows[0]!.cells[0]!.spoken, 'English Channel');
 
   const ticks = computeAxisTicks(0, 167, 24, layout.plotLeft, layout.plotWidth);
   assert.ok(ticks.length >= 2);
@@ -408,4 +410,78 @@ test('heat scale helpers preserve zero neutrality, signed extremes, margin blend
     { color: '#4f86f7', top: 10, height: 5 },
     { color: '#e55353', top: 15, height: 15 },
   ]);
+});
+
+test('a sub-pixel last observation gets one pixel at its own hour, and an uncovered hour is not the current readout', () => {
+  const runs = [{ firstHour: 500, lastHour: 500, readHour: 500, cell: { kind: 'solid' as const, color: '#4f86f7' } }];
+  const spans = projectLaneRunsToPixels(runs, 0, 1000, 500, 0, 100);
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0]!.width, 1, 'the observation is one pixel wide, not stretched to the plot edge');
+  assert.ok(Math.abs(spans[0]!.x - 49.95) < 0.1, 'at its witnessed position');
+  const model: HeatLanesModel = {
+    hour: 500, firstHour: 0, lastHour: 1000, dayHours: 24, playhead: 500,
+    rows: [{ id: 'r', label: 'Region', runs, readout: { kind: 'value', primary: '71%', secondary: 'Allies' } }],
+  };
+  assert.deepEqual(deriveLanesTooltip(model, 0, 100), { title: 'Region', hour: 100, missingReason: 'Not recorded at this hour' });
+  assert.equal(deriveLanesTooltip(model, 0, null)?.exactValue, '71%', 'the readout answers only when the readout itself is hit');
+  const layout = layoutHeatLanes({ width: 400, height: 120, scrollTop: 0, firstHour: 0, lastHour: 1000, displayedHour: 500, rows: model.rows });
+  const pastPlayhead = layout.plotLeft + layout.plotWidth * 0.9;
+  assert.equal(hitHeatLanes(pastPlayhead, layout.plotTop + 4, 0, layout, 1), null, 'nothing after the displayed hour is hit');
+});
+
+test('stripes draw the fractions they are given and leave an unknown remainder unfilled', () => {
+  const stripes = splitStripes(
+    [
+      { id: 'a', label: 'A', color: '#4f86f7', share: 0.25 },
+      { id: 'b', label: 'B', color: '#e55353', share: 0.35 },
+    ],
+    10,
+    20,
+  );
+  assert.deepEqual(stripes, [
+    { color: '#4f86f7', top: 10, height: 5 },
+    { color: '#e55353', top: 15, height: 7 },
+  ]);
+});
+
+test('a stable row id is never read as a row position, and a reorder refreshes the published rows', async () => {
+  const { heatLanesHostAdapter } = await import('./hostAdapter.ts');
+  const { lanesExtentSignature, laneIdentities } = await import('./lanesModel.ts');
+  const { matrixExtentSignature } = await import('./matrixLaneView.ts');
+  const rows = [{ id: '1', label: 'One', runs: [] }, { id: '0', label: 'Zero', runs: [] }];
+  const installed = { id: 7, owner: 'w', hour: 50 } as unknown as Parameters<NonNullable<typeof heatLanesHostAdapter.resolveHitAction>>[1];
+  const fields = { extent: { totalHeight: 100, rowStride: 30, plotTop: 0, plotHeight: 100, rows: laneIdentities(rows) } };
+  const byId = heatLanesHostAdapter.resolveHitAction!({ key: '1' } as never, installed, fields as never);
+  assert.equal(byId?.subject, '1', 'Enter on stable id "1" activates "1", not the row at position 1');
+  const byPointer = heatLanesHostAdapter.resolveHitAction!({ key: '#1@40' } as never, installed, fields as never);
+  assert.equal(byPointer?.subject, '0', 'a pointer token names a position');
+  const layout = { totalHeight: 100, rowStride: 30, plotTop: 0, plotHeight: 100 };
+  assert.notEqual(lanesExtentSignature(layout, rows), lanesExtentSignature(layout, [rows[1]!, rows[0]!]));
+  const grid = { totalWidth: 100, totalHeight: 100, cellSize: 20, gridLeft: 10, gridTop: 10 };
+  const a = { id: 'A', label: 'A' }, b = { id: 'B', label: 'B' };
+  assert.notEqual(matrixExtentSignature(grid, { rows: [a, b], columns: [a, b] }), matrixExtentSignature(grid, { rows: [b, a], columns: [b, a] }));
+});
+
+test('a who miss inside a projection comes back as a demand from the same projection, and art it asked for as a URL', async () => {
+  const { projectFromScene } = await import('./sceneReadView.ts');
+  const pending = { status: 'pending' } as const;
+  const identity = {
+    demandOwner: 'view' as const,
+    resolve: (kind: 'country', key: string, atHour: number) => ({
+      kind, key, atHour, holder: pending, tag: pending, name: pending, colour: pending, flagChoice: pending,
+      validInterval: [atHour, atHour] as const, nextChangeAt: Infinity,
+    }),
+  };
+  const scene = { widget: 1, subs: [], pictures: [], model: null };
+  const projected = projectFromScene(scene, { sources: {}, staticPanels: { main: { partner: 'BUL' } } }, 120, {
+    identity: identity as never,
+    artUrl: handle => (handle.kind === 'url' ? handle.url : null),
+  }, view => {
+    const reply = view.panel<{ partner: string }>('main')!;
+    view.art({ kind: 'url', url: 'asset://flag.png' });
+    return view.who('country', reply.partner, 120).name.status;
+  });
+  assert.equal(projected.model, 'pending');
+  assert.deepEqual(projected.identityDemands, [['country', 'BUL', 120]]);
+  assert.deepEqual(projected.artUrls, ['asset://flag.png']);
 });

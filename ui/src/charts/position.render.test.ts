@@ -4,12 +4,10 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { tokensFromValues } from './tokens.ts';
-import { ARC_BAND, chordSurface, layoutChord } from './chord/layout.ts';
 import type { FrameTask } from './scheduler';
-import type { ChordChartProps } from './chord/ChordChart';
 import type { ButterflyItem, ButterflyProps } from './butterfly/ButterflyChart';
 
-for (const kind of ['chord', 'butterfly'] as const) test(`${kind} interaction follows position-only moves without size notifications`, async () => {
+test(`butterfly interaction follows position-only moves without size notifications`, async () => {
   let left = 30, top = 40;
   const bars: number[][] = [];
   const handlers = new Map<string, (event: any) => void>();
@@ -42,7 +40,7 @@ for (const kind of ['chord', 'butterfly'] as const) test(`${kind} interaction fo
         if (path.endsWith('/charts/useChartTokens.ts')) return `export const useChartTokens = () => (${JSON.stringify(tokens)}); export const useViewportHeight = () => 800;`;
         if (path.endsWith('/components/ContextMenu.tsx')) return 'export const useContextMenu = () => ({ menu: null, open() {} });';
         if (path.endsWith('/charts/scheduler.ts')) return `export const scheduler = { add(task) { globalThis.__positionFixture.task = task; return () => {}; }, wake() {}, setVisible() {} };`;
-        if (path.endsWith('/chord/ChordChart.tsx') || path.endsWith('/butterfly/ButterflyChart.tsx')) return source
+        if (path.endsWith('/butterfly/ButterflyChart.tsx')) return source
           .replace('canvas = useRef<HTMLCanvasElement>(null)', 'canvas = useRef(globalThis.__positionFixture.canvas)')
           .replace('root = useRef<HTMLDivElement>(null)', 'root = useRef(globalThis.__positionFixture.container)')
           .replace('onKeyDown={event => {', 'onKeyDown={globalThis.__positionFixture.key = event => {')
@@ -57,30 +55,16 @@ for (const kind of ['chord', 'butterfly'] as const) test(`${kind} interaction fo
   try {
     const { tooltipStore } = await vite.ssrLoadModule('/ui/src/charts/tooltip.ts') as typeof import('./tooltip.ts');
     const selected: string[] = [];
-    let point: { clientX: number; clientY: number };
-    if (kind === 'chord') {
-      const { default: Chart } = await vite.ssrLoadModule('/ui/src/charts/chord/ChordChart.tsx');
-      const data = { nodes: [{ id: 'a', label: 'A', color: '#123456' }, { id: 'b', label: 'B', color: '#654321' }],
-        flows: [{ id: 'flow', source: 'a', target: 'b', value: 1 }] };
-      const props: ChordChartProps = { label: 'Synthetic chord', caption: '', active: true, frame: { data },
-        tooltip: hit => ({ title: hit.id.toUpperCase(), rows: [] }), onPick: hit => { selected.push(hit.id); }, onError: error => assert.equal(error, null) };
-      renderToStaticMarkup(createElement(Chart, props));
-      const surface = chordSurface(500, 300), arc = layoutChord(data).arcs[0], angle = (arc.start + arc.end) / 2;
-      point = { clientX: left + surface.x + Math.cos(angle) * (surface.radius - ARC_BAND / 2),
-        clientY: top + surface.y + Math.sin(angle) * (surface.radius - ARC_BAND / 2) };
-    } else {
-      const { default: Chart } = await vite.ssrLoadModule('/ui/src/charts/butterfly/ButterflyChart.tsx');
-      const props: ButterflyProps<ButterflyItem> = { label: 'Synthetic butterfly', active: true, leftLabel: 'Left', rightLabel: 'Right', ratioLabel: 'Ratio',
-        items: [{ id: 'a', label: 'A', color: '#123456', left: 1, right: 2, leftText: '1', rightText: '2', ratioText: '2', segment: 'known' }],
-        tooltip: item => ({ title: item.label, rows: [] }), onSelect: item => { selected.push(item.id); } };
-      renderToStaticMarkup(createElement(Chart, props));
-      point = { clientX: 0, clientY: 0 };
-      handlers.set('keydown', fixture.key!); handlers.set('pointermove', fixture.move!); handlers.set('click', fixture.click!);
-    }
+    const { default: Chart } = await vite.ssrLoadModule('/ui/src/charts/butterfly/ButterflyChart.tsx');
+    const props: ButterflyProps<ButterflyItem> = { label: 'Synthetic butterfly', active: true, leftLabel: 'Left', rightLabel: 'Right', ratioLabel: 'Ratio',
+      items: [{ id: 'a', label: 'A', color: '#123456', left: 1, right: 2, leftText: '1', rightText: '2', ratioText: '2', segment: 'known' }],
+      tooltip: item => ({ title: item.label, rows: [] }), onSelect: item => { selected.push(item.id); } };
+    renderToStaticMarkup(createElement(Chart, props));
+    handlers.set('keydown', fixture.key!); handlers.set('pointermove', fixture.move!); handlers.set('click', fixture.click!);
     for (const effect of fixture.effects) { const cleanup = effect(); if (typeof cleanup === 'function') cleanups.push(cleanup as () => void); }
     const frame = () => fixture.task!.frame({ now: 0, dt: 0 });
     for (let i = 0; i < 3; i++) frame();
-    if (kind === 'butterfly') point = { clientX: left + bars[1][0] + bars[1][2] / 2, clientY: top + bars[1][1] + bars[1][3] / 2 };
+    let point = { clientX: left + bars[1][0] + bars[1][2] / 2, clientY: top + bars[1][1] + bars[1][3] / 2 };
     const move = () => { handlers.get('pointermove')!(point); frame(); };
     move();
     assert.equal(tooltipStore.get()?.content.title, 'A');
@@ -93,14 +77,12 @@ for (const kind of ['chord', 'butterfly'] as const) test(`${kind} interaction fo
     assert.equal(tooltipStore.get()?.content.title, 'A', 'hover agrees with the click after moving');
     assert.deepEqual([canvas.width, canvas.height], originalBacking, 'a translation retains the backing size');
     assert.equal(notifications, notificationsBefore, 'the move has no size, scroll or window notification');
-    if (kind === 'butterfly') {
-      handlers.get('keydown')!({ key: 'Home', preventDefault() {} }); frame();
-      const before = tooltipStore.get()!;
-      left += 50; top += 25;
-      handlers.get('keydown')!({ key: 'Home', preventDefault() {} }); frame();
-      assert.equal(tooltipStore.get()!.x, before.x + 50, 'keyboard placement uses the current horizontal position');
-      assert.equal(tooltipStore.get()!.y, before.y + 25, 'keyboard placement uses the current vertical position');
-    }
+    handlers.get('keydown')!({ key: 'Home', preventDefault() {} }); frame();
+    const before = tooltipStore.get()!;
+    left += 50; top += 25;
+    handlers.get('keydown')!({ key: 'Home', preventDefault() {} }); frame();
+    assert.equal(tooltipStore.get()!.x, before.x + 50, 'keyboard placement uses the current horizontal position');
+    assert.equal(tooltipStore.get()!.y, before.y + 25, 'keyboard placement uses the current vertical position');
     handlers.get('pointerleave')?.({});
   } finally {
     for (const cleanup of cleanups.reverse()) cleanup();

@@ -9,7 +9,7 @@ const UPGRADES: GameWindowRow<AgencyUpgradesSelection> = {
     const tag = (meta as AgencyMeta | undefined)?.tag;
     return tag ? { kind: 'agencyUpgrades', sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, hour, tag } : null;
   },
-  title: meta => (meta as AgencyMeta | undefined)?.name ?? 'Agency',
+  label: 'Intelligence agency',
 };
 
 function AgencyComparisonWidget(props: WidgetProps) {

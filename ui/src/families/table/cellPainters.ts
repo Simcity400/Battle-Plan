@@ -12,6 +12,7 @@ import {
   drawSkillFigure,
   drawStatusMark,
   drawStockpileSumCell,
+  drawTwoWayBar,
   drawTrackBar,
   drawWinRateCell,
   FLAG_SLOT_HEIGHT,
@@ -36,6 +37,14 @@ import {
 } from './settings.ts';
 
 export const TREE_INDENT_PX = 16;
+export const TWO_WAY_SLOT = 72;
+export const TWO_WAY_FIGURE = 56;
+
+function signedText(text: string, signed: number): string {
+  if (signed > 0) return text.startsWith('+') ? text : `+${text}`;
+  if (signed < 0) return text.replace(/^-/, '−');
+  return text;
+}
 export const TREE_CHEVRON_LANE = 18;
 
 export interface CellRenderContext {
@@ -114,6 +123,8 @@ function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHei
     if (density === 'comfortable') return { width: 36, height: 48 };
     return { width: 30, height: 40 };
   }
+  if (shape === 'equipment') return { width: 30, height: 24 };
+  if (shape === 'counter') return { width: 30, height: 18 };
   if (shape === 'wide') {
     const h = Math.min(28, Math.max(20, rowHeight - 14));
     const w = Math.round(h * (46 / 28));
@@ -150,7 +161,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const middle = y + rowHeight / 2;
   let left = leftBase;
 
-  if (column.notRecordedReason) return;
+  if (column.notRecordedReason || cell?.blank) return;
 
   if (colIndex === 0) {
     if (item.level > 1) left += (item.level - 1) * TREE_INDENT_PX;
@@ -166,6 +177,37 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const label = cell?.actionLabel ?? 'View';
     if (formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
     drawActionButton(ctx, right, middle, label, rowHovered || rowFocused, theme);
+    return;
+  }
+
+  if (kind === 'kind') {
+    if (!cell || (!cell.icon && !paintModel.iconPending && !cell.iconSlot)) return;
+    const geom = artGeometry(cell.artShape ?? 'square', density, rowHeight);
+    const state = resolveArtState(paintModel.icon, paintModel.iconPending === true, cell.artName ?? item.name, rc);
+    drawArtSlot(ctx, Math.round(x + (column.width - geom.width) / 2), Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 2 });
+    return;
+  }
+
+  if (kind === 'twoWay') {
+    if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
+      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
+      return;
+    }
+    const signed = paintModel.value.kind === 'known' || paintModel.value.kind === 'partial' ? Number(paintModel.value.value) : 0;
+    const slotRight = right - TWO_WAY_FIGURE;
+    if (slotRight - TWO_WAY_SLOT >= left) {
+      const grey = tokens.dark ? 'rgba(245, 245, 245, 0.28)' : 'rgba(15, 23, 42, 0.25)';
+      const share = fraction === null ? 0 : (signed < 0 ? -fraction : fraction);
+      drawTwoWayBar(ctx, slotRight - TWO_WAY_SLOT / 2, middle, TWO_WAY_SLOT / 2, 12, share, grey, grey, theme);
+    }
+    const font = fontOf(theme, 13, 500);
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = formatted.kind === 'zero' || item.row.muted ? theme.muted : theme.text;
+    ctx.fillText(fit(signedText(formatted.text, signed), font, Math.max(0, right - left)), right, middle);
+    ctx.restore();
     return;
   }
 
@@ -352,7 +394,8 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       drawBarBehindFigure(ctx, right, middle, fraction, barFill, { density, sorted: isSorted, theme });
     }
     const maxVal = cell?.secondaryValue;
-    const maxText = maxVal && (maxVal.kind === 'known' || maxVal.kind === 'zero') ? String(maxVal.value) : '—';
+    const maxFormatted = maxVal ? formatValueState(maxVal, paintModel.format) : null;
+    const maxText = maxFormatted && (maxFormatted.kind === 'known' || maxFormatted.kind === 'zero' || maxFormatted.kind === 'partial') ? maxFormatted.text : '—';
     drawOutOfFigure(ctx, formatted.text, maxText, left, right, middle, theme, { muted: item.row.muted });
     return;
   }
@@ -384,7 +427,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const isChild = item.level > 1;
   const subtext = density !== 'compact' ? cell?.subtext : undefined;
   const avail = Math.max(0, right - left);
-  if (subtext && rowHeight >= 40) {
+  if (subtext && rowHeight >= 36) {
     const titleFont = fontOf(theme, 13.5, isChild ? 500 : 600);
     const subFont = fontOf(theme, 12, 400);
     ctx.save();

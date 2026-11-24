@@ -6,7 +6,7 @@ import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race',
-    choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' }, { value: 'breakdown', label: 'Loss causes' }] },
+    choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines' }, { value: 'breakdown', label: 'Loss causes' }] },
   { key: 'measure', section: 'options', label: 'Rank by', kind: 'choice', default: 'taken',
     choices: [{ value: 'taken', label: 'Own losses' }, { value: 'dealt', label: 'Enemy losses' }] },
   { key: 'regions', section: 'options', label: 'Air regions', kind: 'content-set', default: '', automatic: 'Every recorded region' },

@@ -21,6 +21,28 @@ export const PARTIAL_TAB_HEIGHT = 13;
 export const PARTIAL_TAB_GAP = 5;
 export const PARTIAL_WORD_GAP = 4;
 
+export function drawHatchLines(
+  ctx: ValueCanvasContext,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  theme: Pick<ValueCanvasTheme, 'hatch' | 'hatchSpacing'>,
+): void {
+  ctx.save();
+  ctx.strokeStyle = theme.hatch;
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = 1.2;
+  const step = Math.max(3, theme.hatchSpacing);
+  for (let at = x - height; at < x + width; at += step) {
+    ctx.beginPath();
+    ctx.moveTo(at, y + height);
+    ctx.lineTo(at + height, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export function drawHatchRect(
   ctx: ValueCanvasContext,
   x: number,
@@ -35,16 +57,7 @@ export function drawHatchRect(
   ctx.beginPath();
   ctx.roundRect(x, y, width, height, radius);
   ctx.clip();
-  ctx.strokeStyle = theme.hatch;
-  ctx.globalAlpha = 0.55;
-  ctx.lineWidth = 1.2;
-  const step = Math.max(3, theme.hatchSpacing);
-  for (let at = x - height; at < x + width; at += step) {
-    ctx.beginPath();
-    ctx.moveTo(at, y + height);
-    ctx.lineTo(at + height, y);
-    ctx.stroke();
-  }
+  drawHatchLines(ctx, x, y, width, height, theme);
   ctx.restore();
   ctx.save();
   ctx.strokeStyle = theme.hatchEdge ?? theme.hatch;
