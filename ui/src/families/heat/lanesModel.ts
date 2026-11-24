@@ -35,9 +35,7 @@ export interface HeatLaneRun {
   readonly firstHour: number;
   readonly lastHour: number;
   readonly readHour: number | null;
-  readonly exact?: boolean;
   readonly cell: HeatLaneCell;
-  readonly tooltip?: FamilyTooltipPayload;
 }
 
 export type HeatLaneReadout =
@@ -113,7 +111,7 @@ export interface HeatLanesModel {
   readonly rows: readonly HeatLaneRow[];
   readonly readoutWidth?: number;
   readonly rowHeight?: number;
-  readonly tooltip?: (row: HeatLaneRow, run: HeatLaneRun | null, hour: number) => FamilyTooltipPayload | null;
+  readonly inspect?: (rowIndex: number, hour: number) => FamilyTooltipPayload | null;
   readonly empty?: string;
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
@@ -169,6 +167,17 @@ export function findRunAtHour(runs: readonly HeatLaneRun[], hour: number, maxHou
   return candidate.firstHour <= hour && hour <= effectiveLast ? candidate : null;
 }
 
+export function spanIndexAt<T>(items: readonly T[], hour: number, firstOf: (item: T) => number): number {
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (firstOf(items[mid]!) <= hour) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
+
 export function readoutAuditText(readout: HeatLaneReadout | undefined): string {
   if (!readout) return '';
   if (readout.audit !== undefined) return readout.audit;
@@ -179,6 +188,25 @@ export function readoutAuditText(readout: HeatLaneReadout | undefined): string {
   return readout.figure ? `${readout.figure} not recorded` : `Not recorded (${readout.reason})`;
 }
 
+function readoutTooltip(row: HeatLaneRow, hour: number): FamilyTooltipPayload {
+  const readout = row.readout;
+  if (!readout) return { title: row.label, hour, missingReason: 'Not recorded at this hour' };
+  if (readout.kind === 'missing') return { title: row.label, hour, missingReason: readout.reason };
+  if (readout.kind === 'clear') return { title: row.label, hour, items: [{ label: readout.label, tone: 'muted' }] };
+  return { title: row.label, hour, exactValue: readout.primary, ...(readout.secondary ? { note: readout.secondary } : {}) };
+}
+
+export function laneCellTooltip(title: string, hour: number, cell: HeatLaneCell): FamilyTooltipPayload {
+  if (cell.kind === 'missing' || cell.kind === 'gap') return { title, hour, missingReason: cell.reason ?? 'Not recorded' };
+  if (cell.kind === 'clear') return { title, hour, items: [{ label: cell.label ?? 'Clear', tone: 'muted' }] };
+  if (cell.kind === 'solid') return { title, hour, ...(cell.label ? { exactValue: cell.label } : {}) };
+  return {
+    title,
+    hour,
+    items: cell.parts.map(part => ({ label: part.label, value: part.text ?? `${Math.round(part.share * 100)}%`, swatch: part.color })),
+  };
+}
+
 export function deriveLanesTooltip(
   model: HeatLanesModel,
   rowIndex: number,
@@ -186,76 +214,14 @@ export function deriveLanesTooltip(
 ): FamilyTooltipPayload | null {
   const row = model.rows[rowIndex];
   if (!row) return null;
-  const effectiveHour = hour === null ? model.hour : Math.min(hour, model.hour);
-  const run = findRunAtHour(row.runs, effectiveHour, model.hour);
-  if (model.tooltip) {
-    const custom = model.tooltip(row, run, effectiveHour);
-    if (custom) return custom;
-  }
-  if (run?.tooltip) return run.tooltip;
-  if (model.gaps?.some(g => g.firstHour <= effectiveHour && effectiveHour <= Math.min(g.lastHour, model.hour))) {
-    const gap = model.gaps.find(g => g.firstHour <= effectiveHour && effectiveHour <= Math.min(g.lastHour, model.hour));
-    return {
-      title: row.label,
-      hour: effectiveHour,
-      missingReason: gap?.reason ?? 'Recording gap',
-    };
-  }
-  if (!run && hour !== null) {
-    return { title: row.label, hour: effectiveHour, missingReason: 'Not recorded at this hour' };
-  }
-  if (!run || (hour === null && row.readout)) {
-    if (row.readout) {
-      if (row.readout.kind === 'missing') {
-        return { title: row.label, hour: effectiveHour, missingReason: row.readout.reason };
-      }
-      if (row.readout.kind === 'clear') {
-        return { title: row.label, hour: effectiveHour, items: [{ label: row.readout.label, tone: 'muted' }] };
-      }
-      return {
-        title: row.label,
-        hour: effectiveHour,
-        exactValue: row.readout.primary,
-        ...(row.readout.secondary ? { note: row.readout.secondary } : {}),
-      };
-    }
-    return {
-      title: row.label,
-      hour: effectiveHour,
-      missingReason: 'Not recorded at this hour',
-    };
-  }
-  const cell = run.cell;
-  if (cell.kind === 'missing' || cell.kind === 'gap') {
-    return {
-      title: row.label,
-      hour: run.readHour ?? effectiveHour,
-      missingReason: cell.reason ?? 'Not recorded',
-    };
-  }
-  if (cell.kind === 'clear') {
-    return {
-      title: row.label,
-      hour: run.readHour ?? effectiveHour,
-      items: [{ label: cell.label ?? 'Clear', tone: 'muted' }],
-    };
-  }
-  if (cell.kind === 'solid') {
-    return {
-      title: row.label,
-      hour: run.readHour ?? effectiveHour,
-      ...(cell.label ? { exactValue: cell.label } : {}),
-    };
-  }
-  return {
-    title: row.label,
-    hour: run.readHour ?? effectiveHour,
-    items: cell.parts.map(part => ({
-      label: part.label,
-      value: part.text ?? `${Math.round(part.share * 100)}%`,
-      swatch: part.color,
-    })),
-  };
+  if (hour === null) return readoutTooltip(row, model.hour);
+  const at = Math.min(hour, model.hour);
+  const gap = model.gaps?.find(g => g.firstHour <= at && at <= Math.min(g.lastHour, model.hour));
+  if (gap) return { title: row.label, hour: at, missingReason: gap.reason ?? 'Recording gap' };
+  const own = model.inspect?.(rowIndex, at);
+  if (own) return own;
+  const run = findRunAtHour(row.runs, at, model.hour);
+  return run ? laneCellTooltip(row.label, at, run.cell) : { title: row.label, hour: at, missingReason: 'Not recorded at this hour' };
 }
 
 export function deriveLanesAudit(
