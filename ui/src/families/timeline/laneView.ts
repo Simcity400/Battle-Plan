@@ -5,12 +5,12 @@ import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import type { ArtHandle, ArtProvider, BoundedReadView, FamilyTheme, IdentityProvider, MirrorModel } from '../contract.ts';
-import { projectFromScene, readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from '../heat/sceneReadView.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { FamilyTooltipField, FamilyTooltipPayload } from '../host/tooltips.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload } from '../scene.ts';
 import { AXIS_HEIGHT, frameTimeline, placeTimeline, visibleRange, type TimelinePlacement } from './layout.ts';
 import { resolutionFor, type TimelineResolution } from './resolution.ts';
 import { deriveTimelineAudit, laneByKey, spanAt, type TimelineHit, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
@@ -179,7 +179,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
       const day = nextDayStart(hour);
       if (held?.model && held.modelKind === bound.kind && hour >= held.validFrom && hour < held.validUntil) return Math.min(day, held.validUntil);
       if (!projection.nextChange) return hour + 1;
-      return Math.min(day, projection.nextChange(readViewFromHeatScene(scene, bound, hour), bound.options));
+      return Math.min(day, projection.nextChange(sceneReadView(scene, bound, hour), bound.options));
     },
 
     unmount(_widget: number, state: Map<string, unknown>): void {
@@ -274,10 +274,10 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
       if (reuse) {
         model = held.model!;
       } else {
-        const projected = projectFromScene(input, bound, input.hour, {
+        const projected = projectScene(input, bound, input.hour, {
           identity: held.identityProvider,
           art: held.artProvider,
-          artUrl: handle => artUrlForHandle(handle, held!.identityIndex),
+          index: held.identityIndex,
         }, view => projection.project(view, bound.options));
         model = projected.model;
         const readView = projected.view;
@@ -349,7 +349,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
 
       const now = laneOptions?.clock ? laneOptions.clock() : input.now;
       let tipView: BoundedReadView | null = null;
-      const tipViewNow = () => tipView ??= readViewFromHeatScene(input, bound, input.hour, { identity: held!.identityProvider, art: held!.artProvider });
+      const tipViewNow = () => tipView ??= sceneReadView(input, bound, input.hour, { identity: held!.identityProvider, art: held!.artProvider });
       if (inspected && input.inspect) {
         if (!held.tipField || held.tipGate.due(now, input.speed, input.inspect)) {
           const payload = tooltipFor(projection, model, inspected, tipViewNow(), bound.options);
