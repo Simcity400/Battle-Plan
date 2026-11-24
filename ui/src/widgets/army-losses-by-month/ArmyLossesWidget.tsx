@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { repliedCells } from '../../dashboard/follow/liveCells.ts';
+import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
-import { useHeadProduct } from '../../dashboard/headProduct';
-import { at as pickAt, SPEC } from '../../dashboard/regionTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 import { resolveOptions } from '../../dashboard/options';
 import { liveKey, type LiveValues } from '../../charts/live.ts';
 import { DeclaredFamilyWidget, DetailWindowHost } from '../../families/host/index.ts';
@@ -22,20 +24,20 @@ import {
   validateArmyLosses,
 } from './armyLossesProjection.ts';
 
-function resolveManpower(row: ArmyLossMonthArmy, live: LiveValues<number>): readonly [number, number, number] | null {
+function resolveManpower(row: ArmyLossMonthArmy, live: LiveValues<number | bigint | string>): readonly [number, number, number] | null {
   if (!row.manpower) return null;
   if (!row.manpowerLiveRow) return row.manpower;
   const g = live.get(liveKey(row.manpowerLiveRow, 'ground'));
   const a = live.get(liveKey(row.manpowerLiveRow, 'air'));
   const n = live.get(liveKey(row.manpowerLiveRow, 'navy'));
   if (g === undefined || a === undefined || n === undefined) return null;
-  return [Math.round(g), Math.round(a), Math.round(n)];
+  return [Math.round(Number(g)), Math.round(Number(a)), Math.round(Number(n))];
 }
 
 function resolveEquipmentTotal(
   row: ArmyLossMonthArmy,
   wantedLedgers: readonly number[],
-  live: LiveValues<number>,
+  live: LiveValues<number | bigint | string>,
 ): { readonly text: string; readonly missing?: string } {
   const matched = row.ledgers.filter(l => wantedLedgers.includes(l.ledger));
   if (!matched.length) return { text: 'Not recorded', missing: 'No equipment ledger row kept for this army in this month.' };
@@ -50,7 +52,7 @@ function resolveEquipmentTotal(
       if (liveVal === undefined) {
         return { text: 'Not recorded', missing: live.missing(key) };
       }
-      total += BigInt(Math.round(liveVal));
+      total += typeof liveVal === 'bigint' ? liveVal : BigInt(Math.round(Number(liveVal)));
       continue;
     }
     total += BigInt(ledger.totalRaw);
@@ -59,28 +61,31 @@ function resolveEquipmentTotal(
 }
 
 export default function ArmyLossesWidget(props: WidgetProps) {
-  const { widget, runtime, active, setOption } = props;
+  const { widget, runtime, active } = props;
   const anchor = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<{ readonly month: number; readonly hour: number } | null>(null);
   const options = resolveOptions(OPTIONS, widget.options);
   const { measure, ledger } = resolveArmyLossesOptions(options);
-  const drillGate = useGate(
-    runtime,
-    widget,
-    picked ? pickAt(picked.hour) : SPEC,
-    active && picked !== null,
-    { country: { stored: widget.options?.country, setOption } },
-  );
-  const tag = drillGate.open ? drillGate.country?.tag ?? null : null;
-  const drillState = useHeadProduct<ArmyLossesReply, 'army-losses'>(
-    runtime,
-    drillGate,
-    'army-losses',
-    tag && picked !== null ? { country: countryFromKey(tag), view: { kind: 'month', month: picked.month } } : null,
-    { active: active && picked !== null, validate: validateArmyLosses },
-  );
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
+  const gate = useGate(runtime, widget);
+  const recordedHour = picked ? gate.recorded(picked.hour) : null;
+  const monthReq = track && tag && picked && recordedHour !== null
+    ? productRequest({
+        sourceId: track.source.id,
+        revision: track.source.revision,
+        product: 'army-losses',
+        params: {
+          branchId: track.branch.id,
+          country: countryFromKey(tag),
+          view: { kind: 'month', month: picked.month },
+          hour: recordedHour,
+        },
+      })
+    : null;
+  const drillState = useProduct<ArmyLossesReply>(runtime.client, monthReq, active && picked !== null, validateArmyLosses, track?.source);
   const detail = drillState.data?.monthDetail ?? null;
-  const live = drillState.live.read();
+  const live = repliedCells(drillState.data).read();
   const wantedLedgers = LEDGERS[ledger];
   const caption = measure === 'manpower' ? 'Manpower lost' : LEDGER_LABELS[ledger];
   const title = picked ? `${caption} \u00b7 ${formatMonthTitle(picked.month)}` : 'Month detail';
