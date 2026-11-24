@@ -1013,13 +1013,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }), [readTarget]);
 
   const shownSpan = view.bundle?.span ?? null;
-  const askedSpan = shownSpan ? `${shownSpan[0]}:${shownSpan[1]}` : '';
+  const spanStart = shownSpan ? shownSpan[0] : null;
+  const spanEnd = shownSpan && !following ? shownSpan[1] : Infinity;
   const ctxWithStaticSpan = useMemo<FamilyPlanContext<TAux> | null>(() => {
     if (!ctx) return null;
-    if (!askedSpan) return ctx;
-    const [lo, hi] = askedSpan.split(':').map(Number) as [number, number];
-    return { ...ctx, staticSpan: [lo, hi] as const };
-  }, [ctx, askedSpan]);
+    if (spanStart === null) return ctx;
+    return { ...ctx, staticSpan: [spanStart, spanEnd] as const };
+  }, [ctx, spanStart, spanEnd]);
 
   const currentCountryLooks = wantsColours ? labels : undefined;
   const currentExtra = useMemo<TExtra | undefined>(

@@ -1663,6 +1663,19 @@ export function compareWithBase(result, baseResult, baseSha = 'base') {
   };
 }
 
+export function compareWithBase(result, baseResult, baseSha = 'base') {
+  if (baseResult.ratchetMissing) {
+    return {
+      comparison: null,
+      notice: `base ${baseSha.slice(0, 9)} has no tools/legacy-widgets-ratchet.json; checking HEAD without base comparison`,
+    };
+  }
+  return {
+    comparison: classifyAgainstBase(result, baseResult, baseSha),
+    notice: null,
+  };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const reportOnly = process.argv.includes('--report-only');
   const noBase = process.argv.includes('--no-base');

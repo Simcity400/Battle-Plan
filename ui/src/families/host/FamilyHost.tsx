@@ -1344,7 +1344,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           className="fh-sr-only"
           aria-label={label}
           role={adapter.tree ? 'treegrid' : undefined}
-          {...(rowsFocus ? { onFocus: onRowFocus, onBlur: onRowBlur, onKeyDown } : {})}
+          {...(rowsFocus ? { tabIndex: -1, onFocus: onRowFocus, onBlur: onRowBlur, onKeyDown } : {})}
         >
           <thead ref={mirrorHeadRef} />
           <tbody ref={mirrorBodyRef} />
