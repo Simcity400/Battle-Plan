@@ -209,9 +209,9 @@ struct NameOperands {
 }
 
 pub struct RunGroups {
-    spans: Vec<(u8, u32, u32, i32, i32)>,
+    pub(crate) spans: Vec<(u8, u32, u32, i32, i32)>,
     events: Vec<(u8, i32, u32, u32, i32)>,
-    factions: HashMap<u32, u64>,
+    pub(crate) factions: HashMap<u32, u64>,
     names: HashMap<u32, NameOperands>,
 }
 
