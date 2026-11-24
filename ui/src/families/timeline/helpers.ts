@@ -61,6 +61,7 @@ export interface TimelineModelParts {
   readonly legend?: readonly LegendStripEntry[];
   readonly iconsOnBars?: boolean;
   readonly labelWidth: number;
+  readonly outcomeWidth?: number;
   readonly summaryText?: string | null;
   readonly empty?: string | null;
   readonly emptyKind?: 'empty' | 'unavailable';
@@ -78,6 +79,7 @@ export function timelineModel(parts: TimelineModelParts): TimelineModel {
     ...(parts.legend?.length ? { legend: parts.legend } : {}),
     iconsOnBars: parts.iconsOnBars ?? false,
     labelWidth: parts.labelWidth,
+    ...(parts.outcomeWidth ? { outcomeWidth: parts.outcomeWidth } : {}),
     ...(parts.summaryText ? { summaryText: parts.summaryText } : {}),
     ...(parts.empty ? { empty: parts.empty, emptyKind: parts.emptyKind ?? 'empty' } : {}),
     warnings: parts.warnings ?? [],

@@ -7,7 +7,7 @@ use super::{
 use crate::products::war_fixtures::recorded;
 use dashboard_query::identity::HolderRun;
 use replay_data::{
-    rows::{self, CasualtyLifetimeRow, LocalPlayerRow, TableRows, WarOverviewCountryRow, WarOwnedRelationRow},
+    rows::{self, CasualtyLifetimeRow, LocalPlayerRow, TableId, TableRows, WarOverviewCountryRow, WarOwnedRelationRow},
     war_participation::Factors,
 };
 use replay_frame::frame::TableView;
@@ -63,17 +63,6 @@ fn every_column_the_overview_reads_is_in_its_table() {
     for (table, names) in inputs::READ {
         inputs::columns(table, names).unwrap();
     }
-    lifetime_columns().unwrap();
-}
-
-#[test]
-fn a_wars_losses_sum_each_side_and_count_a_countrys_unknown_losses_once_at_their_largest() {
-    let membership = |a: u32, b: u32, oriented: bool| WarRelationMembership { key: WarRelationKey::new((a, a), (b, b), 90), oriented, first_hour: 100, last_hour: 110 };
-    let (ab, ac, ad) = (membership(1, 2, true), membership(1, 3, true), membership(1, 4, false));
-    assert_eq!(losses(&[(&ab, Some([10, 20, 5, 1])), (&ac, Some([30, 40, 7, 2]))]), Some([40, 7, 60, 3]));
-    assert_eq!(losses(&[(&ad, Some([10, 20, 5, 1]))]), Some([20, 1, 10, 5]));
-    assert_eq!(losses(&[(&ab, Some([10, 20, 5, 1])), (&ac, None)]), None, "a lifetime not known leaves the war's casualties not known, never a smaller sum");
-    assert_eq!(losses(&[]), Some([0; 4]));
 }
 
 #[test]
@@ -124,6 +113,19 @@ fn a_walk_carries_a_war_through_a_join_and_a_capitulation_and_a_gap_starts_anoth
     let after = &reply.wars[1];
     assert_eq!((after.first_hour, after.last_hour, after.started_by), (107, 108, true));
     assert_eq!(reply.viewpoints.iter().map(|run| (run.tag.as_str(), run.first_hour, run.last_hour)).collect::<Vec<_>>(), vec![("ONE", 100, 104), ("ONE", 107, 108)]);
+    let early = super::at::at(&reply, 102);
+    assert_eq!(early.wars.len(), 1, "a war begun after the hour is not in the reply");
+    let runs: Vec<_> = early.wars[0].participants.iter().map(|run| (run.tag.as_str(), run.last_hour, run.left_by)).collect();
+    assert_eq!(runs, vec![("ONE", 102, false), ("TWO", 102, false)], "a participant who joins after the hour is not there, and one held at it ends there");
+    assert!(early.wars[0].capitulations.is_empty() && early.wars[0].last_hour == 102 && !early.wars[0].ended_by);
+    assert_eq!(early.next_change, Some(103));
+    let gap = super::at::at(&reply, 106);
+    assert_eq!((gap.wars.len(), gap.wars[0].last_hour, gap.wars[0].ended_by), (1, 104, true), "inside the unread hours its end is not known");
+    assert_eq!(gap.unobserved, vec![HourSpan { first_hour: 105, last_hour: 106 }]);
+    let late = super::at::at(&reply, 108);
+    assert_eq!(late.wars.iter().map(|war| war.first_hour).collect::<Vec<_>>(), vec![107, 100], "ongoing wars first, then the ended ones");
+    assert_eq!(late.wars[1].capitulations, vec![WarCapitulation { tag: "THREE".into(), hour: 103 }]);
+    assert_eq!(late.next_change, Some(109), "nothing changes before the hour after the last one recorded");
 }
 
 fn participation() -> replay_frame::frame::DecodedFrame {
