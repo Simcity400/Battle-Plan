@@ -25,8 +25,10 @@ use std::{
 use ts_rs::TS;
 
 mod at_hour;
+mod breakdown;
 mod template_roster;
 pub use at_hour::{ArmyAt, ArmyAtParams};
+pub use breakdown::{ArmyBreakdown, ArmyBreakdownParams, ArmyBreakdownReply};
 pub use template_roster::{TemplateRoster, TemplateRosterParams, TemplateRosterReply};
 
 pub const SERIES: &str = "army-size";

@@ -1,7 +1,8 @@
 import { useCallback, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { OptionChoices, WidgetProps, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
+import type { WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
@@ -13,6 +14,19 @@ import type { InstalledAction } from '../../families/plan.ts';
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { ArmyAttribution, ForceAtReply } from '../../generated/dashboard';
+import { armyMetadataParams, measureChoices, validateArmyMetadata, type ArmyMetadataReply } from './armySizeMeta.ts';
+
+function useArmyChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const request = track ? productRequest({
+    sourceId: track.source.id,
+    revision: track.source.revision,
+    product: 'army-size',
+    params: armyMetadataParams(track.branch.id),
+  }) : null;
+  const { data } = useProduct<ArmyMetadataReply>(runtime.client, request, true, validateArmyMetadata, track?.source);
+  return { measure: measureChoices(data) };
+}
 
 function ArmyAtDetail({ runtime, trackId, tag, hour, countFor, active }: {
   readonly runtime: WidgetProps['runtime'];
@@ -109,4 +123,4 @@ function ArmySizeFamilyWidget(props: WidgetProps) {
   );
 }
 
-export default { render: ArmySizeFamilyWidget } satisfies WidgetRenderer;
+export default { render: ArmySizeFamilyWidget, useOptionChoices: useArmyChoices } satisfies WidgetRenderer;
