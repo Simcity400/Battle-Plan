@@ -8,7 +8,7 @@ import { commandSpendingProjection } from './powerSpendingProjection.ts';
 
 const part = (key: string, raw: string | null, extra: Partial<BreakdownPart> = {}): BreakdownPart => ({
   key, name: key, ordinal: 0, other: false, raw, state: raw === null ? 'notRecorded' : 'known', reason: raw === null ? `${key} was not recorded` : null,
-  share: null, count: null, last: null, children: [], ...extra,
+  share: null, parentShare: null, count: null, last: null, children: [], ...extra,
 });
 
 test('spending rows are the product\'s categories and items, dated by their latest payment, with the title figures the rows do not show', () => {
@@ -49,4 +49,6 @@ test('spending rows are the product\'s categories and items, dated by their late
   assert.deepEqual(model.rows[1]!.cells.spent!.value, { kind: 'notRecorded', reason: 'laws was not recorded' });
   assert.equal(model.titleSummary, '1,450 spent · 1,347 gained · 76 lost at the cap');
   assert.equal(model.titleSummaryPartial, 'Some hours were not recorded', 'a partial total carries its hatch and reason');
+  const partlyGained = commandSpendingProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', { ...reply, gainedReason: 'Gains in hours when power changes were not read are not counted.' }]]) }), { currency: 'Command' });
+  assert.equal(partlyGained.titleSummaryPartial, 'Some hours were not recorded; Gains in hours when power changes were not read are not counted.', 'a partial gain names why beside its figure');
 });

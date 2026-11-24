@@ -77,7 +77,7 @@ test('the paired view stacks destroyed (solid) over own losses (outline) and rea
   const rows = drawn.rows as BarsDataRow[];
   assert.deepEqual(rows.map(row => row.readout?.primary), ['4.45K / 2.47K · 1.80', '1.44K / 2.08K · 0.69']);
   const partial = model(reply({ rows: [{ tag: 'GER', identity: '7:1', segmentFirstHour: 0, dealt: aircraft(319), taken: aircraft(1000), complete: false, causes: [] }] }), paired).rows as BarsDataRow[];
-  assert.equal(partial[0]!.readout?.primary, '≥319 / ≥1K', 'figures that may miss events are at least, and carry no ratio');
+  assert.equal(partial[0]!.readout?.primary, '319 / 1K', 'partial figures carry no ≥ prefix and no ratio');
 });
 
 test('loss causes stack each country by cause in the product order, with one colour per cause', () => {

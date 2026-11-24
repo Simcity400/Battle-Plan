@@ -9,7 +9,7 @@ import type { WidgetSpec } from '../dashboard/model';
 import { resolveWidgetActiveView } from './manifest';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
-type Slot = 'render' | 'countryChip';
+type Slot = 'render' | 'countryChip' | 'subjectMenu';
 const nothing = () => null;
 const declaredRenderers = new WeakMap<object, Map<string, ComponentType<WidgetProps>>>();
 
@@ -36,13 +36,15 @@ function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: stri
 
 const viewedRenderers = new WeakMap<ComponentType<WidgetProps>, Map<string, ComponentType<WidgetProps>>>();
 
-function rendererForView(render: ComponentType<WidgetProps>, view: string): ComponentType<WidgetProps> {
+function rendererForView(render: ComponentType<WidgetProps>, view: string, declaration: FamilyWidgetDeclaration | undefined): ComponentType<WidgetProps> {
   let byView = viewedRenderers.get(render);
   if (!byView) viewedRenderers.set(render, byView = new Map());
   let held = byView.get(view);
   if (!held) {
     const Render = render;
-    held = (props: WidgetProps) => <Render {...props} view={view} />;
+    held = declaration
+      ? (props: WidgetProps) => <Render {...props} view={view} manifestDeclaration={declaration} />
+      : (props: WidgetProps) => <Render {...props} view={view} />;
     byView.set(view, held);
   }
   return held;
@@ -58,7 +60,7 @@ export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer
       if (slot === 'countryChip' && !loaded?.countryChip) {
         return DefaultCountryChip as ComponentType<object>;
       }
-      if (slot === 'render' && loaded?.render) return rendererForView(loaded.render, view) as ComponentType<object>;
+      if (slot === 'render' && loaded?.render) return rendererForView(loaded.render, view, loaded.declaration) as ComponentType<object>;
       return (loaded?.[slot] as ComponentType<object> | undefined) ?? nothing;
     };
     const byView = new Map<string, ComponentType<object>>();
