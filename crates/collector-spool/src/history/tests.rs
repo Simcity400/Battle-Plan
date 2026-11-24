@@ -65,6 +65,7 @@ fn event_feed_history_seeds_sequence_generation_and_counts_from_retained_rows() 
                 } else {
                     Vec::new()
                 },
+                windows: Default::default(),
             };
             if branch == 2 && hour > first {
                 row.coverage = EventFeedCoverage::Unavailable;

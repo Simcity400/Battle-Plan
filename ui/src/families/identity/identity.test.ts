@@ -976,3 +976,35 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
   assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
   assert.deepEqual(toFlagSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', tag: 'GER' });
 });
+
+test('an entity failure belongs to its window and a retryable one is asked again after its backoff', async () => {
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  const clock = { now: () => now, after: (ms: number, run: () => void) => { const timer = { at: now + ms, run }; timers.push(timer); return () => { timers.splice(timers.indexOf(timer), 1); }; } };
+  const asked: string[] = [];
+  let failNext = true;
+  const transport = {
+    loadPlaceNameRuns: async (_scope: unknown, from: number, to: number, states: readonly number[]) => {
+      asked.push(`${from}-${to}`);
+      if (from === 0 && failNext) {
+        failNext = false;
+        throw new TypeError('network dropped');
+      }
+      return { from, to, unknown: [], states: states.map(id => ({ id, runs: [{ firstHour: from, lastHour: to, name: `State ${id}`, missing: null, presence: 'present' }] })), provinces: [], warnings: [] };
+    },
+  } as unknown as IdentityTransport;
+  const broker = new IdentityBroker({ transport, clock });
+  const owner = {};
+  broker.setDemand(owner, SCOPE, { asks: [{ key: stateKey(7), hour: 10 }, { key: stateKey(7), hour: 800 }] }, undefined, [0, 2000]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(broker.resolve(SCOPE, stateKey(7), 10).kind, 'failed');
+  assert.equal(broker.resolve(SCOPE, stateKey(7), 800).kind, 'known', 'a failure in one window never answers another');
+  assert.ok(timers.length > 0, 'the failed window stays scheduled through its backoff');
+  now = timers[0]!.at;
+  timers.shift()!.run();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.deepEqual(asked.filter(span => span === '0-719').length, 2);
+  const shown = broker.resolve(SCOPE, stateKey(7), 10);
+  assert.equal(shown.kind === 'known' && shown.name.kind === 'known' ? shown.name.value : null, 'State 7');
+  broker.dispose();
+});

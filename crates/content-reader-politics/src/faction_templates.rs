@@ -376,6 +376,22 @@ mod tests {
         assert_eq!(db.icon("hidden").unwrap(), Some(&b"art"[..]));
         assert_eq!(db.icon("late").unwrap(), Some(&b"late_art"[..]));
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_template_file_that_could_not_be_read_is_read_again() {
+        use std::os::windows::fs::OpenOptionsExt;
+        content_reader_script::test_game::enter();
+        let stack = Stack::new("faction_template_transient");
+        let base = stack.base();
+        stack.write(&base, "common/factions/templates/a.txt", "kept={name=KNOWN}");
+        let layers = stack.layers(&[]);
+        let locked = std::fs::OpenOptions::new().read(true).share_mode(0).open(base.join("common/factions/templates/a.txt")).unwrap();
+        assert!(layers.faction_templates().is_err(), "a file another process holds cannot be read");
+        drop(locked);
+        let templates = layers.faction_templates().expect("a failed read is not kept: the next request reads the file");
+        assert_eq!(templates.get("kept").unwrap().unwrap().nodes[0].key, FormattedLocalization::Key(b"KNOWN".to_vec()));
+    }
 }
 
 pub trait FactionTemplateProducts {
@@ -386,7 +402,7 @@ pub trait FactionTemplateProducts {
 
 impl FactionTemplateProducts for ResolvedLayers {
     fn faction_templates(&self) -> Result<Arc<crate::faction_templates::Catalog>, String> {
-        self.retained_product_with_errors("faction templates", 1, &[], true, crate::faction_templates::read)
+        self.retained_product("faction templates", 1, &[], crate::faction_templates::read)
             .map_err(|error| format!("Faction templates are unreadable: {error}"))
     }
 

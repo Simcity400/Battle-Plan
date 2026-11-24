@@ -209,9 +209,9 @@ struct NameOperands {
 }
 
 pub struct RunGroups {
-    spans: Vec<(u8, u32, u32, i32, i32)>,
+    pub(crate) spans: Vec<(u8, u32, u32, i32, i32)>,
     events: Vec<(u8, i32, u32, u32, i32)>,
-    factions: HashMap<u32, u64>,
+    pub(crate) factions: HashMap<u32, u64>,
     names: HashMap<u32, NameOperands>,
 }
 
@@ -340,10 +340,11 @@ fn naming(source: &Source, context: &LoadContext, warnings: &mut Vec<String>) ->
     };
     let (templates, localisation, generation) = match loaded {
         Some(Ok((templates, localisation, layers))) => {
-            if let Ok(templates) = &templates {
+            let generation = templates.as_ref().ok().map(|templates| {
                 warnings.extend(templates.warnings.iter().cloned());
-            }
-            (templates, localisation, Some(Generation::Of(layers)))
+                Generation::Of(layers)
+            });
+            (templates, localisation, generation)
         }
         Some(Err(error)) => (Err(format!("Faction naming content is unavailable: {error}")), stored(), None),
         None => (Err("Faction naming content is unavailable until the game folders are chosen".into()), stored(), Some(Generation::Uncontent)),
@@ -815,6 +816,34 @@ mod tests {
         assert!(!Arc::ptr_eq(&failed, &retried), "a reply made on a failed naming lookup is not kept: the next request looks again");
         let named = shared(&held, &query, &context, &AtomicBool::new(false)).unwrap();
         assert!(Arc::ptr_eq(&named, &shared(&held, &query, &context, &AtomicBool::new(true)).unwrap()), "a reply made on the content is kept for that content");
+        drop(query);
+        drop(replay);
+        drop(held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_kept_reply_lasts_only_while_the_content_it_was_named_with_does() {
+        use dashboard_base::test_fixtures::{source, source_with_content};
+        use dashboard_query::{identity::Holders, timeline::{Join, Stretch, Timeline}};
+        let root = std::env::temp_dir().join(format!("shared-groups-generation-{}", uuid::Uuid::new_v4()));
+        let (held, context) = source_with_content((100..=110).map(|hour| source(1, hour, Some(1))).collect(), &root);
+        let replay = held.replay();
+        let timeline = Timeline { id: 1, first: 100, last: 110, stretches: vec![Stretch { run: 0, first: 100, last: 110, join: Join::Start }], unheld: Vec::new() };
+        let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(Holders::new(Default::default(), Vec::new())) };
+        let options = context.content.clone().expect("the fixture names its content");
+        let named = shared(&held, &query, &context, &AtomicBool::new(false)).unwrap();
+        let file = root.join("user/settings.txt");
+        let before = held.content(&options.options).unwrap();
+        before.layers.with_file_witness(&file, || std::fs::read(&file)).unwrap();
+        std::fs::write(&file, "language=l_english force_pow2_textures=yes").unwrap();
+        assert!(before.layers.validate_generation().is_err(), "the edit is seen as the folder watcher would report it");
+        let after = held.content(&options.options).unwrap();
+        assert!(!Arc::ptr_eq(&before, &after), "a file the content read was edited: the content is resolved again");
+        let renamed = shared(&held, &query, &context, &AtomicBool::new(false)).unwrap();
+        assert!(!Arc::ptr_eq(&named, &renamed), "a kept reply is not used once its content generation is replaced");
+        assert!(Arc::ptr_eq(&renamed, &shared(&held, &query, &context, &AtomicBool::new(true)).unwrap()), "the reply made on the new content is kept for it");
+        drop((before, after));
         drop(query);
         drop(replay);
         drop(held);

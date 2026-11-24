@@ -783,6 +783,7 @@ pub unsafe fn hooks(
     let (decision_hooks, decision_taps) = unsafe { decisions::hooks(base) }?;
     hooks.extend(decision_hooks);
     taps.extend(decision_taps);
+    taps.extend(unsafe { crate::event_window_observer::taps(base) });
     BASE.store(base, Ordering::Release);
     Ok((hooks, taps))
 }

@@ -79,6 +79,12 @@ function eventItemAndSubtext(
         missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
         detail: { value: knownValue('Option chosen') },
       };
+    case 'eventWindowPresented':
+      return {
+        primary: named,
+        secondary: event.window?.presented?.shown === false ? 'Window (hidden)' : 'Window',
+        missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
+      };
     case 'decisionSelected':
       return { primary: named ?? 'Decision selected', secondary: named ? 'Decision' : undefined, missingReason: reasons.nameMissing };
     case 'decisionActivated':
