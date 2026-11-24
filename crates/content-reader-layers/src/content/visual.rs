@@ -30,13 +30,14 @@ pub struct Plan {
     pub revision: String,
 }
 
-struct Candidate {
-    item: InstalledMod,
+pub(super) struct Candidate {
+    pub(super) item: InstalledMod,
     request: String,
-    descriptor: PathBuf,
+    pub(super) descriptor: PathBuf,
     document: Option<Document>,
-    source: Option<LayerSource>,
-    replace_paths: Vec<LayerPath>,
+    pub(super) source: Option<LayerSource>,
+    pub(super) replace_paths: Vec<LayerPath>,
+    pub(super) workshop_item: Option<String>,
 }
 
 fn cancelled(cancel: &AtomicBool) -> io::Result<()> {
@@ -50,7 +51,7 @@ fn cancelled(cancel: &AtomicBool) -> io::Result<()> {
     }
 }
 
-fn workshop_root(game_dir: &Path) -> Option<PathBuf> {
+pub(super) fn workshop_root(game_dir: &Path) -> Option<PathBuf> {
     let game = fs::canonicalize(game_dir).ok()?;
     let common = game.parent()?;
     if !common.file_name()?.to_str()?.eq_ignore_ascii_case("common") {
@@ -127,6 +128,7 @@ fn local(user_dir: &Path, path: PathBuf) -> Candidate {
         document: None,
         source: None,
         replace_paths: Vec::new(),
+        workshop_item: None,
     };
     match read_document(&path) {
         Ok(document) => describe(&mut candidate, document, |document| {
@@ -161,7 +163,7 @@ fn workshop(folder: PathBuf, item: String) -> Candidate {
         item: InstalledMod {
             id: format!("workshop/{item}"),
             name: item.clone(),
-            recorded_id: item,
+            recorded_id: item.clone(),
             source: source_text(&LayerSource::Folder(folder.clone())),
             problem: None,
         },
@@ -170,6 +172,7 @@ fn workshop(folder: PathBuf, item: String) -> Candidate {
         document: None,
         source: None,
         replace_paths: Vec::new(),
+        workshop_item: Some(item),
     };
     match read_document(&descriptor) {
         Ok(document) => describe(&mut candidate, document, |document| {
@@ -206,6 +209,7 @@ fn unreadable(id: String, name: String, problem: String) -> Candidate {
         document: None,
         source: None,
         replace_paths: Vec::new(),
+        workshop_item: None,
     }
 }
 
@@ -245,28 +249,38 @@ fn entries(directory: &Path, problems: &mut Vec<Candidate>) -> Vec<fs::DirEntry>
 }
 
 fn discover(options: &ResolveOptions, cancel: &AtomicBool) -> io::Result<Vec<Candidate>> {
+    discover_installed(Some(&options.game_dir), Some(&options.user_dir), cancel)
+}
+
+pub(super) fn discover_installed(
+    game_dir: Option<&Path>,
+    user_dir: Option<&Path>,
+    cancel: &AtomicBool,
+) -> io::Result<Vec<Candidate>> {
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut problems = Vec::new();
-    for entry in entries(&options.user_dir.join("mod"), &mut problems) {
-        cancelled(cancel)?;
-        let path = entry.path();
-        if !listed_mod_descriptor(&entry.file_name().to_string_lossy()) {
-            continue;
-        }
-        match entry.file_type() {
-            Ok(kind) if kind.is_file() => candidates.push(local(&options.user_dir, path)),
-            Ok(_) => {}
-            Err(error) => {
-                let file = entry.file_name().to_string_lossy().into_owned();
-                problems.push(unreadable(
-                    format!("mod/{file}"),
-                    file,
-                    format!("its descriptor cannot be read: {error}"),
-                ));
+    if let Some(user_dir) = user_dir {
+        for entry in entries(&user_dir.join("mod"), &mut problems) {
+            cancelled(cancel)?;
+            let path = entry.path();
+            if !listed_mod_descriptor(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_file() => candidates.push(local(user_dir, path)),
+                Ok(_) => {}
+                Err(error) => {
+                    let file = entry.file_name().to_string_lossy().into_owned();
+                    problems.push(unreadable(
+                        format!("mod/{file}"),
+                        file,
+                        format!("its descriptor cannot be read: {error}"),
+                    ));
+                }
             }
         }
     }
-    let root = workshop_root(&options.game_dir);
+    let root = game_dir.and_then(workshop_root);
     if let Some(root) = &root {
         for candidate in &mut candidates {
             let folder = match &candidate.source {
@@ -279,6 +293,7 @@ fn discover(options: &ResolveOptions, cancel: &AtomicBool) -> io::Result<Vec<Can
                 && let Some(item) = folder.file_name().and_then(|name| name.to_str())
             {
                 candidate.item.id = format!("workshop/{item}");
+                candidate.workshop_item = Some(item.to_owned());
             }
         }
     }
@@ -643,6 +658,8 @@ fn mount(
                     archive_stamp: None,
                     descriptor_hash: None,
                     overlay: overlay(false),
+                    display_name: Some(candidate.item.name.clone()),
+                    art_unmounted: None,
                 };
                 if let Err(error) = layer.inventory() {
                     plan.warnings.push(format!(

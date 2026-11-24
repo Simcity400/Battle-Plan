@@ -491,8 +491,14 @@ impl Naming {
             let strip = line_sprite(catalogue, LINE_PICTURE).map_err(|error| format!("Building icons are unavailable: {error}"));
             let repair_icon = line_sprite(catalogue, LINE_REPAIR)
                 .and_then(|line| {
-                    let decode = *catalogue.gui_decode.as_ref().map_err(dashboard_core::invalid)?;
-                    catalogue::sprite_frame_png(layers, &line.sprite, decode, catalogue::authored_frame(line.frame), ICON_EDGE)
+                    dashboard_base::products::artwork::resolve_sprite_type(
+                        catalogue,
+                        &line.sprite,
+                        catalogue::authored_frame(line.frame),
+                        ICON_EDGE,
+                    )
+                    .into_io_result()?
+                    .ok_or_else(|| dashboard_core::invalid("repair marker artwork unavailable"))
                 })
                 .map_err(|error| format!("The repair marker is unavailable, so repairs are marked in words only: {LINE_ENTRY}.{LINE_REPAIR}: {error}"));
             (buildings, state_keys, state_warnings, strip, repair_icon)
@@ -548,7 +554,10 @@ impl Naming {
         warnings.extend(self.state_warnings.iter().cloned());
         counted(warnings, "states have no name in the recorded content; their titles are unavailable", &unnamed);
         if out.iter().any(|named| named.icon.is_some()) {
-            warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
+            warnings.push(format!(
+                "{}; visual assets are outside content hash coverage.",
+                dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
+            ));
         }
         Named { types: out, repair_icon, states }
     }
@@ -585,13 +594,16 @@ impl Naming {
             });
             let icon = match (&self.strip, frame) {
                 (Ok(strip), Some(frame)) => {
-                    let drawn = catalogue
-                        .gui_decode
-                        .as_ref()
-                        .map_err(dashboard_core::invalid)
-                        .and_then(|decode| catalogue::sprite_frame_png(&catalogue.content.layers, &strip.sprite, *decode, frame - 1, ICON_EDGE));
+                    let drawn = dashboard_base::products::artwork::resolve_sprite_type(
+                        catalogue,
+                        &strip.sprite,
+                        frame - 1,
+                        ICON_EDGE,
+                    )
+                    .into_result();
                     match drawn {
-                        Ok(icon) => Some(icon),
+                        Ok(Some(icon)) => Some(icon),
+                        Ok(None) => None,
                         Err(error) => {
                             listed.push((Listing::Unreadable, format!("{token} (frame {frame}: {error})")));
                             None

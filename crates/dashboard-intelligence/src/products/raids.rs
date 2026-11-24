@@ -290,8 +290,10 @@ impl Content {
                 .find(&key)
                 .and_then(|sprite| sprite.ok_or_else(|| format!("raid sprite {key} is unavailable")))
                 .and_then(|sprite| {
-                    let decode = cat.gui_decode.clone()?;
-                    catalogue::sprite_frame_png(&cat.content.layers, sprite, decode, 0, 48).map_err(|error| format!("raid sprite {key}: {error}"))
+                    dashboard_base::products::artwork::resolve_sprite_type(cat, sprite, 0, 48)
+                        .into_result()
+                        .and_then(|url| url.ok_or_else(|| "artwork unavailable".to_owned()))
+                        .map_err(|error| format!("raid sprite {key}: {error}"))
                 })
                 .map(|image| (key, image)),
         };

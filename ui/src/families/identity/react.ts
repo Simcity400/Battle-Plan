@@ -203,6 +203,73 @@ export function useIdentities(
   return { index, version, resolve, flagFor, flagArtFor, retry };
 }
 
+export function subscribeIdentityAtHead(
+  broker: ReturnType<typeof identityBrokerFor>,
+  clock: Pick<PlaybackController, 'subscribe' | 'subscribeFrame'>,
+  scope: IdentityScope | null,
+  active: boolean,
+  follow: boolean,
+  hasKeys: boolean,
+  recording: DashboardSource | null | undefined,
+  bounds: HourInterval | undefined,
+  changed: () => void,
+): () => void {
+  if (!active || !follow || !scope || !hasKeys) return NO_SUBSCRIBE();
+  const stopClock = clock.subscribeFrame(changed);
+  const stopAnchor = clock.subscribe(changed);
+  const stopBroker = broker.subscribe(scope, changed, recording ?? undefined, bounds);
+  return () => { stopClock(); stopAnchor(); stopBroker(); };
+}
+
+export function readIdentityAtHeadHour(
+  broker: ReturnType<typeof identityBrokerFor>,
+  clock: Pick<PlaybackController, 'getHour'>,
+  scope: IdentityScope | null,
+  active: boolean,
+  keys: readonly IdentityKey[],
+  trackHour: (clockHour: number) => number | null,
+  recording: DashboardSource | null | undefined,
+  bounds: HourInterval | undefined,
+  held: { current: { readonly key: string; readonly hour: number | null } },
+): number | null {
+  if (!active || !scope || !keys.length) {
+    if (held.current.key === 'idle') return held.current.hour;
+    held.current = { key: 'idle', hour: null };
+    return null;
+  }
+  const raw = trackHour(clock.getHour());
+  const at = raw !== null && Number.isFinite(raw) ? Math.floor(raw) : null;
+  if (at === null) {
+    if (held.current.key === 'null') return held.current.hour;
+    held.current = { key: 'null', hour: null };
+    return null;
+  }
+  const index = broker.indexOf(scope, recording ?? undefined, bounds);
+  let intervalFirst = -Infinity;
+  let intervalLast = Infinity;
+  let allCovered = true;
+  const parts: string[] = [];
+  for (const key of keys) {
+    const res = index.resolve(key, at);
+    if (res.kind === 'known' || res.kind === 'absent') {
+      intervalFirst = Math.max(intervalFirst, res.valid[0]);
+      intervalLast = Math.min(intervalLast, res.valid[1]);
+      parts.push(`${res.kind}:${res.valid[0]}:${res.valid[1]}`);
+    } else {
+      allCovered = false;
+      parts.push(`${res.kind}:${at}`);
+    }
+  }
+  const signature = allCovered && intervalFirst <= intervalLast
+    ? `run:${broker.versionOf(scope)}:${intervalFirst}:${intervalLast}:${parts.join('|')}`
+    : `point:${broker.versionOf(scope)}:${at}:${parts.join('|')}`;
+  if (held.current.key === signature && held.current.hour !== null && held.current.hour >= intervalFirst && held.current.hour <= intervalLast) {
+    return held.current.hour;
+  }
+  held.current = { key: signature, hour: at };
+  return at;
+}
+
 export function useIdentityAtHead(
   client: DashboardClient,
   recording: DashboardSource | null | undefined,
@@ -237,52 +304,22 @@ export function useIdentityAtHead(
   const held = useRef<{ readonly key: string; readonly hour: number | null }>({ key: '', hour: null });
 
   const hasKeys = keys.length > 0;
-  const subscribe = useCallback((changed: () => void) => {
-    if (!active || !follow || !scope || !hasKeys) return NO_SUBSCRIBE();
-    const stopClock = clock.subscribeFrame(changed);
-    const stopAnchor = clock.subscribe(changed);
-    const stopBroker = broker.subscribe(scope, changed, recording ?? undefined, bounds);
-    return () => { stopClock(); stopAnchor(); stopBroker(); };
-  }, [active, follow, scope, hasKeys, clock, broker, recording, bounds]);
+  const subscribe = useCallback(
+    (changed: () => void) => subscribeIdentityAtHead(broker, clock, scope, active, follow, hasKeys, recording, bounds, changed),
+    [active, follow, scope, hasKeys, clock, broker, recording, bounds],
+  );
 
-  const readHour = (): number | null => {
-    if (!active || !scope || !keysRef.current.length) {
-      if (held.current.key === 'idle') return held.current.hour;
-      held.current = { key: 'idle', hour: null };
-      return null;
-    }
-    const raw = trackHourRef.current(clock.getHour());
-    const at = raw !== null && Number.isFinite(raw) ? Math.floor(raw) : null;
-    if (at === null) {
-      if (held.current.key === 'null') return held.current.hour;
-      held.current = { key: 'null', hour: null };
-      return null;
-    }
-    const index = broker.indexOf(scope, recording ?? undefined, bounds);
-    let intervalFirst = -Infinity;
-    let intervalLast = Infinity;
-    let allCovered = true;
-    const parts: string[] = [];
-    for (const key of keysRef.current) {
-      const res = index.resolve(key, at);
-      if (res.kind === 'known' || res.kind === 'absent') {
-        intervalFirst = Math.max(intervalFirst, res.valid[0]);
-        intervalLast = Math.min(intervalLast, res.valid[1]);
-        parts.push(`${res.kind}:${res.valid[0]}:${res.valid[1]}`);
-      } else {
-        allCovered = false;
-        parts.push(`${res.kind}:${at}`);
-      }
-    }
-    const signature = allCovered && intervalFirst <= intervalLast
-      ? `run:${broker.versionOf(scope)}:${intervalFirst}:${intervalLast}:${parts.join('|')}`
-      : `point:${broker.versionOf(scope)}:${at}:${parts.join('|')}`;
-    if (held.current.key === signature && held.current.hour !== null && held.current.hour >= intervalFirst && held.current.hour <= intervalLast) {
-      return held.current.hour;
-    }
-    held.current = { key: signature, hour: at };
-    return at;
-  };
+  const readHour = (): number | null => readIdentityAtHeadHour(
+    broker,
+    clock,
+    scope,
+    active,
+    keysRef.current,
+    trackHourRef.current,
+    recording,
+    bounds,
+    held,
+  );
 
   const hour = useSyncExternalStore(subscribe, readHour, readHour);
   const asks = useMemo<readonly IdentityAsk[]>(

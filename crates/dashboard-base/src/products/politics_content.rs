@@ -942,45 +942,26 @@ fn idea_icon(
             reason,
         )));
     }
-    const UNKNOWN: &str = "GFX_idea_unknown";
-    sprite_png_in(catalogue, UNKNOWN, ICON_EDGE)
-        .map_err(|why| refused(format!("idea fallback sprite {UNKNOWN} is unreadable: {why}")))?
-        .map(Some)
-        .ok_or_else(|| Box::new(Finding::new(Kind::Fallback, token, format!("{token}: icon unavailable: idea fallback sprite {UNKNOWN} is undeclared or has no texture; a placeholder is shown"))))
-}
-
-fn texture_path(text: &str) -> String {
-    text.split(['/', '\\'])
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("/")
+    Err(Box::new(Finding::new(
+        Kind::Fallback,
+        token,
+        format!(
+            "{token}: icon unavailable: none of {names:?} is declared in the recorded content"
+        ),
+    )))
 }
 
 pub fn sprite_png_in(catalogue: &Catalogue, name: &str, edge: u32) -> io::Result<Option<String>> {
-    let decode = || -> io::Result<content_reader_image::native::Decode> {
-        catalogue
-            .gui_decode
-            .as_ref()
-            .copied()
-            .map_err(|why| crate::invalid(why.clone()))
-    };
-    let Some(sprite) = catalogue.sprites.find(name).map_err(crate::invalid)? else {
-        if name.starts_with("GFX_") || name.is_empty() {
-            return Ok(None);
-        }
-        return catalogue::texture_png(
-            &catalogue.content.layers,
-            &texture_path(name),
-            decode()?,
-            1,
-            edge,
-        )
-        .map(Some);
-    };
-    if sprite.texture.is_none() {
-        return Ok(None);
+    match super::artwork::resolve_sprite_or_texture(catalogue, name, edge) {
+        super::artwork::ArtResolution::NoArtExpected => Ok(None),
+        super::artwork::ArtResolution::Ready { url, .. } => Ok(Some(url)),
+        super::artwork::ArtResolution::ConfirmedMissing {
+            origin: None,
+            file: None,
+            ..
+        } => Ok(None),
+        other => other.into_io_result(),
     }
-    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode()?, 0, edge).map(Some)
 }
 
 fn recorded_portrait_in(
@@ -989,30 +970,12 @@ fn recorded_portrait_in(
     text: &str,
     edge: u32,
 ) -> Result<String, String> {
-    let loaded = match kind {
-        0 => match catalogue.sprites.find(text) {
-            Ok(Some(_)) => sprite_png_in(catalogue, text, edge),
-            Err(why) => return Err(why),
-            Ok(None) => {
-                return Err(format!(
-                    "Content has no sprite {text}; the game generates this portrait."
-                ));
-            }
-        },
-        1 => catalogue::texture_png(
-            &catalogue.content.layers,
-            &texture_path(text),
-            *catalogue.gui_decode.as_ref().map_err(Clone::clone)?,
-            1,
-            edge,
-        )
-        .map(Some),
-        other => return Err(format!("Portrait kind {other} is not supported.")),
-    };
-    match loaded {
-        Ok(Some(png)) => Ok(png),
-        Ok(None) => Err(format!("{text} has no texture.")),
-        Err(error) => Err(format!("{text} did not load: {error}")),
+    match super::artwork::resolve_portrait_entry(catalogue, kind, text, edge) {
+        super::artwork::ArtResolution::Ready { url, .. } => Ok(url),
+        other => Err(other
+            .reason()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{text} has no texture."))),
     }
 }
 

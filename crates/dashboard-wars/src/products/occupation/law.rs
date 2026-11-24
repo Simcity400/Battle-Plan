@@ -1,5 +1,5 @@
 
-use dashboard_base::catalogue::{self, Catalogue, View};
+use dashboard_base::catalogue::{Catalogue, View};
 pub(super) use dashboard_text::occupation_law::{GroupLaw, LawInputs, admitted, law_for};
 use content_reader_politics::occupation_laws::Laws;
 use serde::{Deserialize, Serialize};
@@ -20,8 +20,9 @@ fn icon(cat: &Catalogue, laws: &Laws, token: &str) -> Result<String, String> {
     let law = laws.find(token)?.ok_or_else(|| "Occupation law has no content declaration".to_owned())?;
     let sprite = cat.sprites.find(&law.sprite)?.ok_or_else(|| "Occupation-law sprite not in the recorded content stack".to_owned())?;
     let frame = u32::try_from(law.frame).ok().and_then(|frame| frame.checked_sub(1)).ok_or_else(|| "Occupation-law icon frame is not positive".to_owned())?;
-    let decode = cat.gui_decode.clone()?;
-    catalogue::sprite_frame_png(&cat.content.layers, sprite, decode, frame, 32).map_err(|error| error.to_string())
+    dashboard_base::products::artwork::resolve_sprite_type(cat, sprite, frame, 32)
+        .into_result()?
+        .ok_or_else(|| "Occupation-law artwork unavailable".to_owned())
 }
 
 pub(super) fn info(cat: Result<&Catalogue, &str>, laws: Result<&Laws, &str>, token: &str) -> OccupationLawInfo {
