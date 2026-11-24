@@ -6,7 +6,7 @@ use crate::products::army::ArmyAttribution;
 use dashboard_query::identity::Holder;
 use dashboard_text::division_history;
 use content_reader_localisation::localisation::Argument;
-use replay_data::rows::{DivisionHistoryRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, tables};
+use replay_data::rows::{CountryLinkRow, CountryRow, DivisionHistoryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, mask, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use content_reader_military::unit_medals::{Medal, Medals};
@@ -316,6 +316,18 @@ impl AtHour for DecoratedDivisions {
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         TABLES.to_vec()
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields = match table {
+            TableId::Countries => mask::<CountryRow>(&["canonical_slot", "tag"]),
+            TableId::CountryLinks => mask::<CountryLinkRow>(&["canonical_slot"]),
+            TableId::Divisions => mask::<DivisionRow>(&["roster_owner", "expeditionary_owner", "template", "reveal_skip"]),
+            TableId::DivisionStatus => mask::<DivisionStatusRow>(&["experience", "career_counter", "name", "naming", "country_ordinal"]),
+            TableId::DivisionLandInputs => mask::<DivisionLandInputsRow>(&["manpower"]),
+            _ => return None,
+        };
+        Some((0..64).filter(|column| fields & 1 << column != 0).collect())
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -704,6 +716,7 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
             return Ok(reply);
         }
     };
+    dashboard_base::products::at_hour::count_rows(|| divisions.len() as u64);
     let content = &at.context.content;
     let countries = Countries::read(frame)?.named(at.holders, at.hour);
     let passing = params.countries.as_ref().map(|spans| spans.iter().filter(|span| span.first_hour <= at.hour && at.hour <= span.last_hour).map(|span| span.tag.as_str()).collect::<HashSet<&str>>());

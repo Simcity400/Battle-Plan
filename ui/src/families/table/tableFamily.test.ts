@@ -2507,14 +2507,21 @@ test('the table host adapter stores and resolves table settings through its decl
 test('batch 1 log projections: market-ledger contract grouping, decisions running-first, event-choices awaiting-first and detail meta, and event-feed missing dated faction name', () => {
   const marketReply: MarketLedgerTailReply = {
     branchId: '1',
-    baseOrdinal: '0',
-    firstOrdinal: '0',
     offset: '0',
     total: '2',
+    live: '1',
+    counts: [{ key: 'active', total: '1' }],
+    nextChange: null,
     rows: [
       {
         key: '0000000000000012',
-        hour: 108,
+        hour: 100,
+        observed: 100,
+        exact: true,
+        ordinal: '0',
+        live: true,
+        request: false,
+        requestedHour: null,
         startedHour: 100,
         endedHour: null,
         status: 'active',
@@ -2531,9 +2538,12 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
           contractedRaw: '50000000',
           deliveryUnavailable: null,
         }],
+        deliveryMissing: null,
         paidRaw: '4800000',
-        paidNotRecorded: false,
-        agreedPriceRaw: '9600000',
+        paidMissing: null,
+        quotes: [{ variant: '6', name: 'Infantry Equipment I', nameMissing: null, priceRaw: '9600000' }],
+        termsMissing: null,
+        eventsTotal: '2',
         events: [
           { key: '3', hour: 108, kind: 'payment', variant: null, equipment: null, equipmentMissing: null, amountRaw: '4800000', amountNotRecorded: false, reason: null },
           { key: '2', hour: 105, kind: 'delivery', variant: '6', equipment: 'Infantry Equipment I', equipmentMissing: null, amountRaw: '25000000', amountNotRecorded: false, reason: null },
@@ -2541,7 +2551,13 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
       },
       {
         key: '0000000000000099',
-        hour: 102,
+        hour: 100,
+        observed: 100,
+        exact: true,
+        ordinal: '1',
+        live: false,
+        request: false,
+        requestedHour: null,
         startedHour: 100,
         endedHour: 102,
         status: 'ended',
@@ -2558,9 +2574,12 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
           contractedRaw: null,
           deliveryUnavailable: 'Delivery amount unavailable: purchase manifest not acquired before removal',
         }],
+        deliveryMissing: null,
         paidRaw: null,
-        paidNotRecorded: false,
-        agreedPriceRaw: null,
+        paidMissing: null,
+        quotes: [],
+        termsMissing: "The contract's terms were not recorded at its start",
+        eventsTotal: '0',
         events: [],
       },
     ],
@@ -2572,8 +2591,6 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   const marketSource = buildRowSourceFromHead('mkt', marketReply, undefined, 110)!;
   const marketModel = marketLedgerProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', marketSource]]) }), {
     perspective: 'FRA',
-    showRequests: true,
-    showEnded: true,
     selectionEmpty: null,
   });
   assert.equal(marketModel.rows.length, 2);

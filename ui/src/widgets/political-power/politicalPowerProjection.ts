@@ -15,6 +15,7 @@ import {
   missingSpansOf,
   rankEntry,
   rankedOrder,
+  spendMarkerEntry,
   spendMarkersOf,
   auditReading,
   headReading,
@@ -116,7 +117,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       };
     });
 
-    const markers = single ? spendMarkersOf(seriesMap?.get(tags[0]!), 'Political power spent') : [];
+    const spent = spendMarkersOf(readView, 'Political power spent', options.extent[0]);
 
     return {
       kind: 'political-power',
@@ -126,7 +127,8 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       extent: options.extent,
       yAxis: { format: 'power', decimals: 0 },
       series,
-      markers: markers.length > 0 ? markers : undefined,
+      markers: spent.markers.length > 0 ? spent.markers : undefined,
+      ...(spent.warnings.length > 0 ? { warnings: spent.warnings } : {}),
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       auditRows: ordered.flatMap(tag => {
         const reading = readingByTag.get(tag);
@@ -155,10 +157,12 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
     const countries = tags.map(countryFromKey);
     const family = { kind: 'country-measure', measure: 'politicalPower' };
     const rank = rankEntry(ctx, family, tags);
+    const spending = spendMarkerEntry(ctx, 'Political');
     return {
-      owner: `political-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${ctx.following ? 1 : 0}`,
+      owner: `political-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${ctx.options.spendTicks !== false ? 1 : 0}:${ctx.following ? 1 : 0}`,
       entries: [
         ...(rank ? [rank] : []),
+        ...(spending ? [spending] : []),
         {
           name: 'main',
           source: ctx.track.source,
@@ -170,7 +174,6 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
             family,
             tags,
             ...(within ? { within } : {}),
-            marks: tags.length === 1,
             headQuery: tags.length
               ? {
                   product: 'series-state',

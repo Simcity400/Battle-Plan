@@ -13,7 +13,9 @@ export const NATIVE = 3;
 
 export interface Posted { readonly type: ToLane['type']; readonly bytes: number; readonly message: ToLane }
 
-function lane(views: (kind: string) => LaneView | undefined, onClose?: () => void, posted?: Posted[]): LaneWorker & { close(): void } {
+interface Held { hold: ((message: FromLane) => boolean) | null; queue: (() => void)[] }
+
+function lane(views: (kind: string) => LaneView | undefined, onClose?: () => void, posted?: Posted[], held?: Held): LaneWorker & { close(): void } {
   const fields = fieldsView(() => undefined);
   let closed = false;
   let lanePort: MessagePort | null = null;
@@ -43,7 +45,8 @@ function lane(views: (kind: string) => LaneView | undefined, onClose?: () => voi
     const copy: FromLane = message.type === 'presentation'
       ? { ...structuredClone({ ...message, entries: [] }), entries: message.entries.map(entry => ({ ...structuredClone({ ...entry, surfaces: [] }), surfaces: entry.surfaces })) }
       : structuredClone(message);
-    setImmediate(() => { if (!closed) worker.onmessage?.({ data: copy } as MessageEvent<FromLane>); });
+    const deliver = () => { if (!closed) worker.onmessage?.({ data: copy } as MessageEvent<FromLane>); };
+    setImmediate(() => { if (held?.hold?.(copy)) held.queue.push(deliver); else deliver(); });
   }, {
     views: (kind, wake) => views(kind) ?? (kind === 'fields' ? fields : drawnViews(kind, wake) ?? fields),
     crop: async sources => sources.map(() => ({ width: 1, height: 1, close() {} }) as unknown as ImageBitmap),
@@ -98,7 +101,13 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
   clock.setBounds({ firstHour: 0, lastHour: 100_000 });
   const channels = new Map<MessagePort, boolean>();
   const posted: Posted[] = [];
-  const workers = Array.from({ length: lanes }, () => lane(views, undefined, posted));
+  const held: Held = { hold: null, queue: [] };
+  const holdBack = (hold: (message: FromLane) => boolean) => { held.hold = hold; };
+  const release = () => {
+    held.hold = null;
+    for (const deliver of held.queue.splice(0)) deliver();
+  };
+  const workers = Array.from({ length: lanes }, () => lane(views, undefined, posted, held));
   const host: PipelineHost = { lanes: workers, open: list => client.openFollow!(list),
     channel: () => {
       const made = new MessageChannel(), shut = made.port2.close.bind(made.port2);
@@ -131,7 +140,7 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
       for (const port of target) port.postMessage({ kind: 'failure', reason } satisfies FromPull);
     });
   };
-  return { pipeline, clock, client, send, fail, source, asked, settle, channels, posted, close: () => { closed = true; pipeline.close(); for (const port of ports) port.close(); ports = []; } };
+  return { pipeline, clock, client, send, fail, source, asked, settle, channels, posted, holdBack, release, close: () => { closed = true; pipeline.close(); for (const port of ports) port.close(); ports = []; } };
 }
 
 export function managedInProcess({ lanes = 1, views = () => undefined, follow, followClock, gate, open }: {

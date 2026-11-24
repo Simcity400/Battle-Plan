@@ -291,11 +291,10 @@ export class Pipeline {
       return;
     }
     if (message.type === 'widget-failed') {
-      const widget = this.widgets.get(message.widget);
-      if (widget) {
+      if (this.widgets.has(message.widget)) {
         const failure = asFailure(new Error(message.reason));
-        widget.error = failure;
         this.page.name(message.widget, 'failed', failure.message, 'local');
+        this.failedLocally(message.widget, message.stamp, failure);
         this.flush();
       }
       return;
@@ -341,7 +340,7 @@ export class Pipeline {
   private commitSoon() {
     if (this.closed || this.framing) return;
     this.framing = true;
-    engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); this.flush(); if (auditing()) this.sample(this.page.seek); });
+    engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); for (const [id, stamp] of this.page.takeFailures()) this.failedLocally(id, stamp, asFailure(new Error('drawing failed'))); this.flush(); if (auditing()) this.sample(this.page.seek); });
   }
 
   private place(key: string | undefined, kind: string | undefined): { lane: number; cost: number } {
@@ -430,6 +429,13 @@ export class Pipeline {
   }
 
   binding(id: number): number { return this.page.widgets.get(id)?.binding ?? 0; }
+
+  private failedLocally(id: number, stamp: number | undefined, failure: Failure) {
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    widget.error = failure;
+    if (stamp !== widget.stamp) this.retryWidget(id);
+  }
 
   retryWidget(id: number) {
     if (this.closed) return;
