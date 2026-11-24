@@ -10,7 +10,6 @@ import { registerMeterProjection } from '../../families/meter/registry.ts';
 import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext } from '../../families/plan.ts';
 import type { ArtResult } from '../../families/contract.ts';
 import type { AutonomyLevelsReply, AutonomySubject, SubjectLevel } from '../../generated/dashboard';
-import { OPTIONS } from './definition.ts';
 
 export interface AutonomyLevelsOptions {
   readonly filter: DeclaredCountryFilter;
@@ -163,7 +162,6 @@ export const autonomyLevelsDeclaration: MeterWidgetDeclaration<AutonomyLevelsOpt
   subject: 'autonomy',
   emptyCampaign: 'Load a campaign to see its subjects’ autonomy.',
   icon: 'link',
-  optionFields: OPTIONS,
   countries: { mode: 'filter', labels: true, colours: true },
   sources: (ctx: FamilyPlanContext) => ({
     owner: `autonomy-levels:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
