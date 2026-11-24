@@ -30,7 +30,9 @@ test('detail failures and missing fleets hide backend reasons without claiming n
   const rows = navalDetailTooltip({ ...detail, fleets: [{ names: [], unknown: 'native field refused' }, { names: [], unknown: null }],
     shipRead: null, namedShips: [], unavailable: 'private table unavailable' });
   assert.ok(rows.some(row => row.label === 'Fleet details unavailable.'));
-  assert.ok(rows.some(row => row.label === 'No fleet recorded'));
+  assert.ok(rows.some(row => row.label === 'No fleets'));
+  assert.equal(navalFleetDescription({ ...detail, fleets: [{ names: ['Fleet 1'], unknown: null }, { names: [], unknown: null }] }, { pending: false }),
+    'Fleet 1 v No fleets');
   assert.ok(rows.some(row => row.label === 'Named ship losses unavailable.'));
   assert.ok(!rows.some(row => row.label === 'No named ship losses recorded.'));
   assert.doesNotMatch(JSON.stringify(rows), /private|native field/);

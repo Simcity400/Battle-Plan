@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dockyardItems, dockyardMonth, formatExactIc, monthColumns, monthsOf, nearestInteger, rateSum, repairItems, repairsRead, validateDockyardSpendingReply } from './dockyardData.ts';
-import { firstHourOfMonth } from '../../dashboard/calendar.ts';
+import { BANDS, createLiveMonthCache, dockyardItems, dockyardMonth, formatExactIc, headMonthLayer, monthColumns, monthSpansFor, monthlyHeadKey, monthsOf, nearestInteger, rateSum, repairAmount, repairItems, repairsRead, repairsSince, shownMonthBands, validateDockyardSpendingReply, visibleMonths } from './dockyardData.ts';
+import { columnAt } from '../../charts/columns.ts';
+import { plotFrame } from '../../charts/frame.ts';
+import { tokensFromValues } from '../../charts/tokens.ts';
+import { sunburstTree } from '../../charts/sunburst/layout.ts';
+import { mergeSpending, spendingRecorded, spendingWidgetGate } from '../production-spending/spendingData.ts';
+import { firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 
 const purposeSum = (items: readonly { path: readonly { id: string }[]; exact?: bigint | null }[], id: string) =>
@@ -89,4 +94,311 @@ test('dockyard IC is rounded once from the exact amount', () => {
   assert.equal(nearestInteger(25n, 10n), 3n);
   assert.equal(nearestInteger(-25n, 10n), -3n);
   assert.equal(formatExactIc(61n * 240000n, 24n, 5, 2), '6.1');
+});
+
+test('all-unknown months become unknown columns without value height, and empty remainder bands stay out of the legend', () => {
+  const data = reply();
+  const knownMonth = dockyardMonth(data, 100, 171, 100);
+  assert.deepEqual(shownMonthBands(BANDS, [knownMonth]).map(entry => entry.band.id), ['new', 'refit', 'repair']);
+  const missing = { ...data, equipmentTotal: [unknown(100, 171)], repairs: { ...data.repairs!, total: [unknown(100, 171)] } };
+  const missingMonth = dockyardMonth(missing, 100, 171, 100);
+  const [column] = monthColumns([missingMonth], 5);
+  assert.equal(column.unknown, true);
+  assert.deepEqual(column.values, []);
+  const withUnknownPurpose = { ...data, leaves: [...data.leaves, leaf({ variant: '99', purpose: 'unknown', runs: [known(100, 171, '50000')] })] };
+  assert.deepEqual(shownMonthBands(BANDS, [dockyardMonth(withUnknownPurpose, 100, 171, 100)]).map(entry => entry.band.id),
+    ['new', 'refit', 'repair', 'purpose-unrecorded']);
+});
+
+test('unknown repair split in an earlier window keeps a later ship withheld instead of inventing zero earlier repairs', () => {
+  const base = reply();
+  const win0 = validateDockyardSpendingReply({
+    ...base, window: 0, firstHour: 0, lastHour: 2879, reads: [0], observations: [0], equipmentReads: [0], rocketReads: [0],
+    equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(0, 2879, '0')],
+    production: [{ firstHour: 0, lastHour: 2879, present: true, emptyCensusHour: null }], leaves: [],
+    total: [known(0, 2879, '0')], totalWithoutRefits: [known(0, 2879, '0')],
+    equipmentTotal: [known(0, 2879, '0')], equipmentTotalWithoutRefits: [known(0, 2879, '0')],
+    repairs: { denominator: 24, total: [known(0, 2879, '24000')], parts: [
+      { variant: null, typeKey: '', name: null, domain: null, names: [], runs: [unknown(0, 2879)] },
+    ] },
+  });
+  const win1 = validateDockyardSpendingReply({
+    ...win0, window: 1, firstHour: 2880, lastHour: 5759, reads: [2880], equipmentReads: [2880], rocketReads: [2880],
+    rocketTotal: [known(2880, 5759, '0')], production: [{ firstHour: 2880, lastHour: 5759, present: true, emptyCensusHour: null }],
+    total: [known(2880, 5759, '0')], totalWithoutRefits: [known(2880, 5759, '0')],
+    equipmentTotal: [known(2880, 5759, '0')], equipmentTotalWithoutRefits: [known(2880, 5759, '0')],
+    repairs: { denominator: 24, total: [known(2880, 2880, '2400000'), known(2881, 5759, '0')], parts: [
+      { variant: 'D', typeKey: 'mod_hull_d', name: 'Hull D', domain: 'naval', names: [], runs: [known(2880, 2880, '2400000'), known(2881, 5759, '0')] },
+      { variant: null, typeKey: '', name: null, domain: null, names: [], runs: [known(2880, 5759, '0')] },
+    ] },
+  });
+  const merged = mergeSpending(new Map([[0, win0], [1, win1]]), 3000)!;
+  const shipD = merged.repairs!.parts.find(part => part.variant === 'D')!;
+  assert.deepEqual(repairAmount(merged, shipD.runs, { from: null, hour: 3000, end: 3000 }, 3000), { exact: null, reason: 'spendingUnavailable' });
+  const items = repairItems(merged, { from: null, hour: 3000, end: 3000 });
+  assert.equal(items.find(item => item.path.at(-1)?.id === 'D')?.exact, null);
+});
+
+test('a future repair reading never turns an unread past into zero', () => {
+  const base = reply();
+  const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
+  const win0 = validateDockyardSpendingReply({
+    ...base, window: 0, firstHour: 0, lastHour: 2879, reads: [0], observations: [0], equipmentReads: [0], rocketReads: [0],
+    equipmentObservations: [0], rocketObservations: [0], rocketTotal: [known(0, 2879, '0')],
+    production: [{ firstHour: 0, lastHour: 2879, present: true, emptyCensusHour: null }], leaves: [],
+    total: [known(0, 2879, '0')], totalWithoutRefits: [known(0, 2879, '0')],
+    equipmentTotal: [known(0, 2879, '0')], equipmentTotalWithoutRefits: [known(0, 2879, '0')],
+    repairs: { denominator: 24, total: [notRec(0, 2879)], parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(0, 2879)] }] },
+  });
+  const win3 = validateDockyardSpendingReply({
+    ...win0, window: 3, firstHour: 8640, lastHour: 11519, reads: [8640], equipmentReads: [8640], rocketReads: [8640],
+    rocketTotal: [known(8640, 11519, '0')], production: [{ firstHour: 8640, lastHour: 11519, present: true, emptyCensusHour: null }],
+    total: [known(8640, 11519, '0')], totalWithoutRefits: [known(8640, 11519, '0')],
+    equipmentTotal: [known(8640, 11519, '0')], equipmentTotalWithoutRefits: [known(8640, 11519, '0')],
+    repairs: { denominator: 24, total: [known(8640, 11519, '24000')], parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [known(8640, 11519, '24000')] }] },
+  });
+  const atPast = mergeSpending(new Map([[0, win0], [3, win3]]), 500)!;
+  assert.deepEqual(repairAmount(atPast, atPast.repairs!.total, { from: null, hour: 500, end: 500 }, 500), { exact: null, reason: 'notRecorded' });
+  const both = mergeSpending(new Map([[0, win0], [3, win3]]))!;
+  assert.deepEqual(repairAmount(both, both.repairs!.total, { from: null, hour: 500, end: 500 }, 500), { exact: null, reason: 'notRecorded' });
+});
+
+test('by-month visible bands and amounts use completed past months plus the current month through the playhead', () => {
+  const data = validateDockyardSpendingReply({
+    ...reply(),
+    leaves: [
+      leaf({ variant: '11', purpose: 'new', runs: [known(100, 171, '1000000')] }),
+      leaf({ variant: '15', purpose: 'converted', runs: [known(100, 123, '0'), known(124, 147, '500000'), known(148, 171, '0')] }),
+    ],
+    total: [known(100, 123, '1000000'), known(124, 147, '1500000'), known(148, 171, '1000000')],
+    equipmentTotal: [known(100, 123, '1000000'), known(124, 147, '1500000'), known(148, 171, '1000000')],
+  });
+  const fullMonth = dockyardMonth(data, 100, 171, 100);
+  const through = (_index: number, hour: number) => dockyardMonth(data, 100, hour, 100);
+  const atMid = visibleMonths([fullMonth], 135, through);
+  assert.ok(shownMonthBands(BANDS, atMid).some(entry => entry.band.id === 'other-purpose'), '5 IC at playhead stays shown even when month-end corrects back to 0');
+  assert.deepEqual(atMid[0].bands[0], { exact: 1000000n, reason: null });
+  assert.deepEqual(atMid[0].bands[4], { exact: 500000n, reason: null });
+  assert.equal(atMid[0].total.exact, (1000000n + 500000n) * 24n + 36n * 240000n);
+  const atEarly = visibleMonths([fullMonth], 110, through);
+  assert.ok(!shownMonthBands(BANDS, atEarly).some(entry => entry.band.id === 'other-purpose'), 'purpose appearing only after playhead stays hidden');
+  assert.deepEqual(atEarly[0].bands[4], { exact: 0n, reason: null });
+  assert.equal(atEarly[0].total.exact, 1000000n * 24n + 11n * 240000n);
+});
+
+test('a future repair date never leaks before the hour it appears, while archetype-classified ships keep their recorded type', () => {
+  const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
+  const base = reply();
+  const win1 = validateDockyardSpendingReply({
+    ...base, window: 1, firstHour: 2880, lastHour: 5759, reads: [2880, 3000], observations: [2880],
+    equipmentReads: [2880, 3000], rocketReads: [2880], equipmentObservations: [2880], rocketObservations: [2880],
+    rocketTotal: [known(2880, 5759, '0')], production: [{ firstHour: 2880, lastHour: 5759, present: true, emptyCensusHour: null }],
+    leaves: [leaf({ variant: '7', typeKey: 'mod_hull', name: 'Hulls', domain: 'naval', purpose: 'new',
+      names: [{ firstHour: 3000, name: 'Type 34', design: null, known: true }], runs: [known(2880, 5759, '1000000')] })],
+    total: [known(2880, 5759, '1000000')], totalWithoutRefits: [known(2880, 5759, '1000000')],
+    equipmentTotal: [known(2880, 5759, '1000000')], equipmentTotalWithoutRefits: [known(2880, 5759, '1000000')],
+    repairs: {
+      denominator: 24,
+      total: [notRec(2880, 2999), known(3000, 5759, '24000')],
+      parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(2880, 2999), known(3000, 5759, '24000')] }],
+    },
+  });
+  const windows = new Map([[1, win1]]);
+
+  const at2890 = mergeSpending(windows, 2890)!;
+  assert.equal(repairsSince(at2890, 2890), null);
+  assert.equal(repairsRead(at2890, 2890), false);
+  const items2890 = dockyardItems(at2890, { from: null, hour: 2890, end: 5759 });
+  const tree2890 = sunburstTree(items2890, { id: 'all', label: 'All dockyard IC' });
+  const new2890 = tree2890.children.find(child => child.key === 'new')!;
+  assert.equal(new2890.valueUnknown, false);
+  assert.equal(new2890.exact, 1000000n);
+  const repair2890 = tree2890.children.find(child => child.key === 'repair')!;
+  assert.equal(repair2890.valueUnknown, true);
+  assert.ok(!repair2890.notes.some(note => note.includes('since ')), 'future repair start date must not appear at hour 2890');
+  assert.ok(repair2890.notes.some(note => note.includes('Spending not recorded.')));
+  assert.equal(tree2890.finalUnknown, true, 'Fill stays unknown while campaign end is in the future');
+
+  const at3000 = mergeSpending(windows, 3000)!;
+  assert.equal(repairsSince(at3000, 3000), 3000);
+  assert.equal(repairsRead(at3000, 3000), true);
+  const items3000 = dockyardItems(at3000, { from: null, hour: 3000, end: 5759 });
+  const tree3000 = sunburstTree(items3000, { id: 'all', label: 'All dockyard IC' });
+  const repair3000 = tree3000.children.find(child => child.key === 'repair')!;
+  assert.equal(repair3000.valueUnknown, false);
+  assert.equal(repair3000.exact, 1000n);
+  assert.equal(repair3000.exactDenominator ?? 1n, 1n);
+  assert.ok(repair3000.notes.some(note => note.includes('since ')));
+});
+
+test('withholding a future final keeps large purpose and repair designs shown instead of folded into Other', () => {
+  const leaves: ProductionSpendingLeaf[] = Array.from({ length: 9 }, (_, index) => {
+    const id = String(index + 1);
+    return leaf({ variant: id, typeKey: `mod_h${id}`, name: `Hull ${id}`, domain: 'naval', purpose: 'new', names: [], runs: [known(100, 171, index === 8 ? '100000000' : '100000')] });
+  });
+  const repairParts = [
+    ...Array.from({ length: 9 }, (_, index) => {
+      const id = `r${index + 1}`;
+      return { variant: id, typeKey: `mod_r${index + 1}`, name: `Repair ${index + 1}`, domain: 'naval' as const, names: [], runs: [known(100, 171, index === 8 ? '240000000' : '240000')] };
+    }),
+    { variant: null, typeKey: '', name: null, domain: null, names: [], runs: [known(100, 171, '0')] },
+  ];
+  const data = validateDockyardSpendingReply({
+    ...reply(), leaves,
+    total: [known(100, 171, '100800000')], equipmentTotal: [known(100, 171, '100800000')],
+    repairs: { denominator: 24, total: [known(100, 171, '241920000')], parts: repairParts },
+  });
+  const tree = sunburstTree(dockyardItems(data, { from: null, hour: 130, end: 171 }), { id: 'all', label: 'All dockyard IC' });
+  const newShips = tree.children.find(child => child.key === 'new')!;
+  assert.ok(newShips.children.some(child => child.key === 'mod_h9' && !child.other), 'large naval design stays shown');
+  assert.equal(newShips.children.find(child => child.key === 'mod_h9')?.finalUnknown, true);
+  const repairs = tree.children.find(child => child.key === 'repair')!;
+  assert.ok(repairs.children.some(child => child.key === 'mod_r9' && !child.other), 'large repair design stays shown');
+  assert.equal(repairs.children.find(child => child.key === 'mod_r9')?.finalUnknown, true);
+});
+
+test('a repair gap withholds the incomplete repair total as on main so Breakdown and By month agree', () => {
+  const data = validateDockyardSpendingReply({
+    ...reply(),
+    leaves: [leaf({ variant: '11', purpose: 'new', runs: [known(100, 102, '3000000')] })],
+    total: [known(100, 102, '3000000')],
+    equipmentTotal: [known(100, 102, '3000000')],
+    repairs: {
+      denominator: 24,
+      total: [known(100, 100, '2400000'), unknown(101, 101), known(102, 102, '2400000')],
+      parts: [
+        { variant: 'A', typeKey: 'mod_hull_a', name: 'Hull A', domain: 'naval', names: [], runs: [known(100, 100, '2400000'), unknown(101, 101), known(102, 102, '2400000')] },
+        { variant: null, typeKey: '', name: null, domain: null, names: [], runs: [known(100, 100, '0'), unknown(101, 101), known(102, 102, '0')] },
+      ],
+    },
+    firstHour: 100, lastHour: 102,
+  });
+  const items = dockyardItems(data, { from: null, hour: 102, end: 102 });
+  const repairs = items.filter(item => item.path[0].id === 'repair');
+  assert.equal(repairs.find(item => item.path.at(-1)?.id === 'A')?.exact, null);
+  assert.equal(repairs.find(item => item.path.at(-1)?.id === 'unattributed')?.exact, null);
+  const month = dockyardMonth(data, 100, 102, 100);
+  assert.equal(month.bands[0].exact, 3000000n);
+  assert.equal(month.bands[2].exact, null);
+  assert.equal(month.total.exact, null);
+});
+
+test('headMonthLayer computes extent and drawing from the same playhead-clipped column without scanning history each frame', () => {
+  const columns = Array.from({ length: 12 }, (_, index) => ({
+    firstHour: index * 720, lastHour: (index + 1) * 720 - 1, values: [index === 11 ? 1 : 2],
+  }));
+  let historicalReads = 0;
+  const tracked = columns.map((column, index) => index < 11 ? new Proxy(column, {
+    get(target, prop, receiver) {
+      if (prop === 'values') historicalReads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  }) : column);
+  let head = 11 * 720 + 10;
+  const layer = headMonthLayer(tracked, ['#000'], (_index, hour) => ({
+    firstHour: 11 * 720, lastHour: 12 * 720 - 1, values: [hour >= 11 * 720 + 50 ? 10 : 1],
+  }), () => head);
+  const tokens = tokensFromValues(() => '#888888', 'sans-serif');
+  const multiCtx = {
+    fillStyle: '', strokeStyle: '', lineWidth: 0,
+    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, rect() {}, clip() {},
+    fillRect() {},
+  } as unknown as CanvasRenderingContext2D;
+  assert.deepEqual(layer.extent!([0, 12 * 720 - 1]), [0, 2]);
+  const readsAfterInit = historicalReads;
+  for (let h = 11 * 720 + 11; h <= 11 * 720 + 60; h++) {
+    head = h;
+    const ext = layer.extent!([0, 12 * 720 - 1])!;
+    assert.deepEqual(ext, [0, h >= 11 * 720 + 50 ? 10 : 2]);
+    const multiFrame = plotFrame(400, 120, { left: 40, right: 10, top: 10, bottom: 20 }, [0, 12 * 720], ext, false);
+    layer.draw(multiCtx, multiFrame, tokens, { playhead: h });
+  }
+  assert.equal(historicalReads, readsAfterInit, 'advancing hours inside the live month must not rescan completed months during extent or draw');
+  const single = [{ firstHour: 0, lastHour: 719, values: [1] }];
+  let firstHead = 10;
+  const growing = headMonthLayer(single, ['#000'], (_index, hour) => ({
+    firstHour: 0, lastHour: 719, values: [hour >= 50 ? 10 : 1],
+  }), () => firstHead);
+  assert.deepEqual(growing.extent!([0, 719]), [0, 1]);
+  firstHead = 100;
+  const grown = growing.extent!([0, 719])!;
+  assert.deepEqual(grown, [0, 10], 'current month bar growth updates extent from the same clipped column');
+  const frame = plotFrame(200, 120, { left: 40, right: 10, top: 10, bottom: 20 }, [0, 720], grown, false);
+  const drawnHeights: number[] = [];
+  const fakeCtx = {
+    fillStyle: '', strokeStyle: '', lineWidth: 0,
+    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, rect() {}, clip() {},
+    fillRect(_x: number, _y: number, _w: number, h: number) { drawnHeights.push(h); },
+  } as unknown as CanvasRenderingContext2D;
+  growing.draw(fakeCtx, frame, tokensFromValues(() => '#888888', 'sans-serif'), { playhead: firstHead });
+  assert.equal(drawnHeights[0], frame.plotHeight, 'drawn 10 IC bar fits inside the updated [0, 10] axis');
+});
+
+test('pinning mid-month keeps the pinned column ending at the pin so later dates in the month hit nothing', () => {
+  const jan1937 = firstHourOfMonth(1937 * 12);
+  const jul1 = firstHourOfMonth(1937 * 12 + 6);
+  const jul15 = jul1 + 14 * 24;
+  const jul25 = jul1 + 24 * 24;
+  const aug31 = firstHourOfMonth(1937 * 12 + 8) - 1;
+  const pinnedSpans = monthSpansFor(jan1937, jul15, aug31, false);
+  const pinnedColumns = pinnedSpans.map(span => ({ ...span, values: [1] }));
+  assert.equal(pinnedSpans.at(-1)?.lastHour, jul15);
+  assert.equal(columnAt(pinnedColumns, jul15), pinnedColumns.length - 1);
+  assert.equal(columnAt(pinnedColumns, jul25), -1);
+  const liveSpans = monthSpansFor(jan1937, jul15, aug31, true);
+  assert.equal(liveSpans.at(-1)?.lastHour, firstHourOfMonth(1937 * 12 + 7) - 1);
+});
+
+test('createLiveMonthCache shares one monthly calculation between clock key and live layer across sub-hour frames', () => {
+  const data = reply();
+  let calls = 0;
+  const cached = createLiveMonthCache((d, _opts: Record<string, never>, first, last, branchFirst) => {
+    calls++;
+    return dockyardMonth(d, first, last, branchFirst);
+  });
+  const opts = {};
+  const first = cached(data, opts, '{}', 100, 140, 100);
+  const second = cached(data, opts, '{}', 100, 140, 100);
+  assert.equal(second, first);
+  assert.equal(calls, 1);
+  cached(data, opts, '{}', 100, 141, 100);
+  assert.equal(calls, 2);
+});
+
+test('dockyard By month clock key and gate transition when repairs first become recorded mid-month', () => {
+  const start = 60_772_680;
+  const end = 60_772_700;
+  const notRec = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'notRecorded' });
+  const rocketUnavail = (firstHour: number, lastHour: number): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw: null, reason: 'rocketTableUnavailable' });
+  const data = validateDockyardSpendingReply({
+    ...reply(),
+    firstHour: start, lastHour: end,
+    reads: [], observations: [],
+    equipmentReads: [], rocketReads: [], equipmentObservations: [], rocketObservations: [],
+    rocketTotal: [rocketUnavail(start, end)],
+    production: [{ firstHour: start, lastHour: end, present: false, emptyCensusHour: null }],
+    leaves: [],
+    total: [notRec(start, end)],
+    totalWithoutRefits: [notRec(start, end)],
+    equipmentTotal: [notRec(start, end)],
+    equipmentTotalWithoutRefits: [notRec(start, end)],
+    repairs: {
+      denominator: 24,
+      total: [notRec(start, start), known(start + 1, end, '24000')],
+      parts: [{ variant: null, typeKey: '', name: null, domain: null, names: [], runs: [notRec(start, start), known(start + 1, end, '24000')] }],
+    },
+  });
+  const branch = { firstHour: start, lastHour: end };
+  const bucketBefore = monthIndex(gameDate(start)!);
+  const bucketAfter = monthIndex(gameDate(start + 1)!);
+  assert.equal(bucketBefore, bucketAfter);
+  const readBefore = spendingRecorded(data) || repairsRead(data, start);
+  const readAfter = spendingRecorded(data) || repairsRead(data, start + 1);
+  assert.equal(readBefore, false);
+  assert.equal(readAfter, true);
+  assert.equal(spendingWidgetGate({ hasTarget: true, hasError: false, branch, hour: start, end, hasData: true, recorded: readBefore }), 'unavailable');
+  assert.equal(spendingWidgetGate({ hasTarget: true, hasError: false, branch, hour: start + 1, end, hasData: true, recorded: readAfter }), 'ready');
+  const keyBefore = monthlyHeadKey(bucketBefore, readBefore, BANDS, dockyardMonth(data, start, start, start));
+  const keyAfter = monthlyHeadKey(bucketAfter, readAfter, BANDS, dockyardMonth(data, start, start + 1, start));
+  assert.notEqual(keyAfter, keyBefore);
 });

@@ -60,6 +60,7 @@ pub fn text<'a>(view: &TableView<'a>, column: usize, slot: u32) -> Option<&'a [u
 }
 
 pub type Runs = replay_lanes::lanes::Runs;
+pub use replay_lanes::lanes::{CoveredRuns, CoveredValue};
 
 pub fn runs(
     recording: &Recording,
@@ -74,8 +75,38 @@ pub fn runs(
     Ok(held.into_iter().collect())
 }
 
+pub fn witnessed_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+) -> io::Result<HashMap<u128, Runs>> {
+    let held = crate::cost::storage(|| replay_lanes::lanes::keyed_witnessed_runs(recording, run, table, source, keys, from, to))?;
+    Ok(held.into_iter().collect())
+}
+
+pub fn covered_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+) -> io::Result<(HashMap<u128, CoveredRuns>, Vec<(i32, i32)>)> {
+    let (held, complete) = crate::cost::storage(|| replay_lanes::lanes::keyed_covered_runs(recording, run, table, source, keys, from, to))?;
+    Ok((held.into_iter().collect(), complete))
+}
+
 pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<replay_lanes::lanes::StatusRun>> {
     crate::cost::storage(|| replay_lanes::lanes::statuses(recording, run, table, from, to))
+}
+
+pub fn status_reasons(recording: &Recording, run: u32, table: TableId, runs: &[replay_lanes::lanes::StatusRun]) -> io::Result<HashMap<u32, String>> {
+    crate::cost::storage(|| replay_lanes::lanes::status_reasons(recording, run, table, runs))
 }
 
 pub fn columns_of(source: &summary::Source) -> Vec<usize> {

@@ -1,9 +1,9 @@
 
 use crate::{
-    evaluate,
     query::{Query, Rows},
     table_name,
 };
+use dashboard_query::coverage::{Coverage, CoverageScope, row_coverage};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{Field, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -59,6 +59,7 @@ pub struct Group {
     pub table: TableId,
     pub columns: Vec<usize>,
     pub keys: Vec<u128>,
+    pub scope: CoverageScope,
 }
 
 impl Group {
@@ -74,7 +75,11 @@ impl Group {
     }
 
     pub fn query(&self) -> Query {
-        Query::Cells { table: self.table.index(), columns: self.columns.clone(), rows: Rows::Live(self.keys.clone()) }
+        let rows = match self.scope {
+            CoverageScope::Row => Rows::Live(self.keys.clone()),
+            CoverageScope::Table => Rows::LiveTable(self.keys.clone()),
+        };
+        Query::Cells { table: self.table.index(), columns: self.columns.clone(), rows }
     }
 }
 
@@ -166,24 +171,36 @@ impl Live {
     }
 }
 
-fn rows_of(table: TableId, view: &TableView) -> Result<&TableRows, String> {
-    match view {
-        TableView::Complete(rows) => Ok(rows),
-        TableView::Truncated { missing, .. } => Err(evaluate::unrecorded(table.index(), Status::Truncated { missing: *missing }, None).unwrap_or_default()),
-        TableView::NotRecorded { .. } => Err(evaluate::unrecorded(table.index(), Status::NotRecorded, None).unwrap_or_default()),
-        TableView::Unavailable { reason } => Err(evaluate::unrecorded(table.index(), Status::Unavailable { reason: 0 }, Some(reason)).unwrap_or_default()),
-    }
-}
-
 fn group_values(group: &Group, view: &TableView) -> Vec<CellValue> {
     let width = group.columns.len();
-    let rows = match rows_of(group.table, view) {
-        Ok(rows) => rows,
-        Err(reason) => return vec![CellValue::Missing(reason); group.keys.len() * width],
+    let (status, reason, rows) = match view {
+        TableView::Complete(rows) => (Status::Complete, None, Some(rows)),
+        TableView::Truncated { rows, missing } => (Status::Truncated { missing: *missing }, None, Some(rows)),
+        TableView::NotRecorded { .. } => (Status::NotRecorded, None, None),
+        TableView::Unavailable { reason } => (Status::Unavailable { reason: 0 }, Some(reason.as_str()), None),
     };
+    let complete = matches!(status, Status::Complete);
+    if !complete {
+        if group.scope == CoverageScope::Table {
+            if let Some(reason) = crate::evaluate::unrecorded(group.table.index(), status, reason) {
+                return vec![CellValue::Missing(reason); group.keys.len() * width];
+            }
+        } else if let Coverage::NotRecorded(reason) = row_coverage(group.table, status, reason, rows.is_some()) {
+            return vec![CellValue::Missing(reason); group.keys.len() * width];
+        }
+    }
+    let rows = rows.expect("a readable table view");
     let mut out = Vec::with_capacity(group.keys.len() * width);
     for &key in &group.keys {
-        let Some(row) = find(rows, key) else {
+        let row = find(rows, key);
+        if !complete
+            && group.scope == CoverageScope::Row
+            && let Coverage::NotRecorded(reason) = row_coverage(group.table, status, reason, row.is_some())
+        {
+            out.extend(std::iter::repeat_n(CellValue::Missing(reason), width));
+            continue;
+        }
+        let Some(row) = row else {
             out.extend(std::iter::repeat_n(CellValue::Missing(NO_ROW.to_owned()), width));
             continue;
         };
@@ -243,7 +260,7 @@ struct Building {
     rows: Vec<String>,
     row_at: HashMap<String, u32>,
     kinds: Vec<(String, Op, f64)>,
-    cells: Vec<(u32, u32, Vec<Source>)>,
+    cells: Vec<(u32, u32, CoverageScope, Vec<Source>)>,
 }
 
 #[derive(Default)]
@@ -251,22 +268,22 @@ pub struct Cells(RefCell<Building>);
 
 impl Cells {
     pub fn value(&self, row: &str, column: &str, source: Source, scale: f64) {
-        self.add(row, column, Op::Value, scale, &[source]);
+        self.add(CoverageScope::Row, row, column, Op::Value, scale, &[source]);
     }
 
     pub fn sum(&self, row: &str, column: &str, sources: &[Source], scale: f64) {
-        self.add(row, column, Op::Sum, scale, sources);
+        self.add(CoverageScope::Table, row, column, Op::Sum, scale, sources);
     }
 
     pub fn difference(&self, row: &str, column: &str, a: Source, b: Source, scale: f64) {
-        self.add(row, column, Op::Difference, scale, &[a, b]);
+        self.add(CoverageScope::Row, row, column, Op::Difference, scale, &[a, b]);
     }
 
     pub fn ratio(&self, row: &str, column: &str, a: Source, b: Source, scale: f64) {
-        self.add(row, column, Op::Ratio, scale, &[a, b]);
+        self.add(CoverageScope::Row, row, column, Op::Ratio, scale, &[a, b]);
     }
 
-    fn add(&self, row: &str, column: &str, op: Op, scale: f64, sources: &[Source]) {
+    fn add(&self, scope: CoverageScope, row: &str, column: &str, op: Op, scale: f64, sources: &[Source]) {
         let held = &mut *self.0.borrow_mut();
         let row = match held.row_at.get(row).copied() {
             Some(at) => at,
@@ -284,35 +301,41 @@ impl Cells {
                 held.kinds.len() as u32 - 1
             }
         };
-        held.cells.push((row, kind, sources.to_vec()));
+        held.cells.push((row, kind, scope, sources.to_vec()));
     }
 
     pub fn finish(self) -> Live {
         let Building { rows, kinds, cells, .. } = self.0.into_inner();
-        let mut columns_of: BTreeMap<(TableId, u128), BTreeSet<usize>> = BTreeMap::new();
-        for source in cells.iter().flat_map(|(.., sources)| sources) {
-            columns_of.entry((source.table, source.key)).or_default().insert(source.column);
+        let mut columns_of: BTreeMap<(TableId, u128, u8), BTreeSet<usize>> = BTreeMap::new();
+        let tag_of = |scope: CoverageScope| u8::from(scope == CoverageScope::Row);
+        for (_, _, scope, sources) in &cells {
+            let tag = tag_of(*scope);
+            for source in sources {
+                columns_of.entry((source.table, source.key, tag)).or_default().insert(source.column);
+            }
         }
-        let mut grouped: BTreeMap<(TableId, Vec<usize>), Vec<u128>> = BTreeMap::new();
-        for ((table, key), columns) in &columns_of {
-            grouped.entry((*table, columns.iter().copied().collect())).or_default().push(*key);
+        let mut grouped: BTreeMap<(TableId, Vec<usize>, u8), Vec<u128>> = BTreeMap::new();
+        for ((table, key, tag), columns) in &columns_of {
+            grouped.entry((*table, columns.iter().copied().collect(), *tag)).or_default().push(*key);
         }
-        let mut place: HashMap<(TableId, u128), (u32, u32)> = HashMap::with_capacity(columns_of.len());
+        let mut place: HashMap<(TableId, u128, u8), (u32, u32)> = HashMap::with_capacity(columns_of.len());
         let groups: Vec<Group> = grouped
             .into_iter()
             .enumerate()
-            .map(|(at, ((table, columns), keys))| {
+            .map(|(at, ((table, columns, tag), keys))| {
                 for (row, &key) in keys.iter().enumerate() {
-                    place.insert((table, key), (at as u32, row as u32));
+                    place.insert((table, key, tag), (at as u32, row as u32));
                 }
-                Group { table, columns, keys }
+                let scope = if tag == 1 { CoverageScope::Row } else { CoverageScope::Table };
+                Group { table, columns, keys, scope }
             })
             .collect();
         let mut flat = Vec::with_capacity(cells.len() * 6);
-        for (row, kind, sources) in &cells {
+        for (row, kind, scope, sources) in &cells {
+            let tag = tag_of(*scope);
             flat.extend([*row, *kind, sources.len() as u32]);
             for source in sources {
-                let (group, at) = place[&(source.table, source.key)];
+                let (group, at) = place[&(source.table, source.key, tag)];
                 let column = groups[group as usize].columns.binary_search(&source.column).expect("a grouped column") as u32;
                 flat.extend([group, at, column]);
             }

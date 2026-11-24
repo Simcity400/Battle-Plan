@@ -22,7 +22,7 @@ pub use answer::{Answer, Decoded, MAGIC, Message, NO_REASON, State, charge, deco
 pub use evaluate::answer_at;
 pub use follow::{Counters, Follow, Held, Sink, StepStats};
 pub use parse::parse;
-pub use query::{Identity, Query, Rows};
+pub use query::{Identity, Query, Rows, SeriesMode};
 
 use std::io;
 

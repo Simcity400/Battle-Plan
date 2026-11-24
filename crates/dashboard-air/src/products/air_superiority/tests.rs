@@ -176,3 +176,92 @@ fn sides_are_assigned_once_per_stretch_of_unchanged_groups() {
     assert_eq!(pact.members, ["ENG", "FRA"], "FRA left the faction but fights GER beside it");
     assert_eq!(pact.co_belligerents, 1);
 }
+
+#[test]
+fn coalition_anchor_uses_majority_or_present_faction_and_solo_keeps_its_own() {
+    let groups = Groups {
+        factions: [
+            (10, FactionHistory { first_hour: 0, members: vec![run("GER", 0, 100)], leaders: vec![run("GER", 0, 100)], incomplete: vec![] }),
+            (20, FactionHistory { first_hour: 30, members: vec![run("USA", 30, 100), run("FRA", 30, 100)], leaders: vec![run("USA", 30, 100)], incomplete: vec![] }),
+        ]
+        .into(),
+        wars: vec![
+            WarRun { first: "GER".into(), second: "ENG".into(), first_hour: 50, last_hour: 100 },
+            WarRun { first: "USA".into(), second: "ENG".into(), first_hour: 80, last_hour: 100 },
+            WarRun { first: "FRA".into(), second: "ENG".into(), first_hour: 80, last_hour: 100 },
+        ],
+        unobserved_factions: vec![],
+        unobserved_wars: vec![],
+        identities: TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![Identity { first_hour: 0, last_hour: 100, slot: *id, country_id: *id }])).collect(),
+    };
+    let index = index::build(groups, 0, 100);
+    let early = index.epoch(10).unwrap().sides.as_ref().unwrap();
+    let ger = early.iter().find(|side| side.factions == [10]).unwrap();
+    assert_eq!(ger.key, "f:10");
+    assert_eq!(ger.colour_faction, None);
+    assert_eq!(index.anchor(ger), Some(("GER".into(), 0)));
+    let late = index.epoch(90).unwrap().sides.as_ref().unwrap();
+    let coalition = late.iter().find(|side| side.factions == [10, 20]).unwrap();
+    assert_eq!(coalition.key, "f:10");
+    assert_eq!(coalition.faction, Some(10));
+    assert_eq!(coalition.colour_faction, Some(20));
+    assert_eq!(index.anchor(coalition), Some(("USA".into(), 30)));
+
+    let absent_anchor = Groups {
+        factions: [
+            (30, FactionHistory { first_hour: 0, members: vec![run("FRA", 0, 20)], leaders: vec![run("FRA", 0, 20)], incomplete: vec![] }),
+            (10, FactionHistory { first_hour: 10, members: vec![run("GER", 10, 100)], leaders: vec![run("GER", 10, 100)], incomplete: vec![] }),
+            (20, FactionHistory { first_hour: 10, members: vec![run("USA", 10, 100)], leaders: vec![run("USA", 10, 100)], incomplete: vec![] }),
+        ]
+        .into(),
+        wars: vec![
+            WarRun { first: "FRA".into(), second: "ENG".into(), first_hour: 0, last_hour: 20 },
+            WarRun { first: "GER".into(), second: "ENG".into(), first_hour: 10, last_hour: 100 },
+            WarRun { first: "USA".into(), second: "ENG".into(), first_hour: 10, last_hour: 100 },
+        ],
+        unobserved_factions: vec![],
+        unobserved_wars: vec![],
+        identities: TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![Identity { first_hour: 0, last_hour: 100, slot: *id, country_id: *id }])).collect(),
+    };
+    let absent_index = index::build(absent_anchor, 0, 100);
+    let after_dissolve = absent_index.epoch(50).unwrap().sides.as_ref().unwrap();
+    let pact = after_dissolve.iter().find(|side| side.factions == [10, 20]).unwrap();
+    assert_eq!(pact.key, "f:30");
+    assert_eq!(pact.colour_faction, None);
+    assert_eq!(absent_index.anchor(pact), Some(("GER".into(), 10)));
+}
+
+#[test]
+fn non_merging_factions_keep_unchanged_region_sides_and_filtered_ranking() {
+    let groups = Groups {
+        factions: [
+            (7, FactionHistory { first_hour: 0, members: vec![run("ENG", 0, 100), run("FRA", 0, 100)], leaders: vec![run("ENG", 0, 100)], incomplete: vec![] }),
+            (10, FactionHistory { first_hour: 0, members: vec![run("GER", 0, 100)], leaders: vec![run("GER", 0, 100)], incomplete: vec![] }),
+        ]
+        .into(),
+        wars: ["ENG", "FRA"].map(|tag| WarRun { first: tag.into(), second: "GER".into(), first_hour: 0, last_hour: 100 }).into(),
+        unobserved_factions: vec![],
+        unobserved_wars: vec![],
+        identities: TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![Identity { first_hour: 0, last_hour: 100, slot: *id, country_id: *id }])).collect(),
+    };
+    let index = Arc::new(index::build(groups, 0, 100));
+    let context = AirContext { names: names(), index: Ok(Arc::clone(&index)) };
+    let holders = holders(100);
+    let reply = moment(&frame(scores(), true), &params(AirMode::Sides), &holders, 50, &context, &Cells::default()).unwrap();
+    let keys: Vec<_> = reply.sides.iter().map(|side| side.key.as_str()).collect();
+    assert_eq!(keys, ["f:7", "f:10"]);
+    struct Rows(Vec<RaidAirScoreRow>);
+    impl timeline::RegionRows for Rows {
+        fn rows(&self, _day: usize, region: u32, out: &mut Vec<RaidAirScoreRow>) {
+            out.extend(self.0.iter().filter(|row| row.region == region).cloned());
+        }
+    }
+    let links = Arc::new(TAGS.iter().map(|(_, id)| CountryLinkRow { id: *id, canonical_slot: *id }).collect::<Vec<_>>());
+    let days = [Some(timeline::DayRead { hour: 50, witnesses: vec![(1, 10, 500, 100), (3, 10, 200, 600)], complete: true, links: Some(links) })];
+    let rows = Rows(vec![score(1, 10, 500, 100), score(3, 10, 200, 600), score(3, 11, 400, 0)]);
+    let filter = timeline::AirTimelineParams { branch_id: "1".into(), first_hour: 24, last_hour: 50, sides: Some(vec!["f:10".into()]), ..Default::default() };
+    let ranked = timeline::Days { index: &index, holders: &holders, days: &days, rows: &rows, params: &filter, theatres: None }
+        .rank(&[10, 11], None, 1, None, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(ranked, [11, 10]);
+}

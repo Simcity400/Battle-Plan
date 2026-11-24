@@ -242,4 +242,22 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
   });
   assert.equal(unavailModel.rows.length, 1);
   assert.deepEqual(unavailModel.rows[0]!.cells.casualties!.value, { kind: 'notRecorded', reason: casualties.reason });
+
+  const selectedPlan = followSrc.follow({
+    branch: { id: '1', firstHour: 0, lastHour: 200 },
+    aux: { branchId: '1', columns: [power, taken], defaultColumns: ['politicalPower', 'casualtiesTaken'], defaultSort: 'politicalPower', warnings: [] },
+    options: { columns: 'politicalPower casualtiesTaken', tableSort: '', topMeasure: '' },
+    countries: { top: null, tags: ['GER'], holders: { GER: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] }, membership: null },
+  } as unknown as Parameters<typeof followSrc.follow>[0]);
+  assert.equal(selectedPlan.subs.length, 3);
+  assert.ok(selectedPlan.subs.every(sub => (sub.query as { coverage?: string }).coverage === 'row'), 'selected scoreboard follows opt into coverage: row');
+
+  const topPlan = followSrc.follow({
+    branch: { id: '1', firstHour: 0, lastHour: 200 },
+    aux: { branchId: '1', columns: [power, taken], defaultColumns: ['politicalPower', 'casualtiesTaken'], defaultSort: 'politicalPower', warnings: [] },
+    options: { columns: 'politicalPower casualtiesTaken', tableSort: '', topMeasure: '' },
+    countries: { top: 5, tags: [], holders: {}, membership: null },
+  } as unknown as Parameters<typeof followSrc.follow>[0]);
+  assert.equal(topPlan.subs.length, 4);
+  assert.ok(topPlan.subs.every(sub => (sub.query as { coverage?: string }).coverage === undefined), 'top-N scoreboard follows stay on default Table coverage');
 });

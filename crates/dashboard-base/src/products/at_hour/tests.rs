@@ -850,3 +850,98 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
         }
     }
 }
+
+#[test]
+fn at_hour_live_cells_apply_witness_rule_on_cold_and_incremental_across_truncated_swap() {
+    struct CoalScopes;
+
+    impl AtHour for CoalScopes {
+        const KEY: &'static str = "test-coal-scopes";
+        const TITLE: &'static str = "Test coal scopes";
+        const CONTENT_DEPENDENT: bool = false;
+        type Params = PowerParams;
+        const FIELDS: crate::products::Fields = crate::fields![branchId, country];
+        type Reply = PowerReply;
+        type Context = ();
+
+        fn validate(params: &Self::Params) -> Result<(), &'static str> {
+            Power::validate(params)
+        }
+
+        fn owner(params: &Self::Params) -> Option<&Country> {
+            Power::owner(params)
+        }
+
+        fn tables(_params: &Self::Params) -> Vec<TableId> {
+            vec![TableId::CountryResources]
+        }
+
+        fn context(_source: &Source, _load: &LoadContext) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn reply(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, ()>) -> io::Result<PowerReply> {
+            let owner = at.owner.expect("the adapter resolved the holder");
+            let coal = u128::from(owner.id) << 32 | 1;
+            let surplus = |name| Cell { table: TableId::CountryResources, column: column(TableId::CountryResources, name), key: coal };
+            at.live.value(&owner.id.to_string(), "special", surplus("special_total"), 1.0);
+            at.live.sum(&owner.id.to_string(), "coal", &[surplus("special_total"), surplus("production_demand")], 1.0);
+            Ok(PowerReply { slot: owner.slot, rows: vec![owner.id.to_string()], warnings: Vec::new() })
+        }
+    }
+
+    let row_trunc = "Country resources read only in part at this hour (1 rows not read)";
+    let table_trunc = "Country resources read only in part at this hour (1 rows not read), and which rows were read is not held at the head";
+    let coal_ger = CountryResourceRow { country: 9001, resource: 1, special_total: 400, production_demand: -10, ..CountryResourceRow::default() };
+    let coal_ita = CountryResourceRow { country: 9002, resource: 1, special_total: 500, production_demand: -20, ..CountryResourceRow::default() };
+    let frames = (FIRST..=LAST)
+        .map(|hour| {
+            let mut f = frame(hour);
+            match hour {
+                110 => {
+                    *f.tables[TableId::CountryResources.index()] = TableView::Truncated { rows: TableRows::CountryResources(vec![coal_ger.clone()]), missing: 1 };
+                }
+                111 => {
+                    *f.tables[TableId::CountryResources.index()] = TableView::Truncated { rows: TableRows::CountryResources(vec![coal_ita.clone()]), missing: 1 };
+                }
+                _ => {
+                    *f.tables[TableId::CountryResources.index()] = TableView::Complete(TableRows::CountryResources(vec![coal_ger.clone(), coal_ita.clone()]));
+                }
+            }
+            f
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let source = Source::from_replay(crate::SourceKey { source_id: "at-hour-trunc-live".into(), revision: "1".into() }, "trunc-live.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let panel = exact_panel::<CoalScopes>(&source, &load(), &json!({ "branchId": "1", "country": "GER" })).unwrap();
+    let exact = panel.exact().unwrap();
+    let token = AtomicBool::new(false);
+
+    let groups = |reply: &Value| -> (Value, Value) {
+        let all = reply["live"]["groups"].as_array().unwrap();
+        let row_group = all.iter().find(|group| group["columns"].as_array().unwrap().len() == 1).unwrap()["values"].clone();
+        let table_group = all.iter().find(|group| group["columns"].as_array().unwrap().len() == 2).unwrap()["values"].clone();
+        (row_group, table_group)
+    };
+
+    for (hour, expected_row, expected_table) in [
+        (109, json!([400]), json!([400, -10])),
+        (110, json!([400]), json!([table_trunc, table_trunc])),
+        (111, json!([row_trunc]), json!([table_trunc, table_trunc])),
+        (112, json!([400]), json!([400, -10])),
+    ] {
+        let cold = (exact.cold)(hour, &token).unwrap();
+        let (got_row, got_table) = groups(&cold);
+        assert_eq!(got_row, expected_row, "Row-scoped live.value at hour {hour}");
+        assert_eq!(got_table, expected_table, "Table-scoped live.sum at hour {hour}");
+        let adv = (exact.advance)(hour, true, &token, None);
+        assert_eq!(adv.value.as_ref().as_ref().unwrap(), &cold, "incremental with values equals cold at hour {hour}");
+    }
+
+    let reads = stepped(&pages, exact, 1, 108, 1);
+    for read in reads.into_iter().filter(|read| !read.pending) {
+        let cold = (exact.cold)(read.hour, &token);
+        assert_eq!(streamed(&read.value, read.fresh), streamed(&cold, read.fresh), "stepped equals cold at hour {}", read.hour);
+    }
+}

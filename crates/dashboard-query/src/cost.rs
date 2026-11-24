@@ -6,11 +6,17 @@ use std::{cell::Cell, io, time::Instant};
 thread_local! {
     static STORAGE: Cell<u64> = const { Cell::new(0) };
     static DEPTH: Cell<u32> = const { Cell::new(0) };
+    #[cfg(test)]
+    static CALLS: Cell<u64> = const { Cell::new(0) };
 }
 
 pub fn storage<T>(read: impl FnOnce() -> T) -> T {
     let depth = DEPTH.get();
     DEPTH.set(depth + 1);
+    #[cfg(test)]
+    if depth == 0 {
+        CALLS.set(CALLS.get().wrapping_add(1));
+    }
     let started = (depth == 0).then(Instant::now);
     let out = read();
     if let Some(started) = started {
@@ -36,6 +42,11 @@ pub fn outside<T>(work: impl FnOnce() -> T) -> T {
 
 pub fn take() -> u64 {
     STORAGE.replace(0)
+}
+
+#[cfg(test)]
+pub fn take_calls() -> u64 {
+    CALLS.replace(0)
 }
 
 pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, i64, i64)>> {

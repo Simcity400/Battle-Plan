@@ -106,7 +106,7 @@ pub fn at_each_with_status(
     table: TableId,
     columns: Option<&[usize]>,
     asks: &[(i32, u128)],
-    each: &mut dyn FnMut(i32, u128, Status, Option<(TableView<'_>, u32)>) -> io::Result<()>,
+    each: &mut dyn FnMut(i32, u128, Status, Option<&str>, Option<(TableView<'_>, u32)>) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut asks = asks.to_vec();
     asks.sort_unstable();
@@ -124,9 +124,13 @@ pub fn at_each_with_status(
         let hour = hour_asks[0].0;
         reader.go_to(recording, ordinal_of(recording, run, hour)?)?;
         let (status, view, read, available) = (reader.status(), reader.view(), reader.read_rows(), reader.available());
+        let unavailable_reason = match status {
+            Status::Unavailable { reason } => view.string(reason).and_then(|text| std::str::from_utf8(text).ok()),
+            _ => None,
+        };
         for &(_, key) in hour_asks {
             let row = view.slot(key).filter(|&slot| available && read.is_none_or(|read| read.binary_search(&slot).is_ok()));
-            each(hour, key, status, row.map(|slot| (view, slot)))?;
+            each(hour, key, status, unavailable_reason, row.map(|slot| (view, slot)))?;
         }
     }
     Ok(())
@@ -140,10 +144,19 @@ pub fn at_each(
     asks: &[(i32, u128)],
     each: &mut dyn FnMut(i32, u128, Option<(TableView<'_>, u32)>) -> io::Result<()>,
 ) -> io::Result<()> {
-    at_each_with_status(recording, run, table, columns, asks, &mut |hour, key, _, row| each(hour, key, row))
+    at_each_with_status(recording, run, table, columns, asks, &mut |hour, key, _, _, row| each(hour, key, row))
 }
 
 pub type Runs = Vec<(i32, i32, Option<i64>)>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoveredValue {
+    Value(i64),
+    Unvalued,
+    Uncovered,
+}
+
+pub type CoveredRuns = Vec<(i32, i32, CoveredValue)>;
 
 pub fn runs(recording: &Recording, run: u32, table: TableId, column: usize, from: i32, to: i32) -> io::Result<Vec<(u128, Runs)>> {
     let held = keyed_runs(recording, run, table, summary::Source::Cell(column), None, from, to)?;
@@ -161,8 +174,35 @@ pub fn keyed_runs(
     from: i32,
     to: i32,
 ) -> io::Result<HashMap<u128, Runs, foldhash::fast::RandomState>> {
+    collect_keyed_runs(recording, run, table, source, keys, from, to, crate::points::points)
+}
+
+pub fn keyed_witnessed_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+) -> io::Result<HashMap<u128, Runs, foldhash::fast::RandomState>> {
+    collect_keyed_runs(recording, run, table, source, keys, from, to, crate::points::witnessed_points)
+}
+
+type PointWalker = fn(&Recording, u32, TableId, &[usize], Option<summary::Source>, Keys<'_>, i32, i32, &mut dyn FnMut(crate::points::Point) -> bool) -> io::Result<()>;
+
+fn collect_keyed_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+    walk: PointWalker,
+) -> io::Result<HashMap<u128, Runs, foldhash::fast::RandomState>> {
     let mut held: HashMap<u128, Runs, foldhash::fast::RandomState> = HashMap::default();
-    crate::points::points(recording, run, table, &inputs(source), Some(source), keys.map_or(Keys::All, Keys::These), from, to, &mut |point| {
+    walk(recording, run, table, &inputs(source), Some(source), keys.map_or(Keys::All, Keys::These), from, to, &mut |point| {
         let runs = held.entry(point.key).or_default();
         let value = if point.covered { point.value } else { None };
         match runs.last_mut() {
@@ -181,6 +221,41 @@ pub fn keyed_runs(
         }
     }
     Ok(held)
+}
+
+pub fn keyed_covered_runs(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    source: summary::Source,
+    keys: Option<&[u128]>,
+    from: i32,
+    to: i32,
+) -> io::Result<(HashMap<u128, CoveredRuns, foldhash::fast::RandomState>, Vec<(i32, i32)>)> {
+    let mut held: HashMap<u128, CoveredRuns, foldhash::fast::RandomState> = HashMap::default();
+    let complete = crate::points::points_with_complete(recording, run, table, &inputs(source), Some(source), keys.map_or(Keys::All, Keys::These), from, to, &mut |point| {
+        let runs = held.entry(point.key).or_default();
+        let value = match (point.covered, point.value) {
+            (true, Some(value)) => CoveredValue::Value(value),
+            (true, None) => CoveredValue::Unvalued,
+            (false, _) => CoveredValue::Uncovered,
+        };
+        match runs.last_mut() {
+            Some((_, _, now)) if *now == value => {}
+            Some((_, last, _)) => {
+                *last = point.hour - 1;
+                runs.push((point.hour, point.hour, value));
+            }
+            None => runs.push((point.hour, point.hour, value)),
+        }
+        true
+    })?;
+    for runs in held.values_mut() {
+        if let Some((_, last, _)) = runs.last_mut() {
+            *last = to;
+        }
+    }
+    Ok((held, complete))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -691,6 +766,74 @@ pub fn statuses(recording: &Recording, run: u32, table: TableId, from: i32, to: 
         }
     }
     Ok(out)
+}
+
+pub fn status_reasons(recording: &Recording, run: u32, table: TableId, runs: &[StatusRun]) -> io::Result<HashMap<u32, String>> {
+    let mut unavailable: Vec<(i32, i32, u32)> = Vec::new();
+    for item in runs {
+        if let Status::Unavailable { reason } = item.status {
+            unavailable.push((item.first, item.last, reason));
+        }
+    }
+    if unavailable.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let held = recording.run(run)?;
+    let index = table.index();
+    let kinds = replay_recording::schema::schema()?.swap_remove(index);
+    let recorded = recording.columns()[index].min(kinds.len());
+    let mut min_block = u32::MAX;
+    let mut max_block = 0u32;
+    let mut max_to = i32::MIN;
+    let mut block_reasons: Vec<(u32, u32, u32)> = Vec::new();
+    for &(first, last, reason) in &unavailable {
+        let (Some(a), Some(b)) = (held.ordinal(first), held.ordinal(last)) else { continue };
+        let (ba, bb) = (held.place(a).0, held.place(b).0);
+        min_block = min_block.min(ba);
+        max_block = max_block.max(bb);
+        max_to = max_to.max(last);
+        block_reasons.push((ba, bb, reason));
+    }
+    if block_reasons.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let pages = recording.table_pages(run, index, min_block.saturating_sub(1), max_block + 1)?;
+    let mut needed: Vec<(usize, Vec<u32>)> = Vec::new();
+    for (page_idx, page) in pages.iter().enumerate() {
+        if page.block < min_block {
+            continue;
+        }
+        let mut ids = Vec::new();
+        for &(ba, bb, reason) in &block_reasons {
+            if ba <= page.block && page.block <= bb && !ids.contains(&reason) {
+                ids.push(reason);
+            }
+        }
+        if !ids.is_empty() {
+            needed.push((page_idx, ids));
+        }
+    }
+    let mut reasons = resolve_log_reasons(recording, held, &pages, &kinds[..recorded], index, max_to, &needed)?;
+    let mut unresolved: Vec<(i32, u32)> = unavailable
+        .iter()
+        .filter(|&&(_, _, reason)| !reasons.contains_key(&reason))
+        .map(|&(first, _, reason)| (first, reason))
+        .collect();
+    if !unresolved.is_empty() {
+        unresolved.sort_unstable_by_key(|&(first, _)| first);
+        let mut reader = TableReader::new(recording, run, table, Some(&[]))?;
+        for (first, reason) in unresolved {
+            if reasons.contains_key(&reason) {
+                continue;
+            }
+            let Some(ordinal) = held.ordinal(first) else { continue };
+            reader.go_to(recording, ordinal)?;
+            if let Some(bytes) = reader.view().string(reason) {
+                reasons.insert(reason, String::from_utf8_lossy(bytes).into_owned());
+            }
+        }
+    }
+    Ok(reasons)
 }
 
 pub fn logged_hours(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {

@@ -43,7 +43,7 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const total = useTiles(client, lane(DIVISIONS), active, following);
   const track = gate.track;
   const store = useMemo(() => source && track ? followStore(client, track, clock) : null, [client, clock, source, track]);
-  const headQuery = (measure: string) => following && active && enabled ? gate.follow({ product: 'series-state', params: { branchId,
+  const headQuery = (measure: string) => following && active && enabled ? gate.follow({ product: 'series-state', coverage: 'row', params: { branchId,
     family: { kind: SUPPLY_FAMILY, measure }, reads: tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null;
   const queries = useMemo(() => SHARE_MEASURES.map(headQuery), [following, active, enabled, branchId, tags, gate.follow]);
   const answered = useRef(new Set<() => void>()).current;
