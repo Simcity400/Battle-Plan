@@ -138,6 +138,25 @@ pub struct MilitaryAirName {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
+pub struct MilitaryAirCauseName {
+    pub cause: u32,
+    pub name: Option<String>,
+    #[doc = " Why the cause has no name: its recorded id has no proved display meaning."]
+    pub missing: Option<String>,
+}
+
+const AIR_LOSS_CAUSES: [&str; 6] = ["Aircraft combat", "Anti-air / raid effect", "Air accidents", "Airbase bombing", "Train anti-air", "Kamikaze anti-air"];
+
+pub fn air_loss_cause(cause: u32) -> MilitaryAirCauseName {
+    match cause.checked_sub(1).and_then(|at| AIR_LOSS_CAUSES.get(at as usize)) {
+        Some(name) => MilitaryAirCauseName { cause, name: Some((*name).to_owned()), missing: None },
+        None => MilitaryAirCauseName { cause, name: None, missing: Some(format!("Air loss cause {cause} has no proved display meaning")) },
+    }
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
 pub struct MilitaryAirNote {
     pub reason: String,
     pub events: usize,
@@ -160,6 +179,8 @@ pub struct MilitaryAirReply {
     pub incomplete: Vec<HourSpan>,
     #[doc = " Hours whose events were read but whose country links were not, so no event can be credited to a country."]
     pub unjoined: Vec<HourSpan>,
+    #[doc = " Air losses: every cause the window's events name, with its name or why it has none."]
+    pub causes: Vec<MilitaryAirCauseName>,
     pub countries: Vec<MilitaryAirCountry>,
     pub openings: Vec<MilitaryAirOpening>,
     pub parts: Vec<MilitaryAirPart>,
@@ -1029,6 +1050,14 @@ pub(crate) fn reply(fold: &Fold, (first, last): (i32, i32), countries: &BTreeMap
         observed: fold.observed.clone(),
         incomplete: fold.incomplete.clone(),
         unjoined: fold.unjoined.clone(),
+        causes: if params.family == MilitaryAirFamily::AirLosses {
+            let mut ids: Vec<u32> = leaves.iter().map(|(key, _)| key.cause).chain(openings.keys().map(|key| key.2)).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids.into_iter().map(air_loss_cause).collect()
+        } else {
+            Vec::new()
+        },
         countries: ranked_countries(countries, membership.as_ref(), cancelled)?,
         openings: openings
             .iter()
@@ -1081,6 +1110,7 @@ impl Product for MilitaryAirLedger {
     fn types() -> Vec<String> {
         vec![
             MilitaryAirParams::decl(),
+            MilitaryAirCauseName::decl(),
             MilitaryAirFamily::decl(),
             MilitaryAirMetric::decl(),
             MilitaryAirTop::decl(),

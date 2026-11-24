@@ -48,6 +48,7 @@ export const rendererKinds = (): readonly string[] => [...defaultViews.keys()];
 
 const loaded = new Map<string, Promise<WidgetRenderer>>();
 const ready = new Map<string, WidgetRenderer>();
+const choiceKinds = new Set<string>();
 export const loadedWidgetRenderer = (kind: string, view?: string): WidgetRenderer | undefined => {
   const key = keyFor(kind, view);
   return key === undefined ? undefined : ready.get(key);
@@ -60,7 +61,11 @@ export function loadWidgetRenderer(kind: string, view?: string): Promise<WidgetR
   if (!held) {
     held = entry.load().then(module => {
       const meta = widgetMetas.find(meta => meta.kind === kind)!;
-      registerWidgets([{ ...meta, useOptionChoices: (module.default as WidgetRenderer).useOptionChoices }]);
+      const choices = (module.default as WidgetRenderer).useOptionChoices;
+      if (choices && !choiceKinds.has(kind)) {
+        choiceKinds.add(kind);
+        registerWidgets([{ ...meta, useOptionChoices: choices }]);
+      }
       ready.set(key, module.default);
       return module.default;
     });
