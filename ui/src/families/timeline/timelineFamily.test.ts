@@ -277,7 +277,7 @@ test('timeline legend reserves bodyTop, shifts hit testing, and paints legend en
   drawTimeline(ctx as never, {
     model,
     layout,
-    readView: createBoundedReadView({ hour: H(1940), panels: new Map() }),
+    art: { resolve: () => ({ status: 'pending' }) },
     theme: LANE_THEME,
     scrollTop: 0,
     expanded: {},
@@ -290,4 +290,27 @@ test('timeline legend reserves bodyTop, shifts hit testing, and paints legend en
   assert.ok(drawnText.includes('In progress'));
   assert.ok(drawnText.includes('Idle'));
   assert.ok(drawnText.includes('opened'));
+});
+
+test('a paused timeline draws a flag that arrives after its projection, through the frame’s art, without projecting again', () => {
+  const flag = { kind: 'flag', choice: { kind: 'tag', tag: 'AAA', variant: null }, size: 'panel' } as unknown as TimelineLane['flag'];
+  const model: TimelineModel = { hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, iconsOnBars: false, labelWidth: 200, warnings: [], nextChangeAt: Infinity, unobserved: [],
+    lanes: [{ key: 'a', kind: 'item', label: 'A', flag, flagTag: 'AAA', auditValue: 'A', spans: [{ id: 's', firstHour: FIRST, lastHour: H(1940), color: '#fff', open: true }] }] };
+  const layout = frameTimeline(placeTimeline(model, 600, 200, {}), H(1940));
+  const resolution = resolutionFor(null, model, layout);
+  let images = 0;
+  const ctx = new Proxy({}, { get: (_target, prop) => {
+    if (prop === 'measureText') return (text: string) => ({ width: text.length * 6 });
+    if (prop === 'createLinearGradient') return () => ({ addColorStop() {} });
+    if (prop === 'drawImage') return () => { images++; };
+    return () => {};
+  }, set: () => true });
+  const paint = (status: 'pending' | 'ready') => drawTimeline(ctx as never, {
+    model, layout, theme: LANE_THEME, scrollTop: 0, expanded: {}, inspectedKey: null, selectedKey: null, focusedKey: null, resolution,
+    art: { resolve: () => (status === 'ready' ? { status, bitmap: { width: 20, height: 13 }, frame: { frameIndex: 0, frameCount: 1, frameWidth: 20, frameHeight: 13, textureWidth: 20, textureHeight: 13, outputWidth: 20, outputHeight: 13 } } : { status }) as never },
+  });
+  paint('pending');
+  assert.equal(images, 0);
+  paint('ready');
+  assert.ok(images > 0, 'the same model paints the flag once the frame’s art has it');
 });

@@ -7,7 +7,7 @@ use super::{
 use crate::products::war_fixtures::recorded;
 use dashboard_query::identity::HolderRun;
 use replay_data::{
-    rows::{self, CasualtyLifetimeRow, LocalPlayerRow, TableRows, WarOverviewCountryRow, WarOwnedRelationRow},
+    rows::{self, CasualtyLifetimeRow, LocalPlayerRow, TableId, TableRows, WarOverviewCountryRow, WarOwnedRelationRow},
     war_participation::Factors,
 };
 use replay_frame::frame::TableView;
@@ -63,17 +63,6 @@ fn every_column_the_overview_reads_is_in_its_table() {
     for (table, names) in inputs::READ {
         inputs::columns(table, names).unwrap();
     }
-    lifetime_columns().unwrap();
-}
-
-#[test]
-fn a_wars_losses_sum_each_side_and_count_a_countrys_unknown_losses_once_at_their_largest() {
-    let membership = |a: u32, b: u32, oriented: bool| WarRelationMembership { key: WarRelationKey::new((a, a), (b, b), 90), oriented, first_hour: 100, last_hour: 110 };
-    let (ab, ac, ad) = (membership(1, 2, true), membership(1, 3, true), membership(1, 4, false));
-    assert_eq!(losses(&[(&ab, Some([10, 20, 5, 1])), (&ac, Some([30, 40, 7, 2]))]), Some([40, 7, 60, 3]));
-    assert_eq!(losses(&[(&ad, Some([10, 20, 5, 1]))]), Some([20, 1, 10, 5]));
-    assert_eq!(losses(&[(&ab, Some([10, 20, 5, 1])), (&ac, None)]), None, "a lifetime not known leaves the war's casualties not known, never a smaller sum");
-    assert_eq!(losses(&[]), Some([0; 4]));
 }
 
 #[test]

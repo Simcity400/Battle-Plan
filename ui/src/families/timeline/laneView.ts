@@ -147,7 +147,7 @@ const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, TimelineFra
     drawTimeline(ctx, {
       model: frame.model,
       layout: frame.layout.frame,
-      readView: frame.projected,
+      art: frame.artProvider,
       theme: frame.theme,
       scrollTop: frame.binding.scrollTop,
       expanded: frame.binding.expanded,
