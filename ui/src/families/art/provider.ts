@@ -1,4 +1,5 @@
 import type { DashboardSource } from '../../dashboard/client';
+import type { CountryFlagChoice } from '../../generated/dashboard';
 import type { IdentityBroker } from '../identity/broker.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { parseFlagChoiceKey, type DrawnFlagEntry, type IdentityScope } from '../identity/types.ts';
@@ -80,7 +81,33 @@ export function laneArtDemand(
 ): void {
   const url = artUrlForHandle(handle, index, resolutions);
   if (url) urls.add(url);
-  else if (needsArtResolution(handle) && !resolutions?.[artHandleKey(handle)]) asks.set(artHandleKey(handle), handle);
+  else if (needsArtResolution(handle) ? !resolutions?.[artHandleKey(handle)] : undrawnFlag(handle, index)) {
+    asks.set(artHandleKey(handle), handle);
+  }
+}
+
+function undrawnFlag(handle: ArtHandle, index: IdentityIndex | null | undefined): boolean {
+  if (handle.kind !== 'flag') return false;
+  const choice = parseFlagChoiceKey(handle.choice);
+  return choice !== null && index?.getDrawnFlag(handle.size, choice) === undefined;
+}
+
+export function requestDemandedFlags(
+  broker: IdentityBroker,
+  scope: IdentityScope,
+  handles: readonly ArtHandle[],
+  recording?: DashboardSource,
+): void {
+  const bySize = new Map<ArtFlagSize, CountryFlagChoice[]>();
+  for (const handle of handles) {
+    if (handle.kind !== 'flag') continue;
+    const choice = parseFlagChoiceKey(handle.choice);
+    if (!choice) continue;
+    let list = bySize.get(handle.size);
+    if (!list) bySize.set(handle.size, list = []);
+    list.push(choice);
+  }
+  for (const [size, choices] of bySize) broker.requestFlagChoices(scope, size, choices, recording);
 }
 
 function resolutionFromHandle(

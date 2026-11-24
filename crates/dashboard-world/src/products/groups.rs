@@ -297,6 +297,10 @@ fn tag_at<'h>(holders: &'h HashMap<u32, Vec<(String, i32, i32)>>, slot: u32, hou
     named(holders, slot, hour, hour).next().map(|(tag, ..)| tag)
 }
 
+fn event_tag<'h>(holders: &'h HashMap<u32, Vec<(String, i32, i32)>>, slot: u32, hour: i32) -> Option<&'h str> {
+    (slot != TagHolderRow::NONE).then(|| tag_at(holders, slot, hour)).flatten()
+}
+
 struct Naming {
     templates: Result<Arc<Catalog>, String>,
     localisation: Arc<Localisation>,
@@ -471,7 +475,7 @@ pub fn groups(source: &Source, query: &Query<'_>, branch_id: &str, context: &Loa
             if read_at < stretch.first || read_at > stretch.last || hour < timeline.first {
                 continue;
             }
-            let tag = |slot: u32| (slot != TagHolderRow::NONE).then(|| tag_at(&holders, slot, hour).or_else(|| tag_at(&holders, slot, read_at))).flatten();
+            let tag = |slot: u32| event_tag(&holders, slot, hour);
             match kind {
                 WarEventRow::START => match (tag(first), tag(second)) {
                     (Some(attacking), Some(defending)) => {
@@ -686,6 +690,39 @@ pub fn faction_name_at(faction: &FactionGroup, hour: i32) -> (Option<String>, Op
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FactionAt {
+    pub id: String,
+    pub name: Option<String>,
+    pub name_missing: Option<String>,
+}
+
+pub fn factions_at(factions: &[FactionGroup], hour: i32) -> HashMap<String, FactionAt> {
+    let mut out = HashMap::new();
+    for faction in factions {
+        let (name, name_missing) = faction_name_at(faction, hour);
+        for run in &faction.members {
+            if run.first_hour <= hour && hour <= run.last_hour {
+                out.entry(run.tag.clone()).or_insert_with(|| FactionAt { id: faction.id.clone(), name: name.clone(), name_missing: name_missing.clone() });
+            }
+        }
+    }
+    out
+}
+
+#[derive(Default)]
+struct Replies(HashMap<(u64, Option<dashboard_base::content::LocalisationKey>), Arc<CountryGroupReply>>);
+
+pub fn shared(source: &Source, query: &Query<'_>, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<CountryGroupReply>> {
+    let key = (query.timeline.id, context.content.as_ref().map(dashboard_base::content::localisation_key));
+    let held = source.state::<Replies>();
+    if let Some(reply) = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key) {
+        return Ok(Arc::clone(reply));
+    }
+    let reply = Arc::new(groups(source, query, &query.timeline.id.to_string(), context, cancelled)?);
+    Ok(Arc::clone(held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.entry(key).or_insert(reply)))
+}
+
 pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunGroups>> {
     Runs::held(&source.state::<Runs>(), run, || run_groups(source.replay_ref().recording(), run))
 }
@@ -693,6 +730,20 @@ pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_branchs_group_reply_is_built_once_and_every_request_shares_it() {
+        use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+        let frames = (100..=110).map(|hour| source(1, hour, Some(1))).collect();
+        let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let held = Source::from_replay(dashboard_base::SourceKey { source_id: "shared-groups".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let query = dashboard_base::queries::query(&held, 1).unwrap();
+        let context = LoadContext { content: None };
+        let first = shared(&held, &query, &context, &AtomicBool::new(false)).unwrap();
+        let cancelled = AtomicBool::new(true);
+        let again = shared(&held, &query, &context, &cancelled).unwrap();
+        assert!(Arc::ptr_eq(&first, &again), "a later request reads the branch's reply already built and visits no stretch again");
+    }
 
     #[test]
     fn sparse_stretches_coalesce_group_runs_independent_of_stretch_count() {
@@ -732,6 +783,15 @@ mod tests {
         );
         assert_eq!(coalesced_wars.len(), 1);
         assert_eq!((coalesced_wars[0].first_hour, coalesced_wars[0].last_hour), (0, 1990));
+    }
+
+    #[test]
+    fn a_backdated_war_event_is_attributed_to_the_slot_holder_at_its_own_hour_or_to_no_one() {
+        let holders = HashMap::from([(7, vec![("AAA".to_owned(), 0, 99), ("BBB".to_owned(), 100, 200)]), (9, vec![("CCC".to_owned(), 120, 200)])]);
+        assert_eq!(event_tag(&holders, 7, 50), Some("AAA"));
+        assert_eq!(event_tag(&holders, 7, 150), Some("BBB"));
+        assert_eq!(event_tag(&holders, 9, 60), None, "the later holder of the slot is never named for an earlier event");
+        assert_eq!(event_tag(&holders, TagHolderRow::NONE, 150), None);
     }
 
     #[test]

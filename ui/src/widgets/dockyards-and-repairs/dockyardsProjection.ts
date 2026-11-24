@@ -6,7 +6,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
 import { fraction, shipLabel, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 const ON_PORT = 'Shown on the port';
@@ -22,19 +22,22 @@ const portName = (port: RepairPort): Value<string> => textValue(port.name, 'Port
 const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
 
 const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never>>[] = [
-  { ...NAME!, priority: 0, text: true, hideable: false, widest: ['Wilhelmshaven harbour'],
+  { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Wilhelmshaven harbour'],
     value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name) },
   { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
+    extra: row => (row.kind === 'port' ? { blank: true } : {}),
     bar: (row, live) => row.kind === 'ship' ? { fraction: fraction(shipStrength(row.ship, live)) } : null },
   { ...PRIORITY!, priority: 2, numeric: true, format: 'integer', widest: ['9'],
     value: row => row.kind === 'port'
       ? valueFromNullable(row.port.priority, { kind: 'notRecorded', reason: 'Repair priority not recorded' })
-      : notApplicable(ON_PORT) },
-  { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'], hint: 'repairing',
+      : notApplicable(ON_PORT),
+    extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
+  { ...DOCKYARDS!, priority: 3, numeric: true, format: 'integer', widest: ['99'], unit: 'repairing',
     value: row => row.kind === 'port'
       ? valueFromNullable(row.port.dockyards, { kind: 'notRecorded', reason: 'Dockyards repairing not recorded' })
-      : notApplicable(ON_PORT) },
+      : notApplicable(ON_PORT),
+    extra: row => (row.kind === 'ship' ? { blank: true } : {}) },
 ];
 
 function summary(reply: NavalRepairsReply): string | null {
@@ -88,7 +91,8 @@ export const dockyardsDeclaration: TableWidgetDeclaration<Record<string, never>>
   label: 'Dockyards and repairs',
   subject: 'repair ports',
   emptyCampaign: 'Load a campaign to see dockyards and repairs.',
-  icon: 'anchor',
+  icon: 'cube',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its dockyards.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

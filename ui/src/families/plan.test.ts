@@ -42,6 +42,7 @@ import {
   planQueryKey,
   planSignature,
   playbackIdleInterval,
+  readPlanExact,
   resolvePlaybackProvenInterval,
   stabilizeCanvasDimension,
 } from './broker.ts';
@@ -396,6 +397,16 @@ test('coverage contract rejects row coverage on population forms and top/least o
     () => assertValidCoverage('bad-keyed', { mode: 'keyed', keys: ['GER'] }, { kind: 'country-measure', params: { top: 5 } }),
     CoverageContractError,
   );
+  assert.throws(
+    () => assertValidCoverage('row-every', { mode: 'keyed', keys: ['GER'] }, { product: 'series-state', coverage: 'row', params: { reads: 'every' } }),
+    CoverageContractError,
+    'row coverage over every read is a population request, which the product refuses',
+  );
+  assert.throws(
+    () => assertValidCoverage('row-every-outer', { mode: 'keyed', keys: ['GER'] }, { product: 'series-state', coverage: 'row', reads: 'every' }),
+    CoverageContractError,
+  );
+  assertValidCoverage('row-keys', { mode: 'keyed', keys: ['GER'] }, { product: 'series-state', coverage: 'row', params: { reads: [{ country: 'GER' }] } });
 
   const badPlan: SourcePlan = {
     owner: 'test:1',
@@ -737,6 +748,20 @@ test('held reply during a resize maps stationary client clicks through installed
     });
     pipeline.page.frame();
     assert.equal(pipeline.view(wid)?.installedOwner, 'country:GER');
+
+    const posted: unknown[] = [];
+    worker.postMessage = message => { posted.push(message); };
+    const clicked: (string | null)[] = [];
+    pipeline.pointer(wid, 0, [50, 50], key => { clicked.push(key); });
+    assert.equal((posted.at(-1) as { installed?: number }).installed, 1, 'the pointer names the picture the page shows');
+    pipeline.page.offer({
+      lane: 0,
+      serial: 2,
+      entries: [makeEntry({ widget: wid, id: 2, owner: 'country:GER', h: 0, c: 100, lo: 0, hi: 100, surfaces: [] }) as unknown as Entry<ImageBitmap>],
+    });
+    pipeline.page.frame();
+    worker.onmessage?.({ data: { type: 'hit', widget: wid, key: 'row:SOV', installedId: 1, owner: 'country:GER' } } as MessageEvent<FromLane>);
+    assert.deepEqual(clicked, ['row:SOV'], 'a click answered for the picture shown when it was made stands though a repaint installed since');
 
     pipeline.retime(wid, { owner: 'country:SOV' });
     assert.equal(pipeline.view(wid)?.mode, 'reading', 'owner change clears installed picture immediately');
@@ -1099,6 +1124,101 @@ test('a family cannot reach data after the displayed hour through a slice, a til
   const frozen = createBoundedReadView({ hour: 150, rows: new Map([['log', rows.snapshot()]]) }).rows('log')!;
   assert.equal(frozen.at, 100);
   assert.equal(frozen.liveCount, 3, 'a source frozen at 100 counts what its own hour held, not a later head');
+});
+
+test('the exact read of a pixel-binned chart asks its exact product at the hour, in the shape of its head read', async () => {
+  const src = fakeSource();
+  const asked: { product: string; params: Record<string, unknown> }[] = [];
+  const reply = { values: [{ country: 'GER', value: 42 }] };
+  const client = {
+    product: async (request: { product: string; params: Record<string, unknown> }) => {
+      asked.push({ product: request.product, params: request.params });
+      return { data: reply };
+    },
+  } as unknown as DashboardClient;
+  const family = { kind: 'country-measure', measure: 'politicalPower' };
+  const chartPlan: SourcePlan = {
+    owner: 'political-power:1',
+    entries: [{
+      name: 'main',
+      source: src,
+      branch: '1',
+      offset: 0,
+      read: {
+        shape: 'pixel-binned',
+        coverage: { mode: 'keyed', keys: ['GER'] },
+        family,
+        tags: ['GER'],
+        headQuery: { product: 'series-state', params: { branchId: '1', family, reads: [{ country: 'GER' }] } },
+        exactProduct: 'series-state',
+      },
+    }],
+  };
+  const gate: FrozenGate = {
+    recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
+    span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
+  };
+  const view = await readPlanExact(chartPlan, 120, {
+    client,
+    following: true,
+    timeMode: 'follow',
+    branch: { firstHour: 0, lastHour: 1000 },
+    window: null,
+    staticSpan: null,
+    gate,
+  });
+  assert.equal(asked.length, 1, 'one exact request, not none');
+  assert.deepEqual(asked[0], { product: 'series-state', params: { branchId: '1', family, reads: [{ country: 'GER', hour: 120 }] } });
+  assert.equal(view?.hour, 120);
+  assert.equal(view?.panel('main'), reply);
+});
+
+test('advancing through an open bucket and a growing mark cluster costs what changed, and replaced prefix points are never served from the cache', () => {
+  const runs: Run[] = [];
+  for (let h = 0; h < 1024; h++) runs.push({ firstHour: h, lastHour: h, value: h % 97 });
+  const bins: [number, number][] = [];
+  for (let h = 0; h < 1024; h++) bins.push([h, 1]);
+  const line: TiledLine = {
+    tag: 'GER',
+    head: 'GER',
+    decimals: 0,
+    summary: { from: 0, to: 1023, width: 1, buckets: [makeBucket(0, 1023, 0, 0, 0, 96)], runs, tiles: { binHours: 1024, valueAt: () => null } },
+    missing: [],
+    parts: [],
+    marks: { from: 0, to: 1023, width: 1, clusters: [{ firstHour: 0, lastHour: 1023, firstOrdinal: '0', count: '1024', bins }] },
+  };
+  const cursor = new BoundedSeriesCursor();
+  cursor.advance(line, 100);
+  let worst = 0;
+  for (let h = 101; h <= 900; h++) {
+    const counter: BoundedWorkCounter = { visits: 0, allocations: 0 };
+    const bounded = cursor.advance(line, h, { counter });
+    worst = Math.max(worst, counter.visits);
+    if (h === 900) {
+      const cut = bounded.buckets.at(0)!;
+      assert.deepEqual([cut.lastHour, cut.maxValue], [900, 96], 'the resumed cut equals a fresh one');
+      const tail = bounded.marks.at(0)!;
+      assert.equal(tail.count, '901');
+      assert.equal(tail.bins?.length, 901);
+      assert.ok(!Array.isArray(tail.bins), 'the clipped cluster shares its bins rather than copying them');
+    }
+  }
+  assert.ok(worst <= 48, `one more hour inside an open bucket visits a constant number of items, not the bucket: ${worst}`);
+  const fresh = boundTiledSeries(line, displayedHour(900));
+  assert.deepEqual(fresh.buckets.at(0), cursor.advance(line, 900).buckets.at(0));
+
+  const brokenRuns: Run[] = [{ firstHour: 0, lastHour: 9, value: 1, breakBefore: true }, { firstHour: 10, lastHour: 19, value: 2 }];
+  const brokenLine: TiledLine = { ...line, summary: { ...line.summary, runs: brokenRuns } };
+  const brokenCursor = new BoundedSeriesCursor();
+  brokenCursor.advance(brokenLine, 3);
+  assert.deepEqual(brokenCursor.advance(brokenLine, 4).buckets.at(0), boundTiledSeries(brokenLine, displayedHour(4)).buckets.at(0), 'a resumed cut observes a run’s break once, as a fresh cut does');
+
+  const pointLine: TiledLine = { ...line, summary: { ...line.summary, runs: undefined } };
+  const pointCursor = new BoundedSeriesCursor();
+  const low = pointCursor.advance(pointLine, 105, { prefixPoints: [{ hour: 100, value: 1 }] });
+  assert.equal(low.buckets.at(0)?.maxValue, 1);
+  const high = pointCursor.advance(pointLine, 105, { prefixPoints: [{ hour: 100, value: 1 }, { hour: 104, value: 8 }] });
+  assert.equal(high.buckets.at(0)?.maxValue, 8, 'new prefix points at the same hour are read, as a fresh cursor would');
 });
 
 test('canvas pixel dimensions stay stable across sub-pixel jitter without changing planSignature', () => {
