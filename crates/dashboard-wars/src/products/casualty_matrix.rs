@@ -345,6 +345,7 @@ impl AtHour for CasualtyMatrix {
     const KEY: &'static str = "casualty-matrix";
     const TITLE: &'static str = "Casualties between countries";
     const CONTENT_DEPENDENT: bool = false;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads ended casualty lifetimes from branch history context and faction membership runs at at.hour");
     type Params = CasualtyMatrixParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", between, top, subject];
     type Reply = CasualtyMatrixReply;

@@ -2,7 +2,7 @@ import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import { drawBar, drawRowFocusRing, drawRowHover, drawRowSelected, resolveKitTokens } from '../../draw/kit.ts';
-import type { AuditRow } from '../../draw/notifications.ts';
+import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import { drawMediaSlot } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import type { FamilyTheme } from '../contract.ts';
@@ -136,10 +136,6 @@ export function pickTooltip(list: BarsPickList, key: string, hour: number): Fami
   return row.tooltip ? { ...row.tooltip, hour } : { title: row.label, fullText: row.label, hour };
 }
 
-export function pickAudit(list: BarsPickList): AuditRow[] {
-  return list.rows.map(row => ({
-    row: pickKey(row.key),
-    key: `${pickKey(row.key)}\u0000pick`,
-    value: JSON.stringify([row.label, row.left.fraction, row.right.fraction, list.selectedKey === row.key, row.divided === true]),
-  }));
+export function pickAudit(list: BarsPickList): FamilyAuditRow[] {
+  return list.rows.map(row => auditCell(pickKey(row.key), 'pick', JSON.stringify([row.label, row.left.fraction, row.right.fraction, list.selectedKey === row.key, row.divided === true])));
 }

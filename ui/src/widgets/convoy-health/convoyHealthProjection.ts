@@ -13,7 +13,9 @@ import {
 } from '../../families/heat/lanesModel.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
-import { regionIds } from '../../families/regionTokens.ts';
+import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
+import { countrySubject, regionLanes } from '../../families/regions/regionRows.ts';
+import { formatProgress } from '../../families/valueFormat.ts';
 import type { ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
 
@@ -22,6 +24,7 @@ export const CONVOY_TOP_DEFAULT = 7;
 export interface ConvoyProjectionOptions {
   readonly view: ConvoyView;
   readonly surface: string;
+  readonly country: string | null;
 }
 
 export function convoyView(options: Readonly<Record<string, unknown>>): ConvoyView {
@@ -40,7 +43,7 @@ export function efficiencyColour(share: number): string {
 }
 
 export function percentText(value: number, scale: number): string {
-  return `${Math.floor((value * 100) / scale)}%`;
+  return formatProgress(value / scale);
 }
 
 function stateCell(state: ConvoyCellState, scale: number): HeatLaneCell {
@@ -53,8 +56,18 @@ function stateReadout(state: ConvoyCellState | undefined, scale: number, surface
   if (!state) return undefined;
   if (state.kind === 'notRecorded') return { kind: 'missing', reason: state.reason };
   if (state.kind === 'noTraffic') return { kind: 'clear', label: 'No convoy traffic' };
-  const value = Number(state.value);
-  return { kind: 'value', form: 'value', primary: percentText(value, scale), secondary: 'Efficiency', swatch: readableColour(efficiencyColour(value / scale), surface, 1) };
+  return efficiencyReadout(Number(state.value), scale, surface);
+}
+
+function efficiencyReadout(value: number, scale: number, surface: string): HeatLaneReadout {
+  return {
+    kind: 'value',
+    form: 'value',
+    primary: percentText(value, scale),
+    meaning: 'Efficiency',
+    ...(value >= scale ? { tone: 'muted' as const } : {}),
+    swatch: readableColour(efficiencyColour(value / scale), surface, 1),
+  };
 }
 
 type Dated = readonly (readonly [number, number, number])[];
@@ -103,6 +116,7 @@ function regionRows(readView: BoundedReadView, reply: ConvoyHealthReply, through
         label,
         ...(nameMissing ? { nameMissing } : {}),
         pinned: region.pinned,
+        region: region.region,
         runs,
         ...(readout ? { readout } : {}),
       },
@@ -163,7 +177,7 @@ function tradeRows(reply: ConvoyHealthReply, through: number, surface: string): 
     if (!runs.length) continue;
     const value = valueAt(deal.efficiency, through);
     const readout: HeatLaneReadout = value !== null
-      ? { kind: 'value', form: 'value', primary: percentText(value, reply.scale), secondary: 'Efficiency', swatch: readableColour(efficiencyColour(value / reply.scale), surface, 1) }
+      ? efficiencyReadout(value, reply.scale, surface)
       : inSpans(dealsKnown, through) ? { kind: 'clear', label: 'No deal' } : { kind: 'missing', reason: 'Resource deals were not recorded' };
     rows.push({
       row: { id: `deal:${deal.id}`, label: dealName(deal, through), runs, readout },
@@ -206,6 +220,7 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
   const through = reply.lastHour;
   const built = reply.view === 'regions' ? regionRows(readView, reply, through, options.surface) : tradeRows(reply, through, options.surface);
   const rows = built.map(item => item.row);
+  const subject = countrySubject(readView, options.country);
   return {
     hour: through,
     firstHour: reply.firstHour,
@@ -214,8 +229,9 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    ...(reply.view === 'regions' ? { regions: regionLanes(subject) } : {}),
     inspect: (rowIndex, at) => built[rowIndex]?.inspect(at) ?? null,
-    ...(rows.length ? {} : { empty: reply.view === 'regions' ? 'No convoys for this country at this date.' : 'No convoyed trade for this country at this date.' }),
+    ...(rows.length ? {} : { empty: `${reply.view === 'regions' ? 'No convoys' : 'No convoyed trade'} for ${subject ?? 'this country'} at this date.` }),
     warnings: reply.warnings,
   };
 }
@@ -238,7 +254,6 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
   sources: (ctx): SourcePlan => {
     const view = convoyView(ctx.options);
     if (!ctx.countryTag) return { owner: `convoy-health:${ctx.branch.id}:none`, entries: [], unavailable: 'Choose a country in widget settings.' };
-    const pinned = view === 'regions' ? regionIds(ctx.options.regions) : [];
     const top = typeof ctx.options.rowCount === 'number' ? ctx.options.rowCount : CONVOY_TOP_DEFAULT;
     const params = {
       branchId: ctx.branch.id,
@@ -246,7 +261,7 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
       country: countryFromKey(ctx.countryTag),
       from: null,
       to: null,
-      ...(view === 'regions' ? { top, ...(pinned.length ? { pinnedRegions: pinned } : {}) } : {}),
+      ...(view === 'regions' ? { top, ...regionParams(readRegionChoice(ctx.options.regions)) } : {}),
     };
     return {
       owner: `convoy-health:${JSON.stringify(params)}`,
@@ -267,6 +282,6 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
     };
   },
   projection: convoyHealthProjection,
-  projectionOptions: (ctx, extra) => ({ view: convoyView(ctx.options), surface: extra.surface }),
+  projectionOptions: (ctx, extra) => ({ view: convoyView(ctx.options), surface: extra.surface, country: ctx.countryTag }),
   jumpToDate: true,
 };

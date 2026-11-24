@@ -63,7 +63,7 @@ function SettingsBody({ widget, template, runtime, onChange, choices, mapOptions
     save({ ...widget, options, title });
   };
   const fields = (section: OptionSection) => <OptionFields fields={sectionFields(optionFields, section, values, widget.countries, widget.time.mode)} values={values}
-    choices={choices} onChange={setValue} />;
+    choices={choices} regionSource={{ client: runtime.client, track: reference }} onChange={setValue} />;
   const body = (section: SettingsSection) => {
     switch (section) {
       case 'campaign': return <CampaignPicker widget={widget} template={template} runtime={runtime} />;

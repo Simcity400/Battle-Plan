@@ -271,6 +271,7 @@ impl AtHour for TrainingQueue {
     const KEY: &'static str = "training-queue";
     const TITLE: &'static str = "Training queue";
     const CONTENT_DEPENDENT: bool = true;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = TrainingQueueParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = TrainingQueueReply;
@@ -311,6 +312,16 @@ impl AtHour for TrainingQueue {
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         Ok(Content::load(source, load))
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        match frame.tables[TableId::DeploymentLines.index()].sampled_at() {
+            Some(read) if read > frame.hour => read - 1,
+            Some(read) if i64::from(frame.hour) - i64::from(read) < i64::from(replay_data::cadence::STAGGER_PERIOD) => {
+                read.saturating_add(replay_data::cadence::STAGGER_PERIOD - 1)
+            }
+            _ => i32::MAX,
+        }
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

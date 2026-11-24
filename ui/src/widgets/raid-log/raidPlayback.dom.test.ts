@@ -9,7 +9,7 @@ test('Raid tally and Raid log replace their paused views during playback and res
       await act('mount()');
       assert.match(await act<string>('text()'), /prepared/);
       await act('playing(true)');
-      assert.deepEqual(await act('states()'), ["Raid tally isn't playing back yet", "Raid log isn't playing back yet"]);
+      assert.deepEqual(await act('states()'), ['Raid tally isn’t playing back yet.', 'Raid log isn’t playing back yet.']);
       assert.deepEqual(await act('advance()'), []);
       await act('playing(false)');
       assert.match(await act<string>('text()'), /prepared/);

@@ -5,7 +5,9 @@ import { engineHour } from '../../dashboard/calendar.ts';
 import type { PaintInput } from '../../draw/lane.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { createLaneArtProvider } from '../art/provider.ts';
-import { missingArt, PENDING_ART } from '../art/types.ts';
+import { PENDING_ART, productArt } from '../art/types.ts';
+
+const missingArt = (reason: string) => productArt({ status: 'confirmedMissing', reason });
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { FamilyTheme } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
@@ -253,7 +255,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
       {
         key: 'reg:poland',
         label: 'Eastern Poland',
-        removable: true,
+        region: 40,
         segments: [
           { key: 'axis', label: 'Axis', share: 0.59, value: knownValue(59), color: '#ccb2a7' },
           { key: 'comintern', label: 'Comintern', share: 0.41, value: knownValue(41), color: '#d44852' },
@@ -281,7 +283,20 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
   assert.ok(shareTexts.includes('Axis 59%'));
   assert.ok(shareTexts.includes('90 air wings'));
   assert.ok(shareTexts.includes('Not recorded'));
-  assert.ok(shareTexts.includes('+ Add region'));
+  assert.ok(shareTexts.includes('Add region'));
+  const gripHit = hitFamilyBars(
+    shareLayoutWide,
+    shareModel,
+    { x: shareLayoutWide.nameX - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[1]! + shareLayoutWide.rowHeights[1]! / 2 },
+    0,
+    undefined,
+    0,
+    0,
+    new Set(['reg:poland']),
+  );
+  assert.deepEqual(gripHit, { kind: 'grip-region', rowKey: 'reg:poland' });
+  assert.equal(hitFamilyBars(shareLayoutWide, shareModel, { x: shareLayoutWide.nameX - 4, y: shareLayoutWide.bodyTop + shareLayoutWide.rowTops[3]! + 4 }, 0, undefined, 0, 0, new Set(['reg:atlantic'])).kind, 'row',
+    'a row that is not a region has no grip');
   const removeHit = hitFamilyBars(
     shareLayoutWide,
     shareModel,

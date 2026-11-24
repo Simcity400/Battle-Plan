@@ -32,28 +32,26 @@ export interface OfferRow {
 const items = (equipment: ReturnType<typeof equipmentOf>, list: readonly MarketItem[]): MarketItemAt[] =>
   list.map(item => ({ ...equipment(item.variant), name: item.name ?? equipment(item.variant).name, variant: item.variant, amount: BigInt(item.amountRaw) }));
 
-export function contractRows(reply: MarketAt, tab: 'contracts' | 'requests', matches: (tag: string, hour: number) => boolean): { rows: ContractRow[]; unattributed: number } {
+export type MarketMatch = (tag: string | null, hour: number) => boolean;
+
+export function contractRows(reply: MarketAt, tab: 'contracts' | 'requests', matches: MarketMatch): ContractRow[] {
   const rows: ContractRow[] = [];
-  let unattributed = 0;
   const equipment = equipmentOf(reply);
   for (const terms of reply.contracts ?? []) {
     if (terms.request !== (tab === 'requests')) continue;
     const { seller, buyer } = terms;
-    if (!(seller !== null && matches(seller, reply.hour) || buyer !== null && matches(buyer, reply.hour))) {
-      if (seller === null || buyer === null) unattributed++;
-      continue;
-    }
+    if (!matches(seller, reply.hour) && !matches(buyer, reply.hour)) continue;
     rows.push({ key: terms.key, terms, seller, buyer, equipment: items(equipment, terms.equipment), prices: items(equipment, terms.prices),
       levels: terms.levels.map(level => ({ variant: level.variant, level: level.level })) });
   }
-  return { rows, unattributed };
+  return rows;
 }
 
-export function offerRows(reply: MarketAt, matches: (tag: string, hour: number) => boolean): OfferRow[] {
+export function offerRows(reply: MarketAt, matches: MarketMatch): OfferRow[] {
   const rows: OfferRow[] = [];
   const equipment = equipmentOf(reply);
   for (const offer of reply.offers ?? []) {
-    if (offer.tag === null || !matches(offer.tag, reply.hour)) continue;
+    if (!matches(offer.tag, reply.hour)) continue;
     const levels = new Map(offer.prices.map(level => [level.variant, level.level]));
     for (const item of offer.inventory) {
       const drawn = equipment(item.variant);

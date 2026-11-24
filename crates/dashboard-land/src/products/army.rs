@@ -24,7 +24,9 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
+mod at_hour;
 mod template_roster;
+pub use at_hour::{ArmyAt, ArmyAtParams};
 pub use template_roster::{TemplateRoster, TemplateRosterParams, TemplateRosterReply};
 
 pub const SERIES: &str = "army-size";
@@ -382,7 +384,7 @@ fn segments(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> Vec<Army
         .collect()
 }
 
-fn group_info(units: Option<&SubUnits>, catalogue: Option<&dashboard_base::catalogue::Catalogue>, name: &str) -> (String, ArmyType, Option<String>) {
+pub(super) fn group_info(units: Option<&SubUnits>, catalogue: Option<&dashboard_base::catalogue::Catalogue>, name: &str) -> (String, ArmyType, Option<String>) {
     let group = units.map_or_else(|| Err("game content is unavailable".into()), |units| units.group(name.as_bytes()));
     let (key, label, mut warning) = match group {
         Ok(Some(group)) => {
@@ -787,7 +789,7 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
                         (None, NavigationKey::End) => to,
                         (None, _) => from,
                     };
-                    line.rank_at(at, top)?.into_iter().map(Country::from).collect()
+                    line.rank_at(at, top, false)?.unwrap_or_default().into_iter().map(Country::from).collect()
                 }
                 None => params.countries.clone(),
             };

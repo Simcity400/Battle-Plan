@@ -1,5 +1,5 @@
 
-use super::{EventFeedKind, FeedEvent, FeedPageParams, LOG, Paged, invalid, logs, row::{Columns, Slot}};
+use super::{EventFeedKind, FeedEvent, LOG, Paged, invalid, logs, row::{Columns, Slot}};
 use dashboard_base::{Source, queries::country_ids::Names};
 use dashboard_world::products::groups::MembershipRun;
 use dashboard_query::{
@@ -83,6 +83,7 @@ pub(crate) fn matched<'i>(index: &'i [(u32, Arc<Vec<Entry>>)], patterns: &[Patte
     out
 }
 
+#[cfg(test)]
 pub(crate) fn window(matched: &[(u32, &Entry)], from: i32, to: i32, cursor: u64, size: u32) -> (u64, u64, u64, u64) {
     let base = matched.partition_point(|(_, entry)| entry.hour < from) as u64;
     let last = matched.partition_point(|(_, entry)| entry.hour <= to) as u64;
@@ -194,45 +195,6 @@ fn scoped(source: &Source, query: &Query<'_>, reader: &Reader<'_, '_>, facets: &
 
 fn declared() -> io::Result<&'static dashboard_declare::Log> {
     dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))
-}
-
-pub(crate) fn page(source: &Source, query: &Query<'_>, params: &FeedPageParams, scope: &[MembershipRun]) -> io::Result<(log::Page, Vec<Paged>, Vec<MissingSpan>)> {
-    let log = declared()?;
-    let reader = Reader::new(query, log)?;
-    let to = hour_of(Some(params.to), "to")?;
-    let from = params.from.map(|from| hour_of(Some(from), "from")).transpose()?.unwrap_or(query.timeline.first);
-    if from > to {
-        return Err(invalid("Invalid log page"));
-    }
-    if !(1..=PAGE_LIMIT).contains(&params.page_size) {
-        return Err(invalid("Invalid page size"));
-    }
-    let cursor = params.cursor.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| invalid("Invalid cursor"))?;
-    let (patterns, index, scope) = scoped(source, query, &reader, &params.facets, scope, to)?;
-    let admitted = matched(&index, &patterns, &scope);
-    let (base, first, end, last) = window(&admitted, from, to, cursor, params.page_size);
-    let shown = &admitted[first as usize..end as usize];
-    let mut ordinals: HashMap<(i32, u128), u64> = shown.iter().zip(first..).map(|((_, entry), ordinal)| ((entry.hour, entry.key), ordinal)).collect();
-    let mut by_run: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
-    for (run, entry) in shown {
-        let ranges = by_run.entry(*run).or_default();
-        match ranges.last_mut() {
-            Some(held) if held.1 + 1 >= entry.hour => held.1 = held.1.max(entry.hour),
-            _ => ranges.push((entry.hour, entry.hour)),
-        }
-    }
-    let columns = Columns::new()?;
-    let mut rows = Vec::with_capacity(shown.len());
-    for (run, ranges) in by_run {
-        for (_, row) in reader.rows(run, &patterns, &ranges)? {
-            if let Some(ordinal) = ordinals.remove(&(row.hour, row.key)) {
-                rows.push(Paged { event: columns.read(&row)?, hour: row.hour, key: row.key, ordinal, own: ordinal, tag: None });
-            }
-        }
-    }
-    rows.sort_by_key(|paged| paged.ordinal);
-    let page = log::Page { base, first, end, last, rows: Vec::new() };
-    Ok((page, rows, logs::missing(query, log, from, to)?))
 }
 
 pub(crate) fn tail_with_index(

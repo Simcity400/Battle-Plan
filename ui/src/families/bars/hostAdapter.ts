@@ -1,15 +1,13 @@
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
+import { parseRegionHitKey } from '../regions/regionRows.ts';
 import type { FamilyBarsBinding } from './laneView.ts';
 import { deriveBarsAudit, type BarsModel } from './model.ts';
 import { pickAudit } from './pickList.ts';
 
 export function parseBarsHit(hitKey: string | null): ParsedFamilyHit | null {
   if (!hitKey) return null;
-  if (hitKey.startsWith('add:')) return { key: '__add-region', subject: '__add-region', kind: 'add-region', toggle: false, inspectToken: hitKey };
-  if (hitKey.startsWith('remove:')) {
-    const key = hitKey.slice(7);
-    return key ? { key, subject: key, kind: 'remove-region', toggle: true, inspectToken: hitKey } : null;
-  }
+  const region = parseRegionHitKey(hitKey);
+  if (region) return { key: region.key, subject: region.key, kind: `region-${region.part}`, toggle: false, inspectToken: `row:${region.key}` };
   if (hitKey.startsWith('right:')) {
     const key = hitKey.slice(6);
     return key ? { key, subject: key, kind: 'right-row', toggle: false, inspectToken: hitKey } : null;

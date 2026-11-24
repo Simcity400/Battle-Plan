@@ -34,6 +34,7 @@ const crashes = new Map<string, string>();
 measureWith(new Proxy({
   shown: (widget: string, hour: number | null) => { shown.set(widget, hour); },
   widgetError: (widget: string | null, message: string) => { if (widget) crashes.set(widget, message); },
+  reader: () => () => undefined,
 }, { get: (target, name) => (target as Record<string | symbol, unknown>)[name] ?? (() => undefined) }) as unknown as PerfRecorder);
 
 const groups: CountryGroupReply = {

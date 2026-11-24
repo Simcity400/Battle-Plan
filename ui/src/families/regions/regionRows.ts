@@ -1,0 +1,93 @@
+import type { BoundedReadView } from '../contract.ts';
+import type { RegionChoice } from './regionChoice.ts';
+import { moveRegion } from './regionChoice.ts';
+
+export const REGION_ADD_KEY = '__add-region';
+
+export type RegionHitPart = 'add' | 'remove' | 'grip';
+
+export interface RegionActivity {
+  readonly color?: string;
+  readonly text: string;
+}
+
+export interface RegionRowRef {
+  readonly key: string;
+  readonly id: number;
+  readonly label: string;
+  readonly picked: boolean;
+  readonly top: number;
+  readonly height: number;
+  readonly activity?: RegionActivity;
+}
+
+export interface RegionRowsField {
+  readonly rows: readonly RegionRowRef[];
+  readonly add: { readonly top: number; readonly height: number } | null;
+  readonly nameLeft: number;
+}
+
+export function regionHitKey(part: RegionHitPart, rowKey: string): string {
+  return `region-${part}:${rowKey}`;
+}
+
+export function parseRegionHitKey(hitKey: string | null): { readonly part: RegionHitPart; readonly key: string } | null {
+  if (!hitKey?.startsWith('region-')) return null;
+  const sep = hitKey.indexOf(':');
+  const part = hitKey.slice(7, sep);
+  if (sep < 0 || (part !== 'add' && part !== 'remove' && part !== 'grip')) return null;
+  return { part, key: hitKey.slice(sep + 1) };
+}
+
+export function regionRowOf(field: RegionRowsField | undefined, key: string | null): RegionRowRef | null {
+  if (!field || key === null) return null;
+  return field.rows.find(row => row.key === key) ?? null;
+}
+
+export function keyboardMove(row: RegionRowRef, delta: -1 | 1, choice: RegionChoice): RegionChoice | null {
+  const at = choice.picks.indexOf(row.id);
+  if (at < 0) return delta < 0 ? moveRegion(choice, row.id, choice.picks.length) : null;
+  const to = at + delta;
+  return to < 0 || to >= choice.picks.length ? null : moveRegion(choice, row.id, to);
+}
+
+export interface RegionDrop {
+  readonly to: number;
+  readonly lineY: number;
+}
+
+export function regionDropAt(field: RegionRowsField, dragged: RegionRowRef, y: number): RegionDrop | null {
+  const picks = field.rows.filter(row => row.picked && row.key !== dragged.key);
+  const first = field.rows[0];
+  if (!first) return null;
+  const lastPick = picks.at(-1);
+  const bottom = lastPick ? lastPick.top + lastPick.height : first.top;
+  if (!dragged.picked && y > bottom + first.height / 2) return null;
+  let to = 0;
+  while (to < picks.length && y > picks[to]!.top + picks[to]!.height / 2) to++;
+  const lineY = to < picks.length ? picks[to]!.top : bottom;
+  return { to, lineY };
+}
+
+export type RegionCommand =
+  | { readonly op: 'open'; readonly x: number; readonly y: number; readonly rows: readonly RegionRowRef[] }
+  | { readonly op: 'remove'; readonly row: RegionRowRef }
+  | { readonly op: 'step'; readonly row: RegionRowRef; readonly delta: -1 | 1 }
+  | { readonly op: 'drop'; readonly row: RegionRowRef; readonly to: number };
+
+export const PICKED_REGIONS_HEADING = 'Your regions';
+export const ADD_REGION_LABEL = 'Add region';
+
+export function mostActiveHeading(subject: string | null): string {
+  return subject ? `Most active for ${subject}` : 'Most active';
+}
+
+export function regionLanes(subject: string | null, automaticHeading = mostActiveHeading(subject)): { readonly pickedHeading: string; readonly automaticHeading: string; readonly addLabel: string } {
+  return { pickedHeading: PICKED_REGIONS_HEADING, automaticHeading, addLabel: ADD_REGION_LABEL };
+}
+
+export function countrySubject(readView: BoundedReadView, country: string | null): string | null {
+  if (!country) return null;
+  const name = readView.who('country', country).name;
+  return name.status === 'ready' ? name.value : null;
+}
