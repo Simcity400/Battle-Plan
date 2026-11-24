@@ -237,7 +237,22 @@
   background: rgba(255, 255, 255, 0.22);
 }
 
+.tf-th-parts-block {
+  flex: 1;
+  align-self: stretch;
+  justify-content: center;
+}
+
+.tf-th.end .tf-th-parts-block {
+  align-items: stretch;
+}
+
+.tf-th-parts-block .tf-th-unit {
+  align-self: flex-end;
+}
+
 .tf-th-parts {
+  width: 100%;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(0, 1fr);

@@ -115,7 +115,7 @@ export function buildColumnLayouts(
 }
 
 const OPERATOR_SLOT = 14;
-const HEADER_HATCH = 15;
+const HEADER_HATCH = 16;
 const SHORT_OVER_GAP = 8;
 
 function headerGroupWidth(column: FamilyColumnLayout, measure: MeasureText, headFont: string, unitFont: string): number {

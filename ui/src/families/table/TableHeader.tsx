@@ -152,7 +152,7 @@ export function FamilyTableHeader({
       </span>;
     }
     if (item.headerGroup?.kind === 'parts') {
-      return <span className="tf-th-text-block">
+      return <span className="tf-th-text-block tf-th-parts-block">
         <span className="tf-th-main tf-th-parts">
           {item.headerGroup.parts.map((part, idx, parts) => <span key={idx} className="tf-th-part" title={part.notRecordedReason}>
             <span>{part.label}</span>
