@@ -4,10 +4,6 @@ import type { ArtHandle, BoundedReadView, DisplayedHour } from '../contract.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import type { TimelineLane, TimelineModel, TimelineSpan } from './model.ts';
 
-export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
-  return url ? { kind: 'url', url } : null;
-}
-
 export interface CountryLook {
   readonly tag: string;
   readonly name: string;
