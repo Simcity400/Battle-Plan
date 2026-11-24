@@ -3873,7 +3873,11 @@ gainedRaw: string | null, lostAtCapRaw: string | null,
 /**
  * Why the gain is not known, or (with `gained_raw`) why it is partial.
  */
-gainedReason: string | null, warnings: Array<string>, };
+gainedReason: string | null,
+/**
+ * Why the loss at the cap is not known, or (with `lost_at_cap_raw`) why it is partial.
+ */
+lostAtCapReason: string | null, warnings: Array<string>, };
 export type SpendCurrency = "Political" | "Command";
 export type Breakdown = { decimals: number, total: BreakdownTotal,
 /**
