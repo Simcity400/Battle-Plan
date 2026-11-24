@@ -8,7 +8,7 @@ import type { Pipeline, PointerHitMeta } from '../../dashboard/follow/pipeline.t
 import { AuditSnapshotStore } from '../audit.ts';
 import { barsHostAdapter, parseBarsHit } from '../bars/hostAdapter.ts';
 import { createBoundedReadView, displayedHour } from '../boundedView.ts';
-import type { FamilyTheme, InstalledAction, InstalledPicture } from '../contract.ts';
+import type { FamilyTheme, InstalledAction, InstalledPicture, MirrorModel } from '../contract.ts';
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { familyBinding, lazyActionKeys, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
@@ -29,9 +29,12 @@ import {
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
   handleFamilyPointsKeyDown,
+  navPageSteps,
+  usableRowHeight,
   type FamilyNavTuple,
 } from './keyboard.ts';
-import { optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
+import { keepEqual } from './stableValue.ts';
+import { mirrorToSync, optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
 import { bindFamilyPointer, CLICK_CANCEL_PX, parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
 import { reportFamilyShownHour } from './shownHour.ts';
@@ -90,7 +93,7 @@ test('F7 & F10: paged keyboard sends first ArrowDown/ArrowUp from no focus to or
     nav: [],
     totalCount: 500,
     focusedKey: null,
-    pageStep: 10,
+    pageStep: { down: 10, up: 10 },
     blocked: false,
     isPinnedTooltip: () => false,
     onFocusKey: () => {},
@@ -104,7 +107,7 @@ test('F7 & F10: paged keyboard sends first ArrowDown/ArrowUp from no focus to or
     nav: [],
     totalCount: 500,
     focusedKey: null,
-    pageStep: 10,
+    pageStep: { down: 10, up: 10 },
     blocked: false,
     isPinnedTooltip: () => false,
     onFocusKey: () => {},
@@ -118,7 +121,7 @@ test('F7 & F10: paged keyboard sends first ArrowDown/ArrowUp from no focus to or
     nav: [],
     totalCount: 500,
     focusedKey: null,
-    pageStep: 10,
+    pageStep: { down: 10, up: 10 },
     blocked: false,
     isPinnedTooltip: () => false,
     onFocusKey: () => {},
@@ -132,7 +135,7 @@ test('F7 & F10: paged keyboard sends first ArrowDown/ArrowUp from no focus to or
   handleFamilyKeyDown(esc.event, {
     nav: [],
     focusedKey: null,
-    pageStep: 10,
+    pageStep: { down: 10, up: 10 },
     blocked: false,
     isPinnedTooltip: () => true,
     onFocusKey: () => {},
@@ -157,7 +160,7 @@ test('handleFamilyKeyDown avoids activating row 0 when focus key was evicted and
   handleFamilyKeyDown(enter.event, {
     nav,
     focusedKey: 'evicted-key',
-    pageStep: 5,
+    pageStep: { down: 5, up: 5 },
     blocked: false,
     isPinnedTooltip: () => false,
     onFocusKey: key => focused.push(key),
@@ -168,14 +171,14 @@ test('handleFamilyKeyDown avoids activating row 0 when focus key was evicted and
   const tree: FamilyNavTuple[] = [['GRP', 'Group', 0, 0, '', null], ['GER', 'Germany', 1, -1, 'GRP', null]];
   const toggled: string[] = [];
   for (const key of ['ArrowRight', 'ArrowLeft']) {
-    handleFamilyKeyDown(mkEvent(key).event, { nav: tree, focusedKey: 'evicted-key', pageStep: 5, blocked: false, isPinnedTooltip: () => false, onFocusKey: k => focused.push(k), onActivate: () => {}, onToggleTree: k => toggled.push(k) });
+    handleFamilyKeyDown(mkEvent(key).event, { nav: tree, focusedKey: 'evicted-key', pageStep: { down: 5, up: 5 }, blocked: false, isPinnedTooltip: () => false, onFocusKey: k => focused.push(k), onActivate: () => {}, onToggleTree: k => toggled.push(k) });
   }
   assert.deepEqual([toggled, focused], [[], []], 'tree keys on an evicted row expand or move nothing');
 
   const keyOptions = (focusedKey: string, blocked: boolean) => ({
     nav,
     focusedKey,
-    pageStep: 5,
+    pageStep: { down: 5, up: 5 },
     blocked,
     isPinnedTooltip: () => false,
     onFocusKey: (key: string) => (focused as string[]).push(key),
@@ -191,7 +194,7 @@ test('handleFamilyKeyDown avoids activating row 0 when focus key was evicted and
   handleFamilyKeyDown(search.event, {
     nav,
     focusedKey: 'GER',
-    pageStep: 5,
+    pageStep: { down: 5, up: 5 },
     blocked: false,
     typeaheadRef,
     isPinnedTooltip: () => false,
@@ -1147,4 +1150,40 @@ test('class D: every action and published state comes from the installed picture
   selections.bound(3, 'A');
   selections.bound(5, 'B');
   assert.deepEqual([selections.at(3), selections.at(4), selections.at(5)], ['A', 'A', 'B'], 'R3-S9: the mirror announces the selection the installed picture was bound with');
+});
+
+test('R3-S7: Page Up and Page Down each find their destination in their own direction from the installed bounds', () => {
+  const nav = Array.from({ length: 50 }, (_, i) => [`r${i}`, `Row ${i}`, i, -1, '', null, i * 20, 20] as FamilyNavTuple);
+  assert.deepEqual(navPageSteps(nav, 'r49', 100), { down: 1, up: 4 }, 'from the last row Page Up moves a viewport up, not one row');
+  assert.deepEqual(navPageSteps(nav, 'r0', 100), { down: 4, up: 1 });
+  assert.deepEqual(navPageSteps(nav, 'r20', 60), { down: 2, up: 2 }, 'a smaller usable row viewport (a bars body under its axis) gives smaller steps');
+  assert.equal(usableRowHeight({ meta: { rowViewport: { top: 24, height: 60 } } }, 100), 60, 'a lane that publishes its row viewport pages and reveals within it');
+  assert.equal(usableRowHeight({ meta: {} }, 100), 100);
+  const focused: string[] = [];
+  const keys = { nav, focusedKey: 'r49', pageStep: navPageSteps(nav, 'r49', 100), blocked: false, isPinnedTooltip: () => false, onFocusKey: (key: string) => { focused.push(key); }, onActivate: () => {} };
+  handleFamilyKeyDown(mkEvent('PageUp').event, keys);
+  handleFamilyKeyDown(mkEvent('PageDown').event, { ...keys, focusedKey: 'r0', pageStep: navPageSteps(nav, 'r0', 100) });
+  assert.deepEqual(focused, ['r45', 'r4']);
+});
+
+test('rv10 R2-S6: a mirror the lane withholds clears the installed rows once, and only a new field or selection repopulates', () => {
+  const m1 = { rows: [], total: 0, first: 0 } as unknown as MirrorModel;
+  const m2 = { rows: [], total: 0, first: 0 } as unknown as MirrorModel;
+  assert.equal(mirrorToSync(m1, null, 'A', null), m1, 'the first mirror is shown');
+  assert.equal(mirrorToSync(m1, m1, 'A', 'A'), undefined, 'the same field and selection do nothing, however many frames install');
+  assert.equal(mirrorToSync(undefined, m1, 'A', 'A'), null, 'a withheld mirror clears the stale rows once');
+  assert.equal(mirrorToSync(undefined, null, 'A', 'A'), undefined, 'and not again');
+  assert.equal(mirrorToSync(m2, null, 'A', 'A'), m2, 'the current field repopulates');
+  assert.equal(mirrorToSync(m2, m2, 'B', 'A'), m2, 'a new selection re-syncs the same rows');
+});
+
+test('rv10 R2-S5: rebuilt projection options equal in structure keep the earlier object, so their revision survives a span-only context change', () => {
+  const looks = new Map([['GER', 'Germany']]);
+  const first = { kinds: ['war', 'peace'], selection: { tags: ['GER'], all: false }, looks, top: null };
+  const rebuilt = { kinds: ['war', 'peace'], selection: { tags: ['GER'], all: false }, looks, top: null };
+  assert.equal(keepEqual(first, rebuilt), first, 'same filters and selection after the span grew: the same options object');
+  const changed = { ...rebuilt, selection: { tags: ['GER', 'ITA'], all: false } };
+  assert.equal(keepEqual(first, changed), changed, 'a changed selection is a new options object');
+  assert.notEqual(keepEqual(first, { ...rebuilt, looks: new Map(looks) }), first, 'a map is compared by reference, never walked');
+  assert.equal(keepEqual(undefined, rebuilt), rebuilt);
 });

@@ -27,7 +27,7 @@ test('validateTailReply rejects malformed replies and rows after the supplied di
       { key: '2', hour: 120, cells: [{ kind: 'number', value: '11' }] },
       { key: '1', hour: 100, cells: [{ kind: 'number', value: '20' }] },
     ],
-    facetTotals: [{ key: 'contracts', total: '1' }],
+    counts: [{ key: 'contracts', total: '1' }],
     missing: [{ firstHour: 105, lastHour: 110, reason: 'gap' }],
   };
   const ok = validateTailReply(raw, 120);
@@ -148,4 +148,16 @@ test('buildNavigableSlots interleaves recording gaps in newest-first order and k
     'c',
     '100-110@3',
   ]);
+
+  const live = [
+    { kind: 'data' as const, ordinal: 0, readAt: 150, row: { key: 'running', hour: 90, label: 'running' } },
+    { kind: 'data' as const, ordinal: 1, readAt: 150, row: { key: 'a', hour: 145, label: 'a' } },
+  ];
+  const placed = buildNavigableSlots(150, live, [{ ...gaps[0]!, before: '2' }, { ...gaps[1]!, before: '2' }], 2);
+  assert.deepEqual(placed.map(slot => slot.kind === 'data' ? slot.row.key : slot.kind === 'gap' ? `${slot.firstHour}-${slot.lastHour}@${slot.beforeOrdinal}` : slot.kind), [
+    'running',
+    'a',
+    '130-140@2',
+    '100-110@2',
+  ], 'a gap the product placed stays at its ordinal, never among the live rows by hour');
 });

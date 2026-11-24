@@ -6,6 +6,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
+  seriesRaceSelection,
   seriesRaceSources,
   seriesRaceUnavailable,
   seriesRaceWarnings,
@@ -54,7 +55,6 @@ export const armySizeRaceProjection: BarsProjection<ArmySizeRaceOptions> = regis
 
     if (!options.split || options.measure !== 'battalions') {
       return projectSeriesRace(readView, options, {
-        decimals: isStrength ? 5 : 0,
         valueFormat,
         scaleFormat,
         scaleUnit,
@@ -173,12 +173,12 @@ export const armySizeRaceDeclaration: BarsWidgetDeclaration<ArmySizeRaceOptions,
       measure,
       countFor: armyCountFor(ctx.options.countFor),
       split: measure === 'battalions' && ctx.options.byType === true,
-      candidates: ranked ? ctx.countries.every : ctx.countries.tags,
       holders: ranked ? null : ctx.countries.holders,
       membership: ranked ? null : ctx.countries.membership,
       unobserved: ranked ? [] : ctx.countries.unobserved,
       top: ctx.countries.top,
       all: ctx.countries.all,
+      group: seriesRaceSelection(ctx).group,
     };
   },
   unavailable: seriesRaceUnavailable,

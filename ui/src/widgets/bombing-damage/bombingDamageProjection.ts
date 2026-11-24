@@ -2,6 +2,7 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsProjection } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FamilyPlanContext } from '../../families/contract.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import { militaryAirModel, militaryAirParams, militaryAirSources, type MilitaryAirAtOptions } from './militaryAirAt.ts';
 
 export const bombingDamageProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
@@ -11,7 +12,9 @@ export const bombingDamageProjection: BarsProjection<MilitaryAirAtOptions> = reg
   project: (readView, options) => militaryAirModel(readView, options),
 });
 
-const sources = (ctx: FamilyPlanContext) => militaryAirSources('bombing-damage', ctx, militaryAirParams(ctx, 'bombing', 'total'));
+const NO_FILTERS = { regions: [], causes: [] } as const;
+
+const sources = (ctx: FamilyPlanContext) => militaryAirSources('bombing-damage', ctx, militaryAirParams(ctx, 'bombing', 'total', NO_FILTERS));
 
 export const bombingDamageDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptions> = {
   family: 'bars',
@@ -23,7 +26,6 @@ export const bombingDamageDeclaration: BarsWidgetDeclaration<MilitaryAirAtOption
   countries: {
     mode: 'multi',
     allowSlots: true,
-    requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },
   sources,
   projection: bombingDamageProjection,
@@ -36,7 +38,8 @@ export const bombingDamageDeclaration: BarsWidgetDeclaration<MilitaryAirAtOption
     unit: 'Building levels',
     ratio: false,
     none: 'No bombing damage yet.',
-    chosen: !ctx.countries.all && ctx.countries.top == null ? ctx.countries.tags : null,
+    group: ctx.countries.top == null && !ctx.countries.all && groupSelection(ctx.widget.countries) !== null,
+    filters: NO_FILTERS,
   }),
   jumpToDate: true,
   keyByBranch: true,

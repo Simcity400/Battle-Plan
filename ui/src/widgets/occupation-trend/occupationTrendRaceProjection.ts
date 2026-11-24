@@ -2,8 +2,8 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import {
-  nextSeriesRaceChange,
   projectSeriesRace,
+  seriesRaceSelection,
   seriesRaceSources,
   seriesRaceUnavailable,
   seriesRaceWarnings,
@@ -31,13 +31,10 @@ function resolveRank(options: Readonly<Record<string, unknown>>): OccupationMeas
 export const occupationTrendRaceProjection: BarsProjection<OccupationTrendRaceOptions> = registerFamilyProjection({
   kind: 'occupation-trend',
   family: 'bars',
-  nextChange(readView, options) {
-    return nextSeriesRaceChange(readView.hour, options);
-  },
+  nextChange: () => Infinity,
   project(readView: BoundedReadView, options: OccupationTrendRaceOptions): BarsModel {
     const label = `Average ${measureName(options.rank).toLowerCase()}`;
     return projectSeriesRace(readView, options, {
-      decimals: 5,
       valueFormat: { decimals: 0, maxDecimals: options.digits, percent: true },
       scaleFormat: { decimals: 0, maxDecimals: 1, percent: true },
       scaleUnit: label,
@@ -70,19 +67,11 @@ export const occupationTrendRaceDeclaration: BarsWidgetDeclaration<OccupationTre
   },
   sources: occupationTrendRaceSources,
   projection: occupationTrendRaceProjection,
-  projectionOptions: ctx => {
-    const ranked = ctx.countries.top != null || ctx.countries.all;
-    return {
-      rank: resolveRank(ctx.options),
-      digits: clampDigits(ctx.options.digits),
-      candidates: ranked ? ctx.countries.every : ctx.countries.tags,
-      holders: ranked ? null : ctx.countries.holders,
-      membership: ranked ? null : ctx.countries.membership,
-      unobserved: ranked ? [] : ctx.countries.unobserved,
-      top: ctx.countries.top,
-      all: ctx.countries.all,
-    };
-  },
+  projectionOptions: ctx => ({
+    ...seriesRaceSelection(ctx),
+    rank: resolveRank(ctx.options),
+    digits: clampDigits(ctx.options.digits),
+  }),
   unavailable: seriesRaceUnavailable,
   warnings: (_ctx, followRefused) => seriesRaceWarnings(followRefused),
   jumpToDate: true,

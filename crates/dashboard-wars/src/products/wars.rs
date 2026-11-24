@@ -1,4 +1,5 @@
 
+mod at;
 pub mod contributions;
 mod inputs;
 mod measures;
@@ -9,6 +10,7 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
+pub use at::WarTimelineReply;
 pub use inputs::{RunWars, run_wars};
 pub use measures::{WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide};
 pub use participation::{WarContributionCountry, WarContributionGroup};
@@ -20,13 +22,11 @@ use dashboard_base::products::{Country, check_reply_budget, validate_country};
 use dashboard_query::{
     Query,
     identity::{Holder, Holders},
-    read,
 };
 use content_reader_country_names::country_names::{CountryNames, Operands};
 use inputs::{Hour, Resolve, State, holds};
 use native::{Blob, Pair};
 use replay_looks::Look;
-use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -38,7 +38,18 @@ use ts_rs::TS;
 use walk::{Seen, Viewed, Walk};
 
 pub struct Wars;
-pub struct WarLosses;
+pub struct WarTimelineAt;
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WarTimelineParams {
+    pub branch_id: String,
+    #[doc = " None follows the recording client's playing or observer country."]
+    pub viewpoint: Option<Country>,
+    #[doc = " The hour answered: nothing recorded after it is read into the reply."]
+    pub hour: i32,
+}
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -175,41 +186,7 @@ pub struct WarsReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WarLossesParams {
-    pub branch_id: String,
-    pub viewpoint: Option<Country>,
-    pub hour: i32,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-pub struct WarCasualtyRun(pub i32, pub i32, pub String, pub String, pub String, pub String);
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct WarCasualties {
-    #[doc = " The war's id in the `wars` reply."]
-    pub id: String,
-    pub run: Option<WarCasualtyRun>,
-    pub reason: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct WarLossesReply {
-    pub branch_id: String,
-    pub hour: i32,
-    #[doc = " Each war the viewpoint saw at the hour, in the order of the wars."]
-    pub wars: Vec<WarCasualties>,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(WarsReply, WarLossesReply);
+dashboard_base::reply_warnings!(WarsReply);
 
 pub(crate) struct SlotNames {
     slots: HashMap<u32, Vec<(i32, i32, String, u32)>>,
@@ -583,45 +560,16 @@ impl Product for Wars {
     }
 }
 
-fn held(war: &WarTimeline, hour: i32) -> Vec<&WarRelationMembership> {
-    war.relations.iter().filter(|membership| membership.first_hour <= hour && hour <= membership.last_hour).collect()
-}
-
-fn lifetime_columns() -> io::Result<[usize; 4]> {
-    let field = |name| dashboard_declare::field(TableId::CasualtyLifetimes, name);
-    Ok([field("taken_a")?, field("taken_b")?, field("unknown_a")?, field("unknown_b")?])
-}
-
-pub(crate) fn losses(held: &[(&WarRelationMembership, Option<[i64; 4]>)]) -> Option<[i128; 4]> {
-    let mut sums = [0_i128; 4];
-    let mut unknown: HashMap<((u32, u32), usize), i64> = HashMap::new();
-    for (membership, counters) in held {
-        let [taken_a, taken_b, unknown_a, unknown_b] = (*counters)?;
-        let (a, b) = if membership.oriented { (0, 2) } else { (2, 0) };
-        sums[a] += i128::from(taken_a);
-        sums[b] += i128::from(taken_b);
-        for (country, side, value) in [(membership.key.first, a + 1, unknown_a), (membership.key.second, b + 1, unknown_b)] {
-            let most = unknown.entry((country, side)).or_insert(value);
-            *most = (*most).max(value);
-        }
-    }
-    for ((_, side), value) in unknown {
-        sums[side] += i128::from(value);
-    }
-    Some(sums)
-}
-
-impl Product for WarLosses {
-    const KEY: &'static str = "war-losses";
+impl Product for WarTimelineAt {
+    const KEY: &'static str = "war-timeline";
     const CONTENT_DEPENDENT: bool = true;
-    const INTERACTIVE: bool = true;
-    type Params = WarLossesParams;
+    type Params = WarTimelineParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint, hour: Read];
-    type Reply = WarLossesReply;
+    type Reply = WarTimelineReply;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![WarLossesParams::decl(), WarCasualtyRun::decl(), WarCasualties::decl(), WarLossesReply::decl()]
+        vec![WarTimelineParams::decl(), WarTimelineReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -630,48 +578,13 @@ impl Product for WarLosses {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let id = branch(&params.branch_id)?;
-        let hour = params.hour;
+        let branch = branch(&params.branch_id)?;
         let cat = catalogue_of(source, context)?;
-        let reply = walked(source, id, params.viewpoint.as_ref(), cat, cancelled)?;
-        let observed = |war: &&WarTimeline| {
-            let at = war.observations.partition_point(|run| run.last_hour < hour);
-            war.observations.get(at).is_some_and(|run| run.first_hour <= hour)
-        };
-        let wars: Vec<&WarTimeline> = reply.wars.iter().filter(observed).collect();
-        let mut out = WarLossesReply { branch_id: params.branch_id.clone(), hour, wars: Vec::new(), warnings: Vec::new() };
-        if wars.is_empty() {
-            return Ok(out);
-        }
-        let query = dashboard_base::queries::query(source, id)?;
-        let run = query.timeline.at(hour).ok_or_else(|| dashboard_core::refused("War losses hour is not recorded"))?.run;
-        let mut keys: Vec<u128> = wars.iter().flat_map(|war| held(war, hour)).map(|membership| membership.key.lifetime()).collect();
-        keys.sort_unstable();
-        keys.dedup();
-        let columns = lifetime_columns()?;
-        let asked = [read::Read { table: TableId::CasualtyLifetimes, columns: None, keys: read::Keys::These(&keys) }];
-        let snapshot = read::at(source.replay_ref().recording(), run, &asked, hour)?;
-        let view = snapshot[0].view();
-        let counters: HashMap<u128, Option<[i64; 4]>> = snapshot[0]
-            .rows
-            .iter()
-            .map(|&(key, slot)| {
-                let cell = |column: usize| view.number(column, slot);
-                (key, (|| Some([cell(columns[0])?, cell(columns[1])?, cell(columns[2])?, cell(columns[3])?]))())
-            })
-            .collect();
-        for war in wars {
-            let lifetimes: Vec<_> = held(war, hour).into_iter().map(|membership| (membership, counters.get(&membership.key.lifetime()).copied().flatten())).collect();
-            let entry = match losses(&lifetimes) {
-                Some(sums) => {
-                    let [a, b, c, d] = sums.map(|sum| sum.to_string());
-                    WarCasualties { id: war.id.clone(), run: Some(WarCasualtyRun(hour, hour, a, b, c, d)), reason: None }
-                }
-                None => WarCasualties { id: war.id.clone(), run: None, reason: Some("Not recorded: a relation's casualties were not recorded at this hour".into()) },
-            };
-            out.wars.push(entry);
-        }
-        Ok(out)
+        let walked = walked(source, branch, params.viewpoint.as_ref(), cat, cancelled)?;
+        let last = dashboard_base::queries::query(source, branch)?.timeline.last;
+        let reply = at::at(&walked, params.hour.min(last));
+        check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }
 

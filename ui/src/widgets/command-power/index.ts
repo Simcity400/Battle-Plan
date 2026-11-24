@@ -1,5 +1,4 @@
 import CountryChip from '../../dashboard/CountryChip';
-import type { WidgetRenderer } from '../../dashboard/definitions';
-import CommandPowerWidget from './CommandPowerWidget.tsx';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 
-export default { countryChip: CountryChip, render: CommandPowerWidget } satisfies WidgetRenderer;
+export default { countryChip: CountryChip } satisfies FamilyViewRenderer;

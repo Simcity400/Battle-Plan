@@ -6,6 +6,7 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
+  seriesRaceSelection,
   seriesRaceSources,
   seriesRaceUnavailable,
   seriesRaceWarnings,
@@ -42,7 +43,6 @@ export const airForceSizeRaceProjection: BarsProjection<AirForceSizeRaceOptions>
 
     if (!options.split) {
       return projectSeriesRace(readView, options, {
-        decimals: 0,
         valueFormat: { decimals: 0 },
         scaleFormat: { decimals: 0 },
         scaleUnit,
@@ -155,12 +155,12 @@ export const airForceSizeRaceDeclaration: BarsWidgetDeclaration<AirForceSizeRace
       measure: airMeasure(ctx.options.measure),
       ownership: airOwnership(ctx.options.ownership),
       split: ctx.options.split === true,
-      candidates: ranked ? ctx.countries.every : ctx.countries.tags,
       holders: ranked ? null : ctx.countries.holders,
       membership: ranked ? null : ctx.countries.membership,
       unobserved: ranked ? [] : ctx.countries.unobserved,
       top: ctx.countries.top,
       all: ctx.countries.all,
+      group: seriesRaceSelection(ctx).group,
     };
   },
   unavailable: seriesRaceUnavailable,

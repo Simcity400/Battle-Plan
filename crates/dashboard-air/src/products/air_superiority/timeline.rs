@@ -7,11 +7,10 @@ use super::{
     index::{self, AirIndex},
     names, region_name, side_of,
 };
-use dashboard_base::{Source, products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, at_hour::{self, AtHour, Read}}, span::HourSpan};
+use dashboard_base::{Source, products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, at_hour::{self, AtHour, Read}, regions::NoRegions}, span::HourSpan};
 use dashboard_query::{Query, identity::Holders, timeline::Stretch};
 use rayon::prelude::*;
 use replay_lanes::lanes::{self, Chart};
-use replay_columnar::manifest::Status;
 use replay_data::rows::{CountryLinkRow, RaidAirScoreRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -48,9 +47,6 @@ pub struct AirTimelineParams {
     #[doc = " The side keys compared; all when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sides: Option<Vec<String>>,
-    #[doc = " The regions shown, ranked; the most active when none."]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub regions: Option<Vec<u32>>,
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub pinned_regions: Option<Vec<u32>>,
@@ -60,13 +56,9 @@ pub struct AirTimelineParams {
     #[doc = " The air theatres whose regions are shown; all when none."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub theatres: Option<Vec<String>>,
-    #[doc = " How many of the most active regions are shown, without `regions`."]
+    #[doc = " How many of the regions most active at `lastHour` follow the user's regions."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<usize>,
-    #[doc = " Ranks the rows by their activity over the whole days from this hour to the view's first hour, kept per source and extended by the days added since."]
-    #[serde(default)]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub rank_from: Option<i32>,
     #[doc = " Every region with a score in the view, unranked, and `absent`: the cells of a region without one."]
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -222,6 +214,10 @@ pub struct AirTimelineReply {
     pub viewpoint: Option<u32>,
     pub gaps: Vec<HourSpan>,
     pub rows: Vec<AirTimelineRow>,
+    #[doc = " Why the automatic rows are not known at `lastHour`; none are listed then, and the user's regions stay."]
+    pub rank_missing: Option<String>,
+    #[doc = " Why no row is listed; set only when `rows` is empty."]
+    pub empty: Option<NoRegions>,
     #[doc = " With `every`: the days of a region without a score, as runs."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub absent: Option<Vec<(u32, Option<AirDayCell>)>>,
@@ -263,6 +259,22 @@ impl Composed<'_> {
     }
 }
 
+const NOT_RECORDED: &str = "Air scores were not recorded at this hour, so the most active regions are not known";
+const READ_IN_PART: &str = "Air scores were read only in part at this hour, so the most active regions are not known";
+const THEATRES_NOT_RECORDED: &str = "Air theatres were not recorded at this hour, so the most active regions in them are not known";
+
+pub(crate) struct AtHourRank {
+    pub regions: Vec<u32>,
+    pub missing: Option<String>,
+    pub outside: u32,
+}
+
+impl AtHourRank {
+    fn unranked(reason: &str) -> Self {
+        Self { regions: Vec::new(), missing: Some(reason.to_owned()), outside: 0 }
+    }
+}
+
 pub(crate) struct Days<'a> {
     pub index: &'a AirIndex,
     pub holders: &'a Holders,
@@ -294,10 +306,10 @@ impl<'a> Days<'a> {
         }
     }
 
-    fn each(&self, regions: &[u32], through: usize, cancelled: &AtomicBool, mut each: impl FnMut(usize, Option<&Composed<'_>>)) -> io::Result<()> {
+    fn each(&self, regions: &[u32], days: std::ops::Range<usize>, cancelled: &AtomicBool, mut each: impl FnMut(usize, Option<&Composed<'_>>)) -> io::Result<()> {
         let empty = Arc::default();
         let mut rows = Vec::new();
-        for (at, day) in self.days.iter().enumerate().take(through) {
+        for (at, day) in self.days.iter().enumerate().take(days.end).skip(days.start) {
             if at % 64 == 0 {
                 dashboard_text::metadata::check_cancel(cancelled)?;
             }
@@ -322,10 +334,7 @@ impl<'a> Days<'a> {
         Ok(())
     }
 
-    fn activity(&self, day: usize, composed: &Composed<'_>, region: u32, keep: Option<&HashSet<&str>>) -> u128 {
-        if self.theatre_reason(day, region).is_some() {
-            return 0;
-        }
+    fn activity(&self, composed: &Composed<'_>, region: u32, keep: Option<&HashSet<&str>>) -> u128 {
         let pairs = composed.pairs(region);
         match (self.params.mode.unwrap_or_default(), keep) {
             (AirMode::Sides, None) => composed.compose.activity(pairs),
@@ -342,55 +351,39 @@ impl<'a> Days<'a> {
         }
     }
 
-    pub fn totals(&self, regions: &[u32], counted: usize, cancelled: &AtomicBool) -> io::Result<Vec<u128>> {
-        let keep = self.keep();
-        let mut totals = vec![0u128; regions.len()];
-        self.each(regions, counted, cancelled, |day, composed| {
-            let Some(composed) = composed else { return };
-            for (total, &region) in totals.iter_mut().zip(regions) {
-                *total += self.activity(day, composed, region, keep.as_ref());
-            }
-        })?;
-        Ok(totals)
-    }
-
-    pub fn rank(&self, candidates: &[u32], bounds: Option<&HashMap<u32, u128>>, counted: usize, top: Option<usize>, cancelled: &AtomicBool) -> io::Result<Vec<u32>> {
-        if top == Some(0) {
-            return Ok(Vec::new());
+    pub fn rank_at(&self, candidates: &[u32], cancelled: &AtomicBool) -> io::Result<AtHourRank> {
+        let Some(day) = self.days.len().checked_sub(1) else {
+            return Ok(AtHourRank::unranked(NOT_RECORDED));
+        };
+        match &self.days[day] {
+            Some(read) if read.hour != self.params.last_hour => return Ok(AtHourRank::unranked(NOT_RECORDED)),
+            Some(read) if !read.complete => return Ok(AtHourRank::unranked(READ_IN_PART)),
+            None => return Ok(AtHourRank::unranked(NOT_RECORDED)),
+            Some(_) => {}
         }
-        let mut exact: Vec<(u32, u128)> = Vec::new();
-        match (bounds, top) {
-            (Some(bounds), Some(top)) => {
-                let mut order: Vec<(u32, u128)> = candidates.iter().map(|&region| (region, bounds.get(&region).copied().unwrap_or(0))).collect();
-                order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-                let batch = 2 * top;
-                let mut next = 0;
-                while next < order.len() {
-                    if order[next].1 == 0 {
-                        exact.extend(order[next..].iter().map(|&(region, _)| (region, 0)));
-                        break;
-                    }
-                    let end = (next + batch).min(order.len());
-                    let regions: Vec<u32> = order[next..end].iter().filter(|(_, bound)| *bound > 0).map(|(region, _)| *region).collect();
-                    let totals = self.totals(&regions, counted, cancelled)?;
-                    exact.extend(regions.into_iter().zip(totals));
-                    exact.extend(order[next..end].iter().filter(|(_, bound)| *bound == 0).map(|&(region, _)| (region, 0)));
-                    next = end;
-                    if exact.len() >= top {
-                        exact.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-                        if order.get(next).is_none_or(|&(_, bound)| bound < exact[top - 1].1) {
-                            break;
-                        }
-                    }
+        let keep = self.keep();
+        let mut active: Vec<(u32, u128)> = Vec::new();
+        let mut outside = 0u32;
+        let mut theatres_unknown = false;
+        self.each(candidates, day..day + 1, cancelled, |at, composed| {
+            let Some(composed) = composed else { return };
+            for &region in candidates {
+                let amount = self.activity(composed, region, keep.as_ref());
+                if amount == 0 {
+                    continue;
+                }
+                match self.theatre_reason(at, region) {
+                    None => active.push((region, amount)),
+                    Some("outside-theatres") => outside += 1,
+                    Some(_) => theatres_unknown = true,
                 }
             }
-            _ => exact = candidates.iter().copied().zip(self.totals(candidates, counted, cancelled)?).collect(),
+        })?;
+        if theatres_unknown {
+            return Ok(AtHourRank::unranked(THEATRES_NOT_RECORDED));
         }
-        exact.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        if let Some(top) = top {
-            exact.truncate(top);
-        }
-        Ok(exact.into_iter().map(|(region, _)| region).collect())
+        active.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        Ok(AtHourRank { regions: active.into_iter().map(|(region, _)| region).collect(), missing: None, outside })
     }
 
     #[cfg(test)]
@@ -406,7 +399,7 @@ impl<'a> Days<'a> {
         let mut excluded = vec![0u32; self.days.len()];
         let mut viewpoint = None;
         let mut latest_by_key: BTreeMap<String, (i32, u32)> = BTreeMap::new();
-        self.each(regions, self.days.len(), cancelled, |day, composed| {
+        self.each(regions, 0..self.days.len(), cancelled, |day, composed| {
             for (row, &region) in cells.iter_mut().zip(regions) {
                 let cell = composed.map(|composed| match self.theatre_reason(day, region) {
                     Some(reason) => AirDayCell::Reason { reason: reason.into() },
@@ -691,64 +684,13 @@ fn theatre_days(query: &Query<'_>, stretches: &[Stretch], days: &[Option<DayRead
         .collect()
 }
 
-struct Activity {
-    day: i32,
-    sums: [i64; 2],
-    totals: [i64; 2],
-}
-
-impl Activity {
-    fn before(&self, day: i32, column: usize) -> i128 {
-        i128::from(self.totals[column]) + i128::from(self.sums[column]) * i128::from(day.saturating_sub(self.day).max(0))
-    }
-}
-
-fn activity_at(query: &Query<'_>, run: u32, hour: i32) -> Option<HashMap<u32, Activity>> {
-    let table = TableId::AirRegionActivity;
-    let snapshot = dashboard_query::cost::storage(|| lanes::at(query.replay.recording(), run, table, hour, None)).ok()?;
-    if !matches!(snapshot.status, Status::Complete) {
-        return None;
-    }
-    let view = snapshot.view();
-    let field = |name: &str| dashboard_declare::field(table, name).ok();
-    let columns = [field("day")?, field("friendly")?, field("enemy")?, field("friendly_total")?, field("enemy_total")?];
-    let mut out = HashMap::new();
-    for &(key, slot) in &snapshot.rows {
-        let number = |at: usize| view.number(columns[at], slot);
-        let row = Activity { day: i32::try_from(number(0)?).ok()?, sums: [number(1)?, number(2)?], totals: [number(3)?, number(4)?] };
-        out.insert(key as u32, row);
-    }
-    Some(out)
-}
-
-fn bounds(query: &Query<'_>, stretches: &[Stretch], viewpoint: bool) -> Option<HashMap<u32, u128>> {
-    let mut out: HashMap<u32, i128> = HashMap::new();
-    for stretch in stretches {
-        let read = dashboard_query::cost::storage(|| lanes::reads(query.replay.recording(), stretch.run, TableId::AirRegionActivity, stretch.first, stretch.last)).ok()?;
-        if read != [(stretch.first, stretch.last)] {
-            return None;
-        }
-        let (start, end) = (activity_at(query, stretch.run, stretch.first)?, activity_at(query, stretch.run, stretch.last)?);
-        let (first_day, last_day) = (stretch.first.div_euclid(DAY), stretch.last.div_euclid(DAY));
-        let columns: &[usize] = if viewpoint { &[0, 1] } else { &[0] };
-        for (region, row) in &end {
-            let through: i128 = columns.iter().map(|&column| row.before(last_day, column) + i128::from(row.sums[column])).sum();
-            let before: i128 = start.get(region).map_or(0, |row| columns.iter().map(|&column| row.before(first_day, column)).sum());
-            *out.entry(*region).or_default() += through - before;
-        }
-    }
-    Some(out.into_iter().map(|(region, bound)| (region, u128::try_from(bound).unwrap_or(0))).collect())
-}
-
 struct Window {
     first_day: i32,
     first_hour: i32,
-    count: usize,
     days: Vec<Option<DayAt>>,
     parts: Vec<Part>,
     at_hours: HashMap<usize, DayRows>,
     reads: Vec<Option<DayRead>>,
-    stretches: Vec<Stretch>,
     theatres: Option<Vec<Option<Result<HashSet<u32>, ()>>>>,
 }
 
@@ -837,41 +779,7 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
     }
     dashboard_text::metadata::check_cancel(cancelled)?;
     let theatres = params.theatres.as_deref().filter(|ids| !ids.is_empty()).map(|ids| theatre_days(query, &stretches, &reads, &days, ids));
-    Ok(Window { first_day, first_hour, count, days, parts, at_hours, reads, stretches, theatres })
-}
-
-#[derive(Clone)]
-struct Totals {
-    through: i32,
-    totals: HashMap<u32, u128>,
-}
-
-#[derive(Default)]
-struct HeldTotals(HashMap<String, Totals>);
-
-const HELD_TOTALS: usize = 32;
-
-fn completed_totals(source: &Source, query: &Query<'_>, index: &AirIndex, params: &AirTimelineParams, from: i32, through: i32, cancelled: &AtomicBool) -> io::Result<HashMap<u32, u128>> {
-    let key = serde_json::to_string(&(&params.branch_id, params.mode, &params.viewpoint, params.viewpoint_country, &params.sides, &params.regions, &params.theatres, from)).map_err(|error| dashboard_core::invalid(error.to_string()))?;
-    let state = source.state::<HeldTotals>();
-    let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key).filter(|held| held.through <= through).cloned();
-    let (start, mut totals) = held.map_or((from, HashMap::new()), |held| (held.through + 1, held.totals));
-    if start <= through {
-        let mut ignored = Vec::new();
-        let added = window(query, params, start, through, &mut ignored, cancelled)?;
-        let candidates: Vec<u32> = added.candidates().into_iter().collect();
-        let charted = added.charted();
-        let composer = Days { index, holders: &query.holders, days: &added.reads, rows: &charted, params, theatres: added.theatres.as_deref() };
-        for (region, amount) in candidates.iter().zip(composer.totals(&candidates, added.count, cancelled)?) {
-            *totals.entry(*region).or_default() += amount;
-        }
-        let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.0.len() >= HELD_TOTALS && !state.0.contains_key(&key) {
-            state.0.clear();
-        }
-        state.0.insert(key, Totals { through, totals: totals.clone() });
-    }
-    Ok(totals)
+    Ok(Window { first_day, first_hour, days, parts, at_hours, reads, theatres })
 }
 
 fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<AirTimelineReply> {
@@ -883,7 +791,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     let names = names(source, load);
     let mut warnings = names.warnings.clone();
     let shown_window = window(&query, params, view_first, view_last, &mut warnings, cancelled)?;
-    let (first_hour, count) = (shown_window.first_hour, shown_window.count);
+    let first_hour = shown_window.first_hour;
     let gaps: Vec<HourSpan> = query
         .timeline
         .unheld
@@ -907,58 +815,28 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
             .zip(readouts.into_iter().chain(std::iter::repeat(None)))
             .map(|((&region, cells), readout)| {
                 let (name, name_missing) = region_name(&names, region);
-                let pinned = params.regions.is_some() || pinned_set.contains(&region);
+                let pinned = pinned_set.contains(&region);
                 AirTimelineRow { region, name, name_missing, pinned, readout, cells }
             })
             .collect()
     };
     let every = params.every == Some(true);
-    let top = (params.regions.is_none() && !every).then(|| params.top.unwrap_or(TOP));
     let charted = shown_window.charted();
     let composer = Days { index: &index, holders: &query.holders, days: &shown_window.reads, rows: &charted, params, theatres: shown_window.theatres.as_deref() };
-
-    let mut candidates: BTreeSet<u32> = match &params.regions {
-        Some(regions) => regions.iter().copied().collect(),
-        None => shown_window.candidates(),
-    };
-    let completed = params.rank_from.filter(|&from| !every && params.regions.is_none() && from < first_hour).map(|from| completed_totals(source, &query, &index, params, from, first_hour - 1, cancelled)).transpose()?;
-    if let Some(totals) = &completed {
-        candidates.extend(totals.keys().copied());
-    }
-    if let Some(theatres) = &shown_window.theatres {
-        let known: Vec<&HashSet<u32>> = theatres.iter().flatten().filter_map(|read| read.as_ref().ok()).collect();
-        if known.len() == theatres.iter().flatten().count() {
-            let allowed: HashSet<u32> = known.into_iter().flatten().copied().collect();
-            candidates.retain(|region| allowed.contains(region));
-        }
-    }
-    let candidates: Vec<u32> = candidates.into_iter().filter(|region| every || params.regions.is_some() || (!pinned_set.contains(region) && !hidden_set.contains(region))).collect();
+    let mut rank_missing = None;
+    let mut filtered = (0u32, 0u32);
     let shown = if every {
-        let mut shown = candidates;
+        let mut shown: Vec<u32> = shown_window.candidates().into_iter().collect();
         shown.push(ABSENT);
         shown
     } else {
-        let mut ranked = match &completed {
-            Some(totals) => {
-                let mut order: Vec<(u32, u128)> = candidates.iter().map(|&region| (region, totals.get(&region).copied().unwrap_or(0))).collect();
-                order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-                order.truncate(top.unwrap_or(usize::MAX));
-                order.into_iter().map(|(region, _)| region).collect()
-            }
-            None => {
-                let counted = if count <= 1 || view_last.rem_euclid(DAY) == DAY - 1 { count } else { count - 1 };
-                let viewpoint = params.mode == Some(AirMode::Viewpoint);
-                let bounds = top.and_then(|_| bounds(&query, &shown_window.stretches, viewpoint));
-                composer.rank(&candidates, bounds.as_ref(), counted, top, cancelled)?
-            }
-        };
-        if params.regions.is_none() && !pinned_list.is_empty() {
-            let mut combined = pinned_list;
-            combined.append(&mut ranked);
-            combined
-        } else {
-            ranked
-        }
+        let candidates: Vec<u32> = shown_window.candidates().into_iter().filter(|region| !pinned_set.contains(region)).collect();
+        let ranked = composer.rank_at(&candidates, cancelled)?;
+        filtered = (ranked.regions.iter().filter(|region| hidden_set.contains(region)).count() as u32, ranked.outside);
+        rank_missing = ranked.missing;
+        let mut shown = pinned_list;
+        shown.extend(ranked.regions.into_iter().filter(|region| !hidden_set.contains(region)).take(params.top.unwrap_or(TOP)));
+        shown
     };
     let mut resolver = RecordedSideResolver::new(source, &query, load, cancelled, &mut warnings)?;
     let mut cells = composer.shown_with_resolver(&shown, &index, &mut resolver, cancelled)?;
@@ -968,6 +846,11 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     }
     let shown = &shown[..cells.cells.len()];
     let rows = named(shown, cells.cells, cells.readouts.into_iter().map(Some).collect());
+    let empty = (!every && rows.is_empty()).then(|| match (&rank_missing, filtered) {
+        (Some(reason), _) => NoRegions::Unread { reason: reason.clone() },
+        (None, (hidden, outside)) if hidden + outside > 0 => NoRegions::Filtered { hidden, outside },
+        (None, _) => NoRegions::None,
+    });
     Ok(AirTimelineReply {
         first_hour,
         last_hour: view_last,
@@ -979,6 +862,8 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         viewpoint: cells.viewpoint,
         gaps,
         rows,
+        rank_missing,
+        empty,
         absent,
         scale: SCALE,
         bad_below: BAD_BELOW,
@@ -993,7 +878,7 @@ impl Product for AirSuperiorityTimeline {
     const KEY: &'static str = "air-superiority-timeline";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirTimelineParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, rankFrom: Start, every, mode, viewpoint, viewpointCountry, sides, regions, pinnedRegions, hiddenRegions, theatres, top, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, every, mode, viewpoint, viewpointCountry, sides, pinnedRegions, hiddenRegions, theatres, top, "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = AirTimelineReply;
 
     #[cfg(any(test, feature = "export-types"))]

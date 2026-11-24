@@ -65,7 +65,7 @@ export const navalLossesMixProjection: BarsProjection<NavalLossesMixOptions> = r
   kind: 'naval-losses',
   family: 'bars',
   nextChange(readView, options) {
-    return nextSeriesRaceChange(readView.hour, { ...options, candidates: [] });
+    return nextSeriesRaceChange(readView.hour, options);
   },
   project(readView: BoundedReadView, options: NavalLossesMixOptions): BarsModel {
     const hour = readView.hour;
