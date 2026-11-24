@@ -14493,6 +14493,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-follow",
+ "dashboard-intelligence",
  "dashboard-land",
  "dashboard-politics",
  "dashboard-text",

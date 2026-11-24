@@ -7,6 +7,7 @@ import type { DashboardClient, GameWindowRegion, GameWindowRender, GameWindowReq
 import { useContentRevision } from './contentRevision';
 import {
   accessibleRegions,
+  shownPlaceholders,
   fitGameWindowSize,
   acceptRender,
   followGameWindowRender,
@@ -453,6 +454,18 @@ export default function GameWindowView({
           }}
           draggable={false}
         />
+        <div className="game-window-placeholders" aria-hidden="true">
+          {shownPlaceholders(render.placeholders, render.logicalSize).map(({ placeholder, rect }, index) => <span
+            key={`${placeholder.path}:${index}`}
+            className="game-window-placeholder"
+            style={{
+              left: `${(rect[0] / logicalWidth) * 100}%`,
+              top: `${(rect[1] / logicalHeight) * 100}%`,
+              width: `${(rect[2] / logicalWidth) * 100}%`,
+              height: `${(rect[3] / logicalHeight) * 100}%`,
+            }}
+          ><span className="game-window-placeholder-label">{placeholder.label}</span></span>)}
+        </div>
         <div className="game-window-regions" aria-label={`${label} controls`}>
           {focusRegions.map(({ region, rect, label: regionLabel, role }, index) => {
             const style = {

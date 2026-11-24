@@ -10,7 +10,8 @@ import type { AnyTableWidgetDeclaration, DeclaredTableContext } from '../../fami
 import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
 import type { TableModel, TableProjection } from '../../families/table/model.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, type TableSettings } from '../../families/table/settings.ts';
-import type { MarketLendLeaseReply } from '../../generated/dashboard';
+import type { AgencyComparisonReply, MarketLendLeaseReply } from '../../generated/dashboard';
+import { registerGameWindow, unregisterGameWindow } from '../../dashboard/gameWindows.ts';
 import { TABLE_VIEWS } from './table.ts';
 
 const identity: IdentityProvider = {
@@ -124,4 +125,26 @@ test('agency comparison asks the product for the stored top measure and for uncr
   assert.equal(params({}).top?.by, 'defense', 'counter intelligence stays the default');
   assert.equal(params({ includeUncreated: true }).includeUncreated, true);
   assert.equal(params({}).includeUncreated, false);
+});
+
+test('agency comparison opens the agency window by country id, and only for a created agency', async () => {
+  const table = await hosted('agency-comparison');
+  const agency = (id: number, created: boolean) => ({
+    country: { id, tag: `T${id}` }, created, name: created ? `Agency ${id}` : null, nameMissing: created ? null : 'Not created',
+    defenseRaw: '0', defenseText: null, defenseValue: null, activeCount: 0, maximum: 0, upgrades: null,
+  });
+  const reply: AgencyComparisonReply = {
+    agencies: [agency(7, true), agency(9, false)], defenseLabel: null, upgradesMissing: null, missing: null, warnings: [],
+  };
+  const readView = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity });
+  const draw = () => table.projection.project(readView, table.declaration.projectionOptions(context(table.options({ includeUncreated: true }))));
+  const view = (model: TableModel) => model.rows.map(row => [row.key, row.cells.view?.value.kind, row.tooltipAction ?? null]);
+  assert.deepEqual(view(draw()).map(([key, status]) => [key, status]), [['7', 'notApplicable'], ['9', 'notApplicable']],
+    'no View while no agency window is registered');
+  registerGameWindow('intelligenceAgency', () => null);
+  try {
+    assert.deepEqual(view(draw()), [['7', 'known', 'Open its agency window'], ['9', 'notApplicable', null]]);
+  } finally {
+    unregisterGameWindow('intelligenceAgency');
+  }
 });
