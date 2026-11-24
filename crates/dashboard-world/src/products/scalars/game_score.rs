@@ -115,7 +115,7 @@ pub(super) fn row(tag: &str, score: &CountryGameScoreRow) -> GameScoreRow {
 
 const SCORES: [&str; 6] = ["total", "army", "navy", "air", "industry", "land"];
 
-fn part(score: &CountryGameScoreRow, by: &str) -> Option<(&Recorded<i64>, u8)> {
+fn part<'a>(score: &'a CountryGameScoreRow, by: &str) -> Option<(&'a Recorded<i64>, u8)> {
     Some(match by {
         "total" => (&score.total, score.total_reason),
         "army" => (&score.army, score.army_reason),

@@ -4,7 +4,7 @@ import type { TableGroup } from '../../charts/table/logic';
 import type { MeasureParts } from '../../charts/race/measureParts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatRaw } from '../../charts/race/measureRaceData.ts';
-import type { CountryGroupReply, GameScoreCell, GameScoreReply as Generated, GameScoreRow } from '../../generated/dashboard';
+import type { CountryGroupReply, GameScoreCell, GameScoreReply as Generated, GameScoreRow, GameScoreTop } from '../../generated/dashboard';
 
 export type GameScoreReply = Omit<Generated, 'hour'>;
 import { resolveCountries } from '../../dashboard/groups.ts';
@@ -24,11 +24,15 @@ export const SCORE_HINTS: Readonly<Record<ScorePart, string>> = {
 };
 
 const cellOk = (cell: unknown) => !!cell && typeof cell === 'object' && ((cell as GameScoreCell).missing === null || typeof (cell as GameScoreCell).missing === 'string');
+const topOk = (top: unknown) => top === undefined || (!!top && typeof top === 'object' && Array.isArray((top as GameScoreTop).tags)
+  && (top as GameScoreTop).tags.every(tag => typeof tag === 'string')
+  && ((top as GameScoreTop).missing === null || typeof (top as GameScoreTop).missing === 'string'));
 
 export function validateGameScore(value: unknown): GameScoreReply {
   const reply = value as Partial<GameScoreReply> | null;
   const ok = !!reply && typeof reply === 'object' && Array.isArray(reply.warnings)
     && (reply.missing === null || typeof reply.missing === 'string') && !!reply.hints && typeof reply.hints === 'object'
+    && topOk(reply.top)
     && Array.isArray(reply.rows) && reply.rows.every(row => row && typeof row.tag === 'string' && SCORE_PARTS.every(part => cellOk(row[part])))
     && Array.isArray(reply.multipliers) && reply.multipliers.every(multiplier => multiplier && typeof multiplier.part === 'string'
       && (multiplier.raw === null ? typeof multiplier.missing === 'string' : typeof multiplier.raw === 'string'));
