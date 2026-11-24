@@ -69,11 +69,6 @@ export function raidLogGroups(data: Pick<RaidLogReply, 'episodes' | 'outcomeNone
   }));
 }
 
-export function raidLogRows(data: Pick<RaidLogReply, 'episodes' | 'outcomeNone' | 'outcomeFailure' | 'outcomeCanceled'>, hour: number, types: readonly string[], matches: (tag: string | null, hour: number) => boolean,
-  from: number | null): ReadonlyArray<LogRow<RaidAt>> {
-  return raidLogGroups(data, hour, types, matches, from).flatMap(group => group.rows);
-}
-
 export function raidLogSections(groups: readonly RaidLogGroup[], months: boolean): ReadonlyArray<LogSection<RaidAt>> | null {
   if (!groups.some(group => group.unordered)) return null;
   const sections: LogSection<RaidAt>[] = [];

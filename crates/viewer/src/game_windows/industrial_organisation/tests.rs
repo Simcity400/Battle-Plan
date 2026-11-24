@@ -383,6 +383,69 @@ fn bonuses_for_different_equipment_targets_are_never_summed_together() {
     );
 }
 
+#[test]
+fn policy_base_costs_come_from_the_owners_roster_never_the_holders() {
+    use replay_data::rows::{
+        CountryLinkRow, CountryRow, IndustrialOrganisationPoliciesRow, IndustrialOrganisationPolicy,
+        TableRows,
+    };
+    use replay_frame::frame::TableView;
+    const HOLDER: u32 = 4_999;
+    const OWNER_ALIAS: u32 = 5_000;
+    const OWNER: u32 = 6_000;
+    let mut frame = empty_frame();
+    let mut set = |id: TableId, rows: TableRows| *frame.tables[id.index()] = TableView::Complete(rows);
+    set(
+        TableId::Countries,
+        TableRows::Countries(
+            [(HOLDER, 3, "HLD"), (OWNER, 7, "OWN")]
+                .into_iter()
+                .map(|(id, canonical_slot, tag)| CountryRow {
+                    id,
+                    canonical_slot,
+                    tag: tag.as_bytes().to_vec(),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    set(
+        TableId::CountryLinks,
+        TableRows::CountryLinks(
+            [(HOLDER, 3), (OWNER_ALIAS, 7), (OWNER, 7)]
+                .into_iter()
+                .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+                .collect(),
+        ),
+    );
+    let roster = |country, cost| IndustrialOrganisationPoliciesRow {
+        country,
+        policies: vec![IndustrialOrganisationPolicy {
+            token: 10,
+            cost,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    set(
+        TableId::IndustrialOrganisationPolicies,
+        TableRows::IndustrialOrganisationPolicies(vec![roster(HOLDER, 99), roster(OWNER, 25)]),
+    );
+    let organisation = IndustrialOrganisationRow {
+        organisation: 1,
+        country: HOLDER,
+        owner: OWNER_ALIAS,
+        ..Default::default()
+    };
+    let rows = spelled_tokens();
+    let costs = owner_policy_roster(&frame, &organisation, Ok(&rows)).unwrap();
+    assert_eq!(costs["synthetic_policy"].cost, Some(25));
+
+    let unowned = IndustrialOrganisationRow { owner: 1, ..organisation };
+    let refused = owner_policy_roster(&frame, &unowned, Ok(&rows)).unwrap_err();
+    assert!(refused.contains("roster is unavailable"), "{refused}");
+}
+
 fn cache_key(layers: &ResolvedLayers, window: &str) -> WindowCacheKey {
     WindowCacheKey {
         source_id: "src".to_owned(),

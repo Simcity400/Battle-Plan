@@ -21,6 +21,7 @@ pub mod metadata;
 pub mod occupation_law;
 pub mod modifier_text;
 pub mod naval_battle_name;
+pub mod organisation_quote;
 pub mod party_names;
 pub mod scope;
 pub mod scripted_text;

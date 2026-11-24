@@ -5,13 +5,10 @@ import { setToken } from './options';
 import { useProduct } from './products';
 import { useFactionColours } from './FactionColours';
 import { useCountryLooks } from './countryLooks';
-import { airMode, airParams, airSideName, validateAirChoices } from './airSuperiority';
-import type { AirModeSettings } from './airSuperiority';
+import { airSideName, validateAirChoices } from './airSuperiority';
 import { airChoiceToken } from './airOptions';
 import type { AirChoicesReply, FactionGroup } from '../generated/dashboard';
 import { productRequest } from './request.ts';
-
-export { airMode, airParams, type AirModeSettings };
 
 export function useAirChoicesReply(runtime: WidgetRuntime, widget: WidgetSpec, active: boolean) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);

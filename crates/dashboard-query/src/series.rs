@@ -366,7 +366,7 @@ pub fn answer_grouped(query: &Query<'_>, product: &str, params: &serde_json::Val
                 measures.push(series.measure(name).ok_or_else(|| invalid(format!("{} has no measure {name}", series.kind)))?);
             }
             let asks = match ranked::top(&line, params.top)? {
-                Some(n) => ranked::stepped(&line, origin, key, bounds, n)?.into_iter().map(|tag| Ask::whole(&tag)).collect(),
+                Some(n) => ranked::stepped(&line, origin, key, bounds, n)?.into_iter().map(Ask::whole).collect(),
                 None => line.asks(&params.countries, &params.lines)?,
             };
             let within: Within = params.within.iter().map(|(country, spans)| (country.clone(), spans.iter().map(|span| (span.first_hour, span.last_hour)).collect())).collect();
@@ -645,7 +645,7 @@ impl<'q, 'a> Line<'q, 'a> {
         out
     }
 
-    pub fn rank_at(&self, hour: i32, n: usize, least: bool) -> io::Result<Result<Vec<String>, String>> {
+    pub fn rank_at(&self, hour: i32, n: usize, least: bool) -> io::Result<Result<Vec<Country>, String>> {
         self.owners_only("a rank at an hour")?;
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
             return Ok(Err(self.query.timeline.reason(hour)));
@@ -666,36 +666,81 @@ impl<'q, 'a> Line<'q, 'a> {
         let view = snapshot.view();
         let holders = self.by_key();
         let tag_of = |key: u128| holders.get(&key)?.iter().find(|run| run.0 <= hour && hour <= run.1).map(|run| run.2);
-        let mut values: Vec<(i64, &str)> = Vec::new();
+        let mut values: Vec<(i64, Country)> = Vec::new();
         let mut held: HashSet<u128> = HashSet::new();
         for slot in view.rows() {
             let Some(key) = view.key(slot) else { continue };
             held.insert(key);
-            let Some(tag) = tag_of(key) else {
-                return Ok(Err(format!("{} holds a row of a country not known at this hour", crate::coverage::table_title(self.series.table))));
+            let country = match (tag_of(key), self.unnamed_slot(key)) {
+                (Some(tag), _) => Country::from(tag),
+                (None, Some(slot)) => Country::Slot(slot),
+                (None, None) => return Ok(Err(format!("{} holds a row of a country not known at this hour", crate::coverage::table_title(self.series.table)))),
             };
             match self.source.read(&view, slot) {
-                Computed::Value(value) => values.push((value, tag)),
+                Computed::Value(value) => values.push((value, country)),
                 Computed::NotApplicable(_) => {}
-                Computed::Unrecorded => return Ok(Err(self.query.holders.say(&Country::from(tag), hour, |name| board::measure_unrecorded(name, self.measure.name)))),
+                Computed::Unrecorded => return Ok(Err(self.query.holders.say(&country, hour, |name| board::measure_unrecorded(name, self.measure.name)))),
             }
         }
         if self.series.absent_none {
-            values.extend(holders.iter().filter(|(key, _)| !held.contains(key)).filter_map(|(&key, _)| Some((0, tag_of(key)?))));
+            values.extend(holders.iter().filter(|(key, _)| !held.contains(key)).filter_map(|(&key, _)| Some((0, Country::from(tag_of(key)?)))));
         }
-        let order = |a: &(i64, &str), b: &(i64, &str)| {
+        let order = |a: &(i64, Country), b: &(i64, Country)| {
             let (a0, b0) = if least { (b.0, a.0) } else { (a.0, b.0) };
-            b0.cmp(&a0).then_with(|| a.1.cmp(b.1))
+            b0.cmp(&a0).then_with(|| a.1.cmp(&b.1))
         };
         if values.len() > n && n > 0 {
             values.select_nth_unstable_by(n - 1, order);
             values.truncate(n);
         }
         values.sort_unstable_by(order);
-        Ok(Ok(values.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect()))
+        Ok(Ok(values.into_iter().take(n).map(|(_, country)| country).collect()))
     }
 
-    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), same: impl Fn(&[String]) -> bool) -> io::Result<(i32, i32)> {
+    fn unnamed_slot(&self, key: u128) -> Option<u32> {
+        match self.series.key {
+            dashboard_declare::Key::Slot => u32::try_from(key).ok(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn unnamed_states(&self, slots: &[u32], hour: i32) -> io::Result<Vec<SeriesState>> {
+        let blank = |slot: u32, missing: Option<String>| SeriesState { country: Country::Slot(slot), part: None, hour, run: None, drop: None, missing, not_applicable: None };
+        let Some(stretch) = self.query.timeline.at(hour).copied() else {
+            return Ok(slots.iter().map(|&slot| blank(slot, Some(self.query.timeline.reason(hour)))).collect());
+        };
+        let keys: Vec<u128> = slots.iter().map(|&slot| u128::from(slot)).collect();
+        let columns = read::columns_of(&self.source);
+        let recording = self.query.replay.recording();
+        let snapshot = crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, stretch.run, self.series.table, hour, Some(&columns), replay_lanes::lanes::Keys::These(&keys)))?;
+        let view = snapshot.view();
+        Ok(slots
+            .iter()
+            .map(|&slot| {
+                let row = snapshot.rows.iter().find(|(key, _)| *key == u128::from(slot)).map(|&(_, at)| at);
+                match row.map(|at| self.source.read(&view, at)) {
+                    Some(Computed::Value(value)) => SeriesState {
+                        run: Some(SeriesRun {
+                            first_hour: hour,
+                            last_hour: hour,
+                            value_raw: value.to_string(),
+                            slot,
+                            country_id: 0,
+                            starts_segment: false,
+                            segment_first_hour: hour,
+                            first_exact: false,
+                            last_exact: false,
+                        }),
+                        ..blank(slot, None)
+                    },
+                    Some(Computed::NotApplicable(reason)) => SeriesState { not_applicable: Some(true), ..blank(slot, Some(reason.to_owned())) },
+                    _ => blank(slot, Some(board::measure_unrecorded(&Country::Slot(slot).key(), self.measure.name))),
+                }
+            })
+            .collect())
+    }
+
+    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), same: impl Fn(&[Country]) -> bool) -> io::Result<(i32, i32)> {
         let timeline = &self.query.timeline;
         let lo = within.0.max(timeline.first).max(hour.saturating_sub(crate::tile::RANK_PROOF_HOURS));
         let hi = within.1.min(timeline.last).min(hour.saturating_add(crate::tile::RANK_PROOF_HOURS));
@@ -719,9 +764,10 @@ impl<'q, 'a> Line<'q, 'a> {
         let hours = i64::from(to) - i64::from(from) + 1;
         let six = replay_columnar::summary::bucket_hours(0);
         if hours < six {
-            let Ok(tags) = self.rank_at(to, n, false)? else {
+            let Ok(ranked) = self.rank_at(to, n, false)? else {
                 return Ok(Vec::new());
             };
+            let tags: Vec<String> = ranked.iter().filter_map(|country| country.tag().map(str::to_owned)).collect();
             let charts = self.summaries(&tags, from, to, width)?;
             return Ok(tags
                 .into_iter()

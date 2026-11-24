@@ -1,5 +1,5 @@
 import type { LogRow } from '../../charts/log/logData';
-import { logCountryRequests, newestFirst } from '../../charts/log/logData.ts';
+import { newestFirst } from '../../charts/log/logData.ts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { TooltipContent } from '../../charts/tooltip';
 import { drawableIcon } from '../../dashboard/artwork.ts';
@@ -53,10 +53,6 @@ export function validateShipsSunkReply(data: unknown): ShipsSunkReply {
   return reply;
 }
 
-function currentRows(rows: readonly LogRow<ShipsSunkRow>[], reply: ShipsSunkReply | undefined) {
-  return rows.filter(row => reply?.rows[Number(row.key)] === row.item);
-}
-
 export function shipClassKey(reply: ShipsSunkReply, type: ShipClassInfo, campaignKey: string): string {
   return type.key ?? campaignToken(campaignKey, `${reply.branchId}:${type.token}`);
 }
@@ -74,17 +70,6 @@ export function manifestClassChoices(manifest: ShipsSunkManifestReply | undefine
   return [...new Map(choices.map(choice => [choice.value, choice])).values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
-export function shipClassChoices(reply: ShipsSunkReply | undefined, campaignKey: string): { value: string; label: string; icon: string | null; hint?: string }[] {
-  if (!reply) return [];
-  const present = new Map<number, ShipsSunkRow>();
-  for (const row of reply.rows) if (!present.has(row.classIndex)) present.set(row.classIndex, row);
-  return [...new Map([...present].map(([index, row]) => {
-    const type = reply.classes[index];
-    return { value: shipClassKey(reply, type, campaignKey), label: shipClassName(reply, row), icon: type.icon,
-      hint: contentTitleHint(type.key ?? type.token) };
-  }).map(choice => [choice.value, choice])).values()].sort((a, b) => a.label.localeCompare(b.label));
-}
-
 const shipOrders = new WeakMap<ShipsSunkReply, ReadonlyArray<LogRow<ShipsSunkRow>>>();
 export function shipLogOrder(reply: ShipsSunkReply): ReadonlyArray<LogRow<ShipsSunkRow>> {
   let rows = shipOrders.get(reply);
@@ -94,13 +79,6 @@ export function shipLogOrder(reply: ShipsSunkReply): ReadonlyArray<LogRow<ShipsS
 
 export const shipCountryHour = (row: ShipsSunkRow, role: 'victim' | 'sinker') =>
   (role === 'victim' ? row.victimAsOf : row.attackerAsOf) ?? row.sinkHour;
-
-export function shipCountryRequests(rows: readonly LogRow<ShipsSunkRow>[], reply: ShipsSunkReply | undefined) {
-  return logCountryRequests(currentRows(rows, reply).flatMap(row => [
-    { ...row, hour: shipCountryHour(row.item, 'victim'), item: row.item.victim },
-    { ...row, hour: shipCountryHour(row.item, 'sinker'), item: row.item.attacker },
-  ]), row => ({ hour: row.hour, tags: [row.item] }));
-}
 
 export function shipCountryLabels(row: ShipsSunkRow, labelAt: (hour: number) => CountryLabel): {
   victim: ReturnType<CountryLabel>; attacker: ReturnType<CountryLabel>;

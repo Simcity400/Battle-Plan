@@ -1,13 +1,11 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import { battleOptions, battleVariants } from '../battles/battleOptions.ts';
-export { DEFAULT_SORT, DEFAULT_TOP_N } from '../battles/battleOptions.ts';
 
 const TABLE_ONLY = new Set(['cellBars', 'rankMarkers', 'tableSort']);
 export const OPTIONS = [...battleOptions([
   { value: 'Casualties', label: 'Casualties' }, { value: 'Peak size', label: 'Most divisions at once' }, { value: 'Length', label: 'Length' },
 ]).filter(field => !TABLE_ONLY.has(field.key)), DRILL_OPTION];
-export const VIEWS = [{ value: 'log', label: 'Log' }, { value: 'biggest', label: 'Biggest' }] as const;
 export const definition = {
   kind: 'land-battles', version: 1, title: 'Land battles', icon: 'shield',
   description: 'Land battles: where and when, who fought and who won, and what each side lost.',
