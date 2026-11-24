@@ -7,7 +7,8 @@ import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '.
 import { sectionLiveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { FamilyArtLoader, type FamilyArtFetcher } from '../artLoader.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
-import type { FamilySources } from '../contract.ts';
+import { createBoundedReadView } from '../boundedView.ts';
+import type { BoundedReadView } from '../contract.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths, type FamilyColumnLayout, type FamilyTableLayout } from './layout.ts';
 import { nextLookChange, type CountryLooksMap } from '../looks.ts';
 import {
@@ -195,17 +196,13 @@ function snapshotPictures(pictures: readonly Picture<LaneValue>[]): readonly (re
   return pictures.map(picture => picture.parts.slice());
 }
 
-function lazyLiveMap(
-  scene: Scene,
-  binding: FamilyTableBinding,
-): ReadonlyMap<string, LiveValues<number | bigint | string> | null> {
-  const cache = new Map<string, LiveValues<number | bigint | string> | null>();
-  let materialized = false;
-  const resolveOne = (name: string): LiveValues<number | bigint | string> | null | undefined => {
-    if (cache.has(name)) return cache.get(name);
+export function readViewFromScene(scene: Scene, binding: FamilyTableBinding, hour: number): BoundedReadView {
+  const liveCache = new Map<string, LiveValues<number | bigint | string> | null>();
+  const resolveLive = (name: string): LiveValues<number | bigint | string> | null | undefined => {
+    if (liveCache.has(name)) return liveCache.get(name);
     if (binding.staticPanels && Object.hasOwn(binding.staticPanels, name)) {
       const val = repliedCells(binding.staticPanels[name]).read();
-      cache.set(name, val);
+      liveCache.set(name, val);
       return val;
     }
     if (Object.hasOwn(binding.sources, name)) {
@@ -215,64 +212,46 @@ function lazyLiveMap(
       const head = picture?.parts[0]?.value;
       if (head && head.kind === 'panel' && head.refused === null) {
         const val = sectionLiveValues(picture!);
-        cache.set(name, val);
+        liveCache.set(name, val);
         return val;
       }
     }
     return undefined;
   };
-  const materializeAll = () => {
-    if (materialized) return;
-    materialized = true;
-    if (binding.staticPanels) for (const name of Object.keys(binding.staticPanels)) resolveOne(name);
-    for (const name of Object.keys(binding.sources)) resolveOne(name);
-  };
-  return {
-    get: (name: string) => resolveOne(name),
-    has: (name: string) => resolveOne(name) !== undefined,
-    get size() { materializeAll(); return cache.size; },
-    entries: () => { materializeAll(); return cache.entries(); },
-    keys: () => { materializeAll(); return cache.keys(); },
-    values: () => { materializeAll(); return cache.values(); },
-    forEach: (cb, thisArg) => { materializeAll(); cache.forEach(cb, thisArg); },
-    [Symbol.iterator]: () => { materializeAll(); return cache[Symbol.iterator](); },
-  };
-}
-
-export function sourcesFromScene(scene: Scene, binding: FamilyTableBinding): FamilySources {
-  let answers: Map<string, FollowedAnswer | undefined> | null = null;
-  let panels: Map<string, unknown> | null = null;
-  let refused: Map<string, string> | null = null;
-  let live: ReadonlyMap<string, LiveValues<number | bigint | string> | null> | null = null;
-  const ensureNonLive = () => {
-    if (answers && panels && refused) return;
-    answers = new Map();
-    panels = new Map();
-    refused = new Map();
-    if (binding.staticAnswers) {
-      for (const [name, answer] of Object.entries(binding.staticAnswers)) answers.set(name, answer);
-    }
-    if (binding.staticPanels) {
-      for (const [name, data] of Object.entries(binding.staticPanels)) panels.set(name, data);
-    }
-    for (const [name, subId] of Object.entries(binding.sources)) {
-      const at = scene.subs.findIndex(sub => sub.id === subId);
-      const picture = at < 0 ? undefined : scene.pictures[at];
-      const head = picture?.parts[0]?.value;
-      if (!head) continue;
-      if (head.kind === 'answer') answers.set(name, answerOf(head));
-      else if (head.kind === 'panel') {
-        if (head.refused === null) panels.set(name, head.data);
-        else refused.set(name, head.refused);
+  const revisions: Record<string, number> = {};
+  for (const [name, subId] of Object.entries(binding.sources)) {
+    const at = scene.subs.findIndex(sub => sub.id === subId);
+    const rev = at < 0 ? undefined : scene.pictures[at]?.parts[0]?.version;
+    if (rev !== undefined) revisions[name] = rev;
+  }
+  return createBoundedReadView({
+    hour,
+    revisions,
+    ensureNonLive: () => {
+      const answers = new Map<string, FollowedAnswer | undefined>();
+      const panels = new Map<string, unknown>();
+      const refused = new Map<string, string>();
+      if (binding.staticAnswers) {
+        for (const [name, answer] of Object.entries(binding.staticAnswers)) answers.set(name, answer);
       }
-    }
-  };
-  return {
-    get answers() { ensureNonLive(); return answers!; },
-    get panels() { ensureNonLive(); return panels!; },
-    get refused() { ensureNonLive(); return refused!; },
-    get live() { return live ??= lazyLiveMap(scene, binding); },
-  };
+      if (binding.staticPanels) {
+        for (const [name, data] of Object.entries(binding.staticPanels)) panels.set(name, data);
+      }
+      for (const [name, subId] of Object.entries(binding.sources)) {
+        const at = scene.subs.findIndex(sub => sub.id === subId);
+        const picture = at < 0 ? undefined : scene.pictures[at];
+        const head = picture?.parts[0]?.value;
+        if (!head) continue;
+        if (head.kind === 'answer') answers.set(name, answerOf(head));
+        else if (head.kind === 'panel') {
+          if (head.refused === null) panels.set(name, head.data);
+          else refused.set(name, head.refused);
+        }
+      }
+      return { panels, answers, refused };
+    },
+    resolveLive,
+  });
 }
 
 function sameColumnSpecs(a: readonly TableColumnSpec[] | null, b: readonly TableColumnSpec[]): boolean {
@@ -402,8 +381,8 @@ export function familyTableLaneView(
         nextLookChange(bound.theme?.countryLooks, hour),
       );
       if (projection.nextChange) {
-        const sources = sourcesFromScene(scene, bound);
-        soonest = Math.min(soonest, projection.nextChange(sources, hour, bound.options));
+        const readView = readViewFromScene(scene, bound, hour);
+        soonest = Math.min(soonest, projection.nextChange(readView, bound.options));
       }
       const held = state?.get('familyTable') as HeldFamilyTable | undefined;
       if (
@@ -561,8 +540,8 @@ export function familyTableLaneView(
         model = held.cachedModel!;
         flatRows = held.cachedRows;
       } else {
-        const sources = sourcesFromScene(input, bound);
-        model = projection.project(sources, input.hour, bound.options);
+        const readView = readViewFromScene(input, bound, input.hour);
+        model = projection.project(readView, bound.options);
         const modelNextAt = nextTableChange(model, input.hour);
         const canIncResolve = prevModel !== null
           && model.changedKeys !== undefined
@@ -599,7 +578,7 @@ export function familyTableLaneView(
           modelNextAt,
         );
         if (projection.nextChange) {
-          nextBoundary = Math.min(nextBoundary, projection.nextChange(sources, input.hour, bound.options));
+          nextBoundary = Math.min(nextBoundary, projection.nextChange(readView, bound.options));
         }
         held.prevParts = snapshotPictures(input.pictures);
         held.prevOptions = bound.options;

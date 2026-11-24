@@ -246,13 +246,30 @@ export const divisionTemplateDeclaration: TableWidgetDeclaration<DivisionTemplat
   emptyCampaign: 'Load a campaign to see templates.',
   optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its templates.' },
-  source: {
-    kind: 'panel',
-    product: 'division-templates',
-    params: ctx => (ctx.countryTag
+  sources: ctx => {
+    const params = ctx.countryTag
       ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), countFor: ctx.options.countFor === 'host' ? 'host' : 'owner' }
-      : null),
-    validate: validateDivisionTemplates,
+      : null;
+    return {
+      owner: `division-template:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}`,
+      entries: params
+        ? [{
+            name: 'main',
+            source: ctx.track.source,
+            branch: ctx.branch.id,
+            offset: ctx.track.axisOffset,
+            read: {
+              shape: 'point',
+              channel: 'panel',
+              coverage: { mode: 'keyed', keys: [ctx.countryTag!] },
+              product: 'division-templates',
+              followQuery: { panel: 'division-templates', ...params },
+              params,
+              validate: validateDivisionTemplates,
+            },
+          }]
+        : [],
+    };
   },
   projection: divisionTemplateProjection,
   columns: ctx => divisionTemplateColumns(ctx.options.cellBars === true),

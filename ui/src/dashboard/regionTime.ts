@@ -218,6 +218,20 @@ export function recordedHour(track: Branch | undefined, hour: number | null | un
   return coverageAt(track, hour).hour;
 }
 
+export function lastRecordedHour(track: Branch | undefined): TrackHour | null {
+  if (!track) return null;
+  const { firstHour, lastHour, gaps } = track.branch;
+  if (!Number.isSafeInteger(firstHour) || !Number.isSafeInteger(lastHour) || firstHour > lastHour) return null;
+  if (!gaps?.length) return lastHour as TrackHour;
+  let at = lastHour;
+  while (at >= firstHour) {
+    const gap = gapAt(track, at);
+    if (!gap) return at as TrackHour;
+    at = gap.firstHour - 1;
+  }
+  return null;
+}
+
 export function bucketEdges(track: Branch, size: number): readonly number[] {
   const edges: number[] = [];
   for (let edge = (Math.floor(track.branch.firstHour / size) + 1) * size; edge <= track.branch.lastHour; edge += size) edges.push(edge);

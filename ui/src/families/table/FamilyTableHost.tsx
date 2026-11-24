@@ -10,8 +10,9 @@ import { useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.ts
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { perfLog } from '../../shell/perf.ts';
+import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { auditIdOf } from '../audit.ts';
-import type { FamilySources, FamilySourceSubscription, MirrorModel } from '../contract.ts';
+import type { BoundedReadView, FamilySourceSubscription, MirrorModel } from '../contract.ts';
 import {
   attachAuditWatch,
   bindFamilyPointer,
@@ -51,7 +52,7 @@ interface AuditSnapshot<TOptions> {
   readonly options: TOptions;
   readonly settings: TableSettings;
   readonly expanded: Readonly<Record<string, boolean>>;
-  readonly exactSources: (hour: number) => Promise<FamilySources | null>;
+  readonly exactReadView: (hour: number) => Promise<BoundedReadView | null>;
   readonly width: number;
   readonly window: { readonly first: number; readonly count: number };
   readonly measuredWidths: Readonly<Record<string, number>>;
@@ -59,9 +60,9 @@ interface AuditSnapshot<TOptions> {
 }
 
 async function verifyTableAuditSnapshot<TOptions>(hour: number, snap: AuditSnapshot<TOptions>) {
-  const exact = await snap.exactSources(hour);
+  const exact = await snap.exactReadView(hour);
   if (!exact) return null;
-  const model = snap.declaration.project(exact, hour, snap.options);
+  const model = snap.declaration.project(exact, snap.options);
   const flatRows = resolveTableRows(model, snap.settings, snap.expanded);
   const rankShown = model.rank === true;
   const rankWidth = rankShown ? (model.rankMarkers ? 64 : 36) : 0;
@@ -99,8 +100,9 @@ export interface FamilyTableHostProps<TOptions> {
   readonly editableColumns?: boolean;
   readonly subscriptions: readonly FamilySourceSubscription[];
   readonly allowEmptyFollow?: boolean;
-  readonly staticSources?: { readonly sources: FamilySources; readonly hour: number } | null;
-  readonly exactSources?: (hour: number) => Promise<FamilySources | null>;
+  readonly owner?: string;
+  readonly staticSources?: { readonly panels?: Readonly<Record<string, unknown>>; readonly answers?: Readonly<Record<string, FollowedAnswer>>; readonly hour: number } | null;
+  readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
@@ -159,8 +161,9 @@ export default function FamilyTableHost<TOptions>({
   editableColumns = true,
   subscriptions,
   allowEmptyFollow = false,
+  owner,
   staticSources = null,
-  exactSources,
+  exactReadView,
   offset,
   pin,
   bounds,
@@ -212,7 +215,7 @@ export default function FamilyTableHost<TOptions>({
     options: TOptions;
     settings: TableSettings;
     expanded: Readonly<Record<string, boolean>>;
-    exactSources: (hour: number) => Promise<FamilySources | null>;
+    exactReadView: (hour: number) => Promise<BoundedReadView | null>;
     width: number;
     windowFirst: number;
     windowCount: number;
@@ -267,12 +270,13 @@ export default function FamilyTableHost<TOptions>({
   const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer('table');
 
   const enabled = active && !prepared && !blockedState && (subscriptions.length > 0 || staticSources !== null || allowEmptyFollow);
-  const auditable = !!exactSources;
+  const auditable = !!exactReadView;
   const placement = useFamilyPlacement({
     family: 'table',
     declarationKind: declaration.kind,
     widgetId: widget.id,
     widgetKind: widget.kind,
+    owner,
     subject,
     widgetTrackIds: widget.trackIds,
     runtime,
@@ -321,7 +325,7 @@ export default function FamilyTableHost<TOptions>({
     theme,
     reducedMotion,
     staticSources,
-    exactSources,
+    exactReadView,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -340,7 +344,7 @@ export default function FamilyTableHost<TOptions>({
     theme,
     reducedMotion,
     staticSources,
-    exactSources,
+    exactReadView,
     selectedKey,
     onActivate,
     contextMenuItems,
@@ -360,14 +364,10 @@ export default function FamilyTableHost<TOptions>({
     const w = Math.max(1, width || 320);
     const h = Math.max(1, height || 200);
     const cur = latestRef.current;
-    const staticPanels = cur.staticSources ? Object.fromEntries(cur.staticSources.sources.panels) : undefined;
-    const staticAnswers = cur.staticSources
-      ? Object.fromEntries(
-        [...cur.staticSources.sources.answers].filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== undefined),
-      )
-      : undefined;
+    const staticPanels = cur.staticSources?.panels;
+    const staticAnswers = cur.staticSources?.answers;
     let auditId: number | undefined;
-    if (perfLog && cur.captureActive && cur.exactSources) {
+    if (perfLog && cur.captureActive && cur.exactReadView) {
       const prev = lastAuditRef.current;
       const win = viewWindowRef.current;
       if (
@@ -376,7 +376,7 @@ export default function FamilyTableHost<TOptions>({
         && prev.options === cur.options
         && prev.settings === cur.settings
         && prev.expanded === expandedRef.current
-        && prev.exactSources === cur.exactSources
+        && prev.exactReadView === cur.exactReadView
         && prev.width === w
         && prev.windowFirst === win.first
         && prev.windowCount === win.count
@@ -390,7 +390,7 @@ export default function FamilyTableHost<TOptions>({
           options: cur.options,
           settings: cur.settings,
           expanded: expandedRef.current,
-          exactSources: cur.exactSources,
+          exactReadView: cur.exactReadView,
           width: w,
           window: { first: win.first, count: win.count },
           measuredWidths: measuredWidthsRef.current,
@@ -402,7 +402,7 @@ export default function FamilyTableHost<TOptions>({
           options: cur.options,
           settings: cur.settings,
           expanded: expandedRef.current,
-          exactSources: cur.exactSources,
+          exactReadView: cur.exactReadView,
           width: w,
           windowFirst: win.first,
           windowCount: win.count,
@@ -531,7 +531,7 @@ export default function FamilyTableHost<TOptions>({
     surfaceRef.current = mounted;
 
     const auditWatch = attachAuditWatch(pipeline, pipe, {
-      isAuditable: () => !!latestRef.current.exactSources,
+      isAuditable: () => !!latestRef.current.exactReadView,
       onCaptureChange: activeAudit => { latestRef.current.captureActive = activeAudit; },
       bindNow: () => bindRef.current(),
     });
@@ -815,7 +815,7 @@ export default function FamilyTableHost<TOptions>({
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
-  }, [pipe, enabled, bind, options, settings, theme, reducedMotion, staticSources, selectedKey, expanded, subsReady, auditable, exactSources, audit.captureActive]);
+  }, [pipe, enabled, bind, options, settings, theme, reducedMotion, staticSources, selectedKey, expanded, subsReady, auditable, exactReadView, audit.captureActive]);
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;

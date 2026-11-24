@@ -3,7 +3,7 @@ import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { changedLiveRows } from '../../draw/views/fields.ts';
 import type { AuditRow } from '../../draw/notifications';
-import type { FamilyProjection, FamilySources, MirrorModel, MirrorRow } from '../contract.ts';
+import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import {
   assertValue,
   compareTie,
@@ -321,7 +321,7 @@ export function resolveTableRowsIncremental(
   if (changed.size === 0) {
     return { flatRows: prevFlat as FlatTableRow[], rowIndex: prevRowIndex as Map<string, number> };
   }
-  if (changed.size * 4 > model.rows.length) return null;
+  if (changed.size * 2 > model.rows.length) return null;
 
   const hour = model.hour;
   const firstColumnKey = model.columns[0]?.key;
@@ -385,7 +385,7 @@ export function resolveTableRowsIncremental(
 
   movedPositions.sort((a, b) => b - a);
   let minTouched = movedPositions[movedPositions.length - 1]!;
-  let maxTouched = movedPositions[0]!;
+  let firstClean = movedPositions[0]! + 1 - movedPositions.length;
   for (let i = 0; i < movedPositions.length; i++) {
     nextFlat.splice(movedPositions[i]!, 1);
   }
@@ -403,12 +403,12 @@ export function resolveTableRowsIncremental(
     }
     nextFlat.splice(lo, 0, entry.flat);
     if (lo < minTouched) minTouched = lo;
-    if (lo > maxTouched) maxTouched = lo;
+    firstClean = (lo <= firstClean ? firstClean : lo) + 1;
   }
 
-  const end = Math.min(nextFlat.length - 1, maxTouched);
+  const end = Math.min(nextFlat.length, firstClean);
   const rowIndex = new Map(prevRowIndex);
-  for (let i = minTouched; i <= end; i++) {
+  for (let i = minTouched; i < end; i++) {
     const item = nextFlat[i]!;
     if (item.kind !== 'data') return null;
     if (item.rank !== i + 1) {
@@ -922,7 +922,7 @@ export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly tooltipNote?: (row: TRow, reply: TReply, live: LiveValues<number | bigint | string> | null, hour: number, options: TOptions) => string | undefined;
   readonly tooltipAction?: (row: TRow, options: TOptions) => string | undefined;
   readonly rowMeta?: (row: TRow, reply: TReply, options: TOptions) => unknown;
-  readonly nextChange?: (sources: FamilySources, hour: number, options: TOptions) => number;
+  readonly nextChange?: (readView: BoundedReadView, options: TOptions) => number;
   readonly incrementalLive?: (options: TOptions) => boolean;
 }
 
@@ -977,10 +977,11 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
     kind: spec.kind,
     family: 'table',
     nextChange: spec.nextChange,
-    project(sources, hour, options): TableModel {
-      const answer = sources.answers.get(panelKey);
-      const rawPanel = sources.panels.get(panelKey);
-      const live = sources.live.get(panelKey) ?? null;
+    project(readView, options): TableModel {
+      const hour = readView.hour;
+      const answer = readView.answer(panelKey);
+      const rawPanel = readView.panel(panelKey);
+      const live = readView.live(panelKey) ?? null;
       const reply = answer !== undefined && spec.fromAnswer
         ? spec.fromAnswer(answer, options)
         : rawPanel !== undefined
@@ -1055,7 +1056,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
       }));
       const rank = typeof spec.rank === 'function' ? spec.rank(options) : spec.rank;
       const rankMarkers = typeof spec.rankMarkers === 'function' ? spec.rankMarkers(options) : spec.rankMarkers;
-      const panelRefused = sources.refused?.get(panelKey);
+      const panelRefused = readView.refused(panelKey);
       if (panelRefused !== undefined) {
         return { columns, rows: [], hour, refused: panelRefused, unsorted: spec.unsorted, rank, rankMarkers };
       }
@@ -1088,7 +1089,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
         for (let i = 0; i < builtRows.length; i++) keyToIndex.set(builtRows[i]!.key, i);
         const validUntil = Math.min(
           nextLookChange(labels, hour),
-          spec.nextChange ? spec.nextChange(sources, hour, options) : Infinity,
+          spec.nextChange ? spec.nextChange(readView, options) : Infinity,
         );
         byOpt.set(options as object, {
           live,

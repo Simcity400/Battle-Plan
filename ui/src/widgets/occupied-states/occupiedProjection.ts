@@ -95,7 +95,7 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
   declareTableProjection<OccupiedStatesReply, OccupiedRow, OccupiedProjectionOptions>({
     kind: 'occupied-states',
     validate: validateOccupiedStates,
-    nextChange: (_sources, hour, options) => filterNext(options.filter, hour),
+    nextChange: (readView, options) => filterNext(options.filter, readView.hour),
     columns: (reply, options): readonly DeclarativeColumnSpec<OccupiedRow, OccupiedProjectionOptions>[] => {
       const laws = lawsOf(reply);
       const redBelow = reply.garrisonRedRaw === null ? undefined : BigInt(reply.garrisonRedRaw);
@@ -220,12 +220,24 @@ export const occupiedStatesDeclaration: TableWidgetDeclaration<OccupiedProjectio
   frameClassName: 'occupied-table-surface',
   optionFields: OPTIONS,
   countries: { mode: 'filter', labels: true, colours: true },
-  source: {
-    kind: 'panel',
-    product: 'occupied-states',
-    params: ctx => ({ branchId: ctx.branch.id }),
-    validate: validateOccupiedStates,
-  },
+  sources: ctx => ({
+    owner: `occupied-states:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+    entries: [{
+      name: 'main',
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: ctx.track.axisOffset,
+      read: {
+        shape: 'point',
+        channel: 'panel',
+        coverage: { mode: 'population', form: 'all' },
+        product: 'occupied-states',
+        followQuery: { panel: 'occupied-states', branchId: ctx.branch.id },
+        params: { branchId: ctx.branch.id },
+        validate: validateOccupiedStates,
+      },
+    }],
+  }),
   projection: occupiedStatesProjection,
   columns: OCCUPIED_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },

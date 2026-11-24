@@ -4,14 +4,13 @@ import { rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { changedAnswerRows } from '../../dashboard/follow/tables.ts';
 import { contentKey, contentSet, setToken } from '../../dashboard/options.ts';
-import type { FamilySources } from '../../families/contract.ts';
+import type { GatedHour } from '../../dashboard/regionTime';
+import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourceEntry, SourcePlan } from '../../families/contract.ts';
 import {
   holderTagAt,
   nextHoldersChange,
   nextMembershipChange,
   nextRangesChange,
-  type DeclaredFollowItem,
-  type DeclaredTableContext,
   type HolderRun,
   type HourRanges,
   type TableWidgetDeclaration,
@@ -115,7 +114,7 @@ const scoreboardIncCache = new WeakMap<ScoreboardProjectionOptions, ScoreboardIn
 
 function buildScoreboardRow(
   entry: { readonly key: string; readonly displayTag: string; readonly wireName: string },
-  sources: FamilySources,
+  readView: BoundedReadView,
   hour: number,
   options: ScoreboardProjectionOptions,
 ): TableRow {
@@ -132,8 +131,8 @@ function buildScoreboardRow(
       cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: displayTag };
       continue;
     }
-    const answer = sources.answers.get(column.key);
-    const partialAns = column.partial ? sources.answers.get(partialSource(column.key)) : undefined;
+    const answer = readView.answer(column.key);
+    const partialAns = column.partial ? readView.answer(partialSource(column.key)) : undefined;
     let isPartialCell = false;
     if (partialAns) {
       const mark = valueFromNamedAnswer(partialAns, wireName);
@@ -155,18 +154,33 @@ function buildScoreboardRow(
   };
 }
 
+function sameRankedEntries(
+  entries: readonly { readonly key: string }[],
+  rankAnswer: FollowedAnswer | undefined,
+): boolean {
+  if (!rankAnswer || rankAnswer.kind === 'notRecorded') return false;
+  const tags = rankedTags(rankAnswer);
+  if (tags.length !== entries.length) return false;
+  for (let i = 0; i < tags.length; i++) {
+    if (entries[i]!.key !== tags[i]) return false;
+  }
+  return true;
+}
+
 export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> = registerTableProjection({
   kind: 'scoreboard',
   family: 'table',
-  nextChange(_sources, hour, options) {
+  nextChange(readView, options) {
+    const hour = readView.hour;
     return Math.min(
       nextHoldersChange(options.holders, hour),
       nextRangesChange(options.unobserved, hour),
       nextMembershipChange(options.membership, hour),
     );
   },
-  project(sources: FamilySources, hour: number, options: ScoreboardProjectionOptions): TableModel {
-    const panel = sources.panels.get('main');
+  project(readView: BoundedReadView, options: ScoreboardProjectionOptions): TableModel {
+    const hour = readView.hour;
+    const panel = readView.panel('main');
 
     if (panel !== undefined) {
       const columns = scoreboardColumnsSpec(options.shown, options.top);
@@ -216,17 +230,21 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       };
     }
 
-    const rankAnswer = options.top != null ? sources.answers.get(RANK_SOURCE) : undefined;
+    const rankAnswer = options.top != null ? readView.answer(RANK_SOURCE) : undefined;
     const prevInc = scoreboardIncCache.get(options);
     if (
       prevInc
       && hour >= prevInc.validFrom
       && hour < prevInc.validUntil
-      && prevInc.rankAnswer === rankAnswer
       && prevInc.entries.length > 0
+      && (
+        options.top == null
+        || prevInc.rankAnswer === rankAnswer
+        || sameRankedEntries(prevInc.entries, rankAnswer)
+      )
     ) {
-      const nextAnswers = options.shown.map(col => (col.available && col.family ? sources.answers.get(col.key) : undefined));
-      const nextPartials = options.shown.map(col => (col.available && col.family && col.partial ? sources.answers.get(partialSource(col.key)) : undefined));
+      const nextAnswers = options.shown.map(col => (col.available && col.family ? readView.answer(col.key) : undefined));
+      const nextPartials = options.shown.map(col => (col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined));
       const touchedIndices = new Set<number>();
       let canPatch = true;
       const collectDiff = (prevAns: FollowedAnswer | undefined, nextAns: FollowedAnswer | undefined) => {
@@ -254,14 +272,22 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       }
       if (canPatch) {
         if (touchedIndices.size === 0) {
-          return { ...prevInc.model, hour, changedKeys: new Set(), changedRows: new Map() };
+          const nextModel: TableModel = { ...prevInc.model, hour, changedKeys: new Set(), changedRows: new Map() };
+          scoreboardIncCache.set(options, {
+            ...prevInc,
+            rankAnswer,
+            answers: nextAnswers,
+            partials: nextPartials,
+            model: nextModel,
+          });
+          return nextModel;
         }
         if (touchedIndices.size * 2 < prevInc.entries.length) {
           const nextRows = prevInc.model.rows.slice();
           const changedKeys = new Set<string>();
           const changedRows = new Map<string, TableRow>();
           for (const idx of touchedIndices) {
-            const built = buildScoreboardRow(prevInc.entries[idx]!, sources, hour, options);
+            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options);
             nextRows[idx] = built;
             changedKeys.add(built.key);
             changedRows.set(built.key, built);
@@ -275,6 +301,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
           };
           scoreboardIncCache.set(options, {
             ...prevInc,
+            rankAnswer,
             answers: nextAnswers,
             partials: nextPartials,
             model: nextModel,
@@ -314,7 +341,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       }
     }
 
-    const rows: TableRow[] = activeEntries.map(entry => buildScoreboardRow(entry, sources, hour, options));
+    const rows: TableRow[] = activeEntries.map(entry => buildScoreboardRow(entry, readView, hour, options));
     const model: TableModel = {
       columns,
       rows,
@@ -342,8 +369,8 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         validFrom: hour,
         validUntil,
         rankAnswer,
-        answers: options.shown.map(col => (col.available && col.family ? sources.answers.get(col.key) : undefined)),
-        partials: options.shown.map(col => (col.available && col.family && col.partial ? sources.answers.get(partialSource(col.key)) : undefined)),
+        answers: options.shown.map(col => (col.available && col.family ? readView.answer(col.key) : undefined)),
+        partials: options.shown.map(col => (col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined)),
         entries: activeEntries,
         wireToIndices,
         model,
@@ -353,13 +380,148 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
   },
 });
 
-function scoreboardState(ctx: Omit<DeclaredTableContext<ScoreboardColumnsReply>, 'settings'>) {
+function scoreboardState(ctx: FamilyPlanContext<ScoreboardColumnsReply>) {
   const registry = ctx.aux?.columns ?? [];
   const shown = selectedColumns(registry, ctx.options.columns, ctx.aux?.defaultColumns ?? []);
   const sort = scoreboardSort(registry, shown, tableSortOf(ctx.options.tableSort, DEFAULT_SORT), ctx.aux?.defaultSort ?? '');
   const rank = rankingColumn(registry, sort, ctx.options.topMeasure, ctx.aux?.defaultSort ?? '');
   const descending = rankingDescending(sort, rank);
   return { registry, shown, sort, rank, descending };
+}
+
+interface ScoreboardExactBase {
+  readonly branchId: string;
+  readonly shown: readonly ScoreboardColumn[];
+  readonly top: number | null;
+  readonly rank: ScoreboardColumn | undefined;
+  readonly descending: boolean;
+  readonly tags: readonly string[];
+  readonly membership: Readonly<Record<string, HourRanges>> | null;
+}
+
+function buildScoreboardExactParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
+  const cfg = base as unknown as ScoreboardExactBase;
+  let tags: readonly string[] = [];
+  if (cfg.top == null) {
+    if (cfg.membership) {
+      tags = cfg.tags.filter(tag => cfg.membership![tag]?.some(([first, last]) => first <= hour && hour <= last));
+    } else {
+      tags = cfg.tags;
+    }
+  }
+  return scoreboardParams(cfg.branchId, hour, cfg.shown, tags, cfg.top, cfg.rank, cfg.descending);
+}
+
+function scoreboardSources(ctx: FamilyPlanContext<ScoreboardColumnsReply>): SourcePlan {
+  const { shown, rank, descending } = scoreboardState(ctx);
+  const top = ctx.countries.top;
+  const owner = `scoreboard:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`;
+  const coverage: SourceCoverage = top != null
+    ? { mode: 'population', form: descending ? 'top' : 'least', limit: top }
+    : { mode: 'keyed', keys: ctx.countries.tags };
+
+  const exactBase: ScoreboardExactBase = {
+    branchId: ctx.branch.id,
+    shown,
+    top,
+    rank,
+    descending,
+    tags: ctx.countries.tags,
+    membership: ctx.countries.membership,
+  };
+  const exactEntry: SourceEntry = {
+    name: 'main',
+    source: ctx.track.source,
+    branch: ctx.branch.id,
+    offset: ctx.track.axisOffset,
+    read: {
+      shape: 'point',
+      channel: 'followed',
+      coverage,
+      product: 'scoreboard',
+      exactProduct: 'scoreboard',
+      followQuery: null,
+      params: exactBase as unknown as Readonly<Record<string, unknown>>,
+      buildExactParams: buildScoreboardExactParams,
+      dynamicKeys: ['hour', 'countries'],
+      validate: raw => validateScoreboardReply(raw, shown.length),
+    },
+  };
+
+  if (top != null && !rank?.family) {
+    return {
+      owner,
+      entries: [],
+      staticEntry: exactEntry,
+      exactEntry,
+      unavailable: 'No measure to rank the top countries by is in this recording.',
+    };
+  }
+
+  const entries: SourceEntry[] = [];
+  if (top != null && rank?.family) {
+    entries.push({
+      name: RANK_SOURCE,
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: ctx.track.axisOffset,
+      read: {
+        shape: 'point',
+        channel: 'followed',
+        coverage,
+        product: 'series-state',
+        followQuery: { product: 'series-state', params: { branchId: ctx.branch.id, family: rank.family, top, least: descending ? undefined : true } },
+        params: null,
+      },
+    });
+  }
+
+  const reads = top != null ? 'every' : ctx.countries.tags.length ? ctx.countries.tags.map(tag => ({ country: countryFromKey(tag) })) : null;
+  const rowCoverage = top == null ? { coverage: 'row' } : {};
+  if (reads) {
+    for (const column of shown) {
+      if (column.family) {
+        entries.push({
+          name: column.key,
+          source: ctx.track.source,
+          branch: ctx.branch.id,
+          offset: ctx.track.axisOffset,
+          read: {
+            shape: 'point',
+            channel: 'followed',
+            coverage,
+            product: 'series-state',
+            followQuery: { product: 'series-state', ...rowCoverage, params: { branchId: ctx.branch.id, family: column.family, reads } },
+            params: null,
+          },
+        });
+      }
+      if (column.partial) {
+        entries.push({
+          name: partialSource(column.key),
+          source: ctx.track.source,
+          branch: ctx.branch.id,
+          offset: ctx.track.axisOffset,
+          read: {
+            shape: 'point',
+            channel: 'followed',
+            coverage,
+            product: 'series-state',
+            followQuery: { product: 'series-state', ...rowCoverage, params: { branchId: ctx.branch.id, family: column.partial, reads } },
+            params: null,
+          },
+        });
+      }
+    }
+  }
+
+  return {
+    owner,
+    entries,
+    staticEntry: exactEntry,
+    exactEntry,
+    allowEmptyFollow: top == null && entries.length === 0,
+  };
 }
 
 export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionOptions, ScoreboardColumnsReply> = {
@@ -384,39 +546,7 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
     params: track => ({ branchId: track.branch.id }),
     validate: validateColumnsReply,
   },
-  source: {
-    kind: 'multi',
-    follow: ctx => {
-      const { shown, rank, descending } = scoreboardState(ctx);
-      const top = ctx.countries.top;
-      const subs: DeclaredFollowItem[] = [];
-      if (top != null) {
-        if (!rank?.family) return { subs: [], unavailable: 'No measure to rank the top countries by is in this recording.' };
-        subs.push({ name: RANK_SOURCE, query: { product: 'series-state', params: { branchId: ctx.branch.id, family: rank.family, top, least: descending ? undefined : true } } });
-      }
-      const reads = top != null ? 'every' : ctx.countries.tags.length ? ctx.countries.tags.map(tag => ({ country: countryFromKey(tag) })) : null;
-      const coverage = top == null ? { coverage: 'row' } : {};
-      if (reads) {
-        for (const column of shown) {
-          if (column.family) {
-            subs.push({ name: column.key, query: { product: 'series-state', ...coverage, params: { branchId: ctx.branch.id, family: column.family, reads } } });
-          }
-          if (column.partial) {
-            subs.push({ name: partialSource(column.key), query: { product: 'series-state', ...coverage, params: { branchId: ctx.branch.id, family: column.partial, reads } } });
-          }
-        }
-      }
-      return { subs, allowEmptyFollow: top == null && subs.length === 0 };
-    },
-    exactProduct: 'scoreboard',
-    exactParams: (ctx, hour) => {
-      const { shown, rank, descending } = scoreboardState(ctx);
-      const tags = ctx.countries.top == null ? ctx.countries.rankedAt(hour) : [];
-      return scoreboardParams(ctx.branch.id, hour, shown, tags, ctx.countries.top, rank, descending);
-    },
-    dynamicKeys: ['hour', 'countries'],
-    validate: (raw, ctx) => validateScoreboardReply(raw, scoreboardState(ctx).shown.length),
-  },
+  sources: scoreboardSources,
   projection: scoreboardProjection,
   columns: ctx => scoreboardColumnsSpec(scoreboardState(ctx).shown, ctx.countries.top),
   settings: {
