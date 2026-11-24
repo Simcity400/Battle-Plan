@@ -131,6 +131,17 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   auditField: Field | null;
 }
 
+const snapshots = new WeakMap<IdentitySnapshot, { readonly index: IdentityIndex; readonly identity: IdentityProvider }>();
+
+function indexedSnapshot(snapshot: IdentitySnapshot): { readonly index: IdentityIndex; readonly identity: IdentityProvider } {
+  let held = snapshots.get(snapshot);
+  if (!held) {
+    const index = IdentityIndex.fromSnapshot(snapshot);
+    snapshots.set(snapshot, held = { index, identity: createSnapshotIdentityProvider(index) });
+  }
+  return held;
+}
+
 const MIRROR_CADENCE_MS = 1000;
 const TOOLTIP_CADENCE_MS = 250;
 const EMPTY: Painted = { surfaces: [], fields: {}, motion: false };
@@ -289,8 +300,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const readersChanged = keep.snapshot !== snapshot || keep.artResolutions !== binding.artResolutions;
       if (keep.snapshot !== snapshot) {
         keep.snapshot = snapshot;
-        keep.index = snapshot ? IdentityIndex.fromSnapshot(snapshot) : null;
-        keep.identity = keep.index ? createSnapshotIdentityProvider(keep.index) : undefined;
+        const indexed = snapshot ? indexedSnapshot(snapshot) : null;
+        keep.index = indexed?.index ?? null;
+        keep.identity = indexed?.identity;
       }
       if (readersChanged) {
         keep.artResolutions = binding.artResolutions;
