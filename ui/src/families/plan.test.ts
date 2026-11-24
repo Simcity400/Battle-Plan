@@ -32,6 +32,7 @@ import {
   assertValidCoverage,
   boundedEntries,
   buildPlaybackBoundedRequest,
+  composeProof,
   compileFollowPlan,
   CoverageContractError,
   FamilySourceBroker,
@@ -1030,6 +1031,10 @@ test('no-follow reads during playback ask nothing after the displayed hour, prov
   const exactPrimary: SourcePlan = { owner: 'exact:1', entries: [followedHead], staticEntry: pointPlan.entries[0]! };
   assert.deepEqual(boundedEntries(exactPrimary, true, headFollowed), [], 'a static entry standing in for followed entries is not read while they follow');
   assert.deepEqual(boundedEntries(exactPrimary, false, []).map(entry => entry.name), ['main']);
+
+  assert.deepEqual(composeProof([{ anchorHour: 50, proof: [50, 80] }, { anchorHour: 60, proof: [60, 60] }]), [60, 60], 'each entry keeps its own proof; the picture holds where all of them do');
+  assert.deepEqual(composeProof([{ anchorHour: 50, proof: [50, 80] }, { anchorHour: 90, proof: [90, 90] }]), null, 'a reply proven only before another entry’s asked hour is not installed with it');
+  assert.equal(composeProof([]), null);
 
   const ctx = { owner: 'a' };
   const held = resolveDisplayedStaticSnapshot(null, {
