@@ -723,7 +723,7 @@ mod tests {
         let indexed = IndexedRunLooks::new(run);
         assert_eq!(indexed.resolve("GER", 0, None).color, Some([200, 40, 40]));
         assert_eq!(indexed.resolve("GER", 72, None).color, Some([40, 80, 220]));
-        assert_eq!([indexed.next_change(0), indexed.next_change(72), indexed.next_change(200)], [72, 201, i32::MAX], "a name or colour holds until the next look starts or ends");
+        assert_eq!([indexed.next_change(0), indexed.next_change(72), indexed.next_change(200), indexed.next_change(201)], [72, 201, 201, i32::MAX], "a name or colour holds until the next look starts or ends");
         let missing = indexed.resolve("GER", 250, None);
         assert_eq!(missing.color, None);
         assert_eq!(missing.color_missing.as_deref(), Some(NOT_A_COUNTRY));
