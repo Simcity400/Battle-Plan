@@ -1,4 +1,32 @@
 export {
+  type FamilyArtDemand,
+  type FamilyBindingContext,
+  type FamilyContextHit,
+  type FamilyGestureContext,
+  type FamilyGestureHandlers,
+  type FamilyGridMetrics,
+  type FamilyHostAdapter,
+  type FamilyMetaState,
+  type FamilyMirrorKind,
+  type FamilyNavigationKind,
+  type FamilyPointerMode,
+  type FamilyScrollExtent,
+  type FamilyScrollMode,
+  type FamilySkeletonKind,
+  type FamilyStaticSources,
+  type FamilyViewportChange,
+  type FamilyViewportState,
+  lazyActionKeys,
+  type ParsedFamilyHit,
+} from './adapter.ts';
+export {
+  default as DeclaredFamilyWidget,
+  type DeclaredFamilyWidgetDeclaration,
+  type DeclaredFamilyWidgetProps,
+  type DeclaredProjectionExtra,
+} from './DeclaredFamilyWidget.tsx';
+export { default as FamilyHost, type FamilyHostComponentProps } from './FamilyHost.tsx';
+export {
   centerWindowPosition,
   clampWindowPosition,
   DetailWindowHost,
@@ -6,7 +34,13 @@ export {
   type DetailWindowClock,
   type DetailWindowHostProps,
 } from './DetailWindowHost.tsx';
-export { familyHost, registerFamilyHost, registeredFamilyHosts, type FamilyHostProps } from './registry.tsx';
+export {
+  familyHost,
+  registerFamilyAdapter,
+  registerFamilyHost,
+  registeredFamilyHosts,
+  type FamilyHostProps,
+} from './registry.tsx';
 export { renderFamilyBodyState, renderFamilyStatus, type FamilyBodyStateProps } from './FamilyBodyState.tsx';
 export {
   useFamilyPlan,
@@ -15,7 +49,16 @@ export {
   type UseFamilyPlanInput,
   type UseFamilyPlanResult,
 } from './useFamilyPlan.ts';
-export { handleFamilyKeyDown, TYPEAHEAD_RESET_MS, type FamilyKeyboardOptions, type FamilyNavTuple } from './keyboard.ts';
+export {
+  handleFamilyGridKeyDown,
+  handleFamilyKeyDown,
+  handleFamilyPointsKeyDown,
+  TYPEAHEAD_RESET_MS,
+  type FamilyGridKeyboardOptions,
+  type FamilyKeyboardOptions,
+  type FamilyNavTuple,
+  type FamilyPointsKeyboardOptions,
+} from './keyboard.ts';
 export {
   optionElementId,
   reconcileFocusedKey,
@@ -32,6 +75,7 @@ export {
   parseDefaultRowHit,
   resolveInstalledAction,
   type FamilyPointerBindingOptions,
+  type FamilyPointerGestures,
   type FamilyPointerHit,
 } from './pointer.ts';
 export {

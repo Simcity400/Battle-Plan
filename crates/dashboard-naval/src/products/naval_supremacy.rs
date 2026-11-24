@@ -76,14 +76,19 @@ pub enum SupremacyReadout {
         friendly: Option<String>,
         enemy: Option<String>,
         own: Option<String>,
-        own_mission_ships: Option<i32>,
-        enemy_mission_ships: Option<i32>,
-        ships_missing: Option<String>,
         as_of_hour: i32,
     },
     NotRecorded {
         reason: String,
     },
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MissionShips {
+    Counted { ships: i32 },
+    NotRecorded { reason: String },
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -115,12 +120,8 @@ pub struct SupremacyRegion {
     pub id: String,
     pub name: String,
     pub pinned: bool,
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub own_mission_ships: Option<i32>,
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub enemy_mission_ships: Option<i32>,
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub ships_missing: Option<String>,
+    pub own_ships: MissionShips,
+    pub enemy_ships: MissionShips,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub readout: Option<SupremacyReadout>,
     pub runs: Vec<SupremacyRun>,
@@ -328,28 +329,39 @@ fn day_hours(timeline: &dashboard_query::timeline::Timeline, first: i32, last: i
     out
 }
 
-pub(crate) fn mission_registered_ships(frame: &DecodedFrame, viewer_slot: u32) -> Result<BTreeMap<u32, (i32, i32)>, String> {
-    let mut tf_ships: HashMap<u64, i32> = HashMap::new();
-    for ship in frame.complete::<tables::Ships>().map_err(|e| format!("Ships table unavailable: {e}"))? {
-        *tf_ships.entry(ship.task_force).or_insert(0) += 1;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MissionRegisteredShips {
+    pub(crate) own: Result<BTreeMap<u32, i32>, String>,
+    pub(crate) enemy: Result<BTreeMap<u32, i32>, String>,
+}
+
+impl MissionRegisteredShips {
+    fn refused(reason: String) -> Self {
+        Self { own: Err(reason.clone()), enemy: Err(reason) }
     }
-    let ledgers = frame.complete::<tables::NavalMissionLedgers>().map_err(|e| format!("Naval mission ledgers unavailable: {e}"))?;
-    let countries = frame.complete::<tables::Countries>().map_err(|e| format!("Countries table unavailable: {e}"))?;
-    let links_rows = frame.complete::<tables::CountryLinks>().map_err(|e| format!("Country links unavailable: {e}"))?;
-    let enemy_raws = naval_region_control::raw_roster(frame, viewer_slot, AirCountryRelationRow::ENEMY)?;
-    let slot_to_raw: HashMap<u32, u32> = countries.iter().map(|c| (c.canonical_slot, c.id)).collect();
-    let raw_to_slot: HashMap<u32, u32> = links_rows.iter().map(|l| (l.id, l.canonical_slot)).collect();
-    let own_raw = slot_to_raw.get(&viewer_slot).copied();
-    let mut enemy_raw_ids: Vec<u32> = Vec::with_capacity(enemy_raws.len());
-    for raw in enemy_raws {
-        let slot = if raw == 0 {
-            0
-        } else {
-            *raw_to_slot.get(&raw).ok_or_else(|| format!("Enemy {raw} has no CountryLinks row"))?
-        };
-        if let Some(&id) = slot_to_raw.get(&slot) {
-            enemy_raw_ids.push(id);
+
+    fn of(side: &Result<BTreeMap<u32, i32>, String>, region: u32) -> MissionShips {
+        match side {
+            Ok(counts) => MissionShips::Counted { ships: counts.get(&region).copied().unwrap_or(0) },
+            Err(reason) => MissionShips::NotRecorded { reason: reason.clone() },
         }
+    }
+}
+
+pub(crate) fn mission_registered_ships(frame: &DecodedFrame, viewer_slot: u32) -> MissionRegisteredShips {
+    let shared = (|| -> Result<_, String> {
+        let ships = frame.complete::<tables::Ships>().map_err(|e| format!("Ships table unavailable: {e}"))?;
+        let ledgers = frame.complete::<tables::NavalMissionLedgers>().map_err(|e| format!("Naval mission ledgers unavailable: {e}"))?;
+        let countries = frame.complete::<tables::Countries>().map_err(|e| format!("Countries table unavailable: {e}"))?;
+        Ok((ships, ledgers, countries))
+    })();
+    let (ships, ledgers, countries) = match shared {
+        Ok(tables) => tables,
+        Err(reason) => return MissionRegisteredShips::refused(reason),
+    };
+    let mut tf_ships: HashMap<u64, i32> = HashMap::new();
+    for ship in ships {
+        *tf_ships.entry(ship.task_force).or_insert(0) += 1;
     }
     let mut by_owner_region: HashMap<(u32, u32), i32> = HashMap::new();
     let mut regions = BTreeSet::new();
@@ -362,13 +374,23 @@ pub(crate) fn mission_registered_ships(frame: &DecodedFrame, viewer_slot: u32) -
             .fold(0_i32, |sum, tf| sum.wrapping_add(tf_ships.get(tf).copied().unwrap_or(0)));
         by_owner_region.insert((row.owner, row.region), count);
     }
-    let mut out = BTreeMap::new();
-    for region in regions {
-        let own = own_raw.and_then(|id| by_owner_region.get(&(id, region)).copied()).unwrap_or(0);
-        let enemy = enemy_raw_ids.iter().fold(0_i32, |sum, &id| sum.wrapping_add(by_owner_region.get(&(id, region)).copied().unwrap_or(0)));
-        out.insert(region, (own, enemy));
-    }
-    Ok(out)
+    let slot_to_raw: HashMap<u32, u32> = countries.iter().map(|c| (c.canonical_slot, c.id)).collect();
+    let own_raw = slot_to_raw.get(&viewer_slot).copied();
+    let own = regions.iter().map(|&region| (region, own_raw.and_then(|id| by_owner_region.get(&(id, region)).copied()).unwrap_or(0))).collect();
+    let enemy = (|| -> Result<BTreeMap<u32, i32>, String> {
+        let links_rows = frame.complete::<tables::CountryLinks>().map_err(|e| format!("Country links unavailable: {e}"))?;
+        let enemy_raws = naval_region_control::raw_roster(frame, viewer_slot, AirCountryRelationRow::ENEMY)?;
+        let raw_to_slot: HashMap<u32, u32> = links_rows.iter().map(|l| (l.id, l.canonical_slot)).collect();
+        let mut enemy_raw_ids: Vec<u32> = Vec::with_capacity(enemy_raws.len());
+        for raw in enemy_raws {
+            let slot = if raw == 0 { 0 } else { *raw_to_slot.get(&raw).ok_or_else(|| format!("Enemy {raw} has no CountryLinks row"))? };
+            if let Some(&id) = slot_to_raw.get(&slot) {
+                enemy_raw_ids.push(id);
+            }
+        }
+        Ok(regions.iter().map(|&region| (region, enemy_raw_ids.iter().fold(0_i32, |sum, &id| sum.wrapping_add(by_owner_region.get(&(id, region)).copied().unwrap_or(0))))).collect())
+    })();
+    MissionRegisteredShips { own: Ok(own), enemy }
 }
 
 fn supremacy_legend(regions: &[SupremacyRegion], viewer_label: &str) -> Vec<SupremacyLegendItem> {
@@ -427,6 +449,7 @@ impl Product for NavalSupremacy {
             SupremacyRun::decl(),
             SupremacyRegion::decl(),
             SupremacyReadout::decl(),
+            MissionShips::decl(),
             SupremacyLegendItem::decl(),
             UnknownDays::decl(),
             Choice::decl(),
@@ -518,23 +541,6 @@ impl Product for NavalSupremacy {
         let viewer_tag = query.holders.name(&params.country, last);
         let viewer_look = looks.at(&viewer_tag, last)?;
         let viewer_label = viewer_look.name.clone().unwrap_or_else(|| viewer_tag.clone());
-        let ships_at_end: Result<BTreeMap<u32, (i32, i32)>, String> = if outside {
-            Err("Outside the recording".into())
-        } else if let Some(Holder::Found { slot, .. }) = query.holders.at(&params.country, last).map(|r| r.holder) {
-            let reads = [
-                at_hour::Read::all(TableId::Ships),
-                at_hour::Read::all(TableId::NavalMissionLedgers),
-                at_hour::Read::all(TableId::Countries),
-                at_hour::Read::all(TableId::CountryLinks),
-                at_hour::Read::all(TableId::AirCountryRelations),
-            ];
-            match at_hour::frame(&query, last, &reads, "Naval mission ships") {
-                Ok(frame) => mission_registered_ships(&frame, slot),
-                Err(error) => Err(error.to_string()),
-            }
-        } else {
-            Err("The viewer's tag is held by no country at this hour".into())
-        };
         let mut runs = runs(pieces);
         let mut names = Refusals::default();
         let all_choices = sea_regions::choices(&places, &sea, runs.keys().copied().chain(params.regions.iter().flatten().copied()).chain(params.pinned_regions.iter().flatten().copied()), &mut names);
@@ -542,15 +548,30 @@ impl Product for NavalSupremacy {
         let last_day_index = count.checked_sub(1);
         let last_day_hour = last_day_index.and_then(|idx| hours.get(&idx).map(|&(_, h)| h));
         let last_day_unknown = last_day_index.and_then(|idx| unknown.iter().find(|u| u.first_day <= idx && idx <= u.last_day).map(|u| u.reason.clone()));
+        let ships_at_end = match (outside, last_day_hour) {
+            (true, _) => MissionRegisteredShips::refused("Outside the recording".into()),
+            (false, None) => MissionRegisteredShips::refused(last_day_unknown.clone().unwrap_or_else(|| "The day was not recorded".into())),
+            (false, Some(ship_hour)) => match query.holders.at(&params.country, ship_hour).map(|r| r.holder) {
+                Some(Holder::Found { slot, .. }) => {
+                    let reads = [
+                        at_hour::Read::all(TableId::Ships),
+                        at_hour::Read::all(TableId::NavalMissionLedgers),
+                        at_hour::Read::all(TableId::Countries),
+                        at_hour::Read::all(TableId::CountryLinks),
+                        at_hour::Read::all(TableId::AirCountryRelations),
+                    ];
+                    match at_hour::frame(&query, ship_hour, &reads, "Naval mission ships") {
+                        Ok(frame) => mission_registered_ships(&frame, slot),
+                        Err(error) => MissionRegisteredShips::refused(error.to_string()),
+                    }
+                }
+                _ => MissionRegisteredShips::refused("The viewer's tag is held by no country at this hour".into()),
+            },
+        };
         let make_region = |id: u32, pinned: bool, runs_vec: Vec<SupremacyRun>| -> SupremacyRegion {
             let name = name_map.get(&id).cloned().unwrap_or_else(|| format!("Region {id} (name unavailable)"));
-            let (own_ships, enemy_ships, ships_missing) = match &ships_at_end {
-                Ok(map) => {
-                    let (o, e) = map.get(&id).copied().unwrap_or((0, 0));
-                    (Some(o), Some(e), None)
-                }
-                Err(why) => (None, None, Some(why.clone())),
-            };
+            let own_ships = MissionRegisteredShips::of(&ships_at_end.own, id);
+            let enemy_ships = MissionRegisteredShips::of(&ships_at_end.enemy, id);
             let readout = if let Some(reason) = &last_day_unknown {
                 Some(SupremacyReadout::NotRecorded { reason: reason.clone() })
             } else if let (Some(idx), Some(as_of_hour)) = (last_day_index, last_day_hour) {
@@ -562,9 +583,6 @@ impl Product for NavalSupremacy {
                             friendly: run.friendly.clone(),
                             enemy: run.enemy.clone(),
                             own: run.own.clone(),
-                            own_mission_ships: own_ships,
-                            enemy_mission_ships: enemy_ships,
-                            ships_missing: ships_missing.clone(),
                             as_of_hour,
                         }),
                         None => Some(SupremacyReadout::NotRecorded { reason: "Naval region control was not recorded".into() }),
@@ -578,9 +596,8 @@ impl Product for NavalSupremacy {
                 id: id.to_string(),
                 name,
                 pinned,
-                own_mission_ships: own_ships,
-                enemy_mission_ships: enemy_ships,
-                ships_missing,
+                own_ships,
+                enemy_ships,
                 readout,
                 runs: runs_vec,
             }

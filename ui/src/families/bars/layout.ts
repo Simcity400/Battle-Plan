@@ -1,3 +1,4 @@
+import { linearTicks } from '../../charts/valueAxis.ts';
 import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BarsDataRow, BarsForm, BarsModel, BarsTwoSidedLayout } from './model.ts';
@@ -96,6 +97,15 @@ function resolveRowMetrics(model: BarsModel, bodyHeight: number): { dataRowHeigh
   );
   const barHeight = model.barHeight ?? (dataRowHeight >= 24 ? 12 : 10);
   return { dataRowHeight, barHeight };
+}
+
+export function axisCeiling(dataMax: number): number {
+  if (!(dataMax > 0) || !Number.isFinite(dataMax)) return dataMax;
+  const ticks = linearTicks(0, dataMax, 4);
+  const last = ticks[ticks.length - 1] ?? dataMax;
+  if (last >= dataMax) return last;
+  const step = ticks.length > 1 ? ticks[1]! - ticks[0]! : dataMax;
+  return last + step;
 }
 
 function positiveScale(provided: number | null | undefined, fallback: number): number {
@@ -265,7 +275,7 @@ export function layoutFamilyBars(
     if (d.rightSide?.numeric !== undefined && d.rightSide.numeric !== null) dataRightMax = Math.max(dataRightMax, Math.abs(d.rightSide.numeric));
   }
   const sharedTwoSidedMax = Math.max(dataMax, dataLeftMax, dataRightMax);
-  const scaleMax = positiveScale(model.scaleMax, form === 'two-sided' ? sharedTwoSidedMax : dataMax);
+  const scaleMax = positiveScale(model.scaleMax, form === 'two-sided' ? sharedTwoSidedMax : wantAxis ? axisCeiling(dataMax) : dataMax);
   const scaleLeftMax = positiveScale(model.scaleLeftMax ?? model.scaleMax, sharedTwoSidedMax);
   const scaleRightMax = positiveScale(model.scaleRightMax ?? model.scaleMax, sharedTwoSidedMax);
 
