@@ -253,9 +253,187 @@ impl<J, R> Cell<J, R> {
 // acquire admission hand it to the next submitter. No shared J/R references.
 unsafe impl<J: Send, R: Send> Sync for Cell<J, R> {}
 
+const FAST_PRIORITIES: usize = 5;
+
+struct ReadyQueue {
+    buckets: [VecDeque<usize>; FAST_PRIORITIES],
+    overflow: VecDeque<usize>,
+    mask: u8,
+    len: usize,
+}
+
+impl ReadyQueue {
+    fn new(capacity: usize) -> Result<Self, &'static str> {
+        let mut buckets: [VecDeque<usize>; FAST_PRIORITIES] = std::array::from_fn(|_| VecDeque::new());
+        for bucket in &mut buckets {
+            bucket
+                .try_reserve_exact(capacity)
+                .map_err(|_| "acquisition ready queue allocation failed")?;
+        }
+        let mut overflow = VecDeque::new();
+        overflow
+            .try_reserve_exact(capacity)
+            .map_err(|_| "acquisition ready queue allocation failed")?;
+        Ok(Self {
+            buckets,
+            overflow,
+            mask: 0,
+            len: 0,
+        })
+    }
+
+    fn capacity(&self) -> usize {
+        self.buckets.iter().map(VecDeque::capacity).sum::<usize>() + self.overflow.capacity()
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn push(&mut self, index: usize, priority: u8) {
+        let p = priority as usize;
+        if p < FAST_PRIORITIES {
+            self.buckets[p].push_back(index);
+            self.mask |= 1 << p;
+        } else {
+            self.overflow.push_back(index);
+        }
+        self.len += 1;
+    }
+
+    fn pop_best(&mut self, slots: &[Slot]) -> Option<usize> {
+        if self.mask != 0 {
+            let p = self.mask.trailing_zeros() as usize;
+            let index = self.buckets[p]
+                .pop_front()
+                .expect("masked acquisition ready bucket non-empty");
+            if self.buckets[p].is_empty() {
+                self.mask &= !(1 << p);
+            }
+            self.len -= 1;
+            return Some(index);
+        }
+        let position = self
+            .overflow
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, index)| slots[**index].priority)
+            .map(|(position, _)| position)?;
+        let index = self
+            .overflow
+            .remove(position)
+            .expect("checked acquisition overflow position");
+        self.len -= 1;
+        Some(index)
+    }
+
+    fn remove_slot(&mut self, slot: usize, priority: u8) -> Option<usize> {
+        let p = priority as usize;
+        if p < FAST_PRIORITIES {
+            let bucket = &mut self.buckets[p];
+            let position = bucket.iter().position(|&index| index == slot)?;
+            let index = bucket
+                .remove(position)
+                .expect("checked acquisition ready bucket position");
+            if bucket.is_empty() {
+                self.mask &= !(1 << p);
+            }
+            self.len -= 1;
+            return Some(index);
+        }
+        let position = self.overflow.iter().position(|&index| index == slot)?;
+        let index = self
+            .overflow
+            .remove(position)
+            .expect("checked acquisition overflow position");
+        self.len -= 1;
+        Some(index)
+    }
+
+    fn pop_first_matching(
+        &mut self,
+        slots: &[Slot],
+        mut pred: impl FnMut(&Slot) -> bool,
+    ) -> Option<usize> {
+        let mut mask = self.mask;
+        while mask != 0 {
+            let p = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            if let Some(position) = self.buckets[p]
+                .iter()
+                .position(|&index| pred(&slots[index]))
+            {
+                let index = self.buckets[p]
+                    .remove(position)
+                    .expect("checked acquisition ready bucket position");
+                if self.buckets[p].is_empty() {
+                    self.mask &= !(1 << p);
+                }
+                self.len -= 1;
+                return Some(index);
+            }
+        }
+        let position = self
+            .overflow
+            .iter()
+            .enumerate()
+            .filter(|(_, index)| pred(&slots[**index]))
+            .min_by_key(|(_, index)| slots[**index].priority)
+            .map(|(position, _)| position)?;
+        let index = self
+            .overflow
+            .remove(position)
+            .expect("checked acquisition overflow position");
+        self.len -= 1;
+        Some(index)
+    }
+
+    #[cfg(feature = "executor_join_help")]
+    fn peek_first_matching(
+        &self,
+        slots: &[Slot],
+        mut pred: impl FnMut(&Slot) -> bool,
+    ) -> Option<usize> {
+        let mut mask = self.mask;
+        while mask != 0 {
+            let p = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            if let Some(&index) = self.buckets[p].iter().find(|&&index| pred(&slots[index])) {
+                return Some(index);
+            }
+        }
+        self.overflow
+            .iter()
+            .copied()
+            .filter(|&index| pred(&slots[index]))
+            .min_by_key(|&index| slots[index].priority)
+    }
+
+    fn pop_any(&mut self) -> Option<usize> {
+        if self.mask != 0 {
+            let p = self.mask.trailing_zeros() as usize;
+            let index = self.buckets[p]
+                .pop_front()
+                .expect("masked acquisition ready bucket non-empty");
+            if self.buckets[p].is_empty() {
+                self.mask &= !(1 << p);
+            }
+            self.len -= 1;
+            return Some(index);
+        }
+        let index = self.overflow.pop_front()?;
+        self.len -= 1;
+        Some(index)
+    }
+}
+
 struct State {
     slots: Vec<Slot>,
-    ready: VecDeque<usize>,
+    ready: ReadyQueue,
     generation: u64,
     started: usize,
     stop: bool,
@@ -267,13 +445,10 @@ struct State {
 impl State {
     fn new(capacity: usize) -> Result<Self, &'static str> {
         let mut slots = Vec::new();
-        let mut ready = VecDeque::new();
         slots
             .try_reserve_exact(capacity)
             .map_err(|_| "acquisition metadata allocation failed")?;
-        ready
-            .try_reserve_exact(capacity)
-            .map_err(|_| "acquisition ready queue allocation failed")?;
+        let ready = ReadyQueue::new(capacity)?;
         for _ in 0..capacity {
             slots.push(Slot {
                 generation: 0,
@@ -298,22 +473,17 @@ impl State {
     }
 
     fn free_slot<J, R, O: Observer>(&self, shared: &Shared<J, R, O>, worker_only: bool) -> Option<usize> {
-        shared
-            .words
-            .iter()
-            .enumerate()
-            .rfind(|(index, value)| {
-                (*index < self.reserved_workers) == worker_only
-                    && value.load(Ordering::Acquire) & PHASE_MASK == VACANT
-            })
-            .map(|(index, _)| index)
+        let range = if worker_only {
+            0..self.reserved_workers
+        } else {
+            self.reserved_workers..shared.words.len()
+        };
+        range
+            .rev()
+            .find(|&index| shared.words[index].load(Ordering::Acquire) & PHASE_MASK == VACANT)
     }
 
-    fn claim<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>, position: usize) -> Claim {
-        let index = self
-            .ready
-            .remove(position)
-            .expect("checked acquisition ready position");
+    fn claim_index<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>, index: usize) -> Claim {
         shared.ready_count.fetch_sub(1, Ordering::Release);
         let slot = &mut self.slots[index];
         debug_assert!(slot.phase == Phase::Queued);
@@ -340,7 +510,7 @@ impl State {
         shared: &Shared<J, R, O>,
         awaited: Option<Ticket>,
     ) -> Option<Claim> {
-        let position = if let Some(ticket) = awaited {
+        let index = if let Some(ticket) = awaited {
             let slot = self.slots.get(ticket.slot)?;
             if slot.generation != ticket.generation
                 || slot.worker_only
@@ -350,18 +520,14 @@ impl State {
             {
                 return None;
             }
+            let priority = slot.priority;
             self.ready
-                .iter()
-                .position(|&index| index == ticket.slot)
+                .remove_slot(ticket.slot, priority)
                 .expect("queued acquisition slot has a ready entry")
         } else {
-            self.ready
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, index)| self.slots[**index].priority)
-                .map(|(position, _)| position)?
+            self.ready.pop_best(&self.slots)?
         };
-        Some(self.claim(shared, position))
+        Some(self.claim_index(shared, index))
     }
 
     fn take_child<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>, ticket: Ticket) -> Option<Claim> {
@@ -372,8 +538,9 @@ impl State {
         {
             return None;
         }
-        let position = self.ready.iter().position(|&index| index == ticket.slot)?;
-        Some(self.claim(shared, position))
+        let priority = slot.priority;
+        let index = self.ready.remove_slot(ticket.slot, priority)?;
+        Some(self.claim_index(shared, index))
     }
 
     fn stop<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>) {
@@ -384,7 +551,7 @@ impl State {
 
     fn cancel_queued<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>) {
         shared.ready_count.store(0, Ordering::Release);
-        while let Some(index) = self.ready.pop_front() {
+        while let Some(index) = self.ready.pop_any() {
             let slot = &self.slots[index];
             debug_assert!(slot.phase == Phase::Queued);
             let completion = shared.cells[index].pointer();
@@ -761,6 +928,7 @@ impl<J, R, O: Observer> Shared<J, R, O> {
                 return None;
             }
         };
+        let state = &mut *state;
         if state.stop
             || collector_memory::terminal::failed()
             || self.words[awaited.slot].load(Ordering::Acquire) != word(awaited.generation, RUNNING)
@@ -780,26 +948,19 @@ impl<J, R, O: Observer> Shared<J, R, O> {
         let elapsed = (collector_primitives::clock::qpc().max(0) as u64).saturating_sub(begin);
         let remaining = mean.saturating_sub(elapsed);
         let available = *budget.ticks.get_or_insert(remaining / 2);
-        let position = state
-            .ready
-            .iter()
-            .enumerate()
-            .filter(|(_, index)| {
-                let candidate = &state.slots[**index];
-                if candidate.worker_only {
-                    return false;
-                }
-                let Some(class) = candidate.class else {
-                    return false;
-                };
-                let candidate_maximum = self.maxima[class].load(Ordering::Relaxed);
-                candidate_maximum != 0
-                    && candidate_maximum <= remaining / 2
-                    && candidate_maximum <= available
-            })
-            .min_by_key(|(_, index)| state.slots[**index].priority)
-            .map(|(position, _)| position)?;
-        let candidate = &state.slots[state.ready[position]];
+        let index = state.ready.peek_first_matching(&state.slots, |candidate| {
+            if candidate.worker_only {
+                return false;
+            }
+            let Some(class) = candidate.class else {
+                return false;
+            };
+            let candidate_maximum = self.maxima[class].load(Ordering::Relaxed);
+            candidate_maximum != 0
+                && candidate_maximum <= remaining / 2
+                && candidate_maximum <= available
+        })?;
+        let candidate = &state.slots[index];
         let candidate_maximum = self.maxima[candidate.class?].load(Ordering::Relaxed);
         let elapsed = (collector_primitives::clock::qpc().max(0) as u64).saturating_sub(begin);
         let remaining = self.means[class]
@@ -813,7 +974,12 @@ impl<J, R, O: Observer> Shared<J, R, O> {
             return None;
         }
         budget.ticks = Some(available - candidate_maximum);
-        Some(state.claim(self, position))
+        let priority = candidate.priority;
+        let removed = state
+            .ready
+            .remove_slot(index, priority)
+            .expect("peeked acquisition slot present");
+        Some(state.claim_index(self, removed))
     }
 }
 
@@ -1220,7 +1386,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
         }
         self.shared.uncollected.fetch_add(1, Ordering::Relaxed);
         self.shared.words[index].store(word(generation, PENDING), Ordering::Release);
-        state.ready.push_back(index);
+        state.ready.push(index, priority);
         self.shared.ready_count.fetch_add(1, Ordering::Release);
         state.counters.accepted = state.counters.accepted.saturating_add(1);
         drop(state);
@@ -1785,20 +1951,17 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
                 Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
                 Err(std::sync::TryLockError::WouldBlock) => return false,
             };
+            let state = &mut *state;
             if state.stop {
                 return false;
             }
-            let Some(position) = state
+            let Some(index) = state
                 .ready
-                .iter()
-                .enumerate()
-                .filter(|(_, index)| state.slots[**index].callback_help)
-                .min_by_key(|(_, index)| state.slots[**index].priority)
-                .map(|(position, _)| position)
+                .pop_first_matching(&state.slots, |slot| slot.callback_help)
             else {
                 return false;
             };
-            state.claim(&self.shared, position)
+            state.claim_index(&self.shared, index)
         };
         let begin = std::time::Instant::now();
         self.shared.execute(claim, true, false);

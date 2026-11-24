@@ -2002,7 +2002,8 @@ impl Captured {
         game_state: usize,
         fingerprints: &mut SliceFingerprints,
     ) -> usize {
-        let resolve = |handle| creference_registry::resolve(memory, base, handle);
+        let resolver = std::cell::RefCell::new(creference_registry::ScopedResolver::new(base));
+        let resolve = |handle| resolver.borrow_mut().resolve(memory, handle);
         let mut receivers = 0;
         let mut leaders = std::mem::take(&mut self.leaders);
         let mut witness = std::mem::take(&mut self.witness);
@@ -2153,7 +2154,8 @@ impl Captured {
         base: usize,
         game_state: usize,
     ) -> (Outcome, Outcome, u64) {
-        let resolve = |handle| creference_registry::resolve(memory, base, handle);
+        let resolver = std::cell::RefCell::new(creference_registry::ScopedResolver::new(base));
+        let resolve = |handle| resolver.borrow_mut().resolve(memory, handle);
         let mut country_rows = (0, 0_u32);
         let mut commander_rows = (0, 0_u32);
         let mut country_failure = None;

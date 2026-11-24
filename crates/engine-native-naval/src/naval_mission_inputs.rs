@@ -239,7 +239,7 @@ fn i32_at(bytes: &[u8], at: usize) -> i32 {
 
 const MISSION: usize = ctask_force::NAVAL_MISSION;
 
-const TASK_FIELDS: [RecordField; 12] = {
+const TASK_FIELDS: [RecordField; 13] = {
     const fn field(source_offset: usize, destination_offset: usize, len: usize) -> RecordField {
         RecordField {
             source_offset,
@@ -260,10 +260,11 @@ const TASK_FIELDS: [RecordField; 12] = {
         field(REPLENISHMENT, 96, 8),
         field(UNDERWAY, 104, 1),
         field(cunit::EXPEDITIONARY_OWNER, 108, 4),
+        field(LOCAL_MODIFIERS, 128, 16),
     ]
 };
 const TASK_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&TASK_FIELDS, 128).expect("task force operand layout");
+    RecordLayout::new(&TASK_FIELDS, 144).expect("task force operand layout");
 
 #[cfg(test)]
 pub fn read_task_force(
@@ -333,7 +334,7 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
     original_selectors: &mut OriginalSelectors,
 ) -> Result<Operands, &'static str> {
     let task = visit.task;
-    let mut bytes = [0; 128];
+    let mut bytes = [0; 144];
     let copied = memory.copy_records(RecordSources::Pointers(&[task]), &TASK_LAYOUT, &mut bytes);
     *original_header = Some(if copied == 0 {
         Err("transport original mission header unreadable")
@@ -418,12 +419,19 @@ pub fn read_task_force_transport_observed_buffer_with_stats(
         let region = u64::from_le_bytes(region_bytes);
         row.region = engine_native_parts::cstrategic_region::id(memory, base, region as usize)?
             .ok_or("task-force location has no strategic region")?;
-        accumulator::lookup_many_at(
-            memory,
-            at(task, LOCAL_MODIFIERS)?,
-            &TASK_FORCE_KEYS,
-            &mut row.local,
-        )?;
+        let local_empty = Array::from_header(
+            bytes[128..144].try_into().expect("local modifier header"),
+            engine_native_parts::modifier_entry::STRIDE,
+        )
+        .is_some_and(|array| array.count == 0);
+        if !local_empty {
+            accumulator::lookup_many_at(
+                memory,
+                at(task, LOCAL_MODIFIERS)?,
+                &TASK_FORCE_KEYS,
+                &mut row.local,
+            )?;
+        }
     }
     let attached = Array::from_header(bytes[40..56].try_into().expect("header"), 8)
         .ok_or("task-force headquarters invalid")?;

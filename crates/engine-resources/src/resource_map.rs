@@ -10,7 +10,29 @@ use crate::{allocation, ccountry_resources, cresource_exchange, cstrategic_resou
 use engine_native::{ccountry, cgame_state, cstate};
 use engine_native_parts::modifier_accumulator;
 use engine_native_parts::modifier_definition;
+use engine_native_parts::modifier_entry;
 use engine_sites::Rva;
+
+fn effective_raw(
+    memory: &impl Memory,
+    base: usize,
+    key: u32,
+    raw: i64,
+    metadata: &std::cell::Cell<Option<modifier_definition::Operands>>,
+) -> Result<i64, &'static str> {
+    if memory.modifier_definitions().is_some() {
+        return modifier_definition::effective(memory, base, key, raw);
+    }
+    let operands = match metadata.get() {
+        Some(operands) => operands,
+        None => {
+            let operands = modifier_definition::operands(memory, base, key)?;
+            metadata.set(Some(operands));
+            operands
+        }
+    };
+    Ok(operands.effective(raw))
+}
 
 fn effective(
     memory: &impl Memory,
@@ -23,18 +45,7 @@ fn effective(
     if !value.present {
         return Ok(0);
     }
-    if memory.modifier_definitions().is_some() {
-        return modifier_definition::effective(memory, base, key, value.raw);
-    }
-    let operands = match metadata.get() {
-        Some(operands) => operands,
-        None => {
-            let operands = modifier_definition::operands(memory, base, key)?;
-            metadata.set(Some(operands));
-            operands
-        }
-    };
-    Ok(operands.effective(value.raw))
+    effective_raw(memory, base, key, value.raw, metadata)
 }
 
 pub const BAD_EFFICIENCY_THRESHOLD_RVA: Rva = Rva(0x33e_3598);
@@ -471,6 +482,7 @@ struct OriginBatch {
     origin_bytes: [u8; ORIGIN_BATCH * ORIGIN_RECORD_STRIDE],
     state_ptrs: [usize; ORIGIN_BATCH],
     state_bytes: [u8; ORIGIN_BATCH * STATE_RECORD_STRIDE],
+    local_factors: [Option<i64>; ORIGIN_BATCH],
 }
 
 impl Default for OriginBatch {
@@ -480,6 +492,7 @@ impl Default for OriginBatch {
             origin_bytes: [0; ORIGIN_BATCH * ORIGIN_RECORD_STRIDE],
             state_ptrs: [0; ORIGIN_BATCH],
             state_bytes: [0; ORIGIN_BATCH * STATE_RECORD_STRIDE],
+            local_factors: [None; ORIGIN_BATCH],
         }
     }
 }
@@ -553,8 +566,8 @@ const ORIGIN_RECORD_FIELDS: [RecordField; 9] = [
 const ORIGIN_RECORD_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ORIGIN_RECORD_FIELDS, ORIGIN_RECORD_STRIDE)
         .expect("valid origin record layout");
-const STATE_RECORD_STRIDE: usize = 24;
-const STATE_RECORD_FIELDS: [RecordField; 2] = [
+const STATE_RECORD_STRIDE: usize = 40;
+const STATE_RECORD_FIELDS: [RecordField; 3] = [
     RecordField {
         source_offset: cstate::ID,
         destination_offset: 0,
@@ -565,10 +578,22 @@ const STATE_RECORD_FIELDS: [RecordField; 2] = [
         destination_offset: 4,
         len: 17,
     },
+    RecordField {
+        source_offset: cstate::BASE_MODIFIERS,
+        destination_offset: 24,
+        len: 16,
+    },
 ];
 const STATE_RECORD_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&STATE_RECORD_FIELDS, STATE_RECORD_STRIDE)
         .expect("valid origin state record layout");
+const BUCKET_DIST_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 4,
+    destination_offset: 0,
+    len: 1,
+}];
+const BUCKET_DIST_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&BUCKET_DIST_FIELDS, 1).expect("valid origin hash bucket distance layout");
 const CLIENT_BATCH: usize = 64;
 const SUPPLY_PTR_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: SUPPLY_TRANSFER_CLIENT,
@@ -893,8 +918,9 @@ impl<M: Memory> Walk<'_, M> {
         &self,
         origins: Array,
         stride: usize,
-        first: u32,
-        count: usize,
+        (first, count): (u32, usize),
+        country_id: u32,
+        cached_owner: &mut Option<Result<u32, &'static str>>,
         batch: &mut OriginBatch,
     ) -> bool {
         let Ok(expected_vtable) = vtable(self.base, ORIGIN_VTABLE_RVA) else {
@@ -949,16 +975,200 @@ impl<M: Memory> Walk<'_, M> {
             if state == 0
                 || state.checked_add(cstate::ID + 4).is_none()
                 || state.checked_add(cstate::COUNTRY_MODIFIERS + 17).is_none()
+                || state.checked_add(cstate::BASE_MODIFIERS + 16).is_none()
             {
                 return false;
             }
             *slot = state;
         }
-        self.memory.copy_records(
+        if self.memory.copy_records(
             RecordSources::Pointers(&batch.state_ptrs[..count]),
             &STATE_RECORD_LAYOUT,
             &mut batch.state_bytes[..count * STATE_RECORD_STRIDE],
-        ) == count * STATE_RECORD_FIELDS.len()
+        ) != count * STATE_RECORD_FIELDS.len()
+        {
+            return false;
+        }
+        batch.local_factors[..count].fill(None);
+        let owner_hash = if self.game_state == 0 || country_id == 0 {
+            Some(country_id)
+        } else if let Ok(Some(links)) = self.links {
+            cached_owner
+                .get_or_insert_with(|| {
+                    links
+                        .element(country_id, 4)
+                        .and_then(|address| read(self.memory, address))
+                        .ok_or("state movement country link unreadable")
+                })
+                .ok()
+        } else {
+            None
+        };
+        if let Some(hash) = owner_hash {
+            let mut bucket_rows = [0_usize; ORIGIN_BATCH];
+            let mut bucket_ptrs = [0_usize; ORIGIN_BATCH];
+            let mut bucket_count = 0_usize;
+            for i in 0..count {
+                let state_record = batch.state_record(i);
+                let header = &state_record[4..21];
+                let data = u64::from_le_bytes(header[..8].try_into().unwrap()) as usize;
+                let mask = u32::from_le_bytes(header[12..16].try_into().unwrap());
+                let Some(buckets) = mask
+                    .checked_add(1)
+                    .filter(|c| c.is_power_of_two() && *c <= i32::MAX as u32)
+                else {
+                    continue;
+                };
+                let Some(sentinel) = buckets.checked_add(u32::from(header[16])) else {
+                    continue;
+                };
+                let index = hash & mask;
+                if data == 0 || index >= sentinel {
+                    continue;
+                }
+                let Some(bucket) =
+                    data.checked_add(index as usize * cstate::COUNTRY_MODIFIER_STRIDE)
+                else {
+                    continue;
+                };
+                if bucket.checked_add(5).is_none() {
+                    continue;
+                }
+                bucket_rows[bucket_count] = i;
+                bucket_ptrs[bucket_count] = bucket;
+                bucket_count += 1;
+            }
+            let mut dist = [0_u8; ORIGIN_BATCH];
+            let copied = if bucket_count != 0 {
+                self.memory.copy_records(
+                    RecordSources::Pointers(&bucket_ptrs[..bucket_count]),
+                    &BUCKET_DIST_LAYOUT,
+                    &mut dist[..bucket_count],
+                )
+            } else {
+                0
+            };
+            const ACC_GATHER: usize = 16;
+            const ACC_BUF_BYTES: usize = 4096;
+            let mut acc_buf = [0_u8; ACC_BUF_BYTES];
+            let mut acc_spans = [(0_usize, 0_usize); ACC_GATHER];
+            let mut acc_rows = [0_usize; ACC_GATHER];
+            let mut acc_len = 0_usize;
+            let mut acc_used = 0_usize;
+            let flush_acc = |acc_len: &mut usize,
+                             acc_used: &mut usize,
+                             acc_spans: &[(usize, usize); ACC_GATHER],
+                             acc_rows: &[usize; ACC_GATHER],
+                             acc_buf: &mut [u8; ACC_BUF_BYTES],
+                             local_factors: &mut [Option<i64>; ORIGIN_BATCH]| {
+                if *acc_len == 0 {
+                    return;
+                }
+                let mut addrs = [0_usize; ACC_GATHER];
+                let mut slices: [&mut [u8]; ACC_GATHER] =
+                    std::array::from_fn(|_| <&mut [u8]>::default());
+                let mut rest = &mut acc_buf[..*acc_used];
+                for idx in 0..*acc_len {
+                    let (addr, len) = acc_spans[idx];
+                    let (head, tail) = std::mem::take(&mut rest).split_at_mut(len);
+                    addrs[idx] = addr;
+                    slices[idx] = head;
+                    rest = tail;
+                }
+                if self.memory.copy_scattered_prefetched(addrs, &mut slices) == ACC_GATHER {
+                    let mut offset = 0_usize;
+                    for idx in 0..*acc_len {
+                        let len = acc_spans[idx].1;
+                        let entries = &acc_buf[offset..offset + len];
+                        offset += len;
+                        let mut previous_key = 0_u32;
+                        let mut valid = true;
+                        let mut found = None;
+                        for entry in entries.chunks_exact(modifier_entry::STRIDE) {
+                            let key = u32::from_le_bytes(entry[..4].try_into().unwrap());
+                            if key <= previous_key {
+                                valid = false;
+                                break;
+                            }
+                            previous_key = key;
+                            if key == LOCAL_RESOURCES_FACTOR {
+                                found = Some(i64::from_le_bytes(entry[8..16].try_into().unwrap()));
+                            }
+                        }
+                        if valid {
+                            local_factors[acc_rows[idx]] = match found {
+                                Some(raw) => effective_raw(
+                                    self.memory,
+                                    self.base,
+                                    LOCAL_RESOURCES_FACTOR,
+                                    raw,
+                                    &self.local_resources,
+                                )
+                                .ok(),
+                                None => Some(0),
+                            };
+                        }
+                    }
+                }
+                *acc_len = 0;
+                *acc_used = 0;
+            };
+            for k in 0..copied {
+                if dist[k] != 0 {
+                    continue;
+                }
+                let i = bucket_rows[k];
+                let acc_addr = batch.state_ptrs[i] + cstate::BASE_MODIFIERS;
+                if self
+                    .memory
+                    .modifier_accumulator_value(acc_addr, LOCAL_RESOURCES_FACTOR)
+                    .is_some()
+                {
+                    continue;
+                }
+                let state_record = batch.state_record(i);
+                let Some(arr) = Array::from_header(
+                    state_record[24..40].try_into().unwrap(),
+                    modifier_entry::STRIDE,
+                ) else {
+                    continue;
+                };
+                if arr.count == 0 {
+                    batch.local_factors[i] = Some(0);
+                    continue;
+                }
+                if arr.count > 64 {
+                    continue;
+                }
+                let byte_len = arr.count as usize * modifier_entry::STRIDE;
+                if arr.data == 0 || arr.data.checked_add(byte_len).is_none() {
+                    continue;
+                }
+                if acc_len == ACC_GATHER || acc_used + byte_len > ACC_BUF_BYTES {
+                    flush_acc(
+                        &mut acc_len,
+                        &mut acc_used,
+                        &acc_spans,
+                        &acc_rows,
+                        &mut acc_buf,
+                        &mut batch.local_factors,
+                    );
+                }
+                acc_spans[acc_len] = (arr.data, byte_len);
+                acc_rows[acc_len] = i;
+                acc_len += 1;
+                acc_used += byte_len;
+            }
+            flush_acc(
+                &mut acc_len,
+                &mut acc_used,
+                &acc_spans,
+                &acc_rows,
+                &mut acc_buf,
+                &mut batch.local_factors,
+            );
+        }
+        true
     }
 
     fn country_modifier_accumulator_from_header(
@@ -1019,19 +1229,24 @@ impl<M: Memory> Walk<'_, M> {
         let modifiers: [u8; 17] = state_record[4..21].try_into().unwrap();
         let efficiency = i64::from_le_bytes(record[44..52].try_into().unwrap());
         let route_factor = i64::from_le_bytes(record[60..68].try_into().unwrap());
-        let accumulator = self.country_modifier_accumulator_from_header(
-            state_pointer,
-            country.id,
-            modifiers,
-            cached_owner,
-        )?;
-        let local_resources_factor = effective(
-            self.memory,
-            self.base,
-            accumulator,
-            LOCAL_RESOURCES_FACTOR,
-            &self.local_resources,
-        )?;
+        let local_resources_factor = match batch.local_factors[index] {
+            Some(value) => value,
+            None => {
+                let accumulator = self.country_modifier_accumulator_from_header(
+                    state_pointer,
+                    country.id,
+                    modifiers,
+                    cached_owner,
+                )?;
+                effective(
+                    self.memory,
+                    self.base,
+                    accumulator,
+                    LOCAL_RESOURCES_FACTOR,
+                    &self.local_resources,
+                )?
+            }
+        };
         let route_address = at(origin, ORIGIN_ROUTE)?;
         if u64::from_le_bytes(record[52..60].try_into().unwrap()) as usize
             != vtable(self.base, ROUTE_VTABLE_RVA)?
@@ -2025,7 +2240,14 @@ pub fn walk_buffer(
                     let mut first = 0_u32;
                     while first < origins.count {
                         let count = ((origins.count - first) as usize).min(ORIGIN_BATCH);
-                        if walk.try_read_origin_batch(origins, 8, first, count, &mut batch) {
+                        if walk.try_read_origin_batch(
+                            origins,
+                            8,
+                            (first, count),
+                            country.id,
+                            &mut owner_canonical,
+                            &mut batch,
+                        ) {
                             rights_table.run(|table| {
                                 for index in 0..count {
                                     let record = batch.origin_record(index);
@@ -2124,8 +2346,9 @@ pub fn walk_buffer(
                 if walk.try_read_origin_batch(
                     origins,
                     RIGHTS_ORIGIN_STRIDE,
-                    first,
-                    count,
+                    (first, count),
+                    country.id,
+                    &mut owner_canonical,
                     &mut batch,
                 ) {
                     for index in 0..count {
