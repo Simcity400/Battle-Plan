@@ -1,6 +1,7 @@
 use replay_columnar::manifest::Status;
 use replay_data::rows::{RowCodec, TableId, TableRows, TableSchema};
 use replay_frame::frame::{DecodedFrame, Keys, TableView};
+use replay_lanes::lanes::{Cell, Reading};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CoverageScope {
@@ -44,18 +45,26 @@ pub fn row_coverage(table: TableId, status: Status, unavailable_reason: Option<&
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Witness<'a, R> {
+pub enum Witness<'a, R: ?Sized> {
     Row(&'a R),
     Absent,
     NotRecorded(String),
 }
 
-impl<'a, R> Witness<'a, R> {
+impl<'a, R: ?Sized> Witness<'a, R> {
     pub fn row(&self) -> Option<&'a R> {
         match self {
             Self::Row(row) => Some(row),
             Self::Absent | Self::NotRecorded(_) => None,
         }
+    }
+}
+
+pub fn reading_witness(table: TableId, reading: Reading<'_>) -> Witness<'_, [Cell]> {
+    match reading {
+        Reading::Cells(cells) => Witness::Row(cells),
+        Reading::Absent => Witness::Absent,
+        Reading::Unread { status, reason } => Witness::NotRecorded(row_coverage(table, status, reason, false).into_missing().unwrap_or_else(|| format!("{} not recorded at this hour", table_title(table)))),
     }
 }
 
@@ -135,6 +144,21 @@ pub fn population<'f, T: TableSchema>(frame: &'f DecodedFrame, asked: &Keys) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_history_reading_is_worded_as_a_frames_witness() {
+        let cells = [Cell::Number(7)];
+        assert_eq!(reading_witness(TableId::CountryExperience, Reading::Cells(&cells)), Witness::Row(&cells[..]));
+        assert_eq!(reading_witness(TableId::CountryExperience, Reading::Absent), Witness::Absent);
+        assert_eq!(
+            reading_witness(TableId::CountryExperience, Reading::Unread { status: Status::Truncated { missing: 3 }, reason: None }),
+            Witness::NotRecorded("Country experience read only in part at this hour (3 rows not read)".into()),
+        );
+        assert_eq!(
+            reading_witness(TableId::CountryExperience, Reading::Unread { status: Status::Unavailable { reason: 1 }, reason: Some("reader fault") }),
+            Witness::NotRecorded("Country experience not available at this hour: reader fault".into()),
+        );
+    }
 
     #[test]
     fn row_coverage_applies_witness_rule_and_canonical_wording() {
