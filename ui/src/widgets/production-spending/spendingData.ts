@@ -3,6 +3,7 @@ import { runAt, sameStretch } from '../../charts/series.ts';
 import { formatIc } from '../../dashboard/icDecimals.ts';
 import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
+import { windowOf, windowsOf } from '../../dashboard/heldWindows.ts';
 import type { FactoryKind } from './definition.ts';
 import type { Domain, ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun, ProductionSpendingUnknown, RepairRatePart, StockVariantName } from '../../generated/dashboard';
 
@@ -144,8 +145,27 @@ function wholeOf(reply: SpendingData, kind: FactoryKind | undefined, refits: boo
     : { runs: refits ? reply.total : reply.totalWithoutRefits, observations: reply.observations };
 }
 
+const UNRECORDED_REASONS: ReadonlySet<ProductionSpendingUnknown | null> = new Set(['notRecorded', 'rocketTableUnavailable']);
+
 export const spendingRecorded = (reply: SpendingData): boolean =>
-  [reply.total, reply.equipmentTotal, reply.rocketTotal].some(runs => runs.some(run => run.totalRaw != null));
+  [reply.total, reply.equipmentTotal, reply.rocketTotal].some(runs =>
+    runs.some(run => run.totalRaw != null || !UNRECORDED_REASONS.has(run.reason)));
+
+export type SpendingGate = 'empty' | 'error' | 'outside' | 'loading' | 'unavailable' | 'ready';
+
+export function spendingWidgetGate(input: {
+  hasTarget: boolean; hasError: boolean;
+  branch: { firstHour: number; lastHour: number } | undefined;
+  hour: number | undefined; end: number | undefined;
+  hasData: boolean; recorded: boolean;
+}): SpendingGate {
+  if (!input.hasTarget || !input.branch) return 'empty';
+  if (input.hasError) return 'error';
+  if (input.hour == null || input.end == null || input.hour < input.branch.firstHour || input.hour > input.branch.lastHour) return 'outside';
+  if (!input.hasData) return 'loading';
+  if (!input.recorded) return 'unavailable';
+  return 'ready';
+}
 
 export const noProductionAt = (reply: SpendingData, hour: number, refits = true) => {
   const evidence = runAt(reply.production, Math.floor(hour));
@@ -177,7 +197,8 @@ export function spendingEmptyLabel(reply: SpendingData, designs: readonly Spendi
 
 export interface SpendingFinal { exact: bigint | null; geometry: number }
 
-export function spendingFinals(reply: SpendingData, designs: readonly SpendingDesign[], from: number | null, end: number): SpendingFinal[] {
+export function spendingFinals(reply: SpendingData, designs: readonly SpendingDesign[], from: number | null, end: number, hour = end): SpendingFinal[] {
+  if (end > hour) return designs.map(() => ({ exact: null, geometry: 0 }));
   return designs.map(design => {
     const amount = designAmount(reply, design, from, end);
     if (amount.exact != null) return { exact: amount.exact, geometry: Number(amount.exact) };
@@ -200,11 +221,12 @@ export function spendingFinals(reply: SpendingData, designs: readonly SpendingDe
 
 export function productionSpendingItems(reply: SpendingData, window: SpendingWindow, designs: readonly SpendingDesign[],
   finals: readonly SpendingFinal[], kind: FactoryKind | undefined, refits: boolean): SunburstItem[] {
+  const futureEnd = window.end > window.hour;
   const amounts = designs.map(design => designAmount(reply, design, window.from, window.hour));
   const unresolved = designs.some((design, index) => !design.rocket && design.domain == null && amounts[index].exact !== 0n);
-  const unresolvedAtEnd = designs.some((design, index) => !design.rocket && design.domain == null && finals[index].exact !== 0n);
+  const unresolvedAtEnd = !futureEnd && designs.some((design, index) => !design.rocket && design.domain == null && finals[index].exact !== 0n);
   const unresolvedRocket = designs.some((design, index) => design.rocket && design.domain == null && amounts[index].exact !== 0n);
-  const unresolvedRocketAtEnd = designs.some((design, index) => design.rocket && design.domain == null && finals[index].exact !== 0n);
+  const unresolvedRocketAtEnd = !futureEnd && designs.some((design, index) => design.rocket && design.domain == null && finals[index].exact !== 0n);
   const items: SunburstItem[] = designs.map((design, index) => {
     const amount = amounts[index];
     const final = finals[index];
@@ -224,16 +246,18 @@ export function productionSpendingItems(reply: SpendingData, window: SpendingWin
       unknownValue: amount.exact == null, unknownLevels: [attribution, attribution, false],
       localUnknownLevels: [false, design.rocket && typeAttribution, false],
       note: amount.reason ? unknownLabel(amount.reason) : typeAttribution ? ATTRIBUTION_NOTE : undefined,
-      final: final.geometry, finalUnknown: final.exact == null,
+      final: futureEnd ? 0 : final.geometry,
+      ...(futureEnd ? { weight: amount.exact == null ? 0 : Number(amount.exact) } : {}),
+      finalUnknown: futureEnd || final.exact == null,
       finalUnknownLevels: [finalAttribution, finalAttribution, false],
       localFinalUnknownLevels: [false, design.rocket && unresolvedRocketAtEnd && design.domain != null, false],
       present: observed || typeAttribution, counted: observed ? [identity] : [],
     };
   });
   const total = kindAmount(reply, designs, window.from, window.hour, kind, refits);
-  const finalTotal = kindAmount(reply, designs, window.from, window.end, kind, refits);
+  const finalTotal = futureEnd ? { exact: null, reason: null } : kindAmount(reply, designs, window.from, window.end, kind, refits);
   const hasParts = items.some(item => item.present);
-  if (total.exact == null || !hasParts || finalTotal.exact == null) items.push({
+  if (total.exact == null || !hasParts || (!futureEnd && finalTotal.exact == null)) items.push({
     path: [], value: total.exact == null ? null : hasParts ? 0 : Number(total.exact), exact: total.exact == null ? null : hasParts ? 0n : total.exact,
     unknownValue: total.exact == null, note: total.reason ? unknownLabel(total.reason) : undefined,
     final: 0, finalUnknown: finalTotal.exact == null,
@@ -243,7 +267,7 @@ export function productionSpendingItems(reply: SpendingData, window: SpendingWin
 
 export function spendingTotal(reply: SpendingData, designs: readonly SpendingDesign[], window: SpendingWindow, kind: FactoryKind | undefined, refits: boolean): SunburstTotal {
   const amount = kindAmount(reply, designs, window.from, window.hour, kind, refits);
-  const final = kindAmount(reply, designs, window.from, window.end, kind, refits);
+  const final = window.end > window.hour ? { exact: null, reason: null } : kindAmount(reply, designs, window.from, window.end, kind, refits);
   return {
     value: amount.exact == null ? null : Number(amount.exact), exact: amount.exact,
     unknownValue: amount.exact == null, note: amount.reason ? unknownLabel(amount.reason) : undefined,
@@ -271,11 +295,76 @@ function joinNames(names: StockVariantName[], next: readonly StockVariantName[])
 }
 
 const union = (lists: readonly (readonly number[])[]) => [...new Set(lists.flat())].sort((a, b) => a - b);
+const absentRuns = (basis: readonly ProductionSpendingRun[]): ProductionSpendingRun[] =>
+  basis.map(run => run.totalRaw == null ? { ...run } : { ...run, totalRaw: '0', reason: null });
 
-export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingReply>): SpendingData | null {
-  const held = [...windows.values()].sort((a, b) => a.window - b.window);
+function absentRepairBasis(repairs: NonNullable<ProductionSpendingReply['repairs']>): ProductionSpendingRun[] {
+  const unattributed = repairs.parts.find(part => part.variant === null);
+  if (unattributed) return absentRuns(unattributed.runs);
+  return repairs.total.map(run => run.totalRaw == null ? { ...run }
+    : BigInt(run.totalRaw) === 0n ? { ...run, totalRaw: '0', reason: null }
+    : { ...run, totalRaw: null, reason: 'spendingUnavailable' });
+}
+
+export function displayedSpendingWindows(branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
+  whole: boolean, repairs: boolean): number[] {
+  const clampedAt = Math.min(branch.lastHour, Math.floor(at));
+  if (clampedAt < branch.firstHour) return [];
+  const start = from == null ? branch.firstHour : Math.max(branch.firstHour, from - 1);
+  if (whole || repairs || from != null) return windowsOf(start, clampedAt, false);
+  return [windowOf(clampedAt)];
+}
+
+export function prefetchSpendingWindows(branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
+  whole: boolean, repairs: boolean, ahead: boolean): number[] {
+  const needed = displayedSpendingWindows(branch, at, from, whole, repairs);
+  if (!ahead || !needed.length) return needed;
+  const next = needed[needed.length - 1] + 1;
+  return next <= windowOf(branch.lastHour) ? [...needed, next] : needed;
+}
+
+export type SpendingWindowBuilder = (branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
+  whole: boolean, repairs: boolean, ahead: boolean) => number[];
+
+export function createWindowTracker(build: SpendingWindowBuilder = prefetchSpendingWindows) {
+  let cached: {
+    firstHour: number; lastHour: number; atWindow: number; from: number | null;
+    whole: boolean; repairs: boolean; ahead: boolean; windows: number[];
+  } | null = null;
+  let recomputations = 0;
+  return {
+    get recomputations() { return recomputations; },
+    get(branch: { firstHour: number; lastHour: number }, at: number, from: number | null,
+      whole: boolean, repairs: boolean, ahead: boolean): number[] {
+      const clamped = Math.min(branch.lastHour, Math.floor(at));
+      const atWindow = clamped < branch.firstHour ? -1 : windowOf(clamped);
+      if (cached && cached.firstHour === branch.firstHour && cached.lastHour === branch.lastHour
+        && cached.atWindow === atWindow && cached.from === from && cached.whole === whole
+        && cached.repairs === repairs && cached.ahead === ahead) return cached.windows;
+      recomputations++;
+      const windows = build(branch, at, from, whole, repairs, ahead);
+      cached = { firstHour: branch.firstHour, lastHour: branch.lastHour, atWindow, from, whole, repairs, ahead, windows };
+      return windows;
+    },
+  };
+}
+
+export function selectSpendingState<E>(needed: readonly number[], data: ReadonlyMap<number, ProductionSpendingReply>,
+  errors: ReadonlyMap<number, E>, at?: number): { data: SpendingData | undefined; error: E | undefined } {
+  const error = needed.map(index => errors.get(index)).find(failure => failure !== undefined);
+  if (error !== undefined) return { data: undefined, error };
+  if (!needed.length || !needed.every(index => data.has(index))) return { data: undefined, error: undefined };
+  const selected = new Map<number, ProductionSpendingReply>();
+  for (const index of needed) selected.set(index, data.get(index)!);
+  return { data: mergeSpending(selected, at) ?? undefined, error: undefined };
+}
+
+export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingReply>, atHour?: number): SpendingData | null {
+  const cutoff = atHour == null ? Infinity : Math.floor(atHour);
+  const held = [...windows.values()].filter(reply => reply.firstHour <= cutoff).sort((a, b) => a.window - b.window);
   if (!held.length) return null;
   const leaves = new Map<string, ProductionSpendingLeaf>();
+  const hasUnproven = new Set<string>();
   const totals = { total: [] as ProductionSpendingRun[], totalWithoutRefits: [] as ProductionSpendingRun[], equipmentTotal: [] as ProductionSpendingRun[],
     equipmentTotalWithoutRefits: [] as ProductionSpendingRun[], rocketTotal: [] as ProductionSpendingRun[] };
   const production: SpendingData['production'] = [];
@@ -285,11 +374,26 @@ export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingRep
   for (const reply of held) {
     for (const leaf of reply.leaves) {
       const key = leafKey(leaf);
-      let into = leaves.get(key);
-      if (!into) leaves.set(key, into = { ...leaf, runs: [], unproven: [], names: [] });
-      joinRuns(into.runs, leaf.runs);
-      joinRuns(into.unproven, leaf.unproven);
-      joinNames(into.names, leaf.names);
+      if (!leaves.has(key)) leaves.set(key, { ...leaf, runs: [], unproven: [], names: [] });
+      if (leaf.unproven.length) hasUnproven.add(key);
+    }
+    for (const part of reply.repairs?.parts ?? []) {
+      if (!parts.has(part.variant)) parts.set(part.variant, { ...part, runs: [], names: [] });
+    }
+  }
+  for (const reply of held) {
+    const windowLeaves = new Map(reply.leaves.map(leaf => [leafKey(leaf), leaf]));
+    for (const [key, into] of leaves) {
+      const leaf = windowLeaves.get(key);
+      const basis = into.rocket ? reply.rocketTotal : reply.equipmentTotal;
+      if (leaf) {
+        joinRuns(into.runs, leaf.runs);
+        if (hasUnproven.has(key)) joinRuns(into.unproven, leaf.unproven.length ? leaf.unproven : absentRuns(basis));
+        joinNames(into.names, leaf.names);
+      } else {
+        joinRuns(into.runs, absentRuns(basis));
+        if (hasUnproven.has(key)) joinRuns(into.unproven, absentRuns(basis));
+      }
     }
     for (const field of Object.keys(totals) as (keyof typeof totals)[]) joinRuns(totals[field], reply[field]);
     for (const run of reply.production) {
@@ -297,17 +401,22 @@ export function mergeSpending(windows: ReadonlyMap<number, ProductionSpendingRep
       if (open && open.lastHour + 1 === run.firstHour && open.present === run.present) production[production.length - 1] = { ...open, lastHour: run.lastHour };
       else production.push({ ...run });
     }
-    for (const part of reply.repairs?.parts ?? []) {
-      let into = parts.get(part.variant);
-      if (!into) parts.set(part.variant, into = { ...part, runs: [], names: [] });
-      joinRuns(into.runs, part.runs);
-      joinNames(into.names, part.names);
+    if (reply.repairs) {
+      const windowParts = new Map(reply.repairs.parts.map(part => [part.variant, part]));
+      const absentRepair = absentRepairBasis(reply.repairs);
+      for (const [variant, into] of parts) {
+        const part = windowParts.get(variant);
+        if (part) {
+          joinRuns(into.runs, part.runs);
+          joinNames(into.names, part.names);
+        } else joinRuns(into.runs, variant === null ? absentRuns(reply.repairs.total) : absentRepair);
+      }
+      joinRuns(repairTotal, reply.repairs.total);
     }
-    joinRuns(repairTotal, reply.repairs?.total ?? []);
     for (const warning of reply.warnings) warnings.add(warning);
   }
   const { window: _window, firstHour: _firstHour, lastHour: _lastHour, ...first } = held[0];
-  const named = held.find(reply => reply.rocketKey !== null) ?? first;
+  const named = [...held].reverse().find(reply => reply.rocketKey !== null) ?? first;
   const repairs = held.find(reply => reply.repairs !== null)?.repairs ?? null;
   return { ...first, ...totals, rocketKey: named.rocketKey, rocketName: named.rocketName,
     reads: union(held.map(reply => reply.reads)), observations: union(held.map(reply => reply.observations)),

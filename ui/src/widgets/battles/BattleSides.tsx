@@ -61,10 +61,14 @@ export default function BattleSides({ row, country, summary, compact }: {
   const flag = useRef<HTMLElement>(null);
   const fullCount = useRef<HTMLSpanElement>(null);
   const compactCount = useRef<HTMLSpanElement>(null);
-  const counts = row.sides.map(side => side.counts.find(value => value.label === summary.countLabel)
-    ?? { label: summary.countLabel, value: null, unknown: summary.unknown });
-  const fullText = counts.map(value => summary.formatCount(value, false)).join(` ${summary.separator} `);
-  const compactText = counts.map(value => summary.formatCount(value, true)).join(` ${summary.separator} `);
+  const formatSide = (side: BattleSide, isCompact: boolean) => {
+    if (summary.formatSide) return summary.formatSide(side, isCompact);
+    const count = side.counts.find(value => value.label === summary.countLabel)
+      ?? { label: summary.countLabel, value: null, unknown: summary.unknown };
+    return summary.formatCount(count, isCompact);
+  };
+  const fullText = row.sides.map(side => formatSide(side, false)).join(` ${summary.separator} `);
+  const compactText = row.sides.map(side => formatSide(side, true)).join(` ${summary.separator} `);
   useFitPainter(host, () => {
     if (compact) { compactCount.current!.hidden = false; return; }
     const element = host.current!;

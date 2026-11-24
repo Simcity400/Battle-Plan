@@ -84,6 +84,23 @@ export function navalBattleMeasureText(value: BattleValue, row: NavalBattleRow):
   return text;
 }
 
+const shipUnit = (value: BattleValue, compact: boolean) =>
+  `${battleValueText(value)}${compact || value.value === null ? '' : value.value === 1 ? ' ship' : ' ships'}`;
+
+const convoyUnit = (value: BattleValue, compact: boolean) => value.value === null ? `${battleValueText(value)} convoys`
+  : `${battleValueText(value)}${compact ? 'c' : value.value === 1 ? ' convoy' : ' convoys'}`;
+
+export function navalSideText(side: BattleSide, compact: boolean): string {
+  const ships = side.counts.find(value => value.label === 'Ships') ?? { label: 'Ships', value: null, unknown: 'Not recorded' };
+  const convoys = side.counts.find(value => value.label === 'Convoys');
+  const hasConvoys = convoys !== undefined && (convoys.value === null || convoys.value > 0);
+  if (!hasConvoys) return shipUnit(ships, compact);
+  if (ships.value === 0) return convoyUnit(convoys, compact);
+  const shipsText = ships.value === null ? `${battleValueText(ships)} ships`
+    : compact ? `${battleValueText(ships)}s` : shipUnit(ships, false);
+  return `${shipsText}${compact ? '+' : ', '}${convoyUnit(convoys, compact)}`;
+}
+
 export function navalBattleState(row: NavalBattleRow): string {
   return JSON.stringify([row.provinceId, battleState(row)]);
 }
