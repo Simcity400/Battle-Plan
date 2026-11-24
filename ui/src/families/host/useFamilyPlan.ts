@@ -373,10 +373,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return made;
   }, [isFilter, widget.countries, filterMatch, groups.data, track, selectedFallback, allTags, firstHour, lastHour]);
 
+  const allowsFactions = isMulti && policy.factions === true;
   const resolvedMulti = useMemo(() => {
-    if (!isMulti || widget.countries.kind === 'all') return null;
+    if (!isMulti || widget.countries.kind === 'all' || (allowsFactions && widget.countries.kind === 'factions')) return null;
     return resolveCountries(widget.countries, selectedFallback, groups.data, lastHour, Number.MAX_SAFE_INTEGER);
-  }, [isMulti, widget.countries, selectedFallback, groups.data, lastHour]);
+  }, [isMulti, allowsFactions, widget.countries, selectedFallback, groups.data, lastHour]);
 
   const singleSlotId = isMulti && policy.allowSingleSlot && widget.countries.kind === 'selected' && selectedFallback.length === 1
     ? countryFromKey(selectedFallback[0]!)
@@ -385,7 +386,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const needsSlots = isMulti && (
     typeof singleSlotId === 'number'
     || anySlot
-    || (widget.countries.kind !== 'all' && resolvedMulti?.top == null)
+    || (widget.countries.kind !== 'all' && !(allowsFactions && widget.countries.kind === 'factions') && resolvedMulti?.top == null)
   );
   const identityScope = useIdentityScope(runtime.client, track?.source, track?.branch.id, active && !!track);
   const branchBounds = useMemo(

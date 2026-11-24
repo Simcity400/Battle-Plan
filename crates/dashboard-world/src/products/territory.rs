@@ -52,6 +52,11 @@ pub(crate) fn cell(row: &TerritoryTotalRow, at: usize) -> Option<i64> {
     }
 }
 
+pub fn territory_value(row: &TerritoryTotalRow, measure: &str) -> Option<i64> {
+    let index = MEASURES.iter().position(|name| *name == measure)?;
+    cell(row, index)
+}
+
 pub fn slot_tags(holders: &Holders, hour: i32) -> HashMap<u32, (&str, u32)> {
     let mut out = HashMap::new();
     for (tag, runs) in &holders.tags {
