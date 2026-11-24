@@ -38,14 +38,15 @@ import {
   TIME_CHART_MIN_SPAN,
   drawTimeChartScene,
   fitTimeChartFrame,
-  resolveDeclarativeEndLabels,
+  normalizeEndLabels,
   resolveTimeChartPadding,
   resolveTimeChartTargetX,
   resolveTimeChartTargetY,
   type AxisValueFormatter,
   type ChartAxisFormatterId,
   type ChartLayer as PureChartLayer,
-  type DeclarativeEndLabels,
+  type DeclarativeLayer,
+  type EndLabelsResolver,
 } from './renderTimeChart';
 import './charts.css';
 
@@ -74,7 +75,7 @@ export interface TimeChartProps {
   strip?: ChartStrip;
   formatValue?: ChartAxisFormatterId | AxisValueFormatter;
   valueTicks?: readonly number[];
-  endLabels?: DeclarativeEndLabels;
+  endLabels?: EndLabelsResolver;
   badges?: readonly EventBadge[];
   markSummary?: MarkSummary;
   markSummaries?: readonly MarkSummary[] | (() => readonly MarkSummary[]);
@@ -124,30 +125,26 @@ function withLiveHead(props: TimeChartProps): TimeChartProps {
 }
 
 function canDrawInWorker(p: TimeChartProps): boolean {
-  return p.layers.length > 0
-    && p.layers.every(layer => typeof layer.describe === 'function')
+  return p.layers.every(layer => typeof layer.describe === 'function')
     && !p.strip
     && !p.overlay
     && typeof p.formatValue !== 'function';
 }
 
-function sampleWorkerHeads(p: TimeChartProps, frame: PlotFrame, until: number | null): {
+function sampleWorkerLayers(layers: readonly ChartLayer[], drawUntil: number): {
+  descriptors: DeclarativeLayer[];
   headValues: (number | null)[];
-  endHeadValues?: (number | null)[];
-} {
-  const drawUntil = until ?? frame.x[1];
-  const endMax = p.endLabels?.extentMax ?? frame.x[1];
-  const endAt = Math.min(until ?? endMax, frame.x[1], endMax);
-  const separateEnd = p.endLabels !== undefined && endAt !== drawUntil;
+} | null {
+  const descriptors: DeclarativeLayer[] = [];
   const headValues: (number | null)[] = [];
-  const endHeadValues: (number | null)[] | undefined = separateEnd ? [] : undefined;
-  for (const layer of p.layers) {
+  for (const layer of layers) {
     const desc = layer.describe?.();
-    const tiled = desc?.kind === 'line-summary' ? desc.summary?.tiles : undefined;
+    if (!desc) return null;
+    descriptors.push(desc);
+    const tiled = desc.kind === 'line-summary' ? desc.summary?.tiles : undefined;
     headValues.push(tiled ? tiled.valueAt(drawUntil) : null);
-    if (endHeadValues) endHeadValues.push(tiled ? tiled.valueAt(endAt) : null);
   }
-  return endHeadValues ? { headValues, endHeadValues } : { headValues };
+  return { descriptors, headValues };
 }
 
 export default function TimeChart(props: TimeChartProps) {
@@ -160,12 +157,9 @@ export default function TimeChart(props: TimeChartProps) {
   const [zoomed, setZoomed] = useState(false);
   const [workerFailed, setWorkerFailed] = useState(false);
   const useWorker = canDrawInWorker(props) && !workerFailed && supportsTimeChartWorker();
-  const canvasMode = useRef(useWorker);
-  const canvasGen = useRef(0);
-  if (canvasMode.current !== useWorker) {
-    canvasMode.current = useWorker;
-    canvasGen.current += 1;
-  }
+  const viewRef = useRef<ViewState>(EMPTY_VIEW);
+  const easedRef = useRef<{ x: [number, number]; y: [number, number] } | null>(null);
+  const zoomedForRef = useRef('');
   const eventsText = useRef<HTMLParagraphElement>(null);
   type Point = { x: number; y: number; clientX: number; clientY: number };
   const hover = useRef<HoverState<Point>>(NO_HOVER);
@@ -188,8 +182,37 @@ export default function TimeChart(props: TimeChartProps) {
 
   useEffect(() => {
     const element = canvas.current!;
-    const triggerFallback = () => { setWorkerFailed(true); };
-    const worker = useWorker ? attachTimeChartWorker(element, triggerFallback) : null;
+    type PaintedState = {
+      readonly frame: PlotFrame;
+      readonly until: number | null;
+      readonly props: TimeChartProps;
+      readonly layoutWidth: number;
+      readonly layoutHeight: number;
+    };
+    let nextFrameId = 1;
+    let lastPostedFrameId = 0;
+    let lastPaintedFrameId = 0;
+    const postedFrames = new Map<number, PaintedState>();
+    let paintedState: PaintedState | null = null;
+    let frame: PlotFrame | null = null;
+    let drag: Drag | null = null;
+    let wakeRef = () => {};
+    const worker = useWorker ? attachTimeChartWorker(element, {
+      onFallback: () => { setWorkerFailed(true); },
+      onPainted: (frameId: number) => {
+        if (frameId <= lastPaintedFrameId) return;
+        lastPaintedFrameId = frameId;
+        const entry = postedFrames.get(frameId);
+        for (const key of postedFrames.keys()) if (key <= frameId) postedFrames.delete(key);
+        if (entry) {
+          paintedState = entry;
+          pickFrame.current = { ...picks.drawn({ frame: entry.frame, until: entry.until }, latest.current.onPick), props: latest.current };
+          shown.current = { x: entry.frame.x, until: entry.until };
+        }
+        if (frameId >= lastPostedFrameId && task.current) scheduler.setAsyncPending(task.current, false);
+        if (hover.current !== NO_HOVER || drag != null) wakeRef();
+      },
+    }) : null;
     if (useWorker && !worker) {
       setWorkerFailed(true);
       return;
@@ -199,21 +222,16 @@ export default function TimeChart(props: TimeChartProps) {
     const measure = worker ? (scratchMeasureText() ?? (() => 0)) : canvasMeasureText(context!);
     const sheet = overlay.current ? drawingSurface(overlay.current) : null, overlayContext = sheet?.context ?? null;
     let tokens = readTokens();
-    let view: ViewState = EMPTY_VIEW;
     let spokenFor: readonly EventBadge[] = [];
     let spokenBadges = '', spokenText = '';
     let spokenMarks: readonly (readonly MarkCluster[])[] = [];
     let clusterText = '';
     let reported: { handler: (x: Range) => void; x: Range } | null = null;
     let telling: { handler: (x: Range) => void; x: Range } | null = null;
-    let eased: { x: [number, number]; y: [number, number] } | null = null;
-    let frame: PlotFrame | null = null;
     let painted: readonly unknown[] | null = null;
     let overlaid = false;
     const surface = watchCanvasSize(element, () => wake());
     let pointer: { x: number; y: number; clientX: number; clientY: number } | null = null;
-    let drag: Drag | null = null;
-    let zoomedFor = '';
     let hovered: { hour: number; row: number; badges: readonly EventBadge[]; cluster?: MarkCluster; markTooltip: TimeChartProps['markTooltip']; rows: TimeChartProps['rows']; tooltip: TimeChartProps['tooltip']; revision: unknown; content: TooltipContent | null; key: string } | null = null;
     let keyedBadges: { source: TimeChartProps['badges']; hour: number; badges: readonly EventBadge[] } | null = null;
     let markHovered: MarkCluster | null | undefined;
@@ -228,10 +246,13 @@ export default function TimeChart(props: TimeChartProps) {
       inFrame(() => sent.callback?.({ from: sent.from, to: sent.to, end: sent.end, width: sent.width }));
     };
 
+    const activeFrame = () => (worker ? paintedState?.frame ?? null : frame);
+
     const dispatch = (action: ViewAction) => {
-      if (!frame) return;
-      view = reduceView(view, action, { x: frame.x, y: frame.y, extent: latest.current.extent, minSpan: MIN_SPAN, log: frame.log });
-      setZoomed(view.x != null || view.y != null);
+      const currentFrame = activeFrame();
+      if (!currentFrame) return;
+      viewRef.current = reduceView(viewRef.current, action, { x: currentFrame.x, y: currentFrame.y, extent: latest.current.extent, minSpan: MIN_SPAN, log: currentFrame.log });
+      setZoomed(viewRef.current.x != null || viewRef.current.y != null);
       wake();
     };
     controls.current = { dispatch };
@@ -257,11 +278,13 @@ export default function TimeChart(props: TimeChartProps) {
         rowLabelWidth: p.rows?.labelWidth,
       });
       const extentKey = `${p.extent[0]}:${p.extent[1]}:${p.branchStart}`;
-      if (extentKey !== zoomedFor) {
-        if (zoomedFor && (view.x || view.y)) { view = EMPTY_VIEW; setZoomed(false); }
-        if (zoomedFor) eased = null;
-        zoomedFor = extentKey;
+      if (extentKey !== zoomedForRef.current) {
+        if (zoomedForRef.current && (viewRef.current.x || viewRef.current.y)) { viewRef.current = EMPTY_VIEW; setZoomed(false); }
+        if (zoomedForRef.current) easedRef.current = null;
+        zoomedForRef.current = extentKey;
       }
+      const view = viewRef.current;
+      const eased = easedRef.current;
       const motion = motionNow(p.hoursPerSecond);
       const targetX = resolveTimeChartTargetX({
         extent: p.extent,
@@ -287,7 +310,7 @@ export default function TimeChart(props: TimeChartProps) {
       if ((Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1])) * plotHeight < 0.5 * ySpan) {
         y[0] = targetY.range[0]; y[1] = targetY.range[1];
       }
-      eased = { x, y };
+      easedRef.current = { x, y };
       frame = fitTimeChartFrame({
         layoutWidth,
         layoutHeight,
@@ -306,15 +329,20 @@ export default function TimeChart(props: TimeChartProps) {
 
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
       const summaries = marks.filter(summary => markSummaryMatches(summary, frame!, until));
-      const heads = worker ? sampleWorkerHeads(p, frame, until) : null;
+      const sampled = worker ? sampleWorkerLayers(p.layers, until ?? frame.x[1]) : null;
+      if (worker && !sampled) return false;
       const baseKey = [size.width, size.height, size.scaleX, size.scaleY, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
         frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, p.gaps, p.endLabels,
-        ...(heads ? heads.headValues : []), ...(heads?.endHeadValues ?? []),
+        ...(sampled ? sampled.headValues : []),
         ...(p.data?.revision() ?? []), ...summaries];
-      pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
       if (!painted || painted.length !== baseKey.length || !painted.every((value, index) => Object.is(value, baseKey[index]))) {
+        const resolvedEnds = p.endLabels ? normalizeEndLabels(p.endLabels(frame, until)) : undefined;
         if (worker) {
+          const frameId = nextFrameId++;
+          postedFrames.set(frameId, { frame, until, props: p, layoutWidth, layoutHeight });
+          lastPostedFrameId = frameId;
           const posted = worker.draw({
+            frameId,
             backingWidth: size.width,
             backingHeight: size.height,
             layoutWidth,
@@ -323,6 +351,8 @@ export default function TimeChart(props: TimeChartProps) {
             scaleY: size.scaleY,
             frame,
             layers: p.layers,
+            descriptors: sampled!.descriptors,
+            headValues: sampled!.headValues,
             gaps: p.gaps,
             playhead: p.playhead,
             playback: p.playback,
@@ -332,14 +362,16 @@ export default function TimeChart(props: TimeChartProps) {
             badges: p.badges,
             rowLabels: p.rows?.labels,
             formatValue: typeof p.formatValue === 'string' ? p.formatValue : undefined,
-            endLabels: p.endLabels,
-            headValues: heads!.headValues,
-            endHeadValues: heads!.endHeadValues,
+            endLabels: resolvedEnds?.ends,
+            endLabelGap: resolvedEnds?.gap,
           });
           if (!posted) {
+            postedFrames.delete(frameId);
+            scheduler.setAsyncPending(current, false);
             setWorkerFailed(true);
             return false;
           }
+          scheduler.setAsyncPending(current, true);
         } else {
           drawTimeChartScene(
             context!,
@@ -363,13 +395,23 @@ export default function TimeChart(props: TimeChartProps) {
               rowLabels: p.rows?.labels,
               formatValue: p.formatValue,
               overlay: p.overlay,
-              endLabels: p.endLabels ? resolveDeclarativeEndLabels(frame, p.layers, p.endLabels, until) : undefined,
-              endLabelGap: p.endLabels?.gap,
+              endLabels: resolvedEnds?.ends,
+              endLabelGap: resolvedEnds?.gap,
             },
             measure,
           );
+          paintedState = { frame, until, props: p, layoutWidth, layoutHeight };
+          pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
+          shown.current = { x, until };
         }
         painted = baseKey;
+      } else if (!worker) {
+        paintedState = { frame, until, props: p, layoutWidth, layoutHeight };
+        pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
+        shown.current = { x, until };
+      } else if (paintedState) {
+        pickFrame.current = { ...picks.drawn({ frame: paintedState.frame, until: paintedState.until }, p.onPick), props: p };
+        shown.current = { x: paintedState.frame.x, until: paintedState.until };
       }
       if (overlayContext && overlaid) {
         overlayContext.setTransform(1, 0, 0, 1, 0, 0);
@@ -377,7 +419,6 @@ export default function TimeChart(props: TimeChartProps) {
         overlaid = false;
       }
       overlayContext?.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
-      shown.current = { x, until };
       if (p.onViewChange && (p.onViewChange !== reported?.handler || x[0] !== reported.x[0] || x[1] !== reported.x[1])) {
         reported = { handler: p.onViewChange, x };
         if (telling) telling = reported;
@@ -412,14 +453,16 @@ export default function TimeChart(props: TimeChartProps) {
       if (eventText !== spokenText && eventsText.current) { spokenText = eventText; eventsText.current.textContent = eventText ? `Events: ${eventText}.` : ''; }
       if (drag?.mode === 'box' && overlayContext) { drawSelection(overlayContext, tokens, drag); overlaid = true; }
 
-      const zone = pointer ? hitZone(pointer, frame) : null;
-      const plot = frame;
-      const hit = hoverAt(hover.current, frame.x, until, point => !drag || drag.mode !== 'box' ? pointedAt(point, plot, p) : null);
-      const pointed = hit?.by === 'pointer' ? hit as Pointed : null;
+      const visible = paintedState;
+      const plot = visible?.frame ?? null;
+      const visibleUntil = visible ? visible.until : until;
+      const zone = pointer && plot ? hitZone(pointer, plot) : null;
+      const hit = plot ? hoverAt(hover.current, plot.x, visibleUntil, point => !drag || drag.mode !== 'box' ? pointedAt(point, plot, p) : null) : null;
+      const pointed = hit?.by === 'pointer' ? hit as unknown as Pointed : null;
       if ((pointed?.cluster ?? null) !== markHovered) { markHovered = pointed?.cluster ?? null; p.onMarkHover?.(markHovered); }
       const stop = keyedStopRef.current;
-      const keyed = hit?.by === 'keyboard' ? (stop && stop.at === hit.hour && stop.describes <= (until ?? Infinity) ? stop.describes : hit.hour) : null;
-      const eventHour = keyed != null && keyed >= frame.x[0] && keyed <= Math.min(frame.x[1], until ?? frame.x[1]) ? keyed : null;
+      const keyed = hit?.by === 'keyboard' ? (stop && stop.at === hit.hour && stop.describes <= (visibleUntil ?? Infinity) ? stop.describes : hit.hour) : null;
+      const eventHour = plot && keyed != null && keyed >= plot.x[0] && keyed <= Math.min(plot.x[1], visibleUntil ?? plot.x[1]) ? keyed : null;
       if (eventHour != null && (!keyedBadges || keyedBadges.source !== p.badges || keyedBadges.hour !== eventHour)) {
         const source = p.badges;
         keyedBadges = { source, hour: eventHour, badges: source ? intervalIndexOf(source, () => source.map(badge => ({
@@ -449,23 +492,23 @@ export default function TimeChart(props: TimeChartProps) {
           branchStart: p.branchStart, first: p.extent[0], last: p.extent[1], hour: tell ? hour : told ?? null };
         if (tell) { const callback = p.onHover; inFrame(() => callback(hour)); }
       }
-      if (at) {
+      if (at && plot && visible) {
         if (p.rows && hit?.by === 'pointer' && pointer) rowRef.current = Math.max(0, Math.min(p.rows.labels.length - 1,
-          Math.floor((pointer.y - frame.plotTop) / frame.plotHeight * p.rows.labels.length)));
+          Math.floor((pointer.y - plot.plotTop) / plot.plotHeight * p.rows.labels.length)));
         const row = Math.max(0, Math.min((p.rows?.labels.length ?? 1) - 1, rowRef.current));
-        if (overlayContext) { drawCrosshair(overlayContext, frame, tokens, at.hour); overlaid = true; }
+        if (overlayContext) { drawCrosshair(overlayContext, plot, tokens, at.hour); overlaid = true; }
         const hour = Math.floor(at.describes);
         const lost = lostAt(p.gaps ?? [], hour);
         if (!hovered || hovered.hour !== hour || hovered.row !== row || hovered.rows !== p.rows || hovered.tooltip !== p.tooltip || hovered.revision !== p.revision || hovered.cluster !== pointed?.cluster || hovered.markTooltip !== p.markTooltip || !sameBadges(hovered.badges, at.badges)) {
           hovered = { hour, row, badges: at.badges, cluster: pointed?.cluster, markTooltip: p.markTooltip, rows: p.rows, tooltip: p.tooltip, revision: p.revision,
             content: pointed?.cluster ? p.markTooltip?.(pointed.cluster) ?? null : lost ? lostTooltip(lost, dayLabel)
-              : p.rows ? p.rows.tooltip(row, hour) : p.tooltip?.(hour, frame, p.badgesAtHour?.(hour) ?? at.badges) ?? null,
+              : p.rows ? p.rows.tooltip(row, hour) : p.tooltip?.(hour, plot, p.badgesAtHour?.(hour) ?? at.badges) ?? null,
             key: `${hour}:${at.badges.map(badge => `${badge.hour}|${badge.label}`).join(',')}` };
         }
         let point: { clientX: number; clientY: number } | null = pointed ? pointer : null;
         if (!point) {
           const rect = element.getBoundingClientRect();
-          point = { clientX: rect.left + frame.toX(at.hour) * rect.width / layoutWidth, clientY: rect.top + (frame.plotTop + 8) * rect.height / layoutHeight };
+          point = { clientX: rect.left + plot.toX(at.hour) * rect.width / visible.layoutWidth, clientY: rect.top + (plot.plotTop + 8) * rect.height / visible.layoutHeight };
         }
         const held = tooltipStore.get(), intent = keyIntent.current;
         const fresh = intent === true || (intent !== false && tooltipStore.revision() === intent.since);
@@ -506,6 +549,7 @@ export default function TimeChart(props: TimeChartProps) {
     const current: FrameTask = { frame: draw };
     task.current = current;
     const wake = () => scheduler.wake(current);
+    wakeRef = wake;
     const remove = scheduler.add(current, element);
     const unsubscribe = subscribeTokens(next => { tokens = next; wake(); });
 
@@ -518,9 +562,10 @@ export default function TimeChart(props: TimeChartProps) {
       pendingNavigation.current = null;
       hover.current = reduceHover(hover.current, { type: 'pointer-down' });
       secondPress = event.detail >= 2;
-      if (!frame || (event.button !== 0 && event.button !== 1)) return;
+      const currentFrame = activeFrame();
+      if (!currentFrame || (event.button !== 0 && event.button !== 1)) return;
       const point = local(event);
-      const zone = hitZone(point, frame);
+      const zone = hitZone(point, currentFrame);
       const drawn = pickFrame.current;
       const badges = event.button === 0 && drawn?.props.badges ? badgesAt(point, drawn.context.frame, drawn.props.badges, drawn.context.until) : [];
       if (badges.length && drawn?.onPick) {
@@ -528,8 +573,8 @@ export default function TimeChart(props: TimeChartProps) {
         return;
       }
       if (!zone) return;
-      if (event.button === 0 && zone === 'x-axis') drag = { mode: 'axis-x', grab: frame.hourAt(point.x) };
-      else if (event.button === 0 && zone === 'y-axis' && !latest.current.rows) drag = { mode: 'axis-y', grab: frame.valueAt(point.y) };
+      if (event.button === 0 && zone === 'x-axis') drag = { mode: 'axis-x', grab: currentFrame.hourAt(point.x) };
+      else if (event.button === 0 && zone === 'y-axis' && !latest.current.rows) drag = { mode: 'axis-y', grab: currentFrame.valueAt(point.y) };
       else if ((zone === 'plot' || zone === 'strip') && (event.button === 1 || event.shiftKey)) drag = { mode: 'pan', lastX: point.x };
       else if (zone === 'plot' || zone === 'strip') drag = { mode: 'box', x0: point.x, y0: point.y, x1: point.x, y1: point.y, timeOnly: zone === 'strip' || !!latest.current.rows };
       else return;
@@ -541,11 +586,12 @@ export default function TimeChart(props: TimeChartProps) {
     const move = (event: PointerEvent) => {
       pointer = local(event);
       hover.current = reduceHover(hover.current, { type: 'pointer', point: pointer });
-      if (drag && frame) {
-        if (drag.mode === 'axis-x') dispatch({ type: 'axis-x', grab: drag.grab, fraction: axisFraction(pointer, frame, 'x') });
-        else if (drag.mode === 'axis-y') dispatch({ type: 'axis-y', grab: drag.grab, fraction: axisFraction(pointer, frame, 'y') });
+      const currentFrame = activeFrame();
+      if (drag && currentFrame) {
+        if (drag.mode === 'axis-x') dispatch({ type: 'axis-x', grab: drag.grab, fraction: axisFraction(pointer, currentFrame, 'x') });
+        else if (drag.mode === 'axis-y') dispatch({ type: 'axis-y', grab: drag.grab, fraction: axisFraction(pointer, currentFrame, 'y') });
         else if (drag.mode === 'pan') {
-          dispatch({ type: 'pan', hours: (drag.lastX - pointer.x) / frame.plotWidth * (frame.x[1] - frame.x[0]) });
+          dispatch({ type: 'pan', hours: (drag.lastX - pointer.x) / currentFrame.plotWidth * (currentFrame.x[1] - currentFrame.x[0]) });
           drag.lastX = pointer.x;
         } else { drag.x1 = pointer.x; drag.y1 = pointer.y; }
       }
@@ -558,10 +604,11 @@ export default function TimeChart(props: TimeChartProps) {
     const up = () => {
       const finished = drag;
       drag = null;
-      if (finished?.mode === 'box' && frame && Math.abs(finished.x1 - finished.x0) > BOX_THRESHOLD) {
-        dispatch({ type: 'box', x: [frame.hourAt(finished.x0), frame.hourAt(finished.x1)],
-          y: !finished.timeOnly && Math.abs(finished.y1 - finished.y0) > BOX_THRESHOLD ? [frame.valueAt(finished.y1), frame.valueAt(finished.y0)] : undefined });
-      } else if (finished?.mode === 'box' && frame && Math.abs(finished.y1 - finished.y0) <= BOX_THRESHOLD && latest.current.onPick) {
+      const currentFrame = activeFrame();
+      if (finished?.mode === 'box' && currentFrame && Math.abs(finished.x1 - finished.x0) > BOX_THRESHOLD) {
+        dispatch({ type: 'box', x: [currentFrame.hourAt(finished.x0), currentFrame.hourAt(finished.x1)],
+          y: !finished.timeOnly && Math.abs(finished.y1 - finished.y0) > BOX_THRESHOLD ? [currentFrame.valueAt(finished.y1), currentFrame.valueAt(finished.y0)] : undefined });
+      } else if (finished?.mode === 'box' && currentFrame && Math.abs(finished.y1 - finished.y0) <= BOX_THRESHOLD && latest.current.onPick) {
         const drawn = pickFrame.current;
         const pointed = drawn && pointedAt({ x: finished.x0, y: finished.y0 }, drawn.context.frame, drawn.props);
         if (pointed && !secondPress) pick(pointed.describes, !finished.timeOnly ? { x: finished.x0, y: finished.y0 } : undefined);
@@ -575,17 +622,19 @@ export default function TimeChart(props: TimeChartProps) {
       hover.current = reduceHover(hover.current, { type: 'pointer-leave' }); hideTooltip(owner); wake();
     };
     const wheel = (event: WheelEvent) => {
-      if (!frame) return;
+      const currentFrame = activeFrame();
+      if (!currentFrame) return;
       const point = local(event);
       const steps = wheelSteps(event.deltaY, event.deltaMode);
-      const zone = hitZone(point, frame);
+      const zone = hitZone(point, currentFrame);
       if ((zone !== 'plot' && zone !== 'strip') || !steps) return;
       event.preventDefault();
-      dispatch({ type: 'wheel', at: frame.hourAt(point.x), steps });
+      dispatch({ type: 'wheel', at: currentFrame.hourAt(point.x), steps });
     };
     const doubleClick = (event: MouseEvent) => {
-      if (!frame) return;
-      const zone = hitZone(local(event), frame);
+      const currentFrame = activeFrame();
+      if (!currentFrame) return;
+      const zone = hitZone(local(event), currentFrame);
       if (latest.current.onPick && (zone === 'plot' || zone === 'strip')) return;
       dispatch({ type: zone === 'x-axis' ? 'reset-x' : zone === 'y-axis' ? 'reset-y' : 'reset' });
     };
@@ -594,8 +643,9 @@ export default function TimeChart(props: TimeChartProps) {
       hover.current = reduceHover(hover.current, { type: 'contextmenu' });
       if (!fromPointer) { event.preventDefault(); return; }
       const handler = latest.current.onContextMenu;
-      if (!handler || !frame) return;
-      const pointed = pointedAt(local(event), frame, latest.current);
+      const currentFrame = activeFrame();
+      if (!handler || !currentFrame) return;
+      const pointed = pointedAt(local(event), currentFrame, latest.current);
       if (!pointed) return;
       event.preventDefault();
       handler(Math.floor(pointed.describes), event.clientX, event.clientY);
@@ -723,7 +773,7 @@ export default function TimeChart(props: TimeChartProps) {
     }
   };
   return <div className="time-chart" data-detail={props.badges?.flatMap(badge => badge.failure ? [badge.failure.message] : []).join("\n") || undefined}>
-    <canvas key={canvasGen.current} ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={`${owner}-events`}
+    <canvas key={useWorker ? 'worker' : 'sync'} ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={`${owner}-events`}
       aria-keyshortcuts={props.rows ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Home End' : props.tooltip ? 'ArrowLeft ArrowRight Home End' : undefined} onKeyDown={keyDown} onBlur={clearKeyed} />
     <p ref={eventsText} id={`${owner}-events`} className="sr-only" />
     <p className="sr-only" aria-live="polite">{keySpoken}</p>

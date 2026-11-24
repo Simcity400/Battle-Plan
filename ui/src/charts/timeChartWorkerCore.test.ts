@@ -192,12 +192,17 @@ test('frame referencing a summary revision draws that revision and prunes stale 
   assert.ok(calls.some(c => c.op === 'moveTo' && Math.abs(Number(c.args[1]) - y20) < 0.5));
 
   calls.length = 0;
+  handler.handle(makeDraw(1, { layers: [{ kind: 'line-summary', summaryRev: 1, color: '#ff0000', held: false }] }));
   handler.handle({
     type: 'data',
     id: 1,
     summaries: [packChartSummary(2, constantSummary(80)).packed],
     keepSummaries: [2],
   });
+  scheduled.shift()!();
+  assert.ok(calls.some(c => c.op === 'moveTo' && Math.abs(Number(c.args[1]) - y20) < 0.5));
+
+  calls.length = 0;
   handler.handle(makeDraw(1, { layers: [{ kind: 'line-summary', summaryRev: 2, color: '#ff0000', held: false }] }));
   scheduled.shift()!();
   assert.ok(calls.some(c => c.op === 'moveTo' && Math.abs(Number(c.args[1]) - y80) < 0.5));
@@ -280,4 +285,201 @@ test('worker reports context acquisition and draw failures through onError', () 
   scheduled.shift()!();
   assert.equal(errors.length, 2);
   assert.match(errors[1]!, /context lost/);
+});
+
+test('worker client survives StrictMode effect replay, catches post failures, and strips non-cloneable badge errors', async () => {
+  const { plotFrame } = await import('./frame.ts');
+  const { lineSummaryLayer } = await import('./renderTimeChart.ts');
+  const { TimeChartWorkerPool } = await import('./timeChartWorkerClient.ts') as unknown as {
+    TimeChartWorkerPool?: new () => {
+      attach(el: HTMLCanvasElement, onFallback: (reason: string) => void): {
+        id: number;
+        draw(scene: unknown): boolean;
+        detach(): void;
+      } | null;
+    };
+  };
+  assert.ok(TimeChartWorkerPool, 'TimeChartWorkerPool should be constructible for isolated client tests');
+  const posted: unknown[] = [];
+  let failNextPost: Error | null = null;
+  class FakeWorker {
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: ErrorEvent) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    postMessage(msg: unknown) {
+      if (failNextPost) {
+        const err = failNextPost;
+        failNextPost = null;
+        throw err;
+      }
+      if ((msg as { type?: string }).type !== 'attach') structuredClone(msg);
+      posted.push(msg);
+    }
+    terminate() {}
+  }
+  class FakeOffscreenCanvas {}
+  class FakeHTMLCanvasElement {
+    transferControlToOffscreen() { return new FakeOffscreenCanvas(); }
+  }
+  const makeFakeDom = (fontFamily?: string) => ({
+    document: {
+      documentElement: { dataset: {} },
+      body: { append() {} },
+      createElement: () => ({ style: { display: '', color: '' }, remove() {} }),
+      styleSheets: fontFamily ? [{
+        cssRules: [{
+          type: 5,
+          style: {
+            getPropertyValue: (prop: string) => prop === 'font-family' ? `"${fontFamily}"` : prop === 'src' ? 'url("https://example.invalid/test.woff2")' : '',
+          },
+        }],
+      }] : [],
+    },
+    getComputedStyle: () => ({
+      color: 'rgb(20, 24, 30)',
+      getPropertyValue: (prop: string) => prop === '--font-ui' ? (fontFamily ?? 'sans-serif') : '',
+    }),
+    window: { addEventListener() {}, removeEventListener() {} },
+  });
+  const fakeDom = makeFakeDom('TestSans');
+  fakeDom.document.styleSheets = [];
+  const saved = new Map(['Worker', 'OffscreenCanvas', 'HTMLCanvasElement', 'document', 'getComputedStyle', 'window']
+    .map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  Object.defineProperty(globalThis, 'Worker', { configurable: true, value: FakeWorker });
+  Object.defineProperty(globalThis, 'OffscreenCanvas', { configurable: true, value: FakeOffscreenCanvas });
+  Object.defineProperty(globalThis, 'HTMLCanvasElement', { configurable: true, value: FakeHTMLCanvasElement });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: fakeDom.document });
+  Object.defineProperty(globalThis, 'getComputedStyle', { configurable: true, value: fakeDom.getComputedStyle });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: fakeDom.window });
+  try {
+    const pool = new TimeChartWorkerPool!();
+    let transfers = 0;
+    const makeCanvas = () => ({
+      transferControlToOffscreen() {
+        if (transfers > 0) throw new DOMException('Cannot transfer control from a canvas for more than one time.', 'InvalidStateError');
+        transfers++;
+        return new FakeOffscreenCanvas();
+      },
+      closest: () => null,
+    }) as unknown as HTMLCanvasElement;
+
+    const el = makeCanvas();
+    const first = pool.attach(el, () => {});
+    assert.ok(first);
+    first!.detach();
+    const second = pool.attach(el, () => {});
+    assert.ok(second);
+    assert.equal(transfers, 1);
+    await Promise.resolve();
+    assert.equal(posted.filter(m => (m as { type?: string }).type === 'detach').length, 0);
+
+    const frame = plotFrame(400, 200, { left: 44, right: 14, top: 12, bottom: 24 }, [0, 100], [0, 100], false, 0, false);
+    const badError = Object.assign(new Error('failed fact'), { cause: () => 'uncloneable' });
+    const okWithBadge = second!.draw({
+      backingWidth: 400, backingHeight: 200, layoutWidth: 400, layoutHeight: 200, scaleX: 1, scaleY: 1, frame,
+      layers: [lineSummaryLayer({ summary: () => constantSummary(50), color: '#ff0000' })],
+      playhead: 100, playback: 'draw-in', until: 100,
+      badges: [{ hour: 50, glyph: '!', label: 'event', failure: badError }],
+    });
+    assert.equal(okWithBadge, true);
+
+    failNextPost = new DOMException('could not clone', 'DataCloneError');
+    const failedDraw = second!.draw({
+      backingWidth: 400, backingHeight: 200, layoutWidth: 400, layoutHeight: 200, scaleX: 1, scaleY: 1, frame,
+      layers: [lineSummaryLayer({ summary: () => constantSummary(60), color: '#ff0000' })],
+      playhead: 100, playback: 'draw-in', until: 100,
+    });
+    assert.equal(failedDraw, false);
+
+    let transfers2 = 0;
+    const el2 = {
+      transferControlToOffscreen() { transfers2++; return new FakeOffscreenCanvas(); },
+      closest: () => null,
+    } as unknown as HTMLCanvasElement;
+    failNextPost = new DOMException('attach post failed', 'DataCloneError');
+    const failedAttach = pool.attach(el2, () => {});
+    assert.equal(failedAttach, null);
+    assert.equal(transfers2, 1);
+  } finally {
+    for (const [k, desc] of saved) {
+      if (desc) Object.defineProperty(globalThis, k, desc); else Reflect.deleteProperty(globalThis, k);
+    }
+  }
+});
+
+test('worker client retries font loading once and falls back to synchronous drawing on repeated failure', async () => {
+  const { TimeChartWorkerPool } = await import('./timeChartWorkerClient.ts');
+  const posted: unknown[] = [];
+  let workerInstance: { onmessage: ((event: MessageEvent) => void) | null } | null = null;
+  class FakeWorker {
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: ErrorEvent) => void) | null = null;
+    onmessageerror: (() => void) | null = null;
+    constructor() { workerInstance = this; }
+    postMessage(msg: unknown) { posted.push(msg); }
+    terminate() {}
+  }
+  class FakeOffscreenCanvas {}
+  class FakeHTMLCanvasElement {
+    transferControlToOffscreen() { return new FakeOffscreenCanvas(); }
+  }
+  const fakeDoc = {
+    documentElement: { dataset: {} },
+    body: { append() {} },
+    createElement: () => ({ style: { display: '', color: '' }, remove() {} }),
+    styleSheets: [{
+      cssRules: [{
+        type: 5,
+        style: {
+          getPropertyValue: (prop: string) => prop === 'font-family' ? '"TestSans"' : prop === 'src' ? 'url("https://example.invalid/test.woff2")' : '',
+        },
+      }],
+    }],
+  };
+  const listeners = new Map<string, Set<() => void>>();
+  const fakeWin = {
+    addEventListener(type: string, fn: () => void) {
+      let set = listeners.get(type);
+      if (!set) { set = new Set(); listeners.set(type, set); }
+      set.add(fn);
+    },
+    removeEventListener(type: string, fn: () => void) { listeners.get(type)?.delete(fn); },
+  };
+  const saved = new Map(['Worker', 'OffscreenCanvas', 'HTMLCanvasElement', 'document', 'getComputedStyle', 'window', 'CSSRule']
+    .map(k => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
+  Object.defineProperty(globalThis, 'Worker', { configurable: true, value: FakeWorker });
+  Object.defineProperty(globalThis, 'OffscreenCanvas', { configurable: true, value: FakeOffscreenCanvas });
+  Object.defineProperty(globalThis, 'HTMLCanvasElement', { configurable: true, value: FakeHTMLCanvasElement });
+  Object.defineProperty(globalThis, 'CSSRule', { configurable: true, value: { FONT_FACE_RULE: 5 } });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: fakeDoc });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: fakeWin });
+  Object.defineProperty(globalThis, 'getComputedStyle', {
+    configurable: true,
+    value: () => ({
+      color: 'rgb(20, 24, 30)',
+      getPropertyValue: (prop: string) => prop === '--font-ui' ? 'TestSans' : '',
+    }),
+  });
+  try {
+    const pool = new TimeChartWorkerPool();
+    const fallbacks: string[] = [];
+    const el = {
+      transferControlToOffscreen: () => new FakeOffscreenCanvas(),
+      closest: () => null,
+    } as unknown as HTMLCanvasElement;
+    const handle = pool.attach(el, reason => fallbacks.push(reason));
+    assert.ok(handle);
+    const fontMessages = () => posted.filter(m => (m as { type?: string }).type === 'fonts');
+    assert.equal(fontMessages().length, 1);
+    workerInstance!.onmessage!({ data: { type: 'fontsResult', fontKey: 'TestSans', ok: false, failed: ['TestSans'] } } as MessageEvent);
+    assert.equal(fontMessages().length, 2);
+    assert.equal(fallbacks.length, 0);
+    workerInstance!.onmessage!({ data: { type: 'fontsResult', fontKey: 'TestSans', ok: false, failed: ['TestSans'] } } as MessageEvent);
+    assert.equal(fallbacks.length, 1);
+    assert.match(fallbacks[0]!, /TestSans/);
+  } finally {
+    for (const [k, desc] of saved) {
+      if (desc) Object.defineProperty(globalThis, k, desc); else Reflect.deleteProperty(globalThis, k);
+    }
+  }
 });

@@ -536,19 +536,28 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     const workerQ = quantiles(changed.map(r => r.workMs));
     const workerMean = mean(changed.map(r => r.workMs));
     const workerTotalMs = changed.reduce((sum, r) => sum + (Number.isFinite(r.workMs) ? r.workMs : 0), 0);
+    const chartWorkerFrames = w.from != null && w.to != null
+      ? winRecords.filter(r => r.t === 'chartWorker' && r.at >= w.from && r.at <= w.to && (!w.widget || !r.widget || r.widget === w.widget)) : [];
+    const chartQ = quantiles(chartWorkerFrames.map(r => r.ms));
+    const chartTotalMs = chartWorkerFrames.reduce((sum, r) => sum + (Number.isFinite(r.ms) ? r.ms : 0), 0);
+    const chartReplaced = chartWorkerFrames.reduce((sum, r) => sum + (Number.isFinite(r.replaced) ? r.replaced : 0), 0);
     const pictures = w.from != null && w.to != null && w.widget
       ? winRecords.filter(r => r.t === 'picture' && r.widget === w.widget && r.at >= (w.seekStart ?? w.from) && r.at <= w.to) : [];
     const playingPictures = pictures.filter(r => r.at >= w.from && r.at <= w.to && r.renderer === 'page');
     const drawMsValues = playingPictures.filter(r => !r.detached && Number.isFinite(r.drawMs)).map(r => r.drawMs);
+    const sumStat = (a, b) => (a != null && b != null ? a + b : a ?? b);
+    const picDrawP95 = p95(drawMsValues);
+    const combinedDrawP95 = chartQ.p95 != null ? Math.max(picDrawP95 ?? 0, chartQ.p95) : picDrawP95;
     const worker = {
-      frames: workerFrames.length,
-      changedFrames: changed.length,
-      p50: workerQ.p50,
-      p95: workerQ.p95,
-      max: workerQ.max,
-      mean: workerMean,
-      totalMsPerSec: seconds > 0 ? workerTotalMs / seconds : null,
-      drawMsP95: p95(drawMsValues),
+      frames: workerFrames.length + chartWorkerFrames.length,
+      changedFrames: changed.length + chartWorkerFrames.length,
+      p50: sumStat(workerQ.p50, chartQ.p50),
+      p95: sumStat(workerQ.p95, chartQ.p95),
+      max: sumStat(workerQ.max, chartQ.max),
+      mean: sumStat(workerMean, mean(chartWorkerFrames.map(r => r.ms))),
+      totalMsPerSec: seconds > 0 ? (workerTotalMs + chartTotalMs) / seconds : null,
+      drawMsP95: combinedDrawP95,
+      ...(chartWorkerFrames.length ? { chartPaints: chartWorkerFrames.length, chartReplaced, chartP95: chartQ.p95 } : {}),
     };
     const commits = frames.reduce((sum, r) => sum + (Number.isFinite(r.commits) ? r.commits : 0), 0);
     const commitsPerSec = seconds > 0 ? commits / seconds : null;

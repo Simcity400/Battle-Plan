@@ -14,7 +14,7 @@ import { CountryFlagUrl } from '../../components/CountryFlag';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { badgeRows } from '../../charts/badges';
-import { dayLabel } from '../../charts/draw';
+import { dayLabel, END_LABEL_HEIGHT } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import type { LegendItem } from '../../charts/Legend';
@@ -22,7 +22,7 @@ import { SECONDARY_DASH } from '../../charts/palette';
 import { runAt } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartData, ChartLayer, ChartPick } from '../../charts/TimeChart';
-import { lineSummaryLayer, stabilityZoomFit, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
+import { lineSummaryLayer, stabilityZoomFit, type EndLabelsResolver } from '../../charts/renderTimeChart';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import { fitTooltip } from '../../charts/tooltip';
@@ -71,7 +71,7 @@ import { useMeasureSeries } from '../country-measure/measureSeries';
 import { STABILITY_BREAKDOWNS, STABILITY_OPTIONS } from './definition';
 import { historyMarks, stabilityMarkers } from './markers';
 import type { FocusMarks, MarkerKind } from './markers';
-import { breakdownRows, formatPercent, linesPerMeasure, readHourOf, validateStabilityReads } from './stabilityData';
+import { breakdownRows, formatPercent, linesPerMeasure, readHourOf, stabilityEnd, validateStabilityReads } from './stabilityData';
 import type { Measure } from './stabilityData';
 import { chooseStabilityActor, pinStabilityDrill, stabilityPickAction } from './stabilityDrillData';
 import type { StabilityPick } from './stabilityDrillData';
@@ -343,23 +343,23 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     options: { dash: measure.dash },
     until,
   }))), [lines, shown, until, stability.lineOf, warSupport.lineOf]);
-  const endLabels = useMemo<DeclarativeEndLabels | undefined>(() => {
+  const endLabels = useMemo<EndLabelsResolver | undefined>(() => {
     if (!options.endLabels) return undefined;
-    const endAt = Math.floor(until ?? extent[1]);
-    return {
-      gap: END_LABEL_GAP,
-      extentMax: extent[1],
-      overflow: 'filter-then-hide',
-      items: lines.flatMap((item, itemIndex) => shown.map((measure, measureIndex) => ({
-        id: `${item.tag}:${measure.key}`,
-        layerIndex: itemIndex * shown.length + measureIndex,
-        color: item.hex,
-        label: `${lines.length > 1 ? `${labelAt(endAt)(item.tag).name}: ` : ''}${measure.label} `,
-        format: { kind: 'percent' as const, decimals },
-        fallbackKeep: measure.key === 'stability',
-      }))),
+    return (frame, drawnUntil) => {
+      const end = Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]);
+      if (end < frame.x[0]) return [];
+      const ends = lines.flatMap(item => shown.flatMap(measure => {
+        const at = stabilityEnd(series[measure.key].lineOf(item.tag), end, decimals);
+        if (!at) return [];
+        const text = `${lines.length > 1 ? `${labelAt(end)(item.tag).name}: ` : ''}${measure.label} ${formatPercent(at.raw, decimals)}`;
+        return [{ id: `${item.tag}:${measure.key}`, y: frame.toY(at.value), text, color: item.hex }];
+      }));
+      const room = Math.floor((frame.plotHeight + END_LABEL_GAP) / (END_LABEL_HEIGHT + END_LABEL_GAP));
+      const fitted = ends.length <= room ? ends : ends.filter(item => item.id.endsWith(':stability'));
+      if (fitted.length > room) return [];
+      return { ends: fitted, gap: END_LABEL_GAP };
     };
-  }, [options.endLabels, until, extent[1], lines, shown, labelAt, decimals]);
+  }, [options.endLabels, extent[1], lines, shown, stability.lineOf, warSupport.lineOf, labelAt, decimals]);
   const error = stability.error ?? warSupport.error;
   const retry = () => { stability.retry(); warSupport.retry(); };
 

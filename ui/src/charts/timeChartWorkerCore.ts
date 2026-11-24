@@ -17,12 +17,9 @@ import type { LostSpan } from './gaps.ts';
 import type { MarkSummary } from './markSummary.ts';
 import {
   drawTimeChartScene,
-  filterEndLabelsByRoom,
-  formatEndLabel,
   scalePlotFrameY,
   type ChartAxisFormatterId,
   type ChartLayer,
-  type DeclarativeEndLabels,
 } from './renderTimeChart.ts';
 import type { Run } from './series.ts';
 import { sizeCanvas } from './surface.ts';
@@ -104,6 +101,7 @@ export interface WorkerCanvasLike {
 export interface DrawMessage {
   readonly type: 'draw';
   readonly id: number;
+  readonly frameId?: number;
   readonly backingWidth: number;
   readonly backingHeight: number;
   readonly layoutWidth: number;
@@ -111,19 +109,23 @@ export interface DrawMessage {
   readonly scaleX: number;
   readonly scaleY: number;
   readonly frame: FrameSpec;
-  readonly layers: readonly WorkerLayerRef[];
+  readonly layers?: readonly WorkerLayerRef[];
   readonly headValues: readonly (number | null)[];
-  readonly endHeadValues?: readonly (number | null)[];
-  readonly gaps?: readonly LostSpan[];
+  readonly gaps?: readonly LostSpan[] | null;
   readonly playhead: number | null;
   readonly playback: PlaybackMode;
   readonly afterPlayhead?: boolean;
   readonly until: number | null;
-  readonly markRevs?: readonly number[];
-  readonly badges?: readonly EventBadge[];
-  readonly rowLabels?: readonly string[];
-  readonly formatValue?: ChartAxisFormatterId;
-  readonly endLabels?: DeclarativeEndLabels;
+  readonly markRevs?: readonly number[] | null;
+  readonly badges?: readonly EventBadge[] | null;
+  readonly rowLabels?: readonly string[] | null;
+  readonly formatValue?: ChartAxisFormatterId | null;
+  readonly endLabels?: readonly LineEnd[] | null;
+  readonly endLabelGap?: number;
+  readonly summaries?: readonly PackedChartSummary[];
+  readonly marks?: readonly WireMarkSummary[];
+  readonly keepSummaries?: readonly number[];
+  readonly keepMarks?: readonly number[];
 }
 
 export type ToTimeChartWorker =
@@ -131,7 +133,8 @@ export type ToTimeChartWorker =
   | { readonly type: 'detach'; readonly id: number }
   | { readonly type: 'tokens'; readonly tokens: ChartTokens }
   | { readonly type: 'rate'; readonly rate: number }
-  | { readonly type: 'fonts'; readonly faces: readonly WorkerFontFace[] }
+  | { readonly type: 'measure'; readonly enabled: boolean }
+  | { readonly type: 'fonts'; readonly fontKey?: string; readonly faces: readonly WorkerFontFace[] }
   | {
       readonly type: 'data';
       readonly id: number;
@@ -143,7 +146,9 @@ export type ToTimeChartWorker =
   | DrawMessage;
 
 export type FromTimeChartWorker =
-  | { readonly type: 'error'; readonly reason: string };
+  | { readonly type: 'error'; readonly reason: string }
+  | { readonly type: 'painted'; readonly id: number; readonly frameId: number; readonly ms?: number; readonly replaced?: number; readonly at?: number }
+  | { readonly type: 'fontsResult'; readonly fontKey: string; readonly ok: boolean; readonly failed: readonly string[] };
 
 export function packChartSummary(rev: number, summary: ChartSummary): { packed: PackedChartSummary; transfer: Transferable[] } {
   const buckets = summary.buckets;
@@ -320,17 +325,6 @@ function retainedAsChartSummary(retained: RetainedSummary): ChartSummary {
   };
 }
 
-function retainedEndValue(retained: RetainedSummary, at: number, headValue: number | null): number | null {
-  const { bucketCount, bucketData, binHours } = retained.packed;
-  for (let index = bucketCount - 1; index >= 0; index--) {
-    const pos = retained.offsets[index]!;
-    if (pos < 0 || bucketData[pos]! > at) continue;
-    const lastHour = bucketData[pos + 1]!;
-    return lastHour >= at && binHours !== null && !retained.runs ? headValue : bucketData[pos + 6]!;
-  }
-  return null;
-}
-
 function drawRetainedLine(
   ctx: Canvas2D,
   frame: PlotFrame,
@@ -393,12 +387,32 @@ function drawRetainedLine(
   });
 }
 
+function layerSummaryRevs(layers: readonly WorkerLayerRef[]): number[] {
+  const revs: number[] = [];
+  for (const ref of layers) {
+    if (ref.kind === 'line-summary') {
+      if (ref.summaryRev !== null) revs.push(ref.summaryRev);
+    } else if (ref.kind === 'gap-summary') {
+      if (ref.firstRev !== null) revs.push(ref.firstRev);
+      if (ref.secondRev !== null) revs.push(ref.secondRev);
+    }
+  }
+  return revs;
+}
+
+export interface FontLoadResult {
+  readonly added: boolean;
+  readonly failed: readonly string[];
+}
+
 export interface TimeChartWorkerHost {
   schedule(run: () => void): void;
   clock?: () => number;
   stretch?: (workMs: number, rate: number) => void;
-  loadFonts?: (faces: readonly WorkerFontFace[]) => Promise<boolean>;
+  loadFonts?: (faces: readonly WorkerFontFace[]) => Promise<FontLoadResult | boolean>;
   onError?: (reason: string) => void;
+  onPainted?: (id: number, frameId: number, ms?: number, replaced?: number, at?: number) => void;
+  onFontsResult?: (fontKey: string, ok: boolean, failed: readonly string[]) => void;
 }
 
 interface ChartSlot {
@@ -408,8 +422,17 @@ interface ChartSlot {
   readonly measure: MeasureText;
   readonly summaries: Map<number, RetainedSummary>;
   readonly marks: Map<number, MarkSummary>;
+  layers: readonly WorkerLayerRef[];
+  markRevs: readonly number[] | undefined;
+  badges: readonly EventBadge[] | undefined;
+  gaps: readonly LostSpan[] | undefined;
+  rowLabels: readonly string[] | undefined;
+  formatValue: ChartAxisFormatterId | undefined;
   pending: DrawMessage | null;
   lastDrawn: DrawMessage | null;
+  deferredKeepSummaries: readonly number[] | null;
+  deferredKeepMarks: readonly number[] | null;
+  replaced: number;
 }
 
 export interface TimeChartWorkerHandler {
@@ -422,6 +445,7 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
   const slots = new Map<number, ChartSlot>();
   let tokens: ChartTokens | null = null;
   let rate = 1;
+  let measuring = false;
   let scheduled = false;
 
   const scheduleDrain = () => {
@@ -433,10 +457,39 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
     });
   };
 
-  const paintSlot = (slot: ChartSlot, job: DrawMessage) => {
+  const applyStaticUpdates = (slot: ChartSlot, job: DrawMessage) => {
+    if (job.layers !== undefined) slot.layers = job.layers;
+    if (job.markRevs !== undefined) slot.markRevs = job.markRevs ?? undefined;
+    if (job.badges !== undefined) slot.badges = job.badges ?? undefined;
+    if (job.gaps !== undefined) slot.gaps = job.gaps ?? undefined;
+    if (job.rowLabels !== undefined) slot.rowLabels = job.rowLabels ?? undefined;
+    if (job.formatValue !== undefined) slot.formatValue = job.formatValue ?? undefined;
+  };
+
+  const applyDeferredPrunes = (slot: ChartSlot) => {
+    if (slot.deferredKeepSummaries !== null) {
+      const keep = new Set(slot.deferredKeepSummaries);
+      const needed = layerSummaryRevs(slot.layers);
+      if (needed.every(rev => keep.has(rev))) {
+        for (const rev of slot.summaries.keys()) if (!keep.has(rev)) slot.summaries.delete(rev);
+        slot.deferredKeepSummaries = null;
+      }
+    }
+    if (slot.deferredKeepMarks !== null) {
+      const keep = new Set(slot.deferredKeepMarks);
+      const needed = slot.markRevs ?? [];
+      if (needed.every(rev => keep.has(rev))) {
+        for (const rev of slot.marks.keys()) if (!keep.has(rev)) slot.marks.delete(rev);
+        slot.deferredKeepMarks = null;
+      }
+    }
+  };
+
+  const paintSlot = (slot: ChartSlot, job: DrawMessage, emitAck: boolean) => {
     if (!tokens) return;
     const clock = host.clock ?? (() => performance.now());
-    const started = rate > 1 ? clock() : 0;
+    const started = measuring || rate > 1 ? clock() : 0;
+    applyStaticUpdates(slot, job);
     sizeCanvas(slot.canvas as unknown as OffscreenCanvas, job.backingWidth, job.backingHeight);
     const frame = plotFrame(
       job.frame.width,
@@ -450,7 +503,7 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
     );
     frame.valueTicks = job.frame.valueTicks;
 
-    const layers: ChartLayer[] = job.layers.map((ref, index) => {
+    const layers: ChartLayer[] = slot.layers.map((ref, index) => {
       if (ref.kind === 'value-rule') {
         return {
           gaps: ref.gaps,
@@ -493,41 +546,12 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
       };
     });
 
-    const markSummaries = job.markRevs
-      ? job.markRevs.flatMap(rev => {
+    const markSummaries = slot.markRevs
+      ? slot.markRevs.flatMap(rev => {
           const mark = slot.marks.get(rev);
           return mark ? [mark] : [];
         })
       : undefined;
-
-    let endLabels: LineEnd[] | undefined;
-    if (job.endLabels) {
-      const spec = job.endLabels;
-      const maxHour = spec.extentMax ?? frame.x[1];
-      const endHour = Math.min(job.until ?? maxHour, frame.x[1], maxHour);
-      if (!(spec.overflow === 'filter-then-hide' && endHour < frame.x[0])) {
-        const ends: LineEnd[] = [];
-        for (const item of spec.items) {
-          const ref = job.layers[item.layerIndex];
-          if (!ref || ref.kind !== 'line-summary' || ref.summaryRev === null) continue;
-          const retained = slot.summaries.get(ref.summaryRev);
-          if (!retained) continue;
-          if (item.format.kind === 'static' && item.format.requireFit) {
-            const p = retained.packed;
-            if (!summaryFits(frame, { from: p.from, to: p.to, width: p.width, tiles: p.binHours !== null ? true : undefined }, job.until)) continue;
-          }
-          const headValue = (job.endHeadValues ?? job.headValues)[item.layerIndex] ?? null;
-          const value = retainedEndValue(retained, endHour, headValue);
-          if (value == null) continue;
-          const formatted = formatEndLabel(item, value, ref.yScale ?? 1);
-          const y = frame.toY(formatted.yValue);
-          if (!Number.isFinite(y)) continue;
-          ends.push({ id: item.id, y, text: formatted.text, suffix: formatted.suffix, color: item.color, muted: item.muted });
-        }
-        const filtered = filterEndLabelsByRoom(ends, spec.items, frame.plotHeight, spec.gap ?? 2, spec.overflow);
-        if (filtered.length > 0) endLabels = filtered;
-      }
-    }
 
     drawTimeChartScene(
       slot.ctx,
@@ -539,24 +563,32 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
         scaleX: job.scaleX,
         scaleY: job.scaleY,
         layers,
-        gaps: job.gaps,
+        gaps: slot.gaps,
         playhead: job.playhead,
         playback: job.playback,
         afterPlayhead: job.afterPlayhead,
         until: job.until,
         markSummaries,
         markSummariesMatched: true,
-        badges: job.badges,
-        rowLabels: job.rowLabels,
-        formatValue: job.formatValue,
-        endLabels,
-        endLabelGap: job.endLabels?.gap,
+        badges: slot.badges,
+        rowLabels: slot.rowLabels,
+        formatValue: slot.formatValue,
+        endLabels: job.endLabels ?? undefined,
+        endLabelGap: job.endLabelGap,
       },
       slot.measure,
     );
     slot.lastDrawn = job;
+    applyDeferredPrunes(slot);
     if (rate > 1 && host.stretch) {
       host.stretch(clock() - started, rate);
+    }
+    if (emitAck) {
+      const totalMs = measuring ? clock() - started : undefined;
+      const replaced = slot.replaced;
+      slot.replaced = 0;
+      const at = measuring ? (typeof performance !== 'undefined' ? performance.timeOrigin : 0) + clock() : undefined;
+      host.onPainted?.(slot.id, job.frameId ?? 0, totalMs, replaced, at);
     }
   };
 
@@ -566,7 +598,7 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
       if (!job) continue;
       slot.pending = null;
       try {
-        paintSlot(slot, job);
+        paintSlot(slot, job, true);
       } catch (error) {
         host.onError?.(error instanceof Error ? error.message : String(error));
       }
@@ -588,8 +620,17 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
           measure: canvasMeasureText(ctx),
           summaries: new Map(),
           marks: new Map(),
+          layers: [],
+          markRevs: undefined,
+          badges: undefined,
+          gaps: undefined,
+          rowLabels: undefined,
+          formatValue: undefined,
           pending: null,
           lastDrawn: null,
+          deferredKeepSummaries: null,
+          deferredKeepMarks: null,
+          replaced: 0,
         });
         break;
       }
@@ -605,10 +646,21 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
         rate = Number.isFinite(message.rate) && message.rate > 1 ? message.rate : 1;
         break;
       }
+      case 'measure': {
+        measuring = message.enabled === true;
+        break;
+      }
       case 'fonts': {
-        if (!host.loadFonts || !message.faces.length) break;
-        void host.loadFonts(message.faces).then(loaded => {
-          if (!loaded) return;
+        const fontKey = message.fontKey ?? '';
+        if (!host.loadFonts || !message.faces.length) {
+          if (fontKey) host.onFontsResult?.(fontKey, true, []);
+          break;
+        }
+        void host.loadFonts(message.faces).then(result => {
+          const added = typeof result === 'boolean' ? result : result.added;
+          const failed = typeof result === 'boolean' ? [] : result.failed;
+          if (fontKey) host.onFontsResult?.(fontKey, failed.length === 0, failed);
+          if (!added) return;
           clearTextWidthCache();
           let any = false;
           for (const slot of slots.values()) {
@@ -630,19 +682,26 @@ export function createTimeChartWorkerHandler(host: TimeChartWorkerHost): TimeCha
         if (message.marks) {
           for (const entry of message.marks) slot.marks.set(entry.rev, entry.summary);
         }
-        if (message.keepSummaries) {
-          const keep = new Set(message.keepSummaries);
-          for (const rev of slot.summaries.keys()) if (!keep.has(rev)) slot.summaries.delete(rev);
-        }
-        if (message.keepMarks) {
-          const keep = new Set(message.keepMarks);
-          for (const rev of slot.marks.keys()) if (!keep.has(rev)) slot.marks.delete(rev);
-        }
+        if (message.keepSummaries) slot.deferredKeepSummaries = message.keepSummaries;
+        if (message.keepMarks) slot.deferredKeepMarks = message.keepMarks;
+        if (!slot.pending) applyDeferredPrunes(slot);
         break;
       }
       case 'draw': {
         const slot = slots.get(message.id);
         if (!slot) break;
+        if (message.summaries) {
+          for (const packed of message.summaries) slot.summaries.set(packed.rev, retainSummary(packed));
+        }
+        if (message.marks) {
+          for (const entry of message.marks) slot.marks.set(entry.rev, entry.summary);
+        }
+        if (message.keepSummaries) slot.deferredKeepSummaries = message.keepSummaries;
+        if (message.keepMarks) slot.deferredKeepMarks = message.keepMarks;
+        if (slot.pending) {
+          applyStaticUpdates(slot, slot.pending);
+          slot.replaced++;
+        }
         slot.pending = message;
         scheduleDrain();
         break;

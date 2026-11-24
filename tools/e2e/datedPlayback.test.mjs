@@ -924,4 +924,16 @@ test('S20: per-picture audit coverage checks every painted picture including own
     { baselines: [baseStart, baseEnd] },
   );
   assert.equal(costWrongGen.widgets[0].exact, 'fail', 'S20: widget-cost verdict isolates generations in audit keys');
+
+  const chartWorkerRecords = [
+    ...costRecords.filter(r => r.t !== 'picture'),
+    ...presented.map(at => ({ t: 'chartWorker', at: 5000 + at, widget: 'w-chart', ms: 3.5, replaced: 0 })),
+  ];
+  const chartWorkerCost = summarizeWidgetCosts(
+    [{ kind: 'political-power', widget: 'w-chart', from: 5000, to: 6000, seconds: 1, outcome: 'content', complete: true, audit: [] }],
+    chartWorkerRecords,
+    { baselines: [baseStart, baseEnd] },
+  );
+  assert.equal(chartWorkerCost.widgets[0].worker.p95, 4.5);
+  assert.equal(chartWorkerCost.widgets[0].costScoreMs, 5.5);
 });

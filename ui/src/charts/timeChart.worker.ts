@@ -1,6 +1,7 @@
 import { stretch } from '../draw/weakCpu.ts';
 import {
   createTimeChartWorkerHandler,
+  type FontLoadResult,
   type FromTimeChartWorker,
   type ToTimeChartWorker,
   type WorkerFontFace,
@@ -16,10 +17,11 @@ yieldChannel.port1.onmessage = () => {
   run?.();
 };
 
-async function loadWorkerFonts(faces: readonly WorkerFontFace[]): Promise<boolean> {
+async function loadWorkerFonts(faces: readonly WorkerFontFace[]): Promise<FontLoadResult> {
   const fontSet = (self as unknown as { fonts?: FontFaceSet }).fonts;
-  if (!fontSet || typeof FontFace !== 'function') return false;
+  if (!fontSet || typeof FontFace !== 'function') return { added: false, failed: faces.map(f => f.family) };
   let added = false;
+  const failed: string[] = [];
   await Promise.all(faces.map(async entry => {
     const key = `${entry.family}|${entry.source}|${entry.descriptors?.weight ?? ''}|${entry.descriptors?.style ?? ''}|${entry.descriptors?.unicodeRange ?? ''}`;
     if (loadedKeys.has(key)) return;
@@ -31,9 +33,10 @@ async function loadWorkerFonts(faces: readonly WorkerFontFace[]): Promise<boolea
       added = true;
     } catch {
       loadedKeys.delete(key);
+      failed.push(entry.family);
     }
   }));
-  return added;
+  return { added, failed };
 }
 
 const handler = createTimeChartWorkerHandler({
@@ -44,6 +47,12 @@ const handler = createTimeChartWorkerHandler({
   stretch: (workMs, rate) => { stretch(workMs, rate, performance.now()); },
   loadFonts: loadWorkerFonts,
   onError: reason => { post({ type: 'error', reason }); },
+  onPainted: (id, frameId, ms, replaced, at) => {
+    post({ type: 'painted', id, frameId, ...(ms !== undefined ? { ms, replaced, at } : {}) });
+  },
+  onFontsResult: (fontKey, ok, failed) => {
+    post({ type: 'fontsResult', fontKey, ok, failed });
+  },
 });
 
 self.onmessage = ({ data }: MessageEvent<ToTimeChartWorker>) => handler.handle(data);

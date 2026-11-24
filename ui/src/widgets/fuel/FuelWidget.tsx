@@ -7,7 +7,7 @@ import CountryPicker from '../../components/CountryPicker';
 import { useContextMenu } from '../../components/ContextMenu';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { dayLabel, font } from '../../charts/draw';
-import { lineSummaryLayer, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
+import { lineSummaryLayer, type EndLabelsResolver } from '../../charts/renderTimeChart';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, pinnedBreakdown } from '../../charts/drill/drillState';
 import { useDrill } from '../../charts/drill/useDrill';
@@ -48,6 +48,7 @@ import { useCountryLineStyles } from '../../dashboard/useCountryLineStyles';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { useMeasureSeries } from '../country-measure/measureSeries';
+import { summaryEnd } from '../country-measure/measureData';
 import { BREAKDOWNS, OPTIONS } from './definition';
 import FuelBreakdown from './FuelBreakdown';
 import FuelConsumptionBreakdown from './FuelConsumptionBreakdown';
@@ -160,30 +161,19 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       yScale: QUANTITY_SCALE,
     }),
   ]), [tags, showCapacity, capacity.lineOf, fuel.lineOf, colourOf, single, options.areaFill, until]);
-  const endLabels = useMemo<DeclarativeEndLabels | undefined>(() => {
+  const endLabels = useMemo<EndLabelsResolver | undefined>(() => {
     if (options.endLabels === false) return undefined;
-    const stride = showCapacity ? 2 : 1;
-    return {
-      extentMax: extent[1],
-      items: tags.flatMap((tag, tagIndex) => {
-        const fuelItem = {
-          id: `${tag}:fuel`,
-          layerIndex: tagIndex * stride + (showCapacity ? 1 : 0),
-          color: colourOf(tag, 'fuel'),
-          label: single ? 'Fuel' : `${nameOf(tag)} · Fuel`,
-          format: { kind: 'fuel' as const, scale: QUANTITY_SCALE, digits },
-        };
-        if (!showCapacity) return [fuelItem];
-        return [fuelItem, {
-          id: `${tag}:capacity`,
-          layerIndex: tagIndex * stride,
-          color: colourOf(tag, 'capacity'),
-          label: single ? 'Capacity' : `${nameOf(tag)} · Capacity`,
-          format: { kind: 'fuel' as const, scale: QUANTITY_SCALE, digits },
-        }];
-      }),
+    return (frame, drawnUntil) => {
+      const end = Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]);
+      return tags.flatMap(tag => (['fuel', ...showCapacity ? ['capacity'] as const : []] as const).flatMap(of => {
+        const value = summaryEnd(of === 'fuel' ? fuel.lineOf(tag) : capacity.lineOf(tag), end);
+        if (value == null) return [];
+        const what = of === 'fuel' ? 'Fuel' : 'Capacity';
+        return [{ id: `${tag}:${of}`, y: frame.toY(value / QUANTITY_SCALE), color: colourOf(tag, of),
+          text: single ? what : `${nameOf(tag)} · ${what}`, suffix: formatFuel(BigInt(Math.round(value)), QUANTITY_SCALE, digits) }];
+      }));
     };
-  }, [options.endLabels, showCapacity, extent[1], tags, colourOf, single, nameOf, digits]);
+  }, [options.endLabels, showCapacity, extent[1], tags, fuel.lineOf, capacity.lineOf, colourOf, single, nameOf, digits]);
   const gainFailure = gain.error?.message ?? null, burnFailure = burn.error?.message ?? null;
   const strip = useMemo<ChartStrip | undefined>(() => {
     if (!withStrip || !tags[0]) return undefined;

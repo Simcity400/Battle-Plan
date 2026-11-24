@@ -8,8 +8,8 @@ import ContentSetPicker from '../../components/ContentSetPicker';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
-import { extentOfSummary, pickSummaryLines } from '../../charts/chartSummary';
-import { lineSummaryLayer, valueRuleLayer, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
+import { extentOfSummary, pickSummaryLines, summaryGeometry } from '../../charts/chartSummary';
+import { lineSummaryLayer, valueRuleLayer, type EndLabelsResolver } from '../../charts/renderTimeChart';
 import { jumpItem } from '../../charts/jump';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED } from '../../charts/drill/drillState';
@@ -268,28 +268,16 @@ function OverTime({ data, catalogue, holders, included, tokens, viewport, option
     })] : []),
   ], [lines, until]);
   const endLabels = options.endLabels !== false;
-  const endLabelsSpec = useMemo<DeclarativeEndLabels | undefined>(() => {
+  const endLabelsSpec = useMemo<EndLabelsResolver | undefined>(() => {
     if (!endLabels) return undefined;
-    const items: DeclarativeEndLabels['items'][number][] = [];
-    let layerIndex = 1;
-    for (const line of lines) {
-      if (!line.summary) continue;
+    return (frame, drawnUntil) => lines.flatMap(line => {
+      if (!line.summary) return [];
+      const end = summaryGeometry(frame, line.summary, false, drawnUntil).end;
       const last = line.summary.buckets.filter(bucket => bucket !== null).at(-1)?.lastHour
-        ?? lineEndHour(line.summary.runs ?? [], extent[0], Math.min(until ?? extent[1], extent[1]));
-      if (last != null) {
-        items.push({
-          id: line.group.key,
-          layerIndex,
-          color: line.color,
-          muted: false,
-          label: labelAt(line.group, grouping, last),
-          format: { kind: 'static', requireFit: true },
-        });
-      }
-      layerIndex++;
-    }
-    return { extentMax: extent[1], items };
-  }, [endLabels, lines, extent[0], extent[1], until, grouping]);
+        ?? lineEndHour(line.summary.runs ?? [], frame.x[0], Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]));
+      return end && last != null ? [{ id: line.group.key, color: line.color, muted: false, y: end.y, text: labelAt(line.group, grouping, last) }] : [];
+    });
+  }, [endLabels, lines, extent[1], grouping]);
   const actions = new Map(groups.map(group => {
     const choice = choiceKey(group, head, chosenTokens.map(contentKey));
     if (choice == null) return [group.key, { reason: SAVED_DESIGN_UNAVAILABLE }];

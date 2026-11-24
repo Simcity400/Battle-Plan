@@ -27,7 +27,7 @@ function widgetOf(state: { element: Drawn | null; widget?: string }): string | n
   return widget ?? null;
 }
 
-interface TaskState { visible: boolean; awake: boolean; woken: boolean; pending: boolean; element: Drawn | null; widget?: string }
+interface TaskState { visible: boolean; awake: boolean; woken: boolean; syncPending: boolean; asyncPending: boolean; pending: boolean; element: Drawn | null; widget?: string }
 
 export class FrameScheduler {
   private readonly tasks = new Map<FrameTask, TaskState>();
@@ -41,14 +41,15 @@ export class FrameScheduler {
   constructor(host: FrameHost) { this.host = host; }
 
   add(task: FrameTask, element: Element | null = null): () => void {
-    const state: TaskState = { visible: true, awake: true, woken: false, pending: false, element: element as Drawn | null };
+    const state: TaskState = { visible: true, awake: true, woken: false, syncPending: true, asyncPending: false, pending: false, element: element as Drawn | null };
     this.tasks.set(task, state);
-    this.setPending(state, true);
+    this.refreshPending(state);
     this.schedule();
-    return () => { this.setPending(state, false); this.tasks.delete(task); };
+    return () => { state.syncPending = false; state.asyncPending = false; this.refreshPending(state); this.tasks.delete(task); };
   }
 
-  private setPending(state: TaskState, pending: boolean): void {
+  private refreshPending(state: TaskState): void {
+    const pending = state.visible && (state.syncPending || state.asyncPending);
     if (state.element) state.element.drawPending = pending;
     if (state.pending === pending) return;
     state.pending = pending;
@@ -62,15 +63,24 @@ export class FrameScheduler {
     if (!state) return;
     state.awake = true;
     state.woken = true;
-    if (state.visible) this.setPending(state, true);
+    state.syncPending = true;
+    this.refreshPending(state);
     this.schedule();
+  }
+
+  setAsyncPending(task: FrameTask, pending: boolean): void {
+    const state = this.tasks.get(task);
+    if (!state || state.asyncPending === pending) return;
+    state.asyncPending = pending;
+    this.refreshPending(state);
   }
 
   setVisible(task: FrameTask, visible: boolean): void {
     const state = this.tasks.get(task);
     if (!state || state.visible === visible) return;
     state.visible = visible;
-    this.setPending(state, visible);
+    state.syncPending = visible;
+    this.refreshPending(state);
     if (visible) { state.awake = true; this.schedule(); }
   }
 
@@ -112,7 +122,7 @@ export class FrameScheduler {
         else again = task.frame(info);
       } catch (error) { console.error(error); }
       state.awake = again || state.woken;
-      if (!state.woken) this.setPending(state, false);
+      if (!state.woken) { state.syncPending = false; this.refreshPending(state); }
     }
     if (this.hasRunnableTask()) this.schedule();
     else this.last = null;

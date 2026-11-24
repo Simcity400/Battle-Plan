@@ -253,13 +253,17 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
   }
 });
 
-test('TimeChart falls back to synchronous drawing on a fresh canvas when the worker fails', async () => {
+test('TimeChart keeps painted geometry for picks, preserves zoom across renderer switches, and falls back when worker fails', async () => {
   const slots = new Map<number, unknown>(), effects = new Map<number, Effect>(), pending = new Map<number, Effect>();
-  let cursor = 0, task: FrameTask | undefined, workerDraws = 0, workerDetaches = 0, syncDraws = 0;
+  const listeners = new Map<string, (event: unknown) => void>();
+  let cursor = 0, task: FrameTask | undefined, workerDraws = 0, workerDetaches = 0, syncDraws = 0, asyncPending = false;
   let triggerFallback: ((reason: string) => void) | null = null;
-  let workerSupported = true;
+  let onPainted: ((frameId: number) => void) | null = null;
+  let lastPostedFrameId = 0;
+  let lastPostedEndLabels: readonly { text: string; color: string; y: number }[] | undefined;
+  let lastSyncFrame: PlotFrame | null = null;
   const fixture = {
-    useId: () => 'time-chart-fallback',
+    useId: () => 'time-chart-worker-lifecycle',
     useRef(initial: unknown) {
       const index = cursor++;
       if (!slots.has(index)) slots.set(index, { current: initial });
@@ -285,13 +289,29 @@ test('TimeChart falls back to synchronous drawing on a fresh canvas when the wor
       pending.clear();
     },
     unmount() { for (const effect of effects.values()) effect.cleanup?.(); effects.clear(); slots.clear(); pending.clear(); },
-    scheduler: { add(next: FrameTask) { task = next; return () => { task = undefined; }; }, wake() {}, setVisible() {} },
-    supportsTimeChartWorker: () => workerSupported,
-    attachTimeChartWorker(_element: unknown, onFallback: (reason: string) => void) {
-      triggerFallback = onFallback;
+    scheduler: {
+      add(next: FrameTask) { task = next; return () => { task = undefined; asyncPending = false; }; },
+      wake() {},
+      setVisible() {},
+      setAsyncPending(_task: FrameTask, value: boolean) { asyncPending = value; },
+    },
+    supportsTimeChartWorker: () => true,
+    attachTimeChartWorker(_element: unknown, callbacks: ((reason: string) => void) | { onFallback: (reason: string) => void; onPainted?: (frameId: number) => void }) {
+      if (typeof callbacks === 'function') {
+        triggerFallback = callbacks;
+        onPainted = null;
+      } else {
+        triggerFallback = callbacks.onFallback;
+        onPainted = callbacks.onPainted ?? null;
+      }
       return {
         id: 1,
-        draw() { workerDraws++; return true; },
+        draw(scene: { frameId?: number; endLabels?: readonly { text: string; color: string; y: number }[] }) {
+          workerDraws++;
+          lastPostedFrameId = scene.frameId ?? workerDraws;
+          lastPostedEndLabels = scene.endLabels;
+          return true;
+        },
         detach() { workerDetaches++; },
       };
     },
@@ -301,7 +321,8 @@ test('TimeChart falls back to synchronous drawing on a fresh canvas when the wor
   const makeElement = () => ({
     clientWidth: 400, clientHeight: 200, width: 400, height: 200, style: styleOf(), focus() {}, setPointerCapture() {},
     getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }),
-    addEventListener() {}, removeEventListener() {},
+    addEventListener: (type: string, callback: (event: unknown) => void) => listeners.set(type, callback),
+    removeEventListener: (type: string) => listeners.delete(type),
   });
   const host = globalThis as typeof globalThis & { __timeChartFallback?: typeof fixture };
   host.__timeChartFallback = fixture;
@@ -314,7 +335,8 @@ test('TimeChart falls back to synchronous drawing on a fresh canvas when the wor
       export const subscribeTokens = () => () => {};`,
     '/charts/draw.ts': `export const clipToPlot = () => {}; export const dayLabel = String;
       export const drawAxes = () => {}; export const drawCrosshair = () => {}; export const drawPlayhead = () => {};
-      export const drawSelection = () => {}; export const VALUE_LABEL_GAP = 6; export const valueLabelWidth = () => 0;`,
+      export const drawSelection = () => {}; export const VALUE_LABEL_GAP = 6; export const valueLabelWidth = () => 0;
+      export const placeEndLabels = () => {};`,
     '/charts/tooltip.ts': `export const hideTooltip = () => {}; export const showTooltip = () => {};
       export const tooltipStore = { get: () => null, revision: () => 0 }; export const tooltipText = () => '';`,
     '/charts/timeChartWorkerClient.ts': `export const supportsTimeChartWorker = () => globalThis.__timeChartFallback.supportsTimeChartWorker();
@@ -334,18 +356,21 @@ test('TimeChart falls back to synchronous drawing on a fresh canvas when the wor
     const { default: Chart } = await vite.ssrLoadModule('/ui/src/charts/TimeChart.tsx') as typeof import('./TimeChart.tsx');
     Object.defineProperty(globalThis, 'window', { configurable: true, value: { devicePixelRatio: 1 } });
     Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class { observe() {} disconnect() {} } });
+    const picked: number[] = [];
     const props: TimeChartProps = {
-      label: 'Worker fallback test',
+      label: 'Worker lifecycle test',
       extent: [0, 100],
       branchStart: 0,
-      playhead: 90,
-      playback: 'draw-in',
-      axes: { xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false },
+      playhead: 100,
+      playback: 'cursor',
+      axes: { xFrom: 0, xTo: 100, yMin: 0, yMax: 100, log: false },
       layers: [{
-        draw() { syncDraws++; },
+        draw(_ctx, drawn) { syncDraws++; lastSyncFrame = drawn; },
         describe: () => ({ kind: 'line-summary', summary: undefined, color: '#ff0000' }),
       }],
+      endLabels: (frame, until) => [{ id: 'a', text: `until=${until}@${Math.round(frame.x[1])}`, color: '#ff0000', y: frame.toY(50) }],
       formatValue: 'powerAxis',
+      onPick: hour => { picked.push(Math.round(hour)); },
       active: true,
       revision: 1,
     };
@@ -357,26 +382,99 @@ test('TimeChart falls back to synchronous drawing on a fresh canvas when the wor
       fixture.commit();
       return canvasNode.key;
     };
+    const clickMidpoint = () => {
+      const midX = 44 + (400 - 44 - 14) / 2;
+      const at = { clientX: midX, clientY: 100, button: 0, pointerId: 1, detail: 1, preventDefault() {} };
+      listeners.get('pointerdown')!(at);
+      listeners.get('pointerup')!(at);
+    };
+
     const firstKey = render();
+    assert.equal(firstKey, 'worker');
     task!.frame({ now: 0, dt: 16 });
     assert.equal(workerDraws, 1);
-    assert.equal(syncDraws, 0);
+    assert.equal(asyncPending, true);
+    assert.equal(lastPostedEndLabels?.[0]?.text, 'until=100@100');
+    onPainted!(lastPostedFrameId);
+    assert.equal(asyncPending, false);
+    clickMidpoint();
+    assert.deepEqual(picked, [50]);
 
+    props.axes = { xFrom: 50, xTo: 100, yMin: 0, yMax: 100, log: false };
+    render();
     task!.frame({ now: 16, dt: 16 });
-    assert.equal(workerDraws, 1);
+    assert.equal(workerDraws, 2);
+    assert.equal(asyncPending, true);
+    clickMidpoint();
+    assert.deepEqual(picked, [50, 50]);
+    onPainted!(lastPostedFrameId);
+    assert.equal(asyncPending, false);
+    clickMidpoint();
+    assert.deepEqual(picked, [50, 50, 75]);
 
-    workerSupported = false;
+    props.axes = { xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false };
+    props.extent = [0, 1000];
+    props.playhead = 1000;
+    render();
+    task!.frame({ now: 32, dt: 16 });
+    onPainted!(lastPostedFrameId);
+    const midX = 44 + (400 - 44 - 14) / 2;
+    listeners.get('wheel')!({ clientX: midX, clientY: 100, deltaY: -240, deltaMode: 0, preventDefault() {} });
+    task!.frame({ now: 48, dt: 16 });
+    onPainted!(lastPostedFrameId);
+
     triggerFallback!('worker crashed');
     const secondKey = render();
-    assert.notEqual(secondKey, firstKey);
+    assert.equal(secondKey, 'sync');
     assert.equal(workerDetaches, 1);
-
-    task!.frame({ now: 32, dt: 16 });
+    task!.frame({ now: 64, dt: 16 });
     assert.equal(syncDraws, 1);
+    const syncFrame = lastSyncFrame as PlotFrame | null;
+    assert.ok(syncFrame !== null && syncFrame.x[1] - syncFrame.x[0] < 999);
   } finally {
     fixture.unmount(); await vite.close(); delete host.__timeChartFallback;
     for (const [key, descriptor] of globals) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);
     }
   }
+});
+
+test('TimeChart resolves endLabels on main thread with the visible frame for exact-run and zoomed-rename parity', async () => {
+  const { plotFrame } = await import('./frame.ts');
+  const { summaryGeometry } = await import('./chartSummary.ts');
+  const { lineEndHour } = await import('./series.ts');
+  const { stabilityEnd, formatPercent } = await import('../widgets/stability/stabilityData.ts');
+  const { resolveDeclarativeEndLabels } = await import('./renderTimeChart.ts') as Record<string, unknown>;
+  assert.equal(resolveDeclarativeEndLabels, undefined);
+
+  const runOnlyFrame = plotFrame(400, 200, { left: 44, right: 14, top: 12, bottom: 24 }, [0, 100], [0, 100], false, 0, false);
+  const runOnly = {
+    from: 0, to: 100, width: Math.ceil(runOnlyFrame.plotWidth),
+    buckets: [],
+    runs: [{ firstHour: 20, lastHour: 70, value: 50, breakBefore: false }],
+  };
+  const end = summaryGeometry(runOnlyFrame, runOnly, false, 100).end;
+  const last = lineEndHour(runOnly.runs, runOnlyFrame.x[0], 100);
+  assert.ok(end && last === 70);
+
+  const offPlotFrame = plotFrame(400, 200, { left: 44, right: 14, top: 12, bottom: 24 }, [40, 100], [0, 100], false, 0, false);
+  const offPlot = {
+    from: 0, to: 100, width: Math.ceil(offPlotFrame.plotWidth),
+    buckets: [{ firstHour: 0, lastHour: 30, firstValue: 50, lastValue: 50, lastValueHour: 30, minHour: 0, minValue: 50, maxHour: 0, maxValue: 50, firstBreak: false, hasBreak: false }],
+    runs: [{ firstHour: 0, lastHour: 30, value: 50, breakBefore: false }],
+  };
+  assert.equal(summaryGeometry(offPlotFrame, offPlot, false, 100).end, null);
+
+  const zoomedFrame = plotFrame(400, 200, { left: 44, right: 14, top: 12, bottom: 24 }, [0, 50], [0, 1], false, 0, false);
+  const summary = {
+    from: 0, to: 100, width: Math.ceil(zoomedFrame.plotWidth),
+    buckets: [
+      { firstHour: 0, lastHour: 50, firstValue: 0.6, lastValue: 0.6, lastValueHour: 50, minHour: 0, minValue: 0.6, maxHour: 0, maxValue: 0.6, firstBreak: false, hasBreak: false },
+      { firstHour: 51, lastHour: 100, firstValue: 0.8, lastValue: 0.8, lastValueHour: 100, minHour: 51, minValue: 0.8, maxHour: 51, maxValue: 0.8, firstBreak: false, hasBreak: false },
+    ],
+  };
+  const visibleEnd = Math.min(100, zoomedFrame.x[1], 100);
+  const at = stabilityEnd(summary, visibleEnd, 3);
+  const nameAt = (hour: number) => hour < 80 ? 'Old Name' : 'Future Name';
+  assert.equal(`${nameAt(visibleEnd)}: Stability ${formatPercent(at!.raw, 3)}`, 'Old Name: Stability 60.0%');
 });

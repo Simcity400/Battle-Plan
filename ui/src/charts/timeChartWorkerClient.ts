@@ -1,11 +1,13 @@
 import type { EventBadge } from './badges.ts';
 import type { ChartSummary } from './chartSummary.ts';
+import type { LineEnd } from './draw.ts';
 import type { PlotFrame } from './frame.ts';
 import type { LostSpan } from './gaps.ts';
 import type { MarkSummary } from './markSummary.ts';
-import type { ChartAxisFormatterId, ChartLayer, DeclarativeEndLabels } from './renderTimeChart.ts';
-import { readTokens, subscribeTokens, type ChartTokens } from './tokens.ts';
+import type { ChartAxisFormatterId, ChartLayer, DeclarativeLayer } from './renderTimeChart.ts';
+import { readTokens, subscribeTokens } from './tokens.ts';
 import type { PlaybackMode } from './view.ts';
+import { perfLog } from '../shell/perf.ts';
 import {
   packChartSummary,
   type DrawMessage,
@@ -18,6 +20,7 @@ import {
 } from './timeChartWorkerCore.ts';
 
 export interface WorkerDrawScene {
+  readonly frameId?: number;
   readonly backingWidth: number;
   readonly backingHeight: number;
   readonly layoutWidth: number;
@@ -26,6 +29,8 @@ export interface WorkerDrawScene {
   readonly scaleY: number;
   readonly frame: PlotFrame;
   readonly layers: readonly ChartLayer[];
+  readonly descriptors?: readonly DeclarativeLayer[];
+  readonly headValues?: readonly (number | null)[];
   readonly gaps?: readonly LostSpan[];
   readonly playhead: number | null;
   readonly playback: PlaybackMode;
@@ -35,15 +40,39 @@ export interface WorkerDrawScene {
   readonly badges?: readonly EventBadge[];
   readonly rowLabels?: readonly string[];
   readonly formatValue?: ChartAxisFormatterId;
-  readonly endLabels?: DeclarativeEndLabels;
-  readonly headValues?: readonly (number | null)[];
-  readonly endHeadValues?: readonly (number | null)[];
+  readonly endLabels?: readonly LineEnd[];
+  readonly endLabelGap?: number;
+}
+
+export interface TimeChartWorkerCallbacks {
+  readonly onFallback: (reason: string) => void;
+  readonly onPainted?: (frameId: number) => void;
 }
 
 export interface TimeChartWorkerAttachment {
   readonly id: number;
   draw(scene: WorkerDrawScene): boolean;
   detach(): void;
+}
+
+interface ManagedSlot {
+  readonly id: number;
+  readonly element: HTMLCanvasElement;
+  readonly widget: string | null;
+  active: boolean;
+  disposed: boolean;
+  onFallback: ((reason: string) => void) | null;
+  onPainted: ((frameId: number) => void) | null;
+  readonly retainedSummaries: Set<number>;
+  readonly retainedMarks: Set<number>;
+  lastLayers: readonly ChartLayer[] | null;
+  lastLayerDescs: readonly (DeclarativeLayer | null)[] | null;
+  lastLayerRefs: readonly WorkerLayerRef[] | null;
+  lastMarkSummaries: readonly MarkSummary[] | null | undefined;
+  lastBadges: readonly EventBadge[] | null | undefined;
+  lastGaps: readonly LostSpan[] | null | undefined;
+  lastRowLabels: readonly string[] | null | undefined;
+  lastFormatValue: ChartAxisFormatterId | null | undefined;
 }
 
 const summaryRevs = new WeakMap<ChartSummary, number>();
@@ -122,11 +151,62 @@ function collectFontFaces(fontStack: string): WorkerFontFace[] {
   return faces;
 }
 
-class TimeChartWorkerPool {
+function stripBadgesForWorker(badges: readonly EventBadge[]): EventBadge[] {
+  return badges.map(badge => ({
+    hour: badge.hour,
+    glyph: badge.glyph,
+    label: '',
+    ...(badge.approximate ? { approximate: true } : {}),
+    ...(badge.color !== undefined ? { color: badge.color } : {}),
+    ...(badge.shape !== undefined ? { shape: badge.shape } : {}),
+  }));
+}
+
+function sameMarkList(a: readonly MarkSummary[] | null | undefined, b: readonly MarkSummary[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return (!a || a.length === 0) && (!b || b.length === 0);
+  return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+function sameLineOptions(a: { readonly area?: boolean; readonly dash?: readonly number[]; readonly endDot?: boolean } | undefined,
+  b: { readonly area?: boolean; readonly dash?: readonly number[]; readonly endDot?: boolean } | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (!!a.area !== !!b.area || !!a.endDot !== !!b.endDot) return false;
+  if (a.dash === b.dash) return true;
+  if (!a.dash || !b.dash) return (!a.dash || a.dash.length === 0) && (!b.dash || b.dash.length === 0);
+  return a.dash.length === b.dash.length && a.dash.every((value, index) => value === b.dash![index]);
+}
+
+function sameDescList(a: readonly (DeclarativeLayer | null)[] | null, b: readonly DeclarativeLayer[]): boolean {
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < b.length; i++) {
+    const prev = a[i];
+    const next = b[i]!;
+    if (!prev || prev.kind !== next.kind) return false;
+    if (prev.kind === 'line-summary' && next.kind === 'line-summary') {
+      if (prev.summary !== next.summary || prev.color !== next.color || prev.held !== next.held
+        || prev.yScale !== next.yScale || prev.gaps !== next.gaps || !sameLineOptions(prev.options, next.options)) return false;
+    } else if (prev.kind === 'gap-summary' && next.kind === 'gap-summary') {
+      if (prev.first !== next.first || prev.second !== next.second || prev.aboveColor !== next.aboveColor
+        || prev.belowColor !== next.belowColor || prev.alpha !== next.alpha || prev.gaps !== next.gaps) return false;
+    } else if (prev.kind === 'value-rule' && next.kind === 'value-rule') {
+      if (prev.value !== next.value || prev.gaps !== next.gaps) return false;
+    }
+  }
+  return true;
+}
+
+export class TimeChartWorkerPool {
   private worker: Worker | null = null;
   private failedReason: string | null = null;
-  private readonly fallbacks = new Map<number, (reason: string) => void>();
-  private readonly sentFonts = new Set<string>();
+  private readonly slots = new Map<number, ManagedSlot>();
+  private readonly canvasSlots = new WeakMap<HTMLCanvasElement, ManagedSlot>();
+  private readonly loadedFonts = new Set<string>();
+  private readonly inFlightFonts = new Set<string>();
+  private readonly retriedFonts = new Set<string>();
+  private readonly fontFaceCache = new Map<string, WorkerFontFace[]>();
+  private measuring = false;
   private unsubTokens: (() => void) | null = null;
   private weakCpuListener: (() => void) | null = null;
 
@@ -144,15 +224,48 @@ class TimeChartWorkerPool {
       window.removeEventListener('weakcpu', this.weakCpuListener);
       this.weakCpuListener = null;
     }
-    for (const notify of [...this.fallbacks.values()]) notify(reason);
-    this.fallbacks.clear();
+    const pending = [...this.slots.values()];
+    this.slots.clear();
+    for (const slot of pending) {
+      slot.disposed = true;
+      slot.active = false;
+      this.canvasSlots.delete(slot.element);
+      const notify = slot.onFallback;
+      slot.onFallback = null;
+      slot.onPainted = null;
+      notify?.(reason);
+    }
   }
 
-  private sendFontsFor(tokens: ChartTokens): void {
-    if (!this.worker || this.sentFonts.has(tokens.font)) return;
-    this.sentFonts.add(tokens.font);
-    const faces = collectFontFaces(tokens.font);
-    if (faces.length > 0) this.worker.postMessage({ type: 'fonts', faces } satisfies ToTimeChartWorker);
+  private disposeSlot(slot: ManagedSlot): void {
+    if (slot.disposed) return;
+    slot.disposed = true;
+    slot.active = false;
+    slot.onFallback = null;
+    slot.onPainted = null;
+    this.slots.delete(slot.id);
+    if (this.canvasSlots.get(slot.element) === slot) this.canvasSlots.delete(slot.element);
+    slot.retainedSummaries.clear();
+    slot.retainedMarks.clear();
+    try {
+      this.worker?.postMessage({ type: 'detach', id: slot.id } satisfies ToTimeChartWorker);
+    } catch {}
+  }
+
+  private sendFontsFor(fontStack: string): void {
+    if (!this.worker || this.loadedFonts.has(fontStack) || this.inFlightFonts.has(fontStack)) return;
+    const faces = this.fontFaceCache.get(fontStack) ?? collectFontFaces(fontStack);
+    this.fontFaceCache.set(fontStack, faces);
+    if (faces.length === 0) {
+      this.loadedFonts.add(fontStack);
+      return;
+    }
+    this.inFlightFonts.add(fontStack);
+    try {
+      this.worker.postMessage({ type: 'fonts', fontKey: fontStack, faces } satisfies ToTimeChartWorker);
+    } catch {
+      this.inFlightFonts.delete(fontStack);
+    }
   }
 
   private ensureWorker(): Worker | null {
@@ -166,7 +279,28 @@ class TimeChartWorkerPool {
       const worker = new Worker(new URL('./timeChart.worker.ts', import.meta.url), { type: 'module' });
       this.worker = worker;
       worker.onmessage = ({ data }: MessageEvent<FromTimeChartWorker>) => {
-        if (data?.type === 'error') this.failAll(data.reason);
+        if (!data) return;
+        if (data.type === 'error') {
+          this.failAll(data.reason);
+        } else if (data.type === 'painted') {
+          const slot = this.slots.get(data.id);
+          if (!slot || !slot.active) return;
+          if (perfLog && data.ms !== undefined) {
+            perfLog.chartWorker(slot.widget, data.ms, data.replaced ?? 0, data.at ?? (performance.timeOrigin + performance.now()));
+          }
+          slot.onPainted?.(data.frameId);
+        } else if (data.type === 'fontsResult') {
+          this.inFlightFonts.delete(data.fontKey);
+          if (data.ok) {
+            this.loadedFonts.add(data.fontKey);
+            this.retriedFonts.delete(data.fontKey);
+          } else if (!this.retriedFonts.has(data.fontKey)) {
+            this.retriedFonts.add(data.fontKey);
+            this.sendFontsFor(data.fontKey);
+          } else {
+            this.failAll(`Worker could not load chart fonts (${data.failed.join(', ')}).`);
+          }
+        }
       };
       worker.onerror = event => {
         this.failAll(event.message || 'The time chart draw worker encountered an unhandled error.');
@@ -176,16 +310,26 @@ class TimeChartWorkerPool {
       };
       const initialTokens = readTokens();
       worker.postMessage({ type: 'tokens', tokens: initialTokens } satisfies ToTimeChartWorker);
-      this.sendFontsFor(initialTokens);
+      if (perfLog) {
+        this.measuring = true;
+        worker.postMessage({ type: 'measure', enabled: true } satisfies ToTimeChartWorker);
+      }
+      this.sendFontsFor(initialTokens.font);
       this.unsubTokens = subscribeTokens(next => {
         if (!this.worker) return;
-        this.worker.postMessage({ type: 'tokens', tokens: next } satisfies ToTimeChartWorker);
-        this.sendFontsFor(next);
+        try {
+          this.worker.postMessage({ type: 'tokens', tokens: next } satisfies ToTimeChartWorker);
+          this.sendFontsFor(next.font);
+        } catch (error) {
+          this.failAll(error instanceof Error ? error.message : String(error));
+        }
       });
       const pushRate = () => {
         if (!this.worker) return;
         const rate = Number((globalThis as { __weakCpu?: number }).__weakCpu) || 1;
-        this.worker.postMessage({ type: 'rate', rate } satisfies ToTimeChartWorker);
+        try {
+          this.worker.postMessage({ type: 'rate', rate } satisfies ToTimeChartWorker);
+        } catch {}
       };
       pushRate();
       if (typeof window !== 'undefined') {
@@ -199,131 +343,202 @@ class TimeChartWorkerPool {
     }
   }
 
-  attach(element: HTMLCanvasElement, onFallback: (reason: string) => void): TimeChartWorkerAttachment | null {
+  attach(
+    element: HTMLCanvasElement,
+    callbacks: ((reason: string) => void) | TimeChartWorkerCallbacks,
+  ): TimeChartWorkerAttachment | null {
+    const resolved: TimeChartWorkerCallbacks = typeof callbacks === 'function' ? { onFallback: callbacks } : callbacks;
     if (typeof element.transferControlToOffscreen !== 'function') return null;
     const worker = this.ensureWorker();
     if (!worker) return null;
-    let offscreen: OffscreenCanvas;
-    try {
-      offscreen = element.transferControlToOffscreen();
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.warn('[TimeChart] Could not transfer canvas to draw worker; falling back to synchronous drawing:', reason);
-      return null;
+    if (perfLog && !this.measuring) {
+      this.measuring = true;
+      try { worker.postMessage({ type: 'measure', enabled: true } satisfies ToTimeChartWorker); } catch {}
     }
-    const id = nextChartId++;
-    this.fallbacks.set(id, onFallback);
-    worker.postMessage({ type: 'attach', id, canvas: offscreen } satisfies ToTimeChartWorker, [offscreen]);
-    const retainedSummaries = new Set<number>();
-    const retainedMarks = new Set<number>();
-    let detached = false;
+
+    let slot = this.canvasSlots.get(element);
+    if (slot && !slot.disposed && this.slots.get(slot.id) === slot) {
+      slot.active = true;
+      slot.onFallback = resolved.onFallback;
+      slot.onPainted = resolved.onPainted ?? null;
+    } else {
+      let offscreen: OffscreenCanvas;
+      try {
+        offscreen = element.transferControlToOffscreen();
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn('[TimeChart] Could not transfer canvas to draw worker; falling back to synchronous drawing:', reason);
+        return null;
+      }
+      const id = nextChartId++;
+      const widget = typeof element.closest === 'function'
+        ? (element.closest<HTMLElement>('[data-widget]')?.dataset.widget ?? null)
+        : null;
+      slot = {
+        id,
+        element,
+        widget,
+        active: true,
+        disposed: false,
+        onFallback: resolved.onFallback,
+        onPainted: resolved.onPainted ?? null,
+        retainedSummaries: new Set(),
+        retainedMarks: new Set(),
+        lastLayers: null,
+        lastLayerDescs: null,
+        lastLayerRefs: null,
+        lastMarkSummaries: undefined,
+        lastBadges: undefined,
+        lastGaps: undefined,
+        lastRowLabels: undefined,
+        lastFormatValue: undefined,
+      };
+      this.slots.set(id, slot);
+      this.canvasSlots.set(element, slot);
+      try {
+        worker.postMessage({ type: 'attach', id, canvas: offscreen } satisfies ToTimeChartWorker, [offscreen]);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn('[TimeChart] Could not attach canvas to draw worker; falling back to synchronous drawing:', reason);
+        slot.disposed = true;
+        slot.active = false;
+        this.slots.delete(id);
+        this.canvasSlots.delete(element);
+        return null;
+      }
+    }
+
+    const boundSlot = slot;
+    let handleDetached = false;
 
     return {
-      id,
+      id: boundSlot.id,
       draw: (scene: WorkerDrawScene): boolean => {
-        if (detached || !this.worker) return false;
-        const newSummaries: PackedChartSummary[] = [];
-        const newMarks: WireMarkSummary[] = [];
-        const transfer: Transferable[] = [];
-        const activeSummaries = new Set<number>();
-        const activeMarks = new Set<number>();
-        const layerRefs: WorkerLayerRef[] = [];
+        if (handleDetached || !boundSlot.active || boundSlot.disposed || !this.worker) return false;
         const drawUntil = scene.until ?? scene.frame.x[1];
-        const endMax = scene.endLabels?.extentMax ?? scene.frame.x[1];
-        const endAt = Math.min(scene.until ?? endMax, scene.frame.x[1], endMax);
-        const separateEnd = scene.endLabels !== undefined && endAt !== drawUntil;
-        const headValues: (number | null)[] = scene.headValues ? [...scene.headValues] : [];
-        const endHeadValues: (number | null)[] | undefined = scene.endHeadValues ? [...scene.endHeadValues] : separateEnd ? [] : undefined;
-        const computeHead = !scene.headValues;
-        const computeEndHead = separateEnd && !scene.endHeadValues;
-
-        const includeSummary = (summary: ChartSummary | undefined): number | null => {
-          if (!summary) return null;
-          const rev = revOfSummary(summary);
-          activeSummaries.add(rev);
-          if (!retainedSummaries.has(rev)) {
-            retainedSummaries.add(rev);
-            const packed = packChartSummary(rev, summary);
-            newSummaries.push(packed.packed);
-            transfer.push(...packed.transfer);
+        let descs: readonly DeclarativeLayer[];
+        if (scene.descriptors) {
+          descs = scene.descriptors;
+        } else {
+          const built: DeclarativeLayer[] = [];
+          for (const layer of scene.layers) {
+            const desc = layer.describe?.();
+            if (!desc) return false;
+            built.push(desc);
           }
-          return rev;
-        };
-
-        for (const layer of scene.layers) {
-          const desc = layer.describe?.();
-          if (!desc) return false;
-          if (desc.kind === 'value-rule') {
-            layerRefs.push({ kind: 'value-rule', value: desc.value, gaps: desc.gaps });
-            if (computeHead) headValues.push(null);
-            if (computeEndHead) endHeadValues!.push(null);
-          } else if (desc.kind === 'gap-summary') {
-            layerRefs.push({
-              kind: 'gap-summary',
-              firstRev: includeSummary(desc.first),
-              secondRev: includeSummary(desc.second),
-              aboveColor: desc.aboveColor,
-              belowColor: desc.belowColor,
-              alpha: desc.alpha,
-              gaps: desc.gaps,
-            });
-            if (computeHead) headValues.push(null);
-            if (computeEndHead) endHeadValues!.push(null);
-          } else {
-            const summaryRev = includeSummary(desc.summary);
-            layerRefs.push({
-              kind: 'line-summary',
-              summaryRev,
-              color: desc.color,
-              held: desc.held === true,
-              options: desc.options,
-              yScale: desc.yScale,
-              gaps: desc.gaps,
-            });
-            const tiled = desc.summary?.tiles;
-            if (computeHead) headValues.push(tiled ? tiled.valueAt(drawUntil) : null);
-            if (computeEndHead) endHeadValues!.push(tiled ? tiled.valueAt(endAt) : null);
-          }
+          descs = built;
         }
 
-        const markRevsList: number[] | undefined = scene.markSummaries?.length
-          ? scene.markSummaries.map(mark => {
+        const headValues: readonly (number | null)[] = scene.headValues ?? descs.map(desc => {
+          if (desc.kind !== 'line-summary') return null;
+          const tiled = desc.summary?.tiles;
+          return tiled ? tiled.valueAt(drawUntil) : null;
+        });
+
+        const layersChanged = boundSlot.lastLayers !== scene.layers || !sameDescList(boundSlot.lastLayerDescs, descs);
+        const marksChanged = !sameMarkList(boundSlot.lastMarkSummaries, scene.markSummaries);
+
+        let newSummaries: PackedChartSummary[] | undefined;
+        let keepSummaries: number[] | undefined;
+        let layerRefsUpdate: WorkerLayerRef[] | undefined;
+        const transfer: Transferable[] = [];
+
+        if (layersChanged) {
+          const activeSummaries = new Set<number>();
+          const refs: WorkerLayerRef[] = [];
+          const includeSummary = (summary: ChartSummary | undefined): number | null => {
+            if (!summary) return null;
+            const rev = revOfSummary(summary);
+            activeSummaries.add(rev);
+            if (!boundSlot.retainedSummaries.has(rev)) {
+              boundSlot.retainedSummaries.add(rev);
+              const packed = packChartSummary(rev, summary);
+              (newSummaries ??= []).push(packed.packed);
+              transfer.push(...packed.transfer);
+            }
+            return rev;
+          };
+
+          for (const desc of descs) {
+            if (desc.kind === 'value-rule') {
+              refs.push({ kind: 'value-rule', value: desc.value, gaps: desc.gaps });
+            } else if (desc.kind === 'gap-summary') {
+              refs.push({
+                kind: 'gap-summary',
+                firstRev: includeSummary(desc.first),
+                secondRev: includeSummary(desc.second),
+                aboveColor: desc.aboveColor,
+                belowColor: desc.belowColor,
+                alpha: desc.alpha,
+                gaps: desc.gaps,
+              });
+            } else {
+              refs.push({
+                kind: 'line-summary',
+                summaryRev: includeSummary(desc.summary),
+                color: desc.color,
+                held: desc.held === true,
+                options: desc.options,
+                yScale: desc.yScale,
+                gaps: desc.gaps,
+              });
+            }
+          }
+
+          let prunedSummaries = false;
+          for (const rev of boundSlot.retainedSummaries) {
+            if (!activeSummaries.has(rev)) { boundSlot.retainedSummaries.delete(rev); prunedSummaries = true; }
+          }
+          if (prunedSummaries) keepSummaries = [...activeSummaries];
+          layerRefsUpdate = refs;
+          boundSlot.lastLayers = scene.layers;
+          boundSlot.lastLayerDescs = descs;
+          boundSlot.lastLayerRefs = refs;
+        }
+
+        let newMarks: WireMarkSummary[] | undefined;
+        let keepMarks: number[] | undefined;
+        let markRevsUpdate: number[] | null | undefined;
+        if (marksChanged) {
+          const activeMarks = new Set<number>();
+          if (scene.markSummaries?.length) {
+            markRevsUpdate = scene.markSummaries.map(mark => {
               const rev = revOfMark(mark);
               activeMarks.add(rev);
-              if (!retainedMarks.has(rev)) {
-                retainedMarks.add(rev);
-                newMarks.push({ rev, summary: mark });
+              if (!boundSlot.retainedMarks.has(rev)) {
+                boundSlot.retainedMarks.add(rev);
+                (newMarks ??= []).push({ rev, summary: mark });
               }
               return rev;
-            })
+            });
+          } else {
+            markRevsUpdate = null;
+          }
+          let prunedMarks = false;
+          for (const rev of boundSlot.retainedMarks) {
+            if (!activeMarks.has(rev)) { boundSlot.retainedMarks.delete(rev); prunedMarks = true; }
+          }
+          if (prunedMarks) keepMarks = [...activeMarks];
+          boundSlot.lastMarkSummaries = scene.markSummaries ?? null;
+        }
+
+        const badgesUpdate = scene.badges !== boundSlot.lastBadges
+          ? (boundSlot.lastBadges = scene.badges ?? null, scene.badges?.length ? stripBadgesForWorker(scene.badges) : null)
           : undefined;
-
-        let prunedSummaries = false;
-        for (const rev of retainedSummaries) {
-          if (!activeSummaries.has(rev)) { retainedSummaries.delete(rev); prunedSummaries = true; }
-        }
-        let prunedMarks = false;
-        for (const rev of retainedMarks) {
-          if (!activeMarks.has(rev)) { retainedMarks.delete(rev); prunedMarks = true; }
-        }
-
-        if (newSummaries.length || newMarks.length || prunedSummaries || prunedMarks) {
-          this.worker.postMessage(
-            {
-              type: 'data',
-              id,
-              ...(newSummaries.length ? { summaries: newSummaries } : {}),
-              ...(newMarks.length ? { marks: newMarks } : {}),
-              ...(prunedSummaries ? { keepSummaries: [...activeSummaries] } : {}),
-              ...(prunedMarks ? { keepMarks: [...activeMarks] } : {}),
-            } satisfies ToTimeChartWorker,
-            transfer,
-          );
-        }
+        const gapsUpdate = scene.gaps !== boundSlot.lastGaps
+          ? (boundSlot.lastGaps = scene.gaps ?? null, scene.gaps ?? null)
+          : undefined;
+        const rowLabelsUpdate = scene.rowLabels !== boundSlot.lastRowLabels
+          ? (boundSlot.lastRowLabels = scene.rowLabels ?? null, scene.rowLabels ?? null)
+          : undefined;
+        const formatValueUpdate = scene.formatValue !== boundSlot.lastFormatValue
+          ? (boundSlot.lastFormatValue = scene.formatValue ?? null, scene.formatValue ?? null)
+          : undefined;
 
         const drawMsg: DrawMessage = {
           type: 'draw',
-          id,
+          id: boundSlot.id,
+          frameId: scene.frameId,
           backingWidth: scene.backingWidth,
           backingHeight: scene.backingHeight,
           layoutWidth: scene.layoutWidth,
@@ -341,30 +556,45 @@ class TimeChartWorkerPool {
             timeAxisTop: scene.frame.timeAxisTop,
             valueTicks: scene.frame.valueTicks,
           },
-          layers: layerRefs,
+          ...(layerRefsUpdate !== undefined ? { layers: layerRefsUpdate } : {}),
           headValues,
-          ...(endHeadValues ? { endHeadValues } : {}),
-          gaps: scene.gaps,
+          ...(gapsUpdate !== undefined ? { gaps: gapsUpdate } : {}),
           playhead: scene.playhead,
           playback: scene.playback,
           afterPlayhead: scene.afterPlayhead,
           until: scene.until,
-          ...(markRevsList ? { markRevs: markRevsList } : {}),
-          badges: scene.badges,
-          rowLabels: scene.rowLabels,
-          formatValue: scene.formatValue,
-          endLabels: scene.endLabels,
+          ...(markRevsUpdate !== undefined ? { markRevs: markRevsUpdate } : {}),
+          ...(badgesUpdate !== undefined ? { badges: badgesUpdate } : {}),
+          ...(rowLabelsUpdate !== undefined ? { rowLabels: rowLabelsUpdate } : {}),
+          ...(formatValueUpdate !== undefined ? { formatValue: formatValueUpdate } : {}),
+          endLabels: scene.endLabels ?? null,
+          ...(scene.endLabelGap !== undefined ? { endLabelGap: scene.endLabelGap } : {}),
+          ...(newSummaries ? { summaries: newSummaries } : {}),
+          ...(newMarks ? { marks: newMarks } : {}),
+          ...(keepSummaries ? { keepSummaries } : {}),
+          ...(keepMarks ? { keepMarks } : {}),
         };
-        this.worker.postMessage(drawMsg);
-        return true;
+        try {
+          this.worker.postMessage(drawMsg, transfer);
+          return true;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.warn('[TimeChart] Failed to post frame to draw worker; falling back to synchronous drawing:', reason);
+          handleDetached = true;
+          this.disposeSlot(boundSlot);
+          return false;
+        }
       },
       detach: () => {
-        if (detached) return;
-        detached = true;
-        this.fallbacks.delete(id);
-        retainedSummaries.clear();
-        retainedMarks.clear();
-        this.worker?.postMessage({ type: 'detach', id } satisfies ToTimeChartWorker);
+        if (handleDetached) return;
+        handleDetached = true;
+        if (!boundSlot.active || boundSlot.disposed) return;
+        boundSlot.active = false;
+        boundSlot.onFallback = null;
+        boundSlot.onPainted = null;
+        queueMicrotask(() => {
+          if (!boundSlot.active && !boundSlot.disposed) this.disposeSlot(boundSlot);
+        });
       },
     };
   }
@@ -382,9 +612,9 @@ export function supportsTimeChartWorker(): boolean {
 
 export function attachTimeChartWorker(
   element: HTMLCanvasElement,
-  onFallback: (reason: string) => void,
+  callbacks: ((reason: string) => void) | TimeChartWorkerCallbacks,
 ): TimeChartWorkerAttachment | null {
   if (!supportsTimeChartWorker()) return null;
   sharedPool ??= new TimeChartWorkerPool();
-  return sharedPool.attach(element, onFallback);
+  return sharedPool.attach(element, callbacks);
 }

@@ -9,7 +9,7 @@ import LineSwatch from '../../charts/LineSwatch';
 import { lineDashes } from '../../charts/palette';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartData, ChartLayer } from '../../charts/TimeChart';
-import { lineSummaryLayer, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
+import { lineSummaryLayer, type EndLabelsResolver } from '../../charts/renderTimeChart';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import { useChartTokens } from '../../charts/useChartTokens';
@@ -33,9 +33,10 @@ import { followStore } from '../../dashboard/follow/store.ts';
 import { followFailure, followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { definition, OPTIONS } from './definition';
-import { BRANCHES, BRANCH_LABELS, MEASURE_LABELS, experienceBranches, experienceCard, experienceFamily, experienceLines, experienceMeasure, followExperienceHeads,
-  experienceStructure, pointsSummary, validateExperienceReply } from './experienceData';
+import { BRANCHES, BRANCH_LABELS, MEASURE_LABELS, SCALE, experienceBranches, experienceCard, experienceFamily, experienceLines, experienceMeasure, followExperienceHeads,
+  experienceStructure, formatExperience, pointsSummary, validateExperienceReply } from './experienceData';
 import type { ExperienceBranch } from './experienceData';
+import { summaryEnd } from '../country-measure/measureData';
 import './experience.css';
 import { SPEC, at as pickAt, recordedHour } from '../../dashboard/regionTime.ts';
 
@@ -119,19 +120,19 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     options: { dash: single ? lineDashes(0).primary : branchDash(line.branch) },
     until,
   })), [lines, summaryOf, until, single]);
-  const endLabels = useMemo<DeclarativeEndLabels | undefined>(() => {
+  const endLabels = useMemo<EndLabelsResolver | undefined>(() => {
     if (!options.endLabels) return undefined;
-    return {
-      extentMax: extent[1],
-      items: lines.map((line, layerIndex) => ({
-        id: `${line.tag}|${line.branch}`,
-        layerIndex,
-        color: line.color,
-        label: single ? BRANCH_LABELS[line.branch] : `${labels.labelAt(styleAt)(line.tag).name} · ${BRANCH_LABELS[line.branch]}`,
-        format: { kind: 'experience', rate: measure !== 'banked' },
-      })),
+    return (frame, drawnUntil) => {
+      const at = Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]);
+      return lines.flatMap(line => {
+        const value = summaryEnd(summaryOf(line.branch, line.tag), at);
+        if (value === null) return [];
+        return [{ id: `${line.tag}|${line.branch}`, y: frame.toY(value), color: line.color,
+          text: single ? BRANCH_LABELS[line.branch] : `${labels.labelAt(styleAt)(line.tag).name} · ${BRANCH_LABELS[line.branch]}`,
+          suffix: formatExperience(value * SCALE, measure !== 'banked') }];
+      });
     };
-  }, [options.endLabels, extent[1], lines, single, labels, styleAt, measure]);
+  }, [options.endLabels, extent[1], lines, summaryOf, single, labels, styleAt, measure]);
   const data = useMemo<ChartData>(() => ({ revision: () => BRANCHES.map(branch => tiles[branch].read()),
     subscribe: listener => { const stops = BRANCHES.map(branch => tiles[branch].subscribe(listener)); return () => stops.forEach(stop => stop()); } }),
   [tiles.army.subscribe, tiles.navy.subscribe, tiles.air.subscribe]);

@@ -36,7 +36,7 @@ async function perfRecords(folder, { keepQueries = false } = {}) {
     for await (const line of readline.createInterface({ input: createReadStream(path.join(folder, name), 'utf8'), crlfDelay: Infinity })) keep(line);
   };
   const records = [], mapRecords = [];
-  const wanted = /^\{"t":"(map_state|tick|workerFrame|picture|ink|commit|shown|widget|widget_error|q|frame|lost|page)"/;
+  const wanted = /^\{"t":"(map_state|tick|workerFrame|chartWorker|picture|ink|commit|shown|widget|widget_error|q|frame|lost|page)"/;
   const lost = line => line.includes('"t":"lost"') && JSON.parse(line).t === 'lost';
   for (const { name, info: { session } } of pages) {
     await read(name, line => {

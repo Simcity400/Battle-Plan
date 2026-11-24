@@ -1,7 +1,6 @@
 import { BADGE_STRIP, drawBadges, type EventBadge } from './badges.ts';
-import { drawGapSummary, drawLineSummary, summaryExtent, summaryFits, type ChartSummary, type SummaryLineOptions } from './chartSummary.ts';
+import { drawGapSummary, drawLineSummary, summaryExtent, type ChartSummary, type SummaryLineOptions } from './chartSummary.ts';
 import {
-  END_LABEL_HEIGHT,
   VALUE_LABEL_GAP,
   clipToPlot,
   drawAxes,
@@ -17,7 +16,7 @@ import { drawMarkSummary, markSummaryMatches, type MarkSummary } from './markSum
 import type { ChartStrip } from './strip.ts';
 import { canvasMeasureText, type Canvas2D, type MeasureText } from './textWidth.ts';
 import { CHART_LAYOUT, type ChartTokens } from './tokens.ts';
-import { formatAmount, formatAxisPercent, formatAxisValue, formatFixed, rescale } from './valueAxis.ts';
+import { formatAmount, formatAxisPercent, formatAxisValue, rescale } from './valueAxis.ts';
 import { playbackDomain, resolveX, resolveY, shownUntil, type AxisSettings, type PlaybackMode, type Range, type ViewState } from './view.ts';
 
 export const TIME_CHART_DEFAULT_PADDING: Padding = { left: 44, right: CHART_LAYOUT.right, top: 12, bottom: 24 };
@@ -128,28 +127,18 @@ export type DeclarativeLayer =
       readonly gaps?: readonly LostSpan[];
     };
 
-export type EndLabelFormat =
-  | { readonly kind: 'fixed'; readonly decimals: number; readonly digits: number; readonly unit?: string; readonly single?: boolean }
-  | { readonly kind: 'percent'; readonly decimals: number }
-  | { readonly kind: 'fuel'; readonly scale: number; readonly digits: number }
-  | { readonly kind: 'experience'; readonly rate: boolean }
-  | { readonly kind: 'static'; readonly requireFit?: boolean };
-
-export interface EndLabelItem {
-  readonly id: string;
-  readonly layerIndex: number;
-  readonly color: string;
-  readonly muted?: boolean;
-  readonly label: string;
-  readonly format: EndLabelFormat;
-  readonly fallbackKeep?: boolean;
+export interface ChartEndLabels {
+  readonly ends: readonly LineEnd[];
+  readonly gap?: number;
 }
 
-export interface DeclarativeEndLabels {
-  readonly gap?: number;
-  readonly extentMax?: number;
-  readonly overflow?: 'place' | 'filter-then-hide';
-  readonly items: readonly EndLabelItem[];
+export type EndLabelsResolver = (frame: PlotFrame, until: number | null) => ChartEndLabels | readonly LineEnd[] | null | undefined;
+
+export function normalizeEndLabels(resolved: ChartEndLabels | readonly LineEnd[] | null | undefined): ChartEndLabels | undefined {
+  if (!resolved) return undefined;
+  if (Array.isArray(resolved)) return resolved.length > 0 ? { ends: resolved } : undefined;
+  const spec = resolved as ChartEndLabels;
+  return spec.ends.length > 0 ? spec : undefined;
 }
 
 export interface ChartLayer<C extends Canvas2D = Canvas2D> {
@@ -251,77 +240,6 @@ export function valueRuleLayer<C extends Canvas2D = Canvas2D>(value: number, gap
     },
     describe: () => ({ kind: 'value-rule', value, gaps }),
   };
-}
-
-export function summaryEndValue(summary: ChartSummary | undefined, at: number): number | null {
-  if (!summary) return null;
-  for (let index = summary.buckets.length - 1; index >= 0; index--) {
-    const bucket = summary.buckets[index];
-    if (!bucket || bucket.firstHour > at) continue;
-    return bucket.lastHour >= at && summary.tiles && !summary.runs ? summary.tiles.valueAt(at) : bucket.lastValue;
-  }
-  return null;
-}
-
-export function formatEndLabel(item: EndLabelItem, value: number, yScale = 1): { yValue: number; text: string; suffix?: string } {
-  const format = item.format;
-  switch (format.kind) {
-    case 'fixed': {
-      const raw = BigInt(Math.round(value * 10 ** format.decimals)).toString();
-      const amount = formatAmount(raw, format.decimals, format.digits);
-      if (format.single) return { yValue: value / yScale, text: format.unit ? `${amount} ${format.unit}` : amount };
-      return { yValue: value / yScale, text: item.label, suffix: amount };
-    }
-    case 'percent': {
-      const raw = BigInt(Math.round(value * 10 ** format.decimals));
-      const text = formatFixed(raw * 100n, format.decimals, 1);
-      return { yValue: value / yScale, text: `${item.label}${text}%` };
-    }
-    case 'fuel': {
-      const amount = formatAmount(rescale(BigInt(Math.round(value)), BigInt(format.scale), format.digits), format.digits, format.digits);
-      return { yValue: value / yScale, text: item.label, suffix: amount };
-    }
-    case 'experience': {
-      const text = value.toLocaleString('en-US', { maximumFractionDigits: 2 });
-      return { yValue: value / yScale, text: item.label, suffix: format.rate && value > 0 ? `+${text}` : text };
-    }
-    case 'static':
-      return { yValue: value / yScale, text: item.label };
-  }
-}
-
-export function filterEndLabelsByRoom(ends: readonly LineEnd[], items: readonly EndLabelItem[], plotHeight: number, gap: number, overflow?: 'place' | 'filter-then-hide'): LineEnd[] {
-  if (overflow !== 'filter-then-hide') return [...ends];
-  const labelHeight = END_LABEL_HEIGHT ?? 14;
-  const room = Math.floor((plotHeight + gap) / (labelHeight + gap));
-  if (ends.length <= room) return [...ends];
-  const keepIds = new Set(items.filter(item => item.fallbackKeep).map(item => item.id));
-  const fitted = ends.filter(end => keepIds.has(end.id));
-  return fitted.length <= room ? fitted : [];
-}
-
-export function resolveDeclarativeEndLabels(
-  frame: PlotFrame,
-  layers: readonly ChartLayer[],
-  spec: DeclarativeEndLabels,
-  until: number | null,
-): LineEnd[] {
-  const maxHour = spec.extentMax ?? frame.x[1];
-  const end = Math.min(until ?? maxHour, frame.x[1], maxHour);
-  if (spec.overflow === 'filter-then-hide' && end < frame.x[0]) return [];
-  const ends: LineEnd[] = [];
-  for (const item of spec.items) {
-    const desc = layers[item.layerIndex]?.describe?.();
-    if (!desc || desc.kind !== 'line-summary') continue;
-    if (item.format.kind === 'static' && item.format.requireFit && (!desc.summary || !summaryFits(frame, desc.summary, until))) continue;
-    const value = summaryEndValue(desc.summary, end);
-    if (value == null) continue;
-    const formatted = formatEndLabel(item, value, desc.yScale ?? 1);
-    const y = frame.toY(formatted.yValue);
-    if (!Number.isFinite(y)) continue;
-    ends.push({ id: item.id, y, text: formatted.text, suffix: formatted.suffix, color: item.color, muted: item.muted });
-  }
-  return filterEndLabelsByRoom(ends, spec.items, frame.plotHeight, spec.gap ?? 2, spec.overflow);
 }
 
 export interface TimeChartPaddingInput {

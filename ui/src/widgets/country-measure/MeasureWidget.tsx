@@ -45,9 +45,9 @@ import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { OptionField } from '../../dashboard/options';
-import { lineSummaryLayer, type DeclarativeEndLabels } from '../../charts/renderTimeChart';
+import { lineSummaryLayer, type EndLabelsResolver } from '../../charts/renderTimeChart';
 import type { MarkCluster, MarkSummary } from '../../charts/markSummary';
-import { changesRange, formatBalance, netSpend } from './measureData';
+import { changesRange, formatBalance, netSpend, rawOf, summaryEnd } from './measureData';
 import { MEASURE_OPTIONS } from './options';
 import { useMeasureSeries } from './measureSeries';
 import BalanceChanges from './BalanceChanges';
@@ -249,20 +249,20 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
     return list;
   }, [series, options.areaFill, until, balances.lineOf, ceiling.lineOf, showCeiling]);
 
-  const endLabels = useMemo<DeclarativeEndLabels | undefined>(() => {
-    if (!options.endLabels || decimals === null) return undefined;
-    const single = series.length === 1;
-    return {
-      extentMax: extent[1],
-      items: series.map((item, layerIndex) => ({
-        id: item.tag,
-        layerIndex,
-        color: item.hex,
-        label: single ? '' : labelAt(shownAt)(item.tag).name,
-        format: { kind: 'fixed', decimals, digits, unit: config.unit, single },
-      })),
+  const endLabels = useMemo<EndLabelsResolver | undefined>(() => {
+    if (!options.endLabels) return undefined;
+    return (frame, drawnUntil) => {
+      const at = Math.min(drawnUntil ?? extent[1], frame.x[1], extent[1]);
+      return decimals === null ? [] : series.flatMap(item => {
+        const value = summaryEnd(balances.lineOf(item.tag), at);
+        if (value == null) return [];
+        const raw = rawOf(value, decimals);
+        const text = series.length === 1 ? { text: `${formatBalance(raw, decimals, digits)} ${config.unit}` }
+          : { text: labelAt(shownAt)(item.tag).name, suffix: formatBalance(raw, decimals, digits) };
+        return [{ id: item.tag, y: frame.toY(value), ...text, color: item.hex }];
+      });
     };
-  }, [options.endLabels, decimals, digits, config.unit, series, extent[1], labelAt, shownAt]);
+  }, [options.endLabels, decimals, digits, config.unit, series, extent[1], balances.lineOf, labelAt, shownAt]);
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message={`Load a campaign to see ${config.noun}.`} />;
   if (refused) return <WidgetState kind="unavailable" technical={refused} />;

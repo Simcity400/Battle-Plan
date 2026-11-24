@@ -520,6 +520,10 @@ export class PerfRecorder {
     this.noteActivity(Number.isFinite(frame) ? Math.max(now, frame) : now);
   }
 
+  chartWorker(widget: string | null, ms: number, replaced: number, at: number): void {
+    this.push({ t: 'chartWorker', at: round(at), widget: widget ?? PAGE_PAINT, ms: round(ms), replaced });
+  }
+
   shown(widget: string, hour: number | null): void {
     this.push({ t: 'shown', at: epoch(performance.now()), widget, hour });
   }
