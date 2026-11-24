@@ -7,6 +7,12 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from '../game-score/definition.ts';
 import * as DIVISION_EQUIPMENT from '../division-equipment/definition.ts';
 import { MARKET_TABS, VIEWS, marketTableOptions } from '../international-market/definition.ts';
+import { EVENTS_TABLE_OPTIONS, OPTIONS as WORLD_TENSION_OPTIONS } from '../world-tension/definition.ts';
+
+const WORLD_TENSION_EVENTS_SCOPED_OPTIONS = [
+  ...WORLD_TENSION_OPTIONS.filter(field => field.key === 'view'),
+  ...EVENTS_TABLE_OPTIONS,
+];
 
 function tableSpec<TModule>(
   kind: string,
@@ -322,6 +328,20 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       family: 'table', kind: 'trade-flows', view: 'table',
       projection: mod.tradeTableProjection, declaration: mod.tradeTableDeclaration,
     })),
+  },
+  {
+    kind: 'world-tension',
+    view: 'events',
+    label: 'Threat events',
+    family: 'table',
+    viewOption: 'view',
+    options: WORLD_TENSION_EVENTS_SCOPED_OPTIONS,
+    loadSpec: tableSpec(
+      'world-tension',
+      'events',
+      () => import('../world-tension/worldTensionEventsProjection.ts'),
+      mod => ({ projection: mod.worldTensionEventsProjection, declaration: mod.worldTensionEventsDeclaration }),
+    ),
   },
 ];
 

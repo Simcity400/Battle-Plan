@@ -1,4 +1,3 @@
-
 use dashboard_base::products::Country;
 use dashboard_base::products::{LoadContext, ReplyWarnings, at_hour::{At, AtHour, Read}};
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}};
@@ -10,7 +9,7 @@ use dashboard_text::{
     variant_names::{self, Tags, Texts},
 };
 use engine_land_inputs::ncombat_log_cequipment_loss::month_bucket;
-use replay_data::rows::{COMBAT_LOG_VARIANT_TYPE, CombatLogDroppedRow, CombatLogEquipmentRow, CombatLogMonthRow, OrdersGroupRow, TableId, tables};
+use replay_data::rows::{COMBAT_LOG_VARIANT_TYPE, CombatLogDroppedRow, CombatLogEquipmentRow, CombatLogMonthRow, OrdersGroupRow, Recorded, TableId, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -22,6 +21,9 @@ use std::{
 use ts_rs::TS;
 
 pub const ENEMY_LEDGER: u8 = 5;
+const EQUIPMENT_SCALE: u32 = 100_000;
+const HOUR_EPOCH: i64 = 43_800_000;
+const MONTH_START_DAYS: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
 
 const TABLES: [TableId; 13] = [
     TableId::Countries,
@@ -43,6 +45,33 @@ const NOT_READ: &str = "Combat Log equipment of this hour was not read";
 const NO_READ_YET: &str = "Combat Log equipment months of a country not read yet are unknown";
 const AFTER_READ: &str = "Combat Log equipment months written after their country's latest read are unknown";
 const UNWITNESSED: &str = "Combat Log equipment months whose rows the recording did not keep are unknown";
+const DROPPED_UNRECORDED: &str = "Combat Log dropped equipment amount was not recorded";
+
+const INDEPENDENT: &str = "independent";
+const UNRESOLVED: &str = "unresolved";
+const UNCLASSIFIED: &str = "unclassified";
+const OTHER: &str = "other";
+
+pub fn first_hour_of_month(month: i32) -> i32 {
+    let m = i64::from(month);
+    let year = m.div_euclid(12);
+    let idx = m.rem_euclid(12) as usize;
+    (HOUR_EPOCH + (year * 365 + MONTH_START_DAYS[idx]) * 24) as i32
+}
+
+pub fn month_hours(month: i32) -> (i32, i32) {
+    (first_hour_of_month(month), first_hour_of_month(month + 1) - 1)
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum LossStack {
+    #[default]
+    Channel,
+    Type,
+    ArmyGroup,
+}
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -52,6 +81,10 @@ pub struct ArmyLossesParams {
     pub country: Country,
     #[serde(default)]
     pub view: LossView,
+    #[serde(default)]
+    pub stack: Option<LossStack>,
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -94,29 +127,10 @@ impl TryFrom<LossViewAsked> for LossView {
     }
 }
 
-impl LossView {
-    fn manpower(&self, month: i32) -> bool {
-        match self {
-            Self::Manpower => true,
-            Self::Equipment { .. } => false,
-            Self::Month { month: asked } => *asked == month,
-        }
-    }
-
-    fn ledger(&self, ledger: u8, month: i32) -> bool {
-        match self {
-            Self::Manpower => false,
-            Self::Equipment { ledgers } => ledgers.contains(&ledger),
-            Self::Month { month: asked } => *asked == month,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossArmy {
-    #[doc = " The army's full reference, which identifies it in the reply."]
     pub reference: String,
     pub ordinal: u32,
     pub name: Option<String>,
@@ -129,47 +143,76 @@ pub struct LossArmy {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct LossManpower {
-    pub army: String,
-    pub ordinal: u32,
-    #[doc = " The game's month: twelve per year plus the zero-based month."]
-    pub month: i32,
-    pub date: i32,
+pub struct ArmyLossPart {
     pub key: String,
+    pub label: String,
+    pub other_count: u32,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct LossEquipment {
-    pub army: String,
-    pub ledger: u8,
+pub struct ArmyLossMonthBar {
     pub month: i32,
-    pub date: i32,
-    #[doc = " Its design's place in the reply's `designs`."]
-    pub design: u32,
-    pub key: String,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub live_row: Option<String>,
+    pub missing: Option<String>,
+    pub values: Vec<String>,
+    pub total: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct ArmyLossDesign {
-    pub variant: String,
+pub struct ArmyLossRollup {
+    pub unit_scale: u32,
+    pub wrap_i32: bool,
+    pub parts: Vec<ArmyLossPart>,
+    pub months: Vec<ArmyLossMonthBar>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ArmyLossMonthDesign {
     pub name: Option<String>,
     pub archetype: Option<String>,
     pub archetype_name: Option<String>,
+    pub amount_raw: Option<String>,
+    pub live_row: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct LossMonth {
-    pub army: String,
+pub struct ArmyLossMonthLedger {
     pub ledger: u8,
+    pub kept: bool,
+    pub missing: Option<String>,
+    pub total_raw: Option<String>,
+    pub live_row: Option<String>,
+    pub designs: Vec<ArmyLossMonthDesign>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ArmyLossMonthArmy {
+    pub army: LossArmy,
+    pub manpower: Option<[i32; 3]>,
+    pub manpower_live_row: Option<String>,
+    pub ledgers: Vec<ArmyLossMonthLedger>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ArmyLossMonthDetail {
     pub month: i32,
-    pub date: i32,
-    pub reason: Option<String>,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub armies: Vec<ArmyLossMonthArmy>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
@@ -188,14 +231,9 @@ pub struct ArmyLossesAvailability {
 #[serde(rename_all = "camelCase")]
 pub struct ArmyLossesReply {
     pub tag: String,
-    #[doc = " No country holds the tag at this hour."]
     pub absent: bool,
-    pub armies: Vec<LossArmy>,
-    pub manpower: Vec<LossManpower>,
-    pub equipment: Vec<LossEquipment>,
-    pub designs: Vec<ArmyLossDesign>,
-    pub empty_months: Vec<LossMonth>,
-    pub unknown_months: Vec<LossMonth>,
+    pub rollup: Option<ArmyLossRollup>,
+    pub month_detail: Option<ArmyLossMonthDetail>,
     pub availability: ArmyLossesAvailability,
     pub warnings: Vec<String>,
 }
@@ -267,7 +305,7 @@ pub fn witness<'a>(month: &CombatLogMonthRow, read: Option<i32>, listed: &'a [Co
     let kept: Vec<&CombatLogDroppedRow> = dropped
         .iter()
         .copied()
-        .filter(|row| (row.country, row.group, row.kind) == (month.country, month.group, month.kind) && matches!(row.date, replay_data::rows::Recorded::Value(date) if date == month.date))
+        .filter(|row| (row.country, row.group, row.kind) == (month.country, month.group, month.kind) && matches!(row.date, Recorded::Value(date) if date == month.date))
         .collect();
     if !kept.is_empty() {
         return Witness::Dropped(kept);
@@ -276,12 +314,18 @@ pub fn witness<'a>(month: &CombatLogMonthRow, read: Option<i32>, listed: &'a [Co
     if newer <= 1 { Witness::Empty } else { Witness::Unknown(UNWITNESSED) }
 }
 
+#[derive(Clone, Debug)]
+struct DesignInfo {
+    name: Option<String>,
+    archetype: Option<String>,
+    archetype_name: Option<String>,
+}
+
 struct Designs<'f> {
     frame: &'f DecodedFrame,
     content: &'f Content,
     tags: Option<Tags<'f>>,
-    listed: Vec<ArmyLossDesign>,
-    places: HashMap<u64, u32>,
+    cache: HashMap<u64, DesignInfo>,
     unnamed: BTreeSet<u64>,
 }
 
@@ -291,30 +335,28 @@ impl<'f> Designs<'f> {
             (Ok(countries), Ok(links)) => Some(Tags::new(countries, links, frame.complete::<tables::CountryAppearance>().ok())),
             _ => None,
         };
-        Self { frame, content, tags, listed: Vec::new(), places: HashMap::new(), unnamed: BTreeSet::new() }
+        Self { frame, content, tags, cache: HashMap::new(), unnamed: BTreeSet::new() }
     }
 
-    fn design(&mut self, variant: u64) -> u32 {
-        if let Some(&place) = self.places.get(&variant) {
-            return place;
+    fn design(&mut self, variant: u64) -> DesignInfo {
+        if let Some(info) = self.cache.get(&variant) {
+            return info.clone();
         }
-        let (name, archetype, archetype_name) = self.read(variant);
-        if name.is_none() {
+        let info = self.read(variant);
+        if info.name.is_none() {
             self.unnamed.insert(variant);
         }
-        let place = self.listed.len() as u32;
-        self.listed.push(ArmyLossDesign { variant: variant.to_string(), name, archetype, archetype_name });
-        self.places.insert(variant, place);
-        place
+        self.cache.insert(variant, info.clone());
+        info
     }
 
-    fn read(&self, variant: u64) -> (Option<String>, Option<String>, Option<String>) {
+    fn read(&self, variant: u64) -> DesignInfo {
         let (frame, content) = (self.frame, self.content);
         let (Some(tags), Ok(lexical), Ok(definitions)) = (&self.tags, frame.complete::<tables::LexicalTokens>(), frame.complete::<tables::VariantDefinitions>()) else {
-            return (None, None, None);
+            return DesignInfo { name: None, archetype: None, archetype_name: None };
         };
         let Ok(at) = definitions.binary_search_by_key(&variant, |row| row.id) else {
-            return (None, None, None);
+            return DesignInfo { name: None, archetype: None, archetype_name: None };
         };
         let raw = variant_names::raw_variant(&definitions[at], frame.hour, tags, lexical);
         let texts: Option<&dyn Texts> = content.catalogue.as_ref().ok().map(|catalogue| catalogue.as_ref() as &dyn Texts);
@@ -324,7 +366,7 @@ impl<'f> Designs<'f> {
             units.equipment.get(ordinal)?.name_str().ok().map(str::to_owned)
         });
         let archetype_name = archetype.as_deref().and_then(|key| content.catalogue.as_ref().ok()?.localised(key, View::Plain)).and_then(|text| catalogue::plain_text(&text).ok());
-        (name, archetype, archetype_name)
+        DesignInfo { name, archetype, archetype_name }
     }
 }
 
@@ -334,30 +376,202 @@ fn array_rows<'a>(rows: &'a [CombatLogEquipmentRow], array: (u32, u32, u8)) -> &
     &rows[start..start + len]
 }
 
+fn army_group_key_label(army: &LossArmy) -> (String, String) {
+    match (&army.parent, &army.parent_missing) {
+        (Some(parent), _) => (parent.clone(), army.parent_name.clone().unwrap_or_else(|| "Army group name unavailable".into())),
+        (None, None) => (INDEPENDENT.into(), "Independent armies".into()),
+        (None, Some(_)) => (UNRESOLVED.into(), "Army group not recorded".into()),
+    }
+}
+
+fn add_value(left: i128, right: i128, wrap_i32: bool) -> i128 {
+    if wrap_i32 {
+        i128::from((left as i32).wrapping_add(right as i32))
+    } else {
+        left + right
+    }
+}
+
+#[derive(Default)]
+pub(super) struct RollupBuilder {
+    unit_scale: u32,
+    wrap_i32: bool,
+    fixed_parts: Option<Vec<(String, String)>>,
+    labels: BTreeMap<String, String>,
+    recorded: BTreeSet<i32>,
+    unknown: BTreeMap<i32, String>,
+    entries: BTreeMap<i32, BTreeMap<String, (i128, Vec<Cell>)>>,
+}
+
+impl RollupBuilder {
+    pub(super) fn new(unit_scale: u32, wrap_i32: bool, fixed_parts: Option<Vec<(String, String)>>) -> Self {
+        let mut labels = BTreeMap::new();
+        if let Some(parts) = &fixed_parts {
+            for (k, v) in parts {
+                labels.insert(k.clone(), v.clone());
+            }
+        }
+        Self { unit_scale, wrap_i32, fixed_parts, labels, ..Self::default() }
+    }
+
+    pub(super) fn mark_recorded(&mut self, month: i32) {
+        self.recorded.insert(month);
+    }
+
+    pub(super) fn mark_unknown(&mut self, month: i32, reason: String) {
+        self.unknown.entry(month).or_insert(reason);
+    }
+
+    pub(super) fn add(&mut self, month: i32, key: String, label: String, amount: i128, cell: Option<Cell>) {
+        self.recorded.insert(month);
+        self.labels.entry(key.clone()).or_insert(label);
+        let entry = self.entries.entry(month).or_default().entry(key).or_insert((0, Vec::new()));
+        entry.0 = add_value(entry.0, amount, self.wrap_i32);
+        if let Some(cell) = cell {
+            entry.1.push(cell);
+        }
+    }
+
+    pub(super) fn finish(self, limit: usize, live: &dashboard_follow::live::Cells) -> ArmyLossRollup {
+        let mut totals: BTreeMap<String, i128> = BTreeMap::new();
+        for (&month, map) in &self.entries {
+            if self.unknown.contains_key(&month) {
+                continue;
+            }
+            for (key, (val, _)) in map {
+                *totals.entry(key.clone()).or_default() += val.abs();
+            }
+        }
+        let ordered: Vec<String> = match &self.fixed_parts {
+            Some(fixed) => fixed.iter().map(|(k, _)| k.clone()).collect(),
+            None => {
+                let mut keys: Vec<String> = totals.keys().cloned().collect();
+                keys.sort_by(|a, b| totals[b].cmp(&totals[a]).then_with(|| a.cmp(b)));
+                keys
+            }
+        };
+        let (kept, folded): (Vec<String>, BTreeSet<String>) = if self.fixed_parts.is_none() && ordered.len() > limit {
+            let keep = limit.saturating_sub(1);
+            (ordered[..keep].to_vec(), ordered[keep..].iter().cloned().collect())
+        } else {
+            (ordered, BTreeSet::new())
+        };
+        let mut parts: Vec<ArmyLossPart> = kept
+            .iter()
+            .map(|key| ArmyLossPart { key: key.clone(), label: self.labels.get(key).cloned().unwrap_or_else(|| key.clone()), other_count: 0 })
+            .collect();
+        if !folded.is_empty() {
+            parts.push(ArmyLossPart { key: OTHER.into(), label: format!("Other ({})", folded.len()), other_count: folded.len() as u32 });
+        }
+        let all_months: BTreeSet<i32> = self.recorded.iter().copied().chain(self.unknown.keys().copied()).collect();
+        let mut months = Vec::with_capacity(all_months.len());
+        for month in all_months {
+            let (first_hour, last_hour) = month_hours(month);
+            if let Some(reason) = self.unknown.get(&month) {
+                months.push(ArmyLossMonthBar {
+                    month,
+                    first_hour,
+                    last_hour,
+                    live_row: None,
+                    missing: Some(reason.clone()),
+                    values: Vec::new(),
+                    total: "0".into(),
+                });
+                continue;
+            }
+            let row_name = format!("r:{month}");
+            let mut values = Vec::with_capacity(parts.len());
+            let mut month_total: i128 = 0;
+            let mut all_cells: Vec<Cell> = Vec::new();
+            let shown = self.entries.get(&month);
+            for (idx, part) in parts.iter().enumerate() {
+                let mut part_val: i128 = 0;
+                let mut part_cells: Vec<Cell> = Vec::new();
+                if let Some(shown) = shown {
+                    if part.key == OTHER {
+                        for folded_key in &folded {
+                            if let Some((val, cells)) = shown.get(folded_key) {
+                                part_val = add_value(part_val, *val, self.wrap_i32);
+                                part_cells.extend_from_slice(cells);
+                            }
+                        }
+                    } else if let Some((val, cells)) = shown.get(&part.key) {
+                        part_val = *val;
+                        part_cells.extend_from_slice(cells);
+                    }
+                }
+                if !part_cells.is_empty() {
+                    live.sum(&row_name, &format!("p{idx}"), &part_cells, 1.0);
+                    all_cells.extend_from_slice(&part_cells);
+                }
+                month_total = add_value(month_total, part_val, self.wrap_i32);
+                values.push(part_val.to_string());
+            }
+            if !all_cells.is_empty() {
+                live.sum(&row_name, "total", &all_cells, 1.0);
+            }
+            months.push(ArmyLossMonthBar {
+                month,
+                first_hour,
+                last_hour,
+                live_row: (!all_cells.is_empty()).then_some(row_name),
+                missing: None,
+                values,
+                total: month_total.to_string(),
+            });
+        }
+        ArmyLossRollup { unit_scale: self.unit_scale, wrap_i32: self.wrap_i32, parts, months }
+    }
+}
+
+#[derive(Default)]
+struct MonthLedgerAcc {
+    kept: bool,
+    missing: Option<String>,
+    total: i128,
+    cells: Vec<Cell>,
+    designs: Vec<ArmyLossMonthDesign>,
+}
+
+struct MonthArmyAcc {
+    army: LossArmy,
+    manpower: Option<[i32; 3]>,
+    manpower_live_row: Option<String>,
+    ledgers: BTreeMap<u8, MonthLedgerAcc>,
+}
+
 impl AtHour for ArmyLosses {
     const KEY: &'static str = "army-losses";
     const TITLE: &'static str = "Army losses";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ArmyLossesParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, view, "view.ledgers[]", "view.month"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, view, "view.ledgers[]", "view.month", stack, limit];
     type Reply = ArmyLossesReply;
     type Context = Content;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        dashboard_base::products::CountryParams { branch_id: params.branch_id.clone(), country: params.country.clone() }.validate()
+        dashboard_base::products::CountryParams { branch_id: params.branch_id.clone(), country: params.country.clone() }.validate()?;
+        if params.limit == Some(0) {
+            return Err("Invalid army losses stack limit");
+        }
+        Ok(())
     }
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
+            LossStack::decl(),
             ArmyLossesParams::decl(),
             ArmyLossesReply::decl(),
             LossArmy::decl(),
-            LossManpower::decl(),
             LossView::decl(),
-            LossEquipment::decl(),
-            ArmyLossDesign::decl(),
-            LossMonth::decl(),
+            ArmyLossPart::decl(),
+            ArmyLossMonthBar::decl(),
+            ArmyLossRollup::decl(),
+            ArmyLossMonthDesign::decl(),
+            ArmyLossMonthLedger::decl(),
+            ArmyLossMonthArmy::decl(),
+            ArmyLossMonthDetail::decl(),
             ArmyLossesAvailability::decl(),
         ]
     }
@@ -381,12 +595,8 @@ impl AtHour for ArmyLosses {
         let mut reply = ArmyLossesReply {
             tag: at.holders.name(&params.country, at.hour),
             absent: false,
-            armies: Vec::new(),
-            manpower: Vec::new(),
-            equipment: Vec::new(),
-            designs: Vec::new(),
-            empty_months: Vec::new(),
-            unknown_months: Vec::new(),
+            rollup: None,
+            month_detail: None,
             availability: ArmyLossesAvailability {
                 armies: unavailable(frame, TableId::CombatLogGroups).or_else(|| unavailable(frame, TableId::OrdersGroups)),
                 manpower: unavailable(frame, TableId::CombatLogManpower),
@@ -415,7 +625,7 @@ impl AtHour for ArmyLosses {
             }
         };
         let orders: BTreeMap<u64, &OrdersGroupRow> = frame.complete::<tables::OrdersGroups>().map(|rows| rows.iter().map(|row| (row.handle, row)).collect()).unwrap_or_default();
-        let mut armies = BTreeMap::<(u32, u32), String>::new();
+        let mut armies_by_key = BTreeMap::<(u32, u32), LossArmy>::new();
         if reply.availability.armies.is_none() {
             for row in frame.complete::<tables::CombatLogGroups>()? {
                 if !ours(row.country) {
@@ -446,121 +656,349 @@ impl AtHour for ArmyLosses {
                         }
                     },
                 };
-                armies.insert((row.country, (row.group >> 32) as u32), row.group.to_string());
-                reply.armies.push(LossArmy { reference: row.group.to_string(), ordinal: row.ordinal, name, name_missing, parent, parent_name, parent_missing });
+                armies_by_key.insert(
+                    (row.country, (row.group >> 32) as u32),
+                    LossArmy { reference: row.group.to_string(), ordinal: row.ordinal, name, name_missing, parent, parent_name, parent_missing },
+                );
             }
         }
         let known_armies = reply.availability.armies.is_none();
-        let army_of = |country: u32, group: u32, refused: &mut BTreeMap<&'static str, usize>| {
-            let army = armies.get(&(country, group)).cloned();
-            if army.is_none() && known_armies {
-                refuse(refused, "Combat Log month rows of a log that was left out");
-            }
-            army
-        };
         let channels = ["losses_0", "losses_1", "losses_2"].map(|name| dashboard_declare::field(TableId::CombatLogManpower, name));
         let amount = |table: TableId, name: &str| dashboard_declare::field(table, name);
-        for row in frame.complete::<tables::CombatLogManpower>().unwrap_or(&[]) {
-            if !ours(row.country) || !params.view.manpower(month_bucket(row.date)) {
-                continue;
-            }
-            if let Some(army) = army_of(row.country, row.group, &mut refused) {
-                let key = format!("m:{}", row.key());
-                for (channel, column) in ["ground", "air", "navy"].into_iter().zip(&channels) {
-                    if let Ok(column) = column {
-                        at.live.value(&key, channel, Cell { table: TableId::CombatLogManpower, column: *column, key: row.key() }, 1.0);
-                    }
-                }
-                reply.manpower.push(LossManpower { army, ordinal: row.ordinal, month: month_bucket(row.date), date: row.date, key });
-            }
-        }
-        let months: Vec<&CombatLogMonthRow> = frame.complete::<tables::CombatLogMonths>().map(|rows| rows.iter().filter(|row| ours(row.country)).collect()).unwrap_or_default();
+        let limit = params.limit.unwrap_or(8).clamp(1, 32) as usize;
         let mut designs = Designs::new(frame, content);
-        let month_of = |header: &CombatLogMonthRow, reason: Option<&str>| LossMonth {
-            army: armies.get(&(header.country, header.group)).cloned().unwrap_or_default(),
-            ledger: header.kind,
-            month: month_bucket(header.date),
-            date: header.date,
-            reason: reason.map(str::to_owned),
-        };
-        let design_row = |header: &CombatLogMonthRow, variant: u64, key: String, designs: &mut Designs<'_>| LossEquipment {
-            army: armies.get(&(header.country, header.group)).cloned().unwrap_or_default(),
-            ledger: header.kind,
-            month: month_bucket(header.date),
-            date: header.date,
-            design: designs.design(variant),
-            key,
-        };
-        let view = &params.view;
-        let own: Vec<&CombatLogMonthRow> = months.iter().copied().filter(|header| header.kind != ENEMY_LEDGER && armies.contains_key(&(header.country, header.group))).collect();
-        let listed = frame.complete::<tables::CombatLogEquipment>().ok().filter(|_| reply.availability.months.is_none());
-        let reads: BTreeMap<u32, i32> = frame
-            .complete::<tables::SliceReads>()
-            .map(|rows| rows.iter().filter(|row| row.table == TableId::CombatLogEquipment.index() as u32).map(|row| (row.owner, row.sample_hour)).collect())
-            .unwrap_or_default();
-        let mut kept = BTreeMap::<(u32, u32, u8), Vec<&CombatLogDroppedRow>>::new();
-        for row in dropped(frame, &ours) {
-            kept.entry((row.country, row.group, row.kind)).or_default().push(row);
-        }
-        let arrays = recent_from(&own);
-        let live_amount = amount(TableId::CombatLogEquipment, "amount_raw");
-        let dropped_amount = amount(TableId::CombatLogDropped, "amount");
-        for &header in &own {
-            if !view.ledger(header.kind, month_bucket(header.date)) {
-                continue;
-            }
-            let Some(rows) = listed else {
-                reply.unknown_months.push(month_of(header, Some(NOT_READ)));
-                continue;
-            };
-            let array = (header.country, header.group, header.kind);
-            let kept_rows = kept.get(&array).map_or(&[][..], Vec::as_slice);
-            match witness(header, reads.get(&header.country).copied(), array_rows(rows, array), kept_rows, &arrays[&array]) {
-                Witness::Listed(rows) => {
-                    for row in rows {
-                        let key = format!("e:{}", row.key());
-                        if let Ok(column) = live_amount {
-                            at.live.value(&key, "amount", Cell { table: TableId::CombatLogEquipment, column, key: row.key() }, 1.0);
+
+        match &params.view {
+            LossView::Manpower => {
+                if reply.availability.armies.is_none() && reply.availability.manpower.is_none() {
+                    let stack = match params.stack.unwrap_or(LossStack::Channel) {
+                        LossStack::ArmyGroup => LossStack::ArmyGroup,
+                        LossStack::Channel | LossStack::Type => LossStack::Channel,
+                    };
+                    let fixed = (stack == LossStack::Channel).then(|| {
+                        vec![("ground".into(), "Ground".into()), ("air".into(), "Air".into()), ("navy".into(), "Navy".into())]
+                    });
+                    let mut rollup = RollupBuilder::new(1, true, fixed);
+                    for row in frame.complete::<tables::CombatLogManpower>().unwrap_or(&[]) {
+                        if !ours(row.country) {
+                            continue;
                         }
-                        let variant = u64::from(row.variant) << 32 | u64::from(COMBAT_LOG_VARIANT_TYPE);
-                        reply.equipment.push(design_row(header, variant, key, &mut designs));
+                        let Some(army) = armies_by_key.get(&(row.country, row.group)) else {
+                            if known_armies {
+                                refuse(&mut refused, "Combat Log month rows of a log that was left out");
+                            }
+                            continue;
+                        };
+                        let month = month_bucket(row.date);
+                        let vals = [i128::from(row.losses_0), i128::from(row.losses_1), i128::from(row.losses_2)];
+                        if stack == LossStack::Channel {
+                            for (((key, label), val), col) in [("ground", "Ground"), ("air", "Air"), ("navy", "Navy")].into_iter().zip(vals).zip(&channels) {
+                                let cell = col.as_ref().ok().map(|&column| Cell { table: TableId::CombatLogManpower, column, key: row.key() });
+                                rollup.add(month, key.into(), label.into(), val, cell);
+                            }
+                        } else {
+                            let (key, label) = army_group_key_label(army);
+                            for (val, col) in vals.into_iter().zip(&channels) {
+                                let cell = col.as_ref().ok().map(|&column| Cell { table: TableId::CombatLogManpower, column, key: row.key() });
+                                rollup.add(month, key.clone(), label.clone(), val, cell);
+                            }
+                        }
+                    }
+                    reply.rollup = Some(rollup.finish(limit, at.live));
+                }
+            }
+            LossView::Equipment { ledgers } => {
+                let needs_own = ledgers.iter().any(|&l| l != ENEMY_LEDGER);
+                let needs_enemy = ledgers.iter().any(|&l| l == ENEMY_LEDGER);
+                let available = reply.availability.armies.is_none()
+                    && reply.availability.months.is_none()
+                    && (!needs_own || reply.availability.own_equipment.is_none())
+                    && (!needs_enemy || reply.availability.enemy_equipment.is_none());
+                if available {
+                    let stack = match params.stack.unwrap_or(LossStack::Type) {
+                        LossStack::ArmyGroup => LossStack::ArmyGroup,
+                        LossStack::Type | LossStack::Channel => LossStack::Type,
+                    };
+                    let mut rollup = RollupBuilder::new(EQUIPMENT_SCALE, false, None);
+                    let months: Vec<&CombatLogMonthRow> = frame.complete::<tables::CombatLogMonths>().map(|rows| rows.iter().filter(|row| ours(row.country)).collect()).unwrap_or_default();
+                    let own: Vec<&CombatLogMonthRow> = months.iter().copied().filter(|header| header.kind != ENEMY_LEDGER && armies_by_key.contains_key(&(header.country, header.group))).collect();
+                    let listed = frame.complete::<tables::CombatLogEquipment>().ok();
+                    let reads: BTreeMap<u32, i32> = frame
+                        .complete::<tables::SliceReads>()
+                        .map(|rows| rows.iter().filter(|row| row.table == TableId::CombatLogEquipment.index() as u32).map(|row| (row.owner, row.sample_hour)).collect())
+                        .unwrap_or_default();
+                    let mut kept = BTreeMap::<(u32, u32, u8), Vec<&CombatLogDroppedRow>>::new();
+                    for row in dropped(frame, &ours) {
+                        kept.entry((row.country, row.group, row.kind)).or_default().push(row);
+                    }
+                    let arrays = recent_from(&own);
+                    let live_amount = amount(TableId::CombatLogEquipment, "amount_raw").ok();
+                    let dropped_amount = amount(TableId::CombatLogDropped, "amount").ok();
+                    for &header in &own {
+                        let month = month_bucket(header.date);
+                        if !ledgers.contains(&header.kind) {
+                            continue;
+                        }
+                        let Some(rows) = listed else {
+                            rollup.mark_unknown(month, NOT_READ.into());
+                            continue;
+                        };
+                        let army = &armies_by_key[&(header.country, header.group)];
+                        let array = (header.country, header.group, header.kind);
+                        let kept_rows = kept.get(&array).map_or(&[][..], Vec::as_slice);
+                        match witness(header, reads.get(&header.country).copied(), array_rows(rows, array), kept_rows, &arrays[&array]) {
+                            Witness::Listed(rows) => {
+                                for row in rows {
+                                    let variant = u64::from(row.variant) << 32 | u64::from(COMBAT_LOG_VARIANT_TYPE);
+                                    let (key, label) = if stack == LossStack::Type {
+                                        let info = designs.design(variant);
+                                        match info.archetype {
+                                            Some(token) => (format!("archetype:{token}"), info.archetype_name.unwrap_or_else(|| "Equipment name unavailable".into())),
+                                            None => (UNCLASSIFIED.into(), "Equipment type unavailable".into()),
+                                        }
+                                    } else {
+                                        army_group_key_label(army)
+                                    };
+                                    let cell = live_amount.map(|column| Cell { table: TableId::CombatLogEquipment, column, key: row.key() });
+                                    rollup.add(month, key, label, i128::from(row.amount_raw), cell);
+                                }
+                            }
+                            Witness::Dropped(rows) => {
+                                for row in rows {
+                                    let Recorded::Value(val) = row.amount else {
+                                        rollup.mark_unknown(month, DROPPED_UNRECORDED.into());
+                                        continue;
+                                    };
+                                    let variant = u64::from(row.variant) << 32 | u64::from(COMBAT_LOG_VARIANT_TYPE);
+                                    let (key, label) = if stack == LossStack::Type {
+                                        let info = designs.design(variant);
+                                        match info.archetype {
+                                            Some(token) => (format!("archetype:{token}"), info.archetype_name.unwrap_or_else(|| "Equipment name unavailable".into())),
+                                            None => (UNCLASSIFIED.into(), "Equipment type unavailable".into()),
+                                        }
+                                    } else {
+                                        army_group_key_label(army)
+                                    };
+                                    let cell = dropped_amount.map(|column| Cell { table: TableId::CombatLogDropped, column, key: row.key() });
+                                    rollup.add(month, key, label, i128::from(val), cell);
+                                }
+                            }
+                            Witness::Empty => rollup.mark_recorded(month),
+                            Witness::Unknown(why) => rollup.mark_unknown(month, why.into()),
+                        }
+                    }
+                    if needs_enemy {
+                        let enemy = frame.complete::<tables::CombatLogEnemyEquipment>().ok();
+                        let enemy_amount = amount(TableId::CombatLogEnemyEquipment, "amount_raw").ok();
+                        for &header in months.iter().filter(|header| header.kind == ENEMY_LEDGER && armies_by_key.contains_key(&(header.country, header.group))) {
+                            let month = month_bucket(header.date);
+                            let Some(rows) = enemy else {
+                                rollup.mark_unknown(month, reply.availability.enemy_equipment.clone().unwrap_or_else(|| NOT_READ.into()));
+                                continue;
+                            };
+                            let army = &armies_by_key[&(header.country, header.group)];
+                            let start = rows.partition_point(|row| (row.country, row.group, row.month) < (header.country, header.group, header.ordinal));
+                            let held: Vec<_> = rows[start..].iter().take_while(|row| (row.country, row.group, row.month) == (header.country, header.group, header.ordinal)).collect();
+                            if held.is_empty() {
+                                rollup.mark_recorded(month);
+                            }
+                            for row in held {
+                                let (key, label) = if stack == LossStack::Type {
+                                    let info = designs.design(row.variant);
+                                    match info.archetype {
+                                        Some(token) => (format!("archetype:{token}"), info.archetype_name.unwrap_or_else(|| "Equipment name unavailable".into())),
+                                        None => (UNCLASSIFIED.into(), "Equipment type unavailable".into()),
+                                    }
+                                } else {
+                                    army_group_key_label(army)
+                                };
+                                let cell = enemy_amount.map(|column| Cell { table: TableId::CombatLogEnemyEquipment, column, key: row.key() });
+                                rollup.add(month, key, label, i128::from(row.amount_raw), cell);
+                            }
+                        }
+                    }
+                    reply.rollup = Some(rollup.finish(limit, at.live));
+                }
+            }
+            LossView::Month { month: asked_month } => {
+                let asked = *asked_month;
+                let mut accs = BTreeMap::<String, MonthArmyAcc>::new();
+                fn entry_of<'a>(accs: &'a mut BTreeMap<String, MonthArmyAcc>, army: &LossArmy) -> &'a mut MonthArmyAcc {
+                    accs.entry(army.reference.clone()).or_insert_with(|| MonthArmyAcc {
+                        army: army.clone(),
+                        manpower: None,
+                        manpower_live_row: None,
+                        ledgers: BTreeMap::new(),
+                    })
+                }
+                for row in frame.complete::<tables::CombatLogManpower>().unwrap_or(&[]) {
+                    if !ours(row.country) || month_bucket(row.date) != asked {
+                        continue;
+                    }
+                    let Some(army) = armies_by_key.get(&(row.country, row.group)) else {
+                        if known_armies {
+                            refuse(&mut refused, "Combat Log month rows of a log that was left out");
+                        }
+                        continue;
+                    };
+                    let key = format!("m:{}", row.key());
+                    for (channel, column) in ["ground", "air", "navy"].into_iter().zip(&channels) {
+                        if let Ok(column) = column {
+                            at.live.value(&key, channel, Cell { table: TableId::CombatLogManpower, column: *column, key: row.key() }, 1.0);
+                        }
+                    }
+                    let acc = entry_of(&mut accs, army);
+                    acc.manpower = Some([row.losses_0, row.losses_1, row.losses_2]);
+                    acc.manpower_live_row = Some(key);
+                }
+                let months: Vec<&CombatLogMonthRow> = frame.complete::<tables::CombatLogMonths>().map(|rows| rows.iter().filter(|row| ours(row.country)).collect()).unwrap_or_default();
+                let own: Vec<&CombatLogMonthRow> = months.iter().copied().filter(|header| header.kind != ENEMY_LEDGER && armies_by_key.contains_key(&(header.country, header.group))).collect();
+                let listed = frame.complete::<tables::CombatLogEquipment>().ok().filter(|_| reply.availability.months.is_none());
+                let reads: BTreeMap<u32, i32> = frame
+                    .complete::<tables::SliceReads>()
+                    .map(|rows| rows.iter().filter(|row| row.table == TableId::CombatLogEquipment.index() as u32).map(|row| (row.owner, row.sample_hour)).collect())
+                    .unwrap_or_default();
+                let mut kept = BTreeMap::<(u32, u32, u8), Vec<&CombatLogDroppedRow>>::new();
+                for row in dropped(frame, &ours) {
+                    kept.entry((row.country, row.group, row.kind)).or_default().push(row);
+                }
+                let arrays = recent_from(&own);
+                let live_amount = amount(TableId::CombatLogEquipment, "amount_raw").ok();
+                let dropped_amount = amount(TableId::CombatLogDropped, "amount").ok();
+                for &header in &own {
+                    if month_bucket(header.date) != asked {
+                        continue;
+                    }
+                    let army = &armies_by_key[&(header.country, header.group)];
+                    let ledger_acc = entry_of(&mut accs, army).ledgers.entry(header.kind).or_default();
+                    let Some(rows) = listed else {
+                        ledger_acc.missing.get_or_insert_with(|| NOT_READ.into());
+                        continue;
+                    };
+                    let array = (header.country, header.group, header.kind);
+                    let kept_rows = kept.get(&array).map_or(&[][..], Vec::as_slice);
+                    match witness(header, reads.get(&header.country).copied(), array_rows(rows, array), kept_rows, &arrays[&array]) {
+                        Witness::Listed(rows) => {
+                            ledger_acc.kept = true;
+                            for row in rows {
+                                let key = format!("e:{}", row.key());
+                                if let Some(column) = live_amount {
+                                    let cell = Cell { table: TableId::CombatLogEquipment, column, key: row.key() };
+                                    at.live.value(&key, "amount", cell, 1.0);
+                                    ledger_acc.cells.push(cell);
+                                }
+                                let variant = u64::from(row.variant) << 32 | u64::from(COMBAT_LOG_VARIANT_TYPE);
+                                let info = designs.design(variant);
+                                ledger_acc.total += i128::from(row.amount_raw);
+                                ledger_acc.designs.push(ArmyLossMonthDesign {
+                                    name: info.name,
+                                    archetype: info.archetype,
+                                    archetype_name: info.archetype_name,
+                                    amount_raw: Some(row.amount_raw.to_string()),
+                                    live_row: Some(key),
+                                });
+                            }
+                        }
+                        Witness::Dropped(rows) => {
+                            ledger_acc.kept = true;
+                            for row in rows {
+                                let key = format!("d:{}", row.key());
+                                let amount_raw = match row.amount {
+                                    Recorded::Value(val) => {
+                                        ledger_acc.total += i128::from(val);
+                                        if let Some(column) = dropped_amount {
+                                            let cell = Cell { table: TableId::CombatLogDropped, column, key: row.key() };
+                                            at.live.value(&key, "amount", cell, 1.0);
+                                            ledger_acc.cells.push(cell);
+                                        }
+                                        Some(val.to_string())
+                                    }
+                                    Recorded::NotRecorded => {
+                                        ledger_acc.missing.get_or_insert_with(|| DROPPED_UNRECORDED.into());
+                                        None
+                                    }
+                                };
+                                let variant = u64::from(row.variant) << 32 | u64::from(COMBAT_LOG_VARIANT_TYPE);
+                                let info = designs.design(variant);
+                                ledger_acc.designs.push(ArmyLossMonthDesign {
+                                    name: info.name,
+                                    archetype: info.archetype,
+                                    archetype_name: info.archetype_name,
+                                    amount_raw,
+                                    live_row: Some(key),
+                                });
+                            }
+                        }
+                        Witness::Empty => {
+                            ledger_acc.kept = true;
+                        }
+                        Witness::Unknown(why) => {
+                            ledger_acc.missing.get_or_insert_with(|| why.into());
+                        }
                     }
                 }
-                Witness::Dropped(rows) => {
-                    for row in rows {
-                        let key = format!("d:{}", row.key());
-                        if let Ok(column) = dropped_amount {
-                            at.live.value(&key, "amount", Cell { table: TableId::CombatLogDropped, column, key: row.key() }, 1.0);
+                let enemy = frame.complete::<tables::CombatLogEnemyEquipment>().ok();
+                let enemy_amount = amount(TableId::CombatLogEnemyEquipment, "amount_raw").ok();
+                for &header in months.iter().filter(|header| header.kind == ENEMY_LEDGER && armies_by_key.contains_key(&(header.country, header.group))) {
+                    if month_bucket(header.date) != asked {
+                        continue;
+                    }
+                    let army = &armies_by_key[&(header.country, header.group)];
+                    let ledger_acc = entry_of(&mut accs, army).ledgers.entry(header.kind).or_default();
+                    let Some(rows) = enemy else {
+                        ledger_acc.missing.get_or_insert_with(|| reply.availability.enemy_equipment.clone().unwrap_or_else(|| NOT_READ.into()));
+                        continue;
+                    };
+                    ledger_acc.kept = true;
+                    let start = rows.partition_point(|row| (row.country, row.group, row.month) < (header.country, header.group, header.ordinal));
+                    let held: Vec<_> = rows[start..].iter().take_while(|row| (row.country, row.group, row.month) == (header.country, header.group, header.ordinal)).collect();
+                    for row in held {
+                        let key = format!("x:{}", row.key());
+                        if let Some(column) = enemy_amount {
+                            let cell = Cell { table: TableId::CombatLogEnemyEquipment, column, key: row.key() };
+                            at.live.value(&key, "amount", cell, 1.0);
+                            ledger_acc.cells.push(cell);
                         }
-                        let variant = u64::from(row.variant) << 32 | u64::from(COMBAT_LOG_VARIANT_TYPE);
-                        reply.equipment.push(design_row(header, variant, key, &mut designs));
+                        let info = designs.design(row.variant);
+                        ledger_acc.total += i128::from(row.amount_raw);
+                        ledger_acc.designs.push(ArmyLossMonthDesign {
+                            name: info.name,
+                            archetype: info.archetype,
+                            archetype_name: info.archetype_name,
+                            amount_raw: Some(row.amount_raw.to_string()),
+                            live_row: Some(key),
+                        });
                     }
                 }
-                Witness::Empty => reply.empty_months.push(month_of(header, None)),
-                Witness::Unknown(why) => reply.unknown_months.push(month_of(header, Some(why))),
-            }
-        }
-        let enemy = frame.complete::<tables::CombatLogEnemyEquipment>().ok();
-        let enemy_amount = amount(TableId::CombatLogEnemyEquipment, "amount_raw");
-        for &header in months.iter().filter(|header| header.kind == ENEMY_LEDGER && armies.contains_key(&(header.country, header.group))) {
-            if !view.ledger(header.kind, month_bucket(header.date)) {
-                continue;
-            }
-            let Some(rows) = enemy else {
-                reply.unknown_months.push(month_of(header, reply.availability.enemy_equipment.as_deref()));
-                continue;
-            };
-            let start = rows.partition_point(|row| (row.country, row.group, row.month) < (header.country, header.group, header.ordinal));
-            let held: Vec<_> = rows[start..].iter().take_while(|row| (row.country, row.group, row.month) == (header.country, header.group, header.ordinal)).collect();
-            if held.is_empty() {
-                reply.empty_months.push(month_of(header, None));
-            }
-            for row in held {
-                let key = format!("x:{}", row.key());
-                if let Ok(column) = enemy_amount {
-                    at.live.value(&key, "amount", Cell { table: TableId::CombatLogEnemyEquipment, column, key: row.key() }, 1.0);
-                }
-                reply.equipment.push(design_row(header, row.variant, key, &mut designs));
+                let mut detail_armies: Vec<ArmyLossMonthArmy> = accs
+                    .into_values()
+                    .map(|acc| {
+                        let ledgers = acc
+                            .ledgers
+                            .into_iter()
+                            .map(|(ledger, la)| {
+                                let valid = la.kept && la.missing.is_none();
+                                let live_row = (valid && !la.cells.is_empty()).then(|| {
+                                    let row_name = format!("l:{}:{ledger}", acc.army.reference);
+                                    at.live.sum(&row_name, "amount", &la.cells, 1.0);
+                                    row_name
+                                });
+                                ArmyLossMonthLedger {
+                                    ledger,
+                                    kept: la.kept,
+                                    missing: la.missing,
+                                    total_raw: valid.then(|| la.total.to_string()),
+                                    live_row,
+                                    designs: la.designs,
+                                }
+                            })
+                            .collect();
+                        ArmyLossMonthArmy { army: acc.army, manpower: acc.manpower, manpower_live_row: acc.manpower_live_row, ledgers }
+                    })
+                    .collect();
+                detail_armies.sort_by_key(|entry| entry.army.ordinal);
+                let (first_hour, last_hour) = month_hours(asked);
+                reply.month_detail = Some(ArmyLossMonthDetail { month: asked, first_hour, last_hour, armies: detail_armies });
             }
         }
         if unbound.get() != 0 {
@@ -569,7 +1007,6 @@ impl AtHour for ArmyLosses {
         if !designs.unnamed.is_empty() {
             reply.warnings.push(format!("{} recorded equipment designs have no resolved name", designs.unnamed.len()));
         }
-        reply.designs = designs.listed;
         reply.warnings.extend(refused.into_iter().map(|(reason, count)| format!("{reason} ({count})")));
         Ok(reply)
     }
