@@ -110,6 +110,18 @@ export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: st
   };
 }
 
+export function careerTotals(career: LeaderCareerReply, hour: number) {
+  let fought = 0; let won = 0; let lost = 0;
+  for (const battle of career.battles) {
+    if (Math.max(battle.start, battle.read) > hour) continue;
+    fought++;
+    if (battle.won !== null && battle.resultRead !== null && battle.resultRead <= hour && (battle.resultHour ?? battle.resultRead) <= hour) {
+      if (battle.won) won++; else lost++;
+    }
+  }
+  return battleTotals(fought, won, lost, career.battlesPartialFrom !== null && career.battlesPartialFrom <= hour);
+}
+
 export function runAt(career: LeaderCareerReply, hour: number) {
   return career.runs.find(run => run.firstHour <= hour && hour <= run.lastHour);
 }

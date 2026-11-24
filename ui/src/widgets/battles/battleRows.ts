@@ -12,7 +12,7 @@ import { placeKey } from '../../dashboard/placeNamesData.ts';
 import { PARTIAL_LABEL } from '../../families/valueFormat.ts';
 import { valueStateText } from '../../components/valueStateText.ts';
 import type { BattleRow, BattleSide, BattleValue, BattleWarning, BattleWindow, PlaceNamesReply } from '../../generated/dashboard';
-export type { BattleRow, BattleSide, BattleValue, BattleWarning } from '../../generated/dashboard';
+export type { BattleRow, BattleSide, BattleValue, BattleWindow, BattleWarning } from '../../generated/dashboard';
 
 export function heldAtHour<T>(read: (hour: number) => T): (hour: number) => T {
   let held: { hour: number; value: T } | null = null;
@@ -126,6 +126,10 @@ export const battleLogOrder = (live: boolean) => <T extends BattleRow>(a: LogRow
 
 const battleLogRow = <T extends BattleRow>(item: T): LogRow<T> => ({ key: item.id, id: item.id, hour: battleHour(item),
   by: (item.end && 'hour' in item.end ? item.end : item.start)?.bound === 'by', item });
+
+export function battleLogRows<T extends BattleRow>(rows: readonly T[], live: boolean): ReadonlyArray<LogRow<T>> {
+  return rows.map(battleLogRow).sort(battleLogOrder(live));
+}
 
 export function battleState(row: BattleRow, painted = false): string {
   const value = (part: BattleValue) => part.value === null ? [part.label, part.unknown] : [part.label, painted || part.value, painted || (part.atLeast ?? false)];
@@ -241,6 +245,15 @@ export function namedBattles<T extends BattleRow & { provinceId: number | null }
     const name = byPlace.get(placeKey(row.provinceId, row.place.namedAt ?? row.place.hour))?.name ?? row.place.name;
     return name === row.place.name ? row : { ...row, place: { ...row.place, name } };
   });
+}
+
+export function lastChange(changes: readonly number[], at: number): number {
+  let low = 0, high = changes.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (changes[middle] <= at) low = middle + 1; else high = middle;
+  }
+  return low === 0 ? at : changes[low - 1];
 }
 
 export const rankingHour = (at: number, first: number, last: number) => Math.min(last, Math.max(first, Math.floor(at / 256) * 256));
