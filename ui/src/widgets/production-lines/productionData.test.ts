@@ -3,6 +3,9 @@ import test from 'node:test';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { compareValues, knownValue } from '../../families/value.ts';
+import { registerWidgets, widgetUnavailable } from '../../dashboard/definitions.ts';
+import { createWidget } from '../../dashboard/model.ts';
+import { definition } from './definition.ts';
 import { efficiencyPercent, iconImage, validateAtReply, validateBreakdownReply, variantName, variantOf, weeklyRaw } from './productionData.ts';
 import { productionLinesProjection, type ProductionLineMeta } from './productionLinesProjection.ts';
 import type { LineNow, ProductionLineBreakdownReply, ProductionLinesAtReply } from '../../generated/dashboard';
@@ -62,4 +65,12 @@ test('a picture is drawn only from an artwork URL; an image no host serves is mi
   assert.equal(iconImage(icons, 'sprite:GFX_b#2'), null, 'an unconfigured table names its images under a base no host serves');
   assert.equal(iconImage(icons, 'sprite:GFX_c#3'), null);
   assert.equal(iconImage(icons, null), null);
+});
+
+test('a widget saved on a retired breakdown view is refused by name, never drawn as the full table under its old title', () => {
+  registerWidgets([definition]);
+  const saved = (show: string) => ({ ...createWidget('production-lines', 'track', 'lines'), options: { show } });
+  assert.match(widgetUnavailable(saved('efficiency')) ?? '', /efficiency breakdown/);
+  assert.match(widgetUnavailable(saved('output')) ?? '', /output breakdown/);
+  assert.equal(widgetUnavailable(createWidget('production-lines', 'track', 'lines')), null);
 });
