@@ -412,7 +412,7 @@ function rowsChartLayout(model: TimeChartModel, width: number, height: number, s
     width, height, small, left: frame.left, right: width - frame.left - frame.plotWidth, top: frame.top, bottom: height - frame.axisY,
     plotWidth: frame.plotWidth, plotHeight: frame.axisY - frame.top, baseY: frame.axisY, markerLaneHeight: 0, axisY: frame.axisY,
     xDomain: frame.xDomain, yDomain: [0, 1], yTicks: [], playheadX: frame.toX(model.hour + 1), dateTabText: '', dateTabX: 0, dateTabWidth: 0,
-    axisTicks: [], rawAxisTicks: frame.axisTicks, endLabels: [], markers: [], gaps: [], columns: [], rows: frame, legendTop: null,
+    axisTicks: [], axisCandidates: [], rawAxisTicks: frame.axisTicks, endLabels: [], markers: [], gaps: [], columns: [], rows: frame, legendTop: null,
     toX: frame.toX, toY: () => frame.axisY, fromX: px => frame.xDomain[0] + ((px - frame.left) / frame.plotWidth) * span,
   };
 }
