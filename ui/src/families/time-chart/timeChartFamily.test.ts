@@ -1091,6 +1091,10 @@ describe('multi-country order from the product', () => {
     const refused = project({ panels: new Map([['rank', rankReply(['ITA', 'GER'], 'Political power is not recorded for GER at this hour')]]) });
     assert.deepEqual(refused.series.map(s => s.id), ['ITA', 'GER'], 'the product’s order, kept verbatim');
     assert.deepEqual(refused.warnings, ['Not in rank order: Political power is not recorded for GER at this hour'], 'an unproven order is said, never shown as a rank');
+    const unresolved = rankReply(['GER', 'ITA']);
+    const unnamedRows = { ...unresolved, rows: unresolved.rows.map(row => (row.country === 'GER' ? { ...row, unnamed: 'The holder of GER is not resolved at this hour' } : row)) };
+    const unnamed = project({ panels: new Map([['rank', unnamedRows]]) });
+    assert.deepEqual(unnamed.series.map(s => [s.id, s.name]), [['GER', 'Country not recorded'], ['ITA', 'ITA']], 'an unnamed row keeps its place and names its country as not recorded');
     assert.deepEqual(project({}).series.map(s => s.id), ['GER', 'ITA'], 'no ranking yet: the recorded order, never a client sort');
   });
 
@@ -1147,9 +1151,9 @@ describe('several countries, one measure', () => {
   const lines = new Map(tags.map((tag, at) => [tag, boundTiledSeries(makeTiledLine(tag, [makeBucket(base, base + 50, (at + 1) * 1000)]),
     displayedHour(hour), { headValue: knownValue((at + 1) * 1000) })]));
   const ranked = [...tags].reverse();
-  const rank = parseFollowed(message(10, [{ id: 1, answer: { keys: ranked.map((_, at) => BigInt(at + 1)), columns: 1, values: ranked.map(() => 1n), names: ranked } }])).answers[0]!.answer;
+  const rank = { hour, from: hour, until: hour, refused: null, measures: [{ name: 'strength', decimals: 0 }], rows: ranked.map(country => ({ country, slot: null, readings: [] })) };
   const project = (projection: typeof navyLinesProjection, membership: Readonly<Record<string, readonly (readonly [number, number])[]>> | null) =>
-    projection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), answers: new Map([['rank', rank]]) }),
+    projection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), panels: new Map([['rank', rank]]) }),
       { tags, top: null, membership, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
 
   it('orders by the product ranking, colours eight and keeps the rest a grey tail without end labels', () => {
@@ -1235,7 +1239,7 @@ describe('several countries, one measure', () => {
     const main = plan.entries.find(entry => entry.name === 'main')!;
     assert.ok(((main.read as { params?: { measures?: readonly string[] } }).params?.measures ?? []).length === 1, 'the ranked exact read asks the second measure too');
     assert.ok(!plan.entries.some(entry => entry.name === 'rank'), 'a ranked top takes its order from its own ranked read, not a second rank request');
-    const keyed = occupationLinesDeclaration.sources({ ...ctx, countries: { tags: ['A07', 'A01'], membership: null, top: null, all: false, every: [] } },
+    const keyed = occupationLinesDeclaration.sources({ ...ctx, countries: { tags: ['A07', 'A01'], membership: null, top: null, all: false, every: [] } } as unknown as Parameters<typeof occupationLinesDeclaration.sources>[0],
       { width: 800, height: 300 } as Parameters<typeof occupationLinesDeclaration.sources>[1]);
     assert.deepEqual(keyed.entries.filter(entry => entry.read.shape === 'pixel-binned').map(entry => (entry.read as { headQuery: { coverage?: string } }).headQuery.coverage), ['row', 'row'], 'keyed heads ask row coverage');
     assert.equal((keyed.entries.find(entry => entry.name === 'rank')!.read as { product: string }).product, 'series-rank');

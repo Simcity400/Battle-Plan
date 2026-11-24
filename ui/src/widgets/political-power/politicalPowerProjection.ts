@@ -14,7 +14,7 @@ import {
   memberAt,
   missingSpansOf,
   rankEntry,
-  rankedOrder,
+  rankedOrder, unnamedLooks,
   spendMarkerEntry,
   spendMarkersOf,
   auditReading,
@@ -63,15 +63,16 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
 
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
     const presentSet = new Set(present);
-    const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
-    const looks = countrySeriesLooks(ordered, readView, {
+    const ranking = rankedOrder(readView, present);
+    const ordered = [...ranking.order, ...tags.filter(tag => !presentSet.has(tag))];
+    const looks = unnamedLooks(countrySeriesLooks(ordered, readView, {
       holders: options.holders,
       from: options.extent[0],
       surface: options.surface,
       withFlag: !single,
       recordedOrdinal: tag => rowOf.get(tag) ?? 0,
       singleColor: CHART_MEASURE_COLOURS.politicalPower,
-    });
+    }), ranking.unnamed, hour);
     const measureIcon: ChartArtSlot | undefined = single
       ? { art: readView.art(measureArtHandle('politicalPower')), label: 'Political power' }
       : undefined;
@@ -99,7 +100,6 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
         ...(single ? {} : { identities }),
         icon: measureIcon,
         missingSpans: missingSpansOf(bounded),
-        rank,
         endLabel: isTail || !settings.endLabels || !reading || !('value' in reading)
           ? null
           : {
@@ -112,6 +112,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
     });
 
     const spent = spendMarkersOf(readView, 'Political power spent', options.extent[0]);
+    const warnings = [...ranking.warnings, ...spent.warnings];
 
     return {
       kind: 'political-power',
@@ -123,7 +124,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       yAxis: { format: 'power', decimals: settings.decimals, ...chartAxis(settings) },
       series,
       markers: spent.markers.length > 0 ? spent.markers : undefined,
-      ...(spent.warnings.length > 0 ? { warnings: spent.warnings } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       auditRows: ordered.flatMap(tag => {
         const reading = readingByTag.get(tag);
@@ -154,7 +155,7 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
     const rank = rankEntry(ctx, family, tags);
     const spending = spendMarkerEntry(ctx, 'Political');
     return {
-      owner: `political-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${ctx.options.spendTicks !== false ? 1 : 0}:${ctx.following ? 1 : 0}`,
+      owner: `political-power:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${ctx.options.spendTicks !== false ? 1 : 0}`,
       entries: [
         ...(rank ? [rank] : []),
         ...(spending ? [spending] : []),
@@ -172,6 +173,7 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
             headQuery: tags.length
               ? {
                   product: 'series-state',
+                  coverage: 'row',
                   params: {
                     branchId: ctx.branch.id,
                     family,

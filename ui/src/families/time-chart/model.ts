@@ -105,7 +105,6 @@ export interface TimeChartSeriesModel {
   readonly missingSpans?: readonly ChartMissingSpan[];
   readonly absentReason?: string | null;
   readonly exact?: { readonly hour: number; readonly value: number | null; readonly raw?: bigint; readonly denominator?: bigint; readonly reason?: string } | null;
-  readonly rank?: number;
 }
 
 export interface ChartStackBand {

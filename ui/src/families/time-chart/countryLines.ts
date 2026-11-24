@@ -20,7 +20,7 @@ import {
   memberAt,
   missingSpansOf,
   rankEntry,
-  rankedOrder,
+  rankedOrder, unnamedLooks,
   rankedPanelKeys,
   withinMapOf,
   type HeadReading,
@@ -158,15 +158,16 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
       const rowOf = new Map(tags.map((tag, row) => [tag, row]));
       const present = tags.filter(tag => memberAt(options.membership, tag, hour));
       const presentSet = new Set(present);
-      const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
-      const looks = countrySeriesLooks(ordered, readView, {
+      const ranking = rankedOrder(readView, present);
+      const ordered = [...ranking.order, ...tags.filter(tag => !presentSet.has(tag))];
+      const looks = unnamedLooks(countrySeriesLooks(ordered, readView, {
         holders: options.holders,
         from: options.extent[0],
         surface: options.surface,
         withFlag: true,
         recordedOrdinal: tag => rowOf.get(tag) ?? 0,
         tailColor: TAIL_COLOUR,
-      });
+      }), ranking.unnamed, hour);
       const exactByCountry = exactHoverByCountry(readView, 'hover', options.decimals);
       const secondLines = options.second ? readView.series('second') : undefined;
       const detailHour = spec.hover ? hoverHourOf(readView, 'detail') : null;
@@ -198,7 +199,6 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
           flag,
           identities,
           missingSpans: missingSpansOf(bounded),
-          rank,
           endLabel: isTail || !reading || !('value' in reading) || !options.endLabels
             ? null
             : { flag, name, fullName: name, value: format(reading) },
@@ -222,7 +222,6 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
           headValue: headValueOf(secondReading),
           headHour: hour,
           missingSpans: missingSpansOf(secondBounded),
-          rank,
           endLabel: null,
         }];
       });
@@ -240,6 +239,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         series,
         ...(legend ? { legend } : {}),
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
+        ...(ranking.warnings.length > 0 ? { warnings: ranking.warnings } : {}),
         hoverDetail: spec.hover ? spec.hover.detail(readView, lines, options) : undefined,
         auditRows: readings.map(([row, reading]) => auditReading(row, reading, format)),
       };
@@ -260,7 +260,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
       const tags = top === null ? ctx.countries.tags : [];
       const measure = measureOf(spec.measure(ctx.options, ctx.aux));
       const second = spec.second?.(ctx.options) ?? null;
-      const owner = `${spec.kind}:${spec.view}:${ctx.track.source.id}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${measure?.measure ?? ''}:${second?.measure ?? ''}:${ctx.following ? 1 : 0}`;
+      const owner = `${spec.kind}:${spec.view}:${ctx.track.source.id}:${ctx.branch.id}:${top === null ? tags.join(',') : `top${top}`}:${measure?.measure ?? ''}:${second?.measure ?? ''}`;
       if (!measure || (top === null && tags.length === 0)) return { owner, entries: [] };
       const family = { kind: measure.kind, measure: measure.measure };
       const secondFamily = second ? { kind: measure.kind, measure: second.measure } : null;
@@ -299,8 +299,6 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
           { name: 'hover', ...common, read: { shape: 'exact-hover', product: 'series-state', params: { branchId: ctx.branch.id, family }, readsOf: 'main' } },
           ...hover,
         ];
-        const rank = rankEntry(ctx, family, top);
-        if (rank) ranked.push(rank);
         return { owner, entries: ranked };
       }
       const within = withinMapOf(ctx.countries.membership);
@@ -315,7 +313,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
             family,
             tags,
             ...(within ? { within } : {}),
-            headQuery: { product: 'series-state', params: { branchId: ctx.branch.id, family, reads } },
+            headQuery: { product: 'series-state', coverage: 'row', params: { branchId: ctx.branch.id, family, reads } },
             exactProduct: 'series-state',
           },
         },
@@ -329,7 +327,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
                 family: secondFamily,
                 tags,
                 ...(within ? { within } : {}),
-                headQuery: { product: 'series-state' as const, params: { branchId: ctx.branch.id, family: secondFamily, reads } },
+                headQuery: { product: 'series-state' as const, coverage: 'row' as const, params: { branchId: ctx.branch.id, family: secondFamily, reads } },
                 exactProduct: 'series-state' as const,
               },
             }]
