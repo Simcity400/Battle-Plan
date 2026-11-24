@@ -1833,10 +1833,10 @@ fn capacity_growth_keeps_primary_rows_and_name_arena_sized() {
     frame.faction_names_required = 20_000;
     frame.state_names_required = 40_000;
     frame.grow(&mut capacities);
-    assert_eq!(frame.wars.len(), 2048);
+    assert_eq!(frame.wars.len(), 1344);
     assert_eq!(frame.factions.len(), 128);
-    assert_eq!(frame.faction_members.len(), 2048);
-    assert_eq!(frame.faction_names.len(), 32768);
+    assert_eq!(frame.faction_members.len(), 1344);
+    assert_eq!(frame.faction_names.len(), 25_024);
     assert!(frame.state_names.len() >= 40_000);
     assert_eq!(frame.state_names.len(), capacities[11]);
     assert!(frame.allocated_bytes() > before);
@@ -3328,21 +3328,28 @@ fn buffer_return_runs_on_a_small_stack() {
     const SMALL_STACK: usize = 256 * 1024;
     const _: () = assert!(SMALL_STACK * 32 <= collector_workers::priority::BACKGROUND_STACK_BYTES);
     let shared = std::sync::Arc::new(campaign_shared());
+    let held: Vec<_> = (0..=BUFFERS)
+        .map(|_|
+        // SAFETY: This fixture owns its frame and worker state and runs without a live
+        // attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap())
+        .collect();
     let worker = std::sync::Arc::clone(&shared);
     let returned = std::thread::Builder::new()
         .stack_size(SMALL_STACK)
         .spawn(move || {
-            let held: Vec<_> = (0..BUFFERS)
-                .map(|_|
-                // SAFETY: This fixture owns its frame and worker state and runs without a live
-                // attachment.
-                unsafe { worker.take_frame(&mut 0) }.unwrap())
-                .collect();
             for index in held {
                 // SAFETY: This fixture owns its frame and worker state and runs without a live
                 // attachment.
                 unsafe { worker.recycle_frame_prepared(index) };
             }
+            let reused =
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { worker.take_frame(&mut 0) }.unwrap();
+            // SAFETY: This fixture owns its frame and worker state and runs without a live
+            // attachment.
+            unsafe { worker.recycle_frame_prepared(reused) };
             worker.frames.len()
         })
         .unwrap()
@@ -3354,26 +3361,25 @@ fn buffer_return_runs_on_a_small_stack() {
 #[test]
 fn buffers_backlogged_with_one_free_buffer() {
     let shared = campaign_shared();
-    let first =
-    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-    unsafe { shared.take_frame(&mut 0) }.unwrap();
-    let second =
-    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-    unsafe { shared.take_frame(&mut 0) }.unwrap();
+    let mut held = Vec::new();
+    while shared.frames.len() > 2 {
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        held.push(unsafe { shared.take_frame(&mut 0) }.unwrap());
+    }
     assert_eq!(shared.frames.len(), 2);
     assert!(!shared.buffers_backlogged());
-    let third =
+    let tipping =
     // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
     unsafe { shared.take_frame(&mut 0) }.unwrap();
     assert_eq!(shared.frames.len(), 1);
     assert!(shared.buffers_backlogged());
     // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-    unsafe { shared.recycle_frame_prepared(first) };
+    unsafe { shared.recycle_frame_prepared(tipping) };
     assert!(!shared.buffers_backlogged());
-    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-    unsafe { shared.recycle_frame_prepared(second) };
-    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-    unsafe { shared.recycle_frame_prepared(third) };
+    for index in held {
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame_prepared(index) };
+    }
     assert_eq!(shared.frames.len(), BUFFERS);
 }
 

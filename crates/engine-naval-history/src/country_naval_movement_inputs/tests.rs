@@ -192,6 +192,24 @@ fn failed_header_is_not_retried_and_other_headers_remain() {
     assert!(inputs.take_ledger_regions().is_err());
     assert_eq!(inputs.take_ledger_regions(), Err(CONSUMED));
     assert_eq!(memory.calls.borrow().len(), before);
+
+    for (count, fault_slot) in [(2, 1_u32), (4, 1_u32), (4, 3_u32)] {
+        let mut memory = world();
+        memory.fail_once = Some(0x6100 + fault_slot as usize * 8);
+        let reader = Reader::new(&memory, 0, STATE);
+        let mut results = Vec::new();
+        reader.observe_navies_range(count, |slot, res| {
+            results.push((slot, res.map(|n| n.ledger_navy())));
+        });
+        assert_eq!(results.len(), count);
+        for (slot, res) in results {
+            if slot == fault_slot {
+                assert_eq!(res, Err("naval movement pointer unreadable"));
+            } else {
+                assert!(res.is_ok(), "slot {slot} unexpectedly failed: {res:?}");
+            }
+        }
+    }
 }
 
 #[test]

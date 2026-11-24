@@ -219,7 +219,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
         }
         assert!(matches!(
             serial.tables[TableId::Ships.index()],
-            TableInput::Sampled(TableView::Complete(_))
+            TableInput::Sampled(TableView::Complete(_)) | TableInput::SharedComplete(_)
         ));
     }
     assert!(helper_steps.entries(collector_workers::spool_phases::Phase::ConvertPacks) >= 24);

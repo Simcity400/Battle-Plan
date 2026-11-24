@@ -1038,6 +1038,15 @@ pub struct Captured {
 }
 
 impl Captured {
+    pub fn vacant() -> Self {
+        Self {
+            rows: CaptureRows::new(0),
+            selection: SliceSelection::new(),
+            parts: Vec::new(),
+            staged: false,
+        }
+    }
+
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),

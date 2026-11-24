@@ -1125,11 +1125,6 @@ impl Captured {
         capacity.party_countries = capacity
             .party_countries
             .max(self.party_countries.first.len());
-        if !self.technology_selection.force_full {
-            capacity.rows[2] = capacity.rows[2]
-                .max(self.technologies.rows.len())
-                .min(STEADY_TECHNOLOGY_CAP);
-        }
         capacity.rows[4] = capacity.rows[4].max(self.definitions.rows.len());
         self.focus.grow(&mut capacity.rows[0]);
         if self.daily_released {
@@ -1141,13 +1136,20 @@ impl Captured {
         } else {
             self.completed.grow(&mut capacity.rows[1]);
         }
-        let mut tech_cap = capacity.rows[2].min(STEADY_TECHNOLOGY_CAP);
-        if self.technologies.rows.len() <= tech_cap && self.technology_pointers.len() <= tech_cap {
-            grow_vec(&mut self.technologies.rows, tech_cap);
-            grow_vec(&mut self.technology_pointers, self.technologies.rows.len());
+        let tech_truncated = matches!(self.technologies.outcome, Outcome::Truncated { .. });
+        if self.daily_released && !tech_truncated {
+            grow_large_demand(&self.technologies, &mut capacity.rows[2]);
+            let tech_cap = capacity.rows[2].min(STEADY_TECHNOLOGY_CAP);
+            if self.technologies.rows.len() <= tech_cap && self.technology_pointers.len() <= tech_cap {
+                grow_vec(&mut self.technologies.rows, tech_cap);
+                grow_vec(&mut self.technology_pointers, self.technologies.rows.len());
+            } else {
+                grow_vec(&mut self.technology_pointers, self.technologies.rows.len());
+            }
         } else {
-            tech_cap = self.technologies.rows.len();
-            grow_vec(&mut self.technology_pointers, tech_cap);
+            capacity.rows[2] = capacity.rows[2].max(self.technologies.rows.len());
+            grow_large(&mut self.technologies, &mut capacity.rows[2]);
+            grow_vec(&mut self.technology_pointers, capacity.rows[2]);
         }
         self.definitions.grow(&mut capacity.rows[4]);
         self.politics.grow(&mut capacity.rows[5]);
@@ -1588,6 +1590,22 @@ pub const BREAKDOWN_WITNESS: bool = cfg!(feature = "breakdown_witness");
 
 fn elapsed(start: i64) -> u64 {
     u64::try_from(qpc().saturating_sub(start)).unwrap_or(0)
+}
+
+fn grow_large_demand<R>(rows: &CaptureRows<R>, capacity: &mut usize) {
+    let required = match rows.outcome {
+        Outcome::Rows { len } => len,
+        Outcome::Truncated { len, unread_rows } => len.saturating_add(unread_rows as usize),
+        Outcome::Unavailable { .. } => 0,
+    };
+    if required > capacity.saturating_sub(*capacity / 4) {
+        *capacity = (*capacity).max(required.saturating_add(required.div_ceil(3)));
+    }
+}
+
+fn grow_large<R: Default + Clone>(rows: &mut CaptureRows<R>, capacity: &mut usize) {
+    grow_large_demand(rows, capacity);
+    grow_vec(&mut rows.rows, *capacity);
 }
 
 fn written<R>(rows: &[R], start: usize, outcome: Outcome) -> &[R] {

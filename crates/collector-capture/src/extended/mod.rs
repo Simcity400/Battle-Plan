@@ -854,254 +854,134 @@ impl Captured {
                 if self.parked {
                     return None;
                 }
+                let mut slot = engine_allocation::boxed_uninit::<ParkedPacks>().ok()?;
+                let ptr = slot.as_mut_ptr();
+                macro_rules! move_pack {
+                    ($field:ident, $vacant:expr) => {
+                        // SAFETY: `ptr` points to uniquely owned writable `ParkedPacks` storage,
+                        // and each field is written exactly once before `assume_init`.
+                        unsafe {
+                            std::ptr::addr_of_mut!((*ptr).$field)
+                                .write(std::mem::replace(&mut self.$field, $vacant));
+                        }
+                    };
+                }
+                macro_rules! move_opt {
+                    ($field:ident) => {
+                        // SAFETY: `ptr` points to uniquely owned writable `ParkedPacks` storage,
+                        // and each field is written exactly once before `assume_init`.
+                        unsafe {
+                            std::ptr::addr_of_mut!((*ptr).$field).write(self.$field.take());
+                        }
+                    };
+                }
+                move_pack!(division_presentation, division_presentation::Captured::vacant());
+                move_pack!(production, production::Captured::vacant());
+                move_pack!(production_modifiers, production_modifiers::Captured::vacant());
+                move_pack!(characters, characters::Captured::vacant());
+                move_pack!(projects, projects::Captured::vacant());
+                move_pack!(economy, economy::Captured::vacant());
+                move_pack!(governance, governance::Captured::vacant());
+                move_pack!(division_templates, division_templates::Captured::vacant());
+                move_pack!(intel, intel::Captured::vacant());
+                move_pack!(air_histories, air_histories::Captured::vacant());
+                move_pack!(ship_models, ship_models::Captured::vacant());
+                move_pack!(fuel_awards, fuel_awards::Captured::vacant());
+                move_pack!(character_portraits, character_portraits::Captured::vacant());
+                move_pack!(naval_history, naval_history::Captured::vacant());
+                move_opt!(scores_rails_spare);
+                move_opt!(ordinary_spare);
+                move_opt!(slow_spare);
+                move_opt!(late_spare);
+                move_opt!(gated_spare);
+                move_pack!(supply_trains, supply_trains::Captured::vacant());
+                move_pack!(visibility, visibility::Captured::vacant());
+                move_pack!(industrial_organisations, industrial_organisations::Captured::vacant());
+                move_pack!(weather, weather::Captured::vacant());
+                move_pack!(logistics, logistics::Captured::vacant());
+                move_pack!(war_overview, war_overview::Captured::vacant());
+                move_pack!(plans, plans::Captured::vacant());
+                move_pack!(air, air::Captured::vacant());
+                move_pack!(new_divisions, new_divisions::Captured::vacant());
+                move_pack!(event_feed, event_feed::Captured::vacant());
+                move_pack!(country_appearance, country_appearance::Captured::vacant());
+                move_pack!(hired_advisors, hired_advisors::Captured::vacant());
+                move_pack!(peace_settlements, peace_settlements::Captured::vacant());
+                move_pack!(peace_bids, peace_bids::Captured::vacant());
+                move_pack!(province_unit_order, province_unit_order::Captured::vacant());
+                move_pack!(construction, construction::Captured::vacant());
+                move_pack!(country_counters, country_counters::Captured::vacant());
+                move_pack!(character_inputs, character_inputs::Captured::vacant());
+                move_pack!(fog, fog::Captured::vacant());
+                move_pack!(model_inputs, model_inputs::Captured::vacant());
+                move_pack!(country_stability, country_stability::Captured::vacant());
+                move_pack!(country_factories, country_factories::Captured::vacant());
+                move_pack!(state_building_inputs, state_building_inputs::Captured::vacant());
+                move_pack!(naval_mission_inputs, naval_mission_inputs::Captured::vacant());
+                move_pack!(raid_state_inputs, raid_state_inputs::Captured::vacant());
+                move_pack!(raid_target_statuses, raid_target_statuses::Captured::vacant());
+                move_pack!(raid_launch_inputs, raid_launch_inputs::Captured::vacant());
                 self.parked = true;
-                let parked = ParkedPacks {
-                    division_presentation: std::mem::replace(
-                        &mut self.division_presentation,
-                        division_presentation::Captured::vacant(),
-                    ),
-                    production: std::mem::replace(
-                        &mut self.production,
-                        production::Captured::vacant(),
-                    ),
-                    production_modifiers: std::mem::replace(
-                        &mut self.production_modifiers,
-                        production_modifiers::Captured::vacant(),
-                    ),
-                    characters: std::mem::replace(
-                        &mut self.characters,
-                        characters::Captured::vacant(),
-                    ),
-                    projects: std::mem::replace(&mut self.projects, projects::Captured::vacant()),
-                    economy: std::mem::replace(&mut self.economy, economy::Captured::vacant()),
-                    governance: std::mem::replace(
-                        &mut self.governance,
-                        governance::Captured::vacant(),
-                    ),
-                    division_templates: std::mem::replace(
-                        &mut self.division_templates,
-                        division_templates::Captured::vacant(),
-                    ),
-                    intel: std::mem::replace(&mut self.intel, intel::Captured::vacant()),
-                    air_histories: std::mem::replace(
-                        &mut self.air_histories,
-                        air_histories::Captured::with_capacities(&Default::default()),
-                    ),
-                    ship_models: std::mem::replace(
-                        &mut self.ship_models,
-                        ship_models::Captured::vacant(),
-                    ),
-                    fuel_awards: std::mem::replace(
-                        &mut self.fuel_awards,
-                        fuel_awards::Captured::vacant(),
-                    ),
-                    character_portraits: std::mem::replace(
-                        &mut self.character_portraits,
-                        character_portraits::Captured::vacant(),
-                    ),
-                    naval_history: std::mem::replace(
-                        &mut self.naval_history,
-                        naval_history::Captured::vacant(),
-                    ),
-                    scores_rails_spare: self.scores_rails_spare.take(),
-                    ordinary_spare: self.ordinary_spare.take(),
-                    slow_spare: self.slow_spare.take(),
-                    late_spare: self.late_spare.take(),
-                    gated_spare: self.gated_spare.take(),
-                    supply_trains: std::mem::replace(
-                        &mut self.supply_trains,
-                        supply_trains::Captured::vacant(),
-                    ),
-                    visibility: std::mem::replace(
-                        &mut self.visibility,
-                        visibility::Captured::vacant(),
-                    ),
-                    industrial_organisations: std::mem::replace(
-                        &mut self.industrial_organisations,
-                        industrial_organisations::Captured::vacant(),
-                    ),
-                    weather: std::mem::replace(&mut self.weather, weather::Captured::vacant()),
-                    logistics: std::mem::replace(
-                        &mut self.logistics,
-                        logistics::Captured::vacant(),
-                    ),
-                    war_overview: std::mem::replace(
-                        &mut self.war_overview,
-                        war_overview::Captured::vacant(),
-                    ),
-                    plans: std::mem::replace(&mut self.plans, plans::Captured::vacant()),
-                    air: std::mem::replace(&mut self.air, air::Captured::vacant()),
-                    new_divisions: std::mem::replace(
-                        &mut self.new_divisions,
-                        new_divisions::Captured::vacant(),
-                    ),
-                    event_feed: std::mem::replace(
-                        &mut self.event_feed,
-                        event_feed::Captured::vacant(),
-                    ),
-                    country_appearance: std::mem::replace(
-                        &mut self.country_appearance,
-                        country_appearance::Captured::vacant(),
-                    ),
-                    hired_advisors: std::mem::replace(
-                        &mut self.hired_advisors,
-                        hired_advisors::Captured::vacant(),
-                    ),
-                    peace_settlements: std::mem::replace(
-                        &mut self.peace_settlements,
-                        peace_settlements::Captured::vacant(),
-                    ),
-                    peace_bids: std::mem::replace(
-                        &mut self.peace_bids,
-                        peace_bids::Captured::vacant(),
-                    ),
-                    province_unit_order: std::mem::replace(
-                        &mut self.province_unit_order,
-                        province_unit_order::Captured::vacant(),
-                    ),
-                    construction: std::mem::replace(
-                        &mut self.construction,
-                        construction::Captured::vacant(),
-                    ),
-                    country_counters: std::mem::replace(
-                        &mut self.country_counters,
-                        country_counters::Captured::vacant(),
-                    ),
-                    character_inputs: std::mem::replace(
-                        &mut self.character_inputs,
-                        character_inputs::Captured::vacant(),
-                    ),
-                    fog: std::mem::replace(&mut self.fog, fog::Captured::vacant()),
-                    model_inputs: std::mem::replace(
-                        &mut self.model_inputs,
-                        model_inputs::Captured::vacant(),
-                    ),
-                    country_stability: std::mem::replace(
-                        &mut self.country_stability,
-                        country_stability::Captured::vacant(),
-                    ),
-                    country_factories: std::mem::replace(
-                        &mut self.country_factories,
-                        country_factories::Captured::vacant(),
-                    ),
-                    state_building_inputs: std::mem::replace(
-                        &mut self.state_building_inputs,
-                        state_building_inputs::Captured::vacant(),
-                    ),
-                    naval_mission_inputs: std::mem::replace(
-                        &mut self.naval_mission_inputs,
-                        naval_mission_inputs::Captured::vacant(),
-                    ),
-                    raid_state_inputs: std::mem::replace(
-                        &mut self.raid_state_inputs,
-                        raid_state_inputs::Captured::vacant(),
-                    ),
-                    raid_target_statuses: std::mem::replace(
-                        &mut self.raid_target_statuses,
-                        raid_target_statuses::Captured::vacant(),
-                    ),
-                    raid_launch_inputs: std::mem::replace(
-                        &mut self.raid_launch_inputs,
-                        raid_launch_inputs::Captured::vacant(),
-                    ),
-                };
-                engine_allocation::boxed(parked).ok()
+                // SAFETY: every field of `ParkedPacks` was initialized above, and
+                // `MaybeUninit<ParkedPacks>` has the exact same layout as `ParkedPacks`.
+                Some(unsafe { Box::from_raw(Box::into_raw(slot).cast::<ParkedPacks>()) })
             }
-            pub fn install_parked_packs(&mut self, parked: Box<ParkedPacks>) {
-                let ParkedPacks {
-                    division_presentation,
-                    production,
-                    production_modifiers,
-                    characters,
-                    projects,
-                    economy,
-                    governance,
-                    division_templates,
-                    intel,
-                    air_histories,
-                    ship_models,
-                    fuel_awards,
-                    character_portraits,
-                    naval_history,
-                    scores_rails_spare,
-                    ordinary_spare,
-                    slow_spare,
-                    late_spare,
-                    gated_spare,
-                    supply_trains,
-                    visibility,
-                    industrial_organisations,
-                    weather,
-                    logistics,
-                    war_overview,
-                    plans,
-                    air,
-                    new_divisions,
-                    event_feed,
-                    country_appearance,
-                    hired_advisors,
-                    peace_settlements,
-                    peace_bids,
-                    province_unit_order,
-                    construction,
-                    country_counters,
-                    character_inputs,
-                    fog,
-                    model_inputs,
-                    country_stability,
-                    country_factories,
-                    state_building_inputs,
-                    naval_mission_inputs,
-                    raid_state_inputs,
-                    raid_target_statuses,
-                    raid_launch_inputs,
-                } = *parked;
-                self.division_presentation = division_presentation;
-                self.production = production;
-                self.production_modifiers = production_modifiers;
-                self.characters = characters;
-                self.projects = projects;
-                self.economy = economy;
-                self.governance = governance;
-                self.division_templates = division_templates;
-                self.intel = intel;
-                self.air_histories = air_histories;
-                self.ship_models = ship_models;
-                self.fuel_awards = fuel_awards;
-                self.character_portraits = character_portraits;
-                self.naval_history = naval_history;
-                self.scores_rails_spare = scores_rails_spare.or_else(ScoresRailsParts::spare);
-                self.ordinary_spare = ordinary_spare.or_else(OrdinaryPacks::spare);
-                self.slow_spare = slow_spare.or_else(SlowPacks::spare);
-                self.late_spare = late_spare.or_else(LatePacks::spare);
-                self.gated_spare = gated_spare.or_else(GatedPacks::spare);
-                self.supply_trains = supply_trains;
-                self.visibility = visibility;
-                self.industrial_organisations = industrial_organisations;
-                self.weather = weather;
-                self.logistics = logistics;
-                self.war_overview = war_overview;
-                self.plans = plans;
-                self.air = air;
-                self.new_divisions = new_divisions;
-                self.event_feed = event_feed;
-                self.country_appearance = country_appearance;
-                self.hired_advisors = hired_advisors;
-                self.peace_settlements = peace_settlements;
-                self.peace_bids = peace_bids;
-                self.province_unit_order = province_unit_order;
-                self.construction = construction;
-                self.country_counters = country_counters;
-                self.character_inputs = character_inputs;
-                self.fog = fog;
-                self.model_inputs = model_inputs;
-                self.country_stability = country_stability;
-                self.country_factories = country_factories;
-                self.state_building_inputs = state_building_inputs;
-                self.naval_mission_inputs = naval_mission_inputs;
-                self.raid_state_inputs = raid_state_inputs;
-                self.raid_target_statuses = raid_target_statuses;
-                self.raid_launch_inputs = raid_launch_inputs;
+            pub fn install_parked_packs(&mut self, mut parked: Box<ParkedPacks>) {
+                std::mem::swap(&mut self.division_presentation, &mut parked.division_presentation);
+                std::mem::swap(&mut self.production, &mut parked.production);
+                std::mem::swap(&mut self.production_modifiers, &mut parked.production_modifiers);
+                std::mem::swap(&mut self.characters, &mut parked.characters);
+                std::mem::swap(&mut self.projects, &mut parked.projects);
+                std::mem::swap(&mut self.economy, &mut parked.economy);
+                std::mem::swap(&mut self.governance, &mut parked.governance);
+                std::mem::swap(&mut self.division_templates, &mut parked.division_templates);
+                std::mem::swap(&mut self.intel, &mut parked.intel);
+                std::mem::swap(&mut self.air_histories, &mut parked.air_histories);
+                std::mem::swap(&mut self.ship_models, &mut parked.ship_models);
+                std::mem::swap(&mut self.fuel_awards, &mut parked.fuel_awards);
+                std::mem::swap(&mut self.character_portraits, &mut parked.character_portraits);
+                std::mem::swap(&mut self.naval_history, &mut parked.naval_history);
+                self.scores_rails_spare = parked
+                    .scores_rails_spare
+                    .take()
+                    .or_else(ScoresRailsParts::spare);
+                self.ordinary_spare = parked.ordinary_spare.take().or_else(OrdinaryPacks::spare);
+                self.slow_spare = parked.slow_spare.take().or_else(SlowPacks::spare);
+                self.late_spare = parked.late_spare.take().or_else(LatePacks::spare);
+                self.gated_spare = parked.gated_spare.take().or_else(GatedPacks::spare);
+                std::mem::swap(&mut self.supply_trains, &mut parked.supply_trains);
+                std::mem::swap(&mut self.visibility, &mut parked.visibility);
+                std::mem::swap(
+                    &mut self.industrial_organisations,
+                    &mut parked.industrial_organisations,
+                );
+                std::mem::swap(&mut self.weather, &mut parked.weather);
+                std::mem::swap(&mut self.logistics, &mut parked.logistics);
+                std::mem::swap(&mut self.war_overview, &mut parked.war_overview);
+                std::mem::swap(&mut self.plans, &mut parked.plans);
+                std::mem::swap(&mut self.air, &mut parked.air);
+                std::mem::swap(&mut self.new_divisions, &mut parked.new_divisions);
+                std::mem::swap(&mut self.event_feed, &mut parked.event_feed);
+                std::mem::swap(&mut self.country_appearance, &mut parked.country_appearance);
+                std::mem::swap(&mut self.hired_advisors, &mut parked.hired_advisors);
+                std::mem::swap(&mut self.peace_settlements, &mut parked.peace_settlements);
+                std::mem::swap(&mut self.peace_bids, &mut parked.peace_bids);
+                std::mem::swap(&mut self.province_unit_order, &mut parked.province_unit_order);
+                std::mem::swap(&mut self.construction, &mut parked.construction);
+                std::mem::swap(&mut self.country_counters, &mut parked.country_counters);
+                std::mem::swap(&mut self.character_inputs, &mut parked.character_inputs);
+                std::mem::swap(&mut self.fog, &mut parked.fog);
+                std::mem::swap(&mut self.model_inputs, &mut parked.model_inputs);
+                std::mem::swap(&mut self.country_stability, &mut parked.country_stability);
+                std::mem::swap(&mut self.country_factories, &mut parked.country_factories);
+                std::mem::swap(
+                    &mut self.state_building_inputs,
+                    &mut parked.state_building_inputs,
+                );
+                std::mem::swap(&mut self.naval_mission_inputs, &mut parked.naval_mission_inputs);
+                std::mem::swap(&mut self.raid_state_inputs, &mut parked.raid_state_inputs);
+                std::mem::swap(&mut self.raid_target_statuses, &mut parked.raid_target_statuses);
+                std::mem::swap(&mut self.raid_launch_inputs, &mut parked.raid_launch_inputs);
                 self.parked = false;
             }
             pub fn hydrate_parked_packs(&mut self, capacity: &Capacities) {

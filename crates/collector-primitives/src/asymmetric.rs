@@ -258,22 +258,29 @@ impl FlightGate {
 
     pub fn active(&self) -> usize {
         flush_writers();
-        let overflow = self.overflow.load(SeqCst);
-        let retained = overflow & RETAIN_BIT;
-        let count = (overflow & !RETAIN_BIT).saturating_add(count_active(self.tag()));
+        let tag = self.tag();
+        let before = self.overflow.load(SeqCst);
+        let mut slots = count_active(tag);
+        let mut after = self.overflow.load(SeqCst);
+        if after != before {
+            slots = count_active(tag);
+            after = self.overflow.load(SeqCst);
+        }
+        let retained = after & RETAIN_BIT;
+        let count = (after & !RETAIN_BIT).saturating_add(slots);
         retained | (count & !RETAIN_BIT)
     }
 
     pub fn any_active(&self) -> bool {
         let tag = self.tag();
-        if (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0
-            || current_thread_has(tag)
+        if current_thread_has(tag)
             || any_active(tag)
+            || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0
         {
             return true;
         }
         if flush_writers() {
-            (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0 || any_active(tag)
+            any_active(tag) || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0
         } else {
             false
         }
@@ -311,14 +318,14 @@ impl FlightGate {
 
     pub fn quiet_epoch(&self) -> Option<u64> {
         let tag = self.tag();
-        if (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0
-            || current_thread_has(tag)
+        if current_thread_has(tag)
             || any_active(tag)
+            || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0
         {
             return None;
         }
         if flush_writers()
-            && ((self.overflow.load(SeqCst) & !RETAIN_BIT) != 0 || any_active(tag))
+            && (any_active(tag) || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0)
         {
             return None;
         }
@@ -331,7 +338,7 @@ impl FlightGate {
                 self.epoch.fetch_add(1, SeqCst);
                 flush_writers();
             }
-            if (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0 || any_active(tag) {
+            if any_active(tag) || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0 {
                 self.dirty.store(true, SeqCst);
                 return None;
             }
@@ -351,7 +358,7 @@ impl FlightGate {
         let epoch = if self.dirty.swap(false, SeqCst) {
             let next = self.epoch.fetch_add(1, SeqCst).wrapping_add(1);
             flush_writers();
-            if (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0 || any_active(tag) {
+            if any_active(tag) || (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0 {
                 self.dirty.store(true, SeqCst);
             }
             next
@@ -377,6 +384,7 @@ impl FlightGuard<'_> {
     }
 
     pub fn leak_and_retain(mut self) {
+        self.gate.dirty.store(true, SeqCst);
         if let Some((slot_idx, entry_idx)) = self.slot.take() {
             let _ = self.gate.overflow.fetch_update(SeqCst, SeqCst, |current| {
                 let count = (current & !RETAIN_BIT)
@@ -384,11 +392,10 @@ impl FlightGuard<'_> {
                     .min(!RETAIN_BIT);
                 Some(RETAIN_BIT | count)
             });
-            leave_slot(slot_idx, entry_idx);
+            SLOTS[slot_idx as usize].active[entry_idx as usize].store(0, SeqCst);
         } else {
             self.gate.overflow.fetch_or(RETAIN_BIT, SeqCst);
         }
-        self.gate.dirty.store(true, SeqCst);
         std::mem::forget(self);
     }
 }
@@ -479,6 +486,41 @@ mod tests {
         assert!(concurrent.is_retained());
         assert_eq!(concurrent.active(), RETAIN_BIT | 1);
         assert_eq!(concurrent.quiet_epoch(), None);
+
+        for _ in 0..32 {
+            let live = Arc::new(FlightGate::new(0));
+            let entered = Arc::new(Barrier::new(2));
+            let go = Arc::new(Barrier::new(2));
+            let saw_zero = Arc::new(AtomicBool::new(false));
+            let done = Arc::new(AtomicBool::new(false));
+            let writer = {
+                let (live, entered, go, done) = (
+                    Arc::clone(&live),
+                    Arc::clone(&entered),
+                    Arc::clone(&go),
+                    Arc::clone(&done),
+                );
+                std::thread::spawn(move || {
+                    let guard = live.enter(false);
+                    assert!(guard.slot.is_some());
+                    entered.wait();
+                    go.wait();
+                    guard.leak_and_retain();
+                    done.store(true, Release);
+                })
+            };
+            entered.wait();
+            assert_eq!(live.active(), 1);
+            go.wait();
+            while !done.load(Acquire) {
+                if (live.active() & !RETAIN_BIT) == 0 {
+                    saw_zero.store(true, Relaxed);
+                }
+            }
+            writer.join().unwrap();
+            assert!(!saw_zero.load(Relaxed));
+            assert_eq!(live.active(), RETAIN_BIT | 1);
+        }
     }
 
     #[test]

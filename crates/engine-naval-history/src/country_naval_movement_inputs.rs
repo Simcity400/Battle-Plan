@@ -3,7 +3,7 @@ use engine_sites::Rva;
 use engine_native_memory::{
     Memory, cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
-    read, read_slice,
+    read,
 };
 use engine_native::{ccountry, cgame_state};
 use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
@@ -11,6 +11,13 @@ use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
 pub const MANAGER: usize = 0x60;
 
 const NAVY_BATCH: usize = 64;
+const PTR_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 8,
+}];
+const PTR_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&PTR_FIELDS, 8).expect("valid navy pointer layout");
 const NAVY_FIELDS: [RecordField; 4] = [
     RecordField {
         source_offset: 0,
@@ -220,23 +227,27 @@ impl<'a, M: Memory> Reader<'a, M> {
             }
             return;
         };
-        each(0, self.observe_navy(0));
         let mut ptr_bytes = [0_u8; NAVY_BATCH * 8];
         let mut pointers = [0_usize; NAVY_BATCH];
         let mut records = [0_u8; NAVY_BATCH * NAVY_BYTES];
-        let mut first = 1_usize;
+        let mut first = 0_usize;
         while first < count {
-            let n = (count - first).min(NAVY_BATCH);
-            let contiguous = u32::try_from(first)
+            let remaining = count - first;
+            let in_bounds = (manager.navies.count as usize).saturating_sub(first);
+            if in_bounds == 0 {
+                for offset in 0..remaining {
+                    if let Ok(slot) = u32::try_from(first + offset) {
+                        each(slot, self.observe_navy(slot));
+                    }
+                }
+                break;
+            }
+            let n = remaining.min(in_bounds).min(NAVY_BATCH);
+            let Some(start) = u32::try_from(first)
                 .ok()
-                .filter(|_| (first + n) as u64 <= u64::from(manager.navies.count))
                 .and_then(|start_slot| manager.navies.element(start_slot, 8))
-                .filter(|&start| {
-                    start.checked_add(n * 8).is_some()
-                        && read_slice(self.memory, start, &mut ptr_bytes[..n * 8])
-                })
-                .is_some();
-            if !contiguous {
+                .filter(|&start| start != 0 && start.checked_add(n * 8).is_some())
+            else {
                 for offset in 0..n {
                     if let Ok(slot) = u32::try_from(first + offset) {
                         each(slot, self.observe_navy(slot));
@@ -244,15 +255,27 @@ impl<'a, M: Memory> Reader<'a, M> {
                 }
                 first += n;
                 continue;
-            }
+            };
+            let ptrs_copied = self.memory.copy_records(
+                RecordSources::Strided {
+                    base: start,
+                    stride: 8,
+                    count: n,
+                },
+                &PTR_LAYOUT,
+                &mut ptr_bytes[..n * 8],
+            );
             let mut live = 0_usize;
             let mut map = [usize::MAX; NAVY_BATCH];
-            let mut raw_ptrs = [0_usize; NAVY_BATCH];
-            for offset in 0..n {
-                let navy =
-                    u64::from_le_bytes(ptr_bytes[offset * 8..(offset + 1) * 8].try_into().unwrap())
-                        as usize;
-                raw_ptrs[offset] = navy;
+            let mut raw_ptrs = [None; NAVY_BATCH];
+            for offset in 0..ptrs_copied {
+                let raw = u64::from_le_bytes(
+                    ptr_bytes[offset * 8..(offset + 1) * 8].try_into().unwrap(),
+                );
+                let Ok(navy) = usize::try_from(raw) else {
+                    continue;
+                };
+                raw_ptrs[offset] = Some(navy);
                 if navy != 0 {
                     map[offset] = live;
                     pointers[live] = navy;
@@ -270,16 +293,19 @@ impl<'a, M: Memory> Reader<'a, M> {
             };
             let complete = copied / NAVY_FIELDS.len();
             let partial = copied % NAVY_FIELDS.len();
-            for offset in 0..n {
+            for offset in 0..ptrs_copied {
                 let slot = (first + offset) as u32;
-                let navy = raw_ptrs[offset];
+                let Some(navy) = raw_ptrs[offset] else {
+                    each(slot, Err("naval movement pointer unreadable"));
+                    continue;
+                };
                 if navy == 0 {
                     each(slot, Ok(NavyInputs::absent(slot)));
                     continue;
                 }
-                let at = map[offset];
-                if at < complete {
-                    let rec = &records[at * NAVY_BYTES..(at + 1) * NAVY_BYTES];
+                let at_live = map[offset];
+                if at_live < complete {
+                    let rec = &records[at_live * NAVY_BYTES..(at_live + 1) * NAVY_BYTES];
                     let primary = u64::from_le_bytes(rec[0..8].try_into().unwrap());
                     let secondary = u64::from_le_bytes(rec[8..16].try_into().unwrap());
                     let backlink = u64::from_le_bytes(rec[16..24].try_into().unwrap());
@@ -305,11 +331,18 @@ impl<'a, M: Memory> Reader<'a, M> {
                             }),
                         );
                     }
-                } else if at == complete {
+                } else if at_live == complete {
                     if partial < 3 {
-                        each(slot, Err("naval movement navy identity unreadable"));
+                        let err = match partial {
+                            1 if at(navy, cstrategic_navy::SECONDARY).is_err() => {
+                                "naval movement address overflow"
+                            }
+                            2 if at(navy, MANAGER).is_err() => "naval movement address overflow",
+                            _ => "naval movement navy identity unreadable",
+                        };
+                        each(slot, Err(err));
                     } else {
-                        let rec = &records[at * NAVY_BYTES..(at + 1) * NAVY_BYTES];
+                        let rec = &records[at_live * NAVY_BYTES..(at_live + 1) * NAVY_BYTES];
                         let primary = u64::from_le_bytes(rec[0..8].try_into().unwrap());
                         let secondary = u64::from_le_bytes(rec[8..16].try_into().unwrap());
                         let backlink = u64::from_le_bytes(rec[16..24].try_into().unwrap());
@@ -319,6 +352,10 @@ impl<'a, M: Memory> Reader<'a, M> {
                         {
                             each(slot, Err("naval movement navy identity or manager mismatch"));
                         } else {
+                            let ledgers = match at(navy, cstrategic_navy::REGION_MISSIONS) {
+                                Ok(_) => Err("naval movement array unreadable or invalid"),
+                                Err(err) => Err(err),
+                            };
                             each(
                                 slot,
                                 Ok(NavyInputs {
@@ -326,7 +363,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                                     present: true,
                                     launch_navy: Some(navy),
                                     ledger_navy: Some(navy),
-                                    ledgers: Some(Err("naval movement array unreadable or invalid")),
+                                    ledgers: Some(ledgers),
                                 }),
                             );
                         }
@@ -335,7 +372,15 @@ impl<'a, M: Memory> Reader<'a, M> {
                     each(slot, self.observe_navy_ptr(slot, manager, navy));
                 }
             }
-            first += n;
+            if ptrs_copied < n {
+                each(
+                    (first + ptrs_copied) as u32,
+                    Err("naval movement pointer unreadable"),
+                );
+                first += ptrs_copied + 1;
+            } else {
+                first += n;
+            }
         }
     }
 }

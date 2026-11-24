@@ -558,7 +558,7 @@ fn is_fast_zero(entry: &[u8]) -> bool {
 fn read_entries<'a>(
     memory: &impl Memory,
     count: usize,
-    mut sources: impl FnMut(usize) -> Result<RecordSources<'a>, &'static str>,
+    mut sources: impl FnMut(usize, usize) -> Result<RecordSources<'a>, &'static str>,
     mut address_at: impl FnMut(usize) -> Result<usize, &'static str>,
     full: &mut [u8; BATCH * FULL_ENTRY],
     scales: &mut [Option<i64>; BATCH],
@@ -568,7 +568,7 @@ fn read_entries<'a>(
     let mut at = 0;
     while at < count {
         let fast = memory.copy_records(
-            sources(at)?,
+            sources(at, count - at)?,
             &FULL_CONTIGUOUS_LAYOUT,
             &mut full[at * FULL_ENTRY..count * FULL_ENTRY],
         );
@@ -584,23 +584,11 @@ fn read_entries<'a>(
             break;
         }
         let copied = memory.copy_records(
-            sources(at)?,
+            sources(at, 1)?,
             &FULL_LAYOUT,
-            &mut full[at * FULL_ENTRY..count * FULL_ENTRY],
+            &mut full[at * FULL_ENTRY..(at + 1) * FULL_ENTRY],
         );
-        let done = copied / FULL.len();
-        for index in at..at + done {
-            let entry = &full[index * FULL_ENTRY..(index + 1) * FULL_ENTRY];
-            scales[index] = Some(i64::from_le_bytes(
-                entry[AIR_SPOTTING_SCALE..FULL_ENTRY].try_into().unwrap(),
-            ));
-            menu_ok[index] = true;
-        }
-        at += done;
-        if at == count {
-            break;
-        }
-        match copied % FULL.len() {
+        match copied {
             0 => return Err("raid air score pair unreadable"),
             1 => {
                 menu_ok[at] = false;
@@ -609,9 +597,16 @@ fn read_entries<'a>(
                     .checked_add(AIR_SPOTTING_SCALE)
                     .and_then(|addr| read::<i64>(memory, addr));
             }
-            _ => {
+            2 => {
                 menu_ok[at] = true;
                 scales[at] = None;
+            }
+            _ => {
+                let entry = &full[at * FULL_ENTRY..(at + 1) * FULL_ENTRY];
+                scales[at] = Some(i64::from_le_bytes(
+                    entry[AIR_SPOTTING_SCALE..FULL_ENTRY].try_into().unwrap(),
+                ));
+                menu_ok[at] = true;
             }
         }
         at += 1;
@@ -635,14 +630,14 @@ fn read_all(
             let all_menus = read_entries(
                 memory,
                 count,
-                |at| {
+                |at, span| {
                     let base = scores
                         .element((first + at) as u32, STRIDE)
                         .ok_or("raid air score address overflow")?;
                     Ok(RecordSources::Strided {
                         base,
                         stride: STRIDE,
-                        count: count - at,
+                        count: span,
                     })
                 },
                 |at| {
@@ -661,7 +656,10 @@ fn read_all(
                     continue;
                 }
                 let entry = &buffers.full[index * FULL_ENTRY..(index + 1) * FULL_ENTRY];
-                if (all_menus || buffers.menu_ok[index]) && is_fast_zero(entry) {
+                if (all_menus || buffers.menu_ok[index])
+                    && buffers.scales[index] == Some(0)
+                    && is_fast_zero(entry)
+                {
                     continue;
                 }
                 buffers.active[active_len] = index;
@@ -743,7 +741,7 @@ fn carry(
             let all_menus = read_entries(
                 memory,
                 count,
-                |at| Ok(RecordSources::Pointers(&slice[at..])),
+                |at, span| Ok(RecordSources::Pointers(&slice[at..at + span])),
                 |at| Ok(slice[at]),
                 &mut buffers.full,
                 &mut buffers.scales,
@@ -755,7 +753,10 @@ fn carry(
             let mut ahead = next;
             for (index, &slot) in batch.iter().enumerate() {
                 let entry = &buffers.full[index * FULL_ENTRY..(index + 1) * FULL_ENTRY];
-                if (all_menus || buffers.menu_ok[index]) && is_fast_zero(entry) {
+                if (all_menus || buffers.menu_ok[index])
+                    && buffers.scales[index] == Some(0)
+                    && is_fast_zero(entry)
+                {
                     continue;
                 }
                 while held.get(ahead).is_some_and(|row| row.slot < slot) {
@@ -1311,6 +1312,90 @@ mod tests {
             Some(3)
         );
         assert_eq!(memory.attempts.get(), 2);
+
+        let zero_scale_fault = Fault {
+            memory: SliceMemory {
+                base: MEMORY,
+                bytes: &world.bytes,
+            },
+            at: data + 4 * STRIDE + AIR_SPOTTING_SCALE,
+            attempts: Default::default(),
+        };
+        let mut zero_held = super::tests::held(17, 1, 17);
+        zero_held.certify(Some(1));
+        let full_zero = walk(&zero_scale_fault, BASE, GAME, HOUR, &mut zero_held, &mut output);
+        assert!(matches!(full_zero.outcome, Outcome::Rows { .. }));
+        let row = output[..full_zero.outcome.len()]
+            .iter()
+            .find(|r| r.slot == 4)
+            .expect("zero non-final row with unreadable scale must be preserved");
+        assert_eq!((row.friendly, row.enemy, row.air_spotting_scale), (0, 0, None));
+        let carry_zero = walk(
+            &zero_scale_fault,
+            BASE,
+            GAME,
+            HOUR + 1,
+            &mut zero_held,
+            &mut output,
+        );
+        assert!(!carry_zero.full);
+        let row = output[..carry_zero.outcome.len()]
+            .iter()
+            .find(|r| r.slot == 4)
+            .expect("carried zero non-final row with unreadable scale must be preserved");
+        assert_eq!((row.friendly, row.enemy, row.air_spotting_scale), (0, 0, None));
+        assert_eq!(zero_scale_fault.attempts.get(), 4);
+
+        world.spotting_scale(1, 7, 11);
+        struct TwoOneShots<'a> {
+            memory: SliceMemory<'a>,
+            first: usize,
+            second: usize,
+            first_attempts: std::cell::Cell<usize>,
+            second_attempts: std::cell::Cell<usize>,
+        }
+        impl Memory for TwoOneShots<'_> {
+            fn copy(&self, at: usize, to: &mut [u8]) -> bool {
+                let range = at..at.saturating_add(to.len());
+                if range.contains(&self.first) {
+                    let count = self.first_attempts.get() + 1;
+                    self.first_attempts.set(count);
+                    if count == 1 {
+                        return false;
+                    }
+                }
+                if range.contains(&self.second) {
+                    let count = self.second_attempts.get() + 1;
+                    self.second_attempts.set(count);
+                    if count == 1 {
+                        return false;
+                    }
+                }
+                self.memory.copy(at, to)
+            }
+        }
+        let two = TwoOneShots {
+            memory: SliceMemory {
+                base: MEMORY,
+                bytes: &world.bytes,
+            },
+            first: data + 5 * STRIDE,
+            second: data + 7 * STRIDE + AIR_SPOTTING_SCALE,
+            first_attempts: Default::default(),
+            second_attempts: Default::default(),
+        };
+        let mut two_held = super::tests::held(17, 1, 17);
+        two_held.certify(Some(1));
+        let both = walk(&two, BASE, GAME, HOUR, &mut two_held, &mut output);
+        assert_eq!(
+            output[..both.outcome.len()]
+                .iter()
+                .find(|r| r.slot == 7)
+                .unwrap()
+                .air_spotting_scale,
+            Some(11)
+        );
+        assert_eq!(two.second_attempts.get(), 2);
     }
 
     #[test]

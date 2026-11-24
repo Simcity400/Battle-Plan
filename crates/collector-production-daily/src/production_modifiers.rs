@@ -412,6 +412,11 @@ impl Captured {
         if has_required {
             self.first.grow(capacity);
         }
+        for extra in &mut self.extra {
+            if extra.is_none() && !crate::allocation::failed() {
+                *extra = engine_allocation::boxed(Part::vacant()).ok();
+            }
+        }
     }
     pub fn fail_capture(&mut self, hour: i32, full: bool, reason: &'static str) {
         self.first.fail_capture(hour, full, reason);

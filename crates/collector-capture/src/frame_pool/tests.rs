@@ -34,7 +34,10 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     // SAFETY: This consumer owns the queue removal for the named pool.
     unsafe { free.pop() })
     .collect();
-    assert_eq!(newest_first, (0..STEADY).rev().collect::<Vec<_>>());
+    let expected: Vec<_> = std::iter::once(newest)
+        .chain((0..STEADY).rev().filter(|&index| index != newest))
+        .collect();
+    assert_eq!(newest_first, expected);
     assert_eq!(free.len(), 0);
     assert!(!free.take(0, 0));
     free.push(1).unwrap();
@@ -300,4 +303,55 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
     );
     assert!(!shared.has_retired_parked());
     assert!(!shared.drain_retired_parked());
+
+    let parked = shared.parked_bytes();
+    assert!(parked > 0);
+    let steady_bytes = pool.live_bytes();
+    let reused = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    assert_eq!(shared.parked_bytes(), 0);
+    assert_eq!(pool.live_bytes(), steady_bytes);
+    assert_eq!(pool.live_bytes(), pool.gauge().live_bytes);
+    let second = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    let grown = unsafe { shared.take_frame(&mut 0) }.unwrap();
+    assert_eq!(pool.live(), STEADY + 1);
+    let transfer_total = pool.live_bytes();
+    assert!(!pool.at_limit_with(usize::MAX, transfer_total + 1));
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let spiked = std::sync::atomic::AtomicBool::new(false);
+    let dipped = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::Acquire) {
+                let bytes = pool.live_bytes();
+                if bytes > transfer_total {
+                    spiked.store(true, Ordering::Relaxed);
+                }
+                if bytes < transfer_total {
+                    dipped.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.prepare_frame_for_reuse(reused) };
+        let restored = shared.frames.push(reused);
+        assert!(restored.is_ok());
+        let again = unsafe { shared.take_frame(&mut 0) }.unwrap();
+        assert_eq!(again, reused);
+        done.store(true, Ordering::Release);
+    });
+    assert!(!spiked.load(Ordering::Relaxed));
+    assert!(!dipped.load(Ordering::Relaxed));
+    assert_eq!(
+        pool.live_bytes(),
+        pool.gauge().live_bytes + shared.parked_bytes()
+    );
+    for slot in [reused, second, grown] {
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.recycle_frame_prepared(slot) };
+    }
+    let _ = shared.drain_retired_parked();
+    assert_eq!(
+        pool.live_bytes(),
+        pool.gauge().live_bytes + shared.parked_bytes()
+    );
 }

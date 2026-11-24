@@ -1178,7 +1178,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                 TableInput::Sampled(TableView::Unavailable { reason })
                 if reason == replay_data::cadence::SKIPPED_REASON
             );
-            let cache_staggered = spooled(table) || conversion_cache;
+            let cache_staggered = !self.columnar.is_live() || spooled(table) || conversion_cache;
             if is_skip {
                 skipped[index] = true;
                 if !may_carry {

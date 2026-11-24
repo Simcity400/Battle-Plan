@@ -295,9 +295,15 @@ impl FramePool {
     }
 
     pub(crate) fn set_slot_bytes(&self, index: usize, bytes: u64) {
-        let previous = self.slot(index).bytes.swap(bytes, Ordering::Relaxed);
-        self.live_bytes
-            .fetch_add(bytes.wrapping_sub(previous), Ordering::Release);
+        self.transfer_slot_bytes(index, bytes, 0);
+    }
+
+    pub(crate) fn transfer_slot_bytes(&self, index: usize, slot_after: u64, other_delta: u64) {
+        let previous = self.slot(index).bytes.swap(slot_after, Ordering::Relaxed);
+        let delta = slot_after.wrapping_sub(previous).wrapping_add(other_delta);
+        if delta != 0 {
+            self.live_bytes.fetch_add(delta, Ordering::Release);
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -425,7 +431,7 @@ impl FramePool {
 
     pub(crate) fn install(&self, index: usize, frame: Box<Captured>) {
         self.claims.fetch_add(1, Ordering::AcqRel);
-        self.install_slot(index, frame);
+        self.install_slot(index, frame, 0);
     }
 
     pub(crate) fn install_claimed(
@@ -434,16 +440,29 @@ impl FramePool {
         frame: Box<Captured>,
         claim: GrowthClaim<'_>,
     ) {
-        std::mem::forget(claim);
-        self.install_slot(index, frame);
+        self.install_claimed_with_credit(index, frame, claim, 0);
     }
 
-    fn install_slot(&self, index: usize, frame: Box<Captured>) {
+    pub(crate) fn install_claimed_with_credit(
+        &self,
+        index: usize,
+        frame: Box<Captured>,
+        claim: GrowthClaim<'_>,
+        credited_bytes: u64,
+    ) {
+        std::mem::forget(claim);
+        self.install_slot(index, frame, credited_bytes);
+    }
+
+    fn install_slot(&self, index: usize, frame: Box<Captured>, credited_bytes: u64) {
         let slot = self.slot(index);
         debug_assert!(slot.frame.load(Ordering::Relaxed).is_null());
         let bytes = frame.allocated_bytes() as u64;
         slot.bytes.store(bytes, Ordering::Relaxed);
-        self.live_bytes.fetch_add(bytes, Ordering::Release);
+        let delta = bytes.wrapping_sub(credited_bytes);
+        if delta != 0 {
+            self.live_bytes.fetch_add(delta, Ordering::Release);
+        }
         slot.generation.fetch_add(1, Ordering::Relaxed);
         slot.frame.store(Box::into_raw(frame), Ordering::Release);
         self.live.fetch_add(1, Ordering::AcqRel);

@@ -1191,12 +1191,8 @@ impl Shared {
     }
 
     pub(crate) fn publish_steady_frames(&self) -> std::io::Result<()> {
-        for index in 0..crate::frame_pool::STEADY {
-            let frame = if index + 1 < crate::frame_pool::STEADY {
-                self.new_frame_parked()?
-            } else {
-                self.new_frame()?
-            };
+        for _ in 0..crate::frame_pool::STEADY {
+            let frame = self.new_frame()?;
             self.publish_frame(frame, false)?;
         }
         Ok(())
@@ -1773,8 +1769,10 @@ impl Shared {
             Some((parked, bytes)) => match self.new_frame_parked() {
                 Ok(mut frame) => {
                     frame.extended.install_parked_packs(parked);
-                    self.frames.install_claimed(index, frame, claim);
-                    self.adjust_parked_bytes(bytes, 0);
+                    self.parked_total_bytes.fetch_sub(bytes, Ordering::Relaxed);
+                    self.pool_bytes.fetch_sub(bytes, Ordering::Relaxed);
+                    self.frames
+                        .install_claimed_with_credit(index, frame, claim, bytes);
                     Ok(())
                 }
                 Err(err) => {
@@ -1816,8 +1814,53 @@ impl Shared {
         }
     }
 
-    fn park_pack(&self, parked: Box<extended::ParkedPacks>) {
-        self.park_pack_with_prior(parked, 0);
+    fn park_pack_from_frame(
+        &self,
+        index: usize,
+        frame_after: u64,
+        parked: Box<extended::ParkedPacks>,
+    ) {
+        const MAX_RETIRED_PARKED: usize = 1;
+        let parked_bytes = parked.allocated_bytes() as u64;
+        let retired = if let Ok(mut slots) = self.parked_packs.lock() {
+            if slots.is_empty() && engine_allocation::reserve(&mut slots, 1).is_ok() {
+                slots.push(parked);
+                self.parked_total_bytes
+                    .fetch_add(parked_bytes, Ordering::Relaxed);
+                self.pool_bytes.fetch_add(parked_bytes, Ordering::Relaxed);
+                self.frames
+                    .transfer_slot_bytes(index, frame_after, parked_bytes);
+                None
+            } else {
+                Some(parked)
+            }
+        } else {
+            Some(parked)
+        };
+        let Some(retired) = retired else {
+            return;
+        };
+        let overflow = if let Ok(mut queue) = self.retired_parked.lock() {
+            if queue.len() < MAX_RETIRED_PARKED && engine_allocation::reserve(&mut queue, 1).is_ok()
+            {
+                queue.push(retired);
+                self.parked_total_bytes
+                    .fetch_add(parked_bytes, Ordering::Relaxed);
+                self.pool_bytes.fetch_add(parked_bytes, Ordering::Relaxed);
+                self.frames
+                    .transfer_slot_bytes(index, frame_after, parked_bytes);
+                self.retired_parked_pending.store(true, Ordering::Release);
+                None
+            } else {
+                Some(retired)
+            }
+        } else {
+            Some(retired)
+        };
+        if let Some(overflow) = overflow {
+            drop(overflow);
+            self.set_frame_bytes(index, frame_after);
+        }
     }
 
     fn park_pack_with_prior(&self, parked: Box<extended::ParkedPacks>, prior_bytes: u64) {
@@ -1904,8 +1947,11 @@ impl Shared {
         }
         if let Some((parked, bytes)) = self.take_parked_pack() {
             frame.extended.install_parked_packs(parked);
-            self.set_frame_bytes(index, frame.allocated_bytes() as u64);
-            self.adjust_parked_bytes(bytes, 0);
+            let after = frame.allocated_bytes() as u64;
+            self.parked_total_bytes.fetch_sub(bytes, Ordering::Relaxed);
+            self.pool_bytes.fetch_sub(bytes, Ordering::Relaxed);
+            self.frames
+                .transfer_slot_bytes(index, after, 0_u64.wrapping_sub(bytes));
             true
         } else {
             let capacities = self.frame_capacities.published();
@@ -2046,15 +2092,17 @@ impl Shared {
         frame.reset_verdicts();
         frame.verdicts_reset = true;
         frame.extended.release_transient();
-        if let Some(parked) = frame.extended.take_parked_packs() {
-            self.park_pack(parked);
-        }
+        let parked = (self.frames.live() > crate::frame_pool::STEADY)
+            .then(|| frame.extended.take_parked_packs())
+            .flatten();
         let result = frame.prepare_clock(self.clock_required());
-        let after = frame.allocated_bytes();
-        if after != before
+        let after = frame.allocated_bytes() as u64;
+        if let Some(parked) = parked {
+            self.park_pack_from_frame(index, after, parked);
+        } else if after != before as u64
             || self.frames.slot(index).bytes.load(Ordering::Relaxed) == 0
         {
-            self.set_frame_bytes(index, after as u64);
+            self.set_frame_bytes(index, after);
         }
         collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
         collector_workers::private_heap::PRIVATE_HEAP.trim_large_if_needed();

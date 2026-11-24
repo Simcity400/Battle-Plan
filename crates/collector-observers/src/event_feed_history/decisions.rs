@@ -71,6 +71,10 @@ impl Index {
     pub fn owner_capacity(&self) -> usize {
         self.owners.len() / 2
     }
+    pub fn owner_demand_for(&self, pointer: usize) -> usize {
+        let extra = usize::from(Self::locate(&self.owners, pointer, |s| s.pointer).is_err());
+        self.owner_count.saturating_add(extra)
+    }
     fn needs_room(&self) -> bool {
         self.live >= self.capacity() || self.owner_count >= self.owners.len() / 2
     }

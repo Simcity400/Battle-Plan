@@ -1493,9 +1493,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
             if observed == word(ticket.generation, PUBLISHED) {
                 continue;
             }
-            if observed == word(ticket.generation, PENDING) && self.run_unclaimed_child(ticket) {
-                continue;
-            }
             if observed != word(ticket.generation, PENDING)
                 && observed != word(ticket.generation, RUNNING)
             {
