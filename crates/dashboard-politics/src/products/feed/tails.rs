@@ -487,6 +487,18 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
     Ok(reply)
 }
 
+const STATUSES_LISTED: [ScriptStatus; 9] = [
+    ScriptStatus::Active,
+    ScriptStatus::Taken,
+    ScriptStatus::Completed,
+    ScriptStatus::Failed,
+    ScriptStatus::Cancelled,
+    ScriptStatus::TimedOut,
+    ScriptStatus::Removed,
+    ScriptStatus::Unsupported,
+    ScriptStatus::NotRecorded,
+];
+
 fn chips(list: List) -> (Vec<Chip>, &'static [&'static str]) {
     match list {
         List::Decisions => (vec![Chip { kinds: None, states: Some(vec![ScriptStatus::Active.code()]) }], &["running"]),
@@ -504,7 +516,11 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         codes.push(kind_code(EventFeedKind::EventOptionSelected));
         codes
     });
-    let states: Option<Vec<u8>> = params.statuses.as_ref().map(|statuses| statuses.iter().map(|status| status.code()).collect());
+    let states: Option<Vec<u8>> = match (&params.statuses, list) {
+        (Some(statuses), _) => Some(statuses.iter().map(|status| status.code()).collect()),
+        (None, List::Decisions) => Some(STATUSES_LISTED.iter().map(|status| status.code()).collect()),
+        (None, List::EventChoices) => None,
+    };
     let (chips, keys) = chips(list);
     let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
     let answer = answer(&prepared.index, query, &window, hour, kinds.as_deref(), states.as_deref(), true, &chips)?;
