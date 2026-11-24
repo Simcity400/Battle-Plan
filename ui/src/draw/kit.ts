@@ -1642,8 +1642,8 @@ export function drawSkillFigure(
   theme: FamilyTheme,
   options?: { readonly badge?: boolean; readonly muted?: boolean },
 ): void {
-  const iconW = options?.badge ? 16 : 20;
-  const iconH = options?.badge ? 23 : 19;
+  const iconW = options?.badge ? 18 : 24;
+  const iconH = options?.badge ? 26 : 22;
   const gap = 6;
   const font = `${options?.badge ? 600 : 500} 13.5px ${theme.font}`;
   ctx.save();
