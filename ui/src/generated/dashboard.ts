@@ -2897,7 +2897,7 @@ export type OccurrenceGap = { firstHour: number, lastHour: number, reason: strin
  * The ordinal of the first row after the gap in the reply's order.
  */
 before: string, };
-export type ScriptStatus = "active" | "taken" | "completed" | "failed" | "cancelled" | "timedOut" | "removed" | "unsupported" | "awaiting" | "chosen" | "notRecorded";
+export type ScriptStatus = "active" | "taken" | "completed" | "failed" | "cancelled" | "timedOut" | "removed" | "unsupported" | "awaiting" | "chosen" | "notRecorded" | "available";
 export type EventFeedTailParams = { branchId: string,
 /**
  * The observation cutoff: nothing observed later exists. The branch's last hour when none.
