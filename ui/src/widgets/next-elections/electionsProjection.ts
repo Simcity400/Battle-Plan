@@ -8,7 +8,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ElectionEntry, NextElectionsReply } from '../../generated/dashboard';
-import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export interface ElectionsProjectionOptions {
   readonly filter: DeclaredCountryFilter;
@@ -132,7 +132,6 @@ export const electionsProjection: TableProjection<ElectionsProjectionOptions> = 
 export const electionsDeclaration: TableWidgetDeclaration<ElectionsProjectionOptions> = {
   family: 'table',
   kind: 'next-elections',
-  optionFields: OPTIONS,
   label: 'Next elections',
   subject: 'elections',
   emptyCampaign: 'Load a campaign to see elections.',

@@ -10,9 +10,11 @@ import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
 import type { FamilyId } from './plan.ts';
 import { ensureBoundProjection, familyProjectionFailure, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
-import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders } from './scene.ts';
+import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
+import { SceneTiles, type TiledSources } from './sceneTiles.ts';
 
-export interface LaneBinding<TOptions = unknown> {
+export interface LaneBinding<TOptions = unknown> extends TiledSources {
+  readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly family: string;
   readonly kind: string;
   readonly view?: string;
@@ -102,6 +104,9 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   options: unknown;
   staticPanels: unknown;
   staticAnswers: unknown;
+  tiled: unknown;
+  hovers: unknown;
+  readonly tiles: SceneTiles;
   parts: readonly (readonly unknown[])[];
   validFrom: number;
   validUntil: number;
@@ -191,6 +196,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     && held.options === binding.options
     && held.staticPanels === binding.staticPanels
     && held.staticAnswers === binding.staticAnswers
+    && held.tiled === binding.tiledBySource
+    && held.hovers === binding.hovers
     && hour >= held.validFrom
     && hour < held.validUntil
     && samePictures(held.parts, scene.pictures);
@@ -229,6 +236,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       mirrorGate, mirrorField: null, tipGate, tipField: null, focusGate, focusField: null,
       flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusGate], options?.timers),
       auditKey: [], auditField: null,
+      tiled: undefined, hovers: undefined, tiles: new SceneTiles(),
     };
     art.setOnSettle(() => {
       held.artRevision++;
@@ -320,7 +328,15 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.projectedArtRevision = keep.artRevision;
       }
       if (!reuse) {
-        const projected = projectScene(input, binding, hour, readers, view => projection.project(view, binding.options));
+        keep.tiles.sync(binding);
+        const base: SceneSources = {
+          sources: binding.sources,
+          ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
+          ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
+          ...(binding.hovers ? { hovers: binding.hovers } : {}),
+        };
+        const series = keep.tiles.series(input, base, binding, hour);
+        const projected = projectScene(input, series ? { ...base, series } : base, hour, readers, view => projection.project(view, binding.options));
         const until = Math.min(
           projection.nextChange ? projection.nextChange(projected.view, binding.options) : Infinity,
           family.boundary(projected.model, hour),
@@ -333,6 +349,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.options = binding.options;
         keep.staticPanels = binding.staticPanels;
         keep.staticAnswers = binding.staticAnswers;
+        keep.tiled = binding.tiledBySource;
+        keep.hovers = binding.hovers;
         keep.parts = snapshotPictures(input.pictures);
         keep.validFrom = hour;
         keep.validUntil = until > hour ? until : hour + 1;
@@ -420,7 +438,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.mirrorField = field(keep, 'mirror', family.mirror(frame), content);
         keep.mirrorGate.record(now, mirrorKey);
       }
-      fields.mirror = keep.mirrorField;
+      if (keep.mirrorField.value !== null) fields.mirror = keep.mirrorField;
 
       if (input.inspect) {
         if (!keep.tipField || keep.tipGate.due(now, input.speed, input.inspect)) {
