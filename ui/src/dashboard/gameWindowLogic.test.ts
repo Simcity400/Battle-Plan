@@ -9,11 +9,13 @@ import {
   gameWindowSubjectKey,
   hitTestClick,
   hitTestHover,
+  hitTestScroll,
   isActivatableClose,
   normalizeGameWindowRequest,
   normalizeScale,
   planGameWindowRender,
   regionTooltipContent,
+  wheelScrollPosition,
 } from './gameWindowLogic.ts';
 import {
   claimGameWindowSlot,
@@ -65,6 +67,34 @@ test('deduplicates identical requests and varies when any single key field chang
   assert.notEqual(gameWindowRequestKey(baseRequest({ scale: 2 }), 2), base);
   assert.notEqual(gameWindowRequestKey(baseRequest({ subView: 'stats' }), 2), base);
   assert.notEqual(gameWindowRequestKey(baseRequest(), 3), base);
+  const scrolled = baseRequest({ scroll: { 'win/list': 40 } });
+  assert.notEqual(gameWindowRequestKey(scrolled, 2), base);
+  assert.equal(gameWindowRequestKey(baseRequest({ scroll: {} }), 2), base);
+  assert.equal(gameWindowSubjectKey(scrolled, 2), gameWindowSubjectKey(baseRequest(), 2));
+});
+
+test('a wheel over a list moves it one step at a time within its range, the top-most list first', () => {
+  const list = (path: string, rect: GameWindowRegion['rect'], position: number): GameWindowRegion => ({
+    path, rect, clip: null, disabled: false, close: false, passthrough: true, tooltip: null,
+    scroll: { position, range: 100, wheel: 30 },
+  });
+  const regions: GameWindowRegion[] = [
+    list('win/outer', [0, 0, 200, 200], 0),
+    { path: 'win/still', rect: [0, 150, 200, 50], clip: null, disabled: false, close: false, tooltip: null,
+      scroll: { position: 0, range: 0, wheel: 30 } },
+    list('win/inner', [10, 10, 50, 50], 90),
+  ];
+  assert.equal(hitTestScroll(regions, 20, 20)?.path, 'win/inner');
+  assert.equal(hitTestScroll(regions, 100, 100)?.path, 'win/outer');
+  assert.equal(hitTestScroll(regions, 100, 170)?.path, 'win/outer');
+  assert.equal(hitTestScroll(regions, 300, 300), null);
+  const inner = regions[2].scroll!;
+  assert.equal(wheelScrollPosition(inner, undefined, 120), 100);
+  assert.equal(wheelScrollPosition(inner, undefined, -3), 60);
+  assert.equal(wheelScrollPosition(inner, 15, -120), 0);
+  assert.equal(wheelScrollPosition(inner, 40, 0), 40);
+  assert.equal(hitTestHover(regions, 20, 20), null);
+  assert.equal(hitTestClick(regions, 20, 20), null);
 });
 
 test('a pass-through tooltip above the close button shows its tooltip but lets the click close', () => {

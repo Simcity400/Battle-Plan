@@ -630,11 +630,12 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: None,
+                scroll: &BTreeMap::new(),
             },
             &cancel,
             |_| Ok(Prepared::uncached(Assets::default(), ())),
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -654,11 +655,12 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: None,
+                scroll: &BTreeMap::new(),
             },
             &cancel,
             |_| Ok(Prepared::uncached(Assets::default(), ())),
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -678,11 +680,12 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: None,
+                scroll: &BTreeMap::new(),
             },
             &cancelled,
             |_| Ok(Prepared::uncached(Assets::default(), ())),
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -958,11 +961,12 @@ fn stale_generation_cancels_without_evicting_newer_cache_entry() {
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: Some(stale_gen),
+                scroll: &BTreeMap::new(),
             },
             &cancel,
             |_| Ok(Prepared::uncached(Assets::default(), ())),
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -1001,6 +1005,7 @@ fn a_render_admitted_before_its_source_is_released_is_cancelled_and_caches_nothi
                 tooltip_overrides: &empty_tips,
                 extra_warnings: Vec::new(),
                 admitted_gen: Some(admitted),
+                scroll: &BTreeMap::new(),
             },
             &cancel,
             |_| {
@@ -1011,7 +1016,7 @@ fn a_render_admitted_before_its_source_is_released_is_cancelled_and_caches_nothi
                 })
             },
             |_, _, _, _, _, _, _| {},
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
+            |_, _, _, _, _, _, _| Ok(()),
         )
         .err()
         .unwrap();
@@ -1054,10 +1059,17 @@ fn rendered_frames_are_reused_by_fingerprint_bounded_and_dropped_with_their_sour
     assert!(cache.get(&frame("b", 3)).is_some());
 
     let window = [9; 32];
-    let base = frame_fingerprint(window, Some(10), true, &[]);
-    assert_ne!(base, frame_fingerprint(window, Some(11), true, &[]));
-    assert_ne!(base, frame_fingerprint(window, Some(10), true, &["warned".to_owned()]));
-    assert_ne!(base, frame_fingerprint([8; 32], Some(10), true, &[]));
+    let unscrolled = BTreeMap::new();
+    let base = frame_fingerprint(window, Some(10), true, &[], &unscrolled);
+    assert_ne!(base, frame_fingerprint(window, Some(11), true, &[], &unscrolled));
+    assert_ne!(base, frame_fingerprint(window, Some(10), true, &["warned".to_owned()], &unscrolled));
+    assert_ne!(base, frame_fingerprint([8; 32], Some(10), true, &[], &unscrolled));
+    let scrolled = BTreeMap::from([("root/list".to_owned(), 30.0)]);
+    assert_ne!(base, frame_fingerprint(window, Some(10), true, &[], &scrolled));
+    assert_ne!(
+        frame_fingerprint(window, Some(10), true, &[], &scrolled),
+        frame_fingerprint(window, Some(10), true, &[], &BTreeMap::from([("root/list".to_owned(), 45.0)]))
+    );
 }
 
 #[test]
@@ -1072,6 +1084,7 @@ fn sub_window_regions_take_their_place_in_paint_order() {
         view: None,
         tooltip: None,
         alpha_mask: None,
+        scroll: None,
     };
     let parts = ["root", "root.backdrop", "root.slots", "root.close_button"];
     let ordered = paint_ordered_regions(
