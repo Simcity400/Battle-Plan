@@ -212,7 +212,6 @@ unsafe extern "system" {
     fn building_damage_native_return();
 }
 
-#[allow(clippy::too_many_arguments)]
 unsafe extern "system" fn before(
     building: usize,
     output: usize,
@@ -372,7 +371,7 @@ impl Hooks {
         BASE.store(base, Ordering::Relaxed);
         let mut frequency = 0;
         if unsafe {
-            windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+            windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&raw mut frequency)
         } != 0
             && frequency > 0
         {

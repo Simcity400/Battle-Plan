@@ -104,7 +104,6 @@ impl<const N: usize> Hooks<N> {
     /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     /// `callbacks[i]` is the detour for `sites[i]`, with that site's ABI and process lifetime, and
     /// `safety[i]`, when given, is the flight counter and stub that cover that callback.
-    #[allow(clippy::too_many_arguments)]
     unsafe fn construct(
         base: usize,
         sites: [Site; N],

@@ -63,6 +63,10 @@ unsafe extern "C" fn allocate(opaque: *mut c_void, size: usize) -> *mut c_void {
         if base.is_null() {
             return std::ptr::null_mut();
         }
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "alloc returned base for a layout aligned to HEADER, which is 16"
+        )]
         base.cast::<usize>().write(layout.size());
         base.add(HEADER).cast()
     }
@@ -75,6 +79,10 @@ unsafe extern "C" fn free(_: *mut c_void, address: *mut c_void) {
     // SAFETY: `allocate` made the block, its size written ahead of it.
     unsafe {
         let base = address.cast::<u8>().sub(HEADER);
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "allocate returned address as a 16-aligned base plus HEADER, so base is 16-aligned"
+        )]
         let size = base.cast::<usize>().read();
         dealloc(base, Layout::from_size_align_unchecked(size, HEADER));
     }
@@ -315,7 +323,7 @@ impl Decompressor {
             pos: (*read).min(src.len()),
         };
         let ended = checked(unsafe {
-            zstd_sys::ZSTD_decompressStream(self.0.as_ptr(), &mut output, &mut input)
+            zstd_sys::ZSTD_decompressStream(self.0.as_ptr(), &raw mut output, &raw mut input)
         })? == 0;
         unsafe { out.set_len(output.pos) };
         *read = input.pos;

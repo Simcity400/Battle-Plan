@@ -91,7 +91,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the change source and held names"
+    )]
     fn capture_held(
         &mut self,
         memory: &impl Memory,

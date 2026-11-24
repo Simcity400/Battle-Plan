@@ -268,7 +268,7 @@ fn splits_in_one_hour_restore_the_value_before_all_splits() {
         accepted_before: 2,
     };
     let left_cov = vec![prepared(0, 1)];
-    let right_cov = vec![prepared(1, 1), missing_hour_2.clone()];
+    let right_cov = vec![prepared(1, 1), missing_hour_2];
     for order in [[0u64, 1], [1, 0]] {
         let mut tree = crate::window::Tree::default();
         for id in order {
@@ -1569,6 +1569,7 @@ fn map_slots_follow_live_units_and_window_ids_instead_of_all_campaign_addresses(
         ));
         let mut switches = 0;
         for hour in origin + 1..=origin + 60 {
+            #[expect(clippy::mutable_key_type, reason = "keys order by their byte content, which never changes; the interior mutability is the memory reservation they share")]
             let before = cursor
                 .values()
                 .slots()

@@ -614,9 +614,8 @@ mod tests {
 
     #[test]
     fn repeated_target_aliases_fail_the_table() {
-        let original = fixture();
         let mut rows = vec![Row::default(); 2];
-        let mut bytes = original.clone();
+        let mut bytes = fixture();
         p32(&mut bytes, STATES + state::TARGET_COUNTRY, 1);
         p32(
             &mut bytes,

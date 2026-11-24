@@ -185,9 +185,9 @@ impl Countries {
     }
 
     fn held(&mut self, resolve: &dyn Resolve, slot: u32) -> Result<(), String> {
-        if !self.tags.contains_key(&slot) {
+        if let std::collections::hash_map::Entry::Vacant(vacant) = self.tags.entry(slot) {
             let (tag, id) = resolve.holder(slot).ok_or_else(|| format!("Not recorded: the country in slot {slot} holds no tag at this hour"))?;
-            self.tags.insert(slot, tag.to_owned());
+            vacant.insert(tag.to_owned());
             self.identities.insert(slot, (slot, id));
         }
         Ok(())

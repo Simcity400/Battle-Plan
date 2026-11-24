@@ -295,7 +295,7 @@ mod tests {
                 &watches,
                 &trampoline,
                 false,
-                [16, &watches as *const _ as usize, 123, 456],
+                [16, &raw const watches as usize, 123, 456],
             )
         };
         assert_eq!(result, 123 ^ 456);
@@ -336,13 +336,13 @@ mod tests {
         let fleet = fleet_bytes.as_mut_ptr() as usize;
         let before = watches.sequence(fleet).unwrap();
         let trampoline = AtomicUsize::new(counted_original as *const () as usize);
-        let arguments = [fleet, &watches as *const _ as usize, 0, 123];
+        let arguments = [fleet, &raw const watches as usize, 0, 123];
         assert_eq!(
             unsafe { invoke(&watches, &trampoline, true, arguments) },
             123
         );
         assert_eq!(watches.sequence(fleet), Some(before));
-        let arguments = [fleet, &watches as *const _ as usize, 2, 456];
+        let arguments = [fleet, &raw const watches as usize, 2, 456];
         assert_eq!(
             unsafe { invoke(&watches, &trampoline, true, arguments) },
             456

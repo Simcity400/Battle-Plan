@@ -766,7 +766,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the owned capture takes both fingerprint sets, both stores, the deferral and dispatch separately"
+    )]
     fn capture_owned_impl(
         &mut self,
         memory: &impl Memory,
@@ -1382,7 +1385,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the slices and politics walk"
+    )]
     pub fn capture_sliced(
         &mut self,
         memory: &impl Memory,
@@ -1398,7 +1404,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the slices, politics walk, deferral and dispatch"
+    )]
     fn capture_sliced_impl(
         &mut self,
         memory: &impl Memory,
@@ -1782,7 +1791,7 @@ macro_rules! politics_tables {
     };
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Keep the independently borrowed table buffers, selection slices and politics walk in one ordered acquisition."
 )]
@@ -2776,7 +2785,7 @@ fn project_country_rows<S: TableSchema, R>(
     }
     let base = source.as_ptr() as usize;
     let owner_of = |row: &R| {
-        let index = (row as *const R as usize - base) / size_of::<R>();
+        let index = (std::ptr::from_ref::<R>(row) as usize - base) / size_of::<R>();
         owners[index]
     };
     collector_projection::projection::project_table::<S, _>(

@@ -43,7 +43,7 @@ fn close_reply(closing: Result<(), String>) -> (Vec<u8>, Option<Vec<u8>>) {
 
 fn pipe_name(role: Role) -> io::Result<Vec<u16>> {
     let mut session = 0_u32;
-    if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) } == 0 {
+    if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &raw mut session) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(format!(r"\\.\pipe\BattlePlan.{session}.{}", role.pipe())
@@ -127,7 +127,7 @@ impl Pipe {
         // only once the operation has completed, by success, failure or an observed cancellation.
         unsafe {
             if started {
-                return if GetOverlappedResult(self.handle, overlapped, &mut moved, 0) != 0 { Ok(moved) } else { Err(Ended::Failed(GetLastError())) };
+                return if GetOverlappedResult(self.handle, overlapped, &raw mut moved, 0) != 0 { Ok(moved) } else { Err(Ended::Failed(GetLastError())) };
             }
             let error = GetLastError();
             if error == ERROR_PIPE_CONNECTED {
@@ -140,10 +140,10 @@ impl Pipe {
             let count = if stop.is_some() { 2 } else { 1 };
             let waited = WaitForMultipleObjects(count, waits.as_ptr(), 0, limit);
             if waited == WAIT_OBJECT_0 {
-                return if GetOverlappedResult(self.handle, overlapped, &mut moved, 0) != 0 { Ok(moved) } else { Err(Ended::Failed(GetLastError())) };
+                return if GetOverlappedResult(self.handle, overlapped, &raw mut moved, 0) != 0 { Ok(moved) } else { Err(Ended::Failed(GetLastError())) };
             }
             CancelIoEx(self.handle, overlapped);
-            GetOverlappedResult(self.handle, overlapped, &mut moved, 1);
+            GetOverlappedResult(self.handle, overlapped, &raw mut moved, 1);
             Err(if count == 2 && waited == WAIT_OBJECT_0 + 1 { Ended::Stopped } else { Ended::TimedOut })
         }
     }
@@ -159,21 +159,21 @@ impl Pipe {
     fn connect(&self, stop: HANDLE) -> Result<(), Ended> {
         let mut overlapped = self.fresh();
         // SAFETY: the overlapped structure outlives the wait that completes it.
-        let started = unsafe { ConnectNamedPipe(self.handle, &mut overlapped) } != 0;
+        let started = unsafe { ConnectNamedPipe(self.handle, &raw mut overlapped) } != 0;
         self.wait(&mut overlapped, started, Some(stop), INFINITE).map(drop)
     }
 
     fn read(&self, buffer: &mut [u8], stop: Option<HANDLE>, limit: u32) -> Result<u32, Ended> {
         let mut overlapped = self.fresh();
         // SAFETY: the buffer and the overlapped structure outlive the wait that completes them.
-        let started = unsafe { ReadFile(self.handle, buffer.as_mut_ptr(), buffer.len() as u32, std::ptr::null_mut(), &mut overlapped) } != 0;
+        let started = unsafe { ReadFile(self.handle, buffer.as_mut_ptr(), buffer.len() as u32, std::ptr::null_mut(), &raw mut overlapped) } != 0;
         self.wait(&mut overlapped, started, stop, limit)
     }
 
     fn write(&self, message: &[u8]) -> Result<u32, Ended> {
         let mut overlapped = self.fresh();
         // SAFETY: the message and the overlapped structure outlive the wait that completes them.
-        let started = unsafe { WriteFile(self.handle, message.as_ptr(), message.len() as u32, std::ptr::null_mut(), &mut overlapped) } != 0;
+        let started = unsafe { WriteFile(self.handle, message.as_ptr(), message.len() as u32, std::ptr::null_mut(), &raw mut overlapped) } != 0;
         self.wait(&mut overlapped, started, None, WRITE_LIMIT)
     }
 
@@ -325,11 +325,11 @@ pub(crate) fn install_blocked(role: Role) -> Option<String> {
     let answered = unsafe {
         CallNamedPipeW(
             name.as_ptr(),
-            (&request as *const u8).cast(),
+            (&raw const request).cast(),
             1,
             reply.as_mut_ptr().cast(),
             reply.len() as u32,
-            &mut read,
+            &raw mut read,
             2000,
         )
     } != 0;
@@ -423,11 +423,11 @@ mod tests {
         let answered = unsafe {
             CallNamedPipeW(
                 name.as_ptr(),
-                (&request as *const u8).cast(),
+                (&raw const request).cast(),
                 1,
                 reply.as_mut_ptr().cast(),
                 4,
-                &mut read,
+                &raw mut read,
                 NMPWAIT_WAIT_FOREVER,
             )
         } != 0;
@@ -449,18 +449,18 @@ mod tests {
         };
         assert_ne!(pipe, INVALID_HANDLE_VALUE, "setup reaches the app’s pipe");
         let mode = PIPE_READMODE_MESSAGE;
-        unsafe { SetNamedPipeHandleState(pipe, &mode, std::ptr::null(), std::ptr::null()) };
+        unsafe { SetNamedPipeHandleState(pipe, &raw const mode, std::ptr::null(), std::ptr::null()) };
         let request = CLOSE;
         let mut status = [0_u8; 4];
         let mut read = 0_u32;
         let answered = unsafe {
             TransactNamedPipe(
                 pipe,
-                (&request as *const u8).cast::<c_void>(),
+                (&raw const request).cast::<c_void>(),
                 1,
                 status.as_mut_ptr().cast(),
                 4,
-                &mut read,
+                &raw mut read,
                 std::ptr::null_mut(),
             )
         } != 0;
@@ -473,7 +473,7 @@ mod tests {
                     pipe,
                     reason.as_mut_ptr().cast(),
                     2046,
-                    &mut read,
+                    &raw mut read,
                     std::ptr::null_mut(),
                 )
             } != 0;
@@ -502,8 +502,8 @@ mod tests {
             let (mut read, mut written) = (0_u32, 0_u32);
             unsafe {
                 ConnectNamedPipe(pipe, std::ptr::null_mut());
-                ReadFile(pipe, request.as_mut_ptr(), 16, &mut read, std::ptr::null_mut());
-                WriteFile(pipe, &answer, 1, &mut written, std::ptr::null_mut());
+                ReadFile(pipe, request.as_mut_ptr(), 16, &raw mut read, std::ptr::null_mut());
+                WriteFile(pipe, &raw const answer, 1, &raw mut written, std::ptr::null_mut());
                 FlushFileBuffers(pipe);
                 DisconnectNamedPipe(pipe);
                 CloseHandle(pipe);

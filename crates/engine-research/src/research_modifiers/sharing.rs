@@ -295,7 +295,10 @@ impl Default for Witness {
     }
 }
 impl Witnesses {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the country reader, raw id, input row and group identify one share, and the output is caller-owned"
+    )]
     pub(super) fn capture<M: Memory>(
         &mut self,
         memory: &M,

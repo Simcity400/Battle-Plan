@@ -1033,7 +1033,6 @@ fn canonical<M: Memory>(
         .ok_or("country link unreadable or outside country table")
 }
 
-#[allow(clippy::too_many_arguments)]
 fn walk_inner(
     memory: &impl Memory,
     base: usize,
@@ -1926,7 +1925,10 @@ fn first_bucket<M: Memory>(
         .ok_or("state movement hash bucket address overflow")
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the infrastructure, members, nations and routes come from earlier reads, and each arena, capacity and total is caller-owned"
+)]
 fn origin_states(
     memory: &impl Memory,
     base: usize,
@@ -2053,7 +2055,10 @@ fn infrastructure_levels(
     Ok(levels)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the members, nations and routes come from earlier reads, and each arena and count is caller-owned"
+)]
 fn route_supply(
     memory: &impl Memory,
     base: usize,
@@ -2127,7 +2132,10 @@ fn route_supply(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the spans, kept rows, counts and total come from the census, and each arena is caller-owned"
+)]
 fn origin_states_supply(
     memory: &impl Memory,
     base: usize,
@@ -2276,7 +2284,10 @@ fn container_array(base: usize, state: &Scratch) -> Result<Array, &'static str> 
     .ok_or("state dynamic modifier array invalid")
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the entries, country and descriptors locate the overrides, and the bytes, output, capacity and demand are caller-owned"
+)]
 fn overrides_of(
     memory: &impl Memory,
     entries: Array,

@@ -93,7 +93,7 @@ fn ordered_sessions_preserve_group_retirement_release_buffers_and_refusal_prefix
         &pass,
     )
     .unwrap();
-    let mut replacement = compiled.clone();
+    let mut replacement = compiled;
     replacement.vertex.wgsl = "struct Block { value: vec4<f32> } @group(0) @binding(4) var<uniform> skin: Block; @vertex fn main() -> @builtin(position) vec4<f32> { return skin.value; }".into();
     replacement.vertex.buffers.remove(0);
     let replacement = Pipeline::for_pass(

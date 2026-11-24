@@ -682,7 +682,7 @@ impl<S: Schedule> Writer<S> {
         use std::os::windows::io::AsRawHandle;
         let handle = self.thread.as_ref()?.as_raw_handle();
         // SAFETY: `self.thread` stays alive for the duration of this query.
-        let id = unsafe { windows_sys::Win32::System::Threading::GetThreadId(handle as _) };
+        let id = unsafe { windows_sys::Win32::System::Threading::GetThreadId(handle.cast()) };
         (id != 0).then_some(id)
     }
     pub(crate) fn account_to(&self, counter: engine_allocation::SharedBox<AtomicU64>) {
@@ -882,7 +882,6 @@ impl<S: Schedule> Drop for Writer<S> {
 }
 
 pub enum Output<B: SegmentBackend = FileBackend, S: Schedule = Unrestricted> {
-    #[cfg_attr(not(test), allow(dead_code))]
     Direct(SegmentedSpool<B>),
     Queued {
         schedule: S,

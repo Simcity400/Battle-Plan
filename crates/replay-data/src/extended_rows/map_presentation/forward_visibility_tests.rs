@@ -298,7 +298,7 @@ fn forward_visibility_wider_delta_mask_keeps_following_table_delta_aligned() {
     let features_before = SimulationFeatureRow::default();
     let features_after = SimulationFeatureRow {
         human_ai: u8::MAX,
-        ..features_before.clone()
+        ..features_before
     };
     let features_delta = features_after
         .delta(Some(&features_before))

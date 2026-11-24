@@ -25,7 +25,7 @@ use crate::display::Step;
 use engine_allocation as allocation;
 use std::{fmt, io};
 #[cfg(any(test, feature = "test-support"))]
-#[allow(unused_imports, reason = "the tests and fixtures below were written against the whole scope of the rows module, now partly in replay-rows")]
+#[expect(unused_imports, reason = "the tests and fixtures below were written against the whole scope of the rows module, now partly in replay-rows")]
 use crate::{
     codec::put_bytes,
     display::Rounding,
@@ -2707,7 +2707,7 @@ mod tests {
         let mut bytes = Vec::new();
         encode_delta(TableId::Countries, &delta, 0, &mut bytes).unwrap();
         assert_eq!(bytes, [7, 0x10, 0, 2]);
-        assert_eq!(delta.apply::<CountryRow>(Some(old.clone())).unwrap(), new);
+        assert_eq!(delta.apply::<CountryRow>(Some(old)).unwrap(), new);
     }
 
     #[test]
@@ -3238,7 +3238,7 @@ mod tests {
         round_trip(TableId::AirNavalPatrolHistories, refused.clone());
         let zero = AirNavalPatrolHistoryRow {
             scenario_channels: Recorded::Value(Some([0; 7])),
-            ..refused.clone()
+            ..refused
         };
         assert!(!zero.has_values());
         assert_ne!(zero, refused);
@@ -3492,11 +3492,11 @@ mod tests {
         };
         let defender = NavalCombatParticipantRow {
             side: 1,
-            ..attacker.clone()
+            ..attacker
         };
         let other_type = NavalCombatParticipantRow {
             combat: 0xffff_ffff_0000_0002,
-            ..attacker.clone()
+            ..attacker
         };
         assert_ne!(attacker.key(), defender.key());
         assert_ne!(attacker.key(), other_type.key());
@@ -3599,7 +3599,7 @@ fn raid_memo_table_metadata_uses_the_dispatcher_key() {
     };
     let naval = RaidPathDistanceRow {
         dispatcher: RaidPathDispatcher::Naval,
-        ..land.clone()
+        ..land
     };
     assert_eq!(land.key(), u64::MAX as u128);
     assert_eq!(naval.key(), (1u128 << 65) - 1);

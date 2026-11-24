@@ -198,7 +198,7 @@ fn a_quiet_hour_is_proven_by_the_gathered_queue_and_category_alone() {
     world.forget_reads();
     let queue = gathered(&world).unwrap();
     let mut cache = Cache::default();
-    drop(Hour::new(&world, BASE, GAME, &mut cache, false).unwrap());
+    Hour::new(&world, BASE, GAME, &mut cache, false).unwrap();
     world.forget_reads();
     let mut hour = Hour::new(&world, BASE, GAME, &mut cache, true).unwrap();
     assert!(hour.proves());
@@ -223,7 +223,6 @@ fn a_changed_or_queued_record_is_not_proven() {
         hour.carried(STATE, held).map(|proof| proof.value().maximum),
         Ok(4)
     );
-    drop(hour);
     let queued = World::new();
     let (_, held, proof) = fresh(&queued);
     let mut hour = Hour::new(&queued, BASE, GAME, &mut cache, false).unwrap();

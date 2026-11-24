@@ -90,7 +90,7 @@ fn thread_cycles() -> io::Result<u64> {
         fn QueryThreadCycleTime(thread: *mut std::ffi::c_void, cycles: *mut u64) -> i32;
     }
     let mut cycles = 0;
-    if unsafe { QueryThreadCycleTime(GetCurrentThread(), &mut cycles) } == 0 {
+    if unsafe { QueryThreadCycleTime(GetCurrentThread(), &raw mut cycles) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(cycles)

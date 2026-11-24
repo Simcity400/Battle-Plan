@@ -441,8 +441,8 @@ impl Product for DiplomaticPacts {
         let mut held = HashMap::new();
         for stretch in &query.timeline.stretches {
             dashboard_text::metadata::check_cancel(cancelled)?;
-            if !held.contains_key(&stretch.run) {
-                held.insert(stretch.run, (crate::products::diplomacy::cached_pacts(source, stretch.run)?, dashboard_base::queries::links(source, stretch.run)?));
+            if let std::collections::hash_map::Entry::Vacant(slot) = held.entry(stretch.run) {
+                slot.insert((crate::products::diplomacy::cached_pacts(source, stretch.run)?, dashboard_base::queries::links(source, stretch.run)?));
             }
         }
         let ids = tag_ids(&query.holders, &params.country);

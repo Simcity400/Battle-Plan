@@ -627,7 +627,7 @@ fn a_note_added_mid_run_is_committed_once_and_survives_a_kill() {
     writer.note(noted.clone()).unwrap();
     assert_eq!(writer.advance(&mut journal, &mut host, &|| false).unwrap(), Progress::Finished);
     drop(writer);
-    assert_eq!(newest(&whole.recording()).records().unwrap().notes, [noted.clone()]);
+    assert_eq!(newest(&whole.recording()).records().unwrap().notes, std::slice::from_ref(&noted));
     let expected = fs::read(whole.recording()).unwrap();
 
     let mut host = Deciding::everything(true);
@@ -640,7 +640,7 @@ fn a_note_added_mid_run_is_committed_once_and_survives_a_kill() {
     assert!(writer.advance(&mut kept, &mut host, &|| false).is_err());
     drop(writer);
     assert!(host.committed.len() > committed);
-    assert_eq!(newest(&folder.recording()).records().unwrap().notes, [noted.clone()]);
+    assert_eq!(newest(&folder.recording()).records().unwrap().notes, std::slice::from_ref(&noted));
     let (writer, _, progress) = folder.write(0, &mut Deciding::everything(true));
     assert_eq!(progress, Progress::Finished);
     drop(writer);

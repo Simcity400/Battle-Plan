@@ -30,7 +30,7 @@ impl Cores {
             GetSystemCpuSetInformation(
                 buffer.as_mut_ptr().cast(),
                 size_of_val(&buffer) as u32,
-                &mut length,
+                &raw mut length,
                 std::ptr::null_mut(),
                 0,
             )
@@ -44,7 +44,7 @@ impl Cores {
         let bytes = buffer.as_ptr().cast::<u8>();
         let mut offset = 0usize;
         while offset + entry_size <= length as usize && len < GROUP_PROCESSORS {
-            let entry = unsafe { &*bytes.add(offset).cast::<SYSTEM_CPU_SET_INFORMATION>() };
+            let entry = unsafe { bytes.add(offset).cast::<SYSTEM_CPU_SET_INFORMATION>().read_unaligned() };
             if (entry.Size as usize) < entry_size {
                 break;
             }

@@ -760,5 +760,10 @@ fn text_handles_inline_and_long_owned_tokens() {
     let long_text = Text::from_source(&memory, 256, long.len(), None).unwrap();
     assert_eq!(long_text.as_bytes(), &long);
     assert!(long_text.allocated_bytes() >= long.len());
-    assert_eq!(long_text.clone().as_bytes(), &long);
+    #[expect(
+        clippy::redundant_clone,
+        reason = "the clone runs Text's own Clone, which copies an owned token through the allocation path"
+    )]
+    let cloned = long_text.clone();
+    assert_eq!(cloned.as_bytes(), &long);
 }

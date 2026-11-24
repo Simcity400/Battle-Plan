@@ -20,7 +20,10 @@ pub fn state_country_order_demand(
         .map(|array| array.count as usize)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pointer and source row locate one state, and the resolved links, output and scratch are caller-owned"
+)]
 pub fn state_country_order<M: Memory>(
     memory: &M,
     image: usize,

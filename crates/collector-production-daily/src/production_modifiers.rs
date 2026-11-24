@@ -157,7 +157,10 @@ impl Part {
     pub fn fail_capture(&mut self, hour: i32, full: bool, reason: &'static str) {
         self.outcome = super::failed_capture(TABLES[0], hour, full, reason);
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the capture takes the slots and provided context beside the hourly operands"
+    )]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -465,7 +468,6 @@ impl Captured {
         self.provided = (parts > 1).then(|| native::Context::read(memory, base));
         parts
     }
-    #[allow(clippy::type_complexity)]
     pub fn take_part(
         &mut self,
         part: usize,

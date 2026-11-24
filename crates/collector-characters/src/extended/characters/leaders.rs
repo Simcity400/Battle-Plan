@@ -123,7 +123,10 @@ impl LeaderCache {
             + collector_primitives::raw_memory::vector_bytes(&self.rows)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a fresh leader read takes its occurrence and gathered sentinel beside the row output"
+    )]
     fn read_fresh(
         memory: &impl Memory,
         base: usize,

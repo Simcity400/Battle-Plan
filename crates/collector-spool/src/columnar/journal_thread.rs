@@ -439,7 +439,7 @@ impl JournalThread {
         use std::os::windows::io::AsRawHandle;
         let handle = self.thread.as_ref()?.as_raw_handle();
         // SAFETY: `self.thread` stays alive for the duration of this query.
-        let id = unsafe { windows_sys::Win32::System::Threading::GetThreadId(handle as _) };
+        let id = unsafe { windows_sys::Win32::System::Threading::GetThreadId(handle.cast()) };
         (id != 0).then_some(id)
     }
 

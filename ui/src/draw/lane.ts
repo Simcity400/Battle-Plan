@@ -63,8 +63,9 @@ export interface LaneHost<B extends Bitmap> {
   failSub?(sub: number, reason: string): void;
   failWidget?(widget: number, reason: string): void;
   later(run: () => void): void;
+  schedule?(run: () => void): void;
   hit?(widget: number, key: string | null): void;
-  served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; costs?: [widget: number, cost: number][] }): void;
+  served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; costs?: [widget: number, cost: number][] }): void;
   budget?: number;
   earlyBuffer?: number;
   clock?: () => number;
@@ -79,7 +80,7 @@ interface Sent {
 
 interface Widget {
   id: number; order: number; subs: number[]; view: string; model: unknown; binding: Binding;
-  installed: Sent | null; inflight: Sent | null; sent: Record<string, string>; motion: boolean; inspect: string | null;
+  installed: Sent | null; inflight: Sent | null; sent: Record<string, string>; forceFull: boolean; motion: boolean; inspect: string | null;
   validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
 }
@@ -223,9 +224,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly gone = new Set<number>();
   private readonly failed = new Set<number>();
   private readonly presented = new Map<number, { widget: number; sent: Sent }>();
+  private readonly acks: { installed: readonly Ack[]; refused: readonly Refusal[] }[] = [];
+  private ackMs = 0;
   private request: FrameRequest | null = null;
   private lastExact: FrameRequest | null = null;
+  private serving = false;
   private working = false;
+  private inHandover = false;
+  private handoverToken = 0;
   private pacing = false;
   private requests = 0;
   private nextEntry = 1;
@@ -526,7 +532,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (was) this.unindexWidget(was);
     const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
-      installed: was?.installed ?? null, inflight: null, sent: {}, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
+      installed: was?.installed ?? null, inflight: null, sent: {}, forceFull: false, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
       served: was?.served ?? 0, deferrals: 0, halted: null, parked: null };
     this.widgets.set(widget, made);
     this.indexWidget(made);
@@ -553,6 +559,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     held.binding = binding;
     if (model !== undefined) held.model = model;
     held.sent = {};
+    held.forceFull = false;
     held.inflight = null;
     if (retry) {
       this.failedWidgets.delete(widget);
@@ -590,6 +597,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   stream(route: number, seek: number, target: number) {
     if (!this.natives.has(route)) return;
+    if (this.lastExact && this.lastExact.seek < seek) this.lastExact = null;
     this.failed.delete(route);
     this.routeConfirmedFollowed.delete(route);
     this.toldConfirmedFollowed.delete(route);
@@ -1207,11 +1215,36 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
   }
 
+  private applyAcks(installed: readonly Ack[], refused: readonly Refusal[]) {
+    const began = this.time();
+    this.acknowledge(installed, refused);
+    for (const id of this.facts.drain()) this.gone.add(id);
+    const bytes = this.freed + this.releasedFacts();
+    this.freed = 0;
+    if (bytes) this.host.release(bytes);
+    this.ackMs += Math.max(0, this.time() - began);
+  }
+
+  private flushAcks() {
+    if (!this.acks.length) return;
+    const began = this.time();
+    const batches = this.acks.splice(0);
+    for (const batch of batches) this.acknowledge(batch.installed, batch.refused);
+    for (const id of this.facts.drain()) this.gone.add(id);
+    const bytes = this.freed + this.releasedFacts();
+    this.freed = 0;
+    if (bytes) this.host.release(bytes);
+    this.ackMs += Math.max(0, this.time() - began);
+  }
+
   frame(request: FrameRequest) {
-    this.request = this.request
-      ? { ...request, installed: [...this.request.installed, ...request.installed], refused: [...this.request.refused, ...request.refused] }
-      : request;
-    this.lastExact = request.exact ? { ...request, installed: [], refused: [] } : null;
+    if (request.installed.length || request.refused.length) {
+      if (this.serving) this.acks.push({ installed: request.installed, refused: request.refused });
+      else this.applyAcks(request.installed, request.refused);
+    }
+    const bare: FrameRequest = { ...request, installed: [], refused: [] };
+    this.request = bare;
+    this.lastExact = request.exact ? bare : null;
     this.schedule();
   }
 
@@ -1221,22 +1254,59 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private schedule() {
-    if (this.working || !this.request) return;
+    if (!this.request) return;
+    if (this.request.exact && this.inHandover) {
+      this.inHandover = false;
+      this.handoverToken++;
+      this.working = false;
+    }
+    if (this.working) return;
     this.working = true;
     queueMicrotask(() => { void this.run(); });
+  }
+
+  private armMotion() {
+    if (!this.pacing && this.motionWidgets.size > 0) {
+      this.pacing = true;
+      this.host.later(() => { this.pacing = false; this.wake(); });
+    }
+  }
+
+  private pendingRequest(): FrameRequest | null {
+    return this.request;
+  }
+
+  private finishRun() {
+    this.working = false;
+    if (this.request) this.schedule();
+    else this.armMotion();
   }
 
   private async run() {
     const request = this.request;
     this.request = null;
-    try { if (request) await this.serve(request); }
+    const ackMs = this.ackMs;
+    this.ackMs = 0;
+    const began = this.time() - ackMs;
+    this.serving = true;
+    try { if (request) await this.serve(request, began); }
     catch (error) { this.host.fail(error instanceof Error ? error.message : String(error)); }
     finally {
-      this.working = false;
-      if (this.request) this.schedule();
-      else if (!this.pacing && this.motionWidgets.size > 0) {
-        this.pacing = true;
-        this.host.later(() => { this.pacing = false; this.wake(); });
+      this.serving = false;
+      this.flushAcks();
+      const next = this.pendingRequest();
+      const overBudget = this.time() - began >= (this.host.budget ?? 10);
+      if (this.host.schedule && !next?.exact && (next || overBudget)) {
+        if (!next) this.armMotion();
+        const token = ++this.handoverToken;
+        this.inHandover = true;
+        this.host.schedule(() => {
+          if (!this.inHandover || token !== this.handoverToken) return;
+          this.inHandover = false;
+          this.finishRun();
+        });
+      } else {
+        this.finishRun();
       }
     }
   }
@@ -1357,10 +1427,26 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       && selected.window[1] <= sent.hi;
   }
 
-  private async serve(request: FrameRequest) {
-    const began = this.time();
+  private seekSuperseded(seek: number): boolean {
+    for (const route of this.natives.keys()) {
+      if (this.facts.generation(route).seek > seek) return true;
+    }
+    return false;
+  }
+
+  private async serve(request: FrameRequest, began = this.time()) {
     this.requests++;
     this.stats.frames++;
+    if (this.seekSuperseded(request.seek)) {
+      if (request.installed.length || request.refused.length) this.acknowledge(request.installed, request.refused);
+      for (const id of this.facts.drain()) this.gone.add(id);
+      const bytes = this.freed + this.releasedFacts();
+      this.freed = 0;
+      if (bytes) this.host.release(bytes);
+      this.host.stretch?.(this.time() - began);
+      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
+      return;
+    }
     this.lastTarget = request.target;
     this.acknowledge(request.installed, request.refused);
     const inspect = new Map(request.inspect);
@@ -1440,12 +1526,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const shown = this.matches(widget.installed, selected, target, widget.binding.generation, key, route);
       if (this.matches(widget.parked, selected, target, widget.binding.generation, key, route)) continue;
       const pending = widget.inflight && this.requests - widget.inflight.request <= STALE && this.matches(widget.inflight, selected, target, widget.binding.generation, key, route);
-      if (pending || shown && !widget.motion) {
+      if (pending || shown && !widget.motion && !widget.forceFull) {
         widget.inspect = key;
         if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
         continue;
       }
-      due.push({ widget, selected, motion: shown, target });
+      due.push({ widget, selected, motion: shown && !widget.forceFull, target });
       widget.inspect = key;
       if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
     }
@@ -1481,7 +1567,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const start = this.time();
       widget.served = this.requests;
       const initialOpen = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
-      if (!motion && !widget.motion && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.inspect)) {
+      if (!motion && !widget.motion && !widget.forceFull && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.inspect)) {
         const redated = this.redateEntry(widget, widget.installed, selected, request.seek, initialOpen);
         entries.push(redated);
         made.push({ widget, selected });
@@ -1550,10 +1636,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       surfaces.push(parts);
     }
     const resets: [number, number][] = [];
+    const toldMoved: [number, number | undefined][] = [];
     let moved = false;
     for (const [route, native] of this.natives) {
       const count = this.resets.get(native) ?? 0;
-      if (this.told.get(route) !== count) { moved = true; this.told.set(route, count); }
+      const prev = this.told.get(route);
+      if (prev !== count) { moved = true; toldMoved.push([route, prev]); this.told.set(route, count); }
       resets.push([route, count]);
     }
     const confirmed: [number, 'followed' | 'panel', number, number, number][] = [];
@@ -1606,6 +1694,33 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       }
       slots.length = 0;
     }
+    if (this.seekSuperseded(request.seek)) {
+      for (const crop of crops) crop.close();
+      for (let e = 0; e < entries.length; e++) {
+        const orig = entries[e]!;
+        const { widget } = made[e]!;
+        this.presented.delete(orig.id);
+        if (this.widgets.get(widget.id) === widget) {
+          if (widget.inflight?.id === orig.id) widget.inflight = null;
+          if (widget.binding.generation === orig.binding) { widget.forceFull = true; widget.sent = {}; }
+          this.dirtyWidgets.add(widget.id);
+          this.syncWindowTracking(widget);
+        }
+      }
+      if (closed) for (const wid of closed) if (this.widgets.has(wid)) this.pendingClosed.add(wid);
+      for (const [route, prev] of toldMoved) {
+        if (!this.natives.has(route)) continue;
+        if (prev === undefined) this.told.delete(route);
+        else this.told.set(route, prev);
+      }
+      for (const id of this.facts.drain()) this.gone.add(id);
+      const bytes = this.freed + this.releasedFacts();
+      this.freed = 0;
+      if (bytes) this.host.release(bytes);
+      this.host.stretch?.(this.time() - began);
+      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began, cancelled: true });
+      return;
+    }
     this.stats.crops += crops.length;
     slots.forEach(([e, k], at) => { surfaces[e]![k] = crops[at]!; });
     const presentEntries = failedEntries ? entries.filter((_, e) => !failedEntries.has(e)) : entries;
@@ -1644,17 +1759,19 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel', failureOrigin?: FailureOrigin): Entry<B> {
     const id = this.host.lane + 1 + this.host.lanes * this.nextEntry++, contents: Record<string, string> = { hour: String(selected.window[0]) };
+    const full = widget.forceFull;
+    if (mode === 'picture') widget.forceFull = false;
     if (mode === 'failed' && reason !== undefined) contents.failed = reason;
     const fields: Record<string, unknown> = {};
     painted.surfaces.forEach((surface, k) => {
       if (!surface) { parts[k] = null; return; }
       contents[k] = surface.content;
-      parts[k] = widget.sent[k] === surface.content ? SAME : null;
+      parts[k] = !full && widget.sent[k] === surface.content ? SAME : null;
     });
     const fieldKeys = Object.keys(painted.fields);
     for (const [key, field] of Object.entries(painted.fields)) {
       contents[key] = field.content;
-      fields[key] = widget.sent[key] === field.content ? SAME : field.value;
+      fields[key] = !full && widget.sent[key] === field.content ? SAME : field.value;
     }
     const route = this.routeOf(widget);
     const gen = route === null ? { seek, reset: 0 } : { seek: this.facts.generation(route).seek, reset: this.applied.get(this.natives.get(route)!) ?? this.resets.get(this.natives.get(route)!) ?? 0 };

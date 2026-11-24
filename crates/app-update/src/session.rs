@@ -68,12 +68,12 @@ impl Done {
             // sent to this thread, which `PeekMessageW` then dispatches without removing anything
             // posted.
             unsafe {
-                let woke = MsgWaitForMultipleObjectsEx(1, &self.0, INFINITE, QS_SENDMESSAGE, MWMO_INPUTAVAILABLE);
+                let woke = MsgWaitForMultipleObjectsEx(1, &raw const self.0, INFINITE, QS_SENDMESSAGE, MWMO_INPUTAVAILABLE);
                 if woke == WAIT_OBJECT_0 {
                     break;
                 }
                 let mut message: MSG = std::mem::zeroed();
-                PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+                PeekMessageW(&raw mut message, std::ptr::null_mut(), 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
             }
         }
         WAITING.set(false);

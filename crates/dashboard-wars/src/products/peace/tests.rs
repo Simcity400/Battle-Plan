@@ -125,7 +125,7 @@ fn a_conference_span_is_its_log_rows_cells_and_a_cell_not_recorded_leaves_it_out
     let span = conference_span(&row, &columns).expect("a whole row");
     assert_eq!((span.conference, span.hour, span.first_observed_hour, span.last_observed_hour), (77, 130, 100, 130));
     assert_eq!((span.first_finalized_hour, span.first_absent_hour, span.before_hour, span.compared_hour), (Some(125), None, None, Some(128)), "an optional cell without a value is none");
-    let mut unrecorded = row.clone();
+    let mut unrecorded = row;
     unrecorded.cells[columns[5]] = log::Cell::Unrecorded;
     assert_eq!(conference_span(&unrecorded, &columns), None, "a cell not recorded is never read as none");
 }
@@ -190,7 +190,7 @@ fn a_settlement_is_its_log_rows_cells_and_a_cell_not_recorded_leaves_it_out() {
     empty.cells[columns[5]] = log::Cell::Missing;
     let emptied = settlement(&empty, &columns).expect("a settlement with empty lists");
     assert!(emptied.actions.is_empty() && emptied.transfers.is_empty(), "an empty list stored as no bytes is the game's empty list");
-    let mut unrecorded = row.clone();
+    let mut unrecorded = row;
     unrecorded.cells[columns[4]] = log::Cell::Unrecorded;
     assert_eq!(settlement(&unrecorded, &columns), None, "a cell not recorded is never read as an empty list");
 }

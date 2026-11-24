@@ -453,7 +453,7 @@ impl Holder {
             return Err("faction operand publication overlaps a writer");
         }
         MISSED.store(false, Ordering::SeqCst);
-        POINTER.store(&mut *storage, Ordering::SeqCst);
+        POINTER.store(&raw mut *storage, Ordering::SeqCst);
         let old = self.storage.replace(storage);
         CLOSED.store(false, Ordering::SeqCst);
         drop(old);
@@ -483,7 +483,7 @@ impl Drop for Holder {
         let Some(storage) = self.storage.take() else {
             return;
         };
-        if ptr::eq(POINTER.load(Ordering::SeqCst), &*storage) {
+        if ptr::eq(POINTER.load(Ordering::SeqCst), &raw const *storage) {
             CLOSED.store(true, Ordering::SeqCst);
             POINTER.store(ptr::null_mut(), Ordering::SeqCst);
             if active() != 0 {

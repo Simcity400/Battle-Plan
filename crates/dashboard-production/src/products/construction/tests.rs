@@ -259,9 +259,9 @@ fn a_line_works_on_its_kinds_leaves_and_lacks_only_output_it_had() {
     assert_eq!(leaf_keys(&line), [(true, false, 300, 12, none)]);
     let gap = line_gap(&line, Some(141)).unwrap();
     assert_eq!((gap.known_at, gap.reason, gap.until), (90, SpendingGap::LinkedOutput, Some(141)));
-    let quiet = Line { output_reason: P::OUTPUT_NOT_RECORDED, had_output: false, ..line.clone() };
+    let quiet = Line { output_reason: P::OUTPUT_NOT_RECORDED, had_output: false, ..line };
     assert_eq!(line_gap(&quiet, None), None, "a line the output table never listed lacks nothing");
-    let idle = Line { repair_work: false, ..line.clone() };
+    let idle = Line { repair_work: false, ..line };
     assert_eq!(leaf_keys(&idle), [(false, false, 300, 12, none)], "a line with no work yet is a new building");
     let railway = Line { railway: true, to_state: Some(14), ..idle };
     let spent = ConstructionSpendRow { slot: 3, country: 41, railway: true, building_type: TagHolderRow::NONE, state: 12, to_state: 14, ..Default::default() }.key();

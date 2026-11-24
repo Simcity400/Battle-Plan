@@ -323,9 +323,9 @@ fn relay_and_stub_ips_refuse_restoration_even_before_the_counter_increments() {
     let relay_loop = hook.executable_ranges()[0].start + 32;
     let mut loop_bytes = [0; 29];
     loop_bytes[..2].copy_from_slice(&[0x48, 0xb8]);
-    loop_bytes[2..10].copy_from_slice(&((&ENTERED as *const _ as usize) as u64).to_le_bytes());
+    loop_bytes[2..10].copy_from_slice(&((&raw const ENTERED as usize) as u64).to_le_bytes());
     loop_bytes[10..15].copy_from_slice(&[0xc6, 0, 1, 0x48, 0xb8]);
-    loop_bytes[15..23].copy_from_slice(&((&RELEASE as *const _ as usize) as u64).to_le_bytes());
+    loop_bytes[15..23].copy_from_slice(&((&raw const RELEASE as usize) as u64).to_le_bytes());
     loop_bytes[23..].copy_from_slice(&[0x80, 0x38, 0, 0x74, 0xfb, 0xc3]);
     let mut previous = 0;
     assert_ne!(
@@ -334,7 +334,7 @@ fn relay_and_stub_ips_refuse_restoration_even_before_the_counter_increments() {
                 relay_loop as *const _,
                 loop_bytes.len(),
                 PAGE_READWRITE,
-                &mut previous,
+                &raw mut previous,
             )
         },
         0
@@ -349,7 +349,7 @@ fn relay_and_stub_ips_refuse_restoration_even_before_the_counter_increments() {
                 relay_loop as *const _,
                 loop_bytes.len(),
                 previous,
-                &mut ignored,
+                &raw mut ignored,
             )
         },
         0

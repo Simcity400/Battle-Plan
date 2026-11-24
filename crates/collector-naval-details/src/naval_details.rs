@@ -30,7 +30,7 @@ pub fn member_phase_data() -> impl serde::Serialize {
     let phases = &engine_native_naval::naval_member_details::MEMBER_PHASES;
     let mut frequency = 0;
     let known = unsafe {
-        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&raw mut frequency)
     } != 0;
     let ns = |ticks: u64| {
         (known && frequency > 0)

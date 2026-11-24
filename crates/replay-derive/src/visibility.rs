@@ -28,10 +28,6 @@ impl IntelBranch {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Keep observer/target visibility gates and content thresholds explicit without an observer/design state matrix."
-)]
 pub fn design_details(
     frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,

@@ -278,7 +278,6 @@ impl PreparedContent for ScriptedContent {
             .get_or_init(|| {
                 content_reader_key_names::characters::leader_templates(&self.layers.layers)
                     .map(LeaderRoles::new)
-                    .map_err(|error| error.to_string())
             })
             .as_ref()
             .map_err(String::as_str)

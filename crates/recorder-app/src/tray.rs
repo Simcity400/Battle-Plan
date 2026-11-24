@@ -106,7 +106,7 @@ fn without_check_column(menu: HMENU) {
         dwStyle: MNS_NOCHECK,
         ..MENUINFO::default()
     };
-    if unsafe { SetMenuInfo(menu, &style) } == 0 {
+    if unsafe { SetMenuInfo(menu, &raw const style) } == 0 {
         eprintln!(
             "Tray menu kept its check mark column: {}",
             std::io::Error::last_os_error()

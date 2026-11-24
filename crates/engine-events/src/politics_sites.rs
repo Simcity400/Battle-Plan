@@ -1061,7 +1061,7 @@ mod operand_guard_tests {
         let memory = unsafe { NativeOperands::new() };
         let value = 123_i64;
         assert_eq!(
-            read::<i64>(&memory, &value as *const i64 as usize),
+            read::<i64>(&memory, (&raw const value) as usize),
             Some(value)
         );
         assert_eq!(read::<i64>(&memory, 1), None);

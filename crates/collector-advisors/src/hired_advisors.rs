@@ -195,7 +195,10 @@ impl Captured {
     /// # Safety
     /// Caller holds hourly capture admission for the active session (or isolated fixture control)
     /// so global `advisor_pool_changes` demand updates belong to this capture pass.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the carried store and fingerprints"
+    )]
     pub unsafe fn capture_carried(
         &mut self,
         memory: &impl Memory,
@@ -217,7 +220,10 @@ impl Captured {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands (memory, base, game state, hour, full flag) travel beside the reused store and fingerprints"
+    )]
     fn capture_with(
         &mut self,
         memory: &impl Memory,

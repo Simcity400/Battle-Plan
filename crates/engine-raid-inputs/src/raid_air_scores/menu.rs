@@ -198,7 +198,7 @@ pub(super) fn read_selected_entries(
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "borrows split scratch buffers alongside decoded entry header parts"
 )]

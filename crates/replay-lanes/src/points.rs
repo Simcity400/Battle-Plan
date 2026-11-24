@@ -601,7 +601,6 @@ fn read<L: Look>(
     Ok((asked, std::mem::take(&mut look.texts().held).into_iter().map(|(_, text)| text).collect()))
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, source, keys and range")]
 pub fn points(
     recording: &Recording,
     run: u32,
@@ -625,7 +624,6 @@ pub fn points(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn cells(
     recording: &Recording,
     run: u32,

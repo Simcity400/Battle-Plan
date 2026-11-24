@@ -128,7 +128,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     ))
     .unwrap();
     let older = store.take().unwrap();
-    let address = &*older as *const _;
+    let address = &raw const *older;
     let mut hour_store = None;
     let (publishing, published) = mpsc::channel();
     let (resume, resumed) = mpsc::channel();
@@ -330,7 +330,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             ));
             assert_eq!(retained.captured.allocated_bytes(), bytes);
             if submit_unwind {
-                let taken = retained.army_stats.as_deref().unwrap() as *const _;
+                let taken = std::ptr::from_ref(retained.army_stats.as_deref().unwrap());
                 assert_ne!(taken, address, "the hour took a store of its own");
                 hour_store = Some(taken);
             }
@@ -345,7 +345,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             let Job::Presentation(request) = &completion.request else {
                 unreachable!()
             };
-            let taken = request.army_stats.as_deref().unwrap() as *const _;
+            let taken = std::ptr::from_ref(request.army_stats.as_deref().unwrap());
             assert_ne!(taken, address, "the hour took a store of its own");
             hour_store = Some(taken);
             drop(completion);
@@ -384,7 +384,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
     assert!(state.movement.is_none() && state.speed_terms.is_none());
     assert_eq!(store.owners(), 1);
     assert_eq!(
-        &*store.take().unwrap() as *const _,
+        &raw const *store.take().unwrap(),
         hour_store.unwrap_or(address)
     );
 }

@@ -159,7 +159,10 @@ pub fn walk_timed(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fleet, task force and ship arenas are caller-owned, and the clock and visit callbacks belong to the caller"
+)]
 pub fn walk_timed_with(
     memory: &impl Memory,
     base: usize,
@@ -452,7 +455,10 @@ impl ShipRun {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fleet, task force, ship and name arenas are caller-owned, and the clock and visit callbacks belong to the caller"
+)]
 pub fn walk_timed_with_names(
     memory: &impl Memory,
     base: usize,
@@ -478,7 +484,10 @@ pub fn walk_timed_with_names(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fleet, task force, ship and name buffers are caller-owned, the clock and visit callbacks belong to the caller, and batching is a flag"
+)]
 fn walk_named(
     memory: &impl Memory,
     base: usize,
@@ -507,7 +516,10 @@ fn walk_named(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fleet, task force, ship and name arenas are caller-owned, and the clock, visit and management callbacks belong to the caller"
+)]
 pub fn walk_timed_with_management(
     memory: &impl Memory,
     base: usize,
@@ -536,7 +548,7 @@ pub fn walk_timed_with_management(
     )
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Batches fleet, task force, ship, naming, and naval management census in one walk."
 )]
@@ -569,7 +581,10 @@ pub fn walk_timed_with_management_and_names(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fleet, task force, ship and name buffers are caller-owned, the clock, visit, management and naming hooks belong to the caller, and batching is a flag"
+)]
 fn walk_named_observed(
     memory: &impl Memory,
     base: usize,
@@ -1213,7 +1228,10 @@ pub fn walk_counter_inputs_with_port<M: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fleets and rosters are caller-owned, the port inputs are grouped, and the visit and observe callbacks belong to the caller"
+)]
 pub fn walk_counter_inputs_with_port_observed<M: Memory>(
     memory: &M,
     base: usize,
@@ -1238,7 +1256,10 @@ pub fn walk_counter_inputs_with_port_observed<M: Memory>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fleets and rosters are caller-owned, the port inputs are grouped, and each callback belongs to the caller"
+)]
 pub fn walk_counter_inputs_with_port_and_fleet_observed<M: Memory, T>(
     memory: &M,
     base: usize,
@@ -1270,7 +1291,10 @@ pub fn walk_counter_inputs_with_port_and_fleet_observed<M: Memory, T>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fleet and roster buffers are caller-owned, the port buffers are grouped, and each callback belongs to the caller"
+)]
 fn walk_counter_buffers_with_port_observed<M: Memory, T>(
     memory: &M,
     base: usize,

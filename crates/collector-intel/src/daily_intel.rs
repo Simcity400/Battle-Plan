@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn a_due_walk_never_waits_for_a_held_buffer_and_the_next_hour_walks_instead() {
         let home = Home::new(4, 32);
-        let (mut first, mut second) = (Loan::new(home.clone()), Loan::new(home.clone()));
+        let (mut first, mut second) = (Loan::new(home.clone()), Loan::new(home));
         assert!(matches!(first.borrow(true), Walk::Ready(_)));
         assert!(matches!(second.borrow(true), Walk::Busy));
         assert!(matches!(second.borrow(false), Walk::Busy));
@@ -281,7 +281,7 @@ mod tests {
         loan.grow(&mut raised);
         assert_eq!(home.allocated_bytes(), raised * size_of::<Row>() + 32);
         {
-            let mut held = Loan::new(home.clone());
+            let mut held = Loan::new(home);
             assert!(matches!(held.borrow(true), Walk::Ready(_)));
         }
         assert!(matches!(loan.borrow(true), Walk::Ready(_)));
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn optional_suffix_pressure_grows_without_poisoning_complete_positive_rows() {
         let home = Home::new(4, 32);
-        let mut loan = Loan::new(home.clone());
+        let mut loan = Loan::new(home);
         let Walk::Ready(buffer) = loan.borrow(true) else {
             panic!("free buffer")
         };

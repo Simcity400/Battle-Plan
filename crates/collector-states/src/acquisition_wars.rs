@@ -86,7 +86,10 @@ impl WarStore {
         self.key = Some(key);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the capture fills the rows and snapshot from both memories with a change source"
+    )]
     fn capture(
         &mut self,
         memory: &impl Memory,

@@ -472,7 +472,7 @@ fn wait(event: &OwnedHandle, timer: &OwnedHandle, delay: Option<Duration>) -> bo
     let handles = [event.as_raw_handle(), timer.as_raw_handle()];
     let (count, timeout) = if let Some(delay) = delay {
         let due = -(delay.as_nanos().div_ceil(100).clamp(1, i64::MAX as u128) as i64);
-        if unsafe { SetWaitableTimer(handles[1], &due, 0, None, std::ptr::null(), 0) } == 0 {
+        if unsafe { SetWaitableTimer(handles[1], &raw const due, 0, None, std::ptr::null(), 0) } == 0 {
             return false;
         }
         (2, u32::MAX)
@@ -577,7 +577,7 @@ impl Reconciler {
     pub fn thread_id(&self) -> u32 {
         unsafe {
             windows_sys::Win32::System::Threading::GetThreadId(
-                self.thread.as_ref().unwrap().as_raw_handle() as _,
+                self.thread.as_ref().unwrap().as_raw_handle().cast(),
             )
         }
     }

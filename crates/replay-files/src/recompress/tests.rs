@@ -123,7 +123,7 @@ fn a_recompress_stopped_midway_leaves_the_recording_whole_and_its_partial_unlist
     assert_eq!(fs::read(&path).unwrap(), bytes);
     assert_eq!(Recording::open_path(&path).unwrap().hours(), u64::from(RUNS[1].2 * envelope::UNIT_ORDINALS));
     let listed: Vec<PathBuf> = crate::recording_files::listing(&folder.0).unwrap().into_iter().map(|(path, ..)| path).collect();
-    assert_eq!(listed, [path.clone()]);
+    assert_eq!(listed, std::slice::from_ref(&path));
     let before = folder.0.join("before.battleplan");
     fs::write(&before, &bytes).unwrap();
     assert!(matches!(recompress_file(&path, 19, false, |_| true), Ok(Outcome::Replaced { .. })));
@@ -148,7 +148,7 @@ fn a_finished_partial_belongs_to_its_attempt_until_the_destination_is_checked() 
     let Written::Whole(original, first) = write_paced(&path, || Staged::beside(&path), 19, false, |_| true, Pace::here()).unwrap() else { panic!("the first attempt wrote nothing") };
     let replaced = recompress_file(&path, 3, false, |_| true);
     assert!(matches!(replaced, Ok(Outcome::Replaced { .. })), "{replaced:?}");
-    assert_eq!(partials(&path).unwrap(), [first.path.clone()], "the second attempt staged apart and left the first's");
+    assert_eq!(partials(&path).unwrap(), std::slice::from_ref(&first.path), "the second attempt staged apart and left the first's");
     let published = fs::read(&path).unwrap();
     let kept = publish(&path, first, original);
     assert!(matches!(kept, Err(Kept::Changed)), "{kept:?}");
@@ -158,7 +158,7 @@ fn a_finished_partial_belongs_to_its_attempt_until_the_destination_is_checked() 
     assert_reads_alike(&before, &path);
 
     let Written::Whole(original, staged) = write_paced(&path, || Staged::beside(&path), 19, false, |_| true, Pace::here()).unwrap() else { panic!("the attempt wrote nothing") };
-    let mut grown = published.clone();
+    let mut grown = published;
     grown.extend_from_slice(&[0; 16]);
     fs::write(&path, &grown).unwrap();
     let kept = publish(&path, staged, original);
@@ -191,7 +191,7 @@ fn a_recording_still_being_written_is_refused_by_name() {
     let (root, length) = container::locate(bytes.as_slice(), Open::Newest).unwrap().unwrap();
     let read = container::read_root(bytes.as_slice(), &root).unwrap();
     let at = container::Revision { number: read.revision, length, root: root.digest };
-    let mut appending = ContainerWriter::resume(io::Cursor::new(bytes.clone()), read, at, 7, None).unwrap();
+    let mut appending = ContainerWriter::resume(io::Cursor::new(bytes), read, at, 7, None).unwrap();
     appending.commit(None, false, |_| Ok(())).unwrap();
     let unsaved = appending.into_inner().into_inner();
     fs::write(&path, &unsaved).unwrap();

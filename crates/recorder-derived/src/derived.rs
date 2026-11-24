@@ -514,7 +514,7 @@ mod tests {
             let error = recorded_stack(&unverified).unwrap_err().to_string();
             assert!(error.contains("session 2's content is not verified"), "{error}");
         }
-        let mut other = sessions.clone();
+        let mut other = sessions;
         other[1].identity.language = "l_french".into();
         let error = recorded_stack(&other).unwrap_err().to_string();
         assert!(error.contains("different content stacks"), "{error}");

@@ -366,7 +366,7 @@ macro_rules! tuples {
     ($(($($name:ident),+)),+ $(,)?) => { $(
         impl<$($name: Product),+> Product for ($($name,)+) {
             const MIN_BYTES: usize = 0 $(+ $name::MIN_BYTES)+;
-            #[allow(non_snake_case)]
+            #[expect(non_snake_case, reason = "the tuple's elements are bound by their type parameter names")]
             fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
                 let ($($name,)+) = self; $($name.encode(out)?;)+ Ok(())
             }

@@ -692,7 +692,10 @@ pub fn stage(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one part's read operands, its verdict and the change, certificate and staging owners are separate"
+)]
 fn stage_part(
     memory: &impl Memory,
     base: usize,
@@ -2159,7 +2162,10 @@ pub mod hour {
             frame.rows.outcome
         }
 
-        #[allow(clippy::too_many_arguments)]
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "the frame, read operands, regions, change source, hour and threading choice are separate owners"
+        )]
         pub fn run<M: Memory + Sync>(
             &mut self,
             frame: &mut Captured,

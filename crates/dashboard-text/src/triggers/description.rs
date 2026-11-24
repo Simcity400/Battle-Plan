@@ -119,10 +119,6 @@ impl Sink<'_> {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Keeps the evaluator, scripted text and tactic metadata borrowed separately at the description entrypoint"
-)]
 pub fn describe<'a>(
     items: &[Item],
     evaluator: &Evaluator<'_, 'a>,
@@ -136,10 +132,6 @@ pub fn describe<'a>(
     describe_at(items, evaluator, text, localisation, scopes, phases, tactic_name, 0, 1, refusals)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Keeps the evaluator, scripted text and tactic metadata borrowed separately at the description entrypoint"
-)]
 pub fn describe_at<'a>(
     items: &[Item],
     evaluator: &Evaluator<'_, 'a>,
@@ -359,10 +351,6 @@ impl<'a> Formatter<'_, '_, 'a> {
         result
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Trigger conjunction formatting keeps key, inversion, indentation, display mode and output sink separate"
-    )]
     fn and(
         &self,
         key: &str,
@@ -401,10 +389,6 @@ impl<'a> Formatter<'_, '_, 'a> {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Trigger body formatting keeps logical combination, inversion, indentation, display mode and output sink separate"
-    )]
     fn body(
         &self,
         units: &[Unit<'_, 'a>],
@@ -454,10 +438,6 @@ impl<'a> Formatter<'_, '_, 'a> {
         result
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Trigger unit formatting keeps independent inversion, indentation, display mode and output sink"
-    )]
     fn describe_unit(
         &self,
         unit: &Unit<'_, 'a>,
@@ -684,10 +664,6 @@ impl<'a> Formatter<'_, '_, 'a> {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Scope tooltip inputs keep independent inversion, indentation, display mode and output sink"
-    )]
     fn scope(
         &self,
         unit: &Unit<'_, 'a>,

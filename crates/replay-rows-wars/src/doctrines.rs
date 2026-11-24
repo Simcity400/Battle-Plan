@@ -141,7 +141,7 @@ mod tests {
         };
         let next = DoctrineCountryRow {
             expiry_events: 0,
-            ..previous.clone()
+            ..previous
         };
         assert_eq!(next.delta(Some(&previous)).unwrap().unwrap().mask, 1 << 1);
         assert!(grant.delta(Some(&decoded)).unwrap().is_none());

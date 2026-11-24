@@ -2952,7 +2952,7 @@ fn complete_decoded(
         decoded,
     )
 }
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "summary fields mirror RawWalk without retaining its scratch arenas"
 )]
@@ -2991,7 +2991,7 @@ fn decode_snapshot(
     walk_snapshot(memory, base, hour, pointer, &mut walk)?;
     complete_snapshot(memory, base, fresh, &mut walk)
 }
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "summary fields mirror RawWalk without retaining its scratch arenas"
 )]

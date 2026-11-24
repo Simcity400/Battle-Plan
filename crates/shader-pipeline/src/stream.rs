@@ -803,7 +803,6 @@ impl Stream {
         "its pipeline is being built".into()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
         arena: &gpu::Arena,
@@ -827,7 +826,6 @@ impl Stream {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn prepare_inner(
         &mut self,
         arena: &gpu::Arena,
@@ -846,10 +844,6 @@ impl Stream {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one native draw carries geometry and target state together"
-    )]
     pub fn prepare_packet(
         &mut self,
         arena: &gpu::Arena,
@@ -873,10 +867,6 @@ impl Stream {
         result
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the public draw arguments are forwarded without an alternate state model"
-    )]
     fn prepare_packet_inner(
         &mut self,
         arena: &gpu::Arena,
@@ -1016,7 +1006,6 @@ impl Stream {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn prepare_native_pass_with(
         &mut self,
         arena: &gpu::Arena,
@@ -1033,7 +1022,6 @@ impl Stream {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn prepare_native_pass_with_cache(
         &mut self,
         arena: &gpu::Arena,
@@ -1989,7 +1977,7 @@ Effect Up { VertexShader = V PixelShader = P }
             vec![],
             cache,
             Some(Recorded {
-                effect: base.clone(),
+                effect: base,
                 note: Arc::new(|_| {}),
             }),
         );

@@ -294,13 +294,13 @@ fn a_reused_thread_id_of_another_process_is_not_opened() {
         assert_ne!(snapshot, INVALID_HANDLE_VALUE);
         let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
         entry.dwSize = size_of::<THREADENTRY32>() as u32;
-        let mut found = unsafe { Thread32First(snapshot, &mut entry) };
+        let mut found = unsafe { Thread32First(snapshot, &raw mut entry) };
         while found != 0 {
             if entry.th32OwnerProcessID == pid {
                 foreign = Some(entry.th32ThreadID);
                 break;
             }
-            found = unsafe { Thread32Next(snapshot, &mut entry) };
+            found = unsafe { Thread32Next(snapshot, &raw mut entry) };
         }
         unsafe {
             CloseHandle(snapshot);
@@ -380,7 +380,7 @@ fn assert_busy_family_publication(track_busy: bool) {
         assert_ne!(unsafe { SuspendThread(handle) }, u32::MAX);
         let mut context = AlignedContext(unsafe { std::mem::zeroed() });
         context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
-        assert_ne!(unsafe { GetThreadContext(handle, &mut context.0) }, 0);
+        assert_ne!(unsafe { GetThreadContext(handle, &raw mut context.0) }, 0);
         assert_ne!(unsafe { ResumeThread(handle) }, u32::MAX);
         if (held..held + 16).contains(&(context.0.Rip as usize)) {
             break;
@@ -523,7 +523,7 @@ fn push_frame_trampoline_unwinds_every_instruction_boundary_and_restores_its_spa
             ..Default::default()
         });
         let mut base = 0;
-        let entry = unsafe { RtlLookupFunctionEntry(context.0.Rip, &mut base, ptr::null_mut()) };
+        let entry = unsafe { RtlLookupFunctionEntry(context.0.Rip, &raw mut base, ptr::null_mut()) };
         assert!(!entry.is_null());
         let mut data = ptr::null_mut();
         let mut frame = 0;
@@ -533,9 +533,9 @@ fn push_frame_trampoline_unwinds_every_instruction_boundary_and_restores_its_spa
                 base,
                 context.0.Rip,
                 entry,
-                &mut context.0,
-                &mut data,
-                &mut frame,
+                &raw mut context.0,
+                &raw mut data,
+                &raw mut frame,
                 ptr::null_mut(),
             );
         }
@@ -561,7 +561,7 @@ fn push_frame_trampoline_unwinds_every_instruction_boundary_and_restores_its_spa
     drop(hook);
     let mut base = 0;
     assert!(
-        unsafe { RtlLookupFunctionEntry(trampoline as u64, &mut base, ptr::null_mut()) }.is_null()
+        unsafe { RtlLookupFunctionEntry(trampoline as u64, &raw mut base, ptr::null_mut()) }.is_null()
     );
 }
 

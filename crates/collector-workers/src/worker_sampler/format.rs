@@ -47,7 +47,7 @@ impl Header {
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
                     | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                 MAGIC.as_ptr().cast(),
-                &mut module,
+                &raw mut module,
             )
         } == 0
         {
@@ -264,7 +264,7 @@ pub(super) fn modules() -> Vec<Module> {
         dwSize: size_of::<MODULEENTRY32W>() as u32,
         ..Default::default()
     };
-    let mut next = unsafe { Module32FirstW(snapshot, &mut entry) };
+    let mut next = unsafe { Module32FirstW(snapshot, &raw mut entry) };
     while next != 0 {
         let len = entry
             .szExePath
@@ -276,7 +276,7 @@ pub(super) fn modules() -> Vec<Module> {
             size: entry.modBaseSize,
             path: String::from_utf16_lossy(&entry.szExePath[..len]),
         });
-        next = unsafe { Module32NextW(snapshot, &mut entry) };
+        next = unsafe { Module32NextW(snapshot, &raw mut entry) };
     }
     unsafe {
         CloseHandle(snapshot);

@@ -316,7 +316,6 @@ fn measured_consumer_carries_typed_cells_and_evidence_across_local_id_reuse() {
                 );
             }
         }
-        drop(append);
         writer.finish().unwrap();
         state.begin_segment().unwrap();
         let mut reader = Reader::open(&path, config.block_bytes, &memory).unwrap();

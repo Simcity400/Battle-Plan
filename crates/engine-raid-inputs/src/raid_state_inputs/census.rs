@@ -233,7 +233,10 @@ pub struct CoreRow {
     pub province_locations_len: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the census and selection come from the caller, and the rows, links and required count are caller-owned"
+)]
 pub fn state_cores(
     memory: &impl Memory,
     base: usize,
@@ -256,7 +259,10 @@ pub fn state_cores(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the census and selection come from the caller, and the row and link buffers and required count are caller-owned"
+)]
 fn state_cores_buffer(
     memory: &impl Memory,
     base: usize,

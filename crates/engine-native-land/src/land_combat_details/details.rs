@@ -690,7 +690,10 @@ impl<M: Memory> DetailReader<'_, M> {
         Ok(values.map(|value| value.raw))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one commander reads the shared members, commanders, leaders, units and arenas into the side row"
+    )]
     pub fn commander(
         &self,
         side: usize,

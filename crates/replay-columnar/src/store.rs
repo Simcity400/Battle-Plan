@@ -2188,7 +2188,6 @@ pub enum Kept {
     Missing,
     Number(u64),
     Text(u32),
-    #[allow(clippy::redundant_allocation, reason = "a thin pointer keeps a kept cell at 16 bytes")]
     List(Box<Box<[u8]>>),
 }
 

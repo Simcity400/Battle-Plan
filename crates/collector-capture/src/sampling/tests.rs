@@ -42,7 +42,7 @@ fn a_slow_loan_dropped_by_an_unwinding_capture_leaves_the_doctrine_observer_stor
     let lent = stores
         .doctrines
         .as_deref()
-        .map(|store| store as *const _ as usize);
+        .map(|store| std::ptr::from_ref(store) as usize);
     assert_eq!(lent, Some(bound));
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _stores = stores;
@@ -188,7 +188,7 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
     for hour in [3, 17] {
         captured.air_wing_pilot().prepare_hour(hour, true);
         let request = captured.take_air_missions_request(&countries, 0, 0, None);
-        let owner = &*request.pack as *const _;
+        let owner = &raw const *request.pack;
         let pending = park(&mut batch, acquisition::Job::AirMissions(request));
         let completed = collector_test_support::with_allocations_denied(|| unsafe {
             finish_acquisition(&shared, &mut batch, pending)
@@ -211,7 +211,7 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
         let acquisition::Job::AirMissions(request) = completed.request else {
             panic!("Air mission payload lost")
         };
-        assert_eq!(&*request.pack as *const _, owner);
+        assert_eq!(&raw const *request.pack, owner);
         captured.restore_air_missions_request(request, false);
         let tables = captured.air_wing_pilot().tables();
         let mut source = replay_frame::frame::DecodedFrame {
@@ -349,7 +349,7 @@ fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
     unsafe { pool.shutdown() }.unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let part = Box::new(collector_divisions::orders_parts::Part::new());
-    let at: *const collector_divisions::orders_parts::Part = &*part;
+    let at: *const collector_divisions::orders_parts::Part = &raw const *part;
     let request = acquisition::Job::OrdersPart(acquisition::OrdersPartRequest {
         base: 0,
         index: 2,
@@ -363,7 +363,7 @@ fn a_rejected_order_part_returns_its_part_with_the_admission_reason() {
     let acquisition::Job::OrdersPart(request) = completed.request else {
         panic!("rejected order part lost");
     };
-    assert!(std::ptr::eq(&*request.part, at));
+    assert!(std::ptr::eq(&raw const *request.part, at));
     assert_eq!(request.index, 2);
     assert_eq!(
         request.failure(completed.report.is_err()),
@@ -973,7 +973,7 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
     payload.fingerprints = Some(Box::new(
         collector_certificates::slicing::SliceFingerprints::new(),
     ));
-    let store = payload.fingerprints.as_deref().unwrap() as *const _;
+    let store = std::ptr::from_ref(payload.fingerprints.as_deref().unwrap());
     let request = acquisition::Job::Relations(acquisition::RawRequest {
         countries: engine_allocation::shared(Cache::try_with_capacity(1).unwrap()).unwrap(),
         context: collector_intel::intel::RelationsCopyContext {
@@ -1009,7 +1009,7 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
         Some(acquisition_failure_reason(acquisition::Failure::Stopped)),
     );
     assert_eq!(
-        returned.as_deref().map(|value| value as *const _),
+        returned.as_deref().map(|value| std::ptr::from_ref(value)),
         Some(store)
     );
     assert!(payload.is_err());

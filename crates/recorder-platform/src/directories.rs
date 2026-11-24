@@ -31,7 +31,7 @@ pub fn resolve_user_directory() -> Result<PathBuf, String> {
             RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
             std::ptr::null_mut(),
             buffer.as_mut_ptr().cast(),
-            &mut bytes,
+            &raw mut bytes,
         )
     } == 0
     {
@@ -85,7 +85,7 @@ pub fn default_game_directory() -> io::Result<PathBuf> {
                 RRF_RT_REG_SZ,
                 std::ptr::null_mut(),
                 buffer.as_mut_ptr().cast(),
-                &mut bytes,
+                &raw mut bytes,
             )
         };
         if result == 0 {

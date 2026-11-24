@@ -82,7 +82,7 @@ mod pacing {
                 if unsafe {
                     SetWaitableTimer(
                         self.0,
-                        &due,
+                        &raw const due,
                         0,
                         std::ptr::null_mut(),
                         std::ptr::null_mut(),

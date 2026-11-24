@@ -11,7 +11,6 @@ pub fn encode_changes_at<T: RowCodec>(
     encode_at(changed, previous, keys, rows, output, deleted, None)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn encode_changes_at_noted<T: RowCodec>(
     changed: &[T],
     previous: &[T],

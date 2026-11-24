@@ -137,7 +137,7 @@ fn advisor_tooltip_keys_check_content_without_withholding_existing_fields() {
     );
     row.tooltip_keys = Recorded::Value(Some(vec![b"unknown".to_vec()]));
     *frame.tables[TableId::AdvisorRoles.index()] =
-        TableView::Complete(TableRows::AdvisorRoles(vec![row.clone()]));
+        TableView::Complete(TableRows::AdvisorRoles(vec![row]));
     assert_eq!(run(&frame).differences.len(), 1);
     *frame.tables[TableId::CharacterRoleTraits.index()] = TableView::Unavailable {
         reason: "unreadable".into(),

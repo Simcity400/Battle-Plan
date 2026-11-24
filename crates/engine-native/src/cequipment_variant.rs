@@ -1327,7 +1327,7 @@ fn compute_modified_lanes(
     Ok(expected)
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Lane verification passes the shared memory, site cache, expected stat block and variant metadata explicitly."
 )]
@@ -1637,7 +1637,6 @@ pub fn walk_stats(
     )
 }
 
-#[allow(clippy::too_many_arguments, reason = "Variant stat capture keeps preallocated output, organisation carry and live stat witness explicit.")]
 pub fn walk_stats_carried(
     memory: &impl Memory,
     base: usize,

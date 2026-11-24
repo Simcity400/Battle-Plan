@@ -151,7 +151,7 @@ impl Owner {
 }
 
 struct Store {
-    #[allow(
+    #[expect(
         clippy::vec_box,
         reason = "Published lane pointers must remain stable when the retention vector grows."
     )]
@@ -212,7 +212,7 @@ impl Store {
         Ok(())
     }
 
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "Native census inputs, recovery gates and reusable output remain independently borrowed."
     )]
@@ -490,7 +490,7 @@ impl Drop for Store {
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "The worker shares native census inputs and transfers acquired rows to the existing lazy snapshot."
 )]
@@ -893,7 +893,7 @@ mod tests {
             );
         }
         let lane = store.lanes.last().unwrap();
-        assert!(ptr::eq(CURRENT.load(Ordering::SeqCst), &**lane));
+        assert!(ptr::eq(CURRENT.load(Ordering::SeqCst), &raw const **lane));
         for order in 0..lane.len() as u64 {
             lane.reserve().unwrap().publish(Append {
                 order,
