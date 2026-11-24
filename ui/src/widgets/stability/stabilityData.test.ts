@@ -38,6 +38,8 @@ test('values are exact percent with two decimals, signed for parts', () => {
   assert.equal(formatPercent('96000', 5), '96.0%');
   assert.equal(formatPercent('5000', 5, true), '+5.0%');
   assert.equal(formatPercent('-8938', 5, true), '−8.9%');
+  assert.equal(formatPercent('8950', 5), '8.9%');
+  assert.equal(formatPercent('50', 5, true), '+<0.1%');
   assert.equal(rawAt([{ firstHour: 1, lastHour: 2, valueRaw: '96000', startsSegment: true }], 3), null);
 });
 

@@ -263,9 +263,9 @@ fn non_merging_factions_keep_unchanged_region_sides_and_filtered_ranking() {
     let rows = Rows(vec![score(1, 10, 500, 100), score(3, 10, 200, 600), score(3, 11, 400, 0)]);
     let filter = timeline::AirTimelineParams { branch_id: "1".into(), first_hour: 24, last_hour: 50, sides: Some(vec!["f:10".into()]), ..Default::default() };
     let ranked = timeline::Days { index: &index, holders: &holders, days: &days, rows: &rows, params: &filter, theatres: None }
-        .rank(&[10, 11], None, 1, None, &AtomicBool::new(false))
+        .rank_at(&[10, 11], &AtomicBool::new(false))
         .unwrap();
-    assert_eq!(ranked, [11, 10]);
+    assert_eq!(ranked.regions, [11, 10]);
 }
 
 #[test]
@@ -298,7 +298,7 @@ fn ordered_air_superiority_ranks_regions_and_registers_live_totals() {
     named.order = Some(AirRegionOrder::Name);
     let (named_reply, _) = moment_of(&frame(contested_scores, true), &named);
     let named_ids: Vec<u32> = named_reply.regions.iter().map(|region| region.id).collect();
-    assert_eq!(named_ids, [10, 11, 12], "name ordering retains inactive regions");
+    assert_eq!(named_ids, [10, 11], "a Name sort orders the active regions; it never adds an idle one");
 }
 
 #[test]
