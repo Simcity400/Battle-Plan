@@ -7,7 +7,9 @@ import { deepFreeze } from '../../testFrozen.ts';
 import type { ShipsSunkReply, ShipsSunkRow } from '../../generated/dashboard';
 const row = (sinkHour: number, knownAt: number): ShipsSunkRow => ({ sinkHour, knownAt, name: 'recorded ship', classIndex: 0,
   recordedNameIndex: 0, victim: 'mod victim', attacker: null, victimAsOf: null, attackerAsOf: null, placeIndex: 0,
-  cause: 'hostile', attributionName: null, assistedKill: false });
+  cause: 'hostile', attributionName: null, assistedKill: false,
+  sinkingCause: { kind: 'notRecorded', reason: 'sinking cause was not recorded' },
+  battle: { kind: 'notRecorded', reason: 'sinking battle was not recorded' } });
 function page(window: number, indices: number[], rows: ShipsSunkRow[], token: number): ShipsSunkWindowReply {
   const reply: ShipsSunkReply = { branchId: '1', window, available: true, firstHour: 100, lastHour: 130, firstRead: 100, unread: [],
     classes: [{ token, key: `mod class ${token}`, name: null, icon: null }], places: [`mod sea ${token}`],

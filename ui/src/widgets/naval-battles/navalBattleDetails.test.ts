@@ -5,7 +5,7 @@ import type { NavalBattleDetail } from '../../generated/dashboard';
 
 const detail: NavalBattleDetail = { id: 'result:15', hour: 43, rosterHour: 8,
   fleets: [{ names: ['Recorded fleet'], unknown: null }, { names: [], unknown: 'Fleet name not recorded' }],
-  namedShips: [{ sinkHour: 9, knownAt: 19, name: 'Recorded ship', className: 'Mod ship class' }], shipRead: 43, unavailable: null };
+  namedShips: [{ sinkHour: 9, knownAt: 19, name: 'Recorded ship', className: 'Mod ship class', sinkingCause: { kind: 'notRecorded', reason: 'sinking cause was not recorded' } }], shipRead: 43, unavailable: null };
 test('fleet and sinking details preserve names and sinking dates without supplying dates', () => {
   assert.equal(validateNavalBattleDetails({ rows: [detail], warnings: [] }).rows[0], detail);
   assert.equal(navalFleetDescription(detail, { pending: false }), 'Recorded fleet v Fleet names not recorded');
