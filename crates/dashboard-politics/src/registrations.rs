@@ -25,3 +25,12 @@ dashboard_base::register_hourly_products! {
     STABILITY_COUNTRYSTABILITYBREAKDOWN => crate::products::stability::CountryStabilityBreakdown,
     STABILITY_STABILITYPARTNAMES => crate::products::stability::StabilityPartNames,
 }
+
+use dashboard_base::{Source, products::at_hour::exact_panel};
+use dashboard_core::config::LoadContext;
+use dashboard_follow::panel::Panel;
+use serde_json::Value;
+
+type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
+
+pub const EXACT_POLITICSSTATE: ExactPanel = exact_panel::<crate::products::politics::state::PoliticsState>;

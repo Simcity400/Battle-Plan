@@ -468,7 +468,8 @@ export function deriveBarsAudit(
 ): AuditRow[] {
   const rows: AuditRow[] = [];
   if (model.empty !== undefined && model.rows.length === 0) {
-    rows.push({ row: 'empty', key: model.emptyKind ?? 'empty', value: model.empty });
+    const key = model.emptyKind ?? 'empty';
+    rows.push({ row: key, key, value: model.empty });
     return rows;
   }
   const first = options?.window ? Math.max(0, options.window.first) : 0;
@@ -477,7 +478,7 @@ export function deriveBarsAudit(
     const item = model.rows[i]!;
     if (item.kind !== 'data') continue;
     const label = item.labelMissing ? notRecordedLabel('Name') : item.label;
-    const cell = (row: string, name: string, value: string) => rows.push({ row, key: `${row}\u0000${name}`, value });
+    const cell = (row: string, name: string, value: string) => rows.push({ row, key: `${row}:${name}`, value });
     cell(item.key, 'label', label);
     if (item.value) cell(item.key, 'value', canonicalAuditValue(item.value.value));
     if (item.left) cell(item.key, 'left', canonicalAuditValue(item.left.value.value));

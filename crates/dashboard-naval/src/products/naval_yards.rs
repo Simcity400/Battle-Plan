@@ -5,6 +5,7 @@ use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Owner, Read}};
 use dashboard_world::products::place_names::{self, Places};
 use dashboard_base::{Source, catalogue::{self, Catalogue, Refusals, View}};
 use dashboard_follow::live::{Cells, Source as Cell};
+use dashboard_query::coverage::witnessed;
 use content_reader_script::sub_units::{SubUnit, SubUnits};
 use content_reader_division_names::division_names::Database;
 use replay_data::rows::{ShipModelRow, ShipNamingOperands, ShipRow};
@@ -329,8 +330,8 @@ impl<'f> Yard<'f> {
 
     fn ship(&mut self, handle: u64) -> YardShip {
         let frame = self.frame;
-        let row = frame.complete::<tables::Ships>().ok().and_then(|rows| rows.iter().find(|row| row.id == handle));
-        let model = frame.complete::<tables::ShipModels>().ok().and_then(|rows| rows.iter().find(|row| row.ship == handle));
+        let row = witnessed::<tables::Ships>(frame, u128::from(handle)).row();
+        let model = witnessed::<tables::ShipModels>(frame, u128::from(handle)).row();
         if row.is_none() {
             self.notes.note("Queued ship is not recorded", handle.to_string());
         }

@@ -1156,6 +1156,7 @@ pub fn render(
             tooltip_overrides: &empty_tooltips,
             extra_warnings,
             admitted_gen: Some(admitted_gen),
+            scroll: &request.scroll,
         },
         cancel,
         |shared| {
@@ -1437,8 +1438,9 @@ pub fn render(
                 tooltips,
             );
         },
-        |main_layout, root, guis, resources, localisation, visuals| {
-            let mut plan = compose_sub_windows(
+        |plan, main_layout, root, guis, resources, localisation, visuals| {
+            compose_sub_windows(
+                plan,
                 main_layout,
                 root,
                 guis,
@@ -1458,7 +1460,7 @@ pub fn render(
                 plan.art_label = Some(provenance.label.clone());
             }
             plan.warnings.extend(visuals.prep_warnings.iter().cloned());
-            Ok(plan)
+            Ok(())
         },
     )
 }
@@ -2891,13 +2893,14 @@ struct StatGridSpec<'a> {
 }
 
 fn compose_sub_windows(
+    plan: &mut ComposedPlan,
     main_layout: &Layout,
     root: &Element,
     guis: &native::Guis,
     resources: &dyn Resources,
     localisation: &Localisation,
     ctx: SubWindowContext<'_>,
-) -> Result<ComposedPlan, GameWindowError> {
+) -> Result<(), GameWindowError> {
     let SubWindowContext {
         data,
         equipment_db,
@@ -2905,8 +2908,6 @@ fn compose_sub_windows(
         blueprint_name,
         equipment_icon,
     } = ctx;
-    let mut plan = ComposedPlan::default();
-
     if data.kind.is_modular() {
         let _ = format_resources_text(
             data.build_resources.as_deref(),
@@ -2949,7 +2950,7 @@ fn compose_sub_windows(
             resources,
             localisation,
             (data, equipment_db),
-            &mut plan,
+            plan,
         )?;
 
         let stat_root = guis.template(b"stat_entry").ok_or_else(|| {
@@ -2985,7 +2986,7 @@ fn compose_sub_windows(
                 },
                 resources,
                 localisation,
-                &mut plan,
+                plan,
             )?;
         }
 
@@ -2996,7 +2997,7 @@ fn compose_sub_windows(
             resources,
             localisation,
             data,
-            &mut plan,
+            plan,
         )?;
     } else if let DesignerKind::Upgrade(domain) = data.kind {
         let sub_name = domain.sub_window();
@@ -3069,11 +3070,11 @@ fn compose_sub_windows(
             },
             resources,
             localisation,
-            &mut plan,
+            plan,
         )?;
     }
 
-    Ok(plan)
+    Ok(())
 }
 
 fn compose_unknown_auto_upgrade(
@@ -3145,6 +3146,7 @@ fn compose_unknown_auto_upgrade(
         view: None,
         tooltip: Some(tip),
         alpha_mask: None,
+        scroll: None,
     });
     Ok(())
 }

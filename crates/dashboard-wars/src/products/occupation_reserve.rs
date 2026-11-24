@@ -1,11 +1,19 @@
 
-use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour}}, queries::country_ids::Names};
+use dashboard_base::{
+    Source,
+    products::{
+        Country as RequestedCountry, LoadContext, Product,
+        at_hour::{At, AtHour},
+        validate_country,
+    },
+    queries::country_ids::Names,
+};
 use dashboard_intelligence::products::intelligence::{Country, IDENTITY, Tags, branch, missing};
-use dashboard_follow::live::{Cells, Source as Cell};
-use replay_lanes::{lanes, points::Cell as Read};
+use dashboard_query::{coverage::population, identity::Holder};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{CountryOccupationReserveManpowerRow, TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, Keys};
+use replay_lanes::{lanes, points::Cell as Read};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -34,6 +42,11 @@ pub struct OccupationReserve;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccupationReserveParams {
     pub branch_id: String,
+    #[serde(default)]
+    pub countries: Vec<RequestedCountry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub top: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -42,6 +55,7 @@ pub struct OccupationReserveParams {
 pub struct ReserveEntry {
     pub ordinal: u32,
     pub source: Country,
+    pub amount: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -51,6 +65,9 @@ pub struct ReserveHolder {
     pub country: Country,
     #[doc = " Its occupation status was read: no entry is a recorded zero."]
     pub admitted: bool,
+    #[doc = " Sum of its positive entries at this hour."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
+    pub total: i64,
     #[doc = " Its entries in list order."]
     pub entries: Vec<ReserveEntry>,
 }
@@ -59,11 +76,12 @@ pub struct ReserveHolder {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationReserveReply {
-    #[doc = " By country id: the race ranks them by their entries' live amounts."]
+    #[doc = " Ranked descending by positive reserve total, then tag."]
     pub holders: Vec<ReserveHolder>,
-    #[doc = " The reserve's read hour the rows hold; it moves with the reads, so a widget renders nothing"]
-    #[doc = " for it."]
+    #[doc = " The reserve's read hour the rows hold."]
     pub read_hour: Option<i32>,
+    #[doc = " Holders whose recording named no tag at this hour."]
+    pub unnamed: u32,
     pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -75,29 +93,85 @@ pub fn holders(
     entries: &[CountryOccupationReserveManpowerRow],
     owned: Option<&HashMap<u32, i32>>,
     country: impl Fn(u32) -> Country,
-    live: &Cells,
-    amount: usize,
 ) -> Vec<ReserveHolder> {
     let mut held: BTreeMap<u32, ReserveHolder> = admitted
         .iter()
-        .map(|&raw| (raw, ReserveHolder { country: country(raw), admitted: true, entries: Vec::new() }))
+        .map(|&raw| (raw, ReserveHolder { country: country(raw), admitted: true, total: 0, entries: Vec::new() }))
         .collect();
     let mut sorted: Vec<&CountryOccupationReserveManpowerRow> = entries.iter().collect();
     sorted.sort_by_key(|entry| (entry.country, entry.ordinal));
     for entry in sorted {
-        let holder = held.entry(entry.country).or_insert_with(|| ReserveHolder { country: country(entry.country), admitted: false, entries: Vec::new() });
-        holder.entries.push(ReserveEntry { ordinal: entry.ordinal, source: country(entry.source_country) });
+        let holder = held.entry(entry.country).or_insert_with(|| ReserveHolder { country: country(entry.country), admitted: false, total: 0, entries: Vec::new() });
+        if entry.amount > 0 {
+            holder.total += i64::from(entry.amount);
+        }
+        holder.entries.push(ReserveEntry { ordinal: entry.ordinal, source: country(entry.source_country), amount: entry.amount });
     }
     held.into_iter()
         .filter(|(raw, _)| owned.is_none_or(|owned| owned.get(raw).is_none_or(|&states| states > 0)))
-        .map(|(raw, holder)| {
-            for entry in &holder.entries {
-                let key = entry_key(raw, entry.ordinal);
-                live.value(&format!("{raw}:{}", entry.ordinal), "amount", Cell { table: TableId::CountryOccupationReserveManpower, column: amount, key }, 1.0);
-            }
-            holder
-        })
+        .map(|(_, holder)| holder)
         .collect()
+}
+
+fn select_holders(
+    all: Vec<ReserveHolder>,
+    params: &OccupationReserveParams,
+    at: &At<'_, ()>,
+    hour: i32,
+) -> Result<(Vec<ReserveHolder>, u32), String> {
+    let unnamed = all.iter().filter(|holder| holder.country.tag.is_none() && (holder.admitted || !holder.entries.is_empty())).count() as u32;
+    let unresolved = at.holders.unknown.iter().any(|&(first, last, _)| first <= hour && hour <= last)
+        || at.holders.tags.values().flatten().any(|run| run.first <= hour && hour <= run.last && run.holder == Holder::Unresolved);
+    let mut unplaced: Vec<i64> = Vec::new();
+    let mut named: Vec<ReserveHolder> = Vec::new();
+    for holder in all {
+        if !holder.admitted && holder.entries.is_empty() {
+            continue;
+        }
+        if holder.country.tag.is_some() {
+            named.push(holder);
+        } else if holder.total > 0 {
+            unplaced.push(holder.total);
+        }
+    }
+    if !params.countries.is_empty() {
+        let mut allowed_ids: BTreeSet<u32> = BTreeSet::new();
+        let mut allowed_tags: BTreeSet<String> = BTreeSet::new();
+        for country in &params.countries {
+            if let Some(run) = at.holders.at(country, hour)
+                && let Holder::Found { id, .. } = run.holder
+            {
+                allowed_ids.insert(id);
+            }
+            allowed_tags.insert(at.holders.name(country, hour));
+        }
+        named.retain(|holder| allowed_ids.contains(&holder.country.id) || holder.country.tag.as_ref().is_some_and(|tag| allowed_tags.contains(tag)));
+        if !named.iter().any(|holder| !holder.entries.is_empty()) {
+            return Ok((Vec::new(), unnamed));
+        }
+        named.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.country.tag.cmp(&b.country.tag)));
+        return Ok((named, unnamed));
+    }
+    if let Some(limit) = params.top {
+        named.retain(|holder| holder.total > 0);
+        named.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.country.tag.cmp(&b.country.tag)));
+        let count = usize::try_from(limit).unwrap_or(usize::MAX);
+        named.truncate(count);
+        if (unresolved || !unplaced.is_empty()) && !unplaced.is_empty() {
+            let full = named.len() >= count;
+            let floor = named.last().map(|holder| holder.total);
+            let contending = unplaced.iter().filter(|&&value| !full || floor.is_none_or(|floor| value >= floor)).count();
+            if contending > 0 {
+                return Err(format!("The top {limit} occupation reserve holders are not known: {contending} countries could not be matched to a tag at this hour and could be among them"));
+            }
+        }
+        return Ok((named, unnamed));
+    }
+    if !named.iter().any(|holder| !holder.entries.is_empty()) {
+        return Ok((Vec::new(), unnamed));
+    }
+    named.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.country.tag.cmp(&b.country.tag)));
+    Ok((named, unnamed))
 }
 
 impl AtHour for OccupationReserve {
@@ -105,7 +179,7 @@ impl AtHour for OccupationReserve {
     const TITLE: &'static str = "Occupation reserve";
     const CONTENT_DEPENDENT: bool = false;
     type Params = OccupationReserveParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, top, "countries[]"];
     type Reply = OccupationReserveReply;
     type Context = ();
 
@@ -115,9 +189,15 @@ impl AtHour for OccupationReserve {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        branch(&params.branch_id)
+        branch(&params.branch_id)?;
+        if params.top.is_some_and(|top| top == 0 || !params.countries.is_empty()) {
+            return Err("Invalid country selection");
+        }
+        for country in &params.countries {
+            validate_country(country)?;
+        }
+        Ok(())
     }
-
 
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
@@ -138,26 +218,26 @@ impl AtHour for OccupationReserve {
         Ok(())
     }
 
-    fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut warnings = Vec::new();
         let read_hour = frame.tables[TableId::CountryOccupationReserveManpower.index()].sampled_at();
-        let amount = dashboard_declare::field(TableId::CountryOccupationReserveManpower, "amount")?;
-        let made = (|| -> io::Result<Vec<ReserveHolder>> {
-            let tags = Tags::read(frame)?;
-            let admitted: Vec<u32> = frame.complete::<tables::OccupationSettings>()?.iter().map(|row| row.country).collect();
-            let entries = frame.complete::<tables::CountryOccupationReserveManpower>()?;
-            let owned: Option<HashMap<u32, i32>> = match frame.complete::<tables::CountryCounterInputs>() {
+        let made = (|| -> Result<(Vec<ReserveHolder>, u32), String> {
+            let tags = Tags::read(frame).map_err(|error| error.to_string())?;
+            let admitted: Vec<u32> = population::<tables::OccupationSettings>(frame, &Keys::All)?.iter().map(|row| row.country).collect();
+            let entries = population::<tables::CountryOccupationReserveManpower>(frame, &Keys::All)?;
+            let owned: Option<HashMap<u32, i32>> = match population::<tables::CountryCounterInputs>(frame, &Keys::All) {
                 Ok(rows) => Some(rows.iter().map(|row| (row.country, row.owned_state_count)).collect()),
                 Err(_) => {
                     warnings.extend(missing(frame, TableId::CountryCounterInputs).map(|reason| format!("Which holders exist is not known, so none is left out: {reason}")));
                     None
                 }
             };
-            Ok(holders(&admitted, entries, owned.as_ref(), |raw| Country::of(&tags, raw), at.live, amount))
+            let built = holders(&admitted, entries, owned.as_ref(), |raw| Country::of(&tags, raw));
+            select_holders(built, params, at, frame.hour)
         })();
         Ok(match made {
-            Ok(holders) => OccupationReserveReply { holders, read_hour, missing: None, warnings },
-            Err(error) => OccupationReserveReply { holders: Vec::new(), read_hour, missing: Some(error.to_string()), warnings },
+            Ok((holders, unnamed)) => OccupationReserveReply { holders, read_hour, unnamed, missing: None, warnings },
+            Err(reason) => OccupationReserveReply { holders: Vec::new(), read_hour, unnamed: 0, missing: Some(reason), warnings },
         })
     }
 }
@@ -346,22 +426,18 @@ mod tests {
     }
 
     #[test]
-    fn an_admitted_holder_without_entries_holds_a_recorded_zero_and_each_entry_is_a_live_amount_in_list_order() {
-        let live = Cells::default();
+    fn an_admitted_holder_without_entries_holds_a_recorded_zero_and_each_entry_carries_its_amount_in_list_order() {
         let entries = [entry(2, 1, 9, 300), entry(2, 0, 8, -50), entry(3, 0, 9, 500)];
-        let held = holders(&[1, 2], &entries, None, named, &live, 1);
-        assert_eq!(held.iter().map(|holder| (holder.country.id, holder.admitted)).collect::<Vec<_>>(), vec![(1, true), (2, true), (3, false)]);
-        assert_eq!(held[1].entries, vec![ReserveEntry { ordinal: 0, source: named(8) }, ReserveEntry { ordinal: 1, source: named(9) }]);
+        let held = holders(&[1, 2], &entries, None, named);
+        assert_eq!(held.iter().map(|holder| (holder.country.id, holder.admitted, holder.total)).collect::<Vec<_>>(), vec![(1, true, 0), (2, true, 300), (3, false, 500)]);
+        assert_eq!(held[1].entries, vec![ReserveEntry { ordinal: 0, source: named(8), amount: -50 }, ReserveEntry { ordinal: 1, source: named(9), amount: 300 }]);
         assert!(held[0].entries.is_empty());
-        let live = live.finish();
-        assert_eq!(live.groups.len(), 1);
-        assert_eq!(live.groups[0].keys, vec![entry_key(2, 0), entry_key(2, 1), entry_key(3, 0)]);
     }
 
     #[test]
     fn a_holder_owning_no_state_does_not_exist_and_one_whose_states_are_not_recorded_stays() {
         let owned = HashMap::from([(1, 0), (2, 4)]);
-        let held = holders(&[1, 2, 3], &[], Some(&owned), named, &Cells::default(), 1);
+        let held = holders(&[1, 2, 3], &[], Some(&owned), named);
         assert_eq!(held.iter().map(|holder| holder.country.id).collect::<Vec<_>>(), vec![2, 3]);
     }
 
