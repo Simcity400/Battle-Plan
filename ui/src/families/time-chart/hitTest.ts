@@ -418,7 +418,21 @@ export function deriveTimeChartTooltip(
       value: seg.exactText,
       swatch: seg.color,
     }));
-    items.push({ label: 'Total', value: m.totalText, strong: true, divider: true });
+    if (m.missingParts) {
+      for (const part of m.missingParts) {
+        items.push({
+          label: part.label,
+          swatch: part.color,
+          missingReason: part.reason,
+          tone: 'muted',
+        });
+      }
+    }
+    if (m.totalMissingReason) {
+      items.push({ label: 'Total', missingReason: m.totalMissingReason, tone: 'muted', strong: true, divider: true });
+    } else {
+      items.push({ label: 'Total', value: m.totalText, strong: true, divider: true });
+    }
     return {
       hour: m.firstHour,
       rowKey: inspectKey,
@@ -426,6 +440,7 @@ export function deriveTimeChartTooltip(
         title,
         subtitle: model.measureTitle,
         items,
+        ...(m.note ? { note: m.note } : {}),
       },
     };
   }
