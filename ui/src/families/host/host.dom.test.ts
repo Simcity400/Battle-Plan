@@ -86,6 +86,11 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.equal(tuple.activatedId, tuple.viewId, 'Enter after a date-only install carries the picture Page shows now');
     assert.equal(tuple.activatedHour, tuple.viewHour, 'and its hour');
 
+    const statics = await act<{ rounds: number; commits: number; binds: number; staticsSupplied: number; generationKept: boolean }>('testStaticPanelsReplaced()');
+    assert.deepEqual([statics.binds, statics.generationKept], [0, true], `replacing only a mounted host's static panels ${statics.rounds} times binds nothing and keeps the binding generation (R4-S4: ${statics.binds} binds)`);
+    assert.equal(statics.staticsSupplied, statics.rounds, 'each new panel set is one statics supply');
+    assert.equal(statics.commits, statics.rounds, 'and costs one React commit, the one that passed the panels');
+
     const f12 = await act<{
       distinctCanvases: boolean;
       distinctPlacements: boolean;

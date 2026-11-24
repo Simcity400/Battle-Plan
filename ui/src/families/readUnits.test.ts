@@ -527,9 +527,8 @@ async function playHundredHours(entries: readonly SourceEntry[]) {
     return {
       replies,
       requests: server.calls.length,
-      commits: counts.views,
+      notifications: counts.views,
       bundles: counts.bundles.size,
-      binds: posted.filter(item => item.type === 'bind').length,
       identities: posted.filter(item => item.type === 'identity').length,
       staticBytes: statics.reduce((sum, item) => sum + item.bytes, 0),
       staticMessages: statics.length,
@@ -544,11 +543,11 @@ async function playHundredHours(entries: readonly SourceEntry[]) {
   }
 }
 
-test('Class N: a hundred hours at 24 hours a frame cost what the answers changed, never a bind per frame', async () => {
+test('Class N: a hundred hours at 24 hours a frame cost what the answers changed (binds and commits are counted on a mounted host in host.dom.test.ts)', async () => {
   const constant = await playHundredHours([aggregate('factions', 0, undefined, { buildSpanParams: params => params })]);
-  assert.deepEqual([constant.requests, constant.replies, constant.bundles, constant.staticMessages, constant.binds, constant.identities], [1, 1, 1, 1, 0, 1],
-    'a request that never names the hour, with no proof: one request, one bundle, one statics message, no bind after the first and one identity snapshot (main: 100 re-asks, 101 binds each cloning the panels and the snapshot)');
-  assert.ok(constant.commits <= 2, `React commits bounded by 1 + changed answers (${constant.commits})`);
+  assert.deepEqual([constant.requests, constant.replies, constant.bundles, constant.staticMessages, constant.identities], [1, 1, 1, 1, 1],
+    'a request that never names the hour, with no proof: one request, one bundle, one statics message and one identity snapshot');
+  assert.ok(constant.notifications <= 2, `view notifications bounded by 1 + changed answers (${constant.notifications})`);
   assert.ok(constant.datedBytes <= 80, `each proof move is a dated message of ${constant.datedBytes} bytes, never the panels`);
   assert.ok(constant.datedMessages <= 101);
   assert.equal(constant.generationKept, true, 'no supply bumps the binding generation');
@@ -559,9 +558,9 @@ test('Class N: a hundred hours at 24 hours a frame cost what the answers changed
   ] as const) {
     const played = await playHundredHours(entries);
     assert.ok(played.requests <= played.replies + 1, `${name}: requests (${played.requests}) are bounded by replies (${played.replies}): one outstanding target, lag instead of a queue`);
-    assert.ok(played.commits <= played.replies + 1, `${name}: React commits (${played.commits}) bounded by 1 + changed answers (${played.replies})`);
+    assert.ok(played.notifications <= played.replies + 1, `${name}: view notifications (${played.notifications}) bounded by 1 + changed answers (${played.replies})`);
     assert.ok(played.staticMessages <= played.replies, `${name}: statics messages (${played.staticMessages}) bounded by changed answers`);
     assert.ok(played.staticBytes <= played.replies * played.replyBytes, `${name}: statics bytes bounded by changed answers × reply size`);
-    assert.deepEqual([played.binds, played.identities, played.generationKept], [0, 1, true], `${name}: no bind after the first, one identity snapshot, the generation kept`);
+    assert.deepEqual([played.identities, played.generationKept], [1, true], `${name}: one identity snapshot, the generation kept`);
   }
 });
