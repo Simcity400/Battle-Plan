@@ -86,6 +86,8 @@ impl AtHour for Power {
 
     fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.expect("the adapter resolved the holder");
+        assert_eq!(*frame.tables[TableId::Countries.index()].keys(), Keys::These(vec![u128::from(owner.id)]), "a keyed read names the rows it chose on every path");
+        assert_eq!(*frame.tables[TableId::CountryLinks.index()].keys(), Keys::All);
         let links = frame.complete::<tables::CountryLinks>()?;
         let power = column(TableId::Countries, "political_power_raw");
         let coal = u128::from(owner.id) << 32 | 1;

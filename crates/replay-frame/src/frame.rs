@@ -130,6 +130,25 @@ impl TableView {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Keys {
+    All,
+    These(Vec<u128>),
+    Range(u128, u128),
+    Ranges(Vec<(u128, u128)>),
+}
+
+impl Keys {
+    pub fn contains(&self, key: u128) -> bool {
+        match self {
+            Self::All => true,
+            Self::These(keys) => keys.binary_search(&key).is_ok(),
+            Self::Range(lo, hi) => (*lo..=*hi).contains(&key),
+            Self::Ranges(ranges) => ranges.get(ranges.partition_point(|&(_, hi)| hi < key)).is_some_and(|&(lo, _)| lo <= key),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SharedView(
     Arc<TableView>,
@@ -137,6 +156,7 @@ pub struct SharedView(
     Option<Arc<ChangeFacts>>,
     Option<Arc<FieldStamp>>,
     Option<u64>,
+    Option<Arc<Keys>>,
 );
 
 impl SharedView {
@@ -161,11 +181,19 @@ impl SharedView {
     }
 
     pub fn with_fields(self, fields: u64) -> Self {
-        Self(self.0, self.1, self.2, self.3, Some(fields))
+        Self(self.0, self.1, self.2, self.3, Some(fields), self.5)
     }
 
     pub fn fields(&self) -> Option<u64> {
         self.4
+    }
+
+    pub fn with_keys(self, keys: Option<Arc<Keys>>) -> Self {
+        Self(self.0, self.1, self.2, self.3, self.4, keys)
+    }
+
+    pub fn keys(&self) -> &Keys {
+        self.5.as_deref().unwrap_or(&Keys::All)
     }
 
     pub fn held(&self) -> &TableView {
@@ -173,7 +201,7 @@ impl SharedView {
     }
 
     pub fn with_sampled_at(self, hour: Option<Hour>) -> Self {
-        Self(self.0, hour, self.2, self.3, self.4)
+        Self(self.0, hour, self.2, self.3, self.4, self.5)
     }
 
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
@@ -203,7 +231,7 @@ impl SharedView {
     }
 
     pub fn try_unwrap(self) -> Result<TableView, Self> {
-        Arc::try_unwrap(self.0).map_err(|shared| Self(shared, self.1, self.2, self.3, self.4))
+        Arc::try_unwrap(self.0).map_err(|shared| Self(shared, self.1, self.2, self.3, self.4, self.5))
     }
 
     pub fn is_shared(&self) -> bool {
@@ -644,7 +672,7 @@ impl std::ops::DerefMut for SharedView {
 
 impl From<TableView> for SharedView {
     fn from(view: TableView) -> Self {
-        Self(Arc::new(view), None, None, None, None)
+        Self(Arc::new(view), None, None, None, None, None)
     }
 }
 
