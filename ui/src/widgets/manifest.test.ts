@@ -31,7 +31,7 @@ import {
 } from '../families/settingsControls.ts';
 import { encodeTableSettings, ROW_HEIGHT, tableDefaults, tableSettingsOf, updateTableSettings, type TableBase, type TableColumnDefaults } from '../families/table/settings.ts';
 import { widgetMetas } from './definitions.ts';
-import { FAMILY_MANIFESTS, FAMILY_VIEWS, familyLaneView } from './familyManifest.ts';
+import { FAMILY_MANIFESTS, FAMILY_VIEWS } from './familyManifest.ts';
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
 import { drawnViews } from '../draw/views/drawn.ts';
 import {
@@ -272,11 +272,23 @@ test('worker projection registry loads table and bars projections lazily on dema
     },
   ]);
 
+  const settle = async (wakes: readonly number[]) => {
+    for (let i = 0; i < 16 && !wakes.length; i++) await Promise.resolve();
+  };
+  const laneOf = (family: string) => FAMILY_MANIFESTS.find(entry => entry.family === family)!.lane;
+
   const matrixWakes: number[] = [];
   const matrixView = drawnViews('heat-matrix', wid => matrixWakes.push(wid))!;
   const matrixBinding = { family: 'heat-matrix', kind: 'synthetic-heat-matrix', options: {}, sources: {}, width: 100, height: 100, scrollLeft: 0, scrollTop: 0 };
-  assert.equal(matrixView.next!({ widget: 7, subs: [], pictures: [], model: matrixBinding }, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
-  for (let i = 0; i < 16 && !matrixWakes.length; i++) await Promise.resolve();
+  const matrixScene = { widget: 7, subs: [], pictures: [], model: matrixBinding };
+  assert.equal(matrixView.next!(matrixScene, 50), null, 'a lane whose code is loading locates no change, so the lane paints at its target and walks no history');
+  await laneOf('heat-matrix')();
+  await settle(matrixWakes);
+  assert.deepEqual(matrixWakes, [7], 'the placement that asked is woken once its lane code loads');
+  assert.equal(heatMatrixLoads, 0);
+  matrixWakes.length = 0;
+  assert.equal(matrixView.next!(matrixScene, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
+  await settle(matrixWakes);
   assert.equal(heatMatrixLoads, 1);
   assert.deepEqual(matrixWakes, [7]);
   assert.equal(familyProjection('heat-matrix', 'synthetic-heat-matrix')?.kind, 'synthetic-heat-matrix');
@@ -284,8 +296,14 @@ test('worker projection registry loads table and bars projections lazily on dema
   const lanesWakes: number[] = [];
   const lanesView = drawnViews('heat-lanes', wid => lanesWakes.push(wid))!;
   const lanesBinding = { family: 'heat-lanes', kind: 'synthetic-heat-lanes', options: {}, sources: {}, width: 100, height: 100, scrollTop: 0 };
-  assert.equal(lanesView.next!({ widget: 9, subs: [], pictures: [], model: lanesBinding }, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
-  for (let i = 0; i < 16 && !lanesWakes.length; i++) await Promise.resolve();
+  const lanesScene = { widget: 9, subs: [], pictures: [], model: lanesBinding };
+  assert.equal(lanesView.next!(lanesScene, 50), null);
+  await laneOf('heat-lanes')();
+  await settle(lanesWakes);
+  assert.deepEqual(lanesWakes, [9]);
+  lanesWakes.length = 0;
+  assert.equal(lanesView.next!(lanesScene, 50), null, 'a loading projection locates no change, so the lane paints at its target and walks no history');
+  await settle(lanesWakes);
   assert.equal(heatLanesLoads, 1);
   assert.deepEqual(lanesWakes, [9]);
   assert.equal(familyProjection('heat-lanes', 'synthetic-heat-lanes')?.kind, 'synthetic-heat-lanes');
@@ -294,8 +312,8 @@ test('worker projection registry loads table and bars projections lazily on dema
     FAMILY_MANIFESTS.map(entry => entry.family),
     ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline'],
   );
-  for (const family of ['bars', 'breakdown', 'card', 'flow', 'heat-lanes', 'heat-matrix', 'meters', 'table', 'time-chart', 'timeline']) {
-    assert.ok(familyLaneView(family, () => {}), `familyLaneView resolves ${family}`);
+  for (const manifest of FAMILY_MANIFESTS) {
+    assert.equal((await manifest.lane()).family, manifest.family, `${manifest.family} lane code loads and names its family`);
   }
 });
 

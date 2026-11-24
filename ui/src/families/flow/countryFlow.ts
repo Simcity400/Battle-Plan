@@ -10,6 +10,7 @@ export interface CountryFlowText {
   readonly leftHeader: string;
   readonly rightHeader: string;
   readonly unitNote?: string;
+  readonly unit?: string;
   readonly groupLeftHeader: string;
   readonly groupRightHeader: string;
   readonly notRecorded: string;
@@ -31,7 +32,6 @@ interface FlowEndpointPresentation {
   readonly subject?: string;
   readonly tag?: string;
   readonly flag?: ArtResult;
-  readonly color?: string;
   readonly unknown?: string;
 }
 
@@ -52,7 +52,6 @@ export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEnd
     subject,
     ...(endpoint.tag ? { tag: endpoint.tag } : {}),
     flag: shown.media.art,
-    ...(shown.color ? { color: shown.color } : {}),
   };
 }
 
@@ -61,7 +60,7 @@ export function flowSideNotes(...sides: readonly ReplySide[]): readonly string[]
 }
 
 function blank(hour: number, extra: Partial<FlowModel>): FlowModel {
-  return { hour, mode: 'centred', left: [], right: [], ribbons: [], parts: [], scaleMax: 0, ...extra };
+  return { hour, mode: 'centred', left: [], right: [], ribbons: [], parts: [], ...extra };
 }
 
 export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowText): FlowModel {
@@ -74,7 +73,7 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
 
   const decimals = reply.decimals;
   const shownFormat: ValueFormat = { decimals, maxDecimals: 1 };
-  const exactFormat: ValueFormat = { decimals };
+  const exactFormat: ValueFormat = { decimals, ...(text.unit ? { unit: text.unit } : {}) };
   const value = (amount: string | null) => (amount === null ? null : scaledAmount(amount, decimals));
   const figure = (amount: string | null) => (amount === null ? 'Not recorded' : formatCompactScalar(BigInt(amount), shownFormat).text);
   const exact = (amount: string | null) => (amount === null ? 'Not recorded' : formatScalar(BigInt(amount), exactFormat));
@@ -121,7 +120,6 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       ...(shown.labelMissing ? { labelMissing: true } : {}),
       ...(shown.tag ? { tag: shown.tag } : {}),
       ...(shown.flag ? { flag: shown.flag } : {}),
-      ...(shown.color ? { color: shown.color } : {}),
       ...(shown.unknown ? { unknown: shown.unknown } : {}),
       numeric: value(amount),
       figure: figure(amount),
@@ -185,7 +183,6 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       centre,
       ribbons,
       parts,
-      scaleMax: value(reply.largest) ?? 0,
       leftHeader: text.leftHeader,
       rightHeader: text.rightHeader,
       ...(text.unitNote ? { unitNote: text.unitNote } : {}),
@@ -214,7 +211,6 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     right,
     ribbons,
     parts,
-    scaleMax: value(reply.largest) ?? 0,
     leftHeader: text.groupLeftHeader,
     rightHeader: text.groupRightHeader,
     ...(text.unitNote ? { unitNote: text.unitNote } : {}),

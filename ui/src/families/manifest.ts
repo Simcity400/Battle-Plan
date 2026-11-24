@@ -1,8 +1,8 @@
 import type { FamilyViewRenderer, WidgetMeta, WidgetRenderer, WidgetViewSwitch } from '../dashboard/definitions';
 import { scopedOptionKey, type OptionField, type WidgetOptions } from '../dashboard/options.ts';
-import type { LaneView } from '../draw/lane.ts';
 import type { FamilyProjection } from './contract.ts';
 import type { FamilyHostAdapter } from './host/adapter.ts';
+import type { LaneFamilyLoad } from './laneRuntime.ts';
 import type { FamilyId, FamilyViewSpec } from './plan.ts';
 import { viewSwitchControl } from './settingsControls.ts';
 
@@ -45,7 +45,7 @@ export interface FamilyViewEntry {
 
 export interface FamilyManifestModule {
   readonly family: FamilyId;
-  readonly laneView: (wake: (widget: number) => void) => LaneView;
+  readonly lane: LaneFamilyLoad;
   readonly views: readonly FamilyViewEntry[];
   readonly hostAdapter?: FamilyHostAdapter<any, any, any, any>;
 }

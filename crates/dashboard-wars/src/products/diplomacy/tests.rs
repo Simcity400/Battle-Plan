@@ -76,6 +76,46 @@ fn opinions_matrix_computes_exact_cells_and_displayed_only_domain() {
 }
 
 #[test]
+fn a_group_is_its_members_at_the_asked_hour_and_unknown_membership_shows_no_owner() {
+    use dashboard_query::{identity::HolderRun, series::ranked::{GroupKind, GroupMembership}};
+    use dashboard_world::products::groups::{CountryGroupReply, MembershipRun, UnobservedHours};
+    let table = TableId::RelationOpinions.index() as u32;
+    let frame = frame(
+        vec![RelationOpinionRow { owner_country: 1, target_country: 2, opinion: 30 }],
+        vec![SliceReadRow { table, owner: 1, sample_hour: 480 }, SliceReadRow { table, owner: 2, sample_hour: 480 }],
+    );
+    let run = |tag: &str, first_hour, last_hour| MembershipRun { tag: tag.into(), first_hour, last_hour };
+    let reply = CountryGroupReply {
+        branch_id: "1".into(),
+        humans: vec![run("AAA", 0, 1000), run("BBB", 600, 1000)],
+        factions: Vec::new(),
+        wars: Vec::new(),
+        war_starts: Vec::new(),
+        capitulations: Vec::new(),
+        identity_changes: Vec::new(),
+        country_identities: Vec::new(),
+        unobserved: UnobservedHours { humans: vec![HourSpan { first_hour: 300, last_hour: 320 }], ..UnobservedHours::default() },
+        warnings: Vec::new(),
+    };
+    let held = |slot: u32| vec![HolderRun { first: 0, last: 1000, holder: Holder::Found { slot, id: slot }, starts_segment: true }];
+    let holders = Holders::new([("AAA".to_owned(), held(1)), ("BBB".to_owned(), held(2))].into_iter().collect(), Vec::new());
+    let context = DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings: Vec::new(), groups: GroupsAt::new(Arc::new(reply), 0) };
+    let group = GroupSelection { kind: GroupKind::Humans, id: None, tag: None, membership: GroupMembership::Hour };
+    let params = DiplomaticRelationsParams { branch_id: "1".into(), countries: Vec::new(), top: None, order: None, group: Some(group) };
+    let live = Cells::default();
+    let cancelled = AtomicBool::new(false);
+    let shown = |hour: i32| {
+        let at = At { owner: None, holders: &holders, hour, context: &context, cancelled: &cancelled, live: &live };
+        let reply = DiplomaticRelations::reply(&frame, &params, &at).unwrap();
+        (reply.owners.iter().map(|owner| owner.tag.clone()).collect::<Vec<_>>(), reply.chosen_missing)
+    };
+    assert_eq!(shown(500), (vec!["AAA".to_owned()], None), "a country joining at 600 is not shown at 500");
+    assert_eq!(shown(700), (vec!["AAA".to_owned(), "BBB".to_owned()], None));
+    let (none, refused) = shown(310);
+    assert!(none.is_empty() && refused.is_some(), "unknown membership is never a guess or a union");
+}
+
+#[test]
 fn a_relations_runs_are_cut_where_its_endpoints_or_dates_change() {
     let step = |hour, cells: Option<[Cell; 4]>| lanes::Step { hour, cells: cells.map(|cells| Box::from(cells)) };
     let n = Cell::Number;

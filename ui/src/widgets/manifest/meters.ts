@@ -1,7 +1,6 @@
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry, type FamilyViewModule } from '../../families/manifest.ts';
 import type { AnyMeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import { meterHostAdapter } from '../../families/meter/hostAdapter.ts';
-import { familyMeterLaneView } from '../../families/meter/laneView.ts';
 import type { MeterProjection } from '../../families/meter/model.ts';
 
 function meterSpec<TModule>(
@@ -69,7 +68,7 @@ export const METER_VIEWS: readonly FamilyViewEntry[] = [
 
 export const metersFamilyManifest: FamilyManifestModule = {
   family: 'meters',
-  laneView: familyMeterLaneView,
+  lane: () => import('../../families/meter/laneView.ts').then(m => m.meterLane),
   views: METER_VIEWS,
   hostAdapter: meterHostAdapter,
 };

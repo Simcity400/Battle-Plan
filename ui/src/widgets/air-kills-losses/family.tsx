@@ -1,18 +1,16 @@
 import { useCallback, useRef, useState } from 'react';
 import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
-import { contentKey, contentSet } from '../../dashboard/options.ts';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type BoundHour, type GatedHour } from '../../dashboard/regionTime';
 import { DetailWindowHost } from '../../families/host/index.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
 import type { MilitaryAirRowMeta } from '../bombing-damage/militaryAirAt.ts';
+import { useAirLossChoices } from '../../dashboard/useMilitaryAirLedger';
 import { AirLossCausesDetail } from './AirLossCausesDetail.tsx';
 
-const numbers = (value: unknown) => contentSet(typeof value === 'string' ? value : '').map(contentKey).map(Number).filter(Number.isInteger);
-
 function AirKillsLossesFamilyWidget(props: FamilyViewProps) {
-  const { widget, runtime, active, options, manifestDeclaration } = props;
+  const { widget, runtime, active, manifestDeclaration } = props;
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly row: MilitaryAirRowMeta; readonly hour: GatedHour; readonly from: BoundHour | null } | null>(null);
   const gate = useGate(runtime, widget, SPEC, active);
@@ -50,8 +48,6 @@ function AirKillsLossesFamilyWidget(props: FamilyViewProps) {
             row={detail.row}
             hour={detail.hour}
             from={detail.from}
-            regions={numbers(options.regions)}
-            causes={numbers(options.causes)}
             active={active}
           />
         ) : null}
@@ -60,4 +56,4 @@ function AirKillsLossesFamilyWidget(props: FamilyViewProps) {
   );
 }
 
-export default { render: AirKillsLossesFamilyWidget } satisfies FamilyViewRenderer;
+export default { render: AirKillsLossesFamilyWidget, useOptionChoices: useAirLossChoices } satisfies FamilyViewRenderer;
