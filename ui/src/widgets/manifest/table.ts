@@ -312,6 +312,17 @@ export const TABLE_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.mostDecoratedProjection, declaration: mod.mostDecoratedDeclaration }),
     ),
   },
+  {
+    kind: 'trade-flows',
+    view: 'table',
+    label: 'Table',
+    family: 'table',
+    viewOption: 'view',
+    loadSpec: () => import('../trade-flows/tradeFlowsProjection.ts').then(mod => ({
+      family: 'table', kind: 'trade-flows', view: 'table',
+      projection: mod.tradeTableProjection, declaration: mod.tradeTableDeclaration,
+    })),
+  },
 ];
 
 export const tableFamilyManifest: FamilyManifestModule = {
