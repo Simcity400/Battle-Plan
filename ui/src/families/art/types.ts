@@ -55,7 +55,7 @@ export function readyArt(
 
 export function missingArt(
   reason: string,
-  options: { readonly origin?: ArtOrigin | null; readonly file?: string | null } = {},
+  options: { readonly origin?: ArtOrigin; readonly file?: string } = {},
 ): Extract<ArtResolution, { status: 'confirmedMissing' }> {
   return {
     status: 'confirmedMissing',
@@ -68,7 +68,7 @@ export function missingArt(
 export function refusedArt(
   reason: string,
   construct = 'unsupported',
-  options: { readonly origin?: ArtOrigin | null; readonly file?: string | null } = {},
+  options: { readonly origin?: ArtOrigin; readonly file?: string } = {},
 ): Extract<ArtResolution, { status: 'refused' }> {
   return {
     status: 'refused',

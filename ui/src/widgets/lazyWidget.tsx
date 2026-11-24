@@ -1,21 +1,28 @@
 import type { ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
-import type { AnyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
-import DeclaredTableWidget from '../families/table/DeclaredTableWidget';
-import DeclaredTimelineWidget from '../families/timeline/DeclaredTimelineWidget';
+import type { FamilyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
+import { familyHost } from '../families/host/registry';
+import type { FamilyViewModule } from '../families/manifest';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
 type Slot = 'render' | 'countryChip';
 const nothing = () => null;
-const declaredRenderers = new WeakMap<AnyWidgetDeclaration, ComponentType<WidgetProps>>();
+const declaredRenderers = new WeakMap<object, ComponentType<WidgetProps>>();
 
-function rendererForDeclaration(declaration: AnyWidgetDeclaration): ComponentType<WidgetProps> {
+function rendererForDeclaration(declaration: FamilyWidgetDeclaration): ComponentType<WidgetProps> {
   let held = declaredRenderers.get(declaration);
   if (!held) {
-    held = declaration.family === 'timeline'
-      ? (props: WidgetProps) => <DeclaredTimelineWidget declaration={declaration} {...props} />
-      : (props: WidgetProps) => <DeclaredTableWidget declaration={declaration} {...props} />;
+    const spec: FamilyViewModule = {
+      family: declaration.family,
+      kind: declaration.kind,
+      projection: declaration.projection,
+      declaration,
+    };
+    held = (props: WidgetProps) => {
+      const Host = familyHost(spec.family);
+      return Host ? <Host spec={spec} {...props} /> : <WidgetState kind="unavailable" message={`Family host unavailable: ${spec.family}`} />;
+    };
     declaredRenderers.set(declaration, held);
   }
   return held;

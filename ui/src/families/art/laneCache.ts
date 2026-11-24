@@ -33,6 +33,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
   private readonly fetchBitmap: LaneArtFetcher<TBitmap>;
   private onSettle?: () => void;
   private contentRevision: number;
+  private settleVersion = 0;
   private wanted: ReadonlySet<string> = new Set();
   private disposed = false;
 
@@ -60,6 +61,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     for (const bitmap of this.bitmaps.values()) bitmap.close();
     this.bitmaps.clear();
     this.failed.clear();
+    this.settleVersion++;
     this.onSettle?.();
   }
 
@@ -68,6 +70,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     if (asset !== undefined) {
       if (!this.failed.delete(asset)) return;
       if (this.wanted.has(asset)) this.startFetch(asset);
+      this.settleVersion++;
       this.onSettle?.();
       return;
     }
@@ -77,6 +80,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     for (const url of retryable) {
       if (this.wanted.has(url)) this.startFetch(url);
     }
+    this.settleVersion++;
     this.onSettle?.();
   }
 
@@ -179,6 +183,10 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
     return this.contentRevision;
   }
 
+  get version(): number {
+    return this.settleVersion;
+  }
+
   get map(): ReadonlyMap<string, TBitmap> {
     return this.bitmaps;
   }
@@ -211,6 +219,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
         this.failed.delete(url);
         this.bitmaps.set(url, bitmap);
         this.evict();
+        this.settleVersion++;
         this.onSettle?.();
       },
       error => {
@@ -223,6 +232,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
           if (oldest === undefined) break;
           this.failed.delete(oldest);
         }
+        this.settleVersion++;
         this.onSettle?.();
       },
     );
