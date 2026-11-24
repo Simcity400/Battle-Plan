@@ -1,7 +1,7 @@
 import type { LiveValues } from '../../charts/live';
 import type { PanelGeometry, PanelView } from './view';
 import type { Structure } from '../views/fields';
-import type { SpecialProjectsReply, DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails, WargoalsReply } from '../../generated/dashboard';
+import type { DoctrineMasteryReply, ResearchSlotsReply, SpecialProjectDetails, WargoalsReply } from '../../generated/dashboard';
 import { arsenalNotice, arsenalStructure, arsenalStructureRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { liveKey } from '../../charts/live.ts';
 import { slotsStructure, slotValues } from '../../widgets/research/researchSlots.ts';
@@ -10,7 +10,7 @@ import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { REWARDS_PANEL, detailTexts, detailsStructure, effectsStructure, rewardsStructure, validateProjectDetails, validateProjectEffects } from '../../widgets/special-projects/projectDetailsData.ts';
 import { technologyEffectsStructure, validateTechnologyEffects } from '../../widgets/research/technologyEffects.ts';
 import { entityStatsStructure, validateEntityStats } from '../../widgets/research/entityStats.ts';
-import { HISTORY_PANEL, historyStructure, projectStructure, currentKey, currentProjects, runningValues, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
+import { HISTORY_PANEL, historyStructure, validateSpecialProjectsReply } from '../../widgets/special-projects/specialProjectsData.ts';
 
 function detailValues(reply: SpecialProjectDetails) {
   const values = detailTexts(reply);
@@ -139,54 +139,4 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
     }),
   'special-project-details': recordView(validateProjectDetails, detailsStructure, detailValues, { extendInline }),
   [REWARDS_PANEL]: recordView(validateProjectDetails, rewardsStructure, detailValues, { extendInline }),
-  'special-projects': {
-    structure: (raw, hour) => projectStructure(projectHistory(raw), hour),
-    nextChange: (raw, hour) => projectChangeAfter(projectHistory(raw), hour),
-    geometry: { rowAttribute: 'data-project', extraFields: '.special-project-progress > span', meters: '.special-project-progress',
-      barVariable: { host: '[data-project]', name: '--project-progress' } },
-    values(raw, _live, hour, shape) {
-      const reply = projectHistory(raw);
-      if (currentKey(reply, hour) !== shape && projectStructure(reply, hour) !== shape) return null;
-      const cells = new Map<string, string>();
-      const { running, completed } = currentProjects(reply, hour);
-      if (!running.length) cells.set('none', 'No projects in progress.');
-      for (const card of completed) cells.set(card.project.id, card.info.name);
-      for (const { project } of running) {
-        const at = runningValues(project, hour);
-        if (!at) continue;
-        cells.set(project.id + ':bar', String(at.fill));
-        cells.set(project.id + ':progress', at.progress);
-        cells.set(project.id + ':iterations', at.iterations);
-      }
-      return cells;
-    },
-  },
 };
-
-const histories = new WeakMap<object, SpecialProjectsReply>();
-function projectHistory(raw: unknown) {
-  let reply = histories.get(raw as object);
-  if (!reply) { reply = validateSpecialProjectsReply(raw); histories.set(raw as object, reply); }
-  return reply;
-}
-
-const boundaries = new WeakMap<SpecialProjectsReply, number[]>();
-export function projectChangeAfter(reply: SpecialProjectsReply, hour: number) {
-  let edges = boundaries.get(reply);
-  if (!edges) {
-    const all = new Set<number>();
-    for (const spans of [reply.available, reply.reads, ...reply.projects.map(p => p.statuses)]) {
-      for (const span of spans) { all.add(span.firstHour); all.add(span.lastHour + 1); }
-    }
-    for (const read of reply.reads) all.add(read.readHour + 1);
-    for (const run of reply.projects.flatMap(p => p.statuses)) if (run.scientistRead !== null) all.add(run.scientistRead + 1);
-    edges = Array.from(all).sort((a, b) => a - b);
-    boundaries.set(reply, edges);
-  }
-  let lo = 0, hi = edges.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (edges[mid]! <= hour) lo = mid + 1; else hi = mid;
-  }
-  return edges[lo] ?? Infinity;
-}

@@ -11,6 +11,10 @@ pub(super) struct Follow {
 }
 
 impl Follow {
+    pub(super) fn through(&self) -> Option<i32> {
+        self.through
+    }
+
     pub fn new(first: i32) -> Self {
         Self { facts: Facts::new(first), holding: Holding::default(), through: None, links: HashMap::new() }
     }

@@ -4,7 +4,7 @@ import { logItems } from './logData.ts';
 import type { LogRow } from './logData';
 import { logPageItems } from './logPages.ts';
 import { EMPTY_LOG_REVEALS, logRevealHistory, logReveals as revealAt, logVisibleEntries } from './logReveal.ts';
-import { deepFreeze } from '../../testFrozen.ts';
+import { deepFreeze } from '../../test-support/frozen.ts';
 
 const logReveals = (...[previous, items, playhead]: Parameters<typeof revealAt>) => {
   const reveals = revealAt(deepFreeze(previous), deepFreeze(items), playhead);

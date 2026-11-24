@@ -469,6 +469,8 @@ pub struct RaidEpisode {
     pub ended_hour: Option<i32>,
     pub ended_exact: bool,
     pub ended_source: Option<RaidEndedSource>,
+    #[doc = " The first read that saw it ended: what a later read reveals is never counted before it."]
+    pub ended_seen_hour: Option<i32>,
     pub disappeared_hour: Option<i32>,
     pub disappeared_exact: bool,
     pub succeeded: bool,
@@ -741,10 +743,11 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
         stretch_runs.push(run);
         stretch_joins.push(stretch.join);
         let lives = dashboard_base::queries::lifetimes(source, run, TableId::Raids)?;
+        let stretch_first = query.timeline.at(stretch.first).map_or(stretch.first, |held| held.first);
         let met: Vec<(u128, i32, i32, i32)> = lives
             .iter()
             .filter_map(|&(key, raw_first, raw_last)| {
-                let raw_first = i32::try_from(raw_first).ok()?.max(stretch.first);
+                let raw_first = i32::try_from(raw_first).ok()?.max(stretch_first);
                 let first = raw_first.max(evidence_from);
                 let last = i32::try_from(raw_last).ok()?.min(end);
                 (first <= last).then_some((key, raw_first, first, last))
@@ -755,7 +758,7 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
         }
         let links = dashboard_base::queries::links(source, run)?;
         let keys: Vec<u128> = met.iter().map(|(key, ..)| *key).collect::<BTreeSet<_>>().into_iter().collect();
-        let start = met.iter().map(|(_, _, first, _)| *first).min().unwrap_or(stretch.first);
+        let start = met.iter().map(|(_, raw_first, _, _)| *raw_first).min().unwrap_or(stretch.first);
         let raids = dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::Raids, &RAID_COLUMNS, Keys::These(&keys), start, end))?;
         let mut ended_rows: HashMap<u128, Vec<log::Row>> = HashMap::new();
         for row in reader.inserted(run, &[(start, end)])? {
@@ -1235,6 +1238,7 @@ fn episodes(source: &Source, query: &Query<'_>, from: i32, to: i32, content: &Co
             ended_hour,
             ended_exact,
             ended_source,
+            ended_seen_hour: acc.ended_hour.map(|(hour, _)| hour),
             disappeared_hour,
             disappeared_exact,
             succeeded,
@@ -1293,13 +1297,29 @@ impl EndColumns {
     }
 }
 
-fn unheld(query: &Query<'_>, from: i32, to: i32) -> Vec<MissingSpan> {
-    query
+fn missing(query: &Query<'_>, from: i32, to: i32) -> io::Result<Vec<MissingSpan>> {
+    let mut out: Vec<MissingSpan> = query
         .timeline
         .unheld_within(from, to)
         .into_iter()
         .map(|gap| MissingSpan { first_hour: gap.first.max(from), last_hour: gap.last.min(to), reason: gap.reason })
-        .collect()
+        .collect();
+    let recording = query.replay.recording();
+    for stretch in query.timeline.within(from, to) {
+        let runs = read::statuses(recording, stretch.run, TableId::Raids, stretch.first.max(from), stretch.last.min(to))?;
+        let reasons = read::status_reasons(recording, stretch.run, TableId::Raids, &runs)?;
+        for run in runs {
+            let held = match run.status {
+                replay_columnar::manifest::Status::Unavailable { reason } => reasons.get(&reason).map(String::as_str),
+                _ => None,
+            };
+            if let Some(reason) = dashboard_query::coverage::row_coverage(TableId::Raids, run.status, held, false).into_missing() {
+                out.push(MissingSpan { first_hour: run.first, last_hour: run.last, reason });
+            }
+        }
+    }
+    out.sort_by_key(|span| span.first_hour);
+    Ok(out)
 }
 
 fn span(query: &Query<'_>, from: Option<i32>, to: Option<i32>) -> io::Result<(i32, i32)> {
@@ -1434,7 +1454,7 @@ impl Product for RaidLog {
             types,
             artwork: artwork.into_values().collect(),
             episodes,
-            missing: unheld(&query, from, to),
+            missing: missing(&query, from, to)?,
             warnings: warnings.into_iter().collect(),
         };
         dashboard_base::products::check_reply_budget(&reply)?;

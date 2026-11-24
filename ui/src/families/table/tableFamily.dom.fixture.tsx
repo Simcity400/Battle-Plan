@@ -16,7 +16,7 @@ import { laneDispatch } from '../../draw/laneDispatch.ts';
 import type { CadenceTimers } from '../cadence.ts';
 import { familyTableLaneView } from './laneView.ts';
 import { tableSettingsOf } from './settings.ts';
-import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDomShared.ts';
+import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDom.fixture.ts';
 import FamilyTableHost from './FamilyTableHost.tsx';
 import '../../styles.css';
 

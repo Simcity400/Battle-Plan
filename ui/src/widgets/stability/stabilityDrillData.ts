@@ -1,8 +1,4 @@
-import type { GatedTime } from '../../dashboard/regionTime';
-import type { PinnedSpec } from '../../charts/drill/drillState';
-import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
-import type { Breakdown, DrillAction } from '../../charts/drill/drillState';
-import type { WidgetSpec } from '../../dashboard/model';
+import type { DrillAction } from '../../charts/drill/drillState';
 import type { Measure } from './stabilityData';
 
 export interface StabilityPick {
@@ -18,8 +14,4 @@ export function chooseStabilityActor(pick: StabilityPick, tag: string | null): S
 
 export function stabilityPickAction(pick: StabilityPick, open: boolean, followsAt: (hour: number) => boolean): DrillAction {
   return open ? { type: 'pick', hour: pick.hour } : { type: 'open', breakdown: 'parts', hour: pick.hour, follow: pick.tag !== null && followsAt(pick.hour) };
-}
-
-export function pinStabilityDrill(widget: WidgetSpec, breakdown: Breakdown, trackId: string, tag: string, time: GatedTime): PinnedSpec {
-  return pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [tag] } }, breakdown, trackId, time);
 }

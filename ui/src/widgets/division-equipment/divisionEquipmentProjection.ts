@@ -169,7 +169,7 @@ export const divisionEquipmentProjection = registerTableProjection(registerTable
 
 function sources(ctx: FamilyPlanContext): SourcePlan {
   const params = ctx.countryTag
-    ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), countFor: ctx.options.countFor === 'host' ? 'host' : 'owner', template: null, division: null }
+    ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), countFor: ctx.options.countFor === 'host' ? 'host' : 'owner' }
     : null;
   return {
     owner: `division-equipment:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}:${params?.countFor ?? ''}`,

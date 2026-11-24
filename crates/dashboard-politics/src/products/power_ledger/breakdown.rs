@@ -10,7 +10,6 @@ use ts_rs::TS;
 #[cfg(test)]
 mod tests;
 
-const AHEAD: i32 = 24 * 31;
 const OTHER_CATEGORY: &str = "notIdentified";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -83,9 +82,10 @@ impl Product for PowerSpendingBreakdown {
             country: params.country.clone(),
             currency: params.currency,
             from: params.from,
-            to: params.hour.saturating_add(AHEAD).min(query.timeline.last.max(params.hour)),
+            to: query.timeline.last.max(params.hour),
         };
-        let reply = at_hour(&spending(source, &query, &span, &naming, cancelled)?, params.hour);
+        let whole = breakdown::held(source, span.clone(), || spending(source, &query, &span, &naming, cancelled))?;
+        let reply = at_hour(&whole, params.hour);
         check_reply_budget(&reply)?;
         Ok(reply)
     }
