@@ -71,9 +71,13 @@ export default function DrillHost({ mode, drill, runtime, subject = true, title,
   };
   const placeWindow = (element: HTMLElement, shown = Infinity) => {
     const view = { width: window.innerWidth, height: window.innerHeight };
+    const pinned = pinnedPos.current;
+    if (!pinned) {
+      element.style.left = '0px';
+      element.style.top = '0px';
+    }
     const width = element.offsetWidth;
     const height = element.offsetHeight;
-    const pinned = pinnedPos.current;
     const at = pinned
       ? clampPanel(width, height, pinned.x, pinned.y, view, shown)
       : centerPanel(width, height, view);

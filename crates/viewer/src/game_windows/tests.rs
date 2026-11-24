@@ -316,12 +316,9 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
     );
     let alpha_root = alpha_gui.template("alpha_panel").unwrap();
     let mut alpha_resources = gui_fixture::fixture();
-    let mut alpha_info = alpha_resources.sprite(b"GFX_even").unwrap();
-    alpha_info.texture = [4, 2];
-    alpha_info.hit = Hit::Alpha;
-    alpha_resources
-        .sprites
-        .insert("GFX_alpha_hole", alpha_info);
+    alpha_resources.physical = Some([400, 300]);
+    alpha_resources.add_sprite("GFX_alpha_hole", [4, 2], 1);
+    alpha_resources.sprites.get_mut("GFX_alpha_hole").unwrap().hit = Hit::Alpha;
     alpha_resources.alpha.insert(
         "GFX_alpha_hole",
         native_gui::AlphaMask {
@@ -933,7 +930,48 @@ fn production_effect_compilation_and_gui_binding_renders_mod_window() {
         localisation,
         physical_viewport: Some(DEFAULT_VIEWPORT.map(|v| v as i32)),
     };
-    let output = render_layout_offscreen(&gpu, pass, &layout, &draw_assets, 1.0).unwrap();
+    let output = match render_layout_offscreen(&gpu, pass, &layout, &draw_assets, 1.0) {
+        Ok(rendered) => rendered,
+        Err(GameWindowError::Failed(msg)) if msg.contains("DXC not found") => {
+            let mut probe = Batch::default();
+            native_gui::draw(&layout, [0, 0], &draw_assets, &mut probe).unwrap();
+            let [min_x, min_y, width, height] = batch_bounds(&probe).unwrap();
+            let mut batch = Batch::default();
+            native_gui::draw(&layout, [-min_x, -min_y], &draw_assets, &mut batch).unwrap();
+            assert!(
+                !batch.quads.is_empty(),
+                "CachedWindow + layout_window must emit bound quads"
+            );
+            let native_quad = batch.quads[0]
+                .exact
+                .as_ref()
+                .and_then(|exact| exact.native.as_ref())
+                .expect("production GuiResources must attach parsed native shader");
+            assert_eq!(native_quad.effect.technique.as_str(), "Up");
+            assert_eq!(
+                native_quad.effect.asset.defines,
+                shader_pipeline::library::globals(DEFAULT_VIEWPORT, Decode::default())
+            );
+            let wgsl_effect = compiled_wgsl_effect(&fixture.layers, b"gfx/FX/buttonstate.shader");
+            for quad in &mut batch.quads {
+                if let Some(exact) = quad.exact.as_mut()
+                    && let Some(native) = exact.native.as_mut()
+                {
+                    Arc::make_mut(native).effect.asset = Arc::clone(&wgsl_effect);
+                }
+            }
+            render_batch_offscreen(
+                &gpu,
+                pass,
+                &batch,
+                [width as u32, height as u32],
+                [min_x, min_y],
+                1.0,
+            )
+            .unwrap()
+        }
+        Err(other) => panic!("unexpected render failure: {other}"),
+    };
     assert_eq!(output.pixel_size, [20, 12]);
     assert_eq!(output.logical_size, [20.0, 12.0]);
     assert_eq!(output.origin, [12.0, 12.0]);

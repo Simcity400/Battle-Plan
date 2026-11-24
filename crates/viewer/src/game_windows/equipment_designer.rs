@@ -2216,86 +2216,6 @@ fn configure_main_window(
                 }
                 disable_by_name(instance, root, "dropdown_tank_roles/expand_button");
 
-                let mut upgrade_slots: Vec<usize> = find_direct(root, "equipment_modules")
-                    .map(|modules| {
-                        modules
-                            .children
-                            .iter()
-                            .filter_map(|child| {
-                                element_name(child)
-                                    .strip_prefix("equipment_upgrade_")
-                                    .and_then(|suffix| suffix.parse::<usize>().ok())
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                upgrade_slots.sort_unstable();
-                upgrade_slots.dedup();
-                if upgrade_slots.is_empty() {
-                    upgrade_slots.extend([0, 1]);
-                }
-
-                for slot_idx in upgrade_slots {
-                    let container_name = format!("equipment_modules/equipment_upgrade_{slot_idx}");
-                    match &data.upgrades {
-                        RecordedUpgrades::Available(list) => {
-                            if let Some((upgrade_key, level)) = list.get(slot_idx) {
-                                set_text_by_name(
-                                    instance,
-                                    root,
-                                    &format!("{container_name}/name"),
-                                    loc_or(localisation, upgrade_key),
-                                );
-                                set_text_by_name(
-                                    instance,
-                                    root,
-                                    &format!("{container_name}/level"),
-                                    level.to_string(),
-                                );
-                                disable_by_name(instance, root, &format!("{container_name}/btn_dec"));
-                                disable_by_name(instance, root, &format!("{container_name}/btn_inc"));
-                            } else {
-                                hide_by_name(instance, root, &container_name);
-                            }
-                        }
-                        RecordedUpgrades::Unavailable { keys, reason } => {
-                            if let Some(upgrade_key) = keys.get(slot_idx) {
-                                let label = loc_or(localisation, upgrade_key);
-                                set_text_by_name(
-                                    instance,
-                                    root,
-                                    &format!("{container_name}/name"),
-                                    label.clone(),
-                                );
-                                set_text_by_name(
-                                    instance,
-                                    root,
-                                    &format!("{container_name}/level"),
-                                    NOT_RECORDED_VALUE.to_owned(),
-                                );
-                                if let Some(level_el) =
-                                    find_direct(root, &format!("{container_name}/level"))
-                                {
-                                    tooltips.insert(
-                                        level_el.path.clone(),
-                                        GameWindowTooltip {
-                                            title: label,
-                                            body: Some(format!(
-                                                "Not recorded: upgrade levels are unavailable at this hour ({reason})."
-                                            )),
-                                            detail: None,
-                                        },
-                                    );
-                                }
-                                disable_by_name(instance, root, &format!("{container_name}/btn_dec"));
-                                disable_by_name(instance, root, &format!("{container_name}/btn_inc"));
-                            } else {
-                                hide_by_name(instance, root, &container_name);
-                            }
-                        }
-                    }
-                }
-
                 if let Some(preview_box) = find_direct(root, "border_container") {
                     tooltips.insert(
                         preview_box.path.clone(),
@@ -2374,6 +2294,85 @@ fn configure_main_window(
                 }
             }
             DesignerKind::Upgrade(_) => {}
+        }
+
+        let mut upgrade_slots: Vec<usize> = find_direct(root, "equipment_modules")
+            .map(|modules| {
+                modules
+                    .children
+                    .iter()
+                    .filter_map(|child| {
+                        element_name(child)
+                            .strip_prefix("equipment_upgrade_")
+                            .and_then(|suffix| suffix.parse::<usize>().ok())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        upgrade_slots.sort_unstable();
+        upgrade_slots.dedup();
+        if upgrade_slots.is_empty() && matches!(data.kind, DesignerKind::Tank) {
+            upgrade_slots.extend([0, 1]);
+        }
+        for slot_idx in upgrade_slots {
+            let container_name = format!("equipment_modules/equipment_upgrade_{slot_idx}");
+            match &data.upgrades {
+                RecordedUpgrades::Available(list) => {
+                    if let Some((upgrade_key, level)) = list.get(slot_idx) {
+                        set_text_by_name(
+                            instance,
+                            root,
+                            &format!("{container_name}/name"),
+                            loc_or(localisation, upgrade_key),
+                        );
+                        set_text_by_name(
+                            instance,
+                            root,
+                            &format!("{container_name}/level"),
+                            level.to_string(),
+                        );
+                        disable_by_name(instance, root, &format!("{container_name}/btn_dec"));
+                        disable_by_name(instance, root, &format!("{container_name}/btn_inc"));
+                    } else {
+                        hide_by_name(instance, root, &container_name);
+                    }
+                }
+                RecordedUpgrades::Unavailable { keys, reason } => {
+                    if let Some(upgrade_key) = keys.get(slot_idx) {
+                        let label = loc_or(localisation, upgrade_key);
+                        set_text_by_name(
+                            instance,
+                            root,
+                            &format!("{container_name}/name"),
+                            label.clone(),
+                        );
+                        set_text_by_name(
+                            instance,
+                            root,
+                            &format!("{container_name}/level"),
+                            NOT_RECORDED_VALUE.to_owned(),
+                        );
+                        if let Some(level_el) =
+                            find_direct(root, &format!("{container_name}/level"))
+                        {
+                            tooltips.insert(
+                                level_el.path.clone(),
+                                GameWindowTooltip {
+                                    title: label,
+                                    body: Some(format!(
+                                        "Not recorded: upgrade levels are unavailable at this hour ({reason})."
+                                    )),
+                                    detail: None,
+                                },
+                            );
+                        }
+                        disable_by_name(instance, root, &format!("{container_name}/btn_dec"));
+                        disable_by_name(instance, root, &format!("{container_name}/btn_inc"));
+                    } else {
+                        hide_by_name(instance, root, &container_name);
+                    }
+                }
+            }
         }
 
         for disabled in [
