@@ -149,23 +149,25 @@ export const factionUpgradesDeclaration: CardWidgetDeclaration<FactionUpgradesOp
   },
   sources: ctx => {
     const subject = ctx.countrySubject ?? ctx.countryTag;
+    const entries = factionsEver(ctx.aux, subject).map(faction => ({
+      name: entryName(faction),
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: ctx.track.axisOffset,
+      read: {
+        shape: 'branch-to-hour' as const,
+        coverage: { mode: 'keyed' as const, keys: [faction] },
+        product: 'faction-state' as const,
+        followQuery: null,
+        params: { view: 'rules', branchId: ctx.branch.id, faction, viewpoint: subject === null ? null : countryFromKey(subject) },
+        buildSpanParams: (params: Readonly<Record<string, unknown>>) => params,
+        provenInterval: wholeBranchProof,
+      },
+    }));
     return {
       owner: `faction-upgrades:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${subject ?? ''}`,
-      entries: factionsEver(ctx.aux, subject).map(faction => ({
-        name: entryName(faction),
-        source: ctx.track.source,
-        branch: ctx.branch.id,
-        offset: ctx.track.axisOffset,
-        read: {
-          shape: 'branch-to-hour' as const,
-          coverage: { mode: 'keyed' as const, keys: [faction] },
-          product: 'faction-state' as const,
-          followQuery: null,
-          params: { view: 'rules', branchId: ctx.branch.id, faction, viewpoint: subject === null ? null : countryFromKey(subject) },
-          buildSpanParams: (params: Readonly<Record<string, unknown>>) => params,
-          provenInterval: wholeBranchProof,
-        },
-      })),
+      entries,
+      allowEmptyFollow: entries.length === 0,
     };
   },
   projection: factionUpgradesProjection,

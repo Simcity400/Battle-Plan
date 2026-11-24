@@ -1072,6 +1072,18 @@ test('no-follow reads during playback ask nothing after the displayed hour and p
   };
   assert.equal(buildPlaybackBoundedRequest(pointPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), null);
   assert.deepEqual(playbackIdleInterval(pointPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), [300, 340], 'inside a gap the next boundary is the gap end, not the next hour');
+  const branchAtHourPlan = planOf({
+    shape: 'branch-to-hour',
+    coverage: { mode: 'population', form: 'all' },
+    product: 'research-history',
+    followQuery: null,
+    params: { branchId: '1' },
+    buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
+  });
+  assert.equal(buildPlaybackBoundedRequest(branchPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), null, 'branch-to-hour never asks an unrecorded gap hour during playback');
+  assert.deepEqual(playbackIdleInterval(branchPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), [300, 340], 'branch-to-hour inside a gap waits until the gap ends');
+  assert.equal(buildPlaybackBoundedRequest(branchAtHourPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), null, 'branch-to-hour with buildSpanParams never asks an unrecorded gap hour during playback');
+  assert.deepEqual(playbackIdleInterval(branchAtHourPlan.entries[0]!, { branch, effectiveEndHour: 1000, currentHour: 310, gate: gappedGate }), [300, 340], 'branch-to-hour with buildSpanParams inside a gap waits until the gap ends');
 });
 
 test('a family cannot reach data after the displayed hour through a slice, a tile status or a frozen row source', () => {

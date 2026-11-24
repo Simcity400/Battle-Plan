@@ -285,7 +285,7 @@ test('a card with lists lays each section out side by side, rows restart per lis
 });
 
 test('faction upgrades list the rules and upgrades in force, each since its own date, and a start inside an unrecorded stretch is not recorded', async () => {
-  const { factionUpgradesProjection } = await import('../../widgets/faction-upgrades/factionUpgradesProjection.ts');
+  const { factionUpgradesDeclaration, factionUpgradesProjection } = await import('../../widgets/faction-upgrades/factionUpgradesProjection.ts');
   const groups = { factions: [{ id: '5', members: [{ tag: 'AAA', firstHour: 0, lastHour: 500 }], incomplete: [] }], unobserved: { factions: [] }, countryIdentities: [] } as unknown as import('../../generated/dashboard').CountryGroupReply;
   const run = (firstHour: number, name: string | null, startsSegment = false) => ({ firstHour, lastHour: 400, token: null, name, reason: name ? null : 'Name refused', startsSegment });
   const reply = {
@@ -302,6 +302,15 @@ test('faction upgrades list the rules and upgrades in force, each since its own 
   assert.equal((model.rows.find(row => row.key === 'rule:2') as CardItemRow).title.kind, 'notRecorded', 'a name the content refuses is named as missing');
   assert.equal(model.columns.lists, true);
   assert.equal(model.nextChangeAt, 401);
+  const noFactionPlan = factionUpgradesDeclaration.sources({
+    track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+    branch: { id: 'b', firstHour: 0, lastHour: 500 },
+    aux: groups,
+    countryTag: 'BBB',
+    countrySubject: 'BBB',
+  } as never, { following: true, staticSpan: null });
+  assert.equal(noFactionPlan.entries.length, 0);
+  assert.equal(noFactionPlan.allowEmptyFollow, true, 'a country never in a faction resolves to an empty plan rather than staying loading');
 });
 
 test('a general’s dossier splits the record won and lost, measures experience and training against what each needs, lists traits as dated text, and leaves unread experience not recorded', async () => {
