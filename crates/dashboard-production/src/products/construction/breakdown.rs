@@ -131,13 +131,19 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
     for line in &facts.lines {
         let (railway, building, state, to_state) = line.leaf;
         for (repair, start) in [(false, line.new_from), (true, line.repair_from)] {
-            let Some(start) = start else { continue };
-            let place = (repair, railway, building, state, to_state);
-            let held = buildings.entry(place).or_insert(None);
-            *held = held.or(line.building);
-            for &(hour, gap) in &line.gaps {
-                events.push((hour.max(start), place, Amount::Partial(0, gap_reason(gap).into())));
+            if start.is_some() {
+                let held = buildings.entry((repair, railway, building, state, to_state)).or_insert(None);
+                *held = held.or(line.building);
             }
+        }
+        for &(hour, gap) in &line.gaps {
+            let (repair, at) = match (line.new_from, line.repair_from) {
+                (_, Some(repair)) if hour >= repair => (true, hour),
+                (Some(new), _) => (false, hour.max(new)),
+                (None, Some(repair)) => (true, repair),
+                (None, None) => continue,
+            };
+            events.push((at, (repair, railway, building, state, to_state), Amount::Partial(0, gap_reason(gap).into())));
         }
     }
     events.sort_by_key(|event| (event.0, event.1));

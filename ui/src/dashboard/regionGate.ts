@@ -211,7 +211,7 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
   const fallback = needs.members ? defaultCountryKey(track) : null;
   const lastHour = track?.branch.lastHour ?? null;
   const query = useMemo(() => wantsMembers && groups.data && lastHour !== null
-    ? worldFilterQuery(widget.countries, fallback ? [fallback] : [], groups.data, lastHour) : null,
+    ? worldFilterQuery(widget.countries, fallback ? [fallback] : [], groups.data) : null,
   [wantsMembers, widget.countries, fallback, groups.data, lastHour]);
   const request = useMemo(() => !needs.members || lastHour === null ? null
     : ranksCountries(widget.countries) ? worldRequestTags(widget.countries, [], undefined, lastHour)
