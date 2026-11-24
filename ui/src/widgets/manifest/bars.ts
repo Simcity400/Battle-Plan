@@ -4,6 +4,17 @@ import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '.
 
 export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   {
+    kind: 'naval-supremacy',
+    view: 'shares',
+    label: 'Shares',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../naval-supremacy/navalSupremacyProjection.ts').then(m => ({
+      family: 'bars', kind: 'naval-supremacy', view: 'shares',
+      projection: m.supremacySharesProjection, declaration: m.supremacySharesDeclaration,
+    })),
+  },
+  {
     kind: 'factories',
     view: 'race',
     label: 'Race',

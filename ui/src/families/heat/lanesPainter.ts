@@ -19,7 +19,7 @@ import {
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { parseColor, readableText } from '../../shell/appearance/color.ts';
+import { mix, parseColor, readableText } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle } from '../art/provider.ts';
@@ -31,6 +31,7 @@ import {
   computeAxisTicks,
   hourToLaneX,
   LANE_PAD,
+  LANE_ROW_GAP,
   projectLaneRunsToPixels,
   type HeatLanesLayout,
 } from './lanesLayout.ts';
@@ -158,6 +159,25 @@ function drawRowFlag(
   drawFlagSlot(ctx, x, fy, { kind: 'missing', tag: row.tag ?? row.id }, theme);
 }
 
+export const READOUT_SWATCH = 10;
+export const READOUT_VALUE_SLOT = 50;
+const READOUT_GAP = 8;
+
+function drawReadoutSwatch(ctx: Canvas2D, x: number, middleY: number, swatch: string, theme: FamilyTheme): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(x + 0.5, middleY - READOUT_SWATCH / 2 + 0.5, READOUT_SWATCH - 1, READOUT_SWATCH - 1, 2);
+  if (swatch === 'hollow') {
+    ctx.strokeStyle = theme.lineSoft;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = swatch;
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawRowReadout(
   ctx: Canvas2D,
   row: HeatLaneRow,
@@ -171,18 +191,23 @@ function drawRowReadout(
   if (!readout || width <= 0) return;
   const middleY = y + rowHeight / 2;
   if (readout.kind === 'missing') {
-    drawMissingMark(ctx, x, middleY, width, theme, { figure: readout.figure, align: 'right' });
+    drawMissingMark(ctx, x, middleY, width, theme, { figure: readout.figure, align: 'left' });
     return;
   }
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
   if (readout.kind === 'clear') {
-    ctx.save();
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
     ctx.fillStyle = theme.muted;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(ellipsise(readout.label, width, s => textWidth(ctx, s)), x + width, middleY);
+    ctx.fillText(ellipsise(readout.label, width, s => textWidth(ctx, s)), x, middleY);
     ctx.restore();
     return;
+  }
+  let cursor = x;
+  if (readout.swatch) {
+    drawReadoutSwatch(ctx, cursor, middleY, readout.swatch, theme);
+    cursor += READOUT_SWATCH + READOUT_GAP;
   }
   const color = readout.color
     ?? (readout.tone === 'positive'
@@ -192,34 +217,37 @@ function drawRowReadout(
         : readout.tone === 'muted'
           ? theme.muted
           : theme.text);
-
-  ctx.save();
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  if (readout.secondary && rowHeight >= 24) {
-    ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  const secondaryColor = mix(theme.text, theme.surface, 0.25);
+  if (readout.form === 'word') {
+    ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
     ctx.fillStyle = color;
-    const primaryW = textWidth(ctx, readout.primary);
-    ctx.font = `${LABEL_WEIGHT} ${Math.max(10, theme.fontSize.small - 1)}px ${theme.font}`;
-    const secW = textWidth(ctx, readout.secondary);
-    if (primaryW + 8 + secW <= width) {
+    const room = Math.max(0, x + width - cursor);
+    const primary = ellipsise(readout.primary, room, s => textWidth(ctx, s));
+    ctx.fillText(primary, cursor, middleY);
+    if (readout.secondary) {
+      const after = cursor + textWidth(ctx, primary) + 6;
+      ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(readout.secondary, x + width, middleY);
-      ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-      ctx.fillStyle = color;
-      ctx.fillText(readout.primary, x + width - secW - 8, middleY);
-    } else {
-      ctx.font = `${VALUE_WEIGHT} ${Math.max(10, theme.fontSize.small - 0.5)}px ${theme.font}`;
-      ctx.fillStyle = color;
-      ctx.fillText(ellipsise(readout.primary, width, s => textWidth(ctx, s)), x + width, middleY - 5);
-      ctx.font = `${LABEL_WEIGHT} ${Math.max(9.5, theme.fontSize.small - 1.5)}px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.fillText(ellipsise(readout.secondary, width, s => textWidth(ctx, s)), x + width, middleY + 6);
+      const rest = x + width - after;
+      if (rest > 12) ctx.fillText(ellipsise(readout.secondary, rest, s => textWidth(ctx, s)), after, middleY);
     }
-  } else {
-    ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-    ctx.fillStyle = color;
-    ctx.fillText(ellipsise(readout.primary, width, s => textWidth(ctx, s)), x + width, middleY);
+    ctx.restore();
+    return;
+  }
+  ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+  ctx.fillStyle = color;
+  const slot = Math.min(READOUT_VALUE_SLOT, Math.max(0, x + width - cursor));
+  if (readout.primary) {
+    ctx.textAlign = 'right';
+    ctx.fillText(ellipsise(readout.primary, slot, s => textWidth(ctx, s)), cursor + slot, middleY);
+    ctx.textAlign = 'left';
+  }
+  if (readout.secondary) {
+    const after = cursor + slot + READOUT_GAP;
+    const rest = x + width - after;
+    ctx.font = `400 ${theme.fontSize.body}px ${theme.font}`;
+    ctx.fillStyle = secondaryColor;
+    if (rest > 12) ctx.fillText(ellipsise(readout.secondary, rest, s => textWidth(ctx, s)), after, middleY);
   }
   ctx.restore();
 }
@@ -237,7 +265,7 @@ function drawInRunLabel(
 ): void {
   if (!text || width < 28 || height < 14) return;
   ctx.save();
-  ctx.font = `${LABEL_WEIGHT} 10.5px ${theme.font}`;
+  ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
   const needed = textWidth(ctx, text) + 16;
   if (width < needed) {
     ctx.restore();
@@ -245,9 +273,9 @@ function drawInRunLabel(
   }
   const rgb = parseColor(bgColor);
   ctx.fillStyle = explicitTextColor ?? (rgb ? readableText(rgb) : theme.text);
-  ctx.textAlign = 'center';
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, x + width / 2, y + height / 2 + 0.5);
+  ctx.fillText(text, x + 8, y + height / 2 + 0.5);
   ctx.restore();
 }
 
@@ -298,6 +326,8 @@ export function drawHeatLanes(
   const laneBarHeight = Math.max(8, layout.rowHeight - laneBarPad * 2);
   const laneRadius = 3;
 
+  const anyPinned = model.rows.some(row => row.pinned);
+  const autoNameColor = mix(theme.text, theme.surface, 0.25);
   for (let i = layout.firstRow; i < layout.endRow; i++) {
     const row = model.rows[i]!;
     const y = layout.plotTop + i * layout.rowStride - scrollTop;
@@ -321,9 +351,10 @@ export function drawHeatLanes(
     }
     const nameMaxW = Math.max(16, layout.nameWidth - nameX);
     drawNameSlot(ctx, row.label, nameX, y, nameMaxW, layout.rowHeight, theme, {
-      fontSize: theme.fontSize.small,
+      fontSize: theme.fontSize.body,
+      weight: 400,
       maxLines: 1,
-      color: row.nameMissing ? theme.muted : theme.text,
+      color: row.nameMissing ? theme.muted : anyPinned && !row.pinned ? autoNameColor : theme.text,
     });
 
     const barY = y + laneBarPad;
@@ -366,10 +397,13 @@ export function drawHeatLanes(
       }
       if (cell.look === 'split') {
         const stripes = splitStripes(cell.parts, barY, laneBarHeight);
+        let filled = 0;
         for (const stripe of stripes) {
           ctx.fillStyle = stripe.color;
           ctx.fillRect(span.x, stripe.top, span.width, stripe.height);
+          filled += stripe.height;
         }
+        if (filled < laneBarHeight - 0.5) drawHatchRect(ctx, span.x, barY + filled, span.width, laneBarHeight - filled, 0, theme);
         if (cell.label && stripes.length === 1) {
           drawInRunLabel(ctx, cell.label, span.x, barY, span.width, laneBarHeight, stripes[0]!.color, theme);
         }
@@ -399,7 +433,8 @@ export function drawHeatLanes(
     }
   }
 
-  if (model.gaps?.length) {
+  const rowsBottom = Math.min(bodyBottom, layout.plotTop + model.rows.length * layout.rowStride - LANE_ROW_GAP - scrollTop);
+  if (model.gaps?.length && rowsBottom > layout.plotTop) {
     for (const gap of model.gaps) {
       if (gap.firstHour > layout.displayedHour) continue;
       const gFirst = Math.max(layout.firstHour, gap.firstHour);
@@ -408,7 +443,7 @@ export function drawHeatLanes(
       const gx0 = hourToLaneX(gFirst, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
       const gx1 = hourToLaneX(gLast + 1, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
       if (gx1 > gx0) {
-        drawGapBand(ctx, gx0, layout.plotTop, Math.max(1, gx1 - gx0), bodyBottom - layout.plotTop, theme);
+        drawGapBand(ctx, gx0, layout.plotTop, Math.max(1, gx1 - gx0), rowsBottom - layout.plotTop, theme);
       }
     }
   }
@@ -439,7 +474,12 @@ export function drawHeatLanes(
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const axisMidY = bodyBottom + layout.axisHeight / 2;
+  const tabX = model.playhead !== null && model.playhead >= layout.firstHour && model.playhead <= layout.lastHour
+    ? hourToLaneX(model.playhead, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth)
+    : null;
+  const tabHalf = tabX === null ? 0 : textWidth(ctx, formatDateOnly(model.playhead!)) / 2 + 14;
   for (const tick of ticks) {
+    if (tabX !== null && Math.abs(tick.x - tabX) < tabHalf + textWidth(ctx, tick.label) / 2) continue;
     ctx.fillText(tick.label, tick.x, axisMidY);
   }
   ctx.restore();
