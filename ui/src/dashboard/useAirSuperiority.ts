@@ -12,10 +12,9 @@ import { looksRead, useCountryLooks } from './countryLooks';
 import { useIdentityHour } from './atHead';
 import { trackHourOf } from './settledHour';
 import { useKeyTagsAt } from './useKeyTagsAt.ts';
-import { countryLineColours } from './countryLineColours.ts';
 import { useHeadProduct } from './headProduct';
 import { useGate } from './regionGate';
-import { airSideName, momentRows, validateAirChoices, validateAirSuperiority } from './airSuperiority';
+import { airSideName, momentRows, resolveSideColours, sideColor, validateAirChoices, validateAirSuperiority } from './airSuperiority';
 import type { AirLooks } from './airSuperiority';
 import { airChoiceKey, airChoiceToken } from './airOptions';
 import type { AirChoicesReply, AirSide, FactionGroup } from '../generated/dashboard';
@@ -103,48 +102,57 @@ export function useAirMoment(props: WidgetProps, options: Readonly<Record<string
   return { ...product, track, mode, needsViewpoint, ...looks };
 }
 
-export function useAirLooks(props: Pick<WidgetProps, 'runtime' | 'widget' | 'active'>, data: { sides: readonly AirSide[]; viewpoint: number | null } | undefined, at: number | null,
+export interface AirLooksData {
+  sides: readonly AirSide[];
+  viewpoint: number | null;
+  viewpointSide?: AirSide | null;
+  allSides?: readonly AirSide[];
+}
+
+export function useAirLooks(props: Pick<WidgetProps, 'runtime' | 'widget' | 'active'>, data: AirLooksData | undefined, at: number | null,
   mode: AirModeSettings, pushed = false) {
   const { runtime, widget, active } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const tokens = useChartTokens();
   const sides = data?.sides ?? NO_SIDES;
+  const viewpointSide = data?.viewpointSide !== undefined ? data.viewpointSide ?? undefined : data?.viewpoint == null ? undefined : sides[data.viewpoint];
+  const allSides = useMemo(() => {
+    const held = data?.allSides ? [...data.allSides] : [...sides];
+    if (viewpointSide && !held.includes(viewpointSide)) held.push(viewpointSide);
+    return held;
+  }, [data?.allSides, sides, viewpointSide]);
   const viewpointKey = mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : null;
   const [viewpointTag = null] = useKeyTagsAt(runtime, track, viewpointKey ? [viewpointKey] : [],
     clockHour => pushed && track ? trackHourOf(widget, track, runtime.tracks, clockHour) ?? Number.NaN : Math.floor(at ?? track?.branch.lastHour ?? 0), pushed, active);
-  const tags = useMemo(() => [...new Set([...sides.flatMap(side => [side.tag, side.leader].flatMap(tag => tag ? [tag] : [])), ...(viewpointTag ? [viewpointTag] : [])])], [sides, viewpointTag]);
+  const tags = useMemo(() => [...new Set([...allSides.flatMap(side => [side.tag, side.leader].flatMap(tag => tag ? [tag] : [])), ...(viewpointTag ? [viewpointTag] : [])])], [allSides, viewpointTag]);
   const identityHour = useIdentityHour(runtime.client, track, tags, runtime.clock, active && pushed,
     clockHour => track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null);
   const read = looksRead(active && pushed, identityHour, Math.floor(at ?? track?.branch.lastHour ?? 0));
   const hour = read.hour;
   const names = useCountryLooks(runtime.client, track, tags, hour, active, undefined, undefined, read.exact);
-  const anchors = useMemo(() => new Map(sides.flatMap(side => side.anchor ? [[side.anchor.tag, side.anchor.hour] as const] : [])), [sides]);
+  const anchors = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const side of allSides) {
+      if (!side.colourFaction && side.anchor && !map.has(side.anchor.tag)) map.set(side.anchor.tag, side.anchor.hour);
+    }
+    return map;
+  }, [allSides]);
   const anchorTags = useMemo(() => [...anchors.keys()], [anchors]);
   const anchorLooks = useCountryLooks(runtime.client, track, anchorTags, hour, active, undefined, anchors, true);
   const factions = useFactionColours(runtime.client, track?.source);
   const faction = useMemo(() => factionNamer(factions.factions, factions.displayNames, hour), [factions.factions, factions.displayNames, hour]);
   const country = useCallback((tag: string) => ({ name: names.name(tag, hour), flag: names.flag(tag, hour) }), [names, hour]);
   const sideName = useCallback((side: AirSide) => airSideName(side, tag => names.name(tag, hour), faction), [names, hour, faction]);
-  const colours = useMemo(() => {
-    const entries = new Map<string, { color: [number, number, number] }>();
-    for (const side of sides) {
-      const anchor = side.anchor ? anchorLooks.color(side.anchor.tag, side.anchor.hour) : null;
-      const tag = side.tag ?? side.leader;
-      const color = anchor ?? (tag ? names.color(tag, hour) : null);
-      if (color) entries.set(side.key, { color });
-    }
-    if (viewpointTag) { const color = names.color(viewpointTag, hour); if (color) entries.set(`country:${viewpointTag}`, { color }); }
-    return countryLineColours([...entries.keys()].sort(), entries, tokens.surface, tokens.countryColours === 'fixed');
-  }, [sides, anchorLooks, names, hour, viewpointTag, tokens.surface, tokens.countryColours]);
-  const color = useCallback((side: AirSide) => side.colourFaction ? factions.colours.get(side.colourFaction) ?? tokens.muted : colours.get(side.key) ?? tokens.muted,
+  const colours = useMemo(() => resolveSideColours(allSides, (tag, atHour) => anchorLooks.color(tag, atHour), tag => names.color(tag, hour),
+    viewpointTag, tokens.surface, tokens.countryColours === 'fixed'), [allSides, anchorLooks, names, hour, viewpointTag, tokens.surface, tokens.countryColours]);
+  const color = useCallback((side: AirSide) => sideColor(side, factions.colours, colours, tokens.muted),
     [factions.colours, colours, tokens.muted]);
   const looks: AirLooks = useMemo(() => {
-    const side = data?.viewpoint == null ? undefined : sides[data.viewpoint];
-    const viewpoint = side ? { name: sideName(side), color: color(side) }
+    const viewpoint = viewpointSide ? { name: sideName(viewpointSide), color: color(viewpointSide) }
       : viewpointTag ? { name: names.name(viewpointTag, hour), tag: viewpointTag, color: colours.get(`country:${viewpointTag}`) ?? tokens.muted }
         : viewpointKey ? { name: 'Country name unavailable', color: tokens.muted } : { name: 'No country selected', color: tokens.muted };
     return { name: sideName, color, viewpoint, enemy: tokens.error, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, mode: mode.mode };
-  }, [data?.viewpoint, sides, sideName, color, viewpointTag, viewpointKey, names, hour, colours, tokens.muted, tokens.error, mode.mode]);
+  }, [viewpointSide, sideName, color, viewpointTag, viewpointKey, names, hour, colours, tokens.muted, tokens.error, mode.mode]);
   const legend = useMemo(() => mode.mode === 'viewpoint' ? [
     { id: 'friendly', label: `${looks.viewpoint.name} (friendly)`, color: looks.viewpoint.color },
     { id: 'enemy', label: `Enemies of ${looks.viewpoint.name}`, color: tokens.error },

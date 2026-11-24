@@ -265,17 +265,12 @@ pub fn resolve_keys(sides: &[SideKey], countries: &BTreeSet<String>, anchors: &S
             .get(identity)
             .is_some_and(|anchor| historical.get(anchor).copied().unwrap_or(0) > 1 && present.get(anchor) == Some(&1))
     };
-    let mut present_factions = BTreeMap::new();
-    for id in sides.iter().flat_map(|side| &side.factions) {
-        if let Some(anchor) = anchors.factions.get(id) {
-            *present_factions.entry(anchor).or_insert(0_usize) += 1;
-        }
-    }
     let mut keys: Vec<_> = sides
         .iter()
         .map(|side| {
-            if let Some(id) = side.factions.iter().min()
-                && let Some(anchor) = anchors.factions.get(id).filter(|anchor| side.factions.len() > 1 || present_factions.get(anchor) == Some(&1))
+            if side.factions.len() > 1
+                && let Some(id) = side.factions.iter().min()
+                && let Some(anchor) = anchors.factions.get(id)
             {
                 return format!("f:{anchor}");
             }
@@ -951,6 +946,45 @@ mod tests {
         assert_eq!(side(&next, "c:GER").leader.as_deref(), Some("GER"));
         assert!(at(102).is_none());
         assert!(at(104).unwrap().iter().all(|side| side.faction.is_none()), "a faction with no member then is no side");
+    }
+
+    #[test]
+    fn solo_faction_keeps_its_own_key_and_anchor_before_later_coalition_merge() {
+        let groups = Groups {
+            factions: [
+                (10, FactionHistory { first_hour: 0, members: vec![run("GER", 0, 400)], leaders: vec![run("GER", 0, 400)], incomplete: vec![] }),
+                (20, FactionHistory { first_hour: 100, members: vec![run("JAP", 100, 400)], leaders: vec![run("JAP", 100, 400)], incomplete: vec![] }),
+            ]
+            .into(),
+            wars: vec![
+                WarRun { first: "JAP".into(), second: "CHI".into(), first_hour: 100, last_hour: 400 },
+                WarRun { first: "GER".into(), second: "ENG".into(), first_hour: 200, last_hour: 400 },
+                WarRun { first: "JAP".into(), second: "ENG".into(), first_hour: 300, last_hour: 400 },
+            ],
+            unobserved_factions: vec![],
+            unobserved_wars: vec![],
+            identities: [
+                ("GER".to_owned(), identity(1)),
+                ("JAP".to_owned(), identity(2)),
+                ("ENG".to_owned(), identity(3)),
+                ("CHI".to_owned(), identity(4)),
+            ]
+            .into(),
+        };
+        let index = GroupIndex::new(&groups);
+        let anchors = historical_anchors(&groups);
+        let tags = countries(&["GER", "JAP", "ENG", "CHI"]);
+        let at = |hour| indexed_roster(&groups, &index, hour, &tags).and_then(|sides| keyed(&groups, hour, sides, &anchors)).unwrap();
+        let early = at(50);
+        let axis_early = side(&early, "f:10");
+        assert_eq!(axis_early.faction, Some(10));
+        assert_eq!(axis_early.factions, [10]);
+        let separate = at(250);
+        assert_eq!(side(&separate, "f:10").faction, Some(10));
+        assert_eq!(side(&separate, "f:20").faction, Some(20));
+        let merged = at(350);
+        let coalition = side(&merged, "f:20");
+        assert_eq!(coalition.factions, [10, 20]);
     }
 
 }
