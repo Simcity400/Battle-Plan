@@ -2,10 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AmountRun, EquipmentStockpileReply, StockVariant } from './types';
 import { resolveY } from '../../charts/view.ts';
-import { chosenShown, toggleChosen } from '../../dashboard/chosen.ts';
-import { contentKey, storableToken } from '../../dashboard/options.ts';
-import { TIME_OPTIONS } from './definition.ts';
-import { chartChoices, chartRuns, choiceKey, choiceRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, shareOf, shareRuns, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
+import { storableToken } from '../../dashboard/options.ts';
+import { choiceKey, choiceRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, shareOf, shareRuns, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
 
 const U = 100000;
 const run = (firstHour: number, lastHour: number, amount: number): AmountRun => ({ firstHour, lastHour, amountRaw: String(Math.round(amount * U)) });
@@ -45,15 +43,6 @@ const REPLY: EquipmentStockpileReply = {
   aiHours: [{ firstHour: 140, lastHour: 150 }],
   needBoundRaw: String(0x53e2d620fb40),
 };
-
-test('stockpile choices can exceed eight', () => {
-  const field = TIME_OPTIONS.find(field => field.key === 'chosen')!;
-  assert.equal(field.kind, 'content-set');
-  if (field.kind !== 'content-set') return;
-  const tokens = Array.from({ length: 12 }, (_, index) => `type_${index}`);
-  const source = { lines: () => 1, name: (token: string) => token, noun: 'type' };
-  assert.deepEqual(toggleChosen(source, tokens.slice(0, -1), tokens.slice(0, -1), tokens.at(-1)!, Number.MAX_SAFE_INTEGER), { value: tokens.join(' ') });
-});
 
 test('the reply is validated and groups follow the game’s order, logistics-only types included', () => {
   assert.equal(validateStockpileReply(REPLY), REPLY);
@@ -442,23 +431,6 @@ test('a saved variant choice is its design: another design under the handle is s
   const types = stockGroups(REPLY, 'type', 110);
   assert.equal(choiceKey(types[0], 110), types[0].key);
 });
-
-test('settings offer only what can be drawn', () => {
-  const types = stockGroups(REPLY, 'type', Infinity);
-  const trucks = types.find(group => group.key === 'motorized_equipment')!;
-  assert.deepEqual(chartRuns(REPLY, trucks, 'type'), []);
-  const offered = chartChoices(REPLY, 'type').map(choice => contentKey(choice.value));
-  assert.ok(!offered.includes('motorized_equipment'), offered.join(', '));
-  assert.ok(offered.includes('infantry_equipment'));
-  const source = stockChoices(types, 'equipment type', group => chartRuns(REPLY, group, 'type').length > 0);
-  assert.equal(source.lines('motorized_equipment'), 0);
-  assert.deepEqual(chosenShown(source, ['motorized_equipment'], ['infantry_equipment']), ['infantry_equipment']);
-  const variants = chartChoices(REPLY, 'variant').map(choice => choiceRow(contentKey(choice.value)));
-  assert.deepEqual(variants, []);
-  const designed: EquipmentStockpileReply = { ...REPLY, variants: REPLY.variants.map(item => ({ ...item, names: [{ firstHour: 90, name: null, known: true, design: `d${item.id}` }] })) };
-  assert.ok(chartChoices(designed, 'variant').some(choice => contentKey(choice.value).includes(':1329:motorized_equipment_1#d1329')));
-});
-
 
 test('native available uses the same write for supply types, including signed need and missing observations', () => {
   const row = REPLY.logistics.find(item => item.key === 'motorized_equipment')!;

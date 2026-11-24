@@ -188,7 +188,6 @@ export function dealsOf(reply: ResourceBalanceReply, resource: number, values: L
 }
 
 export const MAX_DEALS = 8;
-export const FULL_BREAKDOWN_MAX = 2;
 
 const factories = (count: number) => `${count} civilian ${count === 1 ? 'factory' : 'factories'}`;
 

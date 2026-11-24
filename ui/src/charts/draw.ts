@@ -4,7 +4,7 @@ import type { GameDate } from '../dashboard/calendar.ts';
 import { chartBottom } from './frame.ts';
 import type { PlotFrame } from './frame.ts';
 import { layoutEndLabels } from './labels.ts';
-import { curveSegments, gapRegions, heldSegments } from './series.ts';
+import { curveSegments, heldSegments } from './series.ts';
 import type { PathCommand, Run } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
 import type { ChartTokens } from './tokens.ts';
@@ -152,24 +152,6 @@ export function drawLine(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, r
     ctx.lineWidth = tokens.lineWidth.series; ctx.strokeStyle = tokens.surface; ctx.stroke();
   }
   return last;
-}
-
-export function drawGapFill(ctx: Canvas2D, frame: PlotFrame, first: readonly Run[], second: readonly Run[],
-  aboveColor: string, belowColor: string, options: { until?: number; alpha?: number } = {}): void {
-  const until = Math.min(frame.x[1], options.until ?? Infinity);
-  const regions = gapRegions(curveSegments(first, frame.x[0], until, frame.toX, frame.toY), curveSegments(second, frame.x[0], until, frame.toX, frame.toY),
-    frame.plotTop, frame.plotTop + frame.plotHeight);
-  const paint = (list: readonly { clip: PathCommand[]; fill: PathCommand[] }[], color: string) => {
-    for (const region of list) {
-      ctx.save();
-      ctx.beginPath(); tracePath(ctx, region.clip); ctx.closePath(); ctx.clip();
-      ctx.beginPath(); tracePath(ctx, region.fill); ctx.closePath();
-      ctx.globalAlpha = options.alpha ?? 0.16; ctx.fillStyle = color; ctx.fill();
-      ctx.restore();
-    }
-  };
-  paint(regions.above, aboveColor);
-  paint(regions.below, belowColor);
 }
 
 export function drawBands(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], bands: readonly { low: readonly number[]; high: readonly number[] }[], colors: readonly string[],

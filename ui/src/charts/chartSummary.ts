@@ -1,7 +1,7 @@
 import type { PlotFrame } from './frame.ts';
 import type { Canvas2D } from './textWidth.ts';
 import type { ChartTokens } from './tokens.ts';
-import { dayLabel, drawGapFill, drawLine, spanLabel, tracePath } from './draw.ts';
+import { dayLabel, drawLine, spanLabel, tracePath } from './draw.ts';
 import { ordinates } from './linePick.ts';
 import { clipToSpans, curveSegments, extentOf, heldSegments, isOrderedSpans, runAt } from './series.ts';
 import type { PathCommand, Point, Run } from './series.ts';
@@ -595,43 +595,6 @@ export function pickSummaryLines(lines: readonly { key: string; summary: ChartSu
   let nearest = Infinity;
   for (const distance of distances.values()) nearest = Math.min(nearest, distance);
   return [...distances].filter(([, distance]) => distance <= nearest + 2).map(([key]) => key);
-}
-
-export function drawGapSummary(ctx: Canvas2D, frame: PlotFrame, _tokens: ChartTokens,
-  first: ChartSummary, second: ChartSummary, aboveColor: string, belowColor: string,
-  until: number | null = null, options: { alpha?: number } = {}): void {
-  if (!summaryFits(frame, first, until) || !summaryFits(frame, second, until)) return;
-  const approximate = [...(first.approximate ?? []), ...(second.approximate ?? [])];
-  if (approximate.length) {
-    drawApproximateSpans(ctx, frame, approximate, until, approximate => {
-      drawGapSummary(ctx, frame, _tokens, { ...first, approximate: undefined }, { ...second, approximate: undefined },
-        aboveColor, belowColor, until, { ...options, alpha: (options.alpha ?? 0.16) * (approximate ? 0.55 : 1) });
-    });
-    return;
-  }
-  const firstRuns = exactRuns(first), secondRuns = exactRuns(second);
-  if (firstRuns && secondRuns) {
-    drawGapFill(ctx, frame, firstRuns, secondRuns, aboveColor, belowColor, { ...options, until: until ?? undefined });
-    return;
-  }
-  ctx.save(); ctx.globalAlpha = options.alpha ?? 0.16;
-  for (let index = 0; index < first.buckets.length; index++) {
-    const a = first.buckets[index], b = second.buckets[index];
-    if (!a || !b || a.hasBreak || b.hasBreak) continue;
-    const start = Math.max(frame.x[0], a.firstHour, b.firstHour);
-    const end = Math.min(first.to, a.lastHour + 1, b.lastHour + 1);
-    if (end <= start) continue;
-    const paint = (low: number, high: number, color: string) => {
-      if (low >= high) return;
-      const top = frame.toY(high), bottom = frame.toY(low);
-      if (!Number.isFinite(top) || !Number.isFinite(bottom)) return;
-      ctx.fillStyle = color;
-      ctx.fillRect(frame.toX(start), top, frame.toX(end) - frame.toX(start), bottom - top);
-    };
-    paint(b.minValue, a.maxValue, aboveColor);
-    paint(a.minValue, b.maxValue, belowColor);
-  }
-  ctx.restore();
 }
 
 export function mergeSummaries(parts: readonly ChartSummary[]): ChartSummary {
