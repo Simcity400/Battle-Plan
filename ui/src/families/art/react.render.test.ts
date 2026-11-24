@@ -120,7 +120,7 @@ test('two widgets on one page each draw their own new sprites through the one sh
   shown[0].onArtDemands(asks[0]);
   shown[1].onArtDemands(asks[1]);
   pass(0); pass(1);
-  shown[1].onArtDemands(asks[1]!.slice(1));
+  shown[1].onArtDemands(asks[1]!);
   for (let round = 0; round < 8; round++) {
     pass(0); pass(1);
     await tick();
@@ -149,19 +149,22 @@ test('a shared request that settles between a widget\'s render and its subscript
   assert.equal(resolve[1](handles[0]).status, 'ready');
 }));
 
-test('a widget\'s dated art demand stays bounded at 1,500 handles, starts empty on another branch, and keeps its record when nothing it shows changed', () => withArtWidgets(1, async ({ useArtHandleResolutions, use }) => {
+test('a widget keeps exactly the art its projection read: 513 handles keep the first, a later projection replaces the set without rotating, another branch starts empty', () => withArtWidgets(1, async ({ useArtHandleResolutions, use }) => {
   const runtime = { client: {} };
   let track = { source: { id: 's', revision: 'r' }, branch: { id: '1' } };
   let shown: any;
   const pass = () => { const hooks = use(0); shown = hooks.render(() => useArtHandleResolutions(runtime, track, true)); hooks.commit(); };
+  const keyOf = (handle: { leader: string; hour: number }) => JSON.stringify(['portrait', handle.leader, handle.hour]);
   pass();
-  for (let wave = 0; wave < 15; wave++) {
-    shown.onArtDemands(Array.from({ length: 100 }, (_, at) => ({ kind: 'portrait', leader: String(at), hour: wave * 100 + at })));
-    pass();
-    await tick();
-  }
+  const read = Array.from({ length: 513 }, (_, at) => ({ kind: 'portrait', leader: String(at), hour: 100 }));
+  shown.onArtDemands(read);
+  for (let i = 0; i < 8; i++) { pass(); await tick(); }
+  assert.equal(Object.keys(shown.resolutions).length, 513, 'every handle the projection read is kept');
+  assert.ok(keyOf(read[0]!) in shown.resolutions, 'the first handle, which may be the painted row, is never dropped');
+  const later = read.slice(400);
+  shown.onArtDemands(later);
   for (let i = 0; i < 6; i++) { pass(); await tick(); }
-  assert.ok(Object.keys(shown.resolutions).length <= 512, `demand is bounded (${Object.keys(shown.resolutions).length})`);
+  assert.deepEqual(Object.keys(shown.resolutions).sort(), later.map(keyOf).sort(), 'a later projection replaces the set, so nothing rotates out of view');
   const before = shown.resolutions;
   pass();
   assert.strictEqual(shown.resolutions, before, 'a render with no change keeps the record, so the lane is not rebound');

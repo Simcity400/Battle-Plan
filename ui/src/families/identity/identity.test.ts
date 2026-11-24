@@ -13,7 +13,7 @@ import type {
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
+import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, readArtDemands, requestDemandedFlags } from '../art/provider.ts';
 import { toArtSlotState } from '../art/adapters.ts';
 import { NO_ART, artHandleKey, productArt, refusedArt } from '../art/types.ts';
 import { RefusedError } from '../../dashboard/queryError.ts';
@@ -744,7 +744,7 @@ test('an identity key and an art handle keep their whole identity from demand to
   const asText: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
   const asRecorded: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, recorded: 'GFX_y' };
   assert.equal(artHandleKey({ kind: 'sprite', key: 'GFX_x' }), artHandleKey(plain));
-  assert.deepEqual(mergeArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
+  assert.deepEqual(readArtDemands([], [plain, asText, asRecorded, plain]), [plain, asText, asRecorded]);
   assert.equal(new Set([plain, asText, asRecorded].map(artHandleKey)).size, 3);
 });
 

@@ -10,11 +10,10 @@ import { identityBrokerFor } from '../identity/broker.ts';
 import { useIdentityScope } from '../identity/react.ts';
 import type { ArtHandle } from '../plan.ts';
 import { sharedDomArtCache, type DomArtCache } from './domCache.ts';
-import { mergeArtDemands, needsArtResolution, requestDemandedFlags, type ArtResolutions } from './provider.ts';
+import { readArtDemands, requestDemandedFlags, type ArtResolutions } from './provider.ts';
 import { SpriteCaches, artCacheScope, fetchArtHandles } from './transport.ts';
 import { PENDING_ART, artHandleKey, failedArt, type ArtResolution, type ArtResult } from './types.ts';
 
-export const MAX_DEMANDED_ART = 512;
 const caches = new PerClient<SpriteCaches>();
 
 function cachesOf(client: DashboardClient): SpriteCaches {
@@ -102,9 +101,9 @@ export function useArtHandleResolutions(
     forward?.(handles);
     if (scope) requestDemandedFlags(identityBrokerFor(runtime.client), scope, handles, track?.source);
     setDemand(held => {
-      const merged = mergeArtDemands(held.scope === demandScope ? held.handles : NO_DEMAND, handles.filter(needsArtResolution));
-      const bounded = merged.length > MAX_DEMANDED_ART ? merged.slice(merged.length - MAX_DEMANDED_ART) : merged;
-      return held.scope === demandScope && bounded === held.handles ? held : { scope: demandScope, handles: bounded };
+      const before = held.scope === demandScope ? held.handles : NO_DEMAND;
+      const next = readArtDemands(before, handles);
+      return held.scope === demandScope && next === before ? held : { scope: demandScope, handles: next };
     });
   }, [forward, scope, runtime.client, track?.source, demandScope]);
   const resolve = useArtResolutions(runtime, track, demanded, active && demanded.length > 0);
