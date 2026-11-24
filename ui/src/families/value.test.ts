@@ -363,9 +363,13 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatShare(0.0001), '<0.1%');
   assert.equal(formatShare(0.0009), '<0.1%');
   assert.equal(formatShare(0.001), '0.1%');
+  assert.equal(formatShare(0.03), '3.0%');
+  assert.equal(formatShare(0.04), '4.0%');
   assert.equal(formatShare(0.042), '4.2%');
-  assert.equal(formatShare(0.07), '7%');
+  assert.equal(formatShare(0.07), '7.0%');
   assert.equal(formatShare(0.073), '7.3%');
+  assert.equal(formatShare(0.0999), '9.9%');
+  assert.equal(formatShare(0.15), '15%');
   assert.equal(formatShare(0.334), '33%');
   assert.equal(formatShare(0.6667), '67%');
   assert.equal(formatShare(0.996), '99%');
