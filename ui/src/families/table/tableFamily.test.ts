@@ -1854,6 +1854,83 @@ test('an incremental table paint after a seek back, a same-hour correction and a
       ],
     }, descending);
     assert.deepEqual(grouped.map(item => item.kind), ['data'], 'a group revealed later adds no heading before its hour');
+    type Side = { key: string; lead: string; total: number; rows: Row[] };
+    const shareColumns: TableColumnSpec[] = [
+      { key: 'name', label: 'Country', as: 'plain', offered: ['plain'], priority: 0, text: true },
+      ...['a', 'b', 'c', 'd', 'e', 'f'].map((key, at): TableColumnSpec => ({ key, label: key.toUpperCase(), as: 'plain', offered: ['plain'], priority: at + 1, numeric: true, cellKind: 'share', barEligible: false, minWidth: 96 })),
+    ];
+    const shareCell = (v: number) => ({ value: v === 0 ? { kind: 'zero' as const, value: 0 } : knownValue(v), format: { decimals: 1, percent: true } as const, bar: { fraction: knownValue(v / 100) }, countryColor: '#cc3333' });
+    registerTableProjection({
+      kind: 'test-panes-fresh',
+      family: 'table',
+      project: readView => {
+        const sides = (readView.panel('main') as { sides: Side[] }).sides;
+        const row = (key: string, name: string, v: number, group?: boolean) => ({
+          key, name,
+          ...(group ? { group: { key: 'side', label: 'Share of the side' } } : {}),
+          cells: { name: { value: knownValue(name) }, ...Object.fromEntries(['a', 'b', 'c', 'd', 'e', 'f'].map((col, at) => [col, shareCell(Math.max(0, v - at))])) },
+        });
+        return {
+          hour: readView.hour,
+          columns: shareColumns,
+          rows: [],
+          panes: sides.map(side => ({
+            key: side.key,
+            title: { name: knownValue(side.lead) },
+            totalRow: row(`total:${side.key}`, 'Share of the war', side.total),
+            rows: side.rows.map(r => row(`${side.key}:${r.id}`, r.id, r.v, true)),
+          })),
+        };
+      },
+    });
+    const paneLane = () => {
+      const view = familyTableLaneView(() => {}, { clock: () => 5000 });
+      const state = new Map<string, unknown>();
+      let seq = 1;
+      const before = contexts.length;
+      const paint = (sides: Side[], hour: number, settings: TableSettings, scrollLeft = 0) => view.paint({
+        widget: 2,
+        subs: [],
+        pictures: [],
+        model: { family: 'table' as const, kind: 'test-panes-fresh', options: {}, settings, sources: {}, staticPanels: { main: { sides } }, width: 700, height: 240, scrollLeft, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+        hour,
+        speed: 24,
+        binding: { generation: 1, surfaces: [{ width: 700, height: 240, dpr: 1 }], offset: 0, pin: null },
+        inspect: null,
+        now: 5000,
+      }, state, () => `p${seq++}`);
+      return { paint, marks: () => new Map(contexts[before]!.marks) };
+    };
+    const freshPanes = (sides: Side[], hour: number, settings: TableSettings, scrollLeft = 0) => {
+      const other = paneLane();
+      other.paint(sides, hour, settings, scrollLeft);
+      return other.marks();
+    };
+    const sharesBy = (direction: 'ascending' | 'descending') => tableSettingsOf(undefined, shareColumns, { density: 'compact', barsBehind: 'off', sort: { column: 'a', direction } });
+    const sidesAt = (shift: number): Side[] => [
+      { key: 'left', lead: 'Alpha', total: 60 + shift, rows: [{ id: 'P', v: 70 - shift, flag: '' }, { id: 'Q', v: 30 + shift, flag: '' }] },
+      { key: 'right', lead: 'Beta', total: 40 - shift, rows: [{ id: 'R', v: 55, flag: '' }, { id: 'S', v: 45, flag: '' }, { id: 'T', v: 0, flag: '' }] },
+    ];
+    const panes = paneLane();
+    panes.paint(sidesAt(0), 1, sharesBy('descending'));
+    const stepped = panes.paint(sidesAt(30), 2, sharesBy('descending'));
+    const paneNav = (stepped.fields.nav?.value as readonly (readonly [string])[]).map(item => item[0]);
+    assert.deepEqual(paneNav, ['total:left', 'left:Q', 'left:P', 'total:right', 'right:R', 'right:S', 'right:T'], 'navigation runs down the first pane, then the second, each in its own sorted order under its total row');
+    assert.ok([...panes.marks().values()].some(text => text.includes('Share of the war')), 'the total row is drawn');
+    assert.ok([...panes.marks().values()].some(text => text.includes('Share of the side')), 'the group label is drawn');
+    const widthsField = stepped.fields.widths?.value as { totalWidth: number };
+    assert.ok(widthsField.totalWidth > 700, 'six share columns overflow each pane, so the view scrolls sideways');
+    const paneHit = stepped.hit?.([700 - 20, 30 + 26 * 2]);
+    assert.ok(typeof paneHit === 'string' && paneHit.startsWith('row:right:'), `a point in the second pane hits that pane's row (${String(paneHit)})`);
+    panes.paint(sidesAt(0), 1, sharesBy('descending'));
+    assert.deepEqual(panes.marks(), freshPanes(sidesAt(0), 1, sharesBy('descending')), 'two panes after a seek back equal a fresh paint');
+    const correctedSides = sidesAt(0).map(side => (side.key === 'right' ? { ...side, lead: 'Beta renamed', total: 41 } : side));
+    panes.paint(correctedSides, 1, sharesBy('descending'));
+    assert.deepEqual(panes.marks(), freshPanes(correctedSides, 1, sharesBy('descending')), 'a same-hour correction in one pane equals a fresh paint');
+    panes.paint(correctedSides, 1, sharesBy('ascending'));
+    assert.deepEqual(panes.marks(), freshPanes(correctedSides, 1, sharesBy('ascending')), 'a reorder in both panes equals a fresh paint');
+    panes.paint(correctedSides, 1, sharesBy('ascending'), 120);
+    assert.deepEqual(panes.marks(), freshPanes(correctedSides, 1, sharesBy('ascending'), 120), 'one shared sideways offset moves both panes as a fresh paint would');
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }

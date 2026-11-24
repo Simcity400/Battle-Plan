@@ -40,6 +40,7 @@ import {
   rankHoldForSpeed,
   type FamilyTablePicture,
 } from './painter.ts';
+import { combinedPaneGeometry, combinedPaneRows, drawPaneFrame, hitPanes, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
 import { ensureTableProjection } from './registry.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings, type TableTheme } from './settings.ts';
 import { unknownProjectionReason } from '../registry.ts';
@@ -90,6 +91,8 @@ interface HeldFamilyTable {
   canvas: OffscreenCanvas;
   ctx: OffscreenCanvasRenderingContext2D;
   picture: FamilyTablePicture;
+  panePictures: FamilyTablePicture[];
+  panes: readonly ResolvedPane[] | null;
   content: string;
   art: LaneArtCache;
   identitySnapshot: IdentitySnapshot | null | undefined;
@@ -356,6 +359,7 @@ function cachedField(held: HeldFamilyTable, name: string, text: string, content:
 function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSettings, theme: TableTheme | undefined, hideHeader = false): string {
   return JSON.stringify([
     hideHeader,
+    settings.sort.column,
     theme?.font ?? '',
     theme?.fontSize.small ?? 0,
     theme?.fontSize.body ?? 0,
@@ -510,6 +514,8 @@ export function familyTableLaneView(
           canvas,
           ctx,
           picture: createTablePicture(),
+          panePictures: [],
+          panes: null,
           content: content(),
           art,
           identitySnapshot: undefined,
@@ -586,6 +592,7 @@ export function familyTableLaneView(
         const holder = held;
         art.setOnSettle(() => {
           holder.picture = createTablePicture();
+          holder.panePictures = [];
           holder.wake?.();
         });
       }
@@ -604,6 +611,7 @@ export function familyTableLaneView(
         held.canvas.width = widthPx;
         held.canvas.height = heightPx;
         held.picture = createTablePicture();
+        held.panePictures = [];
       }
       held.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -666,6 +674,7 @@ export function familyTableLaneView(
           && prevSortKey === sortSig
           && prevExpanded === bound.expanded
           && !held.cachedHasGroupHeaders
+          && model.panes === undefined
           && input.hour >= prevValidFrom
           && input.hour < prevValidUntil;
         const inc = canIncResolve
@@ -675,13 +684,15 @@ export function familyTableLaneView(
         let hasVariableHeights: boolean;
         let rowIndex: Map<string, number>;
         if (inc) {
+          held.panes = null;
           flatRows = inc.flatRows;
           rowIndex = inc.rowIndex;
           hasGroups = false;
           hasVariableHeights = false;
           incrementalUsed = true;
         } else {
-          flatRows = resolveTableRows(model, bound.settings, bound.expanded);
+          held.panes = model.panes ? resolvePanes(model, bound.settings, bound.expanded, model.rowHeightMode ?? 'standard') : null;
+          flatRows = held.panes ? combinedPaneRows(held.panes) : resolveTableRows(model, bound.settings, bound.expanded);
           hasGroups = false;
           hasVariableHeights = false;
           rowIndex = new Map<string, number>();
@@ -734,10 +745,13 @@ export function familyTableLaneView(
 
       if (modelChanged) held.sampleSig = textSampleSignature(model.columns, flatRows);
       const { shown: rankShown, markers: rankMarkersOn, width: rankWidth } = tableRank(model, bound.settings);
+      const panes = held.panes;
+      const paneGeom = panes ? paneGeometry(bound.width, panes.length) : null;
+      const layoutWidth = paneGeom ? paneGeom.width : bound.width;
       const layoutSame = held.cachedLayout !== null
         && sameColumnSpecs(held.layoutCols, model.columns)
         && held.layoutSettings === bound.settings
-        && held.layoutWidth === bound.width
+        && held.layoutWidth === layoutWidth
         && held.layoutRankShown === rankShown
         && held.layoutRankWidth === rankWidth
         && held.layoutTheme === bound.theme
@@ -767,10 +781,10 @@ export function familyTableLaneView(
           held.widthConfigKey = configKey;
         }
         allLayouts = buildColumnLayouts(model.columns, bound.settings, held.fixedWidths);
-        layout = layoutFamilyTable(allLayouts, Math.max(1, bound.width), { rankShown, rankWidth });
+        layout = layoutFamilyTable(allLayouts, Math.max(1, layoutWidth), { rankShown, rankWidth });
         held.layoutCols = model.columns;
         held.layoutSettings = bound.settings;
-        held.layoutWidth = bound.width;
+        held.layoutWidth = layoutWidth;
         held.layoutRankShown = rankShown;
         held.layoutRankWidth = rankWidth;
         held.layoutTheme = bound.theme;
@@ -783,7 +797,7 @@ export function familyTableLaneView(
         const widthsPayload = {
           widths: Object.fromEntries([...allLayouts.filter(col => col.shown), ...layout.columns].map(col => [col.key, col.width])),
           visible: layout.columns.map(col => col.key),
-          totalWidth: layout.totalWidth,
+          totalWidth: paneGeom ? bound.width + Math.max(0, layout.totalWidth - paneGeom.width) : layout.totalWidth,
           scrollable: layout.scrollable,
           pinnedCount: layout.pinnedCount,
         };
@@ -806,14 +820,15 @@ export function familyTableLaneView(
           held.cachedRowGeomKey = geomKey;
         }
       }
-      const totalHeight = rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
-      const rowWindow = tableRowWindow(flatRows.length, rowGeom, rowHeight, bound.scrollTop, bound.height);
-      const rowTop = (index: number) => (rowGeom ? rowGeom.tops[index]! : index * rowHeight);
-      const rowSpan = (index: number) => (rowGeom ? rowGeom.heights[index]! : rowHeight);
+      const totalHeight = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
+      const paneSpans = panes ? combinedPaneGeometry(panes) : null;
+      const rowWindow = paneSpans ? { first: 0, count: flatRows.length } : tableRowWindow(flatRows.length, rowGeom, rowHeight, bound.scrollTop, bound.height);
+      const rowTop = (index: number) => (paneSpans ? paneSpans.tops[index]! : rowGeom ? rowGeom.tops[index]! : index * rowHeight);
+      const rowSpan = (index: number) => (paneSpans ? paneSpans.heights[index]! : rowGeom ? rowGeom.heights[index]! : rowHeight);
       if (modelChanged) {
         const forwardStep = input.speed > 0 && Number.isFinite(held.priorHour) && model.hour > held.priorHour;
         const jumped = !Number.isFinite(held.priorHour) || model.hour < held.priorHour || (model.hour !== held.priorHour && !forwardStep);
-        if (held.priorRows.length && glideMs > 0 && !jumped) {
+        if (held.priorRows.length && glideMs > 0 && !jumped && !panes) {
           const oldIndex = new Map<string, number>();
           held.priorRows.forEach((item, index) => { if (item.kind === 'data') oldIndex.set(item.key, index); });
           const nextGlide = new Map<string, GlideOffset>();
@@ -909,11 +924,59 @@ export function familyTableLaneView(
         visibleFirst = Math.max(0, Math.floor(bound.scrollTop / rowHeight));
         visibleLast = Math.min(flatRows.length, Math.ceil((bound.scrollTop + bound.height) / rowHeight) + (held.glide.size && glideMs > 0 ? 2 : 0));
       }
-      const visibleIcons = collectVisibleCellIcons(flatRows, layout.columns, model.hour, visibleFirst, visibleLast);
+      const visibleIcons = panes
+        ? panes.flatMap(pane => {
+            const [first, last] = visiblePaneRange(pane.geom, pane.rows.length, bound.scrollTop, bound.height);
+            return collectVisibleCellIcons(pane.rows, layout.columns, model.hour, first, last);
+          })
+        : collectVisibleCellIcons(flatRows, layout.columns, model.hour, visibleFirst, visibleLast);
       held.art.requestVisible(held.demandedArtUrls.length ? [...visibleIcons, ...held.demandedArtUrls] : visibleIcons);
 
       let painted = false;
-      if (bound.theme) {
+      if (bound.theme && panes && paneGeom) {
+        const scroll = paneScroll(layout, paneGeom, bound.scrollLeft);
+        for (let p = 0; p < panes.length; p++) {
+          const pane = panes[p]!;
+          const picture = held.panePictures[p] ?? (held.panePictures[p] = createTablePicture());
+          held.ctx.save();
+          held.ctx.translate(paneGeom.xs[p]!, 0);
+          held.ctx.beginPath();
+          held.ctx.rect(0, 0, paneGeom.width, bound.height);
+          held.ctx.clip();
+          const result = drawFamilyTable(held.ctx, {
+            layout,
+            rows: pane.rows,
+            settings: bound.settings,
+            hour: model.hour,
+            width: paneGeom.width,
+            height: bound.height,
+            scrollLeft: scroll.left,
+            scrollTop: bound.scrollTop,
+            rankShown: false,
+            rankWidth: 0,
+            theme: bound.theme,
+            now,
+            glideDuration: 0,
+            glide: held.glide,
+            inspectedKey,
+            selectedKey,
+            focusedKey,
+            icons: held.art.map,
+            iconVersion: held.art.version,
+            artCache: held.art,
+            dpr,
+            hasGroupHeaders: true,
+            precomputedMaxima: maxima,
+            staticRowLooks: model.rowTimeBoundaries === false,
+            rowIndex: pane.rowIndex,
+            rowHeightMode,
+            rowGeom: pane.geom,
+          }, picture);
+          held.ctx.restore();
+          painted = painted || result.drew;
+        }
+        if (painted) drawPaneFrame(held.ctx, paneGeom, layout, scroll, bound.height, bound.theme);
+      } else if (bound.theme) {
         const result = drawFamilyTable(held.ctx, {
           layout,
           rows: flatRows,
@@ -978,6 +1041,16 @@ export function familyTableLaneView(
       const fields: Record<string, FieldEntry> = {};
 
       if (held.widthsField) fields.widths = held.widthsField;
+      if (panes && paneGeom) {
+        const paneChrome = {
+          width: paneGeom.width,
+          gutter: paneGeom.gutter,
+          xs: paneGeom.xs,
+          tableWidth: layout.totalWidth,
+          titles: panes.map(pane => ({ key: pane.key, name: paneTitleText(pane.title), missing: pane.title.name.kind === 'notRecorded', flag: pane.title.flag ?? null, flagPending: pane.title.flagPending === true, country: pane.title.country ?? null })),
+        };
+        fields.panes = { value: paneChrome, content: cachedField(held, 'panes', JSON.stringify(paneChrome), content) };
+      }
       if (held.identityDemandsField) fields.identityDemands = held.identityDemandsField;
       if (held.artDemandsField) fields.artDemands = held.artDemandsField;
 
@@ -1027,7 +1100,9 @@ export function familyTableLaneView(
       }
       fields.nav = held.navField!;
 
-      const focusedIndex = focusedKey ? (held.cachedRowIndex.get(focusedKey) ?? -1) : -1;
+      const focusedIndex = focusedKey
+        ? (panes ? (paneOfRow(panes, focusedKey)?.index ?? -1) : (held.cachedRowIndex.get(focusedKey) ?? -1))
+        : -1;
       const inspectedPresent = inspectedKey ? held.cachedRowIndex.has(inspectedKey) : false;
       const tSig = `${flatRows.length}:${totalHeight}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
       if (tSig !== held.tableSig || !held.tableField) {
@@ -1139,12 +1214,13 @@ export function familyTableLaneView(
       const glideSnapshot = moving ? new Map(held.glide) : undefined;
       const hit = (point: readonly [number, number]) => {
         if (model.clockSummary) return null;
+        if (panes && paneGeom) return hitPanes(layout, panes, paneGeom, { x: point[0], y: point[1] }, rowHeight, paneScroll(layout, paneGeom, bound.scrollLeft), bound.scrollTop);
         const at = hitFamilyTable(layout, flatRows, { x: point[0], y: point[1] }, rowHeight, bound.scrollLeft, bound.scrollTop, rankShown, rankWidth, glideSnapshot, now, glideMs, rowGeom, held!.cachedRowIndex, bound.height);
         if (at.kind !== 'row' || !at.rowKey) return null;
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };
 
-      const handledPicture = model.rows.length > 0 || (model.slots?.length ?? 0) > 0 || model.empty !== undefined || model.clockSummary !== undefined;
+      const handledPicture = model.rows.length > 0 || panes !== null || (model.slots?.length ?? 0) > 0 || model.empty !== undefined || model.clockSummary !== undefined;
       return {
         ...(handledPicture ? { mode: 'picture' as const } : {}),
         ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),
