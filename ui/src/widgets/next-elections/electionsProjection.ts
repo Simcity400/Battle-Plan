@@ -2,6 +2,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { int, object, opaqueTag } from '../../dashboard/validation.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { filterCandidates } from '../../families/holders.ts';
 import { identityCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
@@ -140,7 +141,7 @@ export const electionsDeclaration: TableWidgetDeclaration<ElectionsProjectionOpt
   icon: 'ballot',
   countries: { mode: 'filter' },
   sources: ctx => {
-    const chosen = !ctx.countries.all && ctx.countries.top === null ? ctx.countries.tags : null;
+    const chosen = filterCandidates(ctx.countries.filter.passing);
     const params = { branchId: ctx.branch.id, ...(chosen !== null ? { countries: chosen.map(countryFromKey) } : {}) };
     return {
       owner: `next-elections:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,

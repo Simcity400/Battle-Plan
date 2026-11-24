@@ -160,6 +160,7 @@ pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashbo
         row.map(|row| row.owned_state_count > 0)
     };
     let mut unresolved = 0_u64;
+    let mut unwitnessed = 0_u32;
     let mut inspect = |slot: u32, tag: &str, row: &PoliticsRow| {
         let has = recorded(&row.has_elections);
         let exists = owned_of(row.country);
@@ -196,7 +197,7 @@ pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashbo
                 match witnessed::<tables::Politics>(frame, u128::from(id)) {
                     Witness::Row(row) => inspect(slot, tag, row),
                     Witness::Absent => {}
-                    Witness::NotRecorded(_) => reply.unknown = reply.unknown.saturating_add(1),
+                    Witness::NotRecorded(_) => unwitnessed = unwitnessed.saturating_add(1),
                 }
             }
         }
@@ -219,6 +220,7 @@ pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashbo
             }
         }
     }
+    reply.unknown = reply.unknown.saturating_add(unwitnessed);
     reply.rows.sort_by(|a, b| (a.next.is_none(), a.next, &a.tag, &a.key).cmp(&(b.next.is_none(), b.next, &b.tag, &b.key)));
     if unresolved != 0 {
         reply.warnings.push(format!("{unresolved} refused election schedules: the country has no identity"));

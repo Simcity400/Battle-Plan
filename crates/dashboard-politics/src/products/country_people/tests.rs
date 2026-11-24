@@ -10,6 +10,7 @@ fn an_exile_is_kept_with_its_identity_missing_when_countries_are_unread_and_an_u
         CountryStabilityInputRow { country: 9003, exile_host: Recorded::NotRecorded, ..Default::default() },
     ];
     frame.tables[TableId::CountryStabilityInputs.index()] = TableView::Complete(TableRows::CountryStabilityInputs(rows)).into();
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "links unreadable".into() };
     let (exiles, refusals) = exile_rows(&frame, |_, _| true);
     assert_eq!(exiles.iter().map(|row| (row.country, row.exile.tag.as_deref(), row.exile.host.as_deref())).collect::<Vec<_>>(), [(9001, None, None)]);
     assert_eq!(refusals[0], 1, "the unread host leaves membership incomplete");

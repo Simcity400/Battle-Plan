@@ -480,6 +480,7 @@ fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_nam
         branch_id: "1".into(),
         countries: Vec::new(),
         only: Some(MarketSection::Offers),
+        lease_side: None,
     };
     let mut market_held = DecodedFrame {
         branch: 1,
