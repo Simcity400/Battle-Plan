@@ -189,7 +189,14 @@ export function projectLaneRunsToPixels(
   const effectiveLast = Math.max(firstHour, lastHour);
   const out: PixelLaneSpan[] = [];
 
-  for (let i = 0; i < runs.length; i++) {
+  let lo = 0;
+  let hi = runs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (runs[mid]!.lastHour < firstHour) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < runs.length; i++) {
     const run = runs[i]!;
     if (run.firstHour > displayedHour) break;
     if (run.readHour !== null && run.readHour > displayedHour) continue;

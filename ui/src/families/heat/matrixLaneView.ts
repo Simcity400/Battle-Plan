@@ -72,6 +72,8 @@ interface HeldHeatMatrix {
   validFrom: number;
   validUntil: number;
   cachedModel: HeatMatrixModel | null;
+  widestFor: string;
+  widestRowName: number;
   cachedModelKind: string;
   cachedLayout: HeatMatrixLayout | null;
 
@@ -106,6 +108,14 @@ export interface FamilyHeatMatrixLaneOptions {
   readonly clock?: () => number;
   readonly fetchBitmap?: LaneArtFetcher;
   readonly artMaxEntries?: number;
+}
+
+export function widestName(ctx: { font: string; measureText(text: string): { width: number } }, font: string, rows: readonly { readonly label: string }[]): number {
+  ctx.font = font;
+  let widest = 0;
+  const sampleLimit = Math.min(rows.length, 60);
+  for (let i = 0; i < sampleLimit; i++) widest = Math.max(widest, ctx.measureText(rows[i]!.label).width);
+  return widest;
 }
 
 export function matrixExtentSignature(
@@ -190,6 +200,8 @@ export function familyHeatMatrixLaneView(
           validFrom: Infinity,
           validUntil: -Infinity,
           cachedModel: null,
+          widestFor: '',
+          widestRowName: 0,
           cachedModelKind: '',
           cachedLayout: null,
           metaSig: '',
@@ -285,14 +297,12 @@ export function familyHeatMatrixLaneView(
         return { mode: 'refused', reason: model.refused, surfaces: [], fields: {}, motion: false };
       }
 
-      let widestRowName = 0;
-      if (bound.theme) {
-        held.ctx.font = `500 ${bound.theme.fontSize.small}px ${bound.theme.font}`;
-        const sampleLimit = Math.min(model.rows.length, 60);
-        for (let i = 0; i < sampleLimit; i++) {
-          widestRowName = Math.max(widestRowName, held.ctx.measureText(model.rows[i]!.label).width);
-        }
+      const font = bound.theme ? `500 ${bound.theme.fontSize.small}px ${bound.theme.font}` : '';
+      if (modelChanged || held.widestFor !== font) {
+        held.widestFor = font;
+        held.widestRowName = bound.theme ? widestName(held.ctx, font, model.rows) : 0;
       }
+      const widestRowName = held.widestRowName;
 
       const layout = layoutHeatMatrix({
         width: bound.width,
