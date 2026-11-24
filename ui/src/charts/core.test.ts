@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fitLabelWidth, layoutEndLabels } from './labels.ts';
+import { ellipsise, fitLabels, fitLabelWidth, layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
 import { monotonePath, runAt, samplePoints, segments, stack, valueAt } from './series.ts';
@@ -117,6 +117,48 @@ test('end labels keep their order without overlapping and stay in bounds', () =>
   const width = fitLabelWidth(['ab', 'x'.repeat(30), 'abcd', 'y'.repeat(40)], text => { measured.push(text); return text.length * 10; }, 20, 200, 6);
   assert.equal(width, 200);
   assert.deepEqual(measured, ['ab', 'x'.repeat(30)]);
+});
+
+test('chart label fitting cuts on grapheme boundaries, keeps fitting names unchanged and disambiguates shared prefixes', () => {
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const cells = (text: string) => Array.from(segmenter.segment(text)).length;
+
+  assert.equal(ellipsise('Germany', 7, cells), 'Germany');
+  assert.equal(ellipsise('Caf\u0065\u0301', 4, cells), 'Caf\u0065\u0301');
+  assert.equal(ellipsise('Caf\u0065\u0301!', 4, cells), 'Caf…');
+  assert.equal(ellipsise('Abc\u0301def', 4, cells), 'Abc\u0301…');
+
+  const flag = '\u{1F1FA}\u{1F1F8}';
+  assert.equal(ellipsise(`AB${flag}CD`, 4, cells), `AB${flag}…`);
+  assert.equal(ellipsise(`ABC${flag}DE`, 4, cells), 'ABC…');
+  assert.equal(ellipsise(`${flag}xyz`, 2, cells), `${flag}…`);
+  assert.equal(ellipsise(`${flag}xyz`, 1, cells), '…');
+  assert.equal(ellipsise('Germany', 0, cells), '');
+
+  const prefix = 'Commonwealth of Sovereign Allied Nations ';
+  assert.ok(prefix.length >= 40);
+  const first = `${prefix}Alpha`;
+  const second = `${prefix}Beta`;
+  const short = 'Short';
+  const fitted = fitLabels([first, second, short], 18, cells);
+  assert.equal(fitted.get(short), short);
+  assert.notEqual(fitted.get(first), fitted.get(second));
+  for (const full of [first, second]) {
+    const shown = fitted.get(full)!;
+    assert.ok(shown.includes('…'), `expected ellipsis in ${shown}`);
+    assert.ok(cells(shown) <= 18, `expected width <= 18 for ${shown}`);
+  }
+  assert.ok(fitted.get(first)!.endsWith('Alpha'));
+  assert.ok(fitted.get(second)!.endsWith('Beta'));
+
+  const sharedEnds = [`${prefix}North${prefix}`, `${prefix}South${prefix}`];
+  const distinctMiddle = fitLabels(sharedEnds, 14, cells);
+  assert.notEqual(distinctMiddle.get(sharedEnds[0]), distinctMiddle.get(sharedEnds[1]));
+  for (const full of sharedEnds) {
+    const shown = distinctMiddle.get(full)!;
+    assert.ok(shown.includes('…'));
+    assert.ok(cells(shown) <= 14);
+  }
 });
 
 test('canvases follow on-screen size, so the Size zoom stays sharp', () => {

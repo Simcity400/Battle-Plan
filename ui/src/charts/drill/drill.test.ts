@@ -6,7 +6,7 @@ import { addGridItemBelow, seekPositionFor } from '../../dashboard/model.ts';
 import type { BoundTrack, GridLayouts, WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, setOption, validOption } from '../../dashboard/options.ts';
 import { jumpItem } from '../jump.ts';
-import { breakdownOption, CLOSED, DRILL_OPTION, drillAction, FOLLOW_NEAR_HOURS, opensFollowing, pinnedBreakdown, reduceDrill, savedDrill } from './drillState.ts';
+import { breakdownOption, breakdownTitle, CLOSED, DRILL_OPTION, drillAction, FOLLOW_NEAR_HOURS, opensFollowing, pinnedBreakdown, reduceDrill, savedDrill } from './drillState.ts';
 import type { DrillState } from './drillState';
 import { axisAt, regionHour, SPEC } from '../../dashboard/regionTime.ts';
 
@@ -60,6 +60,20 @@ test('the drill settings are ordinary options, and a pinned breakdown shows it a
   assert.equal(pinned.title, 'Political power: Daily income');
   assert.deepEqual([pinned.campaign, pinned.trackIds, pinned.countries, pinned.time.value, pinned.contentScale], [source.campaign, source.trackIds, source.countries, source.time, 125]);
   assert.deepEqual(pinned.options, { drill: 'popout', show: 'income' });
+
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const graphemeList = (text: string) => Array.from(segmenter.segment(text), part => part.segment);
+  const combining = `e\u0301`;
+  const flag = '\u{1F1FA}\u{1F1F8}';
+  const fits = breakdownTitle('Title', 'a'.repeat(153));
+  assert.equal(fits, `Title: ${'a'.repeat(153)}`);
+  const atCombining = breakdownTitle('Title', `${'a'.repeat(151)}${combining}XYZ`);
+  assert.equal(graphemeList(atCombining).length, 160);
+  assert.ok(atCombining.endsWith(`${combining}…`));
+  const atFlag = breakdownTitle('Title', `${'a'.repeat(152)}${flag}XYZ`);
+  assert.equal(graphemeList(atFlag).length, 160);
+  assert.ok(atFlag.endsWith('a…'));
+  assert.equal(atFlag.includes('\u{1F1FA}'), false);
 });
 
 test('a pinned widget goes directly below its source, as wide as it', () => {

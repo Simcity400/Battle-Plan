@@ -1,9 +1,8 @@
-import { ellipsise } from './labels.ts';
+import { fitLabels, layoutEndLabels } from './labels.ts';
 import { formatDate, gameDate, monthNames } from '../dashboard/calendar.ts';
 import type { GameDate } from '../dashboard/calendar.ts';
 import { chartBottom } from './frame.ts';
 import type { PlotFrame } from './frame.ts';
-import { layoutEndLabels } from './labels.ts';
 import { curveSegments, gapRegions, heldSegments } from './series.ts';
 import type { PathCommand, Run } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
@@ -69,7 +68,7 @@ export function valueLabelWidth(ctx: Canvas2D | null, frame: PlotFrame, tokens: 
   return width;
 }
 
-const rowLabels = new WeakMap<Canvas2D, { font: string; width: number; measure: MeasureText; revision: number; labels: Map<string, string> }>();
+const rowLabels = new WeakMap<Canvas2D, { font: string; width: number; measure: MeasureText; revision: number; key: string; labels: Map<string, string> }>();
 export function drawAxes(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
   rows?: readonly string[], measure?: MeasureText): void {
   const { plotLeft, plotTop, plotWidth, plotHeight } = frame;
@@ -93,16 +92,15 @@ export function drawAxes(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, f
     ctx.font = rowFont;
     const width = plotLeft - VALUE_LABEL_GAP * 2;
     const revision = textWidthRevision();
+    const key = rows.join('\u0000');
     let cached = rowLabels.get(ctx);
-    if (!cached || cached.font !== rowFont || cached.width !== width || cached.measure !== measureText || cached.revision !== revision) {
-      cached = { font: rowFont, width, measure: measureText, revision, labels: new Map() };
+    if (!cached || cached.font !== rowFont || cached.width !== width || cached.measure !== measureText || cached.revision !== revision || cached.key !== key) {
+      cached = { font: rowFont, width, measure: measureText, revision, key, labels: fitLabels(rows, width, text => measureText(text, rowFont)) };
       rowLabels.set(ctx, cached);
     }
     rows.forEach((label, index) => {
-      let fitted = cached.labels.get(label);
-      if (fitted === undefined) { fitted = ellipsise(label, width, text => measureText(text, rowFont)); cached.labels.set(label, fitted); }
       ctx.fillStyle = tokens.text;
-      ctx.fillText(fitted, plotLeft - VALUE_LABEL_GAP, plotTop + (index + 0.5) / Math.max(1, rows.length) * plotHeight);
+      ctx.fillText(cached.labels.get(label) ?? '', plotLeft - VALUE_LABEL_GAP, plotTop + (index + 0.5) / Math.max(1, rows.length) * plotHeight);
     });
   }
   const tickFont = rows ? font(tokens, tokens.fontSize.small, 500) : smallFont;
@@ -290,16 +288,25 @@ export function drawEndLabels(ctx: Canvas2D, frame: PlotFrame, tokens: ChartToke
   ctx.font = labelFont;
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   const x = frame.plotLeft + frame.plotWidth + 10;
-  for (const label of labels) {
+  const room = frame.padding.right - 14;
+  const suffixes = labels.map(label => label.suffix ? ` ${label.suffix}` : '');
+  const rooms = new Map<string, number>();
+  if (room > 0) labels.forEach((label, index) => {
+    const avail = room - measureText(suffixes[index], labelFont);
+    const prev = rooms.get(label.text);
+    rooms.set(label.text, prev === undefined ? avail : Math.min(prev, avail));
+  });
+  const fitted = room > 0 ? fitLabels(labels.map(label => label.text), text => rooms.get(text) ?? 0, text => measureText(text, labelFont)) : null;
+  labels.forEach((label, index) => {
     if (Math.abs(label.y - label.from) > 2) {
       ctx.strokeStyle = label.color; ctx.globalAlpha = 0.5; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x - 8, label.from); ctx.lineTo(x - 2, label.y); ctx.stroke(); ctx.globalAlpha = 1;
     }
     ctx.fillStyle = label.muted ? tokens.muted : tokens.text;
-    const room = frame.padding.right - 14, suffix = label.suffix ? ` ${label.suffix}` : '';
-    const text = room > 0 ? ellipsise(label.text, room - measureText(suffix, labelFont), text => measureText(text, labelFont)) : label.text;
+    const suffix = suffixes[index];
+    const text = fitted ? fitted.get(label.text) ?? '' : label.text;
     ctx.fillText(`${text}${suffix}`.trimStart(), x, label.y);
-  }
+  });
   ctx.restore();
 }
 

@@ -5,7 +5,7 @@ import { useMotionNow } from '../liveMotion.ts';
 import { NO_HOVER, pointerMenu, reduceHover } from '../hover';
 import type { HoverState } from '../hover';
 import { canvasImage } from '../images';
-import { ellipsise, layoutEndLabels } from '../labels';
+import { fitLabels, layoutEndLabels } from '../labels';
 import { countryTooltipContent, drawCountryFlag } from '../countryFlag';
 import type { Live } from '../live';
 import { scheduler } from '../scheduler';
@@ -159,9 +159,19 @@ export default function ChordChart(props: ChordChartProps) {
       for (const right of [true, false]) {
         const side = labels.filter(label => label.right === right);
         const placed = layoutEndLabels(side, 2, height - (right ? 26 : 2), 1);
-        for (const { arc, id } of side) {
+        context.font = font(t, t.fontSize.small, 500);
+        const rooms = new Map<string, number>();
+        const laid = side.map(({ arc, id }) => {
           const ly = placed.get(id)!, ring = radius + 12, reach = Math.sqrt(Math.max(0, ring * ring - (ly - y) ** 2));
-          const lx = right ? x + reach : x - reach, flagX = right ? lx : lx - 16;
+          const lx = right ? x + reach : x - reach;
+          const room = right ? width - lx - 23 : lx - 23;
+          const prev = rooms.get(arc.node.label);
+          rooms.set(arc.node.label, prev === undefined ? room : Math.min(prev, room));
+          return { arc, lx, ly };
+        });
+        const fitted = fitLabels(laid.map(item => item.arc.node.label), text => rooms.get(text) ?? 0, measure);
+        for (const { arc, lx, ly } of laid) {
+          const flagX = right ? lx : lx - 16;
           context.globalAlpha = arc.presence;
           if (arc.node.countryFlag) drawCountryFlag(context, arc.node.countryFlag, flagX, ly - 5, 15, 10, t, wake);
           else {
@@ -170,7 +180,7 @@ export default function ChordChart(props: ChordChartProps) {
           }
           context.font = font(t, t.fontSize.small, 500); context.textBaseline = 'middle'; context.textAlign = right ? 'left' : 'right';
           context.fillStyle = t.text;
-          context.fillText(ellipsise(arc.node.label, right ? width - lx - 23 : lx - 23, measure), right ? lx + 19 : lx - 19, ly);
+          context.fillText(fitted.get(arc.node.label) ?? '', right ? lx + 19 : lx - 19, ly);
         }
       }
       context.globalAlpha = 1; context.font = font(t, t.fontSize.small, 500); context.fillStyle = t.muted;

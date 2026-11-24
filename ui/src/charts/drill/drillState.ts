@@ -1,3 +1,4 @@
+import { ellipsise, graphemeCount } from '../labels.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { choiceVariants } from '../../dashboard/options.ts';
@@ -60,7 +61,7 @@ export function breakdownOption(breakdowns: readonly Breakdown[], mainLabel: str
     choices: [{ value: 'main', label: mainLabel }, ...breakdowns.map(item => ({ value: item.id, label: item.label }))] };
 }
 
-export const breakdownTitle = (title: string, label: string) => `${title}: ${label}`.slice(0, 160);
+export const breakdownTitle = (title: string, label: string) => ellipsise(`${title}: ${label}`, 160, graphemeCount);
 
 export function breakdownVariants(title: string, fields: readonly OptionField[]): WidgetPreset[] {
   return choiceVariants(fields.find(field => field.key === 'show'), choice => breakdownTitle(title, choice.label));

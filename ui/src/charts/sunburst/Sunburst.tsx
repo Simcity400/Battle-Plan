@@ -5,6 +5,7 @@ import { CountryFlagUrl } from '../../components/CountryFlag';
 import { mix, parseColor, readableText, toHex } from '../../shell/appearance/color';
 import type { Rgb } from '../../shell/appearance/color';
 import { font } from '../draw';
+import { ellipsise } from '../labels';
 import { approach, easeTau } from '../easing';
 import { useMotionNow } from '../liveMotion.ts';
 import { setStyle } from '../domText.ts';
@@ -96,13 +97,6 @@ function centreLines(lines: readonly CentreLine[], height: number): CentreLine[]
     used += line.size * LINE;
   }
   return lines.filter(line => kept.has(line));
-}
-
-function fitText(text: string, width: number, measure: (text: string) => number): string {
-  if (measure(text) <= width) return text;
-  let cut = text.length;
-  while (cut > 1 && measure(`${text.slice(0, cut)}…`) > width) cut--;
-  return `${text.slice(0, cut).trimEnd()}…`;
 }
 
 const free = (who: string) => { const current = tooltipStore.get(); return current == null || current.owner === who; };
@@ -310,7 +304,7 @@ export default function Sunburst(props: SunburstProps) {
           const width = textWidth(context, line.text);
           if (width > room) context.font = font(tokens, Math.max(tokens.fontSize.small * 0.8, line.size * room / width), line.weight);
           context.fillText(line.text, g.cx, y + line.size * LINE / 2);
-        } else context.fillText(fitText(line.text, room, text => textWidth(context, text)), g.cx, y + line.size * LINE / 2);
+        } else context.fillText(ellipsise(line.text, room, text => textWidth(context, text)), g.cx, y + line.size * LINE / 2);
         y += line.size * LINE;
       }
 

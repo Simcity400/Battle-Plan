@@ -5,7 +5,7 @@ import Legend from '../Legend';
 import { drawCountryFlag, countryFlagContent } from '../countryFlag';
 import { font, LABEL_WEIGHT } from '../draw';
 import { drawUnknownHatch } from '../hatch';
-import { ellipsise } from '../labels';
+import { fitLabels } from '../labels';
 import { FLAG, NAME_PAD } from '../race/draw';
 import { liveKey } from '../live';
 import type { Live, LiveValues } from '../live';
@@ -131,22 +131,22 @@ export default function HeatMatrix(props: HeatMatrixProps) {
       ctx.restore();
       ctx.save(); ctx.beginPath(); ctx.rect(0, MATRIX_HEADER, gutter, height - MATRIX_HEADER); ctx.clip();
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = t.text;
+      const rowNameX = (flags ? FLAG.x + FLAG.width : FLAG.x) + NAME_PAD / 2;
+      const fittedRows = names ? fitLabels(p.rows.slice(rows.first, rows.end).map(item => item.label), gutter - rowNameX - NAME_PAD / 2, text => ctx.measureText(text).width) : null;
       for (let row = rows.first; row < rows.end; row++) {
         const item = p.rows[row], y = MATRIX_HEADER + (row + 0.5) * cell - scrollTop;
         if (focus?.row === row) { ctx.globalAlpha = 0.05; ctx.fillRect(0, y - cell / 2, gutter, cell); ctx.globalAlpha = 1; }
         if (item.countryFlag) drawCountryFlag(ctx, item.countryFlag, FLAG.x, y - FLAG.height / 2, FLAG.width, FLAG.height, t, loaded);
-        if (names) {
-          const x = (flags ? FLAG.x + FLAG.width : FLAG.x) + NAME_PAD / 2;
-          ctx.fillText(ellipsise(item.label, gutter - x - NAME_PAD / 2, text => ctx.measureText(text).width), x, y);
-        }
+        if (fittedRows) ctx.fillText(fittedRows.get(item.label) ?? '', rowNameX, y);
       }
       ctx.restore();
       ctx.save(); ctx.beginPath(); ctx.rect(gutter, 0, width - gutter, MATRIX_HEADER); ctx.clip();
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = t.muted;
+      const fittedCols = fitLabels(p.columns.slice(columns.first, columns.end).filter(item => !item.countryFlag).map(item => item.label), cell - 2, text => ctx.measureText(text).width);
       for (let column = columns.first; column < columns.end; column++) {
         const item = p.columns[column], x = gutter + (column + 0.5) * cell - scrollLeft;
         if (item.countryFlag) drawCountryFlag(ctx, item.countryFlag, x - FLAG.width / 2, (MATRIX_HEADER - FLAG.height) / 2, FLAG.width, FLAG.height, t, loaded);
-        else ctx.fillText(ellipsise(item.label, cell - 2, text => ctx.measureText(text).width), x, MATRIX_HEADER / 2);
+        else ctx.fillText(fittedCols.get(item.label) ?? '', x, MATRIX_HEADER / 2);
       }
       ctx.restore();
       ctx.strokeStyle = t.grid; ctx.lineWidth = t.lineWidth.grid;

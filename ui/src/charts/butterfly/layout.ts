@@ -1,5 +1,6 @@
 import { FLAG, MIN_LABEL, NAME_PAD, NAME_X, VALUE_GAP, VALUE_PAD } from '../race/draw.ts';
 import { barThickness, MIN_SLOT, RACE_AXIS } from '../race/race.ts';
+import { ellipsise } from '../labels.ts';
 import { linearTicks } from '../valueAxis.ts';
 
 export interface ButterflyValue { id: string; left: number | null; right: number | null }
@@ -77,15 +78,7 @@ export function butterflyLabelWidth(width: number, longestName: number, showFlag
 }
 
 export function ellipsizeLabel(label: string, width: number, measure: (text: string) => number): string {
-  if (measure(label) <= width) return label;
-  if (measure('…') > width) return '';
-  const glyphs = Array.from(label);
-  let lo = 0, hi = glyphs.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (measure(glyphs.slice(0, mid).join('') + '…') <= width) lo = mid; else hi = mid - 1;
-  }
-  return glyphs.slice(0, lo).join('') + '…';
+  return ellipsise(label, width, measure);
 }
 
 export function formatRatio(right: number | bigint | null, left: number | bigint | null): string {

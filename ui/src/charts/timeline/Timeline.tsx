@@ -11,7 +11,7 @@ import { canvasImageRead } from '../images';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import { approach, easeTau } from '../easing';
 import { useMotionNow } from '../liveMotion.ts';
-import { fitLabelWidth } from '../labels';
+import { ellipsise, fitLabels, fitLabelWidth } from '../labels';
 import type { Live } from '../live';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
@@ -233,17 +233,7 @@ export default function Timeline(props: TimelineProps) {
       const key = `${context.font}|${Math.round(width)}|${text}`;
       const known = fits.get(key);
       if (known != null) return known;
-      const room = width * SQUEEZE;
-      let result = text;
-      if (measuredWidth(context, text) > room) {
-        let low = 0;
-        let high = text.length;
-        while (low < high) {
-          const middle = Math.ceil((low + high) / 2);
-          if (measuredWidth(context, `${text.slice(0, middle).trimEnd()}…`) <= room) low = middle; else high = middle - 1;
-        }
-        result = `${text.slice(0, low).trimEnd()}…`;
-      }
+      const result = ellipsise(text, width * SQUEEZE, value => measuredWidth(context, value));
       if (fits.size > 4096) fits.clear();
       fits.set(key, result);
       return result;
@@ -375,15 +365,47 @@ export default function Timeline(props: TimelineProps) {
       const unknown = inSpans(p.unobserved, Math.floor(holderHour));
       const kept = new Set(shown.map(lane => lane.id));
       for (const id of holders.keys()) if (!kept.has(id)) holders.delete(id);
+      const laneRoom = (lane: TimelineLane, row: number) => {
+        const iconSize = Math.min(ICON, Math.max(0, row - 4));
+        const disclosure = lane.expanded == null ? 0 : INDENT;
+        const indent = (lane.depth ?? 0) * INDENT;
+        const blueprint = lane.identity?.tile === 'blueprint';
+        const textAt = indent + disclosure + (lane.compact ? 10 : blueprint ? 62 : lane.heading && !lane.identity?.icon && !lane.identity?.countryFlag ? 10 : iconSize + 18);
+        return { iconSize, disclosure, indent, blueprint, textAt, textWidth: Math.max(8, left - textAt - 10) };
+      };
+      const laneFitted = new Map<string, Map<string, string>>();
+      if (p.truncateLabels !== false) {
+        const byFont = new Map<string, Map<string, number>>();
+        const record = (textFont: string, text: string, width: number) => {
+          let rooms = byFont.get(textFont);
+          if (!rooms) byFont.set(textFont, rooms = new Map());
+          const room = width * SQUEEZE;
+          const prev = rooms.get(text);
+          rooms.set(text, prev === undefined ? room : Math.min(prev, room));
+        };
+        shown.forEach((lane, offset) => {
+          const { textWidth } = laneRoom(lane, geometry.current.rowHeights[viewport.first + offset]);
+          if (!lane.compact && !lane.pill) {
+            const current = lane.identity ? { id: lane.id, firstHour: 0, lastHour: 0, ...lane.identity } : unknown ? null : spanAt(lane.spans, holderHour);
+            const primaryFont = lane.labelStyle === 'side' ? font(tokens, 10, 600) : font(tokens, tokens.fontSize.body, lane.heading ? 600 : 500);
+            if (current) record(primaryFont, lane.labelStyle === 'side' ? current.label.toUpperCase() : current.label, textWidth);
+          }
+          if (lane.compact || (!lane.pill && !lane.singleLine)) {
+            record(font(tokens, tokens.fontSize.small, lane.pill ? 600 : 400), lane.label, textWidth);
+          }
+        });
+        for (const [textFont, rooms] of byFont) {
+          context.font = textFont;
+          laneFitted.set(textFont, fitLabels(rooms.keys(), text => rooms.get(text) ?? 0, value => measuredWidth(context, value)));
+        }
+      }
       shown.forEach((lane, offset) => {
         const index = viewport.first + offset;
         const y = laneTop(index, geometry.current);
         const row = geometry.current.rowHeights[index];
         const laneHeight = geometry.current.offsets[index + 1] - geometry.current.offsets[index];
         const centre = laneLabelY(index, geometry.current, axisTop, visible.top + visible.height - axisTop) + axisTop;
-        const iconSize = Math.min(ICON, Math.max(0, row - 4));
-        const disclosure = lane.expanded == null ? 0 : INDENT;
-        const indent = (lane.depth ?? 0) * INDENT;
+        const { iconSize, disclosure, indent, blueprint, textAt, textWidth } = laneRoom(lane, row);
         if (index && lane.separator !== false) { context.fillStyle = mix(tokens.surface, tokens.border, lane.heading ? 0.9 : 0.5); context.fillRect(8, y, layoutWidth - 16, 1); }
         if (lane.separatorAfter) { context.fillStyle = mix(tokens.surface, tokens.border, 0.6); context.fillRect(0, y + laneHeight - 1, layoutWidth, 1); }
         if (lane.expanded != null) drawDisclosure(context, indent + 12, centre, lane.expanded, tokens);
@@ -394,10 +416,7 @@ export default function Timeline(props: TimelineProps) {
         if (state.t < 1) animating = true;
         holders.set(lane.id, state);
         const fade = lane.labelStyle === 'side' ? 1 : lane.muted ? 0.55 : 1;
-        const blueprint = lane.identity?.tile === 'blueprint';
-        const textAt = indent + disclosure + (lane.compact ? 10 : blueprint ? 62 : lane.heading && !lane.identity?.icon && !lane.identity?.countryFlag ? 10 : iconSize + 18);
-        const textWidth = Math.max(8, left - textAt - 10);
-        const labelText = (text: string) => p.truncateLabels === false ? text : fitText(text, textWidth);
+        const labelText = (text: string, textFont?: string) => p.truncateLabels === false ? text : (textFont ? laneFitted.get(textFont)?.get(text) : undefined) ?? fitText(text, textWidth);
         const holder = (span: TimelineSpan | null, alpha: number) => {
           context.globalAlpha = alpha * fade;
           context.textAlign = 'left'; context.textBaseline = 'middle';
@@ -414,23 +433,26 @@ export default function Timeline(props: TimelineProps) {
                 fallback(`${lane.id}:${span.id}`, 8, centre - 14, 46, 28, alpha * fade, 'flask');
               }
             } else drawIcon(span.icon, 10 + indent + disclosure, centre, iconSize, p.holderIconAlign ? p.holderIconAlign === 'top' : !!lane.pill, span.countryFlag);
-            context.fillStyle = tokens.text; context.font = font(tokens, tokens.fontSize.body, lane.heading ? 600 : 500);
-            if (lane.labelStyle === 'side') { context.font = font(tokens, 10, 600); context.fillStyle = tokens.muted; }
-            context.fillText(lane.pill ? span.label : labelText(lane.labelStyle === 'side' ? span.label.toUpperCase() : span.label), textAt, centre - (lane.singleLine ? 0 : 7), textWidth);
+            const primaryFont = lane.labelStyle === 'side' ? font(tokens, 10, 600) : font(tokens, tokens.fontSize.body, lane.heading ? 600 : 500);
+            context.fillStyle = lane.labelStyle === 'side' ? tokens.muted : tokens.text;
+            context.font = primaryFont;
+            context.fillText(lane.pill ? span.label : labelText(lane.labelStyle === 'side' ? span.label.toUpperCase() : span.label, primaryFont), textAt, centre - (lane.singleLine ? 0 : 7), textWidth);
           } else {
-            context.fillStyle = tokens.muted; context.font = font(tokens, tokens.fontSize.body);
-            context.fillText(labelText(unknown ? 'Not recorded' : p.emptyLabel ?? 'Empty'), textAt, centre - (lane.singleLine ? 0 : 7), textWidth);
+            const emptyFont = font(tokens, tokens.fontSize.body);
+            context.fillStyle = tokens.muted; context.font = emptyFont;
+            context.fillText(labelText(unknown ? 'Not recorded' : p.emptyLabel ?? 'Empty', emptyFont), textAt, centre - (lane.singleLine ? 0 : 7), textWidth);
           }
           context.globalAlpha = 1;
         };
         if (!lane.compact && state.t < 1) holder(state.previous, 1 - state.t);
         if (!lane.compact) holder(state.current, state.t);
         context.globalAlpha = fade;
-        context.font = font(tokens, tokens.fontSize.small, lane.pill ? 600 : 400);
+        const subFont = font(tokens, tokens.fontSize.small, lane.pill ? 600 : 400);
+        context.font = subFont;
         context.textAlign = 'left'; context.textBaseline = 'middle';
         if (lane.compact) {
           context.fillStyle = tokens.muted;
-          context.fillText(labelText(lane.label), textAt, centre, textWidth);
+          context.fillText(labelText(lane.label, subFont), textAt, centre, textWidth);
         } else if (lane.pill) {
           const width = Math.min(textWidth, measuredWidth(context, lane.pill.text) + 12);
           const pillTop = centre + 1;
@@ -442,7 +464,7 @@ export default function Timeline(props: TimelineProps) {
           context.fillText(lane.pill.text, textAt + 6, pillTop + pillHeight / 2 + 0.5, Math.max(1, width - 12));
         } else if (!lane.singleLine) {
           context.fillStyle = tokens.muted;
-          context.fillText(labelText(lane.label), textAt, centre + 8, textWidth);
+          context.fillText(labelText(lane.label, subFont), textAt, centre + 8, textWidth);
         }
         context.globalAlpha = 1;
 

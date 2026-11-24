@@ -20,7 +20,8 @@ import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { font, LABEL_WEIGHT, VALUE_WEIGHT } from '../draw';
 import { barPath, fillHatched, FLAG, NAME_PAD, VALUE_GAP } from '../race/draw';
 import { formatAxisValue } from '../valueAxis';
-import { butterflyLabelWidth, butterflyLayout, butterflyMinimumHeight, butterflyMinimumWidth, butterflyNameX, butterflyPartAt, butterflyPartSpans, butterflyRowViewport, butterflyScale, butterflySurface, butterflyTextWidths, butterflyTicks, ellipsizeLabel } from './layout';
+import { fitLabels } from '../labels';
+import { butterflyLabelWidth, butterflyLayout, butterflyMinimumHeight, butterflyMinimumWidth, butterflyNameX, butterflyPartAt, butterflyPartSpans, butterflyRowViewport, butterflyScale, butterflySurface, butterflyTextWidths, butterflyTicks } from './layout';
 import type { ButterflyPart, ButterflyPartHit, ButterflyValue } from './layout';
 import '../charts.css';
 import './butterfly.css';
@@ -136,7 +137,14 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
       const visible = butterflyRowViewport(layout.top, height, scrollTop);
       const nameX = butterflyNameX(flags);
       const shortRoom = layout.labelWidth - nameX - NAME_PAD;
-      if (shortWidth !== shortRoom || shortFont !== labelFont) { shortened.clear(); shortWidth = shortRoom; shortFont = labelFont; }
+      const rowLabelsKey = rows.map(row => row.item.label).join('\u0000');
+      if (shortWidth !== shortRoom || shortFont !== labelFont || shortened.get('\u0000') !== rowLabelsKey) {
+        ctx.font = labelFont;
+        shortened.clear();
+        for (const [full, shown] of fitLabels(rows.map(row => row.item.label), shortRoom, text => ctx.measureText(text).width)) shortened.set(full, shown);
+        shortened.set('\u0000', rowLabelsKey);
+        shortWidth = shortRoom; shortFont = labelFont;
+      }
       const targetScale = butterflyScale(p.items);
       scale = approach(scale ?? targetScale, targetScale, dt, tau);
       let moving = scale !== targetScale;
@@ -213,9 +221,7 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
           }
         }
         ctx.fillStyle = t.text; ctx.font = labelFont; ctx.textAlign = 'left';
-        let short = shortened.get(item.label);
-        if (short === undefined) { short = ellipsizeLabel(item.label, shortRoom, text => ctx.measureText(text).width); shortened.set(item.label, short); }
-        ctx.fillText(short, nameX, y);
+        ctx.fillText(shortened.get(item.label) ?? '', nameX, y);
         ctx.font = valueFont;
         if (values || item.left == null) { ctx.fillStyle = item.left == null ? t.muted : t.text; ctx.textAlign = 'right'; ctx.fillText(item.leftText, layout.axis - l - VALUE_GAP, y); }
         if (values || item.right == null) { ctx.fillStyle = item.right == null ? t.muted : t.text; ctx.textAlign = 'left'; ctx.fillText(item.rightText, layout.axis + r + VALUE_GAP, y); }

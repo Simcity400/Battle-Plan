@@ -15,7 +15,7 @@ import type { ChartTokens } from '../tokens';
 import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { formatAxisValue } from '../valueAxis';
-import { ellipsise } from '../labels';
+import { fitLabels } from '../labels';
 import { drawDateOverlay, drawRaceBar, drawRaceEmpty, drawRaceGrid, FLAG, MIN_LABEL, NAME_PAD, NAME_X, VALUE_GAP, VALUE_PAD } from './draw';
 import { keyedEntry, paintOrder, raceHeight, raceLayout, raceMoving, raceText, rowAt, rowCentre, rowInView, rowSeen, selectRaceRow, stepRace } from './race';
 import type { RaceItem, RaceLayout, RaceRow, RaceState } from './race';
@@ -108,7 +108,7 @@ export default function RaceChart(props: RaceChartProps) {
     let labelTokens: ChartTokens | null = null;
     let tabular: boolean | null = null;
     let painted: unknown[] | null = null;
-    const fitted: { width: number; tokens: ChartTokens | null; names: Map<string, string> } = { width: -1, tokens: null, names: new Map() };
+    const fitted: { width: number; tokens: ChartTokens | null; key: string; names: Map<string, string> } = { width: -1, tokens: null, key: '', names: new Map() };
     let spokenItems: readonly RaceItem[] | null = null, spokenAt = -Infinity, extentRows = -1;
     let tooltipFor: { key: string; item: RaceItem; props: RaceChartProps; content: TooltipContent | null } | null = null;
 
@@ -230,17 +230,16 @@ export default function RaceChart(props: RaceChartProps) {
       context.textAlign = 'left';
       context.textBaseline = 'middle';
       const nameWidth = layout.left - NAME_X - NAME_PAD;
-      if (fitted.width !== nameWidth || fitted.tokens !== tokens) { fitted.names.clear(); fitted.width = nameWidth; fitted.tokens = tokens; }
-      for (const row of drawn) {
-        const name = p.name(row.key, row.item);
-        let shown = fitted.names.get(name);
-        if (shown === undefined) {
-          if (fitted.names.size > 4096) fitted.names.clear();
-          fitted.names.set(name, shown = ellipsise(name, nameWidth, text => context.measureText(text).width));
-        }
-        context.globalAlpha = alpha(row);
-        context.fillText(shown, NAME_X, rowCentre(layout, row.y));
+      const drawnNames = drawn.map(row => p.name(row.key, row.item));
+      const namesKey = drawnNames.join('\u0000');
+      if (fitted.width !== nameWidth || fitted.tokens !== tokens || fitted.key !== namesKey) {
+        fitted.width = nameWidth; fitted.tokens = tokens; fitted.key = namesKey;
+        fitted.names = fitLabels(drawnNames, nameWidth, text => context.measureText(text).width);
       }
+      drawn.forEach((row, index) => {
+        context.globalAlpha = alpha(row);
+        context.fillText(fitted.names.get(drawnNames[index]) ?? '', NAME_X, rowCentre(layout, row.y));
+      });
       const tips: number[] = [];
       for (const row of drawn) { context.globalAlpha = alpha(row); tips.push(drawRaceBar(context, layout, tokens, row, min, max)); }
       context.fillStyle = tokens.text;

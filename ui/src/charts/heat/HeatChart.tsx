@@ -6,7 +6,7 @@ import Legend from '../Legend';
 import type { ChartLayer, LiveHead, TimeChartProps } from '../TimeChart';
 import type { Live } from '../live';
 import type { TooltipContent } from '../tooltip';
-import { fitLabelWidth, ellipsise } from '../labels';
+import { fitLabels, fitLabelWidth } from '../labels';
 import { font, VALUE_LABEL_GAP } from '../draw';
 import { toLocal } from '../surface';
 import { keyTarget } from '../rowNavigation';
@@ -49,8 +49,8 @@ export default function HeatChart(props: HeatChartProps) {
   const [labelWidth, setLabelWidth] = useState(0);
   const [hoverRow, setHoverRow] = useState<number | null>(null);
   const labels = useMemo(() => props.labelCatalogue ?? props.rows.map(row => row.label), [props.labelCatalogue, props.rows]);
-  const labelCache = useRef<{ font: string; labels: Map<string, number>; fitted: Map<string, { room: number; text: string }> }>(
-    { font: '', labels: new Map(), fitted: new Map() });
+  const labelCache = useRef<{ font: string; room: number; key: string; labels: Map<string, number>; fitted: Map<string, string> }>(
+    { font: '', room: -1, key: '', labels: new Map(), fitted: new Map() });
   const window = heatWindow(props.rows.length, viewport.scroll, viewport.height, minimumRow, top, bottom);
   const visible = useMemo(() => props.rows.slice(window.first, window.end), [props.rows, window.first, window.end]);
   const history = props.periods;
@@ -76,9 +76,9 @@ export default function HeatChart(props: HeatChartProps) {
     const context = document.createElement('canvas').getContext('2d');
     if (!context) return;
     context.font = font(tokens, tokens.fontSize.small, 500);
-    if (labelCache.current.font !== context.font) labelCache.current = { font: context.font, labels: new Map(), fitted: new Map() };
+    if (labelCache.current.font !== context.font) labelCache.current = { font: context.font, room: -1, key: '', labels: new Map(), fitted: new Map() };
     const measure = () => {
-      if (labelCache.current.font !== context.font) labelCache.current = { font: context.font, labels: new Map(), fitted: new Map() };
+      if (labelCache.current.font !== context.font) labelCache.current = { font: context.font, room: -1, key: '', labels: new Map(), fitted: new Map() };
       const widths = labelCache.current.labels;
       const width = fitLabelWidth(labels, label => {
         let width = widths.get(label);
@@ -90,7 +90,7 @@ export default function HeatChart(props: HeatChartProps) {
     const families = new Set(fontFamilies(tokens.font));
     const loaded = (event: FontFaceSetLoadEvent) => {
       if (!loadedFontFamily(event, families)) return;
-      labelCache.current.labels.clear(); labelCache.current.fitted.clear(); invalidateGeometry(measure);
+      labelCache.current.labels.clear(); labelCache.current.fitted.clear(); labelCache.current.room = -1; labelCache.current.key = ''; invalidateGeometry(measure);
       setViewport(previous => ({ ...previous }));
     };
     document.fonts?.addEventListener('loadingdone', loaded);
@@ -193,19 +193,21 @@ export default function HeatChart(props: HeatChartProps) {
     ctx.save(); ctx.beginPath(); ctx.rect(0, frame.plotTop, frame.plotLeft - VALUE_LABEL_GAP, frame.plotHeight); ctx.clip();
     ctx.clearRect(0, frame.plotTop, frame.plotLeft - VALUE_LABEL_GAP, frame.plotHeight);
     ctx.font = font(tokens, tokens.fontSize.small, 500); ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillStyle = tokens.text;
-    if (labelCache.current.font !== ctx.font) labelCache.current = { font: ctx.font, labels: new Map(), fitted: new Map() };
-    const { labels: widths, fitted } = labelCache.current;
+    if (labelCache.current.font !== ctx.font) labelCache.current = { font: ctx.font, room: -1, key: '', labels: new Map(), fitted: new Map() };
+    const cache = labelCache.current;
     const room = frame.plotLeft - VALUE_LABEL_GAP * 2;
+    const visibleLabels = visible.map(row => row.label);
+    const key = visibleLabels.join('\u0000');
+    if (cache.room !== room || cache.key !== key) {
+      cache.room = room; cache.key = key;
+      cache.fitted = fitLabels(visibleLabels, room, text => {
+        let width = cache.labels.get(text);
+        if (width === undefined) { width = ctx.measureText(text).width; cache.labels.set(text, width); }
+        return width;
+      });
+    }
     visible.forEach((row, index) => {
-      let label = fitted.get(row.label);
-      if (!label || label.room !== room) {
-        let width = widths.get(row.label);
-        if (width === undefined) { width = ctx.measureText(row.label).width; widths.set(row.label, width); }
-        const fullWidth = width;
-        label = { room, text: ellipsise(row.label, room, text => text === row.label ? fullWidth : ctx.measureText(text).width) };
-        fitted.set(row.label, label);
-      }
-      ctx.fillText(label.text, frame.plotLeft - VALUE_LABEL_GAP,
+      ctx.fillText(cache.fitted.get(row.label) ?? '', frame.plotLeft - VALUE_LABEL_GAP,
         frame.plotTop + (index + 0.5) * window.rowHeight - window.offset);
     });
     ctx.restore();

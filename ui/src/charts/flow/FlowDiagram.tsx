@@ -6,7 +6,7 @@ import { easeTau } from '../easing';
 import { useMotionNow } from '../liveMotion.ts';
 import { canvasImage } from '../images';
 import { countryTooltipContent, drawCountryFlag } from '../countryFlag';
-import { ellipsise, layoutEndLabels } from '../labels';
+import { fitLabels, layoutEndLabels } from '../labels';
 import type { Live } from '../live';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
@@ -158,6 +158,9 @@ export default function FlowDiagram(props: FlowDiagramProps) {
       for (const side of ['source', 'target'] as const) {
         const boxes = frame.nodes.filter(box => box.node.side === side && box.alpha > 0.02 && box.height > 0);
         const placed = layoutEndLabels(boxes.map(box => ({ id: box.id, y: box.y + box.height / 2, height: lineHeight })), geometry.top, geometry.bottom);
+        const room = Math.max(8, column - FLAG_WIDTH - LABEL_GAP * 2);
+        context.font = font(tokens, tokens.fontSize.body, 500);
+        const fittedLabels = fitLabels(boxes.map(box => box.node.label), room, text => textWidth(context, text));
         for (const box of boxes) {
           const centre = box.y + box.height / 2;
           const at = placed.get(box.id) ?? centre;
@@ -182,8 +185,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
           }
           context.fillStyle = tokens.text; context.font = font(tokens, tokens.fontSize.body, 500); context.textBaseline = 'middle';
           context.textAlign = side === 'source' ? 'right' : 'left';
-          const room = Math.max(8, column - FLAG_WIDTH - LABEL_GAP * 2);
-          const label = ellipsise(box.node.label, room, text => textWidth(context, text));
+          const label = fittedLabels.get(box.node.label) ?? '';
           context.fillText(label, side === 'source' ? flagX - LABEL_GAP / 2 : flagX + FLAG_WIDTH + LABEL_GAP / 2, at);
           const text = textWidth(context, label) + LABEL_GAP / 2;
           labels.push({ id: box.id, node: box.node, x: side === 'source' ? flagX - text : flagX, y: at - lineHeight / 2,
