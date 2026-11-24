@@ -1112,7 +1112,8 @@ impl<'q, 'a> Reader<'q, 'a> {
                         let loaded = self.load_buckets(run, &merged)?;
                         for (at, a, b) in unfiltered {
                             let (a32, b32) = (a as i32, b as i32);
-                            for &(bucket_start, ref entries) in &loaded {
+                            for &(bucket, ref entries) in &loaded {
+                                let bucket_start = bucket * six;
                                 let bucket_end = bucket_start + six - 1;
                                 if bucket_end < a || bucket_start > b {
                                     continue;
