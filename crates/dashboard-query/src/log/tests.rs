@@ -184,15 +184,21 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
 }
 
 #[test]
-fn a_tag_filter_over_two_facets_keeps_each_matching_event_once() {
+fn a_tag_filter_over_two_facets_preserves_each_pattern_by_default_and_deduplicates_when_opted_in() {
     let first = ITA_FROM - 120;
     let fixture = Fixture::with_gap(Data::Market, first..=LAST, FIRST + FIRST_HOURS..=SECOND - 1);
     let query = fixture.query();
     let reader = market(&query);
-    let parties = FacetFilter { name: "country|receiver".into(), countries: vec!["ITA".into(), "GER".into()], ..Default::default() };
+    let default_parties = FacetFilter { name: "country|receiver".into(), countries: vec!["ITA".into(), "GER".into()], ..Default::default() };
+    let default_selection = reader.select(&[default_parties], query.timeline.first, LAST).unwrap();
+    assert_eq!(default_selection.overlap, Overlap::EachPattern, "multi-facet country filter defaults to EachPattern for existing callers");
+
+    let parties = FacetFilter { name: "country|receiver".into(), countries: vec!["ITA".into(), "GER".into()], deduplicate: true, ..Default::default() };
     let selection = reader.select(&[parties], query.timeline.first, LAST).unwrap();
+    assert_eq!(selection.overlap, Overlap::FirstMatch);
     assert_eq!(selection.groups, vec![Some("ITA".into()), Some("GER".into())]);
     let mut wanted = Vec::new();
+    let mut each_wanted = Vec::new();
     let mut both_matched = 0usize;
     for (hour, key, kind, country) in events(&query, first, LAST, |_, _, _| true) {
         let receiver = fixture::receiver(country, kind, hour);
@@ -203,12 +209,18 @@ fn a_tag_filter_over_two_facets_keeps_each_matching_event_once() {
         }
         if ita {
             wanted.push((hour, 0usize, key));
+            each_wanted.push((hour, 0usize, key));
         } else if ger {
             wanted.push((hour, 1usize, key));
         }
+        if ger {
+            each_wanted.push((hour, 1usize, key));
+        }
     }
     wanted.sort_unstable();
+    each_wanted.sort_unstable();
     assert!(both_matched > 0, "the fixture has rows both selected parties hold");
+    assert_eq!(reader.total_with(&default_selection.patterns, first, LAST, default_selection.overlap).unwrap(), each_wanted.len() as u64);
     assert!(wanted.iter().any(|row| row.1 == 0) && wanted.iter().any(|row| row.1 == 1));
     let (mut got, mut cursor) = (Vec::new(), 0);
     let mut seen_keys = HashSet::new();
@@ -532,22 +544,83 @@ fn projected_out_numeric_column_in_append_log_stays_unrecorded() {
 }
 
 #[test]
-fn staggered_membership_intervals_match_exact_counts() {
+fn staggered_membership_intervals_match_exact_counts_without_quadratic_sweep() {
     let fixture = Fixture::campaign(Data::Market);
     let query = fixture.query();
     let reader = market(&query);
     let from = FIRST;
     let to = FIRST + 1_800;
     let membership: Vec<CountrySpan> = (0..1_500)
-        .map(|i| {
-            let start = from + i;
-            let end = (start + 12).min(to);
-            CountrySpan { country: Country::from("GER"), first_hour: start, last_hour: end }
-        })
+        .map(|i| CountrySpan { country: Country::from("GER"), first_hour: from + i, last_hour: to })
         .collect();
     let filter = FacetFilter { name: "country".into(), membership, ..Default::default() };
     let selection = reader.select(&[filter], from, to).unwrap();
-    let total = reader.total_with(&selection.patterns, from, to, selection.overlap).unwrap();
-    let expected = events(&query, from, (from + 1_499 + 12).min(to), |_, _, country| country == 9001).len() as u64;
-    assert_eq!(total, expected, "1,500 staggered overlapping intervals count each matching event once");
+    let (total, checked) = count_patterns_checked(|| reader.total_with(&selection.patterns, from, to, selection.overlap).unwrap());
+    let expected = events(&query, from, to, |_, _, country| country == 9001).len() as u64;
+    assert_eq!(total, expected, "1,500 staggered intervals ending together count each matching event once");
+    assert!(checked <= 20_000, "1,500 staggered intervals must not perform a quadratic active-set sweep, got {checked}");
+}
+
+#[test]
+fn membership_group_order_matches_sorted_tags_not_input_order() {
+    let fixture = Fixture::campaign(Data::Market);
+    let query = fixture.query();
+    let reader = market(&query);
+    let shared_hour = (ITA_FROM..=LAST)
+        .find(|&hour| {
+            let list = fixture::market(hour);
+            list.iter().any(|&(_, _, c)| c == 9001) && list.iter().any(|&(_, _, c)| c == 9002)
+        })
+        .expect("fixture has an hour where both GER and ITA emit events");
+    let filter = FacetFilter {
+        name: "country".into(),
+        membership: vec![
+            CountrySpan { country: Country::from("ITA"), first_hour: ITA_FROM, last_hour: shared_hour },
+            CountrySpan { country: Country::from("GER"), first_hour: shared_hour - 10, last_hour: shared_hour },
+        ],
+        ..Default::default()
+    };
+    let selection = reader.select(&[filter], ITA_FROM, shared_hour).unwrap();
+    assert_eq!(selection.groups, vec![Some(Country::from("GER")), Some(Country::from("ITA"))]);
+
+    let page = reader.page_with(&selection.patterns, selection.groups.len(), shared_hour, shared_hour, 0, 16, selection.overlap).unwrap();
+    let tail = reader.newest_page_with(&selection.patterns, selection.groups.len(), shared_hour, shared_hour, 0, 16, selection.overlap).unwrap();
+    let page_groups: Vec<usize> = page.rows.iter().map(|r| r.group).collect();
+    let tail_groups: Vec<usize> = tail.rows.iter().map(|r| r.group).collect();
+    assert_eq!(page_groups, vec![0, 1], "GER (group 0) precedes ITA (group 1) at the same hour");
+    assert_eq!(tail_groups, vec![0, 1], "newest_page_with matches page_with same-hour order");
+}
+
+#[test]
+fn quiet_advance_does_not_walk_expired_historical_patterns() {
+    let fixture = Fixture::campaign(Data::Market);
+    let query = fixture.query();
+    let reader = market(&query);
+    let from = FIRST;
+    let quiet_hour = (FIRST + 1_200..=FIRST + 1_300).find(|&hour| fixture::market(hour).is_empty()).unwrap();
+    let mut membership: Vec<CountrySpan> = (0..1_000)
+        .map(|i| CountrySpan { country: Country::from("GER"), first_hour: from + i, last_hour: from + i })
+        .collect();
+    membership.push(CountrySpan { country: Country::from("GER"), first_hour: quiet_hour - 5, last_hour: quiet_hour + 5 });
+    let filter = FacetFilter { name: "country".into(), membership, ..Default::default() };
+    let selection = reader.select(&[filter], from, quiet_hour + 5).unwrap();
+    let ((has, examined), checked) = count_patterns_checked(|| count_examined(|| reader.has_any_in(&selection, quiet_hour, quiet_hour).unwrap()));
+    assert!(!has);
+    assert_eq!(examined, 0);
+    assert!(checked < 64, "quiet advance must skip expired historical patterns via interval index, checked {checked}");
+}
+
+#[test]
+fn filtered_quiet_advance_skips_bucket_with_only_unselected_event_kinds() {
+    let first = 600;
+    let last = 612;
+    let dense_hour = 602;
+    let fixture = Fixture::new(Data::DenseMarket(dense_hour, 100), first..=last);
+    let query = fixture.query();
+    let reader = market(&query);
+    let filter = FacetFilter { name: "kind".into(), values: vec![10], ..Default::default() };
+    let selection = reader.select(&[filter], first, last).unwrap();
+    let (has, examined) = count_examined(|| reader.has_any_in(&selection, dense_hour, dense_hour).unwrap());
+    assert!(!has, "dense hour holds only kind 20, not kind 10");
+    assert_eq!(examined, 0, "bucket summary with no matching facet must examine zero entries");
 }

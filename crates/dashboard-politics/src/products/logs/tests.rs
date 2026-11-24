@@ -137,19 +137,200 @@ fn tail_coverage_cost_does_not_grow_with_elapsed_campaign() {
     };
 
     let (first_reply, first_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(first + 250, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
-    assert!(first_counts.status_blocks > 0, "cold call indexes the branch coverage once");
-    assert_eq!(first_reply.missing, Vec::<MissingSpan>::new(), "8 newest events at H350 span H280..=H350 after the H200..=H220 gap");
+    assert!(first_counts.status_blocks > 0, "cold call indexes coverage for the read blocks");
+    assert_eq!(spans(&first_reply.missing), [(200, 220, true)], "offset zero returns full-interval coverage regardless of countFacets");
 
     let (early_reply, early_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(first + 150, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
-    assert_eq!(early_counts.status_blocks, 0, "indexed coverage reads zero status blocks on subsequent early steps");
-    assert_eq!(spans(&early_reply.missing), [(200, 220, true)], "8 newest events at H250 cross the H200..=H220 gap");
+    assert_eq!(early_counts.status_blocks, 0, "cached block coverage reads zero status blocks on subsequent early steps");
+    assert_eq!(spans(&early_reply.missing), [(200, 220, true)]);
 
-    let (late_reply, late_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(2_430, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
-    assert_eq!(late_counts.status_blocks, 0, "indexed coverage reads zero status blocks late in the campaign");
-    assert_eq!(spans(&late_reply.missing), [(2_400, 2_410, true)], "8 newest events at H2430 cross only the H2400..=H2410 gap");
+    let (late_reply, _late_cold_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(2_430, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
+    assert_eq!(spans(&late_reply.missing), [(200, 220, true), (2_400, 2_410, true)], "offset zero late tail carries all gaps across the requested interval");
+    let (late_warm, late_warm_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(2_430, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
+    assert_eq!(late_warm_counts.status_blocks, 0, "warm repeat late read decodes zero status blocks");
+    assert_eq!(late_warm.missing, late_reply.missing);
 
     let count_asks = vec![LogFacetCountAsk { key: "kind1".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![1], ..Default::default() }] }];
-    let (counted_reply, counted_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(last, count_asks), &load, &AtomicBool::new(false)).unwrap());
-    assert_eq!(counted_counts.status_blocks, 0, "counted tail also reuses the branch coverage index");
+    let (counted_reply, _counted_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(last, count_asks.clone()), &load, &AtomicBool::new(false)).unwrap());
     assert_eq!(spans(&counted_reply.missing), [(200, 220, true), (2_400, 2_410, true)], "counted tail carries all gaps over the counted range");
+    let (_, counted_warm_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(last, count_asks), &load, &AtomicBool::new(false)).unwrap());
+    assert_eq!(counted_warm_counts.status_blocks, 0, "warm counted tail reuses per-block coverage cache");
+}
+
+#[test]
+fn log_pages_keep_recorded_coverage_gaps_between_page_boundaries() {
+    let frames = (100..=200)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            *frame.tables[TableId::MarketEvents.index()] = if (140..=150).contains(&hour) {
+                TableView::Truncated { rows: TableRows::MarketEvents(Vec::new()), missing: 3 }
+            } else if hour == 110 || hour == 190 {
+                TableView::Complete(TableRows::MarketEvents(vec![MarketEventRow {
+                    id: hour as u64,
+                    occurrence: hour as u64,
+                    hour,
+                    country: 9001,
+                    kind: 1,
+                    ..MarketEventRow::default()
+                }]))
+            } else {
+                TableView::Complete(TableRows::MarketEvents(Vec::new()))
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let src = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "logs-gap-pages".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let ask = |cursor: Option<String>| LogPageParams {
+        branch_id: "1".into(),
+        log: "market-events".into(),
+        facets: Vec::new(),
+        from: Some(100.0),
+        to: 200.0,
+        cursor,
+        page_size: 1,
+        columns: None,
+    };
+    let page0 = LogPage::load(&src, &ask(None), &load, &AtomicBool::new(false)).unwrap();
+    let page1 = LogPage::load(&src, &ask(Some("1".into())), &load, &AtomicBool::new(false)).unwrap();
+    assert_eq!(page0.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [110]);
+    assert_eq!(page1.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [190]);
+    let gap = |m: &[MissingSpan]| m.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>();
+    assert_eq!(gap(&page0.missing), [(140, 150)], "page 0 keeps full-interval truncation gap");
+    assert_eq!(gap(&page1.missing), [(140, 150)], "page 1 keeps full-interval truncation gap");
+}
+
+#[test]
+fn later_damaged_run_does_not_prevent_reading_earlier_healthy_interval() {
+    use dashboard_base::test_fixtures::continuation_records;
+
+    let run0_frames: Vec<DecodedFrame> = (100..=150)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let events = if hour == 120 {
+                vec![MarketEventRow { id: 1, occurrence: 1, hour, country: 9001, kind: 1, ..MarketEventRow::default() }]
+            } else {
+                Vec::new()
+            };
+            *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
+            frame
+        })
+        .collect();
+    let first_part = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, run0_frames.clone())]).unwrap();
+    let run1_frames: Vec<DecodedFrame> = (200..=240)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            *frame.tables[TableId::MarketEvents.index()] = TableView::Unavailable { reason: WHY.into() };
+            frame
+        })
+        .collect();
+    let continued = continuation_records(&first_part, 1, run1_frames);
+    let clean = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, run0_frames), continued]).unwrap();
+    let entry = clean.recording().table_entry(1, 0, TableId::MarketEvents.index()).unwrap();
+    let frame_entry = &entry.unit.parts[0].frames[0];
+    let mut damaged = clean.bytes().to_vec();
+    damaged[(frame_entry.offset + u64::from(frame_entry.stored) / 2) as usize] ^= 0x40;
+    let dir = std::env::temp_dir().join(format!("bp-log-damage-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("damaged-later-run.battleplan");
+    std::fs::write(&path, &damaged).unwrap();
+    let replay = Replay::open_timelines(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let src = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "logs-later-damage".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let early = LogPage::load(
+        &src,
+        &LogPageParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: Some(100.0), to: 150.0, cursor: None, page_size: 32, columns: None },
+        &load,
+        &AtomicBool::new(false),
+    )
+    .expect("healthy earlier run must succeed despite later run damage");
+    assert_eq!(early.rows.iter().map(|r| r.hour).collect::<Vec<_>>(), [120]);
+    assert!(early.missing.is_empty());
+    let late = LogPage::load(
+        &src,
+        &LogPageParams { branch_id: "1".into(), log: "market-events".into(), facets: Vec::new(), from: Some(100.0), to: 240.0, cursor: None, page_size: 32, columns: None },
+        &load,
+        &AtomicBool::new(false),
+    );
+    assert!(late.is_err(), "reading into the damaged later run still reports the error");
+}
+
+#[test]
+fn tail_offset_zero_returns_full_interval_coverage_without_count_facets() {
+    let frames: Vec<DecodedFrame> = (50..=260)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            *frame.tables[TableId::MarketEvents.index()] = if hour == 150 {
+                TableView::Truncated { rows: TableRows::MarketEvents(Vec::new()), missing: 5 }
+            } else if (50..=99).contains(&hour) || (201..=250).contains(&hour) {
+                let events = (0..3)
+                    .map(|k| MarketEventRow { id: hour as u64 * 10 + k, occurrence: hour as u64 * 10 + k, hour, country: 9001, kind: 1, ..MarketEventRow::default() })
+                    .collect();
+                TableView::Complete(TableRows::MarketEvents(events))
+            } else {
+                TableView::Complete(TableRows::MarketEvents(Vec::new()))
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let src = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "logs-tail-cov".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let tail = LogTail::load(
+        &src,
+        &LogTailParams {
+            branch_id: "1".into(),
+            log: "market-events".into(),
+            facets: Vec::new(),
+            from: Some(50.0),
+            hour: Some(250),
+            offset: None,
+            limit: 64,
+            columns: None,
+            count_facets: Vec::new(),
+        },
+        &load,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(tail.rows.len(), 64);
+    assert!(tail.rows.last().unwrap().hour > 200, "tail rows lie strictly above the gap at 150");
+    let gap = |m: &[MissingSpan]| m.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>();
+    assert_eq!(gap(&tail.missing), [(150, 150)], "offset 0 tail carries gap at 150 even with empty countFacets");
+
+    let asked = serde_json::json!({ "panel": "log-tail", "branchId": "1", "log": "market-events", "from": 50, "limit": 64 });
+    let panel = dated_panel(&src, &load, &asked).unwrap();
+    let exact = panel.exact().unwrap();
+    let _seed = (exact.advance)(250, true, &AtomicBool::new(false), None);
+    let quiet = (exact.advance)(255, true, &AtomicBool::new(false), None);
+    let cold = (exact.cold)(255, &AtomicBool::new(false));
+    assert_eq!(*quiet.value, cold, "quiet advance preserves full-interval gap matching cold read");
+    let quiet_reply: LogTailReply = serde_json::from_value(quiet.value.as_ref().as_ref().unwrap().clone()).unwrap();
+    assert_eq!(gap(&quiet_reply.missing), [(150, 150)]);
 }

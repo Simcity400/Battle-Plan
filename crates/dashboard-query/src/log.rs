@@ -29,6 +29,7 @@ mod tests;
 #[cfg(test)]
 thread_local! {
     static EXAMINED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static PATTERNS_CHECKED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -39,10 +40,30 @@ pub fn count_examined<T>(run: impl FnOnce() -> T) -> (T, u64) {
     (value, count)
 }
 
+#[cfg(test)]
+pub fn count_patterns_checked<T>(run: impl FnOnce() -> T) -> (T, u64) {
+    let prev = PATTERNS_CHECKED.with(|cell| cell.replace(Some(0)));
+    let value = run();
+    let count = PATTERNS_CHECKED.with(|cell| cell.replace(prev)).unwrap_or(0);
+    (value, count)
+}
+
 #[inline]
 fn record_examined(n: usize) {
     #[cfg(test)]
     EXAMINED.with(|cell| {
+        if let Some(count) = cell.get() {
+            cell.set(Some(count.saturating_add(n as u64)));
+        }
+    });
+    #[cfg(not(test))]
+    let _ = n;
+}
+
+#[inline]
+fn record_patterns_checked(n: usize) {
+    #[cfg(test)]
+    PATTERNS_CHECKED.with(|cell| {
         if let Some(count) = cell.get() {
             cell.set(Some(count.saturating_add(n as u64)));
         }
@@ -154,6 +175,9 @@ pub struct FacetFilter {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<_>")]
     pub unobserved: Vec<UnobservedSpan>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub deduplicate: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1024,6 +1048,7 @@ impl<'q, 'a> Reader<'q, 'a> {
         let mut by_run: BTreeMap<u32, Vec<(usize, i64, i64)>> = BTreeMap::new();
         let mut runs: HashMap<u32, (i64, i64)> = HashMap::new();
         for (at, pattern) in patterns.iter().enumerate() {
+            record_patterns_checked(1);
             let (run_first, run_last) = match runs.get(&pattern.run) {
                 Some(&held) => held,
                 None => *runs.entry(pattern.run).or_insert(self.run_hours(pattern.run)?),
@@ -1187,6 +1212,7 @@ impl<'q, 'a> Reader<'q, 'a> {
                         if a > b {
                             continue;
                         }
+                        record_patterns_checked(active_set.len());
                         let active = Arc::new(active_set.iter().map(|&(_, at)| at).collect::<Vec<_>>());
                         if a == run_first {
                             a = a.div_euclid(bin) * bin;
@@ -1768,6 +1794,10 @@ impl<'q, 'a> Reader<'q, 'a> {
 
     pub fn has_any_with(&self, patterns: &[Pattern], from: i32, to: i32, overlap: Overlap) -> io::Result<bool> {
         Ok(self.total_with(patterns, from, to, overlap)? > 0)
+    }
+
+    pub fn has_any_in(&self, selection: &Selection, from: i32, to: i32) -> io::Result<bool> {
+        self.has_any_with(&selection.patterns, from, to, selection.overlap)
     }
 }
 

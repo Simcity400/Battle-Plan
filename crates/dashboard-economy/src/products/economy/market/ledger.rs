@@ -798,4 +798,65 @@ mod tests {
         let after_forget = load_tail_at(&query, &links, &context, Some(&source_cache), None, &tail_params, 110, &AtomicBool::new(false)).unwrap();
         assert_eq!(after_forget, uncached_tail, "re-resolution after forget matches uncached");
     }
+
+    #[test]
+    fn market_ledger_preserves_each_pattern_while_tail_deduplicates_when_opted_in() {
+        use dashboard_base::test_fixtures::{CAMPAIGN, ownership_frame, records};
+        use dashboard_query::identity::Country;
+        use replay::campaign::Replay;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+
+        let frames = (100..=110)
+            .map(|hour| {
+                let mut frame = ownership_frame(1, hour, 9001);
+                let events = if hour == 104 {
+                    vec![MarketEventRow { id: 77, occurrence: 77, hour, country: 9001, receiver: 44, kind: 20, agreement: 9, amount_raw: 100_000, ..MarketEventRow::default() }]
+                } else {
+                    Vec::new()
+                };
+                *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let src = Source::from_replay(
+            dashboard_base::SourceKey { source_id: "mkt-overlap".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let load = LoadContext { content: None };
+        let default_facets = vec![
+            FacetFilter { name: "kind".into(), values: vec![20], ..Default::default() },
+            FacetFilter { name: "country|receiver".into(), countries: vec![Country::from("FRA"), Country::from("GER")], ..Default::default() },
+        ];
+        let legacy = MarketLedger::load(
+            &src,
+            &MarketLedgerParams { branch_id: "1".into(), facets: default_facets, from: None, to: 110.0, cursor: None, page_size: 64 },
+            &load,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(legacy.total, "2", "legacy Trade Flows caller keeps EachPattern match per selected party");
+        assert_eq!(legacy.rows.len(), 2);
+
+        let dedup_facets = vec![
+            FacetFilter { name: "kind".into(), values: vec![20], ..Default::default() },
+            FacetFilter { name: "country|receiver".into(), countries: vec![Country::from("FRA"), Country::from("GER")], deduplicate: true, ..Default::default() },
+        ];
+        let dedup_tail = MarketLedgerTail::load(
+            &src,
+            &MarketLedgerTailParams { branch_id: "1".into(), facets: dedup_facets, from: None, hour: Some(110), offset: None, limit: 64, count_facets: Vec::new() },
+            &load,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(dedup_tail.total, "1", "market ledger opt-in deduplicates seller-and-buyer match to one row");
+        assert_eq!(dedup_tail.rows.len(), 1);
+    }
 }
