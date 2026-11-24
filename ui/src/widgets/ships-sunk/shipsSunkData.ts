@@ -13,6 +13,20 @@ import type { ShipClassInfo, ShipsSunkManifestReply, ShipsSunkReply, ShipsSunkRo
 export type CountryRole = 'victim' | 'sinker' | 'both';
 const text = (value: unknown) => value === null || typeof value === 'string';
 const optionalInt = (value: unknown) => value === null || int(value);
+const validAttribution = (value: unknown) => {
+  if (!object(value) || typeof value.kind !== 'string') return false;
+  if (value.kind === 'cause') return typeof value.text === 'string' && typeof value.assisted === 'boolean';
+  if (value.kind === 'ship') return typeof value.name === 'string' && text(value.classKey) && text(value.className) && typeof value.assisted === 'boolean';
+  if (value.kind === 'airWing') return text(value.carrierName) && text(value.carrierClassKey) && text(value.carrierClassName) && typeof value.assisted === 'boolean';
+  if (value.kind === 'notRecorded') return typeof value.reason === 'string';
+  return false;
+};
+const validBattle = (value: unknown) => {
+  if (!object(value) || typeof value.kind !== 'string') return false;
+  if (value.kind === 'linked') return typeof value.id === 'string' && value.id.length > 0 && text(value.liveId) && text(value.resultId) && optionalInt(value.firstHour) && optionalInt(value.resultHour);
+  if (value.kind === 'notRecorded') return typeof value.reason === 'string';
+  return false;
+};
 
 export function validateShipsSunkReply(data: unknown): ShipsSunkReply {
   const reply = data as ShipsSunkReply;
@@ -32,7 +46,8 @@ export function validateShipsSunkReply(data: unknown): ShipsSunkReply {
         || (tag !== null && int(hour) && hour === row.knownAt && row.sinkHour < hour))
       && (row.placeIndex === null || (int(row.placeIndex) && row.placeIndex >= 0 && row.placeIndex < reply.places.length))
       && ['hostile', 'assisted', 'cause'].includes(row.cause)
-      && typeof row.assistedKill === 'boolean');
+      && typeof row.assistedKill === 'boolean'
+      && validAttribution(row.sinkingCause) && validBattle(row.battle));
   if (!ok) throw new Error('The ships sunk reply is malformed.');
   for (const type of reply.classes) type.icon = drawableIcon(type.icon);
   return reply;

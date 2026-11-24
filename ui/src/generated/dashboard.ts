@@ -2881,7 +2881,7 @@ export type NavalBattleDetailsParams = { branchId: string, battles: Array<NavalB
 export type NavalBattleDetailsReply = { rows: Array<NavalBattleDetail>, warnings: Array<string>, };
 export type NavalBattleDetailRequest = { id: string, hour: number, };
 export type NavalBattleFleetNames = { names: Array<string>, unknown: string | null, };
-export type NavalBattleNamedShip = { sinkHour: number, knownAt: number, name: string | null, className: string | null, };
+export type NavalBattleNamedShip = { sinkHour: number, knownAt: number, name: string | null, className: string | null, sinkingCause: ShipSinkingAttribution, };
 export type NavalBattleDetail = { id: string, hour: number,
 /**
  * The hour its fleets are read at: the hour asked.
@@ -2925,6 +2925,8 @@ key: string | null, name: string | null,
  */
 icon: string | null, };
 export type ShipSinkingCause = "hostile" | "assisted" | "cause";
+export type ShipSinkingAttribution = { "kind": "cause", text: string, assisted: boolean, } | { "kind": "ship", name: string, classKey: string | null, className: string | null, assisted: boolean, } | { "kind": "airWing", carrierName: string | null, carrierClassKey: string | null, carrierClassName: string | null, assisted: boolean, } | { "kind": "notRecorded", reason: string, };
+export type ShipSinkingBattle = { "kind": "linked", id: string, liveId: string | null, resultId: string | null, firstHour: number | null, resultHour: number | null, } | { "kind": "notRecorded", reason: string, };
 export type ShipsSunkRow = { sinkHour: number,
 /**
  * The first read listing it.
@@ -2933,7 +2935,7 @@ knownAt: number, name: string | null, classIndex: number, recordedNameIndex: num
 /**
  * Always null: both countries are named at the sinking hour.
  */
-victimAsOf: number | null, attackerAsOf: number | null, placeIndex: number | null, cause: ShipSinkingCause, attributionName: string | null, assistedKill: boolean, };
+victimAsOf: number | null, attackerAsOf: number | null, placeIndex: number | null, cause: ShipSinkingCause, attributionName: string | null, assistedKill: boolean, sinkingCause: ShipSinkingAttribution, battle: ShipSinkingBattle, };
 export type NavalLossesParams = { branchId: string, countries: Array<CountryRef>, top: number | null, attribution: NavalAttribution, kind: NavalKind, period: NavalPeriod,
 /**
  * None is the window manifest; a window's runs name it by its index.
