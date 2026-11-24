@@ -478,6 +478,28 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/shell/AnalyticsNav.tsx": "const s = 'Choose at least one page';\n",
         })[0], 0)
 
+    def test_widget_helpers_and_jsx_are_checked_and_false_positives_pass(self):
+        code, out = check({}, {
+            "ui/src/widgets/air-statistics/airStatisticsData.ts": "export const fmt = (n: number) => n.toLocaleString('en-US');\n",
+            "ui/src/widgets/foo/FooWidget.tsx": "const inkOnFill = (f: string) => f;\nconst computeAxisTicks = () => [];\nconst c = '#e5484d';\nfor (const r of rows) { w = ctx.measureText(r).width; }\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("ui/src/widgets/air-statistics/airStatisticsData.ts: family-locale-string", out)
+        self.assertIn("local-contrast-ink", out)
+        self.assertIn("local-tick-engine", out)
+        self.assertIn("family-colour-literal", out)
+        self.assertIn("family-measure-text-loop", out)
+        self.assertEqual(check({}, {
+            "ui/src/widgets/foo/FooWidget.tsx": (
+                "const contrastInk = contrastInkForFill(fill, theme);\n"
+                "const computedTicks = linearTicks(0, 100);\n"
+                "const el = root.querySelector('#abc');\n"
+                "const msg = 'do not use .toLocaleString( here';\n"
+                "for (const r of rows) { h = ctx.measureText(r).actualBoundingBoxAscent; }\n"
+            ),
+            "ui/src/widgets/foo/foo.fixtures.ts": "const s = n.toLocaleString('en-US');\n",
+        })[0], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -196,7 +196,7 @@ function collectIdentifierMemberUsage(rootNode, targetName, initialShadowed = ne
       local.push(...collectTypeParamNames(node));
       if (local.includes(targetName)) return;
       if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
-    } else if (node.type === 'BlockStatement') {
+    } else if (node.type === 'BlockStatement' && node !== rootNode) {
       const local = collectBlockLocalBindings(node.body);
       if (local.includes(targetName)) return;
       if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
