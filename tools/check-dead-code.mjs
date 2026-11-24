@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { extname, join, resolve } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseAst } from 'rolldown/parseAst';
-import { astLang, extractImportSpecifiers, relPosix, resolveLocalImport, walkAst, walkImportGraph } from './ui-import-graph.mjs';
+import { astLang, extractImportSpecifiers, relPosix, resolveLocalImport, staticStringLiteral, walkAst, walkImportGraph } from './ui-import-graph.mjs';
 
 export const UI_FILE_RULES = [
   {
@@ -30,8 +30,9 @@ export const UI_FILE_RULES = [
 ];
 
 const UI_CHECKED_EXTENSIONS = new Set(['.ts', '.tsx', '.css']);
-const SCRIPT_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.js', '.mjs']);
+const SCRIPT_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.js', '.mjs', '.cjs']);
 const TEXT_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs', '.rs', '.py', '.ps1', '.json', '.toml', '.html', '.css']);
+const TOOL_CALLER_EXTENSIONS = new Set(['.mjs', '.ts', '.js', '.cjs', '.py', '.ps1', '.json', '.toml']);
 const NON_CALLER_UI_FILES = new Set([
   'ui/src/dashboard/pages.ts',
   'ui/src/widgets/manifest.ts',
@@ -47,6 +48,23 @@ const GLOBAL_REGISTRIES = new Set([
   'ui/src/widgets/index.ts',
 ]);
 const NON_PRODUCT_PROPERTY_NAMES = new Set(['kind', 'view', 'owner', 'className', 'icon', 'category', 'family']);
+
+export const BASE_SNAPSHOT_PATHSPECS = [
+  'ui/src',
+  'ui/vite.config.ts',
+  'ui/browserBridge.ts',
+  'ui/replayLibrary.ts',
+  ':(glob)ui/*.html',
+  ':(glob)crates/*/src/**/*.rs',
+  ':(glob)tools/**/*.mjs',
+  ':(glob)tools/**/*.ts',
+  ':(glob)tools/**/*.js',
+  ':(glob)tools/**/*.cjs',
+  ':(glob)tools/**/*.py',
+  ':(glob)tools/**/*.ps1',
+  ':(glob)tools/**/*.json',
+  ':(glob)tools/**/*.toml',
+];
 
 function walkDirectory(dirPath, root, predicate, out = []) {
   if (!existsSync(dirPath)) return out;
@@ -70,16 +88,1021 @@ export function classifyUiFile(relPath) {
   return 'production';
 }
 
-export function discoverHtmlEntryPoints(root) {
-  const uiDir = resolve(root, 'ui');
-  if (!existsSync(uiDir)) return [];
-  return readdirSync(uiDir, { withFileTypes: true })
-    .filter(entry => entry.isFile() && entry.name.endsWith('.html'))
-    .map(entry => `ui/${entry.name}`)
-    .sort();
+function unwrapExpression(node) {
+  let cur = node;
+  while (cur && (cur.type === 'TSAsExpression' || cur.type === 'TSSatisfiesExpression' || cur.type === 'ParenthesizedExpression' || cur.type === 'TSNonNullExpression')) {
+    cur = cur.expression;
+  }
+  return cur;
 }
 
-export function checkUiModules(root) {
+export function discoverHtmlEntryPoints(root) {
+  const viteConfigPath = resolve(root, 'ui/vite.config.ts');
+  if (existsSync(viteConfigPath)) {
+    const ast = parseAst(readFileSync(viteConfigPath, 'utf8'), { lang: 'ts' });
+    const found = new Set();
+    walkAst(ast, node => {
+      if (node.type !== 'Property') return;
+      const keyName = node.key?.name ?? node.key?.value;
+      if (keyName !== 'rolldownOptions' && keyName !== 'rollupOptions') return;
+      const optObj = unwrapExpression(node.value);
+      if (optObj?.type !== 'ObjectExpression') return;
+      for (const prop of optObj.properties) {
+        if (prop.type !== 'Property') continue;
+        const propName = prop.key?.name ?? prop.key?.value;
+        if (propName !== 'input') continue;
+        walkAst(prop.value, inner => {
+          const lit = staticStringLiteral(inner);
+          if (lit && lit.endsWith('.html')) {
+            const candidate = resolve(root, 'ui', lit);
+            if (existsSync(candidate)) found.add(relPosix(root, candidate));
+          }
+        });
+      }
+    });
+    if (found.size > 0) return [...found].sort();
+  }
+  const indexHtml = resolve(root, 'ui/index.html');
+  return existsSync(indexHtml) ? ['ui/index.html'] : [];
+}
+
+function collectBindingNames(pattern, out) {
+  if (!pattern) return;
+  if (pattern.type === 'Identifier') {
+    out.push(pattern.name);
+    return;
+  }
+  if (pattern.type === 'ObjectPattern') {
+    for (const prop of pattern.properties) {
+      if (prop.type === 'RestElement') collectBindingNames(prop.argument, out);
+      else collectBindingNames(prop.value, out);
+    }
+  } else if (pattern.type === 'ArrayPattern') {
+    for (const el of pattern.elements) collectBindingNames(el, out);
+  } else if (pattern.type === 'AssignmentPattern') {
+    collectBindingNames(pattern.left, out);
+  } else if (pattern.type === 'RestElement') {
+    collectBindingNames(pattern.argument, out);
+  }
+}
+
+function collectBlockLocalBindings(stmts) {
+  const names = [];
+  for (const stmt of stmts ?? []) {
+    if (!stmt) continue;
+    if (stmt.type === 'VariableDeclaration') {
+      for (const d of stmt.declarations) collectBindingNames(d.id, names);
+    } else if ((stmt.type === 'FunctionDeclaration' || stmt.type === 'ClassDeclaration'
+      || stmt.type === 'TSTypeAliasDeclaration' || stmt.type === 'TSInterfaceDeclaration'
+      || stmt.type === 'TSEnumDeclaration') && stmt.id?.name) {
+      names.push(stmt.id.name);
+    }
+  }
+  return names;
+}
+
+function collectTypeParamNames(node) {
+  const names = [];
+  const params = node?.typeParameters?.params;
+  if (Array.isArray(params)) {
+    for (const p of params) {
+      if (p?.name?.type === 'Identifier') names.push(p.name.name);
+      else if (typeof p?.name === 'string') names.push(p.name);
+    }
+  }
+  return names;
+}
+
+function leftmostIdent(node) {
+  let cur = node;
+  while (cur && cur.type === 'TSQualifiedName') cur = cur.left;
+  return cur?.type === 'Identifier' ? cur.name : null;
+}
+
+function collectIdentifierMemberUsage(rootNode, targetName, initialShadowed = new Set()) {
+  const used = new Set();
+  let opaque = false;
+
+  const walk = (node, parent, key, shadowed) => {
+    if (!node || typeof node !== 'object') return;
+    let nextShadowed = shadowed;
+
+    if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
+      const local = [];
+      if (node.type === 'FunctionExpression' && node.id?.name) local.push(node.id.name);
+      for (const p of node.params ?? []) collectBindingNames(p, local);
+      local.push(...collectTypeParamNames(node));
+      if (local.includes(targetName)) return;
+      if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
+    } else if (node.type === 'BlockStatement') {
+      const local = collectBlockLocalBindings(node.body);
+      if (local.includes(targetName)) return;
+      if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
+    } else if (node.type === 'CatchClause' && node.param) {
+      const local = [];
+      collectBindingNames(node.param, local);
+      if (local.includes(targetName)) return;
+      if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
+    } else if ((node.type === 'ForStatement' || node.type === 'ForInStatement' || node.type === 'ForOfStatement')) {
+      const init = node.init ?? node.left;
+      if (init?.type === 'VariableDeclaration') {
+        const local = [];
+        for (const d of init.declarations) collectBindingNames(d.id, local);
+        if (local.includes(targetName)) return;
+        if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
+      }
+    }
+
+    if (node.type === 'Identifier' && node.name === targetName && !nextShadowed.has(targetName)) {
+      if (parent?.type === 'MemberExpression' && key === 'object') {
+        if (!parent.computed && parent.property?.type === 'Identifier') used.add(parent.property.name);
+        else opaque = true;
+        return;
+      }
+      if (parent?.type === 'JSXMemberExpression' && key === 'object') {
+        if (parent.property?.type === 'JSXIdentifier') used.add(parent.property.name);
+        else opaque = true;
+        return;
+      }
+      if (parent?.type === 'TSQualifiedName' && key === 'left') {
+        if (parent.right?.type === 'Identifier') used.add(parent.right.name);
+        else opaque = true;
+        return;
+      }
+      if (parent?.type === 'VariableDeclarator' && key === 'init' && parent.id?.type === 'ObjectPattern') {
+        for (const prop of parent.id.properties) {
+          if (prop.type === 'Property' && !prop.computed && prop.key?.type === 'Identifier') used.add(prop.key.name);
+          else opaque = true;
+        }
+        return;
+      }
+      if (parent?.type === 'Property' && key === 'key' && !parent.computed && !parent.shorthand) return;
+      if (parent?.type === 'MemberExpression' && key === 'property' && !parent.computed) return;
+      if (parent?.type === 'VariableDeclarator' && key === 'id') return;
+      if (parent?.type === 'TSPropertySignature' && key === 'key' && !parent.computed) return;
+      if ((parent?.type === 'MethodDefinition' || parent?.type === 'PropertyDefinition') && key === 'key' && !parent.computed) return;
+      opaque = true;
+      return;
+    }
+
+    for (const [childKey, value] of Object.entries(node)) {
+      if (Array.isArray(value)) {
+        for (const el of value) {
+          if (el && typeof el === 'object' && typeof el.type === 'string') walk(el, node, childKey, nextShadowed);
+        }
+      } else if (value && typeof value === 'object' && typeof value.type === 'string') {
+        walk(value, node, childKey, nextShadowed);
+      }
+    }
+  };
+
+  walk(rootNode, null, null, initialShadowed);
+  return { used, opaque };
+}
+
+function extractCallbackParamUsage(cb) {
+  if (!cb || (cb.type !== 'ArrowFunctionExpression' && cb.type !== 'FunctionExpression')) {
+    return ['*'];
+  }
+  const p0 = cb.params[0];
+  if (!p0) return ['*'];
+  if (p0.type === 'Identifier') {
+    const { used, opaque } = collectIdentifierMemberUsage(cb.body, p0.name);
+    return opaque ? ['*'] : [...used];
+  }
+  if (p0.type === 'ObjectPattern') {
+    const names = [];
+    for (const prop of p0.properties) {
+      if (prop.type === 'Property' && !prop.computed && prop.key?.type === 'Identifier') names.push(prop.key.name);
+      else return ['*'];
+    }
+    return names;
+  }
+  return ['*'];
+}
+
+function isLazyCall(node) {
+  if (node?.type !== 'CallExpression') return false;
+  if (node.callee?.type === 'Identifier' && node.callee.name === 'lazy') return true;
+  if (node.callee?.type === 'MemberExpression'
+    && !node.callee.computed
+    && node.callee.object?.type === 'Identifier' && node.callee.object.name === 'React'
+    && node.callee.property?.type === 'Identifier' && node.callee.property.name === 'lazy') {
+    return true;
+  }
+  return false;
+}
+
+function isImportMetaUrl(node) {
+  return node?.type === 'MemberExpression'
+    && !node.computed
+    && node.property?.type === 'Identifier'
+    && node.property.name === 'url'
+    && node.object?.type === 'MetaProperty'
+    && node.object.meta?.name === 'import'
+    && node.object.property?.name === 'meta';
+}
+
+function findDirectDynamicImport(fnNode) {
+  if (!fnNode) return null;
+  if (fnNode.type === 'ArrowFunctionExpression') {
+    const body = unwrapExpression(fnNode.body);
+    if (body?.type === 'ImportExpression') return body;
+    if (body?.type === 'BlockStatement' && body.body.length === 1 && body.body[0]?.type === 'ReturnStatement') {
+      const arg = unwrapExpression(body.body[0].argument);
+      if (arg?.type === 'ImportExpression') return arg;
+    }
+  } else if ((fnNode.type === 'FunctionExpression' || fnNode.type === 'FunctionDeclaration') && fnNode.body?.type === 'BlockStatement') {
+    if (fnNode.body.body.length === 1 && fnNode.body.body[0]?.type === 'ReturnStatement') {
+      const arg = unwrapExpression(fnNode.body.body[0].argument);
+      if (arg?.type === 'ImportExpression') return arg;
+    }
+  }
+  return null;
+}
+
+const TYPE_CHILD_KEYS = new Set([
+  'typeAnnotation',
+  'returnType',
+  'typeParameters',
+  'typeArguments',
+  'superTypeArguments',
+  'implements',
+  'extends',
+]);
+
+const TYPE_NODE_TYPES = new Set([
+  'TSTypeAliasDeclaration',
+  'TSInterfaceDeclaration',
+  'TSTypeAnnotation',
+  'TSTypeReference',
+  'TSTypeQuery',
+  'TSTypeLiteral',
+  'TSFunctionType',
+  'TSConstructorType',
+  'TSArrayType',
+  'TSTupleType',
+  'TSUnionType',
+  'TSIntersectionType',
+  'TSConditionalType',
+  'TSMappedType',
+  'TSIndexedAccessType',
+  'TSInferType',
+  'TSTypeOperator',
+  'TSImportType',
+]);
+
+function analyzeScriptModule(root, relPath, cache) {
+  if (cache.has(relPath)) return cache.get(relPath);
+  const full = resolve(root, relPath);
+  const ext = extname(full).toLowerCase();
+  if (!SCRIPT_EXTENSIONS.has(ext) || !existsSync(full)) {
+    cache.set(relPath, null);
+    return null;
+  }
+  const source = readFileSync(full, 'utf8');
+  const ast = parseAst(source, { lang: astLang(full) });
+
+  const declaredExports = new Map();
+  const reexports = [];
+  const starReexports = [];
+  const importedBindings = new Map();
+  const nsBindings = new Map();
+  const bareImports = [];
+  const workerUrls = [];
+  const statements = [];
+  const localLoaders = new Map();
+
+  for (let stmtIndex = 0; stmtIndex < ast.body.length; stmtIndex += 1) {
+    const node = ast.body[stmtIndex];
+    const bindings = [];
+    let isDeclOnly = false;
+    let isTypeOnly = false;
+
+    if (node.type === 'ImportDeclaration') {
+      isDeclOnly = true;
+      const spec = staticStringLiteral(node.source);
+      if (spec !== null) {
+        const target = resolveLocalImport(full, spec, root);
+        if (target) {
+          const targetRel = relPosix(root, target);
+          const declIsType = node.importKind === 'type';
+          if (node.specifiers.length === 0) {
+            bareImports.push({ targetRel, isType: declIsType });
+          } else {
+            for (const item of node.specifiers) {
+              const itemIsType = declIsType || item.importKind === 'type';
+              if (item.type === 'ImportDefaultSpecifier') {
+                importedBindings.set(item.local.name, { targetRel, importedName: 'default', isType: itemIsType });
+              } else if (item.type === 'ImportSpecifier') {
+                const importedName = item.imported?.name ?? item.imported?.value;
+                if (importedName) importedBindings.set(item.local.name, { targetRel, importedName, isType: itemIsType });
+              } else if (item.type === 'ImportNamespaceSpecifier') {
+                nsBindings.set(item.local.name, { targetRel, isType: itemIsType });
+              }
+            }
+          }
+        }
+      }
+    } else if (node.type === 'ExportDefaultDeclaration') {
+      isDeclOnly = true;
+      if (node.declaration?.id?.name) bindings.push(node.declaration.id.name);
+      declaredExports.set('default', { stmtIndex, localName: node.declaration?.id?.name ?? null, isType: false, isReexport: false, specifierOnly: false });
+    } else if (node.type === 'ExportNamedDeclaration') {
+      isDeclOnly = true;
+      const sourceSpec = staticStringLiteral(node.source);
+      if (sourceSpec !== null) {
+        const target = resolveLocalImport(full, sourceSpec, root);
+        const targetRel = target ? relPosix(root, target) : null;
+        for (const spec of node.specifiers) {
+          const exported = spec.exported?.name ?? spec.exported?.value;
+          const local = spec.local?.name ?? spec.local?.value;
+          if (!exported) continue;
+          const isType = node.exportKind === 'type' || spec.exportKind === 'type';
+          declaredExports.set(exported, { stmtIndex, localName: null, isType, isReexport: true, specifierOnly: false });
+          if (targetRel && local) reexports.push({ exported, targetRel, targetName: local, isType, stmtIndex });
+        }
+      } else if (node.declaration) {
+        const decl = node.declaration;
+        isTypeOnly = decl.type === 'TSTypeAliasDeclaration' || decl.type === 'TSInterfaceDeclaration';
+        if (decl.type === 'VariableDeclaration') {
+          const names = [];
+          for (const item of decl.declarations) {
+            collectBindingNames(item.id, names);
+            if (item.id?.type === 'Identifier') {
+              const imp = findDirectDynamicImport(unwrapExpression(item.init));
+              if (imp) {
+                const spec = staticStringLiteral(imp.source);
+                const resolved = spec !== null ? resolveLocalImport(full, spec, root) : null;
+                if (resolved) localLoaders.set(item.id.name, { targetRel: relPosix(root, resolved), exported: true, stmtIndex, impNode: imp });
+              }
+            }
+          }
+          for (const name of names) {
+            bindings.push(name);
+            declaredExports.set(name, { stmtIndex, localName: name, isType: false, isReexport: false, specifierOnly: false });
+          }
+        } else if (decl.id?.name) {
+          bindings.push(decl.id.name);
+          declaredExports.set(decl.id.name, { stmtIndex, localName: decl.id.name, isType: isTypeOnly, isReexport: false, specifierOnly: false });
+          if (decl.type === 'FunctionDeclaration') {
+            const imp = findDirectDynamicImport(decl);
+            if (imp) {
+              const spec = staticStringLiteral(imp.source);
+              const resolved = spec !== null ? resolveLocalImport(full, spec, root) : null;
+              if (resolved) localLoaders.set(decl.id.name, { targetRel: relPosix(root, resolved), exported: true, stmtIndex, impNode: imp });
+            }
+          }
+        }
+      } else {
+        for (const spec of node.specifiers) {
+          const exported = spec.exported?.name ?? spec.exported?.value;
+          const local = spec.local?.name ?? spec.local?.value;
+          if (!exported) continue;
+          const isType = node.exportKind === 'type' || spec.exportKind === 'type';
+          declaredExports.set(exported, { stmtIndex, localName: local, isType, isReexport: false, specifierOnly: true });
+        }
+      }
+    } else if (node.type === 'ExportAllDeclaration') {
+      isDeclOnly = true;
+      const sourceSpec = staticStringLiteral(node.source);
+      if (sourceSpec !== null) {
+        const target = resolveLocalImport(full, sourceSpec, root);
+        const targetRel = target ? relPosix(root, target) : null;
+        const isType = node.exportKind === 'type';
+        if (node.exported) {
+          const expName = node.exported.name ?? node.exported.value;
+          if (expName) {
+            declaredExports.set(expName, { stmtIndex, localName: null, isType, isReexport: true, specifierOnly: false });
+            if (targetRel) reexports.push({ exported: expName, targetRel, targetName: '*', isType, stmtIndex });
+          }
+        } else if (targetRel) {
+          starReexports.push({ targetRel, isType, stmtIndex });
+        }
+      }
+    } else if (node.type === 'VariableDeclaration') {
+      isDeclOnly = true;
+      for (const item of node.declarations) {
+        collectBindingNames(item.id, bindings);
+        if (item.id?.type === 'Identifier') {
+          const imp = findDirectDynamicImport(unwrapExpression(item.init));
+          if (imp) {
+            const spec = staticStringLiteral(imp.source);
+            const resolved = spec !== null ? resolveLocalImport(full, spec, root) : null;
+            if (resolved) localLoaders.set(item.id.name, { targetRel: relPosix(root, resolved), exported: false, stmtIndex, impNode: imp });
+          }
+        }
+      }
+    } else if (node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration'
+      || node.type === 'TSTypeAliasDeclaration' || node.type === 'TSInterfaceDeclaration'
+      || node.type === 'TSEnumDeclaration') {
+      isDeclOnly = true;
+      isTypeOnly = node.type === 'TSTypeAliasDeclaration' || node.type === 'TSInterfaceDeclaration';
+      if (node.id?.name) {
+        bindings.push(node.id.name);
+        if (node.type === 'FunctionDeclaration') {
+          const imp = findDirectDynamicImport(node);
+          if (imp) {
+            const spec = staticStringLiteral(imp.source);
+            const resolved = spec !== null ? resolveLocalImport(full, spec, root) : null;
+            if (resolved) localLoaders.set(node.id.name, { targetRel: relPosix(root, resolved), exported: false, stmtIndex, impNode: imp });
+          }
+        }
+      }
+    }
+
+    statements.push({
+      stmtIndex,
+      node,
+      bindings,
+      refs: new Set(),
+      typeRefs: new Set(),
+      nsUses: [],
+      dynamicUses: [],
+      inlineTypeUses: [],
+      isSideEffect: !isDeclOnly,
+      isTypeOnly,
+      isDeclOnly,
+    });
+  }
+
+  for (const [, meta] of declaredExports) {
+    if (meta.specifierOnly && meta.localName && localLoaders.has(meta.localName)) {
+      localLoaders.get(meta.localName).exported = true;
+    }
+  }
+
+  const isLegacyManifestFile = relPath === 'ui/src/widgets/legacyManifest.ts';
+  const isWidgetManifestFile = relPath === 'ui/src/widgets/manifest.ts';
+  const loaderImpNodes = new Set([...localLoaders.values()].map(item => item.impNode));
+
+  for (const stmt of statements) {
+    const node = stmt.node;
+    if (node.type === 'ImportDeclaration' || (node.type === 'ExportNamedDeclaration' && node.source) || node.type === 'ExportAllDeclaration') {
+      continue;
+    }
+
+    const handledImports = new Set();
+
+    const walkStmt = (cur, parent, key, shadowed, inType, enclosingBlock) => {
+      if (!cur || typeof cur !== 'object') return;
+      const nextInType = inType || TYPE_NODE_TYPES.has(cur.type) || TYPE_CHILD_KEYS.has(key);
+      let nextShadowed = shadowed;
+      let nextBlock = enclosingBlock;
+
+      if (cur.type === 'FunctionDeclaration' || cur.type === 'FunctionExpression' || cur.type === 'ArrowFunctionExpression') {
+        const local = [];
+        if (cur.type === 'FunctionExpression' && cur.id?.name) local.push(cur.id.name);
+        for (const p of cur.params ?? []) collectBindingNames(p, local);
+        local.push(...collectTypeParamNames(cur));
+        if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
+        nextBlock = cur.body ?? cur;
+      } else if (cur.type === 'BlockStatement') {
+        const local = collectBlockLocalBindings(cur.body);
+        if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
+        nextBlock = cur;
+      } else if (cur.type === 'CatchClause' && cur.param) {
+        const local = [];
+        collectBindingNames(cur.param, local);
+        if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
+      } else if (cur.type === 'ForStatement' || cur.type === 'ForInStatement' || cur.type === 'ForOfStatement') {
+        const init = cur.init ?? cur.left;
+        if (init?.type === 'VariableDeclaration') {
+          const local = [];
+          for (const d of init.declarations) collectBindingNames(d.id, local);
+          if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
+        }
+      } else if (cur.type === 'TSTypeAliasDeclaration' || cur.type === 'TSInterfaceDeclaration' || cur.type === 'ClassDeclaration' || cur.type === 'ClassExpression') {
+        const local = collectTypeParamNames(cur);
+        if (local.length > 0) nextShadowed = new Set([...shadowed, ...local]);
+      }
+
+      if (cur.type === 'NewExpression'
+        && cur.callee?.type === 'Identifier' && cur.callee.name === 'URL'
+        && cur.arguments.length >= 2
+        && isImportMetaUrl(cur.arguments[1])) {
+        const spec = staticStringLiteral(cur.arguments[0]);
+        if (spec !== null) {
+          const target = resolveLocalImport(full, spec, root);
+          if (target) workerUrls.push({ targetRel: relPosix(root, target), stmtIndex: stmt.stmtIndex });
+        }
+      }
+
+      if (cur.type === 'TSImportType') {
+        const spec = staticStringLiteral(cur.source) ?? staticStringLiteral(cur.argument?.literal);
+        if (spec !== null) {
+          const target = resolveLocalImport(full, spec, root);
+          if (target) {
+            stmt.inlineTypeUses.push({ targetRel: relPosix(root, target), name: leftmostIdent(cur.qualifier) ?? '*' });
+          }
+        }
+      }
+
+      if (cur.type === 'CallExpression' && isLazyCall(cur) && cur.arguments.length >= 1) {
+        const imp = findDirectDynamicImport(unwrapExpression(cur.arguments[0]));
+        if (imp) {
+          handledImports.add(imp);
+          const spec = staticStringLiteral(imp.source);
+          const target = spec !== null ? resolveLocalImport(full, spec, root) : null;
+          if (target) stmt.dynamicUses.push({ targetRel: relPosix(root, target), names: ['default'], legacyLoad: false });
+        }
+      }
+
+      if (cur.type === 'CallExpression' && cur.arguments.length >= 2) {
+        for (let i = 0; i < cur.arguments.length - 1; i += 1) {
+          const imp = findDirectDynamicImport(unwrapExpression(cur.arguments[i]));
+          if (!imp) continue;
+          const nextArg = unwrapExpression(cur.arguments[i + 1]);
+          if (nextArg && (nextArg.type === 'ArrowFunctionExpression' || nextArg.type === 'FunctionExpression')) {
+            handledImports.add(imp);
+            const spec = staticStringLiteral(imp.source);
+            const target = spec !== null ? resolveLocalImport(full, spec, root) : null;
+            if (target) {
+              stmt.dynamicUses.push({ targetRel: relPosix(root, target), names: extractCallbackParamUsage(nextArg), legacyLoad: false });
+            }
+          }
+        }
+      }
+
+      if (cur.type === 'CallExpression'
+        && cur.callee?.type === 'MemberExpression'
+        && !cur.callee.computed
+        && cur.callee.property?.name === 'then'
+        && cur.callee.object?.type === 'ImportExpression') {
+        const imp = cur.callee.object;
+        handledImports.add(imp);
+        const spec = staticStringLiteral(imp.source);
+        const target = spec !== null ? resolveLocalImport(full, spec, root) : null;
+        if (target) {
+          stmt.dynamicUses.push({ targetRel: relPosix(root, target), names: extractCallbackParamUsage(cur.arguments[0]), legacyLoad: false });
+        }
+      }
+
+      if (cur.type === 'AwaitExpression' && cur.argument?.type === 'ImportExpression') {
+        const imp = cur.argument;
+        handledImports.add(imp);
+        const spec = staticStringLiteral(imp.source);
+        const target = spec !== null ? resolveLocalImport(full, spec, root) : null;
+        if (target) {
+          const targetRel = relPosix(root, target);
+          let names;
+          if (parent?.type === 'MemberExpression' && key === 'object') {
+            names = !parent.computed && parent.property?.type === 'Identifier' ? [parent.property.name] : ['*'];
+          } else if (parent?.type === 'VariableDeclarator' && key === 'init' && parent.id?.type === 'ObjectPattern') {
+            names = [];
+            for (const prop of parent.id.properties) {
+              if (prop.type === 'Property' && !prop.computed && prop.key?.type === 'Identifier') names.push(prop.key.name);
+              else { names = ['*']; break; }
+            }
+          } else if (parent?.type === 'VariableDeclarator' && key === 'init' && parent.id?.type === 'Identifier') {
+            const { used, opaque } = collectIdentifierMemberUsage(nextBlock ?? node, parent.id.name);
+            names = opaque ? ['*'] : [...used];
+          } else {
+            names = ['*'];
+          }
+          stmt.dynamicUses.push({ targetRel, names, legacyLoad: false });
+        }
+      }
+
+      if (cur.type === 'ImportExpression' && !handledImports.has(cur) && !loaderImpNodes.has(cur)) {
+        const spec = staticStringLiteral(cur.source);
+        const target = spec !== null ? resolveLocalImport(full, spec, root) : null;
+        if (target) {
+          const targetRel = relPosix(root, target);
+          const inManifestLoadProp = (isLegacyManifestFile || isWidgetManifestFile)
+            && parent?.type === 'ArrowFunctionExpression';
+          if (inManifestLoadProp) {
+            stmt.dynamicUses.push({ targetRel, names: ['default'], legacyLoad: isLegacyManifestFile });
+          } else {
+            stmt.dynamicUses.push({ targetRel, names: ['*'], legacyLoad: false });
+          }
+        }
+      }
+
+      if (cur.type === 'Identifier' && localLoaders.has(cur.name) && !nextShadowed.has(cur.name)) {
+        const loader = localLoaders.get(cur.name);
+        const isDeclId = (parent?.type === 'VariableDeclarator' && key === 'id')
+          || (parent?.type === 'FunctionDeclaration' && key === 'id');
+        if (!isDeclId && !(parent?.type === 'Property' && key === 'key' && !parent.computed && !parent.shorthand)
+          && !(parent?.type === 'MemberExpression' && key === 'property' && !parent.computed)) {
+          if (parent?.type === 'CallExpression' && key === 'callee') {
+            const grand = null;
+            void grand;
+          } else {
+            loader.opaqueEscape = true;
+          }
+        }
+      }
+
+      if (cur.type === 'CallExpression' && cur.callee?.type === 'Identifier' && localLoaders.has(cur.callee.name) && !nextShadowed.has(cur.callee.name)) {
+        const loader = localLoaders.get(cur.callee.name);
+        if (parent?.type === 'AwaitExpression') {
+          stmt.dynamicUses.push({ targetRel: loader.targetRel, names: [], legacyLoad: false, pendingAwaitLoader: { callNode: cur, awaitNode: parent, block: nextBlock ?? node } });
+        } else if (parent?.type === 'MemberExpression' && key === 'object' && !parent.computed && parent.property?.name === 'then') {
+          stmt.dynamicUses.push({ targetRel: loader.targetRel, names: [], legacyLoad: false, pendingThenLoader: { memberNode: parent } });
+        } else {
+          stmt.dynamicUses.push({ targetRel: loader.targetRel, names: ['*'], legacyLoad: false });
+        }
+      }
+
+      if ((cur.type === 'Identifier' || cur.type === 'JSXIdentifier') && !nextShadowed.has(cur.name)) {
+        const skip = (parent?.type === 'MemberExpression' && key === 'property' && !parent.computed)
+          || (parent?.type === 'JSXMemberExpression' && key === 'property')
+          || (parent?.type === 'Property' && key === 'key' && !parent.computed && !parent.shorthand)
+          || (parent?.type === 'TSPropertySignature' && key === 'key' && !parent.computed)
+          || (parent?.type === 'MethodDefinition' && key === 'key' && !parent.computed)
+          || (parent?.type === 'PropertyDefinition' && key === 'key' && !parent.computed)
+          || (parent?.type === 'JSXAttribute' && key === 'name')
+          || (parent?.type === 'ImportSpecifier' || parent?.type === 'ImportDefaultSpecifier' || parent?.type === 'ImportNamespaceSpecifier')
+          || (parent?.type === 'ExportSpecifier' && key === 'exported')
+          || ((parent?.type === 'FunctionDeclaration' || parent?.type === 'ClassDeclaration'
+            || parent?.type === 'TSTypeAliasDeclaration' || parent?.type === 'TSInterfaceDeclaration'
+            || parent?.type === 'TSEnumDeclaration') && key === 'id')
+          || (parent?.type === 'VariableDeclarator' && key === 'id')
+          || (parent?.type === 'TSTypeParameter' && key === 'name')
+          || (parent?.type === 'LabeledStatement' && key === 'label')
+          || ((parent?.type === 'BreakStatement' || parent?.type === 'ContinueStatement') && key === 'label');
+
+        if (!skip) {
+          if (cur.type === 'JSXIdentifier' && /^[a-z]/.test(cur.name)) {
+          } else if (nextInType) {
+            stmt.typeRefs.add(cur.name);
+          } else {
+            stmt.refs.add(cur.name);
+          }
+
+          if (nsBindings.has(cur.name)) {
+            const ns = nsBindings.get(cur.name);
+            const isType = nextInType || ns.isType;
+            if (parent?.type === 'MemberExpression' && key === 'object') {
+              const name = !parent.computed && parent.property?.type === 'Identifier' ? parent.property.name : '*';
+              stmt.nsUses.push({ targetRel: ns.targetRel, name, isType });
+            } else if (parent?.type === 'JSXMemberExpression' && key === 'object') {
+              const name = parent.property?.type === 'JSXIdentifier' ? parent.property.name : '*';
+              stmt.nsUses.push({ targetRel: ns.targetRel, name, isType: false });
+            } else if (parent?.type === 'TSQualifiedName' && key === 'left') {
+              const name = parent.right?.type === 'Identifier' ? parent.right.name : '*';
+              stmt.nsUses.push({ targetRel: ns.targetRel, name, isType: true });
+            } else if (parent?.type === 'VariableDeclarator' && key === 'init' && parent.id?.type === 'ObjectPattern') {
+              for (const prop of parent.id.properties) {
+                if (prop.type === 'Property' && !prop.computed && prop.key?.type === 'Identifier') {
+                  stmt.nsUses.push({ targetRel: ns.targetRel, name: prop.key.name, isType });
+                } else {
+                  stmt.nsUses.push({ targetRel: ns.targetRel, name: '*', isType });
+                }
+              }
+            } else {
+              stmt.nsUses.push({ targetRel: ns.targetRel, name: '*', isType });
+            }
+          }
+        }
+      }
+
+      for (const [childKey, value] of Object.entries(cur)) {
+        if (Array.isArray(value)) {
+          for (const el of value) {
+            if (el && typeof el === 'object' && typeof el.type === 'string') {
+              walkStmt(el, cur, childKey, nextShadowed, nextInType, nextBlock);
+            }
+          }
+        } else if (value && typeof value === 'object' && typeof value.type === 'string') {
+          walkStmt(value, cur, childKey, nextShadowed, nextInType, nextBlock);
+        }
+      }
+    };
+
+    walkStmt(node, null, null, new Set(), stmt.isTypeOnly, node);
+
+    const parentMap = new Map();
+    if (stmt.dynamicUses.some(d => d.pendingAwaitLoader || d.pendingThenLoader)) {
+      walkAst(node, (n, p, k) => { parentMap.set(n, { parent: p, key: k }); });
+      for (const d of stmt.dynamicUses) {
+        if (d.pendingAwaitLoader) {
+          const { awaitNode, block } = d.pendingAwaitLoader;
+          const info = parentMap.get(awaitNode);
+          const p = info?.parent;
+          const k = info?.key;
+          if (p?.type === 'MemberExpression' && k === 'object') {
+            d.names = !p.computed && p.property?.type === 'Identifier' ? [p.property.name] : ['*'];
+          } else if (p?.type === 'VariableDeclarator' && k === 'init' && p.id?.type === 'ObjectPattern') {
+            const names = [];
+            let ok = true;
+            for (const prop of p.id.properties) {
+              if (prop.type === 'Property' && !prop.computed && prop.key?.type === 'Identifier') names.push(prop.key.name);
+              else { ok = false; break; }
+            }
+            d.names = ok ? names : ['*'];
+          } else if (p?.type === 'VariableDeclarator' && k === 'init' && p.id?.type === 'Identifier') {
+            const { used, opaque } = collectIdentifierMemberUsage(block, p.id.name);
+            d.names = opaque ? ['*'] : [...used];
+          } else {
+            d.names = ['*'];
+          }
+          delete d.pendingAwaitLoader;
+        } else if (d.pendingThenLoader) {
+          const info = parentMap.get(d.pendingThenLoader.memberNode);
+          const p = info?.parent;
+          if (p?.type === 'CallExpression') {
+            d.names = extractCallbackParamUsage(p.arguments[0]);
+          } else {
+            d.names = ['*'];
+          }
+          delete d.pendingThenLoader;
+        }
+      }
+    }
+  }
+
+  for (const [, loader] of localLoaders) {
+    if (loader.exported || loader.opaqueEscape) {
+      const stmt = statements[loader.stmtIndex];
+      if (stmt) stmt.dynamicUses.push({ targetRel: loader.targetRel, names: ['*'], legacyLoad: false });
+    }
+  }
+
+  const bindingToStmts = new Map();
+  for (const stmt of statements) {
+    for (const name of stmt.bindings) {
+      let list = bindingToStmts.get(name);
+      if (!list) bindingToStmts.set(name, list = []);
+      list.push(stmt.stmtIndex);
+    }
+  }
+
+  const result = {
+    relPath,
+    declaredExports,
+    reexports,
+    starReexports,
+    importedBindings,
+    nsBindings,
+    bareImports,
+    workerUrls,
+    statements,
+    bindingToStmts,
+  };
+  cache.set(relPath, result);
+  return result;
+}
+
+function moduleProvidesExport(root, relPath, exportName, moduleCache, visiting = new Set()) {
+  if (visiting.has(relPath)) return false;
+  visiting.add(relPath);
+  const info = analyzeScriptModule(root, relPath, moduleCache);
+  if (!info) return false;
+  if (info.declaredExports.has(exportName)) return true;
+  for (const star of info.starReexports) {
+    if (moduleProvidesExport(root, star.targetRel, exportName, moduleCache, visiting)) return true;
+  }
+  return false;
+}
+
+function readRatchetFile(root) {
+  const ratchetPath = resolve(root, 'tools/legacy-widgets-ratchet.json');
+  const data = JSON.parse(readFileSync(ratchetPath, 'utf8'));
+  const required = ['maxLegacyViews', 'maxLegacyRendererViews', 'maxUnusedExports'];
+  for (const field of required) {
+    const val = data[field];
+    if (typeof val !== 'number' || !Number.isInteger(val) || val < 0) {
+      throw new Error(`tools/legacy-widgets-ratchet.json must set integer ${field} >= 0`);
+    }
+  }
+  return data;
+}
+
+function resolveImportFromFunction(fn, fromFile, root) {
+  if (typeof fn !== 'function') return null;
+  try {
+    const ast = parseAst(`(${fn.toString()})`, { lang: 'ts' });
+    let target = null;
+    walkAst(ast, inner => {
+      if (target || inner.type !== 'ImportExpression') return;
+      const spec = staticStringLiteral(inner.source);
+      if (spec === null) return;
+      const resolved = resolveLocalImport(fromFile, spec, root);
+      if (resolved) target = relPosix(root, resolved);
+    });
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+function parseLegacyManifestAstFallback(legacyPath, root) {
+  const byKey = new Map();
+  if (!existsSync(legacyPath)) return byKey;
+  const ast = parseAst(readFileSync(legacyPath, 'utf8'), { lang: 'ts' });
+  walkAst(ast, node => {
+    if (node.type !== 'ObjectExpression') return;
+    let kind = null;
+    let view = '';
+    let loadTarget = null;
+    for (const prop of node.properties) {
+      if (prop.type !== 'Property') continue;
+      const propName = prop.key?.name ?? prop.key?.value;
+      if (propName === 'kind') kind = staticStringLiteral(prop.value);
+      else if (propName === 'view') view = staticStringLiteral(prop.value) ?? '';
+      else if (propName === 'load') {
+        walkAst(prop.value, inner => {
+          if (loadTarget || inner.type !== 'ImportExpression') return;
+          const spec = staticStringLiteral(inner.source);
+          if (spec === null) return;
+          const resolved = resolveLocalImport(legacyPath, spec, root);
+          if (resolved) loadTarget = relPosix(root, resolved);
+        });
+      }
+    }
+    if (kind && loadTarget) byKey.set(`${kind}\0${view}`, loadTarget);
+  });
+  return byKey;
+}
+
+async function loadManifestData(root) {
+  const metaByKind = new Map();
+  const familyViews = [];
+  const familyByKind = new Map();
+  const legacyEntries = [];
+  const familyViewUiEntries = new Map();
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const definitionsPath = resolve(root, 'ui/src/widgets/definitions.ts');
+  if (existsSync(definitionsPath)) {
+    const mod = await import(`${pathToFileURL(definitionsPath).href}?t=${stamp}`);
+    for (const meta of mod.widgetMetas ?? []) {
+      if (meta && typeof meta.kind === 'string') metaByKind.set(meta.kind, meta);
+    }
+  }
+
+  const familyManifestPath = resolve(root, 'ui/src/widgets/familyManifest.ts');
+  if (existsSync(familyManifestPath)) {
+    const mod = await import(`${pathToFileURL(familyManifestPath).href}?t=${stamp}`);
+    for (const entry of mod.FAMILY_VIEWS ?? []) {
+      if (!entry || typeof entry.kind !== 'string') continue;
+      familyViews.push(entry);
+      const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : 'default';
+      let set = familyByKind.get(entry.kind);
+      if (!set) familyByKind.set(entry.kind, set = new Set());
+      set.add(view);
+    }
+  }
+
+  const legacyPath = resolve(root, 'ui/src/widgets/legacyManifest.ts');
+  const legacyFileExists = existsSync(legacyPath);
+  if (legacyFileExists) {
+    const mod = await import(`${pathToFileURL(legacyPath).href}?t=${stamp}`);
+    const astFallback = parseLegacyManifestAstFallback(legacyPath, root);
+    const evaluated = mod.LEGACY_WIDGETS;
+    if (!Array.isArray(evaluated)) {
+      throw new Error('Could not find exported LEGACY_WIDGETS array in ui/src/widgets/legacyManifest.ts');
+    }
+    for (const entry of evaluated) {
+      if (!entry || typeof entry.kind !== 'string') continue;
+      const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : null;
+      const loadTarget = resolveImportFromFunction(entry.load, legacyPath, root)
+        ?? astFallback.get(`${entry.kind}\0${view ?? ''}`)
+        ?? null;
+      legacyEntries.push({
+        kind: entry.kind,
+        view,
+        loadTarget,
+        hasLoader: typeof entry.load === 'function',
+      });
+    }
+  }
+
+  const manifestPath = resolve(root, 'ui/src/widgets/manifest.ts');
+  if (existsSync(manifestPath)) {
+    const ast = parseAst(readFileSync(manifestPath, 'utf8'), { lang: 'ts' });
+    const astUiTargets = new Map();
+    for (const node of ast.body) {
+      if (node.type !== 'ExportNamedDeclaration' || node.declaration?.type !== 'VariableDeclaration') continue;
+      for (const decl of node.declaration.declarations) {
+        if (decl.id?.type !== 'Identifier' || decl.id.name !== 'FAMILY_VIEW_UI') continue;
+        const init = unwrapExpression(decl.init);
+        if (init?.type !== 'ObjectExpression') continue;
+        for (const prop of init.properties) {
+          if (prop.type !== 'Property') continue;
+          const kind = prop.key?.value ?? prop.key?.name;
+          if (typeof kind !== 'string') continue;
+          let target = null;
+          walkAst(prop.value, inner => {
+            if (target || inner.type !== 'ImportExpression') return;
+            const spec = staticStringLiteral(inner.source);
+            if (spec === null) return;
+            const resolved = resolveLocalImport(manifestPath, spec, root);
+            if (resolved) target = relPosix(root, resolved);
+          });
+          astUiTargets.set(kind, target);
+        }
+      }
+    }
+    try {
+      const mod = await import(`${pathToFileURL(manifestPath).href}?t=${stamp}`);
+      if (mod.FAMILY_VIEW_UI && typeof mod.FAMILY_VIEW_UI === 'object') {
+        for (const [kind, loader] of Object.entries(mod.FAMILY_VIEW_UI)) {
+          const target = resolveImportFromFunction(loader?.load, manifestPath, root) ?? astUiTargets.get(kind) ?? null;
+          familyViewUiEntries.set(kind, target);
+        }
+      }
+    } catch {
+      for (const [kind, target] of astUiTargets) familyViewUiEntries.set(kind, target);
+    }
+  }
+
+  return {
+    metaByKind,
+    familyViews,
+    familyByKind,
+    legacyFileExists,
+    legacyEntries,
+    familyViewUiEntries,
+  };
+}
+
+function selectLegacyViewChoices(meta) {
+  const viewField = meta?.options?.find(item => item.key === 'view' && item.kind === 'choice');
+  if (viewField?.choices?.length) return viewField.choices;
+  if (meta?.viewSwitch?.choices?.length) return meta.viewSwitch.choices;
+  if (meta?.viewSwitch?.option) {
+    const switchField = meta.options?.find(item => item.key === meta.viewSwitch.option && item.kind === 'choice');
+    if (switchField?.choices?.length) return switchField.choices;
+  }
+  return null;
+}
+
+function expandLegacyViewPairs(legacyEntries, metaByKind, familyByKind) {
+  const pairs = [];
+  const seen = new Set();
+  const staleEntries = [];
+  const activeLegacyTargets = new Set();
+  const unresolvedLoaders = [];
+
+  const addPair = (kind, view) => {
+    const pair = `${kind}:${view}`;
+    if (!seen.has(pair)) {
+      seen.add(pair);
+      pairs.push(pair);
+    }
+  };
+
+  for (const entry of legacyEntries) {
+    const explicitView = typeof entry.view === 'string' && entry.view.length > 0 && entry.view !== 'default'
+      ? entry.view
+      : null;
+    const label = explicitView ? `${entry.kind}:${explicitView}` : `${entry.kind}:default`;
+
+    if (entry.hasLoader && !entry.loadTarget) {
+      unresolvedLoaders.push(label);
+    }
+
+    const covered = familyByKind.get(entry.kind);
+    if (explicitView) {
+      if (covered?.has(explicitView)) {
+        staleEntries.push(label);
+        continue;
+      }
+      addPair(entry.kind, explicitView);
+      if (entry.loadTarget) activeLegacyTargets.add(entry.loadTarget);
+      continue;
+    }
+
+    const meta = metaByKind.get(entry.kind);
+    const choices = selectLegacyViewChoices(meta);
+    if (choices && choices.length > 0) {
+      let addedAny = false;
+      for (const choice of choices) {
+        if (!covered?.has(choice.value)) {
+          addPair(entry.kind, choice.value);
+          addedAny = true;
+        }
+      }
+      if (!addedAny) {
+        staleEntries.push(label);
+      } else if (entry.loadTarget) {
+        activeLegacyTargets.add(entry.loadTarget);
+      }
+    } else {
+      if (covered?.has('default')) {
+        staleEntries.push(label);
+      } else {
+        addPair(entry.kind, 'default');
+        if (entry.loadTarget) activeLegacyTargets.add(entry.loadTarget);
+      }
+    }
+  }
+
+  return {
+    pairs: pairs.sort(),
+    staleEntries: staleEntries.sort(),
+    unresolvedLoaders: unresolvedLoaders.sort(),
+    activeLegacyTargets,
+  };
+}
+
+export function checkUiAndExports(root, activeLegacyTargets, ratchetData = null) {
+  const data = ratchetData ?? readRatchetFile(root);
+  const maxUnusedExports = data.maxUnusedExports;
+
   const allFiles = walkDirectory(
     resolve(root, 'ui/src'),
     root,
@@ -89,18 +1112,324 @@ export function checkUiModules(root) {
   const roleByRel = new Map();
   for (const file of allFiles) roleByRel.set(file.rel, classifyUiFile(file.rel));
 
-  const cache = new Map();
   const entryPoints = discoverHtmlEntryPoints(root);
-  const prodWalk = walkImportGraph(entryPoints, root, {
-    includeTypes: true,
-    includeDynamic: true,
-    includeWorkerUrls: true,
-    cache,
-  });
+  const moduleCache = new Map();
+  const runtimeLive = new Set();
+  const typeOnlyLive = new Set();
+  const runtimeDemand = new Map();
+  const typeDemand = new Map();
+  const liveRuntimeStmts = new Map();
+  const liveTypeStmts = new Map();
+  const entryModules = new Set();
+  const productionTestImports = [];
+  const seenProdTestImport = new Set();
+
+  const ensureSet = (map, key) => {
+    let set = map.get(key);
+    if (!set) map.set(key, set = new Set());
+    return set;
+  };
+
+  let changed = false;
+
+  const markRuntimeStmt = (rel, idx) => {
+    const set = ensureSet(liveRuntimeStmts, rel);
+    if (!set.has(idx)) {
+      set.add(idx);
+      changed = true;
+    }
+  };
+
+  const markTypeStmt = (rel, idx) => {
+    const set = ensureSet(liveTypeStmts, rel);
+    if (!set.has(idx)) {
+      set.add(idx);
+      changed = true;
+    }
+  };
+
+  const addModuleEdge = (fromRel, targetRel, isType, demandName) => {
+    if (!targetRel) return false;
+    const role = roleByRel.get(targetRel);
+    if (role === 'test' || role === 'fixture' || role === 'test-support') {
+      if (!fromRel || roleByRel.get(fromRel) === 'production') {
+        const key = `${fromRel ?? '<root>'}->${targetRel}`;
+        if (!seenProdTestImport.has(key)) {
+          seenProdTestImport.add(key);
+          productionTestImports.push({ from: fromRel ?? '<root>', to: targetRel, role });
+        }
+      }
+      return false;
+    }
+    let added = false;
+    if (!isType) {
+      if (!runtimeLive.has(targetRel)) {
+        runtimeLive.add(targetRel);
+        added = true;
+      }
+      if (demandName) {
+        const set = ensureSet(runtimeDemand, targetRel);
+        if (!set.has(demandName)) {
+          set.add(demandName);
+          added = true;
+        }
+      }
+    } else {
+      if (!typeOnlyLive.has(targetRel)) {
+        typeOnlyLive.add(targetRel);
+        added = true;
+      }
+      if (demandName) {
+        const set = ensureSet(typeDemand, targetRel);
+        if (!set.has(demandName)) {
+          set.add(demandName);
+          added = true;
+        }
+      }
+    }
+    if (added) changed = true;
+    return added;
+  };
+
+  const cssVisited = new Set();
+  const seedCss = cssRel => {
+    if (cssVisited.has(cssRel)) return;
+    cssVisited.add(cssRel);
+    const full = resolve(root, cssRel);
+    if (!existsSync(full)) return;
+    for (const spec of extractImportSpecifiers(full)) {
+      const target = resolveLocalImport(full, spec.specifier, root);
+      if (target) {
+        const targetRel = relPosix(root, target);
+        addModuleEdge(cssRel, targetRel, false, null);
+        if (targetRel.endsWith('.css')) seedCss(targetRel);
+      }
+    }
+  };
+
+  const seedEntryModule = targetRel => {
+    if (!targetRel) return;
+    if (targetRel.endsWith('.css')) {
+      addModuleEdge(null, targetRel, false, null);
+      seedCss(targetRel);
+      return;
+    }
+    if (!addModuleEdge(null, targetRel, false, null) && entryModules.has(targetRel)) return;
+    entryModules.add(targetRel);
+    const info = analyzeScriptModule(root, targetRel, moduleCache);
+    if (!info) return;
+    for (const stmt of info.statements) {
+      if (stmt.isTypeOnly) markTypeStmt(targetRel, stmt.stmtIndex);
+      else markRuntimeStmt(targetRel, stmt.stmtIndex);
+    }
+  };
+
+  for (const htmlRel of entryPoints) {
+    const full = resolve(root, htmlRel);
+    if (!existsSync(full)) continue;
+    for (const spec of extractImportSpecifiers(full)) {
+      const target = resolveLocalImport(full, spec.specifier, root);
+      if (target) seedEntryModule(relPosix(root, target));
+    }
+  }
+
+  const viteConfigPath = resolve(root, 'ui/vite.config.ts');
+  if (existsSync(viteConfigPath)) {
+    const buildWalk = walkImportGraph(['ui/vite.config.ts'], root, {
+      includeTypes: true,
+      includeDynamic: true,
+      includeWorkerUrls: true,
+      shouldTraverse: file => !relPosix(root, file).startsWith('ui/src/'),
+    });
+    for (const file of buildWalk.visited) {
+      const rel = relPosix(root, file);
+      if (rel.startsWith('ui/src/')) continue;
+      const info = analyzeScriptModule(root, rel, moduleCache);
+      if (!info) continue;
+      for (const stmt of info.statements) {
+        for (const ref of stmt.refs) {
+          const imp = info.importedBindings.get(ref);
+          if (imp && imp.targetRel.startsWith('ui/src/')) {
+            addModuleEdge(rel, imp.targetRel, imp.isType, imp.importedName);
+          }
+        }
+        for (const tref of stmt.typeRefs) {
+          const imp = info.importedBindings.get(tref);
+          if (imp && imp.targetRel.startsWith('ui/src/')) {
+            addModuleEdge(rel, imp.targetRel, true, imp.importedName);
+          }
+        }
+        for (const nsUse of stmt.nsUses) {
+          if (nsUse.targetRel.startsWith('ui/src/')) {
+            addModuleEdge(rel, nsUse.targetRel, nsUse.isType, nsUse.name);
+          }
+        }
+      }
+    }
+  }
+
+  const processedRuntimeInit = new Set();
+  const processedRuntimeStmts = new Map();
+  const processedTypeStmts = new Map();
+
+  changed = true;
+  while (changed) {
+    changed = false;
+
+    for (const rel of [...runtimeLive]) {
+      if (rel.endsWith('.css')) {
+        seedCss(rel);
+        continue;
+      }
+      const info = analyzeScriptModule(root, rel, moduleCache);
+      if (!info) continue;
+
+      if (!processedRuntimeInit.has(rel)) {
+        processedRuntimeInit.add(rel);
+        for (const bare of info.bareImports) {
+          addModuleEdge(rel, bare.targetRel, bare.isType, null);
+        }
+        for (const stmt of info.statements) {
+          if (stmt.isSideEffect) markRuntimeStmt(rel, stmt.stmtIndex);
+        }
+        if (rel === 'ui/src/widgets/legacyManifest.ts' && activeLegacyTargets) {
+          for (const targetRel of activeLegacyTargets) {
+            addModuleEdge(rel, targetRel, false, 'default');
+          }
+        }
+      }
+
+      const req = runtimeDemand.get(rel);
+      if (req) {
+        const allWanted = req.has('*');
+        for (const [expName, meta] of info.declaredExports) {
+          if (!allWanted && !req.has(expName)) continue;
+          if (meta.isReexport) continue;
+          if (meta.isType) {
+            markTypeStmt(rel, meta.stmtIndex);
+            if (meta.specifierOnly && meta.localName) {
+              for (const idx of info.bindingToStmts.get(meta.localName) ?? []) markTypeStmt(rel, idx);
+            }
+          } else {
+            markRuntimeStmt(rel, meta.stmtIndex);
+            if (meta.specifierOnly && meta.localName) {
+              for (const idx of info.bindingToStmts.get(meta.localName) ?? []) markRuntimeStmt(rel, idx);
+            }
+          }
+        }
+        for (const re of info.reexports) {
+          if (allWanted || req.has(re.exported)) {
+            addModuleEdge(rel, re.targetRel, re.isType, re.targetName);
+          }
+        }
+        for (const star of info.starReexports) {
+          if (allWanted) {
+            addModuleEdge(rel, star.targetRel, star.isType, '*');
+          } else {
+            for (const name of req) {
+              if (name !== 'default' && !info.declaredExports.has(name) && moduleProvidesExport(root, star.targetRel, name, moduleCache)) {
+                addModuleEdge(rel, star.targetRel, star.isType, name);
+              }
+            }
+          }
+        }
+      }
+
+      const doneStmts = ensureSet(processedRuntimeStmts, rel);
+      for (const idx of [...(liveRuntimeStmts.get(rel) ?? [])]) {
+        if (doneStmts.has(idx)) continue;
+        doneStmts.add(idx);
+        const stmt = info.statements[idx];
+        if (!stmt) continue;
+        for (const ref of stmt.refs) {
+          for (const depIdx of info.bindingToStmts.get(ref) ?? []) {
+            const depStmt = info.statements[depIdx];
+            if (depStmt?.isTypeOnly) markTypeStmt(rel, depIdx);
+            else markRuntimeStmt(rel, depIdx);
+          }
+          const imp = info.importedBindings.get(ref);
+          if (imp) addModuleEdge(rel, imp.targetRel, imp.isType, imp.importedName);
+        }
+        for (const tref of stmt.typeRefs) {
+          for (const depIdx of info.bindingToStmts.get(tref) ?? []) markTypeStmt(rel, depIdx);
+          const imp = info.importedBindings.get(tref);
+          if (imp) addModuleEdge(rel, imp.targetRel, true, imp.importedName);
+        }
+        for (const nsUse of stmt.nsUses) {
+          addModuleEdge(rel, nsUse.targetRel, nsUse.isType, nsUse.name);
+        }
+        for (const dyn of stmt.dynamicUses) {
+          if (dyn.legacyLoad) continue;
+          for (const name of dyn.names) addModuleEdge(rel, dyn.targetRel, false, name);
+        }
+        for (const inl of stmt.inlineTypeUses) {
+          addModuleEdge(rel, inl.targetRel, true, inl.name);
+        }
+        for (const w of info.workerUrls) {
+          if (w.stmtIndex === idx) seedEntryModule(w.targetRel);
+        }
+      }
+    }
+
+    for (const rel of new Set([...typeOnlyLive, ...runtimeLive])) {
+      const info = analyzeScriptModule(root, rel, moduleCache);
+      if (!info) continue;
+
+      const req = typeDemand.get(rel);
+      if (req) {
+        const allWanted = req.has('*');
+        for (const [expName, meta] of info.declaredExports) {
+          if (!allWanted && !req.has(expName)) continue;
+          if (meta.isReexport) continue;
+          markTypeStmt(rel, meta.stmtIndex);
+          if (meta.specifierOnly && meta.localName) {
+            for (const idx of info.bindingToStmts.get(meta.localName) ?? []) markTypeStmt(rel, idx);
+          }
+        }
+        for (const re of info.reexports) {
+          if (allWanted || req.has(re.exported)) {
+            addModuleEdge(rel, re.targetRel, true, re.targetName);
+          }
+        }
+        for (const star of info.starReexports) {
+          if (allWanted) {
+            addModuleEdge(rel, star.targetRel, true, '*');
+          } else {
+            for (const name of req) {
+              if (name !== 'default' && !info.declaredExports.has(name) && moduleProvidesExport(root, star.targetRel, name, moduleCache)) {
+                addModuleEdge(rel, star.targetRel, true, name);
+              }
+            }
+          }
+        }
+      }
+
+      const doneStmts = ensureSet(processedTypeStmts, rel);
+      for (const idx of [...(liveTypeStmts.get(rel) ?? [])]) {
+        if (doneStmts.has(idx)) continue;
+        doneStmts.add(idx);
+        const stmt = info.statements[idx];
+        if (!stmt) continue;
+        for (const ref of [...stmt.refs, ...stmt.typeRefs]) {
+          for (const depIdx of info.bindingToStmts.get(ref) ?? []) markTypeStmt(rel, depIdx);
+          const imp = info.importedBindings.get(ref);
+          if (imp) addModuleEdge(rel, imp.targetRel, true, imp.importedName);
+        }
+        for (const nsUse of stmt.nsUses) {
+          addModuleEdge(rel, nsUse.targetRel, true, nsUse.name);
+        }
+        for (const inl of stmt.inlineTypeUses) {
+          addModuleEdge(rel, inl.targetRel, true, inl.name);
+        }
+      }
+    }
+  }
 
   const liveProd = new Set();
-  for (const file of prodWalk.visited) {
-    const rel = relPosix(root, file);
+  for (const rel of runtimeLive) {
+    if (roleByRel.has(rel)) liveProd.add(rel);
+  }
+  for (const rel of typeOnlyLive) {
     if (roleByRel.has(rel)) liveProd.add(rel);
   }
 
@@ -112,6 +1441,7 @@ export function checkUiModules(root) {
   }
   const deadProdSet = new Set(deadProduction);
 
+  const testCache = new Map();
   const testFiles = allFiles.filter(file => roleByRel.get(file.rel) === 'test').map(file => file.rel);
   const deadTests = [];
   const liveTestReach = new Set();
@@ -122,7 +1452,7 @@ export function checkUiModules(root) {
       includeDynamic: true,
       includeWorkerUrls: true,
       includeTestStringRefs: true,
-      cache,
+      cache: testCache,
       shouldTraverse: file => {
         const rel = relPosix(root, file);
         return !liveProd.has(rel);
@@ -146,17 +1476,69 @@ export function checkUiModules(root) {
   const deadFixturesAndSupport = [];
   for (const file of allFiles) {
     const role = roleByRel.get(file.rel);
-    if ((role === 'fixture' || role === 'test-support') && !liveTestReach.has(file.rel) && !liveProd.has(file.rel)) {
+    if ((role === 'fixture' || role === 'test-support') && !liveTestReach.has(file.rel)) {
       deadFixturesAndSupport.push({ file: file.rel, role });
     }
   }
 
+  const unusedExports = [];
+  for (const rel of [...liveProd].sort()) {
+    if (rel.startsWith('ui/src/generated/') || entryModules.has(rel)) continue;
+    const info = analyzeScriptModule(root, rel, moduleCache);
+    if (!info) continue;
+    const rReq = runtimeDemand.get(rel);
+    const tReq = typeDemand.get(rel);
+    if (rReq?.has('*') || tReq?.has('*')) continue;
+
+    const liveStmts = new Set([...(liveRuntimeStmts.get(rel) ?? []), ...(liveTypeStmts.get(rel) ?? [])]);
+    for (const [expName, meta] of [...info.declaredExports.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      if (rReq?.has(expName) || tReq?.has(expName)) continue;
+      if (meta.isReexport) {
+        unusedExports.push({ file: rel, name: expName, key: `${rel}:${expName}`, isType: meta.isType, isReexport: true });
+        continue;
+      }
+      if (meta.specifierOnly) {
+        const localLive = Boolean(meta.localName && (info.bindingToStmts.get(meta.localName) ?? []).some(idx => liveStmts.has(idx)));
+        if (!localLive) {
+          unusedExports.push({ file: rel, name: expName, key: `${rel}:${expName}`, isType: meta.isType, isReexport: false });
+        }
+        continue;
+      }
+      if (!liveStmts.has(meta.stmtIndex)) {
+        unusedExports.push({ file: rel, name: expName, key: `${rel}:${expName}`, isType: meta.isType, isReexport: false });
+      }
+    }
+  }
+
+  const exportErrors = [];
+  const exportNotices = [];
+  if (unusedExports.length > maxUnusedExports) {
+    exportErrors.push(`${unusedExports.length} unused export(s) in ui/src, above ratchet ${maxUnusedExports}`);
+  } else if (unusedExports.length > 0 && unusedExports.length < maxUnusedExports) {
+    exportNotices.push(`unused exports in ui/src dropped to ${unusedExports.length} (ratchet is ${maxUnusedExports}); lower maxUnusedExports in tools/legacy-widgets-ratchet.json to ${unusedExports.length}`);
+  } else if (unusedExports.length === 0 && maxUnusedExports !== 0) {
+    exportErrors.push(`no unused exports remain in ui/src; lower maxUnusedExports in tools/legacy-widgets-ratchet.json from ${maxUnusedExports} to 0`);
+  }
+
+  productionTestImports.sort((a, b) => `${a.from}->${a.to}`.localeCompare(`${b.from}->${b.to}`));
+
   return {
-    entryPoints,
-    liveProd,
-    deadProduction,
-    deadTests,
-    deadFixturesAndSupport,
+    ui: {
+      entryPoints,
+      liveProd,
+      runtimeLive,
+      typeOnlyLive,
+      deadProduction,
+      deadTests,
+      deadFixturesAndSupport,
+      productionTestImports,
+    },
+    exports: {
+      maxUnusedExports,
+      unusedExports,
+      errors: exportErrors,
+      notices: exportNotices,
+    },
   };
 }
 
@@ -221,7 +1603,7 @@ function textProductMatcher(key) {
   return text => text.includes(key) && pattern.test(text);
 }
 
-const QUOTED_PRODUCT_TOKEN = /['"]([a-z][a-z0-9:-]{1,63})['"]/g;
+const QUOTED_PRODUCT_TOKEN = /['"`]([a-z][a-z0-9:-]{1,63})['"`]/g;
 
 function sourceMightMentionProduct(source, productSet, headNames) {
   QUOTED_PRODUCT_TOKEN.lastIndex = 0;
@@ -237,23 +1619,22 @@ function collectUiProductCalls(filePath, relPath, productSet, headNames) {
   const found = new Set();
   if (NON_CALLER_UI_FILES.has(relPath) || relPath.startsWith('ui/src/widgets/manifest/')) return found;
   const ext = extname(filePath).toLowerCase();
-  if (ext !== '.ts' && ext !== '.tsx' && ext !== '.js' && ext !== '.mjs') return found;
+  if (!SCRIPT_EXTENSIONS.has(ext)) return found;
   const source = readFileSync(filePath, 'utf8');
   if (!sourceMightMentionProduct(source, productSet, headNames)) return found;
   const ast = parseAst(source, { lang: astLang(filePath) });
 
   walkAst(ast, (node, parent, key) => {
-    if (node.type === 'Literal' && typeof node.value === 'string') {
-      const val = node.value;
-      const propName = parent?.type === 'Property' && key === 'value'
-        ? (parent.key?.name ?? parent.key?.value ?? null)
-        : null;
-      const isObjKey = parent?.type === 'Property' && key === 'key';
-      if (propName === 'head' && headNames.has(val)) {
-        found.add(`head:${val}`);
-      } else if (!isObjKey && !NON_PRODUCT_PROPERTY_NAMES.has(propName) && productSet.has(val)) {
-        found.add(val);
-      }
+    const val = staticStringLiteral(node);
+    if (val === null) return;
+    const propName = parent?.type === 'Property' && key === 'value'
+      ? (parent.key?.name ?? parent.key?.value ?? null)
+      : null;
+    const isObjKey = parent?.type === 'Property' && key === 'key';
+    if (propName === 'head' && headNames.has(val)) {
+      found.add(`head:${val}`);
+    } else if (!isObjKey && !NON_PRODUCT_PROPERTY_NAMES.has(propName) && productSet.has(val)) {
+      found.add(val);
     }
   });
   return found;
@@ -274,7 +1655,7 @@ export function checkRustProducts(root, uiResult) {
   );
   for (const file of uiFiles) {
     const role = classifyUiFile(file.rel);
-    if (role === 'production' && uiResult.liveProd.has(file.rel)) {
+    if (role === 'production' && uiResult.runtimeLive.has(file.rel)) {
       for (const hit of collectUiProductCalls(file.full, file.rel, productSet, headNames)) {
         liveUiCalls.add(hit);
       }
@@ -286,7 +1667,7 @@ export function checkRustProducts(root, uiResult) {
   const toolCallerFiles = walkDirectory(
     resolve(root, 'tools'),
     root,
-    rel => !rel.startsWith('tools/check-dead-code') && TEXT_EXTENSIONS.has(extname(rel).toLowerCase()),
+    rel => !rel.startsWith('tools/check-dead-code') && TOOL_CALLER_EXTENSIONS.has(extname(rel).toLowerCase()),
   );
 
   const nonDashboardCrateFiles = walkDirectory(
@@ -323,73 +1704,9 @@ export function checkRustProducts(root, uiResult) {
   };
 }
 
-function parseLegacyManifestEntries(legacyPath, root) {
-  const source = readFileSync(legacyPath, 'utf8');
-  const ast = parseAst(source, { lang: 'ts' });
-  for (const node of ast.body) {
-    if (node.type !== 'ExportNamedDeclaration' || node.declaration?.type !== 'VariableDeclaration') continue;
-    for (const decl of node.declaration.declarations) {
-      if (decl.id?.type === 'Identifier' && decl.id.name === 'LEGACY_WIDGETS' && decl.init?.type === 'ArrayExpression') {
-        const entries = [];
-        for (const el of decl.init.elements) {
-          if (!el || el.type !== 'ObjectExpression') continue;
-          let kind = null;
-          let view = null;
-          let loadTarget = null;
-          for (const prop of el.properties) {
-            if (prop.type !== 'Property') continue;
-            const propName = prop.key?.name ?? prop.key?.value;
-            if (propName === 'kind' && prop.value?.type === 'Literal' && typeof prop.value.value === 'string') {
-              kind = prop.value.value;
-            } else if (propName === 'view' && prop.value?.type === 'Literal' && typeof prop.value.value === 'string') {
-              view = prop.value.value;
-            } else if (propName === 'load') {
-              walkAst(prop.value, inner => {
-                if (!loadTarget && inner.type === 'ImportExpression' && inner.source?.type === 'Literal' && typeof inner.source.value === 'string') {
-                  const target = resolveLocalImport(legacyPath, inner.source.value, root);
-                  if (target) loadTarget = relPosix(root, target);
-                }
-              });
-            }
-          }
-          if (kind) entries.push({ kind, view, loadTarget });
-        }
-        return entries;
-      }
-    }
-  }
-  throw new Error('Could not find exported LEGACY_WIDGETS array in ui/src/widgets/legacyManifest.ts');
-}
-
-function parseFamilyViewUiMap(root) {
-  const manifestPath = resolve(root, 'ui/src/widgets/manifest.ts');
-  const out = new Map();
-  if (!existsSync(manifestPath)) return out;
-  const ast = parseAst(readFileSync(manifestPath, 'utf8'), { lang: 'ts' });
-  for (const node of ast.body) {
-    if (node.type !== 'ExportNamedDeclaration' || node.declaration?.type !== 'VariableDeclaration') continue;
-    for (const decl of node.declaration.declarations) {
-      if (decl.id?.type !== 'Identifier' || decl.id.name !== 'FAMILY_VIEW_UI' || decl.init?.type !== 'ObjectExpression') continue;
-      for (const prop of decl.init.properties) {
-        if (prop.type !== 'Property') continue;
-        const kind = prop.key?.value ?? prop.key?.name;
-        if (typeof kind !== 'string') continue;
-        walkAst(prop.value, inner => {
-          if (!out.has(kind) && inner.type === 'ImportExpression' && inner.source?.type === 'Literal' && typeof inner.source.value === 'string') {
-            const target = resolveLocalImport(manifestPath, inner.source.value, root);
-            if (target) out.set(kind, relPosix(root, target));
-          }
-        });
-      }
-    }
-  }
-  return out;
-}
-
 function parseFamilyManifestSpecs(root, runtimeFamilyViews) {
   const dir = resolve(root, 'ui/src/widgets/manifest');
-  if (!existsSync(dir)) return [];
-  const files = readdirSync(dir).filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts')).sort();
+  const byPair = new Map();
   const runtimeViewsByKindFamily = new Map();
   for (const entry of runtimeFamilyViews) {
     const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : 'default';
@@ -399,166 +1716,203 @@ function parseFamilyManifestSpecs(root, runtimeFamilyViews) {
     list.push(view);
   }
 
-  const out = [];
-  const seen = new Set();
   const pushEntry = (kind, view, family, specTarget) => {
-    const key = `${kind}:${view}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ kind, view, family, specTarget });
-  };
-
-  for (const file of files) {
-    const full = resolve(dir, file);
-    const family = file.slice(0, -'.ts'.length);
-    const ast = parseAst(readFileSync(full, 'utf8'), { lang: 'ts' });
-    const firstImportIn = node => {
-      let target = null;
-      walkAst(node, inner => {
-        if (!target && inner.type === 'ImportExpression' && inner.source?.type === 'Literal' && typeof inner.source.value === 'string') {
-          const resolved = resolveLocalImport(full, inner.source.value, root);
-          if (resolved) target = relPosix(root, resolved);
-        }
-      });
-      return target;
-    };
-    const record = (kind, view, specTarget) => {
-      if (!kind || !specTarget) return;
-      if (view === '*') {
-        const concrete = runtimeViewsByKindFamily.get(`${kind}\0${family}`) ?? ['*'];
-        for (const v of concrete) pushEntry(kind, v, family, specTarget);
-      } else {
-        pushEntry(kind, view, family, specTarget);
-      }
-    };
-    const visitEntryNode = node => {
-      if (node.type === 'ObjectExpression') {
-        let kind = null;
-        let view = 'default';
-        let specTarget = null;
-        for (const prop of node.properties) {
-          if (prop.type !== 'Property') continue;
-          const propName = prop.key?.name ?? prop.key?.value;
-          if (propName === 'kind' && prop.value?.type === 'Literal' && typeof prop.value.value === 'string') {
-            kind = prop.value.value;
-          } else if (propName === 'view') {
-            if (prop.value?.type === 'Literal' && typeof prop.value.value === 'string') view = prop.value.value;
-            else if (prop.value?.type === 'Identifier' && prop.value.name === 'DEFAULT_VIEW') view = 'default';
-            else view = '*';
-          } else if (propName === 'loadSpec') {
-            specTarget = firstImportIn(prop.value);
-          }
-        }
-        record(kind, view, specTarget);
-      } else if (node.type === 'CallExpression' && node.arguments.length >= 2 && node.arguments[0]?.type === 'Literal' && typeof node.arguments[0].value === 'string') {
-        const specTarget = firstImportIn(node);
-        let view = 'default';
-        if (node.arguments[1]?.type === 'Literal' && typeof node.arguments[1].value === 'string') {
-          view = node.arguments[1].value;
-        }
-        record(node.arguments[0].value, view, specTarget);
-      }
-    };
-
-    for (const stmt of ast.body) {
-      if (stmt.type !== 'ExportNamedDeclaration' || stmt.declaration?.type !== 'VariableDeclaration') continue;
-      for (const decl of stmt.declaration.declarations) {
-        if (decl.init?.type !== 'ArrayExpression') continue;
-        for (const el of decl.init.elements) {
-          if (!el) continue;
-          if (el.type === 'SpreadElement') {
-            walkAst(el.argument, inner => {
-              if (inner.type === 'ObjectExpression') visitEntryNode(inner);
-            });
-          } else {
-            visitEntryNode(el);
-          }
-        }
-      }
-    }
-  }
-  return out.sort((a, b) => `${a.kind}:${a.view}`.localeCompare(`${b.kind}:${b.view}`));
-}
-
-async function loadMetaAndFamilyViews(root) {
-  const metaByKind = new Map();
-  const familyViews = [];
-  const familyByKind = new Map();
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const definitionsPath = resolve(root, 'ui/src/widgets/definitions.ts');
-  if (existsSync(definitionsPath)) {
-    const mod = await import(`${pathToFileURL(definitionsPath).href}?t=${stamp}`);
-    for (const meta of mod.widgetMetas ?? []) {
-      if (meta && typeof meta.kind === 'string') metaByKind.set(meta.kind, meta);
-    }
-  }
-  const familyManifestPath = resolve(root, 'ui/src/widgets/familyManifest.ts');
-  if (existsSync(familyManifestPath)) {
-    const mod = await import(`${pathToFileURL(familyManifestPath).href}?t=${stamp}`);
-    for (const entry of mod.FAMILY_VIEWS ?? []) {
-      if (!entry || typeof entry.kind !== 'string') continue;
-      familyViews.push(entry);
-      const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : 'default';
-      let set = familyByKind.get(entry.kind);
-      if (!set) familyByKind.set(entry.kind, set = new Set());
-      set.add(view);
-    }
-  }
-  return { metaByKind, familyViews, familyByKind };
-}
-
-function expandLegacyViewPairs(legacyEntries, metaByKind, familyByKind) {
-  const pairs = [];
-  const seen = new Set();
-  const addPair = (kind, view) => {
     const pair = `${kind}:${view}`;
-    if (!seen.has(pair)) {
-      seen.add(pair);
-      pairs.push(pair);
+    if (!byPair.has(pair)) {
+      byPair.set(pair, { kind, view, family, specTarget });
     }
   };
-  for (const entry of legacyEntries) {
-    if (entry.view && entry.view.length > 0) {
-      addPair(entry.kind, entry.view);
-      continue;
-    }
-    const meta = metaByKind.get(entry.kind);
-    const optKey = meta?.viewSwitch?.option ?? 'view';
-    const field = meta?.options?.find(item => item.key === optKey && item.kind === 'choice');
-    const choices = meta?.viewSwitch?.choices ?? field?.choices ?? null;
-    if (choices && choices.length > 0) {
-      const covered = familyByKind.get(entry.kind);
-      for (const choice of choices) {
-        if (!covered?.has(choice.value)) addPair(entry.kind, choice.value);
+
+  if (existsSync(dir)) {
+    const files = readdirSync(dir).filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts')).sort();
+
+    for (const file of files) {
+      const full = resolve(dir, file);
+      const family = file.slice(0, -'.ts'.length);
+      const ast = parseAst(readFileSync(full, 'utf8'), { lang: 'ts' });
+
+      const localStringArrays = new Map();
+      for (const stmt of ast.body) {
+        const declNode = stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
+        if (declNode?.type !== 'VariableDeclaration') continue;
+        for (const decl of declNode.declarations) {
+          if (decl.id?.type !== 'Identifier') continue;
+          const init = unwrapExpression(decl.init);
+          if (init?.type === 'ArrayExpression') {
+            const values = init.elements.map(el => staticStringLiteral(unwrapExpression(el)));
+            if (values.length > 0 && values.every(v => v !== null)) {
+              localStringArrays.set(decl.id.name, values);
+            }
+          }
+        }
       }
-    } else {
-      addPair(entry.kind, 'default');
+
+      const firstImportIn = node => {
+        let target = null;
+        walkAst(node, inner => {
+          if (target || inner.type !== 'ImportExpression') return;
+          const spec = staticStringLiteral(inner.source);
+          if (spec === null) return;
+          const resolved = resolveLocalImport(full, spec, root);
+          if (resolved) target = relPosix(root, resolved);
+        });
+        return target;
+      };
+
+      const record = (kind, view, specTarget) => {
+        if (!kind || !specTarget) return;
+        if (view === '*') {
+          const concrete = runtimeViewsByKindFamily.get(`${kind}\0${family}`) ?? [];
+          for (const v of concrete) pushEntry(kind, v, family, specTarget);
+        } else {
+          pushEntry(kind, view, family, specTarget);
+        }
+      };
+
+      const resolveStringExpr = (expr, env) => {
+        const unwrapped = unwrapExpression(expr);
+        const lit = staticStringLiteral(unwrapped);
+        if (lit !== null) return lit;
+        if (unwrapped?.type === 'Identifier') {
+          if (env && env.has(unwrapped.name)) return env.get(unwrapped.name);
+          if (unwrapped.name === 'DEFAULT_VIEW') return 'default';
+        }
+        return null;
+      };
+
+      const visitEntryNode = (node, env = null) => {
+        const unwrapped = unwrapExpression(node);
+        if (!unwrapped) return;
+        if (unwrapped.type === 'ObjectExpression') {
+          let kind = null;
+          let view = 'default';
+          let specTarget = null;
+          for (const prop of unwrapped.properties) {
+            if (prop.type !== 'Property') continue;
+            const propName = prop.key?.name ?? prop.key?.value;
+            if (propName === 'kind') {
+              kind = resolveStringExpr(prop.value, env);
+            } else if (propName === 'view') {
+              const resolvedView = resolveStringExpr(prop.value, env);
+              view = resolvedView !== null ? resolvedView : '*';
+            } else if (propName === 'loadSpec') {
+              specTarget = firstImportIn(prop.value);
+            }
+          }
+          record(kind, view, specTarget);
+        } else if (unwrapped.type === 'CallExpression' && unwrapped.arguments.length >= 2) {
+          const kind = resolveStringExpr(unwrapped.arguments[0], env);
+          if (!kind) return;
+          const specTarget = firstImportIn(unwrapped);
+          const resolvedView = resolveStringExpr(unwrapped.arguments[1], env);
+          const view = resolvedView !== null ? resolvedView : 'default';
+          record(kind, view, specTarget);
+        }
+      };
+
+      const extractArrayStrings = expr => {
+        const unwrapped = unwrapExpression(expr);
+        if (unwrapped?.type === 'ArrayExpression') {
+          const vals = unwrapped.elements.map(el => staticStringLiteral(unwrapExpression(el)));
+          return vals.length > 0 && vals.every(v => v !== null) ? vals : null;
+        }
+        if (unwrapped?.type === 'Identifier' && localStringArrays.has(unwrapped.name)) {
+          return localStringArrays.get(unwrapped.name);
+        }
+        return null;
+      };
+
+      const visitSpread = arg => {
+        const unwrapped = unwrapExpression(arg);
+        if (unwrapped?.type === 'CallExpression'
+          && unwrapped.callee?.type === 'MemberExpression'
+          && !unwrapped.callee.computed
+          && unwrapped.callee.property?.name === 'map'
+          && unwrapped.arguments.length >= 1) {
+          const cb = unwrapExpression(unwrapped.arguments[0]);
+          const paramName = cb && (cb.type === 'ArrowFunctionExpression' || cb.type === 'FunctionExpression')
+            && cb.params[0]?.type === 'Identifier'
+            ? cb.params[0].name
+            : null;
+          const items = extractArrayStrings(unwrapped.callee.object);
+          if (paramName && items) {
+            for (const item of items) {
+              const env = new Map([[paramName, item]]);
+              walkAst(cb.body, inner => {
+                if (inner.type === 'ObjectExpression') visitEntryNode(inner, env);
+              });
+            }
+            return;
+          }
+        }
+        walkAst(arg, inner => {
+          if (inner.type === 'ObjectExpression') visitEntryNode(inner);
+        });
+      };
+
+      for (const stmt of ast.body) {
+        if (stmt.type !== 'ExportNamedDeclaration' || stmt.declaration?.type !== 'VariableDeclaration') continue;
+        for (const decl of stmt.declaration.declarations) {
+          const init = unwrapExpression(decl.init);
+          if (init?.type !== 'ArrayExpression') continue;
+          for (const el of init.elements) {
+            if (!el) continue;
+            if (el.type === 'SpreadElement') visitSpread(el.argument);
+            else visitEntryNode(el);
+          }
+        }
+      }
     }
   }
-  return pairs.sort();
-}
 
-function readRatchetFile(root) {
-  const ratchetPath = resolve(root, 'tools/legacy-widgets-ratchet.json');
-  return JSON.parse(readFileSync(ratchetPath, 'utf8'));
-}
+  const resolved = [];
+  const unresolved = [];
+  const seenPairs = new Set();
 
-export async function checkLegacyRatchet(root, loaded = null, ratchetData = null) {
-  const data = ratchetData ?? readRatchetFile(root);
-  const maxLegacyViews = data.maxLegacyViews ?? data.maxLegacyWidgets;
-  if (typeof maxLegacyViews !== 'number' || !Number.isInteger(maxLegacyViews) || maxLegacyViews < 0) {
-    throw new Error('tools/legacy-widgets-ratchet.json must set integer maxLegacyViews >= 0');
+  for (const entry of runtimeFamilyViews) {
+    const view = typeof entry.view === 'string' && entry.view.length > 0 ? entry.view : 'default';
+    const pair = `${entry.kind}:${view}`;
+    if (seenPairs.has(pair)) continue;
+    seenPairs.add(pair);
+    const hit = byPair.get(pair);
+    if (hit?.specTarget) {
+      resolved.push(hit);
+    } else {
+      const fromFile = entry.family ? resolve(root, 'ui/src/widgets/manifest', `${entry.family}.ts`) : resolve(root, 'ui/src/widgets/familyManifest.ts');
+      const fromFn = resolveImportFromFunction(entry.loadSpec, fromFile, root);
+      if (fromFn) {
+        resolved.push({ kind: entry.kind, view, family: entry.family ?? 'unknown', specTarget: fromFn });
+      } else {
+        unresolved.push({ pair, kind: entry.kind, view, family: entry.family ?? 'unknown' });
+      }
+    }
   }
 
-  const legacyPath = resolve(root, 'ui/src/widgets/legacyManifest.ts');
-  const legacyFileExists = existsSync(legacyPath);
-  const legacyEntries = legacyFileExists ? parseLegacyManifestEntries(legacyPath, root) : [];
-  const resolved = loaded ?? (legacyEntries.length > 0 ? await loadMetaAndFamilyViews(root) : { metaByKind: new Map(), familyViews: [], familyByKind: new Map() });
-  const pairs = expandLegacyViewPairs(legacyEntries, resolved.metaByKind, resolved.familyByKind);
+  resolved.sort((a, b) => `${a.kind}:${a.view}`.localeCompare(`${b.kind}:${b.view}`));
+  unresolved.sort((a, b) => a.pair.localeCompare(b.pair));
+  return { resolved, unresolved };
+}
+
+export function checkLegacyRatchet(root, loaded, ratchetData = null) {
+  const data = ratchetData ?? readRatchetFile(root);
+  const maxLegacyViews = data.maxLegacyViews;
+
+  const { pairs, staleEntries, unresolvedLoaders, activeLegacyTargets } = expandLegacyViewPairs(
+    loaded.legacyEntries,
+    loaded.metaByKind,
+    loaded.familyByKind,
+  );
   const count = pairs.length;
 
   const errors = [];
   const notices = [];
+
+  for (const stale of staleEntries) {
+    errors.push(`stale LEGACY_WIDGETS entry ${stale} is already covered by FAMILY_VIEWS`);
+  }
+  for (const bad of unresolvedLoaders) {
+    errors.push(`LEGACY_WIDGETS entry ${bad} has an unresolvable load target`);
+  }
 
   if (count > maxLegacyViews) {
     errors.push(`legacy renderer has ${count} (kind, view) pair(s), above ratchet ${maxLegacyViews}`);
@@ -570,7 +1924,7 @@ export async function checkLegacyRatchet(root, loaded = null, ratchetData = null
     if (maxLegacyViews !== 0) {
       errors.push(`legacy views are gone; lower maxLegacyViews in tools/legacy-widgets-ratchet.json from ${maxLegacyViews} to 0`);
     }
-    if (legacyFileExists) {
+    if (loaded.legacyFileExists) {
       errors.push('ui/src/widgets/legacyManifest.ts is empty and must be deleted');
     }
     const familyManifestPath = resolve(root, 'ui/src/families/manifest.ts');
@@ -597,30 +1951,46 @@ export async function checkLegacyRatchet(root, loaded = null, ratchetData = null
     }
   }
 
-  return { count, maxLegacyViews, maxLegacyWidgets: maxLegacyViews, pairs, legacyEntries, errors, notices };
+  return {
+    count,
+    maxLegacyViews,
+    maxLegacyWidgets: maxLegacyViews,
+    pairs,
+    staleEntries,
+    unresolvedLoaders,
+    activeLegacyTargets,
+    legacyEntries: loaded.legacyEntries,
+    errors,
+    notices,
+  };
 }
 
-export function checkConvertedLegacyReach(root, uiResult, legacyResult, runtimeFamilyViews = [], ratchetData = null) {
+function importsReactAtRuntime(root, relPath) {
+  const full = resolve(root, relPath);
+  if (!existsSync(full)) return false;
+  const specs = extractImportSpecifiers(full, { includeTypes: false, includeDynamic: true, includeWorkerUrls: false });
+  return specs.some(spec => spec.specifier === 'react' || spec.specifier.startsWith('react/'));
+}
+
+function importsCssDirectly(root, relPath) {
+  const full = resolve(root, relPath);
+  if (!existsSync(full)) return false;
+  const specs = extractImportSpecifiers(full, { includeTypes: false, includeDynamic: false, includeWorkerUrls: false });
+  return specs.some(spec => spec.specifier.endsWith('.css'));
+}
+
+export function checkConvertedLegacyReach(root, uiResult, legacyResult, loaded, ratchetData = null) {
   const data = ratchetData ?? readRatchetFile(root);
-  const maxLegacyRendererViews = typeof data.maxLegacyRendererViews === 'number' ? data.maxLegacyRendererViews : null;
-  if (maxLegacyRendererViews !== null && (!Number.isInteger(maxLegacyRendererViews) || maxLegacyRendererViews < 0)) {
-    throw new Error('tools/legacy-widgets-ratchet.json must set integer maxLegacyRendererViews >= 0');
+  const maxLegacyRendererViews = data.maxLegacyRendererViews;
+
+  const { resolved: familyViews, unresolved: unresolvedFamilyViews } = parseFamilyManifestSpecs(root, loaded.familyViews);
+  const familyViewUi = loaded.familyViewUiEntries;
+
+  const unresolvedUiLoaders = [];
+  for (const [kind, target] of familyViewUi) {
+    if (!target) unresolvedUiLoaders.push(kind);
   }
-
-  const familyViews = parseFamilyManifestSpecs(root, runtimeFamilyViews);
-  const familyViewUi = parseFamilyViewUiMap(root);
-
-  const familyFiles = [...uiResult.liveProd].filter(file => file.startsWith('ui/src/families/'));
-  const familyGraph = walkImportGraph(familyFiles, root, {
-    includeTypes: false,
-    includeDynamic: true,
-    includeWorkerUrls: true,
-    shouldTraverse: file => {
-      const rel = relPosix(root, file);
-      return !rel.startsWith('ui/src/widgets/') && !GLOBAL_REGISTRIES.has(rel);
-    },
-  });
-  const familyReach = new Set([...familyGraph.visited].map(file => relPosix(root, file)));
+  unresolvedUiLoaders.sort();
 
   const legacyStarts = [...new Set(legacyResult.legacyEntries.map(entry => entry.loadTarget).filter(Boolean))];
   const legacyGraph = walkImportGraph(legacyStarts, root, {
@@ -634,28 +2004,45 @@ export function checkConvertedLegacyReach(root, uiResult, legacyResult, runtimeF
   });
   const legacyReach = new Set([...legacyGraph.visited].map(file => relPosix(root, file)));
 
-  const oldCharts = new Set([...uiResult.liveProd].filter(file => file.startsWith('ui/src/charts/') && !familyReach.has(file)));
-  const oldDash = new Set();
-  const dashCache = new Map();
-  for (const file of uiResult.liveProd) {
-    if (!file.startsWith('ui/src/dashboard/') || !legacyReach.has(file) || familyReach.has(file)) continue;
-    const g = walkImportGraph([file], root, {
+  const dashShellPath = resolve(root, 'ui/src/dashboard/Dashboard.tsx');
+  const shellReach = new Set();
+  if (existsSync(dashShellPath)) {
+    const shellGraph = walkImportGraph(['ui/src/dashboard/Dashboard.tsx'], root, {
       includeTypes: false,
       includeDynamic: true,
       includeWorkerUrls: true,
-      cache: dashCache,
-      shouldTraverse: cur => !GLOBAL_REGISTRIES.has(relPosix(root, cur)),
+      shouldTraverse: file => {
+        const rel = relPosix(root, file);
+        return !rel.startsWith('ui/src/widgets/') && !rel.startsWith('ui/src/families/') && !GLOBAL_REGISTRIES.has(rel);
+      },
     });
-    let isUiOrHook = file.endsWith('.tsx') || file.endsWith('.css');
-    for (const visited of g.visited) {
-      const rel = relPosix(root, visited);
-      if (oldCharts.has(rel) || rel.endsWith('.tsx') || rel.endsWith('.css')) isUiOrHook = true;
-      const ext = g.externalImports.get(visited);
-      if (ext && [...ext].some(spec => spec === 'react' || spec.startsWith('react/'))) isUiOrHook = true;
-    }
-    if (isUiOrHook) oldDash.add(file);
+    for (const file of shellGraph.visited) shellReach.add(relPosix(root, file));
   }
-  const oldRenderer = new Set([...oldCharts, ...oldDash]);
+
+  const oldWidgetRenderers = new Set(legacyStarts);
+  for (const file of legacyReach) {
+    if (file.startsWith('ui/src/widgets/') && file.endsWith('.tsx')) {
+      oldWidgetRenderers.add(file);
+    }
+  }
+
+  const oldCharts = new Set();
+  for (const file of uiResult.runtimeLive) {
+    if (!file.startsWith('ui/src/charts/')) continue;
+    if (file.endsWith('.tsx') || importsReactAtRuntime(root, file)) {
+      oldCharts.add(file);
+    }
+  }
+
+  const oldDash = new Set();
+  for (const file of legacyReach) {
+    if (!file.startsWith('ui/src/dashboard/') || shellReach.has(file)) continue;
+    if (file.endsWith('.tsx') && importsCssDirectly(root, file)) {
+      oldDash.add(file);
+    }
+  }
+
+  const oldRenderer = new Set([...oldWidgetRenderers, ...oldCharts, ...oldDash]);
 
   const edgeCache = new Map();
   const shortestChain = startFiles => {
@@ -665,8 +2052,9 @@ export function checkConvertedLegacyReach(root, uiResult, legacyResult, runtimeF
       const chain = queue.shift();
       const cur = chain[chain.length - 1];
       if (oldRenderer.has(cur)) return chain;
-      if (cur.startsWith('ui/src/families/') || GLOBAL_REGISTRIES.has(cur)) continue;
+      if (GLOBAL_REGISTRIES.has(cur)) continue;
       const full = resolve(root, cur);
+      if (!existsSync(full)) continue;
       let targets = edgeCache.get(full);
       if (!targets) {
         targets = [...new Set(extractImportSpecifiers(full, { includeTypes: false, includeDynamic: true, includeWorkerUrls: true })
@@ -704,19 +2092,25 @@ export function checkConvertedLegacyReach(root, uiResult, legacyResult, runtimeF
 
   const errors = [];
   const notices = [];
-  const limit = maxLegacyRendererViews ?? 0;
-  if (maxLegacyRendererViews !== null) {
-    if (violations.length > limit) {
-      errors.push(`${violations.length} converted view(s) reach old-renderer modules, above ratchet ${limit}`);
-    } else if (violations.length > 0 && violations.length < limit) {
-      notices.push(`converted views reaching old-renderer modules dropped to ${violations.length} (ratchet is ${limit}); lower maxLegacyRendererViews in tools/legacy-widgets-ratchet.json to ${violations.length}`);
-    } else if (violations.length === 0 && limit !== 0) {
-      errors.push(`no converted view reaches old-renderer modules; lower maxLegacyRendererViews in tools/legacy-widgets-ratchet.json from ${limit} to 0`);
-    }
+  for (const item of unresolvedFamilyViews) {
+    errors.push(`unresolved FAMILY_VIEWS entry ${item.pair} (${item.family}): could not resolve loadSpec target`);
+  }
+  for (const kind of unresolvedUiLoaders) {
+    errors.push(`unresolved FAMILY_VIEW_UI loader for ${kind}`);
+  }
+  if (violations.length > maxLegacyRendererViews) {
+    errors.push(`${violations.length} converted view(s) reach old-renderer modules, above ratchet ${maxLegacyRendererViews}`);
+  } else if (violations.length > 0 && violations.length < maxLegacyRendererViews) {
+    notices.push(`converted views reaching old-renderer modules dropped to ${violations.length} (ratchet is ${maxLegacyRendererViews}); lower maxLegacyRendererViews in tools/legacy-widgets-ratchet.json to ${violations.length}`);
+  } else if (violations.length === 0 && maxLegacyRendererViews !== 0) {
+    errors.push(`no converted view reaches old-renderer modules; lower maxLegacyRendererViews in tools/legacy-widgets-ratchet.json from ${maxLegacyRendererViews} to 0`);
   }
 
   return {
     totalConvertedViews: familyViews.length,
+    unresolvedFamilyViews,
+    unresolvedUiLoaders,
+    oldWidgetCount: oldWidgetRenderers.size,
     oldChartCount: oldCharts.size,
     oldDashboardCount: oldDash.size,
     maxLegacyRendererViews,
@@ -726,465 +2120,17 @@ export function checkConvertedLegacyReach(root, uiResult, legacyResult, runtimeF
   };
 }
 
-function collectBindingNames(pattern, out) {
-  if (!pattern) return;
-  if (pattern.type === 'Identifier') {
-    out.push(pattern.name);
-    return;
-  }
-  if (pattern.type === 'ObjectPattern') {
-    for (const prop of pattern.properties) {
-      if (prop.type === 'RestElement') collectBindingNames(prop.argument, out);
-      else collectBindingNames(prop.value, out);
-    }
-  } else if (pattern.type === 'ArrayPattern') {
-    for (const el of pattern.elements) collectBindingNames(el, out);
-  } else if (pattern.type === 'AssignmentPattern') {
-    collectBindingNames(pattern.left, out);
-  } else if (pattern.type === 'RestElement') {
-    collectBindingNames(pattern.argument, out);
-  }
-}
-
-function leftmostIdent(node) {
-  let cur = node;
-  while (cur && cur.type === 'TSQualifiedName') cur = cur.left;
-  return cur?.type === 'Identifier' ? cur.name : null;
-}
-
-function collectParamMemberUsage(fnNode, paramName) {
-  const used = new Set();
-  let opaque = false;
-  walkAst(fnNode.body, (node, parent, key) => {
-    if (node.type !== 'Identifier' || node.name !== paramName) return;
-    if (parent?.type === 'MemberExpression' && key === 'object') {
-      if (!parent.computed && parent.property?.type === 'Identifier') used.add(parent.property.name);
-      else opaque = true;
-      return;
-    }
-    if (parent?.type === 'VariableDeclarator' && key === 'init' && parent.id?.type === 'ObjectPattern') {
-      for (const prop of parent.id.properties) {
-        if (prop.type === 'Property' && !prop.computed && prop.key?.type === 'Identifier') used.add(prop.key.name);
-        else opaque = true;
-      }
-      return;
-    }
-    if (parent?.type === 'Property' && key === 'key' && !parent.computed) return;
-    opaque = true;
-  });
-  return { used, opaque };
-}
-
-function collectStatementRefs(stmtNode) {
-  const refs = new Set();
-  walkAst(stmtNode, (node, parent, key) => {
-    if (node.type !== 'Identifier' && node.type !== 'JSXIdentifier') return;
-    if (parent?.type === 'MemberExpression' && key === 'property' && !parent.computed) return;
-    if (parent?.type === 'Property' && key === 'key' && !parent.computed && !parent.shorthand) return;
-    if (parent?.type === 'TSPropertySignature' && key === 'key' && !parent.computed) return;
-    if (parent?.type === 'MethodDefinition' && key === 'key' && !parent.computed) return;
-    if (parent?.type === 'PropertyDefinition' && key === 'key' && !parent.computed) return;
-    if (parent?.type === 'JSXAttribute' && key === 'name') return;
-    if (parent?.type === 'ImportSpecifier' || parent?.type === 'ImportDefaultSpecifier' || parent?.type === 'ImportNamespaceSpecifier') return;
-    if (parent?.type === 'ExportSpecifier' && key === 'exported') return;
-    if ((parent?.type === 'FunctionDeclaration' || parent?.type === 'ClassDeclaration'
-      || parent?.type === 'TSTypeAliasDeclaration' || parent?.type === 'TSInterfaceDeclaration'
-      || parent?.type === 'TSEnumDeclaration') && key === 'id') return;
-    if (parent?.type === 'VariableDeclarator' && key === 'id') return;
-    refs.add(node.name);
-  });
-  return refs;
-}
-
-function analyzeScriptExportsAndImports(root, relPath) {
-  const full = resolve(root, relPath);
-  const ext = extname(full).toLowerCase();
-  if (!SCRIPT_EXTENSIONS.has(ext)) return null;
-  const source = readFileSync(full, 'utf8');
-  const ast = parseAst(source, { lang: astLang(full) });
-
-  const declaredExports = new Map();
-  const reexports = [];
-  const starReexports = [];
-  const directImports = new Map();
-  const nsLocals = new Map();
-  const statements = [];
-
-  const addDirect = (targetRel, name) => {
-    if (!name) return;
-    let set = directImports.get(targetRel);
-    if (!set) directImports.set(targetRel, set = new Set());
-    set.add(name);
-  };
-
-  for (let stmtIndex = 0; stmtIndex < ast.body.length; stmtIndex += 1) {
-    const node = ast.body[stmtIndex];
-    const bindings = [];
-    let isDeclOnly = false;
-
-    if (node.type === 'ImportDeclaration') {
-      isDeclOnly = true;
-      if (typeof node.source?.value === 'string') {
-        const target = resolveLocalImport(full, node.source.value, root);
-        if (target) {
-          const targetRel = relPosix(root, target);
-          for (const spec of node.specifiers) {
-            if (spec.type === 'ImportDefaultSpecifier') addDirect(targetRel, 'default');
-            else if (spec.type === 'ImportSpecifier') addDirect(targetRel, spec.imported?.name ?? spec.imported?.value);
-            else if (spec.type === 'ImportNamespaceSpecifier') nsLocals.set(spec.local.name, targetRel);
-          }
-        }
-      }
-    } else if (node.type === 'ExportDefaultDeclaration') {
-      isDeclOnly = true;
-      if (node.declaration?.id?.name) bindings.push(node.declaration.id.name);
-      declaredExports.set('default', { stmtIndex, localName: node.declaration?.id?.name ?? null, isType: false, isReexport: false });
-    } else if (node.type === 'ExportNamedDeclaration') {
-      isDeclOnly = true;
-      if (node.source && typeof node.source.value === 'string') {
-        const target = resolveLocalImport(full, node.source.value, root);
-        const targetRel = target ? relPosix(root, target) : null;
-        for (const spec of node.specifiers) {
-          const exported = spec.exported?.name ?? spec.exported?.value;
-          const local = spec.local?.name ?? spec.local?.value;
-          if (!exported) continue;
-          declaredExports.set(exported, {
-            stmtIndex,
-            localName: null,
-            isType: node.exportKind === 'type' || spec.exportKind === 'type',
-            isReexport: true,
-          });
-          if (targetRel && local) reexports.push({ exported, targetRel, targetName: local });
-        }
-      } else if (node.declaration) {
-        const decl = node.declaration;
-        const isType = decl.type === 'TSTypeAliasDeclaration' || decl.type === 'TSInterfaceDeclaration';
-        if (decl.type === 'VariableDeclaration') {
-          const names = [];
-          for (const item of decl.declarations) collectBindingNames(item.id, names);
-          for (const name of names) {
-            bindings.push(name);
-            declaredExports.set(name, { stmtIndex, localName: name, isType: false, isReexport: false });
-          }
-        } else if (decl.id?.name) {
-          bindings.push(decl.id.name);
-          declaredExports.set(decl.id.name, { stmtIndex, localName: decl.id.name, isType, isReexport: false });
-        }
-      } else {
-        for (const spec of node.specifiers) {
-          const exported = spec.exported?.name ?? spec.exported?.value;
-          const local = spec.local?.name ?? spec.local?.value;
-          if (!exported) continue;
-          declaredExports.set(exported, {
-            stmtIndex,
-            localName: local,
-            isType: node.exportKind === 'type' || spec.exportKind === 'type',
-            isReexport: false,
-            specifierOnly: true,
-          });
-        }
-      }
-    } else if (node.type === 'ExportAllDeclaration') {
-      isDeclOnly = true;
-      if (typeof node.source?.value === 'string') {
-        const target = resolveLocalImport(full, node.source.value, root);
-        const targetRel = target ? relPosix(root, target) : null;
-        if (node.exported) {
-          const expName = node.exported.name ?? node.exported.value;
-          if (expName) {
-            declaredExports.set(expName, { stmtIndex, localName: null, isType: false, isReexport: true });
-            if (targetRel) reexports.push({ exported: expName, targetRel, targetName: '*' });
-          }
-        } else if (targetRel) {
-          starReexports.push(targetRel);
-        }
-      }
-    } else if (node.type === 'VariableDeclaration') {
-      isDeclOnly = true;
-      for (const item of node.declarations) collectBindingNames(item.id, bindings);
-    } else if (node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration'
-      || node.type === 'TSTypeAliasDeclaration' || node.type === 'TSInterfaceDeclaration'
-      || node.type === 'TSEnumDeclaration') {
-      isDeclOnly = true;
-      if (node.id?.name) bindings.push(node.id.name);
-    }
-
-    const refs = node.type === 'ImportDeclaration' || (node.type === 'ExportNamedDeclaration' && node.source) || node.type === 'ExportAllDeclaration'
-      ? new Set()
-      : collectStatementRefs(node);
-    statements.push({ stmtIndex, bindings, refs, isSideEffect: !isDeclOnly });
-  }
-
-  walkAst(ast, (node, parent, key) => {
-    if (nsLocals.size > 0 && node.type === 'Identifier' && nsLocals.has(node.name)) {
-      if (parent?.type === 'ImportNamespaceSpecifier') return;
-      const targetRel = nsLocals.get(node.name);
-      if (parent?.type === 'MemberExpression' && key === 'object') {
-        if (!parent.computed && parent.property?.type === 'Identifier') addDirect(targetRel, parent.property.name);
-        else addDirect(targetRel, '*');
-        return;
-      }
-      if (parent?.type === 'TSQualifiedName' && key === 'left') {
-        if (parent.right?.type === 'Identifier') addDirect(targetRel, parent.right.name);
-        else addDirect(targetRel, '*');
-        return;
-      }
-      if (parent?.type === 'Property' && key === 'key' && !parent.computed) return;
-      if (parent?.type === 'MemberExpression' && key === 'property' && !parent.computed) return;
-      addDirect(targetRel, '*');
-    }
-    if (node.type === 'TSImportType') {
-      const spec = node.source?.value ?? node.argument?.literal?.value;
-      if (typeof spec === 'string') {
-        const target = resolveLocalImport(full, spec, root);
-        if (target) {
-          const targetRel = relPosix(root, target);
-          addDirect(targetRel, leftmostIdent(node.qualifier) ?? '*');
-        }
-      }
-    }
-    if (node.type === 'ImportExpression' && node.source?.type === 'Literal' && typeof node.source.value === 'string') {
-      const target = resolveLocalImport(full, node.source.value, root);
-      if (!target) return;
-      const targetRel = relPosix(root, target);
-      if (parent?.type === 'MemberExpression' && key === 'object' && parent.property?.name === 'then') return;
-      if (parent?.type === 'AwaitExpression') return;
-      addDirect(targetRel, 'default');
-    }
-    if (node.type === 'AwaitExpression' && node.argument?.type === 'ImportExpression'
-      && node.argument.source?.type === 'Literal' && typeof node.argument.source.value === 'string') {
-      const target = resolveLocalImport(full, node.argument.source.value, root);
-      if (!target) return;
-      const targetRel = relPosix(root, target);
-      if (parent?.type === 'MemberExpression' && key === 'object') {
-        if (!parent.computed && parent.property?.type === 'Identifier') addDirect(targetRel, parent.property.name);
-        else addDirect(targetRel, '*');
-      } else if (parent?.type === 'VariableDeclarator' && key === 'init' && parent.id?.type === 'ObjectPattern') {
-        for (const prop of parent.id.properties) {
-          if (prop.type === 'Property' && !prop.computed && prop.key?.type === 'Identifier') addDirect(targetRel, prop.key.name);
-          else addDirect(targetRel, '*');
-        }
-      } else {
-        addDirect(targetRel, '*');
-      }
-    }
-    if (node.type === 'CallExpression' && node.callee?.type === 'MemberExpression'
-      && !node.callee.computed && node.callee.property?.name === 'then'
-      && node.callee.object?.type === 'ImportExpression' && node.callee.object.source?.type === 'Literal') {
-      const target = resolveLocalImport(full, node.callee.object.source.value, root);
-      if (!target) return;
-      const targetRel = relPosix(root, target);
-      const cb = node.arguments[0];
-      if (cb && (cb.type === 'ArrowFunctionExpression' || cb.type === 'FunctionExpression')) {
-        const p0 = cb.params[0];
-        if (p0?.type === 'Identifier') {
-          const { used, opaque } = collectParamMemberUsage(cb, p0.name);
-          if (opaque) addDirect(targetRel, '*');
-          else for (const name of used) addDirect(targetRel, name);
-        } else if (p0?.type === 'ObjectPattern') {
-          for (const prop of p0.properties) {
-            if (prop.type === 'Property' && !prop.computed && prop.key?.type === 'Identifier') addDirect(targetRel, prop.key.name);
-            else addDirect(targetRel, '*');
-          }
-        } else {
-          addDirect(targetRel, '*');
-        }
-      } else {
-        addDirect(targetRel, '*');
-      }
-    }
-    if (node.type === 'CallExpression' && node.arguments.length >= 2) {
-      for (let i = 0; i < node.arguments.length - 1; i += 1) {
-        const arg = node.arguments[i];
-        let importTarget = null;
-        if (arg?.type === 'ArrowFunctionExpression' && arg.body?.type === 'ImportExpression' && arg.body.source?.type === 'Literal') {
-          importTarget = resolveLocalImport(full, arg.body.source.value, root);
-        }
-        if (!importTarget) continue;
-        const nextArg = node.arguments[i + 1];
-        if (nextArg && (nextArg.type === 'ArrowFunctionExpression' || nextArg.type === 'FunctionExpression')) {
-          const targetRel = relPosix(root, importTarget);
-          const p0 = nextArg.params[0];
-          if (p0?.type === 'Identifier') {
-            const { used, opaque } = collectParamMemberUsage(nextArg, p0.name);
-            if (opaque) addDirect(targetRel, '*');
-            else for (const name of used) addDirect(targetRel, name);
-          } else {
-            addDirect(targetRel, '*');
-          }
-        }
-      }
-    }
-  });
-
-  return { relPath, declaredExports, reexports, starReexports, directImports, statements };
-}
-
-export function checkUnusedExports(root, uiResult, ratchetData = null) {
-  const data = ratchetData ?? readRatchetFile(root);
-  const maxUnusedExports = typeof data.maxUnusedExports === 'number' ? data.maxUnusedExports : null;
-  if (maxUnusedExports !== null && (!Number.isInteger(maxUnusedExports) || maxUnusedExports < 0)) {
-    throw new Error('tools/legacy-widgets-ratchet.json must set integer maxUnusedExports >= 0');
-  }
-
-  const infoByFile = new Map();
-  for (const rel of uiResult.liveProd) {
-    const info = analyzeScriptExportsAndImports(root, rel);
-    if (info) infoByFile.set(rel, info);
-  }
-
-  const entryModules = new Set();
-  for (const htmlRel of uiResult.entryPoints) {
-    const full = resolve(root, htmlRel);
-    for (const spec of extractImportSpecifiers(full)) {
-      const target = resolveLocalImport(full, spec.specifier, root);
-      if (target) entryModules.add(relPosix(root, target));
-    }
-  }
-  for (const rel of uiResult.liveProd) {
-    const full = resolve(root, rel);
-    for (const spec of extractImportSpecifiers(full, { includeTypes: false, includeDynamic: false, includeWorkerUrls: true })) {
-      if (spec.kind === 'url') {
-        const target = resolveLocalImport(full, spec.specifier, root);
-        if (target) entryModules.add(relPosix(root, target));
-      }
-    }
-  }
-
-  const demanded = new Map();
-  const markDemand = (fileRel, name) => {
-    let set = demanded.get(fileRel);
-    if (!set) demanded.set(fileRel, set = new Set());
-    if (set.has(name)) return false;
-    set.add(name);
-    return true;
-  };
-  for (const info of infoByFile.values()) {
-    for (const [targetRel, names] of info.directImports) {
-      for (const name of names) markDemand(targetRel, name);
-    }
-  }
-
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const [rel, info] of infoByFile) {
-      const req = demanded.get(rel);
-      if (!req) continue;
-      const allWanted = req.has('*');
-      for (const re of info.reexports) {
-        if (allWanted || req.has(re.exported)) {
-          if (markDemand(re.targetRel, re.targetName)) changed = true;
-        }
-      }
-      for (const starTarget of info.starReexports) {
-        if (allWanted) {
-          if (markDemand(starTarget, '*')) changed = true;
-        } else {
-          for (const name of req) {
-            if (name !== 'default' && !info.declaredExports.has(name)) {
-              if (markDemand(starTarget, name)) changed = true;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  const unusedExports = [];
-  for (const [rel, info] of [...infoByFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    if (rel.startsWith('ui/src/generated/') || entryModules.has(rel)) continue;
-    const req = demanded.get(rel);
-    if (req?.has('*')) continue;
-
-    const bindingToStmts = new Map();
-    for (const stmt of info.statements) {
-      for (const name of stmt.bindings) {
-        let list = bindingToStmts.get(name);
-        if (!list) bindingToStmts.set(name, list = []);
-        list.push(stmt.stmtIndex);
-      }
-    }
-
-    const liveStmts = new Set();
-    const queue = [];
-    const markStmt = idx => {
-      if (!liveStmts.has(idx)) {
-        liveStmts.add(idx);
-        queue.push(idx);
-      }
-    };
-
-    for (const stmt of info.statements) {
-      if (stmt.isSideEffect) markStmt(stmt.stmtIndex);
-    }
-    for (const [expName, meta] of info.declaredExports) {
-      if (!req?.has(expName)) continue;
-      markStmt(meta.stmtIndex);
-      if (meta.specifierOnly && meta.localName) {
-        for (const idx of bindingToStmts.get(meta.localName) ?? []) markStmt(idx);
-      }
-    }
-
-    while (queue.length > 0) {
-      const idx = queue.pop();
-      const stmt = info.statements[idx];
-      if (!stmt) continue;
-      for (const ref of stmt.refs) {
-        for (const depIdx of bindingToStmts.get(ref) ?? []) markStmt(depIdx);
-      }
-    }
-
-    for (const [expName, meta] of [...info.declaredExports.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      if (req?.has(expName)) continue;
-      if (meta.isReexport) {
-        unusedExports.push({ file: rel, name: expName, key: `${rel}:${expName}`, isType: meta.isType, isReexport: true });
-        continue;
-      }
-      if (meta.specifierOnly) {
-        const localLive = Boolean(meta.localName && (bindingToStmts.get(meta.localName) ?? []).some(idx => liveStmts.has(idx)));
-        if (!localLive) {
-          unusedExports.push({ file: rel, name: expName, key: `${rel}:${expName}`, isType: meta.isType, isReexport: false });
-        }
-        continue;
-      }
-      if (!liveStmts.has(meta.stmtIndex)) {
-        unusedExports.push({ file: rel, name: expName, key: `${rel}:${expName}`, isType: meta.isType, isReexport: false });
-      }
-    }
-  }
-
-  const errors = [];
-  const notices = [];
-  if (maxUnusedExports !== null) {
-    if (unusedExports.length > maxUnusedExports) {
-      errors.push(`${unusedExports.length} unused export(s) in ui/src, above ratchet ${maxUnusedExports}`);
-    } else if (unusedExports.length > 0 && unusedExports.length < maxUnusedExports) {
-      notices.push(`unused exports in ui/src dropped to ${unusedExports.length} (ratchet is ${maxUnusedExports}); lower maxUnusedExports in tools/legacy-widgets-ratchet.json to ${unusedExports.length}`);
-    } else if (unusedExports.length === 0 && maxUnusedExports !== 0) {
-      errors.push(`no unused exports remain in ui/src; lower maxUnusedExports in tools/legacy-widgets-ratchet.json from ${maxUnusedExports} to 0`);
-    }
-  }
-
-  return {
-    maxUnusedExports,
-    unusedExports,
-    errors,
-    notices,
-  };
-}
-
 export async function runDeadCodeCheck(root) {
-  const ui = checkUiModules(root);
-  const rust = checkRustProducts(root, ui);
   const ratchetData = readRatchetFile(root);
-  const loaded = await loadMetaAndFamilyViews(root);
-  const legacy = await checkLegacyRatchet(root, loaded, ratchetData);
-  const convertedLegacy = checkConvertedLegacyReach(root, ui, legacy, loaded.familyViews, ratchetData);
-  const exports = checkUnusedExports(root, ui, ratchetData);
+  const loaded = await loadManifestData(root);
+  const legacy = checkLegacyRatchet(root, loaded, ratchetData);
+  const { ui, exports } = checkUiAndExports(root, legacy.activeLegacyTargets, ratchetData);
+  const rust = checkRustProducts(root, ui);
+  const convertedLegacy = checkConvertedLegacyReach(root, ui, legacy, loaded, ratchetData);
   const totalIssues = ui.deadProduction.length
     + ui.deadTests.length
     + ui.deadFixturesAndSupport.length
+    + ui.productionTestImports.length
     + rust.deadProducts.length
     + rust.unwiredRegistrations.length
     + legacy.errors.length
@@ -1198,6 +2144,7 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
   const baseDeadProd = new Set(baseResult.ui.deadProduction);
   const baseDeadTestTargets = new Map(baseResult.ui.deadTests.map(entry => [entry.test, new Set(entry.targets)]));
   const baseDeadFixtures = new Set(baseResult.ui.deadFixturesAndSupport.map(entry => entry.file));
+  const baseProdTestImports = new Set((baseResult.ui.productionTestImports ?? []).map(e => `${e.from}->${e.to}`));
   const baseDeadProducts = new Set(baseResult.rust.deadProducts.map(entry => entry.product));
   const baseUnwired = new Set(baseResult.rust.unwiredRegistrations);
   const baseLegacyPairs = new Set(baseResult.legacy.pairs);
@@ -1205,16 +2152,27 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
   const baseOverRatchet = baseResult.legacy.count > baseResult.legacy.maxLegacyViews;
 
   const baseConvertedPairs = new Set((baseResult.convertedLegacy?.violations ?? []).map(v => v.pair));
-  const baseConvertedOver = baseResult.convertedLegacy?.maxLegacyRendererViews !== null
-    && (baseResult.convertedLegacy?.violations?.length ?? 0) > baseResult.convertedLegacy.maxLegacyRendererViews;
+  const baseConvertedErrors = new Set(baseResult.convertedLegacy?.errors ?? []);
+  const baseConvertedOver = (baseResult.convertedLegacy?.violations?.length ?? 0) > baseResult.convertedLegacy.maxLegacyRendererViews;
 
   const baseUnusedExportKeys = new Set((baseResult.exports?.unusedExports ?? []).map(item => item.key));
-  const baseExportsOver = baseResult.exports?.maxUnusedExports !== null
-    && (baseResult.exports?.unusedExports?.length ?? 0) > baseResult.exports.maxUnusedExports;
+  const baseExportErrors = new Set(baseResult.exports?.errors ?? []);
+  const baseExportsOver = (baseResult.exports?.unusedExports?.length ?? 0) > baseResult.exports.maxUnusedExports;
 
   const addedLegacyPairs = result.legacy.pairs.filter(pair => !baseLegacyPairs.has(pair));
   const addedConvertedViolations = result.convertedLegacy.violations.filter(v => !baseConvertedPairs.has(v.pair));
   const addedUnusedExports = result.exports.unusedExports.filter(item => !baseUnusedExportKeys.has(item.key));
+
+  const ratchetRaises = [];
+  if (result.legacy.maxLegacyViews > baseResult.legacy.maxLegacyViews) {
+    ratchetRaises.push(`maxLegacyViews raised from ${baseResult.legacy.maxLegacyViews} to ${result.legacy.maxLegacyViews}`);
+  }
+  if (result.convertedLegacy.maxLegacyRendererViews > baseResult.convertedLegacy.maxLegacyRendererViews) {
+    ratchetRaises.push(`maxLegacyRendererViews raised from ${baseResult.convertedLegacy.maxLegacyRendererViews} to ${result.convertedLegacy.maxLegacyRendererViews}`);
+  }
+  if (result.exports.maxUnusedExports > baseResult.exports.maxUnusedExports) {
+    ratchetRaises.push(`maxUnusedExports raised from ${baseResult.exports.maxUnusedExports} to ${result.exports.maxUnusedExports}`);
+  }
 
   let newIssues = 0;
   let inheritedIssues = 0;
@@ -1242,6 +2200,11 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
     tag: tag(baseDeadFixtures.has(entry.file)),
   }));
 
+  const productionTestImports = (result.ui.productionTestImports ?? []).map(entry => {
+    const inherited = baseProdTestImports.has(`${entry.from}->${entry.to}`);
+    return { ...entry, inherited, tag: tag(inherited) };
+  });
+
   const deadProducts = result.rust.deadProducts.map(entry => ({
     ...entry,
     inherited: baseDeadProducts.has(entry.product),
@@ -1254,8 +2217,16 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
     tag: tag(baseUnwired.has(item)),
   }));
 
+  const ratchetErrors = ratchetRaises.map(err => ({
+    error: err,
+    inherited: false,
+    tag: tag(false),
+  }));
+
+  let legacyAddedReported = false;
   const legacyErrors = result.legacy.errors.map(err => {
     if (err.includes('above ratchet')) {
+      legacyAddedReported = true;
       const text = addedLegacyPairs.length > 0 ? `${err} (added: ${addedLegacyPairs.join(', ')})` : err;
       const inherited = baseOverRatchet && addedLegacyPairs.length === 0 && result.legacy.count <= baseResult.legacy.count;
       return { error: text, inherited, tag: tag(inherited) };
@@ -1263,9 +2234,17 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
     const inherited = baseLegacyErrors.has(err);
     return { error: err, inherited, tag: tag(inherited) };
   });
+  if (!legacyAddedReported && (addedLegacyPairs.length > 0 || result.legacy.count > baseResult.legacy.count)) {
+    const detail = addedLegacyPairs.length > 0
+      ? `legacy renderer added ${addedLegacyPairs.length} (kind, view) pair(s) vs ${shortBase}: ${addedLegacyPairs.join(', ')}`
+      : `legacy renderer count increased from ${baseResult.legacy.count} to ${result.legacy.count}`;
+    legacyErrors.push({ error: detail, inherited: false, tag: tag(false) });
+  }
 
+  let convertedAddedReported = false;
   const convertedLegacyErrors = result.convertedLegacy.errors.map(err => {
     if (err.includes('above ratchet')) {
+      convertedAddedReported = true;
       const addedText = addedConvertedViolations.length > 0
         ? ` (added: ${addedConvertedViolations.map(v => v.pair).join(', ')})`
         : '';
@@ -1274,9 +2253,16 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
         && result.convertedLegacy.violations.length <= (baseResult.convertedLegacy?.violations?.length ?? 0);
       return { error: `${err}${addedText}`, inherited, tag: tag(inherited) };
     }
-    const inherited = (baseResult.convertedLegacy?.errors ?? []).includes(err);
+    const inherited = baseConvertedErrors.has(err);
     return { error: err, inherited, tag: tag(inherited) };
   });
+  if (!convertedAddedReported && addedConvertedViolations.length > 0) {
+    convertedLegacyErrors.push({
+      error: `converted views added ${addedConvertedViolations.length} old-renderer violation(s) vs ${shortBase}: ${addedConvertedViolations.map(v => v.pair).join(', ')}`,
+      inherited: false,
+      tag: tag(false),
+    });
+  }
 
   const convertedViolations = result.convertedLegacy.violations.map(v => ({
     ...v,
@@ -1284,8 +2270,10 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
     tag: baseConvertedPairs.has(v.pair) ? `[inherited from ${shortBase}]` : '[new on this branch]',
   }));
 
+  let exportsAddedReported = false;
   const unusedExportErrors = result.exports.errors.map(err => {
     if (err.includes('above ratchet')) {
+      exportsAddedReported = true;
       const addedText = addedUnusedExports.length > 0
         ? ` (added: ${addedUnusedExports.slice(0, 10).map(item => item.key).join(', ')}${addedUnusedExports.length > 10 ? `, +${addedUnusedExports.length - 10} more` : ''})`
         : '';
@@ -1294,9 +2282,16 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
         && result.exports.unusedExports.length <= (baseResult.exports?.unusedExports?.length ?? 0);
       return { error: `${err}${addedText}`, inherited, tag: tag(inherited) };
     }
-    const inherited = (baseResult.exports?.errors ?? []).includes(err);
+    const inherited = baseExportErrors.has(err);
     return { error: err, inherited, tag: tag(inherited) };
   });
+  if (!exportsAddedReported && addedUnusedExports.length > 0) {
+    unusedExportErrors.push({
+      error: `added ${addedUnusedExports.length} unused export(s) vs ${shortBase}: ${addedUnusedExports.slice(0, 10).map(item => item.key).join(', ')}${addedUnusedExports.length > 10 ? `, +${addedUnusedExports.length - 10} more` : ''}`,
+      inherited: false,
+      tag: tag(false),
+    });
+  }
 
   const unusedExports = result.exports.unusedExports.map(item => ({
     ...item,
@@ -1309,13 +2304,16 @@ export function classifyAgainstBase(result, baseResult, baseSha = 'base') {
     addedLegacyPairs,
     addedConvertedViolations,
     addedUnusedExports,
+    ratchetRaises,
     newIssues,
     inheritedIssues,
     deadProduction,
     deadTests,
     deadFixturesAndSupport,
+    productionTestImports,
     deadProducts,
     unwiredRegistrations,
+    ratchetErrors,
     legacyErrors,
     convertedLegacyErrors,
     convertedViolations,
@@ -1351,6 +2349,14 @@ export function formatReport(result, comparison = null, options = {}) {
       lines.push(`  - ${entry.file} (${entry.role})${suffix}`);
     }
   }
+  if ((result.ui.productionTestImports?.length ?? 0) > 0) {
+    lines.push(`Production UI modules importing test/fixture/support files (${result.ui.productionTestImports.length}):`);
+    const list = comparison ? comparison.productionTestImports : result.ui.productionTestImports;
+    for (const entry of list) {
+      const suffix = entry.tag ? ` ${entry.tag}` : '';
+      lines.push(`  - ${entry.from} -> ${entry.to} (${entry.role})${suffix}`);
+    }
+  }
   if (result.rust.deadProducts.length > 0) {
     lines.push(`Dead Rust dashboard products (${result.rust.deadProducts.length}):`);
     const list = comparison ? comparison.deadProducts : result.rust.deadProducts;
@@ -1368,36 +2374,33 @@ export function formatReport(result, comparison = null, options = {}) {
       for (const item of result.rust.unwiredRegistrations) lines.push(`  - ${item}`);
     }
   }
-  if (result.legacy.errors.length > 0) {
-    lines.push(`Legacy view ratchet errors (${result.legacy.errors.length}):`);
-    if (comparison) {
-      for (const entry of comparison.legacyErrors) lines.push(`  - ${entry.error} ${entry.tag}`);
-    } else {
-      for (const err of result.legacy.errors) lines.push(`  - ${err}`);
-    }
+  if (comparison && comparison.ratchetErrors.length > 0) {
+    lines.push(`Ratchet ceiling regressions (${comparison.ratchetErrors.length}):`);
+    for (const entry of comparison.ratchetErrors) lines.push(`  - ${entry.error} ${entry.tag}`);
   }
-  if (result.convertedLegacy.errors.length > 0 || (showAllInFile && result.convertedLegacy.violations.length > 0)) {
-    lines.push(`Converted views reaching old-renderer modules (${result.convertedLegacy.violations.length}/${result.convertedLegacy.maxLegacyRendererViews ?? 0}):`);
-    if (comparison && result.convertedLegacy.errors.length > 0) {
-      for (const entry of comparison.convertedLegacyErrors) lines.push(`  - ${entry.error} ${entry.tag}`);
-    } else {
-      for (const err of result.convertedLegacy.errors) lines.push(`  - ${err}`);
-    }
+  const legErrors = comparison ? comparison.legacyErrors : result.legacy.errors.map(error => ({ error, tag: '' }));
+  if (legErrors.length > 0) {
+    lines.push(`Legacy view ratchet errors (${legErrors.length}):`);
+    for (const entry of legErrors) lines.push(`  - ${entry.error}${entry.tag ? ` ${entry.tag}` : ''}`);
+  }
+  const convErrors = comparison ? comparison.convertedLegacyErrors : result.convertedLegacy.errors.map(error => ({ error, tag: '' }));
+  if (convErrors.length > 0 || (showAllInFile && result.convertedLegacy.violations.length > 0)) {
+    lines.push(`Converted views reaching old-renderer modules (${result.convertedLegacy.violations.length}/${result.convertedLegacy.maxLegacyRendererViews}):`);
+    for (const entry of convErrors) lines.push(`  - ${entry.error}${entry.tag ? ` ${entry.tag}` : ''}`);
     const list = comparison ? comparison.convertedViolations : result.convertedLegacy.violations;
     for (const entry of list) {
+      if (!showAllInFile && comparison && entry.inherited && result.convertedLegacy.errors.length === 0) continue;
       const suffix = entry.tag ? ` ${entry.tag}` : '';
       lines.push(`  - ${entry.pair} (${entry.family}): ${entry.chain.join(' -> ')}${suffix}`);
     }
   }
-  if (result.exports.errors.length > 0 || (showAllInFile && result.exports.unusedExports.length > 0)) {
-    lines.push(`Unused exports in ui/src (${result.exports.unusedExports.length}/${result.exports.maxUnusedExports ?? 0}):`);
-    if (comparison && result.exports.errors.length > 0) {
-      for (const entry of comparison.unusedExportErrors) lines.push(`  - ${entry.error} ${entry.tag}`);
-    } else {
-      for (const err of result.exports.errors) lines.push(`  - ${err}`);
-    }
+  const expErrors = comparison ? comparison.unusedExportErrors : result.exports.errors.map(error => ({ error, tag: '' }));
+  if (expErrors.length > 0 || (showAllInFile && result.exports.unusedExports.length > 0)) {
+    lines.push(`Unused exports in ui/src (${result.exports.unusedExports.length}/${result.exports.maxUnusedExports}):`);
+    for (const entry of expErrors) lines.push(`  - ${entry.error}${entry.tag ? ` ${entry.tag}` : ''}`);
     const list = comparison ? comparison.unusedExports : result.exports.unusedExports;
     for (const entry of list) {
+      if (!showAllInFile && comparison && entry.inherited && result.exports.errors.length === 0) continue;
       const kind = entry.isReexport ? ' [re-export]' : entry.isType ? ' [type]' : '';
       const suffix = entry.tag ? ` ${entry.tag}` : '';
       lines.push(`  - ${entry.file}: ${entry.name}${kind}${suffix}`);
@@ -1428,35 +2431,24 @@ function resolveBaseCommit(root, explicitRef) {
   return baseSha;
 }
 
-async function runCheckAtCommit(root, sha) {
+export function materializeCommitSnapshot(root, sha, destDir, pathspecs = BASE_SNAPSHOT_PATHSPECS) {
+  const tarPath = join(destDir, '__base.tar');
+  execFileSync(
+    'git',
+    ['archive', '--output', tarPath, sha, '--', ...pathspecs],
+    { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  execFileSync('tar', ['-xf', '__base.tar'], { cwd: destDir, stdio: ['ignore', 'ignore', 'pipe'] });
+  rmSync(tarPath, { force: true });
+}
+
+export async function runCheckAtCommit(root, sha) {
   const baseDir = mkdtempSync(join(tmpdir(), 'bp-dead-code-base-'));
-  const tarPath = join(baseDir, '__base.tar');
   const nodeModulesLink = join(baseDir, 'node_modules');
   const repoNodeModules = resolve(root, 'node_modules');
   let linkedNodeModules = false;
   try {
-    execFileSync(
-      'git',
-      [
-        'archive',
-        '--output',
-        tarPath,
-        sha,
-        '--',
-        'ui/src',
-        'tools/legacy-widgets-ratchet.json',
-        ':(glob)ui/*.html',
-        ':(glob)crates/*/src/**/*.rs',
-        ':(glob)tools/*.mjs',
-        ':(glob)tools/*.py',
-        ':(glob)tools/*.ps1',
-        ':(glob)tools/*.json',
-        ':(glob)tools/*.toml',
-      ],
-      { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] },
-    );
-    execFileSync('tar', ['-xf', tarPath, '-C', baseDir], { stdio: ['ignore', 'ignore', 'pipe'] });
-    rmSync(tarPath, { force: true });
+    materializeCommitSnapshot(root, sha, baseDir);
     if (existsSync(repoNodeModules)) {
       symlinkSync(repoNodeModules, nodeModulesLink, 'junction');
       linkedNodeModules = true;
@@ -1485,7 +2477,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const root = fileURLToPath(new URL('../', import.meta.url));
   const result = await runDeadCodeCheck(root);
   let comparison = null;
-  if (result.totalIssues > 0 && !noBase) {
+  if (!noBase) {
     const baseSha = resolveBaseCommit(root, againstArg);
     if (baseSha) {
       const baseResult = await runCheckAtCommit(root, baseSha);
@@ -1494,27 +2486,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   }
   const body = formatReport(result, comparison, { showAllInFile: listInFile });
   if (body) console.log(body);
-  const legacyRendererPart = result.convertedLegacy.maxLegacyRendererViews !== null
-    ? `, ${result.convertedLegacy.violations.length}/${result.convertedLegacy.maxLegacyRendererViews} converted view(s) reaching old renderer`
-    : '';
-  const unusedExportPart = result.exports.maxUnusedExports !== null
-    ? `, ${result.exports.unusedExports.length}/${result.exports.maxUnusedExports} unused export(s)`
-    : '';
   const summary = `dead-code: ${result.ui.deadProduction.length} dead UI module(s), `
     + `${result.ui.deadTests.length} dead test(s), `
     + `${result.ui.deadFixturesAndSupport.length} dead fixture/support file(s), `
     + `${result.rust.deadProducts.length} dead Rust product(s), `
     + `${result.rust.unwiredRegistrations.length} unwired registration(s), `
-    + `${result.legacy.count}/${result.legacy.maxLegacyViews} legacy view(s)`
-    + legacyRendererPart
-    + unusedExportPart;
-  if (result.totalIssues > 0) {
+    + `${result.legacy.count}/${result.legacy.maxLegacyViews} legacy view(s), `
+    + `${result.convertedLegacy.violations.length}/${result.convertedLegacy.maxLegacyRendererViews} converted view(s) reaching old renderer, `
+    + `${result.exports.unusedExports.length}/${result.exports.maxUnusedExports} unused export(s)`;
+  const failed = comparison ? comparison.newIssues > 0 : result.totalIssues > 0;
+  if (failed) {
     if (reportOnly) {
       console.log(`${summary} (report-only)`);
-      process.exit(0);
-    }
-    if (comparison && comparison.newIssues === 0) {
-      console.log(`${summary} (OK: 0 new on this branch; ${comparison.inheritedIssues} inherited from ${comparison.shortBase})`);
       process.exit(0);
     }
     const detail = comparison
@@ -1522,6 +2505,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       : 'FAILED';
     console.error(`${summary} (${detail})`);
     process.exit(1);
+  }
+  if (comparison && comparison.inheritedIssues > 0) {
+    console.log(`${summary} (OK: 0 new on this branch; ${comparison.inheritedIssues} inherited from ${comparison.shortBase})`);
+    process.exit(0);
   }
   console.log(`${summary} (OK)`);
 }
