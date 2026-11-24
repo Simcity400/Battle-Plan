@@ -251,6 +251,22 @@ impl Fold {
                 (Some(_), Some(segment)) if extends => &segment.order.completed,
                 _ => &[],
             };
+            let prior_dates: BTreeMap<&str, i32> = if extends {
+                BTreeMap::new()
+            } else {
+                self.segments
+                    .last()
+                    .filter(|segment| segment.slot == who.0)
+                    .map(|segment| {
+                        segment
+                            .order
+                            .completed
+                            .iter()
+                            .filter_map(|entry| entry.completed_by_hour.map(|when| (entry.token.as_str(), when)))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
             let held = if extends { before.as_ref().map_or(0, |before| before.completed.len()) } else { 0 };
             let completed: Vec<FocusEntry> = order
                 .completed
@@ -259,14 +275,18 @@ impl Fold {
                 .map(|(position, token)| FocusEntry {
                     ordinal: position as u32,
                     token: token.clone(),
-                    completed_by_hour: if position < held {
+                    completed_by_hour: if extends && position < held {
                         prior.get(position).and_then(|entry| entry.completed_by_hour)
+                    } else if extends {
+                        continuing.then_some(hour)
                     } else {
-                        (extends && continuing).then_some(hour)
+                        prior_dates.get(token.as_str()).copied()
                     },
                 })
                 .collect();
-            self.completions.extend(completed[held..].iter().filter(|entry| entry.completed_by_hour.is_some()).cloned());
+            if extends {
+                self.completions.extend(completed[held..].iter().filter(|entry| entry.completed_by_hour.is_some()).cloned());
+            }
             self.segments.push(Segment {
                 first: hour,
                 last: end,

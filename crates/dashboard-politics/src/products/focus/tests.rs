@@ -104,3 +104,39 @@ fn progress_gains_only_from_the_hour_before_under_the_same_focus_and_replies_rea
     assert!(order_page(&fold, 126, &pages, 1).unwrap().entries.is_none());
     assert!(order_page(&fold, 126, &FocusPages { first: 0, count: 1, rows: 2 }, 0).is_err(), "pages of another order are refused");
 }
+
+#[test]
+fn a_tree_change_or_list_reorder_keeps_earlier_focus_completion_dates() {
+    let make_frame = |hour: i32| {
+        let mut frame = source(1, hour, Some(1_000));
+        let countries = vec![CountryRow { id: GER, canonical_slot: 7, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }];
+        set(&mut frame, TableId::Countries, TableRows::Countries(countries));
+        set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: 7 }]));
+        let (tree, completed): (&[u8], &[&str]) = match hour {
+            ..105 => (b"GER_tree_a", &["a"]),
+            105..110 => (b"GER_tree_a", &["a", "b"]),
+            110..115 => (b"GER_tree_a", &["a", "b", "c"]),
+            115..120 => (b"GER_tree_a", &["b", "c"]),
+            120..125 => (b"GER_tree_b", &["c", "b"]),
+            _ => (b"GER_tree_b", &["c", "b", "d"]),
+        };
+        set(
+            &mut frame,
+            TableId::Focus,
+            TableRows::Focus(vec![FocusRow { country: GER, tree: Some(tree.to_vec()), current: None, continuous: None, progress: 0, paused: 0, completed_count: completed.len() as i32 }]),
+        );
+        let rows = completed.iter().enumerate().map(|(ordinal, token)| CompletedFocusRow { country: GER, ordinal: ordinal as u32, token: token.as_bytes().to_vec() }).collect();
+        set(&mut frame, TableId::CompletedFocuses, TableRows::CompletedFocuses(rows));
+        frame
+    };
+    let frames = (FIRST..=130).map(make_frame).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "focus-discontinuity".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let fold = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
+    let at = |hour: i32| fold.segment_at(hour).unwrap().1.order.completed.clone();
+    assert_eq!(at(118), [entry(0, "b", Some(105)), entry(1, "c", Some(110))]);
+    assert_eq!(at(122), [entry(0, "c", Some(110)), entry(1, "b", Some(105))]);
+    assert_eq!(at(128), [entry(0, "c", Some(110)), entry(1, "b", Some(105)), entry(2, "d", Some(125))]);
+    assert_eq!(fold.completions, [entry(1, "b", Some(105)), entry(2, "c", Some(110)), entry(2, "d", Some(125))]);
+}

@@ -4,7 +4,7 @@ import type { LiveValues } from '../../charts/live';
 import { cellView, momentViews, regionLabel, sideOrder } from '../../dashboard/airSuperiority.ts';
 import type { AirLooks, AirView } from '../../dashboard/airSuperiority';
 import { int, object } from '../../dashboard/validation.ts';
-import type { AirCell, AirDayCell, AirRankingReply, AirSuperiorityReply, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
+import type { AirCell, AirDayCell, AirRankingReply, AirSide, AirSuperiorityReply, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 
 export const STEP = 256 * 24;
 export const tileOf = (hour: number) => Math.floor(hour / STEP);
@@ -147,6 +147,21 @@ export function joinTiles(tiles: readonly (AirTimelineReply | undefined)[], span
     for (const row of rows) (row.cells as HeatCell[]).push(...(made.get(row.id) ?? tile.days.map(() => ({ parts: [] }))));
   });
   return { rows, periods, loading };
+}
+
+export function mergeTimelineSides(replies: readonly (AirTimelineReply | undefined)[], moment?: AirSuperiorityReply): AirSide[] {
+  const held: AirSide[] = [];
+  const index = new Map<string, number>();
+  for (const side of [...replies.flatMap(reply => reply?.sides ?? []), ...(moment?.sides ?? [])]) {
+    const at = index.get(side.key);
+    if (at === undefined) {
+      index.set(side.key, held.length);
+      held.push(side);
+    } else {
+      held[at] = side;
+    }
+  }
+  return held;
 }
 
 export function validateAirRanking(value: unknown): AirRankingReply {

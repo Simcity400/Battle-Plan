@@ -4,7 +4,7 @@ import { valuesOf, liveKey } from '../../charts/live.ts';
 import { sideOrder } from '../../dashboard/airSuperiority.ts';
 import type { AirLooks } from '../../dashboard/airSuperiority';
 import type { AirSide, AirSuperiorityReply, AirTimelineReply } from '../../generated/dashboard';
-import { STEP, airPeriods, dayView, followedEnd, headTail, joinTiles, timelineRows, validateAirTimeline, viewTiles } from './airTimelineData.ts';
+import { STEP, airPeriods, dayView, followedEnd, headTail, joinTiles, mergeTimelineSides, timelineRows, validateAirTimeline, viewTiles } from './airTimelineData.ts';
 
 const side = (key: string, faction: string | null, leader: string): AirSide =>
   ({ key, faction, colourFaction: null, factions: faction ? [faction] : [], tag: faction ? null : leader, leader, coBelligerents: 0, anchor: null });
@@ -92,4 +92,12 @@ test('tiles join in hour order, each made with its own sides; a tile not read le
   assert.equal(joined.rows[0].cells.length, 6);
   assert.deepEqual(joined.rows[0].cells[4].parts.map(part => part.id), ['c:GER'], "the second tile's side 0 is its own GER");
   assert.equal(joined.rows[1].cells.length, 6, 'a region a tile does not hold reads as no activity there');
+});
+
+test('merging timeline sides updates stale earlier-tile metadata with the latest assignment while preserving order', () => {
+  const early: AirSide = { key: 'f:10', faction: '10', colourFaction: null, factions: ['10'], tag: null, leader: 'GER', coBelligerents: 0, anchor: { tag: 'GER', hour: 0 } };
+  const late: AirSide = { key: 'f:10', faction: '10', colourFaction: '10', factions: ['10'], tag: null, leader: 'GER', coBelligerents: 1, anchor: { tag: 'GER', hour: 0 } };
+  const other: AirSide = { key: 'f:20', faction: '20', colourFaction: '20', factions: ['20'], tag: null, leader: 'JAP', coBelligerents: 0, anchor: { tag: 'JAP', hour: 100 } };
+  const merged = mergeTimelineSides([{ ...reply(), sides: [early] }, { ...reply(), sides: [other, late] }]);
+  assert.deepEqual(merged, [late, other]);
 });
