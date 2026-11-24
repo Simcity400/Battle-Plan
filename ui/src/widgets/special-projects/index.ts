@@ -1,4 +1,4 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import SpecialProjectsWidget from './SpecialProjectsWidget';
+import SpecialProjectsView from './SpecialProjectsView';
 
-export default { render: SpecialProjectsWidget } satisfies WidgetRenderer;
+export default { render: SpecialProjectsView } satisfies WidgetRenderer;
