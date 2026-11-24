@@ -4,7 +4,7 @@ import { jumpItem } from '../../charts/jump';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
-import { renderFamilyStatus, useFamilyPlan } from '../host/index.ts';
+import { renderFamilyStatus, useFamilyPlan, useFamilyTheme } from '../host/index.ts';
 import type { HeatLanesWidgetDeclaration, LaneActivation } from './lanesDeclaration.ts';
 import FamilyHeatLanesHost from './FamilyHeatLanesHost.tsx';
 
@@ -44,9 +44,10 @@ export default function DeclaredHeatLanesWidget<TProjectionOptions, TAux>({
   });
 
   const displayedCtx = plan.displayedCtx;
+  const { theme } = useFamilyTheme();
   const projectionOptions = useMemo(
-    () => (displayedCtx ? declaration.projectionOptions(displayedCtx) : ({} as TProjectionOptions)),
-    [displayedCtx, declaration.projectionOptions],
+    () => (displayedCtx && theme ? declaration.projectionOptions(displayedCtx, { theme }) : null),
+    [displayedCtx, theme, declaration.projectionOptions],
   );
 
   const contextMenuItems = useCallback(
@@ -79,6 +80,7 @@ export default function DeclaredHeatLanesWidget<TProjectionOptions, TAux>({
   const host = <FamilyHeatLanesHost
     key={declaration.keyByBranch ? (plan.track ? JSON.stringify([plan.track.source.id, plan.track.source.revision, plan.track.branch.id]) : 'none') : undefined}
     declaration={declaration.projection}
+    view={declaration.view}
     options={projectionOptions}
     label={declaration.label}
     subject={declaration.subject}

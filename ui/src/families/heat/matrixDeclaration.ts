@@ -1,5 +1,6 @@
 import type { IconName } from '../../components/Icons';
 import type { OptionField } from '../../dashboard/options';
+import type { FamilyTheme } from '../contract.ts';
 import type {
   AuxProductSpec,
   CountryPolicy,
@@ -7,6 +8,7 @@ import type {
   FamilyViewportRequest,
   SourcePlan,
 } from '../plan.ts';
+import type { HeatLook } from './lanesDeclaration.ts';
 import type { HeatMatrixProjection, MatrixAxisEntity } from './matrixModel.ts';
 
 export interface MatrixActivation {
@@ -20,6 +22,7 @@ export interface MatrixActivation {
 export interface HeatMatrixWidgetDeclaration<TProjectionOptions = Record<string, never>, TAux = unknown> {
   readonly family: 'heat-matrix';
   readonly kind: string;
+  readonly view?: string;
   readonly label: string;
   readonly subject: string;
   readonly emptyCampaign: string;
@@ -31,7 +34,7 @@ export interface HeatMatrixWidgetDeclaration<TProjectionOptions = Record<string,
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
   readonly projection: HeatMatrixProjection<TProjectionOptions>;
-  readonly projectionOptions: (ctx: FamilyPlanContext<TAux>) => TProjectionOptions;
+  readonly projectionOptions: (ctx: FamilyPlanContext<TAux>, look: HeatLook) => TProjectionOptions;
   readonly unavailable?: (ctx: FamilyPlanContext<TAux>, moment: number) => string | null;
   readonly warnings?: (ctx: FamilyPlanContext<TAux>, followRefused: string | null) => readonly string[];
   readonly jumpToDate?: boolean;

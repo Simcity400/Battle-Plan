@@ -138,6 +138,8 @@ checkWorkerSafe([
   'ui/src/families/table/registry.ts',
   'ui/src/families/bars/registry.ts',
   'ui/src/families/time-chart/declaration.ts',
+  'ui/src/families/heat/lanesRegistry.ts',
+  'ui/src/families/heat/matrixRegistry.ts',
 ]);
 
 const drawnSource = readFileSync(resolve(root, 'ui/src/draw/views/drawn.ts'), 'utf8');

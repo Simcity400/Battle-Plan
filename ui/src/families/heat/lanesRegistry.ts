@@ -1,15 +1,10 @@
-import type { HeatLanesProjection } from './lanesModel.ts';
+import { ensureFamilyProjection } from '../registry.ts';
+import type { HeatLanesModel, HeatLanesProjection } from './lanesModel.ts';
 
-const registry = new Map<string, HeatLanesProjection<unknown>>();
-
-export function registerHeatLanesProjection<TOptions>(projection: HeatLanesProjection<TOptions>): void {
-  registry.set(projection.kind, projection as HeatLanesProjection<unknown>);
-}
-
-export function heatLanesProjection(kind: string): HeatLanesProjection<unknown> | undefined {
-  return registry.get(kind);
-}
-
-export function registeredHeatLanesKinds(): readonly string[] {
-  return [...registry.keys()];
+export function ensureHeatLanesProjection(
+  kind: string,
+  view: string | undefined,
+  onReady: () => void,
+): HeatLanesProjection<any> | 'loading' | 'unknown' {
+  return ensureFamilyProjection<HeatLanesModel, any>('heat-lanes', kind, view, onReady) as HeatLanesProjection<any> | 'loading' | 'unknown';
 }

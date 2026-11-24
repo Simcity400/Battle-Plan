@@ -19,12 +19,13 @@ import {
   type HeatLanesModel,
 } from './lanesModel.ts';
 import { collectVisibleLaneArt, createLanesPicture, drawHeatLanes, type HeatLanesPicture } from './lanesPainter.ts';
-import { heatLanesProjection } from './lanesRegistry.ts';
+import { ensureHeatLanesProjection } from './lanesRegistry.ts';
 import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltipPayload } from './sceneReadView.ts';
 
 export interface FamilyHeatLanesBinding<TOptions = unknown> {
   readonly family: 'heat-lanes';
   readonly kind: string;
+  readonly view?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -118,8 +119,8 @@ export function familyHeatLanesLaneView(
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyHeatLanesBinding(bound)) return Infinity;
-      const projection = heatLanesProjection(bound.kind);
-      if (!projection) return Infinity;
+      const projection = ensureHeatLanesProjection(bound.kind, bound.view, () => wake(scene.widget));
+      if (typeof projection === 'string') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
       if (projection.nextChange) {
         const readView = readViewFromHeatScene(scene, bound, hour);
@@ -139,8 +140,9 @@ export function familyHeatLanesLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyHeatLanesBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = heatLanesProjection(bound.kind);
-      if (!projection) {
+      const projection = ensureHeatLanesProjection(bound.kind, bound.view, () => wake(input.widget));
+      if (projection === 'loading') return { surfaces: [], fields: {}, motion: false };
+      if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown timeline declaration: ${bound.kind}` };
       }
 

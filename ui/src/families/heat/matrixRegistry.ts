@@ -1,15 +1,10 @@
-import type { HeatMatrixProjection } from './matrixModel.ts';
+import { ensureFamilyProjection } from '../registry.ts';
+import type { HeatMatrixModel, HeatMatrixProjection } from './matrixModel.ts';
 
-const registry = new Map<string, HeatMatrixProjection<unknown>>();
-
-export function registerHeatMatrixProjection<TOptions>(projection: HeatMatrixProjection<TOptions>): void {
-  registry.set(projection.kind, projection as HeatMatrixProjection<unknown>);
-}
-
-export function heatMatrixProjection(kind: string): HeatMatrixProjection<unknown> | undefined {
-  return registry.get(kind);
-}
-
-export function registeredHeatMatrixKinds(): readonly string[] {
-  return [...registry.keys()];
+export function ensureHeatMatrixProjection(
+  kind: string,
+  view: string | undefined,
+  onReady: () => void,
+): HeatMatrixProjection<any> | 'loading' | 'unknown' {
+  return ensureFamilyProjection<HeatMatrixModel, any>('heat-matrix', kind, view, onReady) as HeatMatrixProjection<any> | 'loading' | 'unknown';
 }

@@ -43,7 +43,8 @@ const verifyMatrixAudit = createPlanAuditVerifier<HeatMatrixModel, unknown>();
 
 export interface FamilyHeatMatrixHostProps<TOptions> {
   readonly declaration: HeatMatrixProjection<TOptions>;
-  readonly options: TOptions;
+  readonly view?: string;
+  readonly options: TOptions | null;
   readonly label: string;
   readonly subject: string;
   readonly widget: WidgetSpec;
@@ -100,6 +101,7 @@ function parseCellHit(hitKey: string | null): { readonly key: string; readonly t
 
 export default function FamilyHeatMatrixHost<TOptions>({
   declaration,
+  view,
   options,
   label,
   subject,
@@ -218,6 +220,7 @@ export default function FamilyHeatMatrixHost<TOptions>({
 
   const latestRef = useRef({
     declaration,
+    view,
     options,
     theme,
     staticBundle,
@@ -234,6 +237,7 @@ export default function FamilyHeatMatrixHost<TOptions>({
   });
   latestRef.current = {
     declaration,
+    view,
     options,
     theme,
     staticBundle,
@@ -256,6 +260,7 @@ export default function FamilyHeatMatrixHost<TOptions>({
     const w = Math.max(1, width || 320);
     const h = Math.max(1, height || 240);
     const cur = latestRef.current;
+    if (cur.options === null) return;
     const staticPanels = cur.staticBundle?.panels;
     const staticAnswers = cur.staticBundle?.answers;
 
@@ -279,6 +284,7 @@ export default function FamilyHeatMatrixHost<TOptions>({
     const bindingModel: FamilyHeatMatrixBinding<TOptions> = {
       family: 'heat-matrix',
       kind: cur.declaration.kind,
+      ...(cur.view ? { view: cur.view } : {}),
       options: cur.options,
       sources: sourceIdsRef.current,
       ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
