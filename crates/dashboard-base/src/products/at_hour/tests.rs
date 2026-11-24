@@ -1052,27 +1052,65 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour-quiet".into(), revision: "1".into() }, "quiet.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
 
+    let run_declared = |exact: &dashboard_follow::panel::AtHour| -> Vec<Stepped> {
+        let seed = (exact.advance)(FIRST, true, &AtomicBool::new(false), None);
+        assert!(seed.rows > 0, "initial seed reads populated rows");
+        let (send, played) = std::sync::mpsc::channel();
+        let advance = exact.advance.clone();
+        let hook: playhead::Hook = Box::new(move |step, lanes| {
+            let token = AtomicBool::new(false);
+            let read = advance(step.last(), step.reset(), &token, Some(dashboard_follow::panel::ProductStep { step, lanes, held: None, wake: None }));
+            let _ = send.send((step.last(), Stepped { hour: step.last(), rows: read.rows, fresh: read.fresh, pending: read.pending, waited: false, value: read.value, lanes: read.lanes }));
+        });
+        let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 1, ring: 3, speed: 1.0, rate: 1.0, ..playhead::Settings::default() };
+        let playhead = playhead::Playhead::new(Arc::clone(&pages), playhead::Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap();
+        let reader = playhead.declare(seed.lanes, None).unwrap();
+        let mut consumer = playhead.consumer(reader);
+        playhead.seek(FIRST);
+        let (mut head, mut out) = (FIRST, Vec::new());
+        loop {
+            let mut next = None;
+            playhead
+                .drive_until(&mut consumer, head, || match played.try_recv() {
+                    Ok(item) => {
+                        next = Some(item);
+                        std::ops::ControlFlow::Break(Ok(()))
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => std::ops::ControlFlow::Continue(()),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => std::ops::ControlFlow::Break(Err("step hook channel disconnected".into())),
+                })
+                .unwrap();
+            let (last, read) = next.unwrap();
+            out.push(read);
+            if last >= LAST { break; }
+            if last >= head { head = (head + 1).min(LAST); }
+        }
+        drop(consumer);
+        playhead.finish();
+        out
+    };
+
     let quiet_panel = exact_panel::<Quiet>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
-    let quiet_reads = stepped(&pages, quiet_panel.exact().unwrap(), 1, FIRST, 1);
-    let settled: Vec<&Stepped> = quiet_reads.iter().filter(|r| !r.pending).collect();
-    let quiet_after: Vec<&&Stepped> = settled.iter().filter(|r| r.hour > FIRST + 1).collect();
-    assert!(quiet_after.len() >= 10, "expected quiet steps after lane attachment, got {}", quiet_after.len());
-    assert!(settled[0].rows > 0, "initial seed reads populated rows");
-    for read in &quiet_after[1..] {
+    let quiet_reads = run_declared(quiet_panel.exact().unwrap());
+    assert!(quiet_reads.len() >= 15);
+    assert!(quiet_reads.iter().all(|r| !r.pending));
+    for read in &quiet_reads[2..] {
         assert_eq!(read.rows, 0, "quiet hour {} must visit zero rows", read.hour);
-        assert!(Arc::ptr_eq(&read.value, &quiet_after[0].value), "quiet hour {} reuses the held reply", read.hour);
+        assert!(Arc::ptr_eq(&read.value, &quiet_reads[1].value), "quiet hour {} reuses the held reply", read.hour);
     }
 
     let expiring_panel = exact_panel::<Expiring>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
-    let expiring_reads = stepped(&pages, expiring_panel.exact().unwrap(), 1, FIRST, 1);
-    let settled: Vec<&Stepped> = expiring_reads.iter().filter(|r| !r.pending).collect();
-    let before = settled.iter().find(|r| r.hour == EXPIRES_AT - 1).unwrap();
-    let at_expiry = settled.iter().find(|r| r.hour == EXPIRES_AT).unwrap();
-    let after = settled.iter().find(|r| r.hour == EXPIRES_AT + 1).unwrap();
+    let expiring_reads = run_declared(expiring_panel.exact().unwrap());
+    assert!(expiring_reads.iter().all(|r| !r.pending));
+    let before = expiring_reads.iter().find(|r| r.hour == EXPIRES_AT - 1).unwrap();
+    let at_expiry = expiring_reads.iter().find(|r| r.hour == EXPIRES_AT).unwrap();
+    let after = expiring_reads.iter().find(|r| r.hour == EXPIRES_AT + 1).unwrap();
     assert_eq!(before.rows, 0);
     assert_eq!(before.value.as_ref().as_ref().unwrap()["expired"], false);
+    assert_eq!(before.value.as_ref().as_ref().unwrap()["count"], 1);
     assert_eq!(at_expiry.rows, 0);
     assert_eq!(at_expiry.value.as_ref().as_ref().unwrap()["expired"], true);
+    assert_eq!(at_expiry.value.as_ref().as_ref().unwrap()["count"], 2);
     assert_eq!(after.rows, 0);
     assert!(Arc::ptr_eq(&after.value, &at_expiry.value));
 }
