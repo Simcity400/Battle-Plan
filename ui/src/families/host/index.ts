@@ -1,4 +1,34 @@
 export {
+  type FamilyArtDemand,
+  type FamilyAuditContext,
+  type FamilyBindingContext,
+  type FamilyContextHit,
+  type FamilyGestureContext,
+  type FamilyGestureHandlers,
+  type FamilyGridMetrics,
+  type FamilyHostAdapter,
+  type FamilyInstallFieldsContext,
+  type FamilyMetaState,
+  type FamilyMirrorKind,
+  type FamilyNavigationKind,
+  type FamilyPointerMode,
+  type FamilyScrollExtent,
+  type FamilyScrollMode,
+  type FamilySkeletonKind,
+  type FamilySlotRenderContext,
+  type FamilyViewportChange,
+  type FamilyViewportState,
+  type FamilyViewWindow,
+  type ParsedFamilyHit,
+} from './adapter.ts';
+export {
+  default as DeclaredFamilyWidget,
+  createDeclaredFamilyWidget,
+  type DeclaredFamilyWidgetDeclaration,
+  type DeclaredFamilyWidgetProps,
+} from './DeclaredFamilyWidget.tsx';
+export { default as FamilyHost, type FamilyHostProps } from './FamilyHost.tsx';
+export {
   centerWindowPosition,
   clampWindowPosition,
   DetailWindowHost,
@@ -14,7 +44,16 @@ export {
   type UseFamilyPlanInput,
   type UseFamilyPlanResult,
 } from './useFamilyPlan.ts';
-export { handleFamilyKeyDown, TYPEAHEAD_RESET_MS, type FamilyKeyboardOptions, type FamilyNavTuple } from './keyboard.ts';
+export {
+  handleFamilyGridKeyDown,
+  handleFamilyKeyDown,
+  handleFamilyPointsKeyDown,
+  TYPEAHEAD_RESET_MS,
+  type FamilyGridKeyboardOptions,
+  type FamilyKeyboardOptions,
+  type FamilyNavTuple,
+  type FamilyPointsKeyboardOptions,
+} from './keyboard.ts';
 export {
   optionElementId,
   reconcileFocusedKey,
@@ -31,6 +70,7 @@ export {
   parseDefaultRowHit,
   resolveInstalledAction,
   type FamilyPointerBindingOptions,
+  type FamilyPointerGestures,
   type FamilyPointerHit,
 } from './pointer.ts';
 export {

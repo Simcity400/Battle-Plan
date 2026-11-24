@@ -125,8 +125,11 @@ export interface TooltipSyncInput {
   readonly dim: boolean;
   readonly held: boolean;
   readonly inspectedKey: string | null;
+  readonly inspectedToken?: string | null;
   readonly pointerPos: { readonly x: number; readonly y: number } | null;
   readonly hoverTip: FamilyTooltipEntry | null;
+  readonly hoverFieldKey?: string | null;
+  readonly keepHoverWhilePending?: boolean;
   readonly focusInside: boolean;
   readonly focusedKey: string | null;
   readonly focusAnchor: { readonly x: number; readonly y: number };
@@ -195,10 +198,20 @@ export class FamilyTooltipController {
     showTooltip(this.owner, fitted, pos.x, pos.y, tip.rowKey);
   }
 
+  isHoverShown(): boolean {
+    return this.hoverShown;
+  }
+
   syncFromInstall(input: TooltipSyncInput): void {
     if (!input.dim && !input.held) {
-      if (input.inspectedKey && input.pointerPos && input.hoverTip && input.hoverTip.rowKey === input.inspectedKey) {
-        this.show('hover', input.hoverTip, input.pointerPos, input.viewportHeight);
+      if (input.inspectedKey && input.pointerPos) {
+        if (input.hoverTip && input.hoverTip.rowKey === input.inspectedKey) {
+          this.show('hover', input.hoverTip, input.pointerPos, input.viewportHeight);
+        } else if (input.keepHoverWhilePending && (!input.inspectedToken || input.hoverFieldKey !== input.inspectedToken)) {
+          return;
+        } else {
+          this.hideIfUnpinned();
+        }
       } else if (input.focusInside && input.focusedKey && input.focusTip && input.focusTip.rowKey === input.focusedKey) {
         this.show('focus', input.focusTip, input.focusAnchor, input.viewportHeight);
       } else {
