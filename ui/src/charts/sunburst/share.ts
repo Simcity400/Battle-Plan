@@ -27,7 +27,7 @@ export function shareReading(values: readonly ShareValue[], world: number | null
   if (reason != null) return missing(reason);
   if (world == null || values.some(part => part.value == null)) return missing('The whole share was not recorded at this hour.');
   if (!Number.isSafeInteger(world) || values.some(part => !Number.isSafeInteger(part.value))) return missing('The share exceeds the exact integer range.');
-  if (world < 0 || values.some(part => part.value! < 0)) return missing('A share cannot represent negative recorded amounts. Choose Race or Lines over time to see them.', true);
+  if (world < 0 || values.some(part => part.value! < 0)) return missing('A share cannot represent negative recorded amounts. Choose Race or Lines to see them.', true);
   const leaders = values.slice().sort((a, b) => b.value! - a.value! || compareTags(a.key, b.key)).slice(0, Math.max(0, Math.floor(count)));
   let total = 0;
   for (const part of leaders) {

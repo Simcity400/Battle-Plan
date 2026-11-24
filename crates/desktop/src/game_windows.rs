@@ -49,9 +49,13 @@ pub async fn render_game_window(
     let runtime = service
         .runtime(window.app_handle())
         .map_err(QueryError::from)?;
-    let source = runtime
-        .source(&request.source_id)
-        .map_err(QueryError::from)?;
+    let renderer = Arc::clone(&renderer.0);
+    let Some((source, admitted_gen)) = renderer
+        .admit(&request.source_id, || runtime.source(&request.source_id))
+        .map_err(QueryError::from)?
+    else {
+        return Err(map_window_error(GameWindowError::Cancelled));
+    };
     if source.key().revision != request.revision {
         return Err(QueryError::Refused {
             text: "The recording changed while loading this game window.".to_owned(),
@@ -61,7 +65,6 @@ pub async fn render_game_window(
         .map_settings(source.replay_ref())
         .visual_mods
         .unwrap_or_default();
-    let renderer = Arc::clone(&renderer.0);
     let cancel_id = request_id.unwrap_or_else(|| {
         format!(
             "gw-fallback-{}",
@@ -72,11 +75,12 @@ pub async fn render_game_window(
     tauri::async_runtime::spawn_blocking(move || {
         let (config, _) = host_config().map_err(QueryError::from)?;
         let result = source.in_scope(|| {
-            renderer.render_from_source(
+            renderer.render_from_source_at_generation(
                 &source,
                 &config,
                 &visual_mods,
                 request,
+                admitted_gen,
                 registration.token(),
             )
         });

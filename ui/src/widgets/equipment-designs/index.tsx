@@ -9,7 +9,7 @@ const DESIGNER: GameWindowRow<EquipmentDesignerSelection> = {
     const tag = (meta as DesignMeta | undefined)?.tag;
     return tag ? { kind: 'equipmentDesigner', sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, hour, tag, variant: key } : null;
   },
-  title: meta => (meta as DesignMeta | undefined)?.name ?? 'Design',
+  label: 'Equipment design',
 };
 
 function EquipmentDesignsWidget(props: WidgetProps) {

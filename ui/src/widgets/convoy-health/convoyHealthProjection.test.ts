@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import type { ConvoyHealthReply } from '../../generated/dashboard';
+import { efficiencyColour, projectConvoyHealth } from './convoyHealthProjection.ts';
+
+const SURFACE = '#161616';
+
+function reply(lastHour: number): ConvoyHealthReply {
+  return {
+    branchId: '1', view: 'regions', tag: 'GER', firstHour: 0, lastHour, scale: 100000,
+    known: [[{ firstHour: 0, lastHour }], [], []], unheld: [], gaps: [{ firstHour: 30, lastHour: 39 }],
+    regions: [{
+      region: 17, name: 'English Channel', missing: null, pinned: false, efficiency: [],
+      cells: [
+        { firstHour: 0, lastHour: 9, state: { kind: 'efficiency', value: 100000n } },
+        { firstHour: 10, lastHour: 19, state: { kind: 'efficiency', value: 62000n } },
+        { firstHour: 20, lastHour: 29, state: { kind: 'noTraffic' } },
+        { firstHour: 30, lastHour: 39, state: { kind: 'notRecorded', reason: 'collector queue overflow' } },
+        { firstHour: 40, lastHour, state: { kind: 'efficiency', value: 38000n } },
+      ],
+      readout: { kind: 'efficiency', value: 38000n },
+    }],
+    deals: [], leases: [], resources: [], warnings: [],
+  };
+}
+
+const view = (hour: number, data: ConvoyHealthReply) => createBoundedReadView({ hour, panels: new Map([['convoys', data]]) });
+const OPTIONS = { view: 'regions' as const, surface: SURFACE };
+
+test('the efficiency scale runs from full at the first stop to empty at the last', () => {
+  assert.equal(efficiencyColour(1), '#22364f');
+  assert.equal(efficiencyColour(0), '#ff6b74');
+  assert.notEqual(efficiencyColour(0.62), efficiencyColour(0.86));
+});
+
+test('no traffic is the empty lane, unrecorded hours keep their reason, and the readout is the latest efficiency', () => {
+  const model = projectConvoyHealth(view(50, reply(50)), OPTIONS);
+  const runs = model.rows[0]!.runs;
+  assert.equal(runs[2]!.cell.kind, 'clear');
+  assert.deepEqual(runs[3]!.cell, { kind: 'missing', reason: 'collector queue overflow' });
+  const readout = model.rows[0]!.readout!;
+  assert.equal(readout.kind === 'value' && readout.primary, '38%');
+  assert.equal(readout.kind === 'value' && readout.secondary, 'Efficiency');
+  assert.equal(runs.at(-1)!.lastHour, 50);
+});
+
+test('a reply that reaches past the displayed hour, or for the other view, draws nothing', () => {
+  assert.deepEqual(projectConvoyHealth(view(45, reply(50)), OPTIONS).rows, []);
+  assert.deepEqual(projectConvoyHealth(view(50, reply(50)), { view: 'trade', surface: SURFACE }).rows, []);
+});

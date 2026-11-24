@@ -3,6 +3,7 @@ import type { FamilyManifestModule, FamilyViewEntry } from '../families/manifest
 import { bindFamilyManifest } from '../families/registry.ts';
 import { barsFamilyManifest } from './manifest/bars.ts';
 import { breakdownFamilyManifest } from './manifest/breakdown.ts';
+import { cardFamilyManifest } from './manifest/card.ts';
 import { heatLanesFamilyManifest } from './manifest/heat-lanes.ts';
 import { heatMatrixFamilyManifest } from './manifest/heat-matrix.ts';
 import { metersFamilyManifest } from './manifest/meters.ts';
@@ -13,6 +14,7 @@ import { timelineFamilyManifest } from './manifest/timeline.ts';
 export const FAMILY_MANIFESTS: readonly FamilyManifestModule[] = [
   barsFamilyManifest,
   breakdownFamilyManifest,
+  cardFamilyManifest,
   heatLanesFamilyManifest,
   heatMatrixFamilyManifest,
   metersFamilyManifest,

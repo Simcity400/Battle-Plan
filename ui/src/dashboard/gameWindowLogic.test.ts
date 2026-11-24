@@ -4,11 +4,15 @@ import type { GameWindowRegion, GameWindowRequest } from './client.ts';
 import {
   accessibleRegions,
   fitGameWindowSize,
+  followGameWindowRender,
   gameWindowRequestKey,
-  hitTestRegion,
+  gameWindowSubjectKey,
+  hitTestClick,
+  hitTestHover,
   isActivatableClose,
   normalizeGameWindowRequest,
   normalizeScale,
+  planGameWindowRender,
   regionTooltipContent,
 } from './gameWindowLogic.ts';
 import {
@@ -63,6 +67,34 @@ test('deduplicates identical requests and varies when any single key field chang
   assert.notEqual(gameWindowRequestKey(baseRequest(), 3), base);
 });
 
+test('a pass-through tooltip above the close button shows its tooltip but lets the click close', () => {
+  const regions: GameWindowRegion[] = [
+    { path: 'win/close_button', rect: [160, 8, 24, 24], clip: null, disabled: false, close: true,
+      tooltip: { title: 'Close', body: null, detail: null } },
+    { path: 'win/frame_tooltip', rect: [0, 0, 200, 40], clip: null, disabled: false, close: false, passthrough: true,
+      tooltip: { title: 'Frame', body: null, detail: null } },
+  ];
+  assert.equal(hitTestHover(regions, 170, 16)?.path, 'win/frame_tooltip');
+  assert.equal(isActivatableClose(hitTestClick(regions, 170, 16)), true);
+  assert.equal(hitTestClick(regions, 20, 16), null);
+});
+
+test('playback of one subject keeps one render in flight and then renders the latest hour', () => {
+  const subject = gameWindowSubjectKey(baseRequest(), 2);
+  assert.equal(gameWindowSubjectKey(baseRequest({ hour: 140 }), 2), subject);
+  assert.notEqual(gameWindowSubjectKey(baseRequest({ target: { tag: 'GER', variant: 'Panzer III' } }), 2), subject);
+  const at = (hour: number) => ({ key: gameWindowRequestKey(baseRequest({ hour }), 2), subject, active: true });
+  const flight = { key: at(100).key, subject };
+  assert.deepEqual(planGameWindowRender(at(101), flight, null), { step: 'wait', abort: false });
+  assert.equal(followGameWindowRender(flight, at(105), at(100).key), true);
+  assert.equal(followGameWindowRender(flight, at(100), at(100).key), false);
+  const other = { key: 'other', subject: 'other', active: true };
+  assert.deepEqual(planGameWindowRender(other, flight, null), { step: 'start', abort: true });
+  assert.equal(followGameWindowRender(flight, other, at(100).key), false);
+  assert.deepEqual(planGameWindowRender(at(100), flight, at(100).key), { step: 'reuse', abort: true });
+  assert.deepEqual(planGameWindowRender({ ...at(101), active: false }, flight, null), { step: 'idle', abort: true });
+});
+
 test('hit-tests top-most matching region, respects clips, and blocks disabled close clicks', () => {
   const regions: GameWindowRegion[] = [
     {
@@ -91,12 +123,12 @@ test('hit-tests top-most matching region, respects clips, and blocks disabled cl
     },
   ];
 
-  assert.equal(hitTestRegion(regions, 25, 25)?.path, 'win/clipped_item');
-  assert.equal(hitTestRegion(regions, 70, 70), null);
-  const disabledClose = hitTestRegion(regions, 130, 16);
+  assert.equal(hitTestHover(regions, 25, 25)?.path, 'win/clipped_item');
+  assert.equal(hitTestHover(regions, 70, 70), null);
+  const disabledClose = hitTestHover(regions, 130, 16);
   assert.equal(disabledClose?.path, 'win/disabled_close');
   assert.equal(isActivatableClose(disabledClose), false);
-  const closeHit = hitTestRegion(regions, 170, 16);
+  const closeHit = hitTestHover(regions, 170, 16);
   assert.equal(isActivatableClose(closeHit), true);
   assert.deepEqual(regionTooltipContent(closeHit!), {
     title: 'Close',
@@ -104,7 +136,7 @@ test('hit-tests top-most matching region, respects clips, and blocks disabled cl
     description: undefined,
     detail: undefined,
   });
-  assert.equal(hitTestRegion(regions, 250, 250), null);
+  assert.equal(hitTestHover(regions, 250, 250), null);
 
   const focusable = accessibleRegions(regions, [200, 120]);
   assert.equal(focusable.length, 3);
@@ -135,10 +167,10 @@ test('hit-testing respects alpha masks so transparent pixels pass through to reg
     },
   ];
 
-  assert.equal(hitTestRegion(regions, 2.5, 2.5)?.path, 'win/behind');
-  assert.equal(hitTestRegion(regions, 3.5, 2.5)?.path, 'win/alpha_front');
-  assert.equal(hitTestRegion(regions, 2.5, 3.5)?.path, 'win/alpha_front');
-  assert.equal(hitTestRegion(regions, 3.5, 3.5)?.path, 'win/behind');
+  assert.equal(hitTestHover(regions, 2.5, 2.5)?.path, 'win/behind');
+  assert.equal(hitTestHover(regions, 3.5, 2.5)?.path, 'win/alpha_front');
+  assert.equal(hitTestHover(regions, 2.5, 3.5)?.path, 'win/alpha_front');
+  assert.equal(hitTestHover(regions, 3.5, 3.5)?.path, 'win/behind');
 });
 
 test('fitGameWindowSize keeps 1:1 when it fits and scales down proportionally without cropping', () => {
