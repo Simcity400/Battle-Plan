@@ -1284,8 +1284,8 @@ runs: Array<SubjectRun>,
  * next to one of these is a gap, not an end or a start.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
-export type GroupKind = "factions" | "overlords";
-export type GroupCountsParams = { branchId: string, of: GroupKind,
+export type CountedGroup = "factions" | "overlords";
+export type GroupCountsParams = { branchId: string, of: CountedGroup,
 /**
  * The hour counted: nothing recorded after it is read into the reply.
  */
@@ -1299,7 +1299,7 @@ count: number | null,
  * Why the count is not known at the hour.
  */
 missing: string | null, };
-export type GroupCountsReply = { branchId: string, of: GroupKind, hour: number,
+export type GroupCountsReply = { branchId: string, of: CountedGroup, hour: number,
 /**
  * The first hour after `hour` at which a count, a group or a reason changes; null when none does.
  */
