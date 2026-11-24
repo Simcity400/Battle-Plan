@@ -5250,7 +5250,11 @@ pinned: boolean,
 missing: string | null, };
 export type UnknownRegion = { region: number, unknownOwners: number, };
 export type NoRegions = { "kind": "filtered", hidden: number, outside: number, } | { "kind": "unread", reason: string, } | { "kind": "none" };
-export type MinefieldsReply = { regions: Array<MinedRegion>, unknown: Array<UnknownRegion>, empty: NoRegions | null, scale: number, warnings: Array<string>, };
+export type MinefieldsReply = { regions: Array<MinedRegion>, unknown: Array<UnknownRegion>,
+/**
+ * Why no region is listed; set only when `regions` is empty.
+ */
+empty: NoRegions | null, scale: number, warnings: Array<string>, };
 export type MinefieldsParamsAtHour = MinefieldsParams & { hour: number };
 export type NavalYardsParams = { branchId: string, country: CountryRef, };
 export type YardShip = { handle: string, name: string | null, nameRebuilt: string | null, design: string | null, class: string | null,
