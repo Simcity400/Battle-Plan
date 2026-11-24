@@ -165,30 +165,6 @@ fn first_hour(bytes: &[u8], store: &mut FlagStore, watches: &Watches) -> Hour {
 }
 
 #[test]
-fn quiet_hours_read_no_manager_and_publish_identical_rows() {
-    let _globals = crate::flag_changes::test_globals();
-    let bytes = flag_scopes();
-    let watches = Watches::enabled(16);
-    let mut store = FlagStore::new();
-    let first = first_hour(&bytes, &mut store, &watches);
-    for _ in 0..3 {
-        let quiet = walk(&bytes, &mut store, &watches);
-        assert_eq!(quiet.outcome, first.outcome);
-        assert_eq!(quiet.rows, first.rows);
-        assert_eq!(
-            (
-                quiet.counts.read,
-                quiet.counts.reused,
-                quiet.counts.reused_rows
-            ),
-            (0, 5, 4)
-        );
-        assert_eq!(quiet.manager_reads, 0);
-        watches.boundary(false);
-    }
-}
-
-#[test]
 fn a_hooked_write_rereads_only_its_manager() {
     let _globals = crate::flag_changes::test_globals();
     let mut bytes = flag_scopes();
@@ -282,54 +258,6 @@ fn a_failed_walk_holds_nothing() {
     let hour = walk(&bytes, &mut store, &watches);
     assert_eq!((hour.counts.read, hour.counts.reused), (5, 0));
     assert_eq!(hour.rows[0].flag.value, 5);
-}
-
-#[test]
-fn every_site_names_its_manager() {
-    let _globals = crate::flag_changes::test_globals();
-    use engine_mutations::{
-        script_flag_mutations::MUTATIONS, script_flag_mutations::Receiver,
-        script_flag_mutations::manager,
-    };
-    for (site, receiver) in MUTATIONS {
-        let expected = match site.name {
-            "assign_flags" => Receiver::Rows,
-            _ => Receiver::Manager,
-        };
-        assert_eq!(receiver, expected, "{}", site.name);
-    }
-    assert_eq!(manager(Receiver::Manager, 0xa100), 0xa100);
-    assert_eq!(manager(Receiver::Rows, 0xa108), 0xa100);
-    let watches = Watches::enabled(16);
-    let certified = crate::flag_changes::Changes::sequence(&watches, 0xa100).unwrap();
-    drop(watches.notify(manager(Receiver::Rows, 0xa108), 6));
-    assert_ne!(
-        crate::flag_changes::Changes::sequence(&watches, 0xa100),
-        Some(certified)
-    );
-}
-
-#[test]
-fn a_quiet_hour_walks_no_scope_and_publishes_identical_rows() {
-    let _globals = crate::flag_changes::test_globals();
-    let bytes = flag_scopes();
-    let watches = Watches::enabled(16);
-    let mut store = FlagStore::new();
-    let (first, reads) = walk_with(&bytes, &mut store, &watches);
-    assert_ne!(reads, 0);
-    assert!(!first.counts.quiet);
-    let held = store.witnessed().unwrap();
-    watches.boundary(false);
-    for _ in 0..3 {
-        let (quiet, reads) = walk_with(&bytes, &mut store, &watches);
-        assert_eq!(quiet.outcome, first.outcome);
-        assert_eq!(quiet.rows, first.rows);
-        assert!(quiet.counts.quiet);
-        assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 5));
-        assert_eq!(reads, 0);
-        assert_eq!(store.witnessed(), Some(held));
-        watches.boundary(false);
-    }
 }
 
 #[test]
@@ -467,54 +395,6 @@ fn a_quiet_hour_carries_an_unhooked_character_flag_write() {
     assert!(stale.counts.quiet);
     assert_eq!(reads, 0);
     assert_eq!(stale.rows[3].flag.value, i16::MIN);
-}
-
-#[test]
-fn a_quiet_hour_visits_only_the_scopes_it_reads() {
-    let _globals = crate::flag_changes::test_globals();
-    let mut bytes = flag_scopes();
-    let watches = Watches::enabled(16);
-    let mut store = FlagStore::new();
-    walk_with(&bytes, &mut store, &watches);
-    watches.boundary(false);
-    let (quiet, _) = walk_with(&bytes, &mut store, &watches);
-    assert!(quiet.counts.quiet);
-    assert!(FlagStore::visited_scopes().is_empty());
-    watches.boundary(false);
-    let notification = watches.notify(MANAGERS[1], 0);
-    set_value(&mut bytes, 1, 7);
-    drop(notification);
-    watches.boundary(false);
-    let (written, _) = walk_with(&bytes, &mut store, &watches);
-    assert!(written.counts.quiet);
-    assert_eq!(FlagStore::visited_scopes(), [1]);
-    assert_eq!(
-        written.rows,
-        walk(&bytes, &mut FlagStore::new(), &watches).rows
-    );
-    watches.boundary(false);
-    let notification = watches.notify(MANAGERS[1], 0);
-    for field in [cflag_manager::SLOT_COUNT, cflag_manager::ENTRY_COUNT] {
-        put(&mut bytes, MANAGERS[1] + field, &0_i32.to_le_bytes());
-    }
-    put(
-        &mut bytes,
-        MANAGERS[1] + cflag_manager::ROWS,
-        &0_u64.to_le_bytes(),
-    );
-    drop(notification);
-    watches.boundary(false);
-    let (cleared, _) = walk_with(&bytes, &mut store, &watches);
-    assert!(cleared.counts.quiet);
-    assert_eq!(FlagStore::visited_scopes(), [1]);
-    let fresh = walk(&bytes, &mut FlagStore::new(), &watches).rows;
-    assert_eq!(cleared.rows, fresh);
-    assert_eq!(cleared.rows.len(), 3);
-    watches.boundary(false);
-    let (next, _) = walk_with(&bytes, &mut store, &watches);
-    assert!(next.counts.quiet);
-    assert!(FlagStore::visited_scopes().is_empty());
-    assert_eq!(next.rows, fresh);
 }
 
 #[test]

@@ -572,22 +572,4 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore]
-    fn bench_path_memo_by_entries() {
-        for entries in [1_000, 10_000, 50_000] {
-            let bytes = scaled(entries);
-            let memory = engine_native_memory::memory::CountingMemory::new(&bytes);
-            let mut rows = vec![Row::default(); entries];
-            memory.bench(
-                &format!("RaidPathDistances {entries} entries"),
-                20,
-                |memory| {
-                    let outcome = walk(memory, 0, GAME, Dispatcher::Naval, &mut rows, &mut 0);
-                    assert_eq!(outcome, Outcome::Rows { len: entries });
-                    format!("{entries} rows")
-                },
-            );
-        }
-    }
 }

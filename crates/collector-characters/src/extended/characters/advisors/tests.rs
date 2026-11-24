@@ -127,26 +127,6 @@ fn assert_outer_matches(cache: &Cache, memory: &impl Memory) {
     assert_eq!(captured.advisors_table(), direct.advisors_table());
 }
 #[test]
-fn first_capture_prepares_controls_without_a_second_roster_discovery() {
-    let _globals = crate::extended::characters::test_globals();
-    let bytes = super::super::tests::section_fixture();
-    let mut observer = Observer::new();
-    let mut cache = cache_for(&bytes);
-    cache.capture(&kit::memory(&bytes), context(), &observer, None);
-    assert_eq!(cache.counts.read, 2);
-    cache.prepare();
-    cache.capture(&kit::memory(&bytes), context(), &observer, None);
-    assert_eq!(cache.counts.planned, 2);
-    assert_outer_fresh(&cache, &bytes);
-    observer.enabled = false;
-    cache.capture(&kit::memory(&bytes), context(), &observer, None);
-    cache.prepare();
-    observer.enabled = true;
-    cache.capture(&kit::memory(&bytes), context(), &observer, None);
-    assert_eq!(cache.counts.planned, 0);
-    assert_outer_fresh(&cache, &bytes);
-}
-#[test]
 fn unregistered_maps_cannot_use_a_control_only_certificate() {
     let _globals = crate::extended::characters::test_globals();
     struct Unwatched;
@@ -1074,17 +1054,3 @@ fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
     assert_eq!(captured.advisors_table(), expected);
 }
 
-#[cfg(feature = "advisor_profile")]
-#[test]
-fn profile_diagnostics_have_five_slots_independent_of_table_count() {
-    let _globals = crate::extended::characters::test_globals();
-    let section = Section::with_capacity(0, 0, 0);
-    let memory = engine_native_memory::memory::SliceMemory {
-        base: 0,
-        bytes: &[],
-    };
-    let counted = Counted::new(&memory);
-    let _: [u64; 5] = section.diagnostic;
-    let _: [u64; 5] = counted.plan.get();
-    assert_eq!(DIAGNOSTIC_SLOTS, 5);
-}

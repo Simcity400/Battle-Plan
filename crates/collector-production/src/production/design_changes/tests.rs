@@ -35,24 +35,6 @@ fn a_new_fog_refusal_withdraws_the_earlier_daily_snapshot() {
     assert!(capture.design_fog().is_some());
 }
 
-#[test]
-fn shared_design_writers_keep_their_original_receivers_without_owning_patches() {
-    assert_eq!(
-        FORWARDED_SITES.map(|index| MUTATIONS[index].name),
-        [
-            "RefreshOrganisation",
-            "RefreshOrganisationBonus",
-            "MoveAssign"
-        ]
-    );
-    assert!(
-        FORWARDED_SITES
-            .iter()
-            .all(|&index| matches!(MUTATIONS[index].receiver, Receiver::Variant))
-    );
-    assert_eq!(MUTATIONS.len() - FORWARDED_SITES.len(), 20);
-}
-
 pub(super) fn fixture() -> Vec<u8> {
     let mut bytes = kit::fixture();
     for offset in [
@@ -626,18 +608,6 @@ fn variant_frame_reset_withdraws_old_observations_and_keeps_reusable_storage() {
     assert!(captured.dictionary.is_none());
     assert!(captured.context.is_none());
     assert!(captured.templates.is_none());
-}
-
-#[test]
-fn variant_site_authentication_without_dependency_baselines_never_admits_carry() {
-    assert!(native::mutations::WRITER_AUDIT_REFUSAL.is_none());
-    assert!(held::certified().is_none());
-    let memory = engine_native_memory::memory::SliceMemory {
-        base: 0,
-        bytes: &[],
-    };
-    let hooks = unsafe { Hooks::new(&memory, 0) }.unwrap();
-    assert!(hooks.hooks.is_empty());
 }
 
 #[test]

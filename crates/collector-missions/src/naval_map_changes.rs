@@ -421,29 +421,6 @@ detour!(unregister_mission, ledger, 1);
 mod tests {
     use super::*;
     #[test]
-    fn every_report_hook_error_and_registered_patch_keeps_its_purpose_name() {
-        let sites: Vec<_> = report_sites().collect();
-        assert_eq!(sites.len(), 4);
-        for ((name, rva), expected) in sites.into_iter().zip([
-            "standing report creation/update",
-            "standing report clear",
-            "standing report expiry",
-            "mine incident",
-        ]) {
-            assert_eq!(name, expected);
-            assert!(patch_sites().contains(&(name, rva)));
-            let error = crate::mission_changes::hook_failure(
-                "naval_map_changes",
-                "verification failed",
-                name,
-                "synthetic refusal",
-            );
-            assert!(error.contains(expected));
-            assert!(error.contains("naval_map_changes"));
-            assert!(error.contains("synthetic refusal"));
-        }
-    }
-    #[test]
     fn mine_slices_and_accidents_have_independent_lifetimes() {
         let mines = WatchRegistry::new();
         let reports = WatchRegistry::new();

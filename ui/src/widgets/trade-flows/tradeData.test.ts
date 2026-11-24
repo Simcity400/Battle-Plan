@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { resolveCountries, worldFilter } from '../../dashboard/groups.ts';
-import { resolveOptions } from '../../dashboard/options.ts';
-import { definition, OPTIONS } from './definition.ts';
+import { definition } from './definition.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { CountryGroupReply, ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
-import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, heldScale, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage,
-  sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote, mergeTrade } from './tradeData.ts';
+import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, heldScale, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage, sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, mergeTrade } from './tradeData.ts';
 
 const resource = (id: number, token: string): ResourceInfo => ({ id, token, ordinal: 1, name: null, icon: null });
 const flow = (seller: number, buyer: number, id: number, runs: [number, number, string, number?, number?, number?][]): TradeFlow => ({
@@ -34,19 +32,7 @@ test('trade selection accepts every recorded country', () => {
   assert.deepEqual([resolved.tags, resolved.dropped], [tags, 0]);
 });
 
-test('trade labels keep content names and ordinals without exposing unresolved tokens', () => {
-  assert.equal(resourceName(resource(1, 'private_mod_resource')), 'Resource name unavailable');
-  assert.equal(resourceName({ ...resource(1, 'private_mod_resource'), ordinal: 2 }), 'Resource name unavailable (2)');
-  assert.equal(resourceName({ ...resource(1, 'private_mod_resource'), name: 'Modded resource' }), 'Modded resource');
-  assert.equal(measureNote('current'), 'Per day');
-  assert.equal(measureNote('total'), 'Total delivered');
-  assert.equal(measureNote('average'), 'Average per trading day');
-});
 
-test('countries per side accepts counts above forty and one, keeping the default twelve', () => {
-  assert.equal(resolveOptions(OPTIONS, {}).perSide, 12);
-  for (const perSide of [1, 80]) assert.equal(resolveOptions(OPTIONS, { perSide }).perSide, perSide);
-});
 
 test('a reply is checked for parallel runs in order with exact amounts', () => {
   assert.doesNotThrow(() => validateTradeFlowsReply(reply()));

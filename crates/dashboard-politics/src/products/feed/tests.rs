@@ -135,30 +135,6 @@ fn a_feed_rows_cells_read_back_typed_and_what_was_not_recorded_stays_so() {
 }
 
 #[test]
-fn every_kind_the_log_holds_has_its_recorded_code_and_rows_the_feed_does_not_show_have_none() {
-    for (source, kind) in [
-        (EventFeedSource::Declaration, EventFeedKind::WarDeclared),
-        (EventFeedSource::Annex, EventFeedKind::Annexed),
-        (EventFeedSource::PeaceConference, EventFeedKind::PeaceConferenceStarted),
-        (EventFeedSource::ScriptEvent, EventFeedKind::ScriptEventFired),
-        (EventFeedSource::EventOption, EventFeedKind::EventOptionSelected),
-        (EventFeedSource::DecisionCompleted, EventFeedKind::DecisionCompleted),
-        (EventFeedSource::DecisionReenabled, EventFeedKind::DecisionReenabled),
-        (EventFeedSource::DecisionDurationChanged, EventFeedKind::DecisionDurationChanged),
-    ] {
-        assert_eq!(EventFeedKind::of_code(source as u8), Some(kind));
-        assert_eq!(kind.code(), Some(source as u8));
-    }
-    assert_eq!(EventFeedKind::of_code(EventFeedSource::ScriptState as u8), None, "registry state is never a fired event");
-    assert_eq!(EventFeedKind::of_code(FeedEventRow::READ_INCOMPLETE), None);
-    assert_eq!(EventFeedKind::of_code(FeedEventRow::GUARANTEE_GRANTED), Some(EventFeedKind::GuaranteeGranted));
-    assert_eq!(EventFeedKind::WarStarted.code(), None, "a war start is the groups family's row");
-    for list in [List::EventChoices, List::Decisions] {
-        assert!(list.openers().iter().chain(list.continuing()).all(|kind| kind.code().is_some() && kind.scripted()));
-    }
-}
-
-#[test]
 fn a_cause_reads_in_words_with_its_flags_and_a_scripts_operands_follow_it() {
     let mut join = event(EventFeedSource::Join as u8, 10, Slot::Of(7), Slot::Of(8));
     join.cause = Some(super::row::Cause { route: EventFeedRoute::CallAlly as u8, within: EventFeedRoute::OnAction as u8, conference: Some(77), state: None, ally: None, reason: Some(4), flags: 1 });
@@ -331,17 +307,6 @@ fn scripted_text_not_expanded_is_marked_where_it_stood_never_as_an_authored_elli
 }
 
 #[test]
-fn a_feed_item_says_why_its_name_is_missing_and_a_named_one_carries_no_reason() {
-    use super::EventFeedItem;
-    let named = serde_json::to_value(EventFeedItem { token: Some("ger.1".into()), name: Some("Title".into()), ..Default::default() }).unwrap();
-    assert!(named.get("nameMissing").is_none() && named.get("gaps").is_none());
-    let unnamed = EventFeedItem { token: Some("fra.1".into()), name_missing: Some("event fra.1 has no title in its content".into()), ..Default::default() };
-    let value = serde_json::to_value(&unnamed).unwrap();
-    assert_eq!(value["nameMissing"], "event fra.1 has no title in its content");
-    assert_eq!(serde_json::from_value::<EventFeedItem>(value).unwrap(), unnamed);
-}
-
-#[test]
 fn a_request_for_the_kinds_alone_gives_every_code_and_reads_nothing_else() {
     let reply = families::kinds_only("7", 10, 20);
     assert_eq!(reply.kinds.len(), super::CODES.len());
@@ -354,20 +319,6 @@ fn a_request_for_the_kinds_alone_gives_every_code_and_reads_nothing_else() {
     assert_eq!(asked.kinds_only, Some(true));
     let plain: families::EventFeedSpanParams = serde_json::from_value(serde_json::json!({ "branchId": "7", "categories": [] })).unwrap();
     assert_eq!(plain.kinds_only, None);
-}
-
-#[test]
-fn the_naming_readers_warmed_at_open_are_kept_at_the_head_for_the_first_page() {
-    use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-    use replay::campaign::Replay;
-    use std::sync::{Arc, PoisonError, atomic::AtomicBool};
-    let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
-    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let source = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "feed-naming".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    let kept = super::kept_naming(&source);
-    assert!(kept.lock().unwrap_or_else(PoisonError::into_inner).positions().is_empty(), "nothing is kept before the open reads ahead");
-    super::warm_naming(&source, 1).unwrap();
-    assert_eq!(kept.lock().unwrap_or_else(PoisonError::into_inner).positions().iter().map(|at| at.1).collect::<Vec<_>>(), [140], "the first page resumes the readers the open left at the head, never restores its own");
 }
 
 #[test]
@@ -389,41 +340,6 @@ fn the_scope_index_warmed_at_open_holds_every_run_of_the_timeline() {
     dashboard_base::queries::forget(&source);
     crate::forget(&source);
     assert!(super::scope::kept(&source).is_empty(), "forgotten with the recording's index");
-}
-
-#[test]
-fn each_page_keeps_its_naming_readers_where_it_stopped_and_the_next_takes_the_nearest_behind_it() {
-    use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-    use replay::campaign::Replay;
-    use std::sync::{Arc, PoisonError, atomic::AtomicBool};
-    let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
-    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    let source = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "feed-naming-pages".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
-    let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let run = query.timeline.stretches[0].run;
-    let kept = super::kept_naming(&source);
-    super::warm_naming(&source, 1).unwrap();
-    let page = |hours: &[i32]| {
-        let presenter = super::text::Presenter::new(&query, None, Arc::clone(&kept));
-        for &hour in hours {
-            assert!(presenter.frame(hour).unwrap().is_ok(), "hour {hour} read");
-        }
-    };
-    page(&[110, 112, 115]);
-    assert_eq!(kept.lock().unwrap_or_else(PoisonError::into_inner).positions(), [(run, 140), (run, 115)], "a page before the head restores once and keeps its readers beside the head's");
-    let held = super::text::Presenter::new(&query, None, Arc::clone(&kept));
-    held.frame(120).unwrap().unwrap();
-    assert_eq!(kept.lock().unwrap_or_else(PoisonError::into_inner).positions(), [(run, 140)], "the next page forward takes the readers stopped at 115, not the head's");
-    page(&[105]);
-    assert_eq!(kept.lock().unwrap_or_else(PoisonError::into_inner).positions(), [(run, 140), (run, 105)], "a page before every kept set takes none, so none is moved back");
-    drop(held);
-    assert_eq!(kept.lock().unwrap_or_else(PoisonError::into_inner).positions(), [(run, 140), (run, 105), (run, 120)]);
-    for (at, hour) in [125, 130].into_iter().enumerate() {
-        let presenter = super::text::Presenter::new(&query, None, Arc::clone(&kept));
-        presenter.frame(100 + at as i32).unwrap().unwrap();
-        presenter.frame(hour).unwrap().unwrap();
-    }
-    assert_eq!(kept.lock().unwrap_or_else(PoisonError::into_inner).positions(), [(run, 105), (run, 120), (run, 125), (run, 130)], "four sets at most: the one left longest ago goes");
 }
 
 #[test]

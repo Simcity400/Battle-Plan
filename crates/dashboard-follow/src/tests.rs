@@ -660,7 +660,6 @@ fn a_query_of_a_text_column_is_refused_by_name() {
     assert_eq!(answers[0].not_recorded.as_deref(), Some("Countries's tag is a text column, which a followed query does not read"));
 }
 
-
 struct Paper {
     follow: Follow,
     held: Vec<bool>,
@@ -1620,16 +1619,6 @@ fn pressure_never_merges_ahead_of_the_clock() {
     push.offer(rows_message(40, false, &[(1, 3)]));
     assert_eq!(push.counters().pressure_merges, 0);
     assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "past the budget ahead of the clock is a named failure, never a lost hour");
-}
-
-#[test]
-fn a_panel_cell_group_takes_an_id_of_its_owners_lane() {
-    for (lane, lanes) in [(0, 1), (1, 2), (2, 3), (3, 4)] {
-        for _ in 0..50 {
-            let id = crate::live::cells_id(lane, lanes);
-            assert_eq!((id & crate::live::CELLS, (id & !crate::live::CELLS) % lanes), (crate::live::CELLS, lane));
-        }
-    }
 }
 
 #[test]

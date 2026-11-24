@@ -1936,43 +1936,6 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "release per-call notification cost; run with --release --ignored --nocapture --test-threads=1"]
-    fn hook_cost_watch_registry() {
-        const RECEIVERS: usize = 1500;
-        let registry = registry(8192);
-        let receiver = |index: usize| 0x10_0000 + index * 0x200;
-        for index in 0..RECEIVERS {
-            registry.sequence(receiver(index)).unwrap();
-        }
-        let one = crate::test_support::per_call_ns(RECEIVERS, || {
-            for index in 0..RECEIVERS {
-                drop(std::hint::black_box(registry.notify(receiver(index))));
-            }
-        });
-        let four = std::thread::scope(|scope| {
-            let threads: Vec<_> = (0..4)
-                .map(|_| {
-                    scope.spawn(|| {
-                        crate::test_support::per_call_ns(RECEIVERS, || {
-                            for index in 0..RECEIVERS {
-                                drop(std::hint::black_box(registry.notify(receiver(index))));
-                            }
-                        })
-                    })
-                })
-                .collect();
-            threads
-                .into_iter()
-                .map(|thread| thread.join().unwrap())
-                .sum::<f64>()
-                / 4.0
-        });
-        println!(
-            "hook_cost watch_registry notify+return: {one:.1} ns/call on one thread, {four:.1} ns/call on each of four"
-        );
-    }
-
     fn marking(len: usize) -> WatchRegistry {
         let registry = WatchRegistry::marking();
         registry.offer_slots(len);
@@ -2070,35 +2033,6 @@ mod tests {
         assert_eq!(registry.quiet(), Some((quiet.0, quiet.1 + 1)));
         assert_eq!(registry.registered(), 1);
         assert_eq!(registry.register(0), None);
-    }
-
-    #[test]
-    #[ignore = "per-call bitmap mark microbenchmark; run only without a live game benchmark"]
-    fn hook_cost_repeated_marks() {
-        const CALLS: usize = 100_000;
-        let word = AtomicU64::new(1);
-        let unconditional = crate::test_support::per_call_ns(CALLS, || {
-            for _ in 0..CALLS {
-                std::hint::black_box(&word).fetch_or(1, SeqCst);
-                std::hint::black_box(&word).fetch_or(1, SeqCst);
-            }
-        });
-        let already_set = crate::test_support::per_call_ns(CALLS, || {
-            for _ in 0..CALLS {
-                mark_slot(std::hint::black_box(&word), 1);
-                mark_slot(std::hint::black_box(&word), 1);
-            }
-        });
-        let after_take = crate::test_support::per_call_ns(CALLS, || {
-            for _ in 0..CALLS {
-                word.swap(0, SeqCst);
-                mark_slot(std::hint::black_box(&word), 1);
-                mark_slot(std::hint::black_box(&word), 1);
-            }
-        });
-        println!(
-            "hook_cost mark entry+return: unconditional={unconditional:.1} ns, already_set={already_set:.1} ns, take+first_mark={after_take:.1} ns"
-        );
     }
 
     #[test]

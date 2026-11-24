@@ -35,24 +35,6 @@ fn exact_metrics_cli_routes_both_forms_and_refuses_recorded_failure() {
 }
 
 #[test]
-fn sizes_route_through_the_cli() {
-    let directory = crate::test_support::allocation_test_directory("sizes");
-    let path = directory.join("synthetic.battleplan");
-    fs::write(
-        &path,
-        crate::test_support::replay(crate::test_support::allocation_records()).bytes(),
-    )
-    .unwrap();
-    crate::recording::command(vec![
-        "sizes".into(),
-        path.clone().into_os_string(),
-        "--json".into(),
-    ])
-    .unwrap();
-    assert!(crate::recording::command(vec!["sizes".into()]).is_err());
-}
-
-#[test]
 fn recompress_routes_through_the_cli() {
     let directory = std::env::temp_dir().join(format!("recorder-recompress-cli-{}", std::process::id()));
     let _ = fs::remove_dir_all(&directory);

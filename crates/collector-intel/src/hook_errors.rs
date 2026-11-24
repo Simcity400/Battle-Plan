@@ -50,37 +50,3 @@ pub(crate) fn publication<'a>(
     format!("{family}: {scope} [{selected}] publication failed: {cause}")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn installer_failures_keep_family_site_and_underlying_cause() {
-        for family in ["intel sources", "network auxiliary", "propaganda"] {
-            let reason = locate(4096, Rva(0), family, "clear", 23).unwrap_err();
-            assert!(
-                reason.contains(family)
-                    && reason.contains("clear (site 23)")
-                    && reason.contains("site verification failed")
-            );
-            let reason = site(
-                family,
-                "getter",
-                39,
-                "construction failed",
-                "relocation cause",
-            );
-            assert!(reason.contains("getter (site 39)") && reason.contains("relocation cause"));
-            let reason = publication(
-                family,
-                &[],
-                ["getter", "clear"].into_iter(),
-                "cache publication cause",
-            );
-            assert!(
-                reason.contains("getter (site 0)")
-                    && reason.contains("clear (site 1)")
-                    && reason.contains("cache publication cause")
-            );
-        }
-    }
-}

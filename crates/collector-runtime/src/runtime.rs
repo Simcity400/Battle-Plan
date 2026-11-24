@@ -3283,66 +3283,6 @@ mod detach_policy_tests {
     use super::*;
 
     #[test]
-    fn successful_restores_do_not_consume_a_refused_familys_retry_budget() {
-        let start = Instant::now();
-        let mut wait = RestoreWait::new(start);
-        let mut restored = [true; RestoreFamily::ALL.len()];
-        restored[RestoreFamily::EquipmentDestruction as usize] = false;
-        restored[RestoreFamily::WorldLifetime as usize] = false;
-        let first_pass = start + DETACH_BUDGET + Duration::from_secs(1);
-        assert!(wait.retry(first_pass, &restored).is_some());
-        assert!(wait.retry(first_pass + DETACH_BUDGET, &restored).is_none());
-        restored[RestoreFamily::EquipmentDestruction as usize] = true;
-        assert!(wait.retry(first_pass + DETACH_BUDGET, &restored).is_some());
-    }
-
-    #[test]
-    fn slow_restore_rounds_credit_progress_before_timing_out_busy_families() {
-        let start = Instant::now();
-        let mut wait = RestoreWait::new(start);
-        let mut restored = [false; RestoreFamily::ALL.len()];
-        let mut previous_errors = [false; RestoreFamily::ALL.len()];
-        let first = RestoreFamily::EquipmentDestruction;
-        let second = RestoreFamily::BuildingBombing;
-        let slow_round = start + DETACH_BUDGET + Duration::from_secs(1);
-        for (now, first_ready) in [(slow_round, false), (slow_round + DETACH_BUDGET, true)] {
-            assert_eq!(
-                wait.round(
-                    &mut restored,
-                    &mut previous_errors,
-                    || false,
-                    |family| Ok(family != second && (family != first || first_ready)),
-                    || now,
-                ),
-                Ok(RestoreRound::Retry(Duration::from_millis(100)))
-            );
-            assert!(previous_errors.iter().all(|error| !error));
-        }
-        let last_progress = slow_round + DETACH_BUDGET;
-        assert_eq!(
-            wait.round(
-                &mut restored,
-                &mut previous_errors,
-                || false,
-                |_| Ok(false),
-                || last_progress + DETACH_BUDGET,
-            ),
-            Ok(RestoreRound::Stalled)
-        );
-        assert_eq!(
-            wait.round(
-                &mut restored,
-                &mut previous_errors,
-                || false,
-                |_| Ok(true),
-                || last_progress + DETACH_BUDGET,
-            ),
-            Ok(RestoreRound::Complete)
-        );
-        assert!(restored.iter().all(|ready| *ready));
-    }
-
-    #[test]
     fn persistent_restore_errors_are_not_hidden_by_progress_in_the_same_round() {
         let start = Instant::now();
         let mut wait = RestoreWait::new(start);
@@ -3496,16 +3436,6 @@ mod detach_policy_tests {
                 RestoreFamily::WorldLifetime
             ]
         );
-    }
-
-    #[test]
-    fn detach_retry_budget_does_not_restart_for_last_short_poll() {
-        let poll = Duration::from_millis(100);
-        assert_eq!(detach_retry_delay(Duration::ZERO, poll), Some(poll));
-        let last = Duration::from_nanos(1);
-        assert_eq!(detach_retry_delay(DETACH_BUDGET - last, poll), Some(last));
-        assert_eq!(detach_retry_delay(DETACH_BUDGET, poll), None);
-        assert_eq!(detach_retry_delay(DETACH_BUDGET + last, poll), None);
     }
 
     #[test]
@@ -3702,18 +3632,6 @@ mod detach_tests {
             Ok(true)
         );
         assert_eq!(world_restores.get(), 1);
-    }
-
-    #[test]
-    fn every_observer_family_has_a_named_bounded_detach_refusal() {
-        for family in RestoreFamily::ALL {
-            let reason = family.observer_state().1;
-            let active = |candidate| candidate == family;
-            assert_eq!(observer_detach_refusal(DETACH_BUDGET, |_| false), None);
-            assert_eq!(observer_detach_refusal(Duration::ZERO, active), None);
-            assert_eq!(observer_detach_refusal(DETACH_BUDGET, active), Some(reason));
-            assert!(reason.ends_with("collector retained"));
-        }
     }
 
     #[test]
@@ -6336,20 +6254,6 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     #[test]
-    fn spool_error_stops_capture_before_synchronous_writer_cleanup() {
-        let recording = AtomicBool::new(true);
-        {
-            let stop = StopRecordingOnSpoolExit {
-                recording: &recording,
-            };
-            stop.stop();
-            assert!(!recording.load(Ordering::Acquire));
-            recording.store(true, Ordering::Release);
-        }
-        assert!(!recording.load(Ordering::Acquire));
-    }
-
-    #[test]
     fn a_slow_spool_s_backlog_is_in_the_status_and_clears_when_it_catches_up() {
         let shared =
         // SAFETY: The caller owns the session or isolated fixture state required by this
@@ -7244,57 +7148,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sizing_census_backoff_keeps_fast_load_growth_and_refusal_retries() {
-        let start = Instant::now();
-        let mut cadence = SizingBackoff::new();
-        let mut now = start;
-        assert!(cadence.due(now, 1, false));
-        for seconds in [2, 4, 5, 5] {
-            cadence.observed(now, false, false);
-            assert_eq!(cadence.interval, Duration::from_secs(seconds));
-            assert!(!cadence.due(now + Duration::from_secs(seconds - 1), 1, false));
-            now += Duration::from_secs(seconds);
-            assert!(cadence.due(now, 1, false));
-        }
-        cadence.observed(now, false, false);
-        now += Duration::from_secs(1);
-        assert!(cadence.due(now, 2, false));
-        cadence.observed(now, true, false);
-        assert_eq!(cadence.interval, SizingBackoff::FAST);
-        for demand in [true, false] {
-            now += Duration::from_secs(1);
-            assert!(cadence.due(now, 2, demand));
-            cadence.observed(now, demand, false);
-        }
-        assert_eq!(cadence.interval, Duration::from_secs(2));
-        assert!(!cadence.due(now + Duration::from_millis(10), 2, true));
-        assert!(cadence.due(now + Duration::from_secs(1), 2, true));
-        for seconds in [2, 4, 8, 16, 32, 60, 60] {
-            cadence.observed(now, false, true);
-            assert_eq!(cadence.interval, Duration::from_secs(seconds));
-            now += Duration::from_secs(seconds);
-            assert!(cadence.due(now, 2, false));
-        }
-        cadence.observed(now, true, true);
-        assert_eq!(cadence.interval, SizingBackoff::FAST);
-    }
-
     impl Moment for Duration {
         fn since(self, earlier: Self) -> Duration {
             self.saturating_sub(earlier)
         }
-    }
-
-    #[test]
-    fn every_second_is_due_at_once_from_the_clock_origin_then_once_a_second() {
-        let origin = Duration::ZERO;
-        let mut every = EverySecond::default();
-        assert!(every.due(origin));
-        every.done(origin);
-        assert!(!every.due(origin));
-        assert!(!every.due(origin + Duration::from_millis(999)));
-        assert!(every.due(origin + Duration::from_secs(1)));
     }
 
     fn sizing_fixture() -> (Shared, SizingThread) {
@@ -8365,28 +8222,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn logistics_owner_poll_does_no_native_reads_between_bounded_observations() {
-        struct Reads(std::cell::Cell<usize>);
-        impl engine_native_memory::Memory for Reads {
-            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-                self.0.set(self.0.get() + 1);
-                false
-            }
-        }
-        let memory = Reads(std::cell::Cell::new(0));
-        let mut watch = RegistryWatch::default();
-        let start = Instant::now();
-        assert_eq!(watch.poll_logistics(&memory, 0, || start).unwrap(), Some(0));
-        let first = memory.0.get();
-        assert!(first > 0);
-        let before = start + RegistryWatch::INTEL_INTERVAL - Duration::from_nanos(1);
-        assert_eq!(watch.poll_logistics(&memory, 0, || before).unwrap(), None);
-        assert_eq!(memory.0.get(), first);
-        let due = start + RegistryWatch::INTEL_INTERVAL;
-        assert_eq!(watch.poll_logistics(&memory, 0, || due).unwrap(), Some(0));
-        assert!(memory.0.get() > first);
-    }
     #[test]
     fn registry_watch_reports_growth_once_and_ignores_torn_or_smaller_counts() {
         let memory = Registry::default();

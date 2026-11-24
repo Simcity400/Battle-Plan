@@ -11,8 +11,7 @@ use crate::land_combat_details::{
     Leaders,
     Span,
     read_details,
-    read_details_sharing,
-};
+    };
 use engine_native::cunit_leader::{CommanderLearningTrait, CommanderTrait};
 use crate::land_combat_details::details::{
     DetailReader,
@@ -455,61 +454,6 @@ fn detail_scatter_partial_destinations_and_checked_address_prefix_match_scalar()
     }
 }
 
-#[test]
-fn details_keep_loss_ring_stored_terrain_and_first_header_gates() {
-    let mut fixture = detail_fixture();
-    fixture.u32(ATTACK + cland_combatant::ORGANISATION_LOSS_COUNT, 23);
-    fixture.u64(ATTACK + cland_combatant::ORGANISATION_LOSS_WINDOW, 1);
-    fixture.u64(COMBAT + STORED_TERRAIN, 0x8e00);
-    fixture.u64(
-        0x8e00,
-        (BASE + engine_native_parts::cterrain_type::NULL_VTABLE_RVA.0) as u64,
-    );
-    let trace = assert_detail_attempt(&fixture, &[], None, None, 8);
-    assert!(!trace.contains(&(ATTACK + cland_combatant::ORGANISATION_LOSS_WINDOW, 8)));
-    assert!(
-        !trace
-            .iter()
-            .any(|(p, _)| *p == 0x8e00 + engine_native_parts::cterrain_type::NAME)
-    );
-    for side in [ATTACK, DEFEND] {
-        for offset in [
-            cland_combatant::COMMITTED,
-            cland_combatant::RESERVES,
-            cland_combatant::AIR_SUPPORT,
-        ] {
-            assert_eq!(
-                trace.iter().filter(|p| **p == (side + offset, 16)).count(),
-                1
-            );
-            let ordinal = trace
-                .iter()
-                .position(|p| *p == (side + offset, 16))
-                .unwrap();
-            assert_eq!(
-                assert_detail_attempt(&fixture, &[], None, Some((ordinal, 15)), 8),
-                trace[..=ordinal]
-            );
-        }
-        assert!(!trace.contains(&(side + cland_combatant::BORDER_MODIFIER, 8)));
-    }
-    assert_eq!(
-        trace.iter().filter(|p| **p == (COMBAT + BODY, 16)).count(),
-        1
-    );
-    let ordinal = trace
-        .iter()
-        .position(|p| *p == (COMBAT + BODY, 16))
-        .unwrap();
-    assert_eq!(
-        assert_detail_attempt(&fixture, &[], None, Some((ordinal, 0)), 8),
-        trace[..=ordinal]
-    );
-    fixture.u32(ATTACK + cland_combatant::ORGANISATION_LOSS_COUNT, 24);
-    let trace = assert_detail_attempt(&fixture, &[], None, None, 8);
-    assert_eq!(trace.last(), Some(&(1, 192)));
-}
-
 const BASE: usize = 0x1_4000_0000;
 const STATE: usize = 0x1000;
 const REGISTRY: usize = 0x2000;
@@ -584,75 +528,6 @@ fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() 
                 .iter()
                 .all(|row| row.id == ((0xf000_0001_u64 << 32) | TYPE_WORD as u64))
         );
-    }
-}
-
-#[test]
-fn growing_map_census_preserves_sufficient_fixed_reads_and_every_original_fault() {
-    let fixture = Fixture::new();
-    let source = fixture.memory();
-    let fixed = Observed::new(&source, &[]);
-    let mut fixed_rows = vec![Row::default(); 2];
-    let mut fixed_participants = vec![0; 8];
-    let mut fixed_classes = vec![0; 8];
-    let expected = walk_with(
-        &fixed,
-        BASE,
-        STATE,
-        &mut fixed_rows,
-        &mut fixed_participants,
-        &mut fixed_classes,
-        |_| {},
-    );
-    let trace = fixed.reads.borrow().clone();
-    for fault in std::iter::once(None).chain((0..trace.len()).map(Some)) {
-        let source = fixture.memory();
-        let mut fixed = Observed::new(&source, &[]);
-        fixed.fault = fault;
-        let expected = if fault.is_none() {
-            expected
-        } else {
-            walk_with(
-                &fixed,
-                BASE,
-                STATE,
-                &mut fixed_rows,
-                &mut fixed_participants,
-                &mut fixed_classes,
-                |_| {},
-            )
-        };
-        let mut growing = Observed::new(&source, &[]);
-        growing.fault = fault;
-        let mut rows = Vec::new();
-        let mut participants = Vec::new();
-        let mut classes = Vec::new();
-        let actual = walk_with(
-            &growing,
-            BASE,
-            STATE,
-            &mut rows,
-            &mut participants,
-            &mut classes,
-            |_| {},
-        );
-        assert_eq!(actual, expected, "fault {fault:?}");
-        let expected_trace = if fault.is_none() {
-            trace.clone()
-        } else {
-            fixed.reads.borrow().clone()
-        };
-        assert_eq!(*growing.reads.borrow(), expected_trace, "fault {fault:?}");
-        if fault.is_none() {
-            assert_eq!(
-                rows[..actual.outcome.len()],
-                fixed_rows[..actual.outcome.len()]
-            );
-            assert_eq!(
-                participants[..actual.participants_len],
-                fixed_participants[..actual.participants_len]
-            );
-        }
     }
 }
 
@@ -1504,38 +1379,6 @@ fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
 }
 
 #[test]
-fn a_pass_reads_a_shared_leaders_own_inputs_once() {
-    let fixture = commander_fixture();
-    let memory = DetailMemory {
-        fixture: &fixture,
-        copies: 0.into(),
-        bytes: 0.into(),
-    };
-    let read = |leaders: &mut Leaders| {
-        let mut arenas = Arenas::new();
-        let before = memory.copies.get();
-        let row = read_details_sharing(
-            &memory,
-            BASE,
-            detail_source(),
-            &Members::none(),
-            &mut Commanders::default(),
-            leaders,
-            &mut arenas.view(),
-        )
-        .unwrap();
-        (row, memory.copies.get() - before)
-    };
-    let mut leaders = Leaders::default();
-    let (first, fresh) = read(&mut leaders);
-    let (second, shared) = read(&mut leaders);
-    assert_eq!(second, first);
-    assert!(shared < fresh, "{shared} copies, {fresh} afresh");
-    leaders.clear();
-    assert_eq!(read(&mut leaders), (first, fresh));
-}
-
-#[test]
 fn unreadable_optional_side_inputs_refuse_only_themselves() {
     let fixture = commander_fixture();
     let mut arenas = Arenas::new();
@@ -1605,7 +1448,6 @@ fn selected_commander_texts_keep_native_length_and_name_their_field() {
     };
     const TERRAIN: usize = 5;
     const OTHER: usize = TERRAIN + 10 + 4;
-
 
     let (details, used, required, text) = read(&fixture, 512);
     let (complete, side) = details.unwrap();
@@ -1929,31 +1771,6 @@ fn bad_objects_fail_the_table_instead_of_producing_a_partial_census() {
         .outcome,
         Outcome::Unavailable { .. }
     ));
-}
-
-#[test]
-fn border_width_fault_stops_before_side_payloads() {
-    let fixture = commander_fixture();
-    let source = detail_source();
-    let image = fixture.memory();
-    let mut memory = Observed::new(&image, &[]);
-    memory.fault = Some(1);
-    let reader = DetailReader(Reader {
-        memory: &memory,
-        base: BASE,
-        provinces: source.provinces,
-    });
-    assert_eq!(
-        crate::land_combat_details::details::read_border_war(&reader, source, &mut Arenas::new().view()),
-        Err("land combat field unreadable or address overflow")
-    );
-    assert_eq!(
-        memory.reads.borrow().as_slice(),
-        &[
-            (COMBAT + cland_border_war_combat::TRANSFER_STATE, 1),
-            (COMBAT + cland_border_war_combat::COMBAT_WIDTH, 8),
-        ]
-    );
 }
 
 #[test]

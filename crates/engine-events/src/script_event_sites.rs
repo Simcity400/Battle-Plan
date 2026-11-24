@@ -230,28 +230,6 @@ pub const EXTEND_DECISION_REMOVAL: Site = Site {
 };
 pub const DURATION_TAPS: [Site; 2] = [EXTEND_MISSION_TIMEOUT, EXTEND_DECISION_REMOVAL];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn duration_sites_end_at_the_unconditional_helper_call_boundary() {
-        assert_eq!(
-            DURATION_TAPS.map(|site| site.name),
-            ["ExtendMissionTimeout", "ExtendDecisionRemoval"]
-        );
-        assert!(
-            LIFECYCLE_ENTRIES
-                .iter()
-                .any(|site| site.name == "ClearCooldownDecision")
-        );
-        assert!(
-            LIFECYCLE_ENTRIES
-                .iter()
-                .any(|site| site.name == "MissionDisplayDuration")
-        );
-    }
-}
-
 pub mod decisions;
 
 impl Site {

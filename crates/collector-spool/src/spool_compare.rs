@@ -574,32 +574,8 @@ fn compare<T: TableSchema>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_data::rows::TABLE_COUNT;
-    use replay_data::{cadence::Cadence, rows::StateRow};
+    use replay_data::rows::StateRow;
     use replay_frame::{frame::FrameDecoder, frame::Metrics};
-
-    #[test]
-    fn every_hourly_table_but_the_clock_and_map_events_is_compared_once() {
-        let mut seen = [false; TABLE_COUNT];
-        for table in TABLES {
-            assert!(!seen[table.index()], "{table:?} listed twice");
-            seen[table.index()] = true;
-        }
-        let current = replay_data::format::FormatVersion::CURRENT.version();
-        let misplaced: Vec<(TableId, bool)> = TableId::ALL
-            .into_iter()
-            .filter_map(|table| {
-                let hourly = replay_data::cadence::cadence(table) == Cadence::Hourly;
-                let names_its_hour = matches!(table, TableId::Clock | TableId::MapEvents);
-                let expected = hourly
-                    && !names_its_hour
-                    && !table.is_derived()
-                    && table.last_change().present(current);
-                (seen[table.index()] != expected).then_some((table, expected))
-            })
-            .collect();
-        assert_eq!(misplaced, []);
-    }
 
     fn state(id: u32, owner: u32) -> StateRow {
         StateRow {

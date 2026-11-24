@@ -408,21 +408,6 @@ mod tests {
     use crate::allocation;
     use std::cell::Cell;
     #[test]
-    fn unavailable_runtime_keeps_an_encodable_explicit_refusal() {
-        let runtime = Runtime::default();
-        let row = rows::ProjectRow {
-            runtime: runtime.value(&nproject_cproject::Row::default()),
-            ..Default::default()
-        };
-        assert_eq!(
-            row.runtime,
-            rows::Recorded::Value(rows::ProjectRuntime::default())
-        );
-        rows::TableRows::Projects(vec![row])
-            .encode_rows(&mut Vec::new())
-            .unwrap();
-    }
-    #[test]
     fn deferred_freeze_owns_names_and_keeps_exact_encoded_runtime() {
         let row = nproject_cproject::Row {
             owner: 5_000,

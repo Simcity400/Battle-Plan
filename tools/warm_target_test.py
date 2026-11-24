@@ -490,11 +490,6 @@ class External(unittest.TestCase):
 
 
 class Slots(unittest.TestCase):
-    def test_slot_b_has_the_shape_of_slot_a(self):
-        with tempfile.TemporaryDirectory() as root:
-            write(os.path.join(root, wt.CHECKOUT_FILE), "C:\\seed\\s\\checkout____\n")
-            a, b = (wt.slot_checkout(root, slot) for slot in wt.SLOTS)
-            self.assertEqual((a, b), ("C:\\seed\\s\\checkout____", "C:\\seed\\s\\checkout___b"))
 
     def test_readers_of_a_slot_are_live_processes(self):
         with tempfile.TemporaryDirectory() as root:

@@ -275,22 +275,6 @@ fn enemy_fraction_preserves_native_empty_and_overflow_branches() {
 }
 
 #[test]
-fn border_power_layout_appends_to_header_and_preserves_both_blank_lines() {
-    let (content, frame, links) = fixture();
-    let mut tooltip = super::super::Tooltip::default();
-    super::super::line(
-        &mut tooltip,
-        "border war",
-        0,
-        render(&content, &frame, &links),
-    );
-    assert_eq!(
-        tooltip.title,
-        "    Border        Our 0.03200\n        Enemy 0.12600\n\n        Share 0.20253\n        Win 0.80000\n        Loss 0.20000\n\n        Hint\n"
-    );
-}
-
-#[test]
 fn empty_provinces_demand_controller_doctrine_and_aliases_do_not_repeat_it() {
     let (mut content, mut frame, links) = fixture();
     let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();

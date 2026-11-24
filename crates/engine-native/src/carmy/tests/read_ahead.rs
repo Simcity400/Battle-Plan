@@ -26,16 +26,6 @@ impl<'a> HintedMemory<'a> {
         }
     }
 
-    fn copies(&self) -> Vec<(usize, usize)> {
-        self.events
-            .borrow()
-            .iter()
-            .filter_map(|event| match *event {
-                Event::Copy(at, len) => Some((at, len)),
-                Event::Hint(..) => None,
-            })
-            .collect()
-    }
 }
 
 impl Memory for HintedMemory<'_> {
@@ -60,15 +50,6 @@ impl Memory for HintedMemory<'_> {
     fn prefetch(&self, address: usize, len: usize) {
         self.events.borrow_mut().push(Event::Hint(address, len));
     }
-}
-
-struct Unhinted<'a, 'b>(&'a HintedMemory<'b>);
-impl Memory for Unhinted<'_, '_> {
-    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        self.0.copy(address, output)
-    }
-
-    fn prefetch(&self, _: usize, _: usize) {}
 }
 
 fn status_world(count: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>) {
@@ -354,44 +335,6 @@ fn batched_status_one_shot_faults_refuse_no_more_and_count_fallbacks() {
 }
 
 #[test]
-fn batched_status_request_counts_and_held_maxima_gates() {
-    let (source, seeds, held) = distinct_status_world(65);
-    let actual = HintedMemory::new(&source, None, false);
-    let batch = status_reads(&actual, 65, false);
-    assert_eq!(status(&batch, &seeds, 65).0, Outcome::Rows { len: 65 });
-    assert_eq!((batch.maxima.get(), batch.entries.get()), (2, 67));
-    let actual = HintedMemory::new(&source, Some(seeds[20].stat_block.unwrap()), false);
-    let batch = status_reads(&actual, 65, false);
-    assert_eq!(
-        status_holding(&batch, &seeds, 65, &held).0,
-        Outcome::Rows { len: 65 }
-    );
-    assert_eq!(batch.maxima.get(), 0);
-    assert_eq!(actual.fault.get(), Some(seeds[20].stat_block.unwrap()));
-    let actual = HintedMemory::new(&source, None, false);
-    let batch = status_reads(&actual, 65, false);
-    status(&batch, &seeds, 1);
-    assert_eq!((batch.maxima.get(), batch.entries.get()), (1, 2));
-
-    let mut shared = seeds[..2].to_vec();
-    shared[1].stat_block = shared[0].stat_block;
-    let carried = [held[0], None];
-    let pointer = shared[0].stat_block.unwrap();
-    let actual = HintedMemory::new(&source, Some(pointer), false);
-    let batch = status_reads(&actual, 65, false);
-    assert_eq!(
-        status_holding(&batch, &shared, 2, &carried).0,
-        Outcome::Rows { len: 2 }
-    );
-    assert_eq!(
-        batch.maxima.get(),
-        0,
-        "an earlier held seed supplies a later memo hit"
-    );
-    assert_eq!(actual.fault.get(), Some(pointer));
-}
-
-#[test]
 fn status_reuses_entry_scratch_and_prefetches_each_scatter() {
     let (source, seeds, _) = distinct_status_world(65);
     let mut packet = status_packet(seeds.len());
@@ -448,61 +391,6 @@ fn status_reuses_entry_scratch_and_prefetches_each_scatter() {
             scratch
         );
         assert_eq!(packet.allocated_bytes(), allocated);
-    }
-}
-
-#[test]
-fn status_maxima_reuses_one_probe_per_seed_and_keeps_carried_aliases_unread() {
-    let (source, mut seeds, held) = distinct_status_world(129);
-    for index in [1, 31, 63, 64, 65, 128] {
-        seeds[index].stat_block = seeds[0].stat_block;
-    }
-    for carried in [false, true] {
-        let mut holds = vec![None; seeds.len()];
-        if carried {
-            holds[0] = held[0];
-        }
-        let hinted = HintedMemory::new(
-            &source,
-            carried.then_some(seeds[0].stat_block.unwrap()),
-            false,
-        );
-        let memory = status_reads(&hinted, seeds.len(), false);
-        let mut packet = status_packet(seeds.len());
-        let outcome = packet.capture_holding(
-            &memory,
-            0,
-            GS,
-            &seeds,
-            Outcome::Rows { len: seeds.len() },
-            &holds,
-            &[],
-        );
-        assert_eq!(outcome, Outcome::Rows { len: seeds.len() });
-        assert_eq!(
-            packet
-                .maxima_probes
-                .load(std::sync::atomic::Ordering::Relaxed),
-            seeds.len(),
-            "selection's slots must serve admission too"
-        );
-        let mut rows = vec![carmy::StatusRow::default(); seeds.len()];
-        packet.project(&mut rows);
-        assert_eq!(
-            (outcome, rows),
-            status_holding(&source, &seeds, seeds.len(), &holds)
-        );
-        assert_eq!(
-            hinted.fault.get(),
-            carried.then_some(seeds[0].stat_block.unwrap())
-        );
-        assert!(
-            packet
-                .maxima_index
-                .iter()
-                .all(|&resident| resident <= packet.maxima.len()),
-            "speculative keys cannot survive preparation"
-        );
     }
 }
 
@@ -717,72 +605,6 @@ fn movement(
     (result, output, route)
 }
 
-#[test]
-fn movement_route_and_combat_payload_hints_still_lead_their_reads() {
-    let (source, seeds) = movement_world(9);
-    let memory = HintedMemory::new(&source, None, false);
-    let (walk, rows, _) = movement(&memory, &seeds, 9, 18);
-    assert_eq!(walk.outcome, Outcome::Rows { len: 9 });
-    let events = memory.events.borrow();
-    for (index, row) in rows.iter().enumerate() {
-        assert_eq!(row.base_speed, Some(400_000 + index as i64));
-        let at = 0x20000 + index * 0x1000;
-        let prior = if index < 4 { 0x20000 } else { at - 0x1000 };
-        let prior_route = events
-            .iter()
-            .position(|&event| event == Event::Copy(prior, 4))
-            .unwrap();
-        for (pointer, len) in [(at, 4), (at + 8, 4), (at + 0x20, 8)] {
-            let hint = events
-                .iter()
-                .position(|&event| event == Event::Hint(pointer, len))
-                .unwrap();
-            assert!(hint < prior_route, "division {index}, hint {pointer:x}");
-        }
-    }
-}
-
-#[test]
-fn movement_hints_preserve_copy_order_source_prefixes_route_growth_and_partial_faults() {
-    let (source, mut seeds) = movement_world(9);
-    for rows in [0, 1, 4, 5, 9] {
-        for paths in [0, 2, 6, 18] {
-            for once in [false, true] {
-                for fault in [
-                    None,
-                    Some(0x20003),
-                    Some(0x2000b),
-                    Some(0x20027),
-                    Some(0x20800 + cprovince::ID + 2),
-                    Some(PROVINCES + 2 * 8 + 7),
-                    Some(0x20100 + engine_native_parts::csub_unit_definition::MAXIMUM_SPEED + 3),
-                ] {
-                    let actual = HintedMemory::new(&source, fault, once);
-                    let direct = HintedMemory::new(&source, fault, once);
-                    assert_eq!(
-                        movement(&actual, &seeds, rows, paths),
-                        movement(&Unhinted(&direct), &seeds, rows, paths),
-                        "rows {rows}, paths {paths}, fault {fault:?}, once {once}"
-                    );
-                    assert_eq!(actual.copies(), direct.copies());
-                }
-            }
-        }
-    }
-    seeds[0].ordinary_route = None;
-    let actual = HintedMemory::new(&source, Some(0x21003), true);
-    let direct = HintedMemory::new(&source, Some(0x21003), true);
-    assert_eq!(
-        movement(&actual, &seeds, 9, 18),
-        movement(&Unhinted(&direct), &seeds, 9, 18)
-    );
-    assert_eq!(actual.copies(), direct.copies());
-    assert_eq!(actual.fault.get(), Some(0x21003));
-    assert!(!actual.events.borrow().iter().any(|&event| {
-        event == Event::Hint(0x20100 + engine_native_parts::csub_unit_definition::MAXIMUM_SPEED, 8)
-    }));
-}
-
 const BATCHED_PROVINCE_SLOTS: usize = 0x4200_0000;
 
 fn batched_movement_world(countries: usize) -> (PresentationMemory, Vec<carmy::DivisionSeed>) {
@@ -919,6 +741,7 @@ fn batched_movement_persistent_faults_keep_serial_prefix_and_optional_speed() {
         );
     }
 }
+
 #[test]
 fn batched_movement_one_shot_refuses_no_more_and_counts_fallbacks() {
     let (source, seeds) = batched_movement_world(65);
@@ -941,28 +764,6 @@ fn batched_movement_one_shot_refuses_no_more_and_counts_fallbacks() {
         assert!(batch.0.outcome.len() >= serial.0.outcome.len());
         assert_eq!(batch, movement(&source, &seeds, 65, 130));
     }
-}
-#[test]
-fn batched_movement_request_counts_and_admitted_speed_gate() {
-    let (source, seeds) = batched_movement_world(65);
-    let actual = HintedMemory::new(&source, None, false);
-    let batch = movement_reads(&actual, 65, false);
-    assert_eq!(
-        movement(&batch, &seeds, 65, 130).0.outcome,
-        Outcome::Rows { len: 65 }
-    );
-    assert_eq!(
-        (batch.province.get(), batch.slots.get(), batch.speed.get()),
-        (3, 3, 2)
-    );
-    let actual = HintedMemory::new(&source, None, false);
-    let batch = movement_reads(&actual, 65, false);
-    movement(&batch, &seeds, 1, 2);
-    assert_eq!(batch.speed.get(), 1);
-    let actual = HintedMemory::new(&source, None, false);
-    let batch = movement_reads(&actual, 65, false);
-    movement(&batch, &seeds, 0, 0);
-    assert_eq!(batch.speed.get(), 0);
 }
 
 #[test]

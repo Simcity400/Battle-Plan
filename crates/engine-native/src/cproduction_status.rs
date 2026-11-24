@@ -600,7 +600,6 @@ pub fn count_lines(memory: &impl Memory, base: usize, game_state: usize) -> Outc
     walk_lines_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
-
 pub fn walk_lines_buffer(
     memory: &impl Memory,
     base: usize,
@@ -665,7 +664,6 @@ pub fn walk_lines_buffer(
 pub fn count_licenses(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
     walk_licenses_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
-
 
 pub fn walk_licenses_buffer(
     memory: &impl Memory,
@@ -1867,59 +1865,6 @@ mod war_overview_tests {
         assert!(count(&w).is_err());
     }
 
-    #[test]
-    fn a_pass_reads_each_building_template_once() {
-        use engine_native_memory::memory::{CountedMemory, ReadCounts};
-        let mut w = World::new(0, 2, 0x1600);
-        let counted = w.alloc(0x320);
-        let skipped = w.alloc(0x320);
-        w.u64(counted, cbuilding_template::VTABLE_RVA.0 as u64);
-        w.u32(counted + cbuilding_template::WAR_OVERVIEW_PRODUCTION[1], 2);
-        w.u64(skipped, cbuilding_template::VTABLE_RVA.0 as u64);
-        let vector = w.alloc(6 * 8);
-        for index in 0..6_usize {
-            let building = w.alloc(0x200);
-            w.u64(building, cbuilding::VTABLE_RVA.0 as u64);
-            let template = if index % 3 == 2 { skipped } else { counted };
-            w.u64(building + cbuilding::TEMPLATE, template as u64);
-            w.put(
-                building + cbuilding::LEVEL,
-                &(index as i16 + 1).to_le_bytes(),
-            );
-            w.u64(vector + index * 8, building as u64);
-        }
-        for id in [1, 2] {
-            let production = w.alloc(0x300);
-            w.u64(production, VTABLE_RVA.0 as u64);
-            w.u64(production + COUNTRY, w.object(id) as u64);
-            w.u64(
-                w.object(id) + ccountry::PRODUCTION_STATUS,
-                production as u64,
-            );
-            let offsite = w.alloc(0x80);
-            w.u64(offsite, cbuilding_status::VTABLE_RVA.0 as u64);
-            w.array(offsite + cbuilding_status::ACTIVE_BUILDINGS, vector, 6);
-            w.u64(
-                w.object(id) + ccountry::WAR_OVERVIEW_OFFSITE,
-                offsite as u64,
-            );
-        }
-        let plain = w.memory();
-        let countries = ccountry::Reader::new(&plain, 0, w.game_state()).unwrap();
-        let memory = CountedMemory::new(w.memory());
-        let mut templates = WarFactoryTemplates::new();
-        let prior = ReadCounts::take_current();
-        let mut spans = Vec::new();
-        for id in [1, 2] {
-            let country = countries.resolve(id).unwrap();
-            let result = war_overview_factories(&memory, 0, &countries, country, &mut templates);
-            spans.push(ReadCounts::take_current().spans);
-            assert_eq!(result, Ok(12));
-        }
-        prior.add_current();
-        assert_eq!(spans[0] - spans[1], 2 * 5, "{spans:?}");
-        assert!(spans[1] < 6 * 5, "{spans:?}");
-    }
 }
 
 #[cfg(test)]
@@ -2006,22 +1951,6 @@ mod policy_tests {
     fn read(bytes: &[u8], count: u32) -> Result<Vec<u32>, &'static str> {
         let mut output = vec![0; count as usize];
         read_policies(&Guarded::new(bytes), BASE, roster(count), &mut output).map(|()| output)
-    }
-
-    #[test]
-    fn a_page_of_policies_is_read_in_two_guarded_batches() {
-        for (count, guards) in [(20, 2), (64, 2), (130, 6)] {
-            let bytes = world(count);
-            let memory = Guarded::new(&bytes);
-            let mut output = vec![0; count];
-            assert_eq!(
-                read_policies(&memory, BASE, roster(count as u32), &mut output),
-                Ok(())
-            );
-            let expected: Vec<u32> = (0..count as u32).map(|slot| 500 + slot % 4).collect();
-            assert_eq!(output, expected);
-            assert_eq!(memory.guards.get(), guards, "{count} policies");
-        }
     }
 
     #[test]

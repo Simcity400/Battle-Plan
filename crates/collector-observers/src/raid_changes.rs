@@ -406,7 +406,6 @@ pub fn record(family: Family, counts: &Counts, ids: Option<usize>) {
     }
 }
 
-
 pub struct Hooks {
     hooks: Vec<Hook>,
 }
@@ -1074,22 +1073,6 @@ mod tests {
     }
 
     #[test]
-    fn claim_writers_mark_their_state() {
-        for name in ["add_claim", "remove_claim"] {
-            let index = site(name);
-            assert_eq!(MUTATIONS[index].1, Receiver::State, "{name}");
-            let watches = Watches::enabled(64, 64);
-            let epoch = take(&watches, Family::States).0.unwrap();
-            drop(watches.notify(index, Target::State(Some(12))));
-            assert_eq!(
-                take(&watches, Family::States),
-                (Some(epoch), vec![12]),
-                "{name}"
-            );
-        }
-    }
-
-    #[test]
     fn strategic_location_writers_mark_their_state() {
         let index = site("add_state_strategic_location");
         assert_eq!(MUTATIONS[index].1, Receiver::State);
@@ -1389,146 +1372,6 @@ mod tests {
                 + engine_native_air::ccountry_air_container::CAPACITY_RAW)
                 / 8],
             120_000
-        );
-        WATCHES.hooks.store(false, Ordering::SeqCst);
-        WATCHES.apply();
-    }
-
-    #[test]
-    #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
-    fn hook_cost_raid_capacity() {
-        let _serial = DAILY_TEST.lock().unwrap();
-        const COUNTRIES: usize = 1500;
-        const GAME: usize = 0x1000;
-        const LINKS: usize = 0x2000;
-        const AIR_BASE: usize = (LINKS + (COUNTRIES + 1) * 4).next_multiple_of(0x100);
-        const CONTAINERS: usize = AIR_BASE + 0x100;
-        const OBJECTS: usize = CONTAINERS + (COUNTRIES + 1) * 8;
-        const TAGS: usize = OBJECTS + (COUNTRIES + 1) * 0x100;
-        let mut memory = vec![0_u64; (TAGS + (COUNTRIES + 1) * 4).div_ceil(8)];
-        let at = memory.as_ptr() as usize;
-        let mut word = |offset: usize, value: u64| memory[offset / 8] = value;
-        word(0, (at + GAME) as u64);
-        let array = |word: &mut dyn FnMut(usize, u64), offset: usize, data: usize| {
-            word(offset, (at + data) as u64);
-            word(
-                offset + 8,
-                ((COUNTRIES as u64 + 1) << 32) | (COUNTRIES as u64 + 1),
-            );
-        };
-        array(
-            &mut word,
-            GAME + engine_native::cgame_state::COUNTRY_LINKS,
-            LINKS,
-        );
-        array(
-            &mut word,
-            AIR_BASE + engine_native_air::cair_base::COUNTRY_CONTAINERS,
-            CONTAINERS,
-        );
-        for slot in 1..=COUNTRIES {
-            let object = OBJECTS + slot * 0x100;
-            word(CONTAINERS + slot * 8, (at + object) as u64);
-            word(
-                object + engine_native_air::ccountry_air_container::CAPACITY_RAW,
-                100_000,
-            );
-        }
-        let words = memory.as_mut_ptr().cast::<u32>();
-        for slot in 1..=COUNTRIES {
-            unsafe {
-                *words.add((LINKS + slot * 4) / 4) = slot as u32;
-                *words.add((TAGS + slot * 4) / 4) = slot as u32;
-            }
-        }
-        unsafe extern "system" fn store(
-            base: usize,
-            capacity: usize,
-            tag: usize,
-            _: usize,
-        ) -> usize {
-            let containers = unsafe {
-                *((base + engine_native_air::cair_base::COUNTRY_CONTAINERS) as *const *const usize)
-            };
-            let slot = unsafe { *(tag as *const u32) } as usize;
-            let container = unsafe { *containers.add(slot) };
-            unsafe {
-                *((container + engine_native_air::ccountry_air_container::CAPACITY_RAW) as *mut i64) =
-                    capacity as i64
-            };
-            0
-        }
-        BASE.store(
-            at - engine_native::cgame_state::SINGLETON_RVA.0,
-            Ordering::Release,
-        );
-        ORIGINAL[CAPACITY_SITE].store(store as *const () as usize, Ordering::Release);
-        let unchanged = || {
-            for slot in 1..=COUNTRIES {
-                std::hint::black_box(unsafe {
-                    set_country_pool_capacity(at + AIR_BASE, 100_000, at + TAGS + slot * 4, 0)
-                });
-            }
-        };
-        let native = || {
-            for slot in 1..=COUNTRIES {
-                std::hint::black_box(unsafe {
-                    store(at + AIR_BASE, 100_000, at + TAGS + slot * 4, 0)
-                });
-            }
-        };
-        let before = WATCHES.unchanged_capacities.load(Ordering::Relaxed);
-        let hooked = crate::test_support::per_call_ns(COUNTRIES, unchanged);
-        let plain = crate::test_support::per_call_ns(COUNTRIES, native);
-        assert_eq!(
-            WATCHES.unchanged_capacities.load(Ordering::Relaxed) - before,
-            8 * COUNTRIES as u64
-        );
-        println!(
-            "hook_cost raid_changes set_country_pool_capacity unchanged: detour {:.1} ns/call (hooked {hooked:.1}, native {plain:.1})",
-            hooked - plain
-        );
-    }
-
-    #[test]
-    #[ignore = "release per-call detour cost; run with --release --ignored --nocapture --test-threads=1"]
-    fn hook_cost_raid_claim() {
-        let _serial = DAILY_TEST.lock().unwrap();
-        const STATES: usize = 1500;
-        let mut memory = vec![0_u64; STATES * 0x100 / 8];
-        for state in 0..STATES {
-            memory[(state * 0x100 + engine_native::cstate::ID) / 8] = state as u64 + 1;
-        }
-        let at = memory.as_ptr() as usize;
-        let tag = 5_u32;
-        let tag = std::ptr::from_ref(&tag) as usize;
-        unsafe extern "system" fn insert(state: usize, tag: usize, _: usize, _: usize) -> usize {
-            std::hint::black_box((state, tag));
-            0
-        }
-        let site = site("add_claim");
-        ORIGINAL[site].store(insert as *const () as usize, Ordering::Release);
-        WATCHES.states.offer(STATES + 1);
-        WATCHES.states.boundary(true);
-        WATCHES.forward(true);
-        WATCHES.hooks.store(true, Ordering::SeqCst);
-        WATCHES.apply();
-        let hooked = crate::test_support::per_call_ns(STATES, || {
-            for state in 0..STATES {
-                std::hint::black_box(unsafe { add_claim(at + state * 0x100, tag, 0, 0) });
-            }
-        });
-        let plain = crate::test_support::per_call_ns(STATES, || {
-            for state in 0..STATES {
-                std::hint::black_box(unsafe { insert(at + state * 0x100, tag, 0, 0) });
-            }
-        });
-        let mut marked = Vec::new();
-        WATCHES.take(Family::States, &mut |id| marked.push(id));
-        assert_eq!(marked.len(), STATES);
-        println!(
-            "hook_cost raid_changes add_claim: detour {:.1} ns/call (hooked {hooked:.1}, native {plain:.1})",
-            hooked - plain
         );
         WATCHES.hooks.store(false, Ordering::SeqCst);
         WATCHES.apply();

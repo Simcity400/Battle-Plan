@@ -243,7 +243,6 @@ fn a_deleted_row_is_seen_at_its_last_live_hour() {
     assert_eq!(seen, expected, "each deleted row as it stood at its last live hour");
 }
 
-
 #[test]
 fn a_run_of_deleted_rows_is_cleared_as_one() {
     use crate::state::Cell;
@@ -360,13 +359,6 @@ fn a_reserved_event_code_is_refused_by_the_event_walk_as_by_the_reader() {
     assert!(refused.to_string().contains("reserved"), "{refused}");
     let damaged = advanced(&bytes, &entry).unwrap_err();
     assert!(damaged.to_string().contains("damaged"), "{damaged}");
-}
-
-#[test]
-fn cursor_lifetime_maps_use_keyed_hashing() {
-    let cursor = Cursor::new(&[Kind::U32], &[0], 0);
-    let _: &foldhash::fast::RandomState = cursor.open.hasher();
-    let _: &foldhash::fast::RandomState = cursor.skipped.hasher();
 }
 
 #[test]

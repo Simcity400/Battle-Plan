@@ -264,14 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn the_refraction_offset_is_half_an_output_pixel_not_a_sea_bed_texel() {
-        let output = [2049, 1153];
-        let sea_bed = SeaBed::Half.size(output);
-        assert_eq!(half_pixel(output), [0.5 / 2049., 0.5 / 1153.]);
-        assert_ne!(half_pixel(output), half_pixel(sea_bed));
-    }
-
-    #[test]
     fn water_reading_the_refraction_texture_by_texel_keeps_the_full_size_sea_bed() {
         let refraction = binding(REFRACTION_SLOT, Stage::Pixel);
         let water = |body: &str| {

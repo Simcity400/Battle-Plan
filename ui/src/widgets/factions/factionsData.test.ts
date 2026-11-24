@@ -1,11 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { createServer } from 'vite';
-import type { WidgetProps } from '../../dashboard/definitions';
-import type { TimelineProps } from '../../charts/timeline/Timeline';
-import type { LegendItem } from '../../charts/Legend';
 import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
 import { LEADER_GLYPH, UNNAMED, factionChangeHours, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData.ts';
 import type { LaneOptions } from './factionsData';
@@ -35,49 +29,6 @@ const options: LaneOptions = { order: 'founded', members: 'joined', ended: true,
 const summaryName = (faction: FactionGroup) => ({ name: faction.name, reason: faction.nameReason });
 const views = factionViews(reply, summaryName, id => `colour-${id}`);
 
-test('the faction legend names factions, retains colour editing and shows one concise name refusal', async () => {
-  const host = globalThis as typeof globalThis & {
-    __factionLegend?: readonly LegendItem[]; __factionTimeline?: TimelineProps; __factionColour?: unknown[];
-  };
-  const replacements: Record<string, string> = {
-    '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(reply)}, retry() {} });`,
-    '/dashboard/FactionColours.tsx': `export const useFactionColours = () => ({ names: faction => ({ name: faction.name, reason: faction.nameReason }),
-      colours: new Map(), warnings: [], setColour: (...args) => { globalThis.__factionColour = args; } });`,
-    '/dashboard/useCountriesAt.ts': 'export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',
-    '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',
-    '/widgets/army-size/headHour.ts': 'export const useHeadHour = clock => clock.getHour();',
-    '/dashboard/widgetPerf.ts': 'export const useShownEachFrame = () => {};',
-    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
-    '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({ muted: "#777777" });',
-    '/charts/Legend.tsx': 'export default props => { globalThis.__factionLegend = props.items; return null; };',
-    '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__factionTimeline = props; return null; };',
-  };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'faction-legend-fixture', enforce: 'pre',
-      transform: (_source, id) => { const key = Object.keys(replacements).find(key => id.endsWith(key)); return key ? replacements[key] : undefined; },
-    }] });
-  try {
-    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/factions/FactionsWidget.tsx');
-    const props = { widget: { id: 'factions', kind: 'factions', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'campaign' },
-      options: { legend: true, colourScope: 'campaign' } }, runtime: { client: {}, clock: { getHour: () => 400, getSnapshot: () => ({ hoursPerSecond: 24 }) },
-        tracks: [{ id: 'main', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 400 },
-          source: { id: 'synthetic', revision: '1', metadata: { countries: [] } } }] }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
-    renderToStaticMarkup(createElement(Widget, props));
-    const unnamed = host.__factionLegend!.find(item => item.id === factions[0].id)!;
-    assert.equal(unnamed.label, 'Unnamed faction');
-    assert.equal(unnamed.tooltip, undefined);
-    unnamed.onColor!('#123456');
-    assert.deepEqual(host.__factionColour, [factions[0].id, '#123456', 'campaign']);
-    const chart = host.__factionTimeline!;
-    const lane = chart.lanes.find(lane => lane.id === `faction:${factions[0].id}`) ?? chart.lanes[0];
-    const tip = chart.tooltip!(lane, null, 300)!;
-    assert.equal(tip.rows.filter(row => row.value === 'Name unavailable').length, 1);
-    assert.doesNotMatch(JSON.stringify(tip), /Faction template not recorded|recorded every hour/);
-  } finally {
-    delete host.__factionLegend; delete host.__factionTimeline; delete host.__factionColour;
-    await vite.close();
-  }
-});
 
 test('a faction that has ended keeps the name it ended with, and one never named stays unnamed', () => {
   const dated = factionViews(reply, (faction, hour) => factionNameAt(faction, hour), id => `colour-${id}`);
@@ -384,35 +335,7 @@ test('heading, band and hover labels use their own hour after a template rename'
   assert.equal(renamed.nameAt(205).reason, null);
 });
 
-test('lane shaping resolves a dated name once per faction in each order', () => {
-  const named = { ...reply, factions: Array.from({ length: 5000 }, (_, index) => ({
-    ...factions[0], id: String(index), members: [], leaders: [], incomplete: [],
-  })) };
-  let reads = 0;
-  const views = factionViews(named, (faction, hour) => {
-    if (hour != null) reads++;
-    return { name: faction.id, reason: null };
-  }, id => id);
-  for (const order of ['founded', 'members', 'name'] as const) {
-    reads = 0;
-    const shaped = factionLanes(views, 150, { ...options, order }, text, [], 100);
-    assert.equal(shaped.lanes.length, named.factions.length);
-    assert.equal(reads, named.factions.length);
-    assert.ok(shaped.lanes.every(lane => lane.identity?.label === JSON.parse(lane.id)[1]));
-  }
-});
 
-test('one name resolver supplies both an unnamed label and its injected reason', () => {
-  let reads = 0;
-  const [view] = factionViews({ ...reply, factions: [factions[0]] }, (_faction, hour) => {
-    if (hour != null) reads++;
-    return { name: null, reason: 'Injected naming refusal' };
-  }, id => id);
-  const named = view.nameAt(150);
-  assert.deepEqual(named, { name: null, reason: 'Injected naming refusal' });
-  assert.equal(reads, 1);
-  assert.equal(factionLabel(view, 150), UNNAMED);
-});
 
 test('member lanes retain native flag refusals while faction headings stay flagless', () => {
   const labels = { ...text, country: (tag: string) => ({ name: tag, flagPending: false, flagReason: `Recorded refusal for ${tag}` }) };

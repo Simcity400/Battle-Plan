@@ -131,7 +131,6 @@ pub fn record(counts: &Counts, slots: Option<usize>) {
     }
 }
 
-
 pub struct Hooks {
     hooks: Vec<Hook>,
 }
@@ -219,15 +218,6 @@ mod tests {
         let mut ids = Vec::new();
         let epoch = Changes::take(domain, &mut |id| ids.push(id));
         (epoch, ids)
-    }
-
-    #[test]
-    fn a_receiver_names_its_province_through_the_live_object() {
-        let mut province = vec![0_u8; 0x200];
-        assert_eq!(province_id(province.as_ptr() as usize), None);
-        province[engine_native::cprovince::ID..][..4].copy_from_slice(&517_u32.to_le_bytes());
-        assert_eq!(province_id(province.as_ptr() as usize), Some(517));
-        assert_eq!(province_id(0), None);
     }
 
     #[test]

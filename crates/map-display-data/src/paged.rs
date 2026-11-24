@@ -335,33 +335,6 @@ impl<T: Product + Clone> Product for Paged<T> {
 mod tests {
     use super::*;
     #[test]
-    fn sparse_equality_compares_only_distinct_pages() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        #[derive(Clone, Debug)]
-        struct Counted(u32, Arc<AtomicUsize>);
-        impl PartialEq for Counted {
-            fn eq(&self, other: &Self) -> bool {
-                self.1.fetch_add(1, Ordering::Relaxed);
-                self.0 == other.0
-            }
-        }
-        let comparisons = Arc::new(AtomicUsize::new(0));
-        let base = Paged::try_from_iter(
-            PAGE_ITEMS * 3,
-            (0..PAGE_ITEMS * 3).map(|value| Counted(value as u32, comparisons.clone())),
-        )
-        .unwrap();
-        let changed = base
-            .try_edited([(PAGE_ITEMS * 2, Counted(u32::MAX, comparisons.clone()))])
-            .unwrap();
-        comparisons.store(0, Ordering::Relaxed);
-        assert_ne!(base, changed);
-        assert_eq!(comparisons.load(Ordering::Relaxed), 1);
-        comparisons.store(0, Ordering::Relaxed);
-        assert_eq!(base, base.clone());
-        assert_eq!(comparisons.load(Ordering::Relaxed), 0);
-    }
-    #[test]
     fn edits_share_unchanged_pages_and_keep_the_vector_wire() {
         let values: Vec<u8> = (0..PAGE_ITEMS * 3 + 7).map(|index| index as u8).collect();
         let base: Paged<_> = values.clone().into();

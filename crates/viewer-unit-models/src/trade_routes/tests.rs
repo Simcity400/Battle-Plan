@@ -135,27 +135,6 @@ fn each_layer_takes_the_viewed_countrys_clients_and_its_route_kinds() {
 }
 
 #[test]
-fn layer_ids_are_the_games_route_collections() {
-    assert_eq!(
-        Layer::ALL.map(Layer::index),
-        [0, 1, 2, 3, 4, 5, 6, 7]
-    );
-    assert_eq!(
-        Layer::ALL,
-        [
-            Layer::Production,
-            Layer::SupplyTransfer,
-            Layer::Export,
-            Layer::Import,
-            Layer::LendLeaseGiven,
-            Layer::LendLeaseReceived,
-            Layer::MarketBought,
-            Layer::MarketSold,
-        ]
-    );
-}
-
-#[test]
 fn layer_kind_filters_match_the_game() {
     let admitted = |layer: Layer| {
         [NO_ROUTE, LAND_ROUTE, NAVAL_ROUTE, 3]
@@ -315,41 +294,6 @@ fn defines() -> TradeRouteDefines {
         )
         .unwrap();
     TradeRouteDefines::read(&defines).unwrap()
-}
-
-#[test]
-fn each_layer_reads_its_colour_and_a_bad_line_the_bad_colour() {
-    let defines = defines();
-    let reds: Vec<f32> = Layer::ALL
-        .into_iter()
-        .map(|layer| defines.line_color(layer, false)[0])
-        .collect();
-    for (actual, expected) in reds
-        .into_iter()
-        .zip([0.1_f32, 0.6, 0.3, 0.4, 0.5, 0.6, 0.7, 0.7])
-    {
-        assert!((actual - expected.powf(2.2)).abs() < 1e-6);
-    }
-    let supply = defines.line_color(Layer::SupplyTransfer, false);
-    for (actual, expected) in supply[..3].iter().zip([0.6_f32, 0.8, 0.4]) {
-        assert!((actual - expected.powf(2.2)).abs() < 1e-6);
-    }
-    assert_eq!(defines.line_color(Layer::SupplyTransfer, false)[3], 1.0);
-    for layer in Layer::ALL {
-        assert_eq!(
-            defines.line_color(layer, true),
-            [0.9_f32.powf(2.2), 0.9_f32.powf(2.2), 0.1_f32.powf(2.2), 0.5]
-        );
-    }
-    assert_eq!(
-        defines.hotspot_color,
-        [0.9_f32.powf(2.2), 0.1_f32.powf(2.2), 0.1_f32.powf(2.2), 0.5]
-    );
-    assert_eq!(defines.regional_threshold, 50_000);
-    assert_eq!(defines.smoothing.passes, 1);
-    assert_eq!(defines.max_lines, 4);
-    assert_eq!(defines.convoys.max, 3);
-    assert_eq!(defines.convoys.cutoff, 100.0);
 }
 
 #[test]

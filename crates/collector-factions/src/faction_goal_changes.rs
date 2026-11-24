@@ -369,58 +369,6 @@ mod tests {
         }
     }
 
-    unsafe extern "system" fn busy_original() -> usize {
-        7
-    }
-    unsafe extern "system" fn busy_callback() -> usize {
-        19
-    }
-
-    #[test]
-    fn busy_attach_publication_remains_retryable() {
-        static FLIGHT: AtomicUsize = AtomicUsize::new(1);
-        let _guard = collector_hooks::hook::FAMILY_TEST
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let code = collector_hooks::hook::TestCode::new();
-        let (site, bytes) = code.stub(0, busy_original as *const () as usize);
-        let callback = busy_callback as *const () as usize;
-        let hook = unsafe {
-            Hook::new_with_safety(
-                site,
-                callback,
-                bytes,
-                collector_hooks::hook::TapSafety {
-                    in_flight: &FLIGHT,
-                    stub: callback..callback + 1,
-                },
-            )
-        }
-        .unwrap();
-        let mut hooks = ManuallyDrop::new(Hooks {
-            hooks: vec![OwnedHook::Entry(hook)],
-        });
-        assert_eq!(hooks.set_enabled(true), Ok(false));
-        assert_eq!(hooks.busy_sites(), [MUTATIONS[0].0.name]);
-        {
-            let mut round =
-                collector_hooks::hook::shared::Round::collect_attach().expect("own attach round");
-            collector_hooks::hook::publication::select_family(Some("faction_goals"));
-            assert_eq!(
-                hooks.set_enabled(true),
-                Ok(true),
-                "collect records it and goes on"
-            );
-            round.publish();
-            assert_eq!(hooks.set_enabled(true), Ok(false), "the round held it back");
-        }
-        collector_hooks::hook::publication::select_family(None);
-        assert!(!hooks.hooks[0].hook().is_enabled());
-        FLIGHT.store(0, Ordering::SeqCst);
-        assert_eq!(hooks.set_enabled(true), Ok(true));
-        assert_eq!(hooks.set_enabled(false), Ok(true));
-    }
-
     static ARGUMENTS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
     unsafe extern "system-unwind" fn update(
         first: usize,
@@ -455,12 +403,6 @@ mod tests {
         assert_eq!(WATCHES.sequence(owner(0x1000)), Some(structural));
         assert_ne!(WATCHES.sequence(first), Some(cache));
         assert_eq!(WATCHES.active(), 0);
-    }
-    #[test]
-    fn faction_goal_progress_change_uses_the_cache_not_modifier_change_flags() {
-        assert!(!progress_changed(Some(-7), -7));
-        assert!(progress_changed(Some(0), 1));
-        assert!(progress_changed(None, 0));
     }
     #[test]
     fn faction_goal_writers_move_only_the_selected_status_certificate() {

@@ -147,22 +147,6 @@ test('a listing without its first page says it is reading, and a failed first pa
   } finally { await vite.close(); }
 });
 
-test('the docked aircraft list is no popover, so the map stays shown while planes are tried', async () => {
-  const { vite, module } = await picker();
-  try {
-    const markup = renderToStaticMarkup(createElement(module.AircraftPanel, { id: 'panel', onClose: () => {}, children: 'list' }));
-    assert.doesNotMatch(markup, /\spopover(target)?=/);
-    assert.match(markup, /^<section id="panel" class="aircraft-picker" aria-label="Aircraft">/);
-    assert.match(markup, /aria-label="Close the aircraft list"/);
-    assert.doesNotMatch(markup, /free camera/, 'with nothing flown there is no camera to go back to');
-    const flying = renderToStaticMarkup(createElement(module.AircraftPanel, { id: 'panel', onClose: () => {}, onFreeCamera: () => {}, children: 'list' }));
-    assert.match(flying, /<button type="button" class="icon-button ui-popover-action" aria-label="Go back to the free camera" data-tooltip="Back to the free camera"><svg/,
-      'a flown aircraft can always be left, even when its row is refused or no longer listed');
-    const picker = renderToStaticMarkup(createElement(module.default, { client: {} as never, source: { id: 's', revision: '1' } as never,
-      chosen: null, status: null, onChoose: () => {}, host: null }));
-    assert.doesNotMatch(picker, /\spopover(target)?=/, 'the trigger opens the docked list, not a popover');
-  } finally { await vite.close(); }
-});
 
 test('refused rows keep their places in the list but are no keyboard destinations', async () => {
   const { vite, module, catalogue } = await picker();

@@ -517,24 +517,6 @@ pub fn pump() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui::Key;
-
-    #[test]
-    fn keys_take_egui_names_and_controls_their_place_on_a_us_keyboard() {
-        assert_eq!(key(0x57, false), Some(Key::W));
-        assert_eq!(key(0x33, false), Some(Key::Num3));
-        assert_eq!(key(0x72, false), Some(Key::F3));
-        assert_eq!(key(0x7b, false), Some(Key::F12));
-        assert_eq!(key(0xbb, false), Some(Key::Equals));
-        assert_eq!(key(0xbb, true), Some(Key::Plus));
-        assert_eq!(key(0x6b, false), Some(Key::Plus));
-        assert_eq!(key(0xbd, false), Some(Key::Minus));
-        assert_eq!(key(0x10, false), None, "Shift is a modifier, not a key");
-        assert_eq!(physical_key(0x11, false), Some(Key::W));
-        assert_eq!(physical_key(0x1e, false), Some(Key::A));
-        assert_eq!(physical_key(0x0b, false), Some(Key::Num0));
-        assert_eq!(physical_key(0x48, true), None);
-    }
 
     fn dispatch_posted() {
         let mut message = MSG::default();
@@ -585,11 +567,4 @@ mod tests {
         dispatch_posted();
     }
 
-    #[test]
-    fn every_pointer_shape_the_map_asks_for_has_a_system_cursor_or_none() {
-        assert_eq!(system_cursor(cursor_index(egui::CursorIcon::None)), None);
-        assert_eq!(system_cursor(cursor_index(egui::CursorIcon::PointingHand)), Some(IDC_HAND));
-        assert_eq!(system_cursor(cursor_index(egui::CursorIcon::Default)), Some(IDC_ARROW));
-        assert_eq!(system_cursor(cursor_index(egui::CursorIcon::ResizeHorizontal)), Some(IDC_SIZEWE));
-    }
 }

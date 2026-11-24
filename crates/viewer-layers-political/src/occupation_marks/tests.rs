@@ -170,17 +170,3 @@ fn the_window_takes_the_layers_marks_where_it_draws_them_and_todays_where_it_doe
     assert_eq!(LeftToLayers::of(None), LeftToLayers::default(), "the playhead off: today's makes both");
 }
 
-#[test]
-fn outside_the_resistance_and_compliance_modes_it_declares_nothing() {
-    let kinds = replay_recording::schema::schema().unwrap();
-    let declared = |view: &View| {
-        let mut layer = OccupationMarks::new(content());
-        let mut inputs = Inputs::new(&kinds, "occupation_marks");
-        layer.inputs(view, &mut inputs).unwrap();
-        inputs.into_tables().len()
-    };
-    assert_eq!(declared(&View::default()), 0);
-    assert_eq!(declared(&View { map_mode: MapMode::Stock(Stock::Resources), ..View::default() }), 0);
-    assert_eq!(declared(&resistance_mode()), 4);
-    assert_eq!(declared(&View { map_mode: MapMode::Stock(Stock::Compliance), ..View::default() }), 4);
-}

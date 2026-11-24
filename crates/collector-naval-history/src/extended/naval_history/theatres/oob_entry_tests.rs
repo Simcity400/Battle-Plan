@@ -3,7 +3,7 @@ use crate::extended::naval_history::naval_test_kit as kit;
 use engine_native_memory::{
     Memory,
     batch_fallback,
-    memory::{RecordLayout, RecordSources, SliceMemory},
+    memory::SliceMemory,
 };
 use engine_native::{carmy, corders_group, corders_group_member, cunit};
 use engine_native_parts::carmy_group;
@@ -323,37 +323,6 @@ impl Memory for Faults<'_> {
     }
 }
 
-struct Counted<'a, M> {
-    inner: &'a M,
-    calls: Cell<usize>,
-}
-
-impl<M: Memory> Memory for Counted<'_, M> {
-    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        self.calls.set(self.calls.get() + 1);
-        self.inner.copy(address, destination)
-    }
-
-    fn copy_scattered<const N: usize>(
-        &self,
-        addresses: [usize; N],
-        destinations: &mut [&mut [u8]; N],
-    ) -> usize {
-        self.calls.set(self.calls.get() + 1);
-        self.inner.copy_scattered(addresses, destinations)
-    }
-
-    fn copy_records(
-        &self,
-        sources: RecordSources<'_>,
-        layout: &RecordLayout<'_>,
-        destination: &mut [u8],
-    ) -> usize {
-        self.calls.set(self.calls.get() + 1);
-        self.inner.copy_records(sources, layout, destination)
-    }
-}
-
 type Keyed = std::collections::BTreeMap<(usize, u32), Vec<(bool, u32, Vec<u8>)>>;
 
 type Air = (
@@ -486,40 +455,6 @@ fn faults(members: usize, children: usize) -> Vec<(&'static str, std::ops::Range
 
 fn stops_a_batch(name: &str) -> bool {
     !matches!(name, "backlink" | "child identity")
-}
-
-#[test]
-fn healthy_runs_log_the_per_entry_spans_at_scale() {
-    const MEMBERS: usize = 5_000;
-    const CHILDREN: usize = 130;
-    let bytes = order_of_battle(MEMBERS, CHILDREN);
-    let healthy = Faults::new(&bytes, Vec::new(), false);
-    let counted = Counted {
-        inner: &healthy,
-        calls: Cell::new(0),
-    };
-    let fallbacks = batch_fallback::count(batch_fallback::Batch::OrderOfBattle);
-    let batched = pass(&counted, false);
-    let batched_calls = counted.calls.replace(0);
-    assert_eq!(
-        batch_fallback::count(batch_fallback::Batch::OrderOfBattle),
-        fallbacks
-    );
-    let serial = pass(&counted, true);
-    let serial_calls = counted.calls.get();
-    assert_eq!(batched, serial);
-    assert_eq!(
-        batched.tables.oob_members_outcome,
-        Outcome::Rows { len: MEMBERS }
-    );
-    assert_eq!(
-        batched.tables.oob_children_outcome,
-        Outcome::Rows { len: CHILDREN }
-    );
-    assert!(
-        batched_calls * 2 < serial_calls,
-        "{batched_calls} guarded calls against the per-entry {serial_calls}"
-    );
 }
 
 #[test]

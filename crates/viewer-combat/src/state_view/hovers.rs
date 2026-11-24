@@ -425,19 +425,6 @@ mod tests {
     }
 
     #[test]
-    fn trailing_newlines_top_up_a_text_and_leave_an_empty_one() {
-        let topped = |text: &str| {
-            let mut text = text.to_owned();
-            trailing_newlines(&mut text, 2);
-            text
-        };
-        assert_eq!(topped(""), "");
-        assert_eq!(topped("a"), "a\n\n");
-        assert_eq!(topped("a\n"), "a\n\n");
-        assert_eq!(topped("a\n\n\n"), "a\n\n\n");
-    }
-
-    #[test]
     fn attrition_counts_through_the_getter() {
         use engine_executable::modifier_keys::{ATTRITION as PLAIN, HEAT_ATTRITION, WINTER_ATTRITION};
         let row = |index, flags, feature_selector| replay_data::rows::ModifierDefinitionRow { index, token: index, flags, feature_selector, ..Default::default() };

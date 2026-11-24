@@ -9,8 +9,6 @@ use collector_primitives::country_slots as country_scale;
 use collector_primitives::table_capture;
 use collector_projection::table_conversion;
 use collector_status::status;
-#[cfg(test)]
-use collector_test_support as test_support;
 use collector_timing::hook_timing;
 
 pub mod air_histories;

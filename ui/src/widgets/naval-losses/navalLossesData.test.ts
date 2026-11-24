@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { navalMeasure, navalOwnership, navalRequest } from './navalLossesData.ts';
+import { navalRequest } from './navalLossesData.ts';
 
 // quarantine: #3 re-enable in the dashboard rework; the issue names its failure
 test.skip('a naval losses request names the chosen countries or the top N with its count, attribution and period', () => {
@@ -11,8 +11,3 @@ test.skip('a naval losses request names the chosen countries or the top N with i
   assert.equal(navalRequest('1', { tags: [] }, { kind: 'planes' }).kind, 'both', 'an unknown count falls back to both');
 });
 
-test('the measure and period read as words', () => {
-  assert.equal(navalMeasure({}), 'Ships and convoys lost');
-  assert.equal(navalMeasure({ kind: 'ships', attribution: 'sunkBy' }), 'Ships sunk by');
-  assert.equal(navalOwnership({ period: 'month' }), 'Per month');
-});

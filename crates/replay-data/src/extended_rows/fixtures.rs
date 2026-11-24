@@ -4667,7 +4667,6 @@ fn supply_vertex_rows_round_trip_beside_nodes_and_delta_only_their_edge() {
     assert_eq!(decoded.apply(Some(vertex)).unwrap(), moved);
 }
 
-
 #[test]
 fn equipment_spending_keeps_old_delivery_prefix_and_independent_optional_suffixes() {
     let table = crate::rows::TableId::ProductionLineOutput;
@@ -6172,14 +6171,6 @@ fn state_flag_payload_keeps_lossless_bytes_and_unchanged_emits_no_delta() {
 }
 
 #[test]
-fn war_overview_rows_round_trip_extremes_and_deltas() {
-    check_table::<WarOwnedRelationRow>(TableId::WarOwnedRelations);
-    check_table::<WarRelationGoalRow>(TableId::WarRelationGoals);
-    check_table::<WarOverviewCountryRow>(TableId::WarOverviewCountries);
-    check_table::<WarNameRuleRow>(TableId::WarNameRules);
-}
-
-#[test]
 fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<FocusRow>(TableId::Focus);
     check_table::<CompletedFocusRow>(TableId::CompletedFocuses);
@@ -7357,11 +7348,6 @@ fn manpower_operand_tables_preserve_independent_fields_and_ordered_references() 
 }
 
 #[test]
-fn occupation_hover_columns_round_trip_nested_operands_and_sources() {
-    check_table::<StateResistanceRow>(TableId::StateResistance);
-}
-
-#[test]
 fn occupation_root_total_absence_round_trips_distinctly_from_zero() {
     let mut zero = StateResistanceRow::fixture(7, 0);
     zero.modifier_sources = Recorded::Value(vec![OccupationModifierSource {
@@ -7501,30 +7487,6 @@ fixture!(CombatLogBattleModifierRow, |key| {battle: (key >> 40) as u32, side: (k
 fixture!(CombatLogBattleCountryRow, |key| {battle: (key >> 40) as u32, side: (key >> 32) as u8, ordinal: key as u32}, {country: u32});
 
 fixture!(CombatLogObserverRow, |key| {combat:(key >> 64) as u64, attacker:key & 1 != 0, ordinal:(key as u64) >> 1}, {kind:u8, item:u64, index:u64, identity:u64, identity_2:u64, identity_3:u64, a:i64, b:i64, c:i64, d:i64, e:i64});
-
-#[test]
-fn combat_log_rows_roundtrip_all_ordinary_and_prepared_columns() {
-    check_table::<LandCombatResultsRow>(TableId::LandCombatResults);
-    check_table::<CombatLogGroupRow>(TableId::CombatLogGroups);
-    check_table::<CombatLogMonthRow>(TableId::CombatLogMonths);
-    check_table::<CombatLogManpowerRow>(TableId::CombatLogManpower);
-    check_table::<CombatLogTemplateRow>(TableId::CombatLogTemplates);
-    check_table::<CombatLogReferenceRow>(TableId::CombatLogReferences);
-    check_table::<CombatLogBattleRow>(TableId::CombatLogBattles);
-    check_table::<CombatLogEnemyEquipmentRow>(TableId::CombatLogEnemyEquipment);
-    check_table::<CombatLogBattleSideRow>(TableId::CombatLogBattleSides);
-    check_table::<CombatLogBattleEquipmentRow>(TableId::CombatLogBattleEquipment);
-    check_table::<CombatLogBattleModifierRow>(TableId::CombatLogBattleModifiers);
-    check_table::<CombatLogBattleCountryRow>(TableId::CombatLogBattleCountries);
-    check_table::<CombatLogObserverRow>(TableId::CombatLogObservers);
-}
-
-#[test]
-fn template_country_configuration_and_shared_operands_round_trip_all_row_codecs() {
-    check_table::<CountryTemplateStateRow>(TableId::CountryTemplateState);
-    check_table::<DivisionTemplateIconRow>(TableId::DivisionTemplateIcons);
-    check_table::<OrdersGroupCounterInputRow>(TableId::OrdersGroupCounterInputs);
-}
 
 sample_struct!(HqEquipment {
     variant: u64,

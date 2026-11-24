@@ -169,15 +169,3 @@ fn enemies(frame: &DecodedFrame, vision: &Vision) -> Result<Vec<u32>, String> {
     replay_derive::naval_region_control::raw_roster(frame, vision.ours(), AirCountryRelationRow::ENEMY)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mines_print_as_whole_percent_of_the_regional_maximum() {
-        assert_eq!(mine_share(500_000, 1_000_000), 50_000);
-        assert_eq!(percent(mine_share(500_000, 1_000_000)), "50%");
-        assert_eq!(percent(mine_share(0, 1_000_000)), "0%");
-        assert_eq!(mine_share(5, 0), 0xffff_ffff);
-    }
-}

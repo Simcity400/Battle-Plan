@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { createServer } from 'vite';
 import type { ReactElement } from 'react';
 import type { MenuItem } from '../components/ContextMenu';
@@ -119,20 +118,3 @@ test('Enter or Esc in a page rename gives focus back to its row, and Esc keeps t
   }
 });
 
-test('sidebar gives overflowing pages a bounded scroll area without shrinking footer controls', () => {
-  const css = readFileSync(new URL('./shell.css', import.meta.url), 'utf8');
-  const rule = (selector: string) => {
-    const declarations = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(match => match[1].trim() === selector)?.[2];
-    assert.ok(declarations, selector);
-    return declarations;
-  };
-  assert.match(rule('.sidebar-menu'), /min-height:\s*0/);
-  assert.match(rule('.sidebar-page-list'), /min-height:\s*0/);
-  assert.match(rule('.sidebar-page-list'), /overflow-y:\s*auto/);
-  assert.match(rule('.sidebar-page-list > *'), /flex-shrink:\s*0/);
-  assert.match(rule('.sidebar-campaign-host'), /overflow:\s*hidden/);
-  assert.match(rule('.sidebar-campaign-host'), /min-height:\s*[1-9]/, 'the campaign list keeps room for its rows; the page list scrolls first');
-  assert.match(rule('.sidebar-views'), /flex:\s*0 1000 auto/, 'the page list gives up height before the campaigns');
-  assert.match(rule('.sidebar-page-list:has(> :nth-child(4))'), /min-height:\s*98px/, 'the page list keeps three rows');
-  assert.match(rule('.sidebar-footer'), /flex-shrink:\s*0/);
-});

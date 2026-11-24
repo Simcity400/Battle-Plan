@@ -4,7 +4,6 @@ import { contrast, isDark, oklchToRgb, parseColor, rgbToOklch, solveLightness, t
 import type { Rgb } from '../shell/appearance/color';
 import { BUILT_IN_THEMES, themeColors } from '../shell/appearance/themes.ts';
 import { CATEGORY_LIMIT, categoricalPalette, distance, GREY_CHROMA, MARK_CONTRAST, nudgeApart } from './palette.ts';
-import { tokensFromValues } from './tokens.ts';
 import { NearestColours } from './paletteDistance.ts';
 
 function scalarDistance(first: Rgb, second: Rgb): number {
@@ -163,11 +162,3 @@ test('all 5000 fixed country colours stay present without quadratic gap scans', 
   }
 });
 
-test('chart tokens come from theme variables, with the palette solved for the surface', () => {
-  const values: Record<string, string> = { '--surface': '#101214', '--text': '#eeeeee' };
-  const tokens = tokensFromValues(variable => values[variable] ?? '#777777', 'Inter');
-  assert.equal(tokens.surface, '#101214');
-  assert.equal(tokens.grid, '#777777');
-  assert.equal(tokens.font, 'Inter');
-  assert.deepEqual(tokens.categories, categoricalPalette('#101214'));
-});

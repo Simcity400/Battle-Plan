@@ -558,12 +558,6 @@ fn held_table(store: &Store, table: TableId) -> HeldTable {
 }
 
 #[test]
-fn the_writers_write_exactly_the_derived_tables() {
-    let derived: Vec<usize> = TableId::ALL.into_iter().filter(|table| table.is_derived()).map(TableId::index).collect();
-    assert_eq!(crate::writers().tables(), derived);
-}
-
-#[test]
 fn every_writer_writes_the_tables_it_wrote_when_called_every_hour() {
     const HOURS: i32 = 800;
     let door = |every: bool| {

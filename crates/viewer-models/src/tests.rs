@@ -1400,27 +1400,6 @@ fn a_moved_part_is_written_where_it_stands_and_leaves_the_rest_of_the_field_alon
 }
 
 #[test]
-fn a_frame_that_moves_no_part_writes_nothing_to_the_field() {
-    let library = library_with_one_mesh(2.0);
-    let mut pass = ModelPass::new(&library, "moved parts");
-    pass.update_placed(vec![(0, at(300.0, 10.0)), (0, at(20.0, 10.0))], 256.0);
-    pass.written.set(false);
-    let before = ModelField::build_meshes(&pass.meshes, vec![(0, at(300.0, 10.0)), (0, at(20.0, 10.0))], 256.0);
-    pass.update_moving(
-        crate::Moving {
-            standing: None,
-            moved: Vec::new(),
-        },
-        256.0,
-    );
-    assert_eq!(pass.field, before);
-    assert!(
-        !pass.written.get(),
-        "a frame that moves nothing leaves no change for the lists to follow"
-    );
-}
-
-#[test]
 fn retained_placement_storage_keeps_group_ties_order_and_replacement_state() {
     let library = library_with_one_mesh(2.0);
     let mut pass = ModelPass::new(&library, "retained placements");

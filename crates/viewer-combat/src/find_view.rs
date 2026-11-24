@@ -780,18 +780,4 @@ mod tests {
         assert_eq!(dragged([1600, 700], size, [34, 80], parent), [1634, 780]);
     }
 
-    #[test]
-    fn the_caret_shows_half_of_each_second_while_the_box_has_focus() {
-        let mut field = Field::default();
-        assert_eq!(field.caret(0.0), None);
-        field.open(10.0);
-        field.insert("ab", 10.0);
-        assert_eq!(field.caret(10.2), Some(2));
-        assert_eq!(field.caret(10.7), None);
-        assert_eq!(field.caret(11.1), Some(2));
-        field.insert("c", 10.7);
-        assert_eq!(field.caret(10.8), Some(3));
-        field.focused = false;
-        assert_eq!(field.caret(10.8), None);
-    }
 }

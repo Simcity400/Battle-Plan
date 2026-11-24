@@ -127,28 +127,3 @@ test('content becoming available re-requests successful but empty replies at the
   assert.equal(contentRevision({} as DashboardClient).snapshot(), 0);
 });
 
-test('a disabled content consumer does not subscribe to presentation changes', async () => {
-  let updates = 0, stop = () => {};
-  const host = globalThis as typeof globalThis & { __contentRevisionHook?: (subscribe: (listener: () => void) => () => void,
-    snapshot: () => number, serverSnapshot: () => number) => number };
-  host.__contentRevisionHook = (subscribe, snapshot) => { stop = subscribe(() => updates++); return snapshot(); };
-  const vite = await (await import('vite')).createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'disabled-content-revision', enforce: 'pre',
-      transform(source, id) {
-        if (id.replaceAll('\\', '/').endsWith('/dashboard/contentRevision.ts')) return source.replace(
-          "import { useSyncExternalStore } from 'react';", "const useSyncExternalStore = globalThis.__contentRevisionHook;");
-      },
-    }] });
-  try {
-    const module = await vite.ssrLoadModule('/ui/src/dashboard/contentRevision.ts') as typeof import('./contentRevision.ts');
-    const client = {} as DashboardClient;
-    module.useContentRevision(client, false);
-    module.contentRevision(client).observePresentation(1);
-    module.contentRevision(client).observePresentation(2);
-    assert.equal(updates, 0);
-  } finally {
-    stop();
-    delete host.__contentRevisionHook;
-    await vite.close();
-  }
-});

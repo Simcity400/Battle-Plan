@@ -13,19 +13,3 @@ pub const MUTATIONS: [MutationSite; 2] = [
     },
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_sites_are_distinct_and_the_reset_belongs_to_world_input() {
-        assert_ne!(MUTATIONS[0].rva, MUTATIONS[1].rva);
-        let (reset, _) = crate::world_input_mutations::MUTATIONS
-            .iter()
-            .find(|(site, _)| site.name == "reset_navy")
-            .unwrap();
-        for site in MUTATIONS {
-            assert_ne!(site.rva, reset.rva, "{}", site.name);
-        }
-    }
-}

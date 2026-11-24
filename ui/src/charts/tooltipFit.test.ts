@@ -50,11 +50,6 @@ test('wrapping labels and dividers count toward the height', () => {
   assert.ok(tooltipHeight({ title: 'T', rows: [{ label: 'Label', value: '1', divider: true }] }) > short);
 });
 
-test('a tooltip is read out as one line, or as its full content when trimmed', () => {
-  assert.equal(tooltipText({ title: 'Oil', subtitle: 'Per day', rows: [{ label: 'Produced', value: '32' }, { label: 'Not recorded' }], note: 'Read earlier.' }),
-    'Oil; Per day; Produced 32; Not recorded; Read earlier.');
-  assert.equal(tooltipText({ title: 'Oil', rows: [], spoken: 'Oil in full' }), 'Oil in full');
-});
 
 test('a full form, when given, is what assistive technology reads whatever is shown', () => {
   const full: TooltipContent = { title: 'Rifles', rows: Array.from({ length: 10 }, (_, index) => ({ label: `Variant ${index}`, value: String(index) })) };

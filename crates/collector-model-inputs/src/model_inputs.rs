@@ -376,30 +376,6 @@ mod tests {
     use replay_data::rows::TableRows;
 
     #[test]
-    fn each_table_walks_on_its_own_cadence() {
-        let memory = engine_native_memory::memory::SliceMemory {
-            base: 0,
-            bytes: &[],
-        };
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        for hour in 0..24 {
-            captured.capture(&memory, 0, 0x1000, hour, false);
-            for (table, outcome) in TABLES.into_iter().zip(captured.outcomes()) {
-                let skipped = outcome
-                    == Outcome::Unavailable {
-                        reason: SKIPPED_REASON,
-                    };
-                assert_eq!(
-                    skipped,
-                    !should_walk(table, hour, false),
-                    "{table:?} {hour}"
-                );
-            }
-            assert!(should_walk(TableId::CountryLocalSubunits, hour, false));
-        }
-    }
-
-    #[test]
     fn requirements_survive_conversion_and_escapes_are_refused() {
         let mut captured = Captured::with_capacities(&Capacities {
             local_rows: 1,

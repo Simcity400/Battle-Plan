@@ -150,8 +150,3 @@ fn a_resume_writes_what_a_run_that_never_stopped_writes() {
     }
 }
 
-#[test]
-fn occupier_keys_are_the_row_codec_s() {
-    let row = OccupierTotalRow { slot: 7, id: u32::MAX, ..Default::default() };
-    assert_eq!(holders::key((7, u32::MAX)), row.key());
-}

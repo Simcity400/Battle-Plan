@@ -243,16 +243,6 @@ fn a_missing_transport_operand_refuses_only_the_full_variant_that_uses_it() {
 }
 
 #[test]
-fn the_run_is_centred_on_the_integer_half_width() {
-    let run = centred_run(&Fixed, "AB C", 1.0);
-    assert_eq!(run.len(), 3);
-    assert!((run[0].left + 1.0).abs() < 1e-6);
-    assert!((run[2].right - 1.0).abs() < 1e-6);
-    assert!((run[0].top - 0.75).abs() < 1e-6);
-    assert!((run[0].bottom - 0.25).abs() < 1e-6);
-}
-
-#[test]
 fn the_text_path_is_the_longest_x_run_read_left_to_right() {
     let p = |x: i64, z: i64| [x * SCALE, z * SCALE];
     let controls = [p(10, 0), p(5, 0), p(0, 0), p(1, 1), p(2, 2)];

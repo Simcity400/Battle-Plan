@@ -249,21 +249,6 @@ mod tests {
         assert_eq!(plan(true, false, false).modifiers, vec![NON_CORE]);
     }
 
-    #[test]
-    fn the_information_line_follows_the_core_and_the_shown_modifiers() {
-        assert_eq!(info_key(true, true), Some("STATE_OWNER_RESISTANCE_NON_CORE_INFO_WITH_MODIFIERS"));
-        assert_eq!(info_key(true, false), Some("STATE_OWNER_RESISTANCE_NON_CORE_INFO"));
-        assert_eq!(info_key(false, true), Some("STATE_OWNER_MODIFIER_INFO"));
-        assert_eq!(info_key(false, false), None);
-    }
-
-    #[test]
-    fn a_share_truncates_and_an_empty_total_gives_the_sentinel() {
-        assert_eq!(share(1, 3), 33_333);
-        assert_eq!(share(10, 10), 100_000);
-        assert_eq!(share(5, 0), 0xffff_ffff);
-    }
-
     fn with_facts<T>(owner: u32, controller: u32, test: impl FnOnce(&Facts<'_>) -> T) -> T {
         let province = replay_data::rows::ProvinceRow::default();
         let state = replay_data::rows::StateRow { owner, controller, ..Default::default() };

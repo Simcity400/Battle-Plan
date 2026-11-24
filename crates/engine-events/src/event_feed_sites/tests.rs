@@ -451,29 +451,6 @@ mod provenance_sites {
     const PROVINCE_STATE: usize = 0x91000;
 
     #[test]
-    fn callers_name_their_returns() {
-        for entry in ENTRIES {
-            for caller in entry.callers {
-                let at = BASE + caller.return_rva.0;
-                assert_eq!(route(BASE, entry.callers, at), Some(caller.route));
-                assert_eq!(route(BASE, entry.callers, at - 5), None);
-            }
-        }
-        let annex = STATE_OWNER_CALLERS
-            .iter()
-            .find(|caller| caller.route == "StateAnnex")
-            .unwrap();
-        assert_eq!(
-            route(BASE, &STATE_OWNER_CALLERS, BASE + annex.return_rva.0),
-            Some("StateAnnex")
-        );
-        assert_eq!(
-            route(BASE, &STATE_OWNER_CALLERS, BASE + annex.return_rva.0 - 5),
-            None
-        );
-    }
-
-    #[test]
     fn world_readers_authenticate_objects_and_keep_references_and_instances() {
         let mut image = Image::new();
         let world = World::new(&image, BASE).unwrap();

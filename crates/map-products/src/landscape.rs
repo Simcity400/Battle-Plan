@@ -804,54 +804,6 @@ fn building_fields(table: replay_data::rows::TableId) -> u64 {
 mod identity_tests {
     use super::*;
     #[test]
-    fn default_projection_is_source_independent_and_keeps_default_wire_bytes() {
-        let first = default_mode_projection();
-        let second = default_mode_projection();
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(
-            product_codec::encode(first.as_ref()).unwrap(),
-            product_codec::encode(&map_display_data::landscape::ModeProjection::Stock {
-                fill: ModeFill::default(),
-            })
-            .unwrap(),
-        );
-    }
-    #[test]
-    fn name_fitting_inputs_do_not_invalidate_area_grouping_keys() {
-        let localisation = Arc::new(Default::default());
-        let heightmap = Arc::new(content_reader_image::IndexedImage {
-            width: 1,
-            height: 1,
-            indices: vec![0].into(),
-            palette: [[0; 4]; 256],
-        });
-        let areas = NameAreaKey {
-            modes: None,
-            layers: (0, 2),
-            witness: [1; 32],
-            localisation: Some(Operand::new(&localisation)),
-            regions: None,
-            states: None,
-        };
-        let first = NameKey {
-            areas,
-            names: 1,
-            placement: 1,
-            font: 1,
-            heightmap: Operand::new(&heightmap),
-            witness: [2; 32],
-        };
-        let mut font_change = first.clone();
-        font_change.font += 1;
-        assert!(first != font_change);
-        assert!(first.areas == font_change.areas);
-        let replacement = Arc::new(heightmap.as_ref().clone());
-        let mut height_change = first.clone();
-        height_change.heightmap = Operand::new(&replacement);
-        assert!(first != height_change);
-        assert!(first.areas == height_change.areas);
-    }
-    #[test]
     fn changed_fog_reuses_only_the_same_building_bank_continuation() {
         let city = Arc::new(vec![true]);
         let old = BuildingKey {

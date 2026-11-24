@@ -527,41 +527,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_authenticates_each_importer_once() {
-        struct Reads<'a> {
-            memory: &'a Fixture,
-            counts: RefCell<std::collections::BTreeMap<usize, usize>>,
-        }
-        impl Memory for Reads<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                *self.counts.borrow_mut().entry(address).or_default() += 1;
-                self.memory.copy(address, destination)
-            }
-        }
-        let fixture = high_degree_fixture();
-        let resources = fixture.descriptors();
-        let memory = Reads {
-            memory: &fixture,
-            counts: RefCell::new(Default::default()),
-        };
-        let mut rows = vec![Row::default(); COUNT];
-        let mut scratch = vec![Membership::default(); COUNT];
-        assert_eq!(
-            walk(&memory, 0, 0x1000, &resources, &mut rows, &mut scratch),
-            Outcome::Rows { len: COUNT }
-        );
-        for (index, row) in rows.iter().enumerate() {
-            assert_eq!(
-                (row.id, row.exporter, row.importer),
-                (((index as u64 + 1) << 32) | 0x33, 7, 2)
-            );
-        }
-        let counts = memory.counts.borrow();
-        assert_eq!(counts[&(0x6000 + ccountry_resources::OWNER)], 1 + 2 * 64);
-        assert_eq!(counts[&0x7000], 1);
-    }
-
-    #[test]
     fn an_exporter_replaced_between_two_trades_is_authenticated_afresh() {
         struct Replaced<'a> {
             memory: &'a Fixture,

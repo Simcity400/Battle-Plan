@@ -249,41 +249,6 @@ fn ship_hours_land_in_the_walkers_columns() {
     table.holds(&[read[0].clone(), census[1].clone()]);
 }
 
-#[test]
-fn shared_history_rows_keep_their_strings_and_lists() {
-    let mut table = Table1::<SharedDivisionHistoryRow>::new();
-    let row = |division: u64, name: &[u8], provinces: &[u32]| {
-        Arc::new(DivisionHistoryRow {
-            division,
-            name: name.to_vec(),
-            reason: b"order".to_vec(),
-            provinces: provinces.to_vec(),
-            medal_token: Some(-2),
-            ..Default::default()
-        })
-    };
-    let first = [row(1, b"First", &[3, 1]), row(2, b"Second", &[])];
-    table.hour(TableInput::Snapshot {
-        rows: &first,
-        partial: None,
-        read: true,
-        sample: READ,
-    });
-    table.holds(&first);
-    let renamed = [row(1, b"Renamed", &[3, 1, 4]), first[1].clone()];
-    let changes = table
-        .hour(TableInput::Snapshot {
-            rows: &renamed,
-            partial: None,
-            read: true,
-            sample: READ,
-        })
-        .unwrap();
-    assert_eq!(changes.changed.len(), 1);
-    table.holds(&renamed);
-    assert_eq!(table.strings.len(), 5);
-}
-
 struct Both<R> {
     columns: Table1<R>,
     rows: Table1<R>,

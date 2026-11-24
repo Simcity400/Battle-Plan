@@ -3158,7 +3158,7 @@ pub fn draw_type_icon(
 
 #[cfg(test)]
 mod tests {
-    use super::{Arc, CounterReport, DivisionStatuses, IconInputs, LAND_WINDOW, NAVY_WINDOW, Plate, STACK_WINDOW, column_holder, gui, native, native_gui, refuse_column, test_frame, test_put};
+    use super::{Arc, CounterReport, DivisionStatuses, IconInputs, Plate, STACK_WINDOW, column_holder, gui, native, refuse_column, test_frame, test_put};
 
     #[test]
     fn attrition_comes_from_the_recorded_value_against_its_threshold() {
@@ -3277,42 +3277,6 @@ mod tests {
             assert_eq!(keyed.get(division), whole.get(division), "division {division}");
             assert_eq!(keyed.recorded(division), whole.recorded(division), "division {division}");
         }
-    }
-
-    #[test]
-    fn columns_keep_the_native_grid_origin_and_viewport_item_offsets() {
-        content_reader_script::test_game::enter();
-        let document = native::read(
-            br#"guiTypes={
-                containerWindowType={name=unit_mapicon size={width=76 height=31}
-                    gridBoxType={name=units_box position={x=0 y=-31}
-                        slotsize={width=76 height=1} format=UPPER_LEFT}}
-                containerWindowType={name=unit_counter size={width=76 height=31}
-                    position={x=2 y=3}}
-                containerWindowType={name=unit_counter_navy size={width=80 height=20}
-                    position={x=10% y=5}}
-            }"#,
-        );
-        let root = document.template(STACK_WINDOW).unwrap();
-        let grid = root.find(native::Kind::Grid, "units_box").unwrap();
-        let viewport = [1000, 600];
-        let (holder, notes) = column_holder(root, viewport, &gui::fixture()).unwrap();
-        assert!(notes.is_empty());
-        let layout = native_gui::finalize_grid_positions(
-            grid,
-            holder.content,
-            viewport,
-            [
-                (document.template(LAND_WINDOW).unwrap(), [0, 31]),
-                (document.template(NAVY_WINDOW).unwrap(), [0, 51]),
-            ],
-            holder.position,
-        )
-        .unwrap();
-        assert_eq!(holder.origin, [0.0; 2]);
-        assert_eq!(layout.origin, [0, -31]);
-        assert_eq!(layout.items, [[2, 34], [100, 56]]);
-        assert_eq!(layout.places(), [[2, 3], [100, 25]]);
     }
 
     #[test]

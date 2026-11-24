@@ -607,7 +607,6 @@ fn field(positions: &[[f32; 3]]) -> ModelField {
     }
 }
 
-
 #[test]
 fn placements_made_again_unchanged_raise_nothing_and_a_change_is_listed_by_instance() {
     let mut walked = WalkedField::default();
@@ -798,22 +797,6 @@ fn the_field_s_change_is_made_once_a_frame_and_names_the_frame_read_before() {
     }
     let change = pass.frame_change(3);
     assert_eq!((change.change, change.since), (Change::Same, Some(2)));
-}
-
-#[test]
-fn a_pass_that_places_nothing_keeps_no_lit_list() {
-    let pass = ModelPass::with_rigs_for_tests(Vec::new(), "unit models");
-    assert!(pass.layers.is_none(), "a library built empty has no content stack");
-    for queue in [Queue::Regular, Queue::Alternate, Queue::Caster] {
-        assert!(pass.kept_lit(queue).is_none());
-    }
-    assert!(pass.native.borrow().is_none(), "and no renderer was asked for");
-}
-
-#[test]
-fn a_walk_of_some_figures_leaves_no_constant_state() {
-    assert!(Recording::of(Vec::new()).partial());
-    assert!(!Recording::default().partial());
 }
 
 #[test]

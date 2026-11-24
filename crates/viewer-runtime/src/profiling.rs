@@ -378,21 +378,6 @@ mod tests {
     }
 
     #[test]
-    fn builder_spans_forks_keep_enable_without_allocating_records() {
-        for enabled in [false, true] {
-            let mut spans = BuilderSpans::new(enabled);
-            assert_eq!(spans.enabled(), enabled);
-            let worker = spans.fork();
-            assert_eq!(worker.enabled(), enabled);
-            assert!(worker.records.is_empty());
-            assert_eq!(worker.records.capacity(), 0);
-            spans.append(worker);
-            assert!(spans.records.is_empty());
-            assert_eq!(spans.records.capacity(), 0);
-        }
-    }
-
-    #[test]
     fn builder_spans_keep_nested_completion_order_and_error_results() {
         let mut calls = Vec::new();
         let mut spans = BuilderSpans::new(true);

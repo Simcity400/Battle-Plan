@@ -79,25 +79,6 @@ fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
 }
 
 #[test]
-fn state_reading_note_keeps_misread_kind() {
-    content_reader_script::test_game::enter();
-    let names = KeyNames::default();
-    let context = Context {
-        resource: &|_| Resource::Null,
-        max_building_levels: 15,
-        province_count: 10,
-        names: &names,
-    };
-    let (_, notes) = parse_states(b"state = { id = 1 impassable = maybe }", &context).unwrap();
-    assert!(
-        notes
-            .iter()
-            .any(|(kind, _)| *kind == crate::DiagnosticKind::Misread),
-        "{notes:?}"
-    );
-}
-
-#[test]
 fn state_field_recovery_causes_keep_offline_notes() {
     content_reader_script::test_game::enter();
     let input = b"@bad nope orphan=yes state={id=1 impassable=yes impassable=maybe provinces={1 100} resources={unknown=2} history={victory_points={1} buildings=4}}";

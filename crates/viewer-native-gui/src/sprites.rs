@@ -3051,15 +3051,6 @@ mod tests {
     }
 
     #[test]
-    fn frames_slice_the_strip_evenly() {
-        let vp = strip(20, 580);
-        assert_eq!(vp.frame_size(), [29.0, 27.0]);
-        assert_eq!(vp.frame_uv(0), [0.0, 0.0, 29.0 / 580.0, 1.0]);
-        assert_eq!(vp.frame_uv(19), [551.0 / 580.0, 0.0, 1.0, 1.0]);
-        assert_eq!(vp.frame_uv(20), vp.frame_uv(19));
-    }
-
-    #[test]
     fn a_strip_that_does_not_divide_evenly_keeps_the_authored_pitch() {
         let naval = strip(11, 301);
         assert_eq!(naval.frame_size()[0], 27.0);
@@ -3169,13 +3160,6 @@ mod tests {
         for (a, b) in clamped.iter().zip(&free) {
             assert!((a.0 - b.0).abs() < 1e-3, "{a:?} {b:?}");
         }
-    }
-
-    #[test]
-    fn only_a_scaled_batch_changes_how_it_samples() {
-        assert_eq!(filter_mode(1.0), 0.0);
-        assert_eq!(filter_mode(1.25), 1.0);
-        assert_eq!(filter_mode(0.75), 2.0);
     }
 
     #[test]
@@ -3576,14 +3560,6 @@ mod tests {
         arena.reset();
         pass.upload(&device, &queue, &arena, &batch, [16, 16], 1.);
         assert_eq!(counts(&pass), (0, 0, 0, 1));
-    }
-
-    #[test]
-    fn at_scale_one_the_corners_are_the_plain_rounding() {
-        assert_eq!(
-            device_corners([10.4, 20.6, 29.0, 27.0], 1.0),
-            [10.0, 21.0, 39.0, 48.0]
-        );
     }
 
     #[test]

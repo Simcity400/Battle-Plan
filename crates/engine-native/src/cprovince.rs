@@ -3079,9 +3079,6 @@ mod tests;
 #[cfg(test)]
 mod direct_combat_tests;
 
-#[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
-mod bench;
-
 pub fn invasion_provinces(memory: &impl Memory, game_state: usize) -> Result<Array, &'static str> {
     game_state
         .checked_add(cgame_state::PROVINCES)

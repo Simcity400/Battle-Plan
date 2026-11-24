@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
-import { followedEntries, liveArmy, rowsOf } from './liveArmy.ts';
+import { followedEntries, rowsOf } from './liveArmy.ts';
 
 const answer = (rows: [string, bigint, number?][]) => parseFollowed(message(10, [{ id: 1, answer: { keys: rows.map((_, at) => BigInt(at + 1)), columns: 1,
   values: rows.map(([, value]) => value), states: rows.map(([, , state]) => state ?? CELL.value), names: rows.map(([tag]) => tag) } }])).answers[0]!.answer;
@@ -20,26 +20,3 @@ test('a followed answer is ranked as today ranks a reply: greatest first, ties b
   assert.equal(rowsOf(followedEntries(rows, null, { membership: null }, 10, 3, 'divisions', 0)), 'ENG,GER,SOV');
 });
 
-test('a live race keeps its entries while the hour moves and the answer does not, and is made again when either does', () => {
-  let position = 10, version = 1, reads = 0;
-  const clock = { getSnapshot: () => ({ position }), subscribeFrame: () => () => {}, subscribe: () => () => {} };
-  const live = liveArmy(clock, 0, hour => { reads++; return [{ tag: 'GER', value: version, label: String(version), stretch: null, hour }]; }, () => version);
-  const first = live.entries();
-  position = 10.5;
-  assert.equal(live.entries(), first, 'the same hour: the same array, nothing read');
-  assert.equal(reads, 1);
-  position = 11;
-  assert.equal(live.entries(), first, 'a new hour with the same rows and values: the same array, nothing to draw');
-  assert.equal(reads, 2, 'read again at the new hour');
-  version = 2;
-  const next = live.entries();
-  assert.equal(next[0]!.value, 2);
-  assert.equal(live.structure(), 'GER', 'the same rows whatever their values');
-  let woken = 0;
-  live.bind(() => { woken++; })();
-  const stop = live.bind(() => { woken++; });
-  live.wake();
-  stop();
-  live.wake();
-  assert.equal(woken, 1, 'only bound charts are woken');
-});

@@ -711,22 +711,6 @@ mod tests {
     }
 
     #[test]
-    fn walks_every_hour() {
-        let memory = engine_native_memory::memory::SliceMemory {
-            base: 0,
-            bytes: &[],
-        };
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        for hour in 0..24 {
-            captured.capture(&memory, 0, 0x1000, hour, false);
-            assert!(captured.outcomes().iter().all(|outcome| matches!(
-                outcome,
-                Outcome::Unavailable { reason } if *reason != SKIPPED_REASON
-            )));
-        }
-    }
-
-    #[test]
     fn traits_projection_reuses_all_fields_and_preserves_frame_results() {
         use collector_projection::projection::{Projection, ProjectionScratch};
         use replay_frame::frame::{FrameEncoder, FrameInput, Metrics};

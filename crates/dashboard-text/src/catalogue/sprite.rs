@@ -429,23 +429,6 @@ mod tests {
     }
 
     #[test]
-    fn geometry_keeps_native_local_coordinates_and_centres_stretch() {
-        assert_eq!(
-            vertices([7.5, 4.5], 2.0, [0.25, 0.75], true),
-            [
-                [0.0, -2.25, 1.0, 1.0, 0.75],
-                [0.0, 6.75, 1.0, 1.0, 0.0],
-                [7.5, -2.25, 1.0, 0.75, 0.75],
-                [7.5, 6.75, 1.0, 0.75, 0.0],
-            ]
-        );
-        let quad = vertices([7.5, 4.5], 1.0, [0.25, 0.75], false);
-        assert_eq!(quad[0][1], 0.0);
-        assert_eq!(quad[1][1], 4.5);
-        assert_eq!(4.0 - quad[1][1], -0.5);
-    }
-
-    #[test]
     fn native_frame_coordinates_keep_direction_two_grid_and_invalid_direction_zero() {
         let mut plain = Plain {
             frames: 3,

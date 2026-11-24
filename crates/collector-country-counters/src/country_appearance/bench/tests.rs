@@ -1,9 +1,7 @@
 use super::*;
 use engine_native_parts::ccountry_database;
 use engine_native::cgame_state;
-use engine_native_memory::{memory::{CountedMemory, LiveMemory, SliceMemory}, msvc_string};
-use replay_data::rows::RowCodec;
-use std::{hint::black_box, time::Instant};
+use engine_native_memory::{memory::SliceMemory, msvc_string};
 
 const STATE: usize = 0x100;
 const DATABASE: usize = 0x800;
@@ -17,7 +15,6 @@ pub(super) struct World {
     pub(super) origin: usize,
     pub(super) module: usize,
     pub(super) countries: usize,
-    subjects: usize,
 }
 
 impl World {
@@ -117,27 +114,11 @@ impl World {
             origin,
             module,
             countries,
-            subjects,
         }
     }
 
     pub(super) fn state(&self) -> usize {
         self.origin + STATE
-    }
-
-    fn advance(&mut self, hour: Hour, tick: usize) -> usize {
-        let changed = match hour {
-            Hour::Empty | Hour::Quiet => 0,
-            Hour::Typical => 1,
-            Hour::AllChanged => self.countries,
-        };
-        for index in 0..changed {
-            let slot = (tick + index) % self.countries;
-            let offset = self.subjects + slot * SUBJECTS_PER_COUNTRY * 4;
-            let value = i32::from_le_bytes(self.bytes[offset..offset + 4].try_into().unwrap());
-            self.bytes[offset..offset + 4].copy_from_slice(&value.wrapping_add(1).to_le_bytes());
-        }
-        changed
     }
 
     pub(super) fn capacities(&self) -> Capacities {
@@ -175,98 +156,3 @@ pub(super) fn rows(captured: &Captured) -> Vec<CountryAppearanceRow> {
     rows
 }
 
-fn subject_delta(
-    before: &[CountryAppearanceRow],
-    after: &[CountryAppearanceRow],
-) -> (usize, usize) {
-    let mut bytes = Vec::new();
-    let mut changed = 0;
-    let mut previous_key = 0;
-    for (old, new) in before.iter().zip(after) {
-        if new
-            .encode_change(Some(old), previous_key, &mut bytes)
-            .unwrap()
-        {
-            assert_eq!(new.delta(Some(old)).unwrap().unwrap().mask, 1 << 18);
-            previous_key = new.key();
-            changed += 1;
-        }
-    }
-    (changed, bytes.len())
-}
-
-#[derive(Debug, Clone, Copy)]
-enum Hour {
-    Empty,
-    Quiet,
-    Typical,
-    AllChanged,
-}
-
-#[test]
-#[ignore = "synthetic ordered-subject capture and hourly encoded delta costs"]
-fn border_effect_subject_scale_bench() {
-    for countries in [193, 1_500, 5_000] {
-        let mut empty_requests = None;
-        for hour in [Hour::Empty, Hour::Quiet, Hour::Typical, Hour::AllChanged] {
-            let mut world = World::new(countries, !matches!(hour, Hour::Empty));
-            let mut captured = Captured::with_capacities(&world.capacities());
-            let mut capture_times = Vec::new();
-            let mut conversion_times = Vec::new();
-            let mut delta_times = Vec::new();
-            let mut previous = world.read(&mut captured);
-            let mut delta = (0, 0);
-            for pass in 0..67 {
-                world.advance(hour, pass);
-                captured.reset();
-                let live = unsafe { LiveMemory::new() };
-                let start = Instant::now();
-                captured.capture(&live, world.module, world.state());
-                let capture_us = start.elapsed().as_secs_f64() * 1e6;
-                let start = Instant::now();
-                let after = rows(&captured);
-                let conversion_us = start.elapsed().as_secs_f64() * 1e6;
-                let start = Instant::now();
-                delta = subject_delta(&previous, &after);
-                let delta_us = start.elapsed().as_secs_f64() * 1e6;
-                previous = after;
-                if pass >= 3 {
-                    capture_times.push(capture_us);
-                    conversion_times.push(conversion_us);
-                    delta_times.push(delta_us);
-                }
-                black_box(&captured);
-            }
-            let memory = CountedMemory::new(unsafe { LiveMemory::new() });
-            let accounting = crate::read_accounting::Capture::new();
-            captured.capture(&memory, world.module, world.state());
-            let requests = accounting.finish()[TableId::CountryAppearance.index()];
-            if matches!(hour, Hour::Empty) {
-                empty_requests = Some(requests);
-            }
-            let empty = empty_requests.unwrap();
-            let payload_bytes = captured.subjects.len * 4;
-            assert_eq!(requests.bytes - empty.bytes, payload_bytes as u64);
-            let added_bytes = countries * 24 + payload_bytes;
-            let percentiles = |mut samples: Vec<f64>| {
-                samples.sort_by(f64::total_cmp);
-                (
-                    samples[samples.len() / 2],
-                    samples[samples.len() * 95 / 100],
-                )
-            };
-            println!(
-                "SUBJECT_BENCH hour={hour:?} countries={countries} capture_us={:?} conversion_us={:?} delta_us={:?} requests={requests:?} prior_requested_bytes={} added_header_bytes={} positive_payload_bytes={payload_bytes} delta_rows={} delta_bytes={} fixture_bytes={} retained_bytes={}",
-                percentiles(capture_times),
-                percentiles(conversion_times),
-                percentiles(delta_times),
-                requests.bytes - added_bytes as u64,
-                countries * 24,
-                delta.0,
-                delta.1,
-                world.bytes.len(),
-                captured.allocated_bytes(),
-            );
-        }
-    }
-}

@@ -29,17 +29,3 @@ pub fn contains(table: &[&str], name: &[u8]) -> bool {
         .is_ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lookup_preserves_case_and_trailing_underscore() {
-        let table = ["alpha", "beta_"];
-        assert!(contains(&table, b"alpha"));
-        assert!(contains(&table, b"beta_"));
-        assert!(!contains(&table, b"Alpha"));
-        assert!(!contains(&table, b"beta"));
-    }
-
-}

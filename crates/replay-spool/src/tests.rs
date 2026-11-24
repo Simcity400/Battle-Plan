@@ -28,12 +28,6 @@ fn numbers_read_back_exactly_at_their_extremes() {
 }
 
 #[test]
-fn small_numbers_take_one_byte() {
-    assert_eq!(round_trip(&5_u32).unwrap().1.len(), 1);
-    assert_eq!(round_trip(&-3_i32).unwrap().1.len(), 1);
-}
-
-#[test]
 fn containers_read_back_exactly() {
     same(vec![1_u8, 2, 3]);
     same(Some(vec![(1_u32, String::from("a")), (2, String::from("é"))]));

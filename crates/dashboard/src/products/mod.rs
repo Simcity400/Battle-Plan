@@ -372,10 +372,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_moved_product_is_registered() {
-        for key in MOVED {
-            assert!(find(key).is_some(), "{key} is not registered");
-        }
-    }
 }

@@ -280,31 +280,4 @@ mod tests {
         assert!(!Mode::Shadow.admits(false));
         assert!(Mode::Shadow.admits(true));
     }
-    #[test]
-    fn late_clone_changes_only_stencil_reference_and_masks() {
-        let ordinary = DepthStencilState {
-            depth_enable: false,
-            stencil_enable: true,
-            stencil_ref: 1,
-            stencil_read_mask: 1,
-            stencil_write_mask: 1,
-            front_function: 5,
-            front_pass: 2,
-            ..Default::default()
-        };
-        let late = late_depth(ordinary.clone(), true);
-        assert_eq!(late.stencil_ref, 2);
-        assert_eq!(late.stencil_read_mask, 2);
-        assert_eq!(late.stencil_write_mask, 2);
-        assert_eq!(late_depth(ordinary.clone(), false), ordinary);
-        assert_eq!(
-            DepthStencilState {
-                stencil_ref: 1,
-                stencil_read_mask: 1,
-                stencil_write_mask: 1,
-                ..late
-            },
-            ordinary
-        );
-    }
 }

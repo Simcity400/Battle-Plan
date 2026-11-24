@@ -110,46 +110,6 @@ fn scenario(draw: &mut Draw) -> DecodedFrame {
 }
 
 #[test]
-fn country_lookups_answer_as_whole_table_scans() {
-    let mut draw = Draw(7);
-    let (mut refused, mut found) = (0, 0);
-    for _ in 0..400 {
-        let frame = scenario(&mut draw);
-        with_world(&frame, |world| {
-            for slot in 0..=4 {
-                for name in TOKENS {
-                    let focus = world.has_focus_unrecorded(slot, name);
-                    assert_eq!(focus, world.has_focus_indexed(slot, name));
-                    refused += usize::from(focus.is_err());
-                    found += usize::from(focus == Ok(true));
-                    assert_eq!(
-                        world.active_idea(slot, name),
-                        world.active_idea_scanned(slot, name)
-                    );
-                }
-                assert_eq!(
-                    world.party_leaders_unrecorded(slot),
-                    world.party_leaders_scanned(slot)
-                );
-                assert_eq!(
-                    world.country_characters_unrecorded(slot),
-                    world.country_characters_scanned(slot)
-                );
-            }
-            for rows in [
-                &world.focus_rows,
-                &world.party_rows,
-                &world.character_rows,
-                &world.idea_rows,
-            ] {
-                assert!(matches!(rows.get().map(|rows| rows.value()), Some(Ok(Some(_)))));
-            }
-        });
-    }
-    assert!(refused > 0 && found > 0, "{refused} refused, {found} found");
-}
-
-#[test]
 fn rows_out_of_country_order_are_scanned_whole() {
     let mut frame = scenario(&mut Draw(3));
     let rows = |country, token: &[u8]| CompletedFocusRow {

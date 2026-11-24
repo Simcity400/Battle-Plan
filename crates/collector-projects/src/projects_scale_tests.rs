@@ -816,52 +816,6 @@ fn scaled_faults_match_direct_walks_and_the_recorded_digests() {
     }
 }
 
-#[test]
-#[ignore = "bench"]
-fn projects_copy_bench() {
-    for countries in [440, 1_500, 5_000] {
-        let space = space(countries, 50);
-        let memory = engine_native_memory::memory::CountedMemory::new(unsafe {
-            engine_native_memory::memory::LiveMemory::new()
-        });
-        let context = ProjectsCopyContext {
-            base: kit::BASE,
-            game_state: space.game_state,
-            active: true,
-        };
-        let mut job = ProjectsJob::new();
-        while !copy_projects_refresh(&memory, context, &mut job).raw_ok {
-            job.grow();
-        }
-        let mut samples = Vec::new();
-        let mut calls = 0;
-        let mut evict = vec![0_u8; 512 << 20];
-        for round in 0..9 {
-            evict.fill(round as u8);
-            std::hint::black_box(&evict);
-            let capture = read_accounting::Capture::new();
-            let started = std::time::Instant::now();
-            assert!(copy_projects_refresh(&memory, context, &mut job).raw_ok);
-            samples.push(started.elapsed().as_secs_f64() * 1e3);
-            calls = capture
-                .finish()
-                .iter()
-                .map(|c| c.copy_calls + c.scattered_calls + c.record_calls + c.plan_calls)
-                .sum::<u64>();
-        }
-        samples.sort_by(f64::total_cmp);
-        println!(
-            "{countries} countries: {calls} guarded calls, {:.2} ms median ({:.2}..{:.2}), {} spans, {} bytes",
-            samples[4],
-            samples[0],
-            samples[8],
-            job.log.spans.len(),
-            job.log.bytes.len()
-        );
-    }
-}
-
-
 const HISTORY_GOLDEN: u64 = 0x3d00_8951_bdf6_eb40;
 const PROGRAMS_GOLDEN: u64 = 0x345b_47ce_caa9_ee9c;
 const LINKS_GOLDEN: u64 = 0xa7fe_1f61_4eee_5ce6;

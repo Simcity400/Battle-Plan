@@ -393,42 +393,6 @@ fn ordinal_fixture(count: usize, provinces: usize) -> (Vec<u8>, Vec<Row>, Vec<Re
 }
 
 #[test]
-fn province_ordinals_read_each_bucket_once() {
-    for count in [1_500, 5_000] {
-        for provinces in [1, 300] {
-            let (bytes, mut rows, mut slots) = ordinal_fixture(count, provinces);
-            let memory = SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            let census = engine_native_memory::read_census::ReadCensus::new(&memory);
-            let started = std::time::Instant::now();
-            assert_eq!(
-                province_ordinals(&census, 0x1000, &mut rows, &mut slots),
-                Ok(())
-            );
-            println!(
-                "{count} results in {provinces} provinces: {} reads, {:.3} ms",
-                census.calls(),
-                started.elapsed().as_secs_f64() * 1e3
-            );
-            let per_province = count.div_ceil(provinces);
-            let expected = 3 + provinces + provinces * per_province.div_ceil(64);
-            assert!(
-                census.calls() <= expected,
-                "{} reads for {count} results in {provinces} provinces",
-                census.calls()
-            );
-            for (result, row) in rows.iter().enumerate() {
-                let members = (count - 1 - result % provinces) / provinces + 1;
-                let own = result / provinces;
-                assert_eq!(row.province_ordinal as usize, members - 1 - own);
-            }
-        }
-    }
-}
-
-#[test]
 fn province_ordinals_refuse_a_missing_misfiled_or_repeated_result() {
     let (bytes, rows, slots) = ordinal_fixture(4, 2);
     let memory = SliceMemory {

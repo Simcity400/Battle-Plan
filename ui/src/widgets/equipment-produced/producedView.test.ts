@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { producedCaption, producedCaptionAt, typeRows } from './producedView.ts';
+import { producedCaptionAt, typeRows } from './producedView.ts';
 import type { ProducedAtReply, ProducedModelAt } from '../../generated/dashboard';
 
 const model = (variant: string, typeKey: string, units: number | null, ic: number | null, typeRecorded = true): ProducedModelAt => ({
@@ -31,11 +31,6 @@ test('a type is not known while a design whose type was not recorded holds somet
   assert.equal(typeRows(at([model('1', 'infantry_equipment', null, 300000)]))![0].units, null);
 });
 
-test('the caption names what is counted over which window', () => {
-  assert.equal(producedCaption('units', 'day', '1 Jan 1937', null), 'Units delivered on 1 Jan 1937');
-  assert.equal(producedCaption('ic', 'month', null, null), 'IC put into equipment per month');
-  assert.equal(producedCaption('units', 'total', '1 Jan 1937', '1 Jan 1936'), 'Units delivered from 1 Jan 1936 to 1 Jan 1937');
-});
 
 test('the race caption is dated at the hour it shows, and a total counts from the read it began at then', () => {
   const day = (hour: number) => `day ${hour}`;

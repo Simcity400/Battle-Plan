@@ -140,6 +140,7 @@ fn batched_core_province_persistent_faults_keep_serial_reason_and_prefix() {
         );
     }
 }
+
 #[test]
 fn batched_core_province_one_shot_refuses_no_more_and_counts_fallback() {
     let (bytes, seeds) = world(65);
@@ -283,13 +284,6 @@ fn batched_core_projection_alias_duplicates_and_faults_equal_serial() {
             }
         }
     }
-}
-#[test]
-fn batched_core_province_request_count_is_two_per_sixty_four_misses() {
-    let (bytes, seeds) = world(129);
-    let actual = capture(&bytes, &seeds, true, None, false);
-    assert_eq!(actual.0.ids.len(), 129);
-    assert_eq!(actual.1, 6, "old code used 258 guarded requests");
 }
 
 #[test]

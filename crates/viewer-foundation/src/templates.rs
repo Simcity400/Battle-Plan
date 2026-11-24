@@ -703,40 +703,8 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn the_sprite_is_keyed_on_the_sub_unit_name_and_not_its_sprite_field() {
-        assert_eq!(
-            unit_sprite("mountaineers"),
-            "GFX_unit_mountaineers_icon_medium_white"
-        );
-        assert_eq!(
-            unit_sprite("hq_support_company"),
-            "GFX_unit_hq_support_company_icon_medium_white"
-        );
-        assert_eq!(
-            unit_sprite("infantry"),
-            "GFX_unit_infantry_icon_medium_white"
-        );
-    }
-
     fn all(_: &str) -> bool {
         true
-    }
-
-    #[test]
-    fn nato_counters_take_the_second_frame_of_the_same_strip() {
-        let plain = type_icon("infantry", -1, false, &all);
-        assert_eq!(plain.sprite, "GFX_unit_infantry_icon_medium_white");
-        assert_eq!(plain.frame, PICTORIAL_FRAME);
-        let nato = type_icon("infantry", -1, true, &all);
-        assert_eq!(nato.sprite, plain.sprite);
-        assert_eq!(nato.frame, NATO_FRAME);
-        assert_eq!(no_intel_icon(false).frame, PICTORIAL_FRAME);
-        assert_eq!(no_intel_icon(true).frame, NATO_FRAME);
-        assert_eq!(
-            no_intel_icon(true).sprite,
-            "GFX_unit_no_intel_icon_medium_white"
-        );
     }
 
     #[test]

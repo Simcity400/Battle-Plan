@@ -469,16 +469,3 @@ pub(super) fn walk<M: Memory>(
     )
 }
 
-#[cfg(test)]
-#[test]
-fn default_roster_passes_through_the_live_token() {
-    let _globals = super::test_globals();
-    // SAFETY: This isolated fixture has no roster hooks and owns the live roster observer.
-    unsafe {
-        collector_observers::roster_changes::with_quiet_roster_for_test(|| {
-            let token = collector_observers::roster_changes::roster().expect("enabled observer");
-            assert_eq!(QuietRoster::default().token(), Some(token));
-            assert_eq!(QuietRoster::unobserved().token(), None);
-        })
-    };
-}

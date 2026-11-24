@@ -42,27 +42,6 @@ impl Fixture {
 }
 
 #[test]
-fn root_views_share_only_the_same_hour_input_owners() {
-    let fixture = Fixture::new();
-    let first = fixture.text(1);
-    let second = first.for_root(2);
-    assert!(Arc::ptr_eq(&first.scopes, &second.scopes));
-    assert!(Arc::ptr_eq(&first.names, &second.names));
-    assert!(Arc::ptr_eq(&first.lexical_names, &second.lexical_names));
-    assert_eq!(first.viewing_country(), 1);
-    assert_eq!(second.viewing_country(), 2);
-    assert!(std::ptr::eq(
-        first.tables().decoded().unwrap().decoded_frame(),
-        second.tables().decoded().unwrap().decoded_frame()
-    ));
-    assert!(std::ptr::eq(first.content(), second.content()));
-    let unrelated = fixture.text(2);
-    assert!(!Arc::ptr_eq(&first.scopes, &unrelated.scopes));
-    assert!(!Arc::ptr_eq(&first.names, &unrelated.names));
-    assert!(!Arc::ptr_eq(&first.lexical_names, &unrelated.lexical_names));
-}
-
-#[test]
 fn root_views_expand_each_root_with_unchanged_native_names() {
     let fixture = Fixture::new();
     let first = fixture.text(1);

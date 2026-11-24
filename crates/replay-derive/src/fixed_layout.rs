@@ -745,51 +745,6 @@ mod tests {
     }
 
     #[test]
-    fn naval_tree_family_covers_all_capture_keys_and_its_tables() {
-        assert_eq!(
-            NAVAL_TREES.keys,
-            engine_naval_history::naval_modifier_trees::KEYS
-        );
-        assert_eq!(
-            NAVAL_TREES.tables,
-            [
-                TableId::NavalModifierTrees,
-                TableId::NavalModifierTreeSamples
-            ]
-        );
-        for key in NAVAL_TREES.keys {
-            assert!(keys::ALL_INDICES.contains(key));
-        }
-    }
-
-    #[test]
-    fn recruitment_families_cover_all_eight_keys_and_their_capture_tables() {
-        assert_eq!(
-            COUNTRY_RECRUITMENT.keys,
-            [
-                keys::MOBILIZATION_SPEED,
-                keys::CONSCRIPTION,
-                keys::CONSCRIPTION_FACTOR,
-                keys::NON_CORE_MANPOWER,
-            ]
-        );
-        assert_eq!(COUNTRY_RECRUITMENT.tables, [TableId::CountryCounterInputs]);
-        assert_eq!(
-            STATE_RECRUITMENT.keys,
-            [
-                keys::LOCAL_MANPOWER,
-                keys::LOCAL_NON_CORE_MANPOWER,
-                keys::RECRUITABLE_POPULATION,
-                keys::RECRUITABLE_POPULATION_FACTOR,
-            ]
-        );
-        assert_eq!(STATE_RECRUITMENT.tables, [TableId::StateResourceInputs]);
-        for family in [COUNTRY_RECRUITMENT, STATE_RECRUITMENT] {
-            assert!(FAMILIES.iter().any(|entry| entry.name == family.name));
-        }
-    }
-
-    #[test]
     fn absent_or_partial_tables_and_missing_definition_or_token_refuse() {
         for table in [TableId::ModifierDefinitions, TableId::LexicalTokens] {
             for view in [

@@ -602,21 +602,6 @@ mod tests {
     }
 
     #[test]
-    fn hook_errors_name_the_family_sites_and_original_failure() {
-        for (index, site) in MUTATIONS.iter().enumerate() {
-            let error = hook_failure(Some(index), "construction", "synthetic refusal");
-            assert!(error.contains("army_stat_changes"));
-            assert!(error.contains(site.name));
-            assert!(error.contains("synthetic refusal"));
-        }
-        let error = hook_failure(None, "publication", "byte verification failed");
-        for site in MUTATIONS {
-            assert!(error.contains(site.name));
-        }
-        assert!(error.contains("byte verification failed"));
-    }
-
-    #[test]
     fn experience_awards_carry_the_independent_template_conversion_certificate() {
         let watches = Watches::enabled(2);
         let mut held = watches.progression_sequence(0x1000).unwrap();

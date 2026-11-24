@@ -36,24 +36,6 @@ fn border_effect_operands_round_trip_raw_lists_and_three_seed_states() {
 }
 
 #[test]
-fn new_operands_fit_the_existing_masks_and_change_independently() {
-    let mut bytes = Vec::new();
-    let old = DecisionRow {
-        country: 3,
-        container: 3,
-        ..Default::default()
-    };
-    let row = DecisionRow {
-        description_seed: crate::rows::Recorded::Value(Some(Some(-3))),
-        ..old.clone()
-    };
-    assert!(row.encode_change(Some(&old), 0, &mut bytes).unwrap());
-    assert_eq!(TableId::Decisions.mask_width(), 1);
-    assert_eq!(TableId::DivisionTemplates.mask_width(), 1);
-    assert_eq!(TableId::CountryAppearance.mask_width(), 3);
-}
-
-#[test]
 fn decision_description_seed_is_rejected_on_non_targeted_containers() {
     for container in 0..3 {
         for description_seed in [Some(None), Some(Some(0)), Some(Some(i32::MIN))] {

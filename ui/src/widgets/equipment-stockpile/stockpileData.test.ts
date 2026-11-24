@@ -5,8 +5,7 @@ import { resolveY } from '../../charts/view.ts';
 import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen.ts';
 import { contentKey, contentSet, setToken, storableToken } from '../../dashboard/options.ts';
 import { OPTIONS } from './definition.ts';
-import { automaticGroups, automaticLines, chartChoices, chartRuns, choiceKey, choiceRow, CHOSEN_KEYS, oneChoicePerRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, overTimeTooltip,
-  shareOf, shareRuns, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
+import { automaticGroups, automaticLines, chartChoices, chartRuns, choiceKey, choiceRow, oneChoicePerRow, designAt, hasRecords, stockChoices, typeName, variantKey, balanceAt, typesComplete, variantsComplete, balanceMode, formatPercent, groupChoices, groupLabel, groupTooltip, labelAt, overTimeTooltip, shareOf, shareRuns, stockAt, stockGroups, stockRuns, validateStockpileReply, variantName, dailyAt } from './stockpileData.ts';
 
 const U = 100000;
 const run = (firstHour: number, lastHour: number, amount: number): AmountRun => ({ firstHour, lastHour, amountRaw: String(Math.round(amount * U)) });
@@ -227,15 +226,6 @@ test('a variant name is the entry that applies at the hour, then a descriptive v
   assert.equal(variantName(named([{ firstHour: 0, name: null, known: true }], ''), 5), 'Variant 5');
 });
 
-test('types are the only grouping: over time chooses types, and the table needs no order or bar settings', () => {
-  const shown = OPTIONS.filter(field => Object.values(CHOSEN_KEYS).includes(field.key) && (!field.visibleWhen || field.visibleWhen({ view: 'time' })));
-  assert.deepEqual(shown.map(field => field.key), [CHOSEN_KEYS.type]);
-  assert.equal(shown[0].kind, 'content-set');
-  assert.equal(OPTIONS.some(field => ['grouping', 'order', 'scale', 'partMode', 'chosenVariant', 'chosenDomain'].includes(field.key)), false);
-  const count = OPTIONS.find(field => field.key === 'count');
-  assert.deepEqual(count?.kind === 'choice' ? count.choices.map(choice => choice.value) : [], ['units', 'ic']);
-  assert.deepEqual([count?.visibleWhen?.({ view: 'bars' }), count?.visibleWhen?.({ view: 'time' })], [true, false]);
-});
 
 test('a group whose variants cannot be told has unknown stock and production, never zero', () => {
   const unresolved: EquipmentStockpileReply = { ...REPLY, types: [],

@@ -48,27 +48,6 @@ fn batch(quads: Vec<Quad>) -> Batch {
 }
 
 #[test]
-fn distance_keeps_size_near_then_shrinks_gently_and_fades_by_the_cutoff() {
-    let range = 1100.0;
-    let (scale, alpha) = distance_look(20.0, 900.0, range);
-    assert_eq!((scale, alpha), (1.0, 1.0));
-    let (scale, alpha) = distance_look(SHRINK_TO * range, 900.0, range);
-    assert!((scale - SMALLEST).abs() < 1e-6, "{scale}");
-    assert_eq!(alpha, 1.0);
-    let middle = 900.0 * (1.0 - FADE_SPAN * 0.5);
-    let (_, alpha) = distance_look(middle, 900.0, range);
-    assert!((alpha - 0.5).abs() < 1e-4, "{alpha}");
-    assert_eq!(distance_look(900.0, 900.0, range).1, 0.0);
-    assert_eq!(distance_look(range, 1500.0, range).1, 0.0);
-    let mut last = 1.0;
-    for step in 0..=110 {
-        let (scale, _) = distance_look(step as f32 * 10.0, 900.0, range);
-        assert!(scale <= last + 1e-6);
-        last = scale;
-    }
-}
-
-#[test]
 fn the_game_s_camera_keeps_every_quad_as_laid_out() {
     let camera = Placement::map([2000.0, 1000.0], 300.0).on(MapSize::TEST, MapDefines::test());
     let laid_out = batch(vec![

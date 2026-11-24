@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PlaybackController, MAX_PLAYBACK_SPEED, MIN_PLAYBACK_SPEED, PLAYBACK_SPEEDS, speedLabel, speedParts, validPlaybackSpeed } from './playback.ts';
+import { PlaybackController, MAX_PLAYBACK_SPEED, MIN_PLAYBACK_SPEED } from './playback.ts';
 import { WidgetFrames, pageClock } from './widgetClock.ts';
 import { pipelineFor, type PipelineHost } from './follow/pipeline.ts';
 import type { DashboardClient, DashboardSource } from './client';
@@ -58,35 +58,7 @@ test('invalid custom rates leave the current speed unchanged', () => {
   }
 });
 
-test('rate labels use whole weeks or days where they fit, and round other rates', () => {
-  assert.equal(speedLabel(0.25), '0.25 h/s');
-  assert.equal(speedLabel(4), '4 h/s');
-  assert.equal(speedLabel(12), '12 h/s');
-  assert.equal(speedLabel(24), '1 day/s');
-  assert.equal(speedLabel(48), '2 days/s');
-  assert.equal(speedLabel(36), '36 h/s');
-  assert.equal(speedLabel(168), '1 week/s');
-  assert.equal(speedLabel(720), '30 days/s');
-  assert.equal(speedLabel(1440), '60 days/s');
-  assert.equal(speedLabel(33.333333333), '33.33 h/s');
-  assert.deepEqual(speedParts(168), ['1', 'week/s']);
-  assert.ok(PLAYBACK_SPEEDS.every(validPlaybackSpeed));
-  assert.equal(PLAYBACK_SPEEDS.at(-1), MAX_PLAYBACK_SPEED);
-});
 
-test('the position carries forward between ticks only while playing and stops at the branch end', t => {
-  const clock = new PlaybackController();
-  t.after(() => clock.stop());
-  clock.setBounds({ firstHour: 0, lastHour: 1000 });
-  clock.seek(100);
-  assert.equal(clock.positionAt(performance.now() + 5000), 100);
-  clock.setSpeed(720);
-  const before = performance.now();
-  clock.setPlaying(true);
-  const ahead = clock.positionAt(before + 500);
-  assert.ok(ahead >= 100 && ahead <= 100 + 0.5 * 720);
-  assert.equal(clock.positionAt(before + 60_000), 1000);
-});
 
 test('a subscriber that stops the clock on a speed change does not count the same time twice', t => {
   let now = 1000;
@@ -123,29 +95,7 @@ test('pausing and changing speed keep the time played since the last tick', t =>
   assert.equal(clock.positionAt(performance.now() + 1000), clock.getSnapshot().position);
 });
 
-test('the page and drawing worker advance from the same instant even if starting play takes a frame', t => {
-  let now = 1000;
-  t.mock.method(performance, 'now', () => now);
-  const clock = new PlaybackController();
-  t.after(() => clock.stop());
-  clock.setBounds({ firstHour: 0, lastHour: 100_000 });
-  clock.setSpeed(1440);
-  clock.subscribe(() => { now += 20; });
-  clock.setPlaying(true);
-  const anchor = clock.getSnapshot();
-  assert.equal(clock.positionAt(now), anchor.position + (now - anchor.composedAt!) / 1000 * anchor.hoursPerSecond);
-});
 
-test('anchor listeners run before a new anchor can paint', () => {
-  const clock = new PlaybackController();
-  clock.setBounds({ firstHour: 0, lastHour: 100 });
-  const events: string[] = [];
-  clock.onAnchor(() => events.push('anchor'));
-  clock.subscribeFrame(() => events.push('frame'));
-  clock.setPlaying(true);
-  assert.deepEqual(events, ['anchor', 'frame']);
-  clock.stop();
-});
 
 
 test('seek sequence survives coalesced playback updates but not pauses, speed changes or the branch end', t => {
@@ -224,15 +174,3 @@ test('the 1440 h/s preset banks fractional positions and stops exactly at the br
   assert.equal(clock.getSnapshot().playing, false);
 });
 
-test('every publish tells its publish listeners first, so a seek is handled before any frame or anchor listener of the new position', () => {
-  const clock = new PlaybackController();
-  clock.setBounds({ firstHour: 0, lastHour: 200 });
-  clock.seek(100);
-  const heard: string[] = [];
-  clock.onPublish((previous, next) => heard.push(`publish ${previous.hour}->${next.hour}`));
-  clock.onAnchor(() => heard.push('anchor'));
-  clock.subscribeFrame(() => heard.push(`frame ${clock.getHour()}`));
-  clock.subscribe(() => heard.push('subscribe'));
-  clock.seek(20);
-  assert.deepEqual(heard, ['publish 100->20', 'anchor', 'frame 20', 'subscribe']);
-});

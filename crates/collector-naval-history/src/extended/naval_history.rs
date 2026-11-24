@@ -2175,5 +2175,3 @@ pub mod supremacy_test_kit;
 #[cfg(any(test, feature = "test-support"))]
 pub mod sunk_test_kit;
 
-#[cfg(test)]
-mod l3b_bench;

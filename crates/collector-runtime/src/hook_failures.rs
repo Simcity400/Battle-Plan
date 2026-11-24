@@ -20,10 +20,6 @@ pub(crate) trait RegisteredFamily {
 macro_rules! runtime_families {
     ($($family:ident => $ty:ty),* $(,)?) => {
         $(impl RegisteredFamily for $ty { const FAMILY: Family = Family::$family; })*
-        #[cfg(test)]
-        pub(crate) fn runtime_type(family: Family) -> &'static str {
-            match family { $(Family::$family => stringify!($ty)),* }
-        }
     };
 }
 runtime_families! {

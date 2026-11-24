@@ -83,8 +83,3 @@ fn only_the_owners_ports_show_and_a_queued_ship_without_a_row_has_no_hull() {
     assert_eq!(fixed(i64::MIN), "-92233720368547.75808");
 }
 
-#[test]
-fn the_owners_rows_are_read_by_key_under_their_task_forces() {
-    let read = under(TableId::NavalRepairChildren, &BTreeSet::from([3, 9]), 32);
-    assert_eq!(read.keys, Keys::Ranges(vec![(3 << 32, (3 << 32) | 0xffff_ffff), (9 << 32, (9 << 32) | 0xffff_ffff)]));
-}

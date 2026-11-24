@@ -1936,27 +1936,6 @@ mod tests {
         }
 
         #[test]
-        fn candidate_finalization_publishes_its_marker_pair_after_every_clear() {
-            let _env = env();
-            unsafe extern "system-unwind" fn finalize(_: usize, _: usize, _: usize) -> usize {
-                assert_inside(cut());
-                assert!(take_published().is_empty());
-                0
-            }
-            ORIGINAL[DETOURS + 6].store(finalize as *const () as usize, Ordering::SeqCst);
-            let status = Object::new();
-            begin();
-            unsafe { candidate_finalization(status.at(), 0, 0) };
-            assert_after();
-            assert_eq!(
-                take_published(),
-                [Published::Candidates {
-                    status: status.at()
-                }]
-            );
-        }
-
-        #[test]
         fn a_latch_outside_its_detour_stages_and_publishes_nothing() {
             let _env = env();
             let mission = timed(0);

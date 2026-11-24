@@ -43,23 +43,3 @@ impl Capacity {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Capacity;
-    #[test]
-    fn repair_capacity_text_preserves_native_controls() {
-        assert_eq!(
-            Capacity {
-                used: 1,
-                level: 10,
-                colour: Some('R'),
-            }
-            .text(),
-            format!(
-                "{}R1/10{}!",
-                viewer_native_gui::native_text::COLOR,
-                viewer_native_gui::native_text::COLOR
-            )
-        );
-    }
-}

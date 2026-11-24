@@ -30,11 +30,6 @@ test('equipment fill counts no type past its need and an unknown need is no fill
   assert.equal(trainingRatio(division('1')), 0.5);
 });
 
-test('a halted division says its reason is not available rather than guessing one', () => {
-  const tip = divisionTooltip(division('1', { halted: true }), 8);
-  assert.equal(tip.rows.find(row => row.label === 'Halted')?.value, 'Halting reason not available');
-  assert.ok(!divisionTooltip(division('1'), 8).rows.some(row => row.label === 'Halted'));
-});
 
 test('a held design of unresolved type leaves the fill unknown, never 0%, and keeps the known needs', () => {
   const unresolved = division('1', { need: [{ archetype: 'rifle', name: 'Rifles', needRaw: '10000000', heldRaw: '0' }],

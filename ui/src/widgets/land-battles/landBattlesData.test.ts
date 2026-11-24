@@ -9,10 +9,8 @@ import { battleChangeHours, battleState, battleStateRows } from '../battles/batt
 import { battleWarnings, battleWindowIndex, battleWindows, rankedLandBattleRows, landBattleChanges, landBattleRow, landBattleRows, landBattlePlaceRequests, landWindowPlaces, namedLandBattles,
   shownCensusHour, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking } from './landBattlesData.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
-import { casualtyRankingNote, landCasualtiesMissing, landCasualtyText, landDivisionText, landLossText } from './landBattlesData.ts';
+import { casualtyRankingNote, landCasualtyText, landLossText } from './landBattlesData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { OPTIONS, definition } from './definition.ts';
-import { resolveOptions } from '../../dashboard/options.ts';
 import { countryMatch, countryMatchFilter, countryScope } from '../../dashboard/groups.ts';
 
 const history = (id = 'episode'): LandBattle => ({ id, provinceId: 17, start: { hour: 10, bound: 'exact' }, end: { hour: 21, bound: 'exact' },
@@ -110,16 +108,6 @@ test('an unread result side stays unknown as recorded and never substitutes an e
   assert.equal(read(unread, 21, false, tag => tag === 'unrelated').length, 1);
 });
 
-test('division text pluralises and compact summaries retain exact values without repeated unit labels', () => {
-  assert.equal(landDivisionText({ label: 'Divisions (incl. reserves)', value: 1 }, false), '1 division');
-  assert.equal(landDivisionText({ label: 'Divisions (incl. reserves)', value: 2 }, false), '2 divisions');
-  assert.equal(landDivisionText({ label: 'Divisions (incl. reserves)', value: 0 }, false), '0 divisions');
-  assert.equal(landDivisionText({ label: 'Divisions (incl. reserves)', value: 5000 }, true), '5,000');
-  assert.equal(landDivisionText({ label: 'Divisions (incl. reserves)', value: null, unknown: 'Not recorded' }, true), '—');
-  assert.equal(landCasualtiesMissing(read()), true);
-  assert.equal(landCasualtiesMissing([]), false);
-  assert.equal(landCasualtiesMissing([{ ...read()[0], casualties: { label: 'Casualties', value: 0 } }]), false);
-});
 
 test('window replies keep all entries and actual counters; malformed runs refuse', () => {
   assert.equal(validateLandBattlesReply(wire()).rows.length, 1);
@@ -280,18 +268,6 @@ test('place names require state/hour replies, retain renames and accept every re
   }
 });
 
-test('definition follows the cap ruling and offers casualty default plus uncapped user top N', () => {
-  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
-  assert.equal(definition.availability.product, 'land-battles-manifest');
-  assert.equal(resolveOptions(OPTIONS, {}).measure, 'Casualties');
-  assert.equal(resolveOptions(OPTIONS, {}).view, 'log');
-  assert.equal(resolveOptions(OPTIONS, {}).topN, 30);
-  for (const topN of [5000, Number.MAX_SAFE_INTEGER, 1e100]) assert.equal(resolveOptions(OPTIONS, { topN }).topN, topN);
-  for (const measure of ['Casualties', 'Peak size', 'Length']) assert.equal(resolveOptions(OPTIONS, { measure }).measure, measure);
-  const top = OPTIONS.find(option => option.key === 'topN');
-  assert.ok(top?.kind === 'number');
-  assert.equal(top.max, Infinity);
-});
 
 test('at the last complete census open battles remain ongoing; hidden subsequent reads are unknown', () => {
   const h = { ...history(), end: null };

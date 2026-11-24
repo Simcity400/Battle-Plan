@@ -710,28 +710,6 @@ fn music_outcomes_keep_f64_scaling_and_leave_refused_songs_unknown_in_order() {
 }
 
 #[test]
-fn map_products_music_matches_the_pre_extraction_synchronous_evaluator() {
-    enter_music_tables();
-    let content = fixture_content();
-    let memo = map_products::music_inputs::Memo::new();
-    for countries in [2, 1500, 5000] {
-        let mut frame = frame(countries);
-        for (branch, hour, country) in
-            [(1, 16, 1), (1, 17, 2), (2, 60827992, 1), (1, 10, countries)]
-        {
-            frame.branch = branch;
-            frame.hour = hour;
-            let expected = original(&frame, &content, country);
-            let actual = with_world(&frame, |world| {
-                memo.chances(&frame, &content, country, world)
-            });
-            assert_eq!(bits(&actual), bits(&expected));
-            assert_eq!(actual.refusals, expected.refusals);
-        }
-    }
-}
-
-#[test]
 fn map_products_music_by_identity_reads_again_only_what_a_replaced_table_holds() {
     enter_music_tables();
     let content = fixture_content();

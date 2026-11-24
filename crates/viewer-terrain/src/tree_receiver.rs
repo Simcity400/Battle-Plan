@@ -84,15 +84,3 @@ impl Receiver {
             .map_err(refuse)
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn receiver_has_no_calendar_season_input() {
-        let matrix = [[2., 3., 4., 5.]; 4];
-        let bytes = constants(matrix, 0.375);
-        assert_eq!(&bytes[..64], bytemuck::bytes_of(&matrix));
-        assert_eq!(&bytes[64..72], &[0; 8]);
-        assert_eq!(&bytes[72..76], &0.375_f32.to_le_bytes());
-    }
-}

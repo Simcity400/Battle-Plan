@@ -466,54 +466,6 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "synthetic acquisition cost; release, affinity 0xF"]
-    #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-    fn acquisition_cost() {
-        use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
-        let countries = std::env::var("BATTLEPLAN_INTEL_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_INTEL_COST_COUNTRIES"))
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5_000_u32);
-        let (arena, state) =
-            crate::cintelligence_agency::test_support::intel_arena(countries as usize, 3);
-        let offset = arena.base();
-        // SAFETY: `intel_arena` finished building the arena every read points into, which stays
-        // allocated and immutable through both cases.
-        let memory = CountedMemory::new(unsafe { LiveMemory::new() });
-        let mut rows = vec![Row::default(); countries as usize * 3];
-        for (label, gathered) in [("serial", false), ("batched", true)] {
-            let mut samples = Vec::new();
-            let mut reads = ReadCounts::ZERO;
-            for _ in 0..40 {
-                ReadCounts::take_current();
-                let start = std::time::Instant::now();
-                let walk = if gathered {
-                    super::walk(&memory, offset, state, &mut rows)
-                } else {
-                    baseline::walk(&memory, offset, state, &mut rows)
-                };
-                samples.push(start.elapsed().as_nanos() as f64);
-                reads = ReadCounts::take_current();
-                assert_eq!(
-                    walk,
-                    Outcome::Rows {
-                        len: countries as usize * 3
-                    }
-                );
-                std::hint::black_box(&rows);
-            }
-            samples.sort_by(f64::total_cmp);
-            println!(
-                "cryptology {label} countries={countries} median_ns_per_country={:.1} copy_calls={} record_calls={} spans={}",
-                samples[20] / f64::from(countries),
-                reads.copy_calls,
-                reads.record_calls,
-                reads.spans
-            );
-        }
-    }
-
     const GS: usize = 0x1000;
     const COUNTRIES: usize = 0x3000;
     const LINKS: usize = 0x3100;

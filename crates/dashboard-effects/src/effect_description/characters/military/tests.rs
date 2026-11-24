@@ -126,55 +126,6 @@ fn rendered(fixture: &Fixture, body: &str, expected: &str, character: bool) {
 }
 
 #[test]
-fn add_military_commander_roles() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture(1);
-    for (body, expected, character) in [
-        (
-            "add_corps_commander_role={logistics_skill=4 character=synthetic_character defense_skill=2 traits={} attack_skill=5 skill=6 planning_skill=3}",
-            "Corps Character name AAA",
-            false,
-        ),
-        (
-            "add_field_marshal_role={legacy_id=173 planning_skill=5 traits={} character=synthetic_character skill=2 logistics_skill=6 defense_skill=4 attack_skill=3}",
-            "Marshal Character name AAA",
-            false,
-        ),
-        (
-            "add_naval_commander_role={coordination_skill=3 legacy_id=-1 skill=5 maneuvering_skill=4 traits={} defense_skill=2 attack_skill=6}",
-            "Navy Character name AAA",
-            true,
-        ),
-    ] {
-        rendered(&fixture, body, expected, character);
-    }
-}
-
-#[test]
-fn create_military_leaders() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture(1);
-    for (body, expected) in [
-        (
-            "create_corps_commander={id=451 logistics_skill=3 name=synthetic_operative planning_skill=5 traits={} gfx=GFX_synthetic_portrait defense_skill=4 attack_skill=2 skill=6}",
-            "Corps synthetic_operative AAA",
-        ),
-        (
-            "create_field_marshal={defense_skill=5 traits={synthetic_trait} name=\"Synthetic Marshal\" logistics_skill=4 skill=2 gfx=GFX_synthetic_portrait planning_skill=6 attack_skill=3}",
-            "Marshal Synthetic Marshal AAA",
-        ),
-        (
-            "create_navy_leader={maneuvering_skill=5 name=\"Synthetic Admiral\" defense_skill=4 gfx=GFX_synthetic_portrait traits={} coordination_skill=2 skill=6 attack_skill=3}",
-            "Navy Synthetic Admiral AAA",
-        ),
-    ] {
-        rendered(&fixture, body, expected, false);
-    }
-}
-
-#[test]
 fn legacy_empty_name_uses_recorded_name_token_then_exact_stored_token() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");

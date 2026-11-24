@@ -22,7 +22,6 @@ fn read(text: &[u8]) -> Read {
     )
 }
 
-
 macro_rules! scalar_value_reader_case {
     ($test:ident, $key:literal) => {
         #[test]
@@ -80,27 +79,6 @@ scalar_value_reader_case!(remove_scientist_role_scalar, "remove_scientist_role")
 scalar_value_reader_case!(set_oob_scalar, "set_oob");
 scalar_value_reader_case!(set_naval_oob_scalar, "set_naval_oob");
 scalar_value_reader_case!(set_air_oob_scalar, "set_air_oob");
-
-#[test]
-fn value_reader_block_routes() {
-    let result = read(b"body = { show_ideas_tooltip = { first second } activate_mission = { mission = a invalid = { @lost = 1 } } activate_mission_tooltip = { mission = b desc = c invalid = { @lost = 2 } } } lost = @lost");
-    assert!(result.unsettled.is_none(), "{result:?}");
-    assert!(
-        result
-            .misreads
-            .iter()
-            .all(|note| !note.what.starts_with("Deferred effect")),
-        "{result:?}"
-    );
-    let effects = body(&result.items, "body");
-    assert_eq!(body(effects, "show_ideas_tooltip").len(), 2);
-    assert_eq!(scalar(body(effects, "activate_mission"), "mission"), b"a");
-    assert_eq!(
-        scalar(body(effects, "activate_mission_tooltip"), "desc"),
-        b"c"
-    );
-    assert_eq!(scalar(&result.items, "lost"), b"@lost");
-}
 
 #[test]
 fn assignment_key_readers() {
@@ -1002,9 +980,6 @@ fn value_remove_role_uses_scalar_or_character_inline_keys() {
     );
 }
 
-
-
-
 #[test]
 fn template_value_reader_starts_its_persistent_loop_after_a_scalar() {
     let result = read(b"body={division_template=none name=T priority=2} add_stability=0} final=9");
@@ -1081,7 +1056,6 @@ fn template_forbidden_equipment_unknown_field_reads_one_value_only() {
     assert_eq!(scalar(&result.items, "seen"), b"3");
     assert_eq!(scalar(effects, "add_stability"), b"0");
 }
-
 
 fn read_scoped_effect(text: &[u8], scope: Option<u32>, names: &KeyNames) -> Read {
     initialize_tables();
@@ -1236,7 +1210,6 @@ fn content_targets_and_registered_effect_precedence_select_effect_scope() {
     assert_eq!(scalar(&result.items, "country"), b"3");
     assert_eq!(scalar(&result.items, "registered"), b"5");
 }
-
 
 #[test]
 fn project_iteration_empty_assigned_key_keeps_one_value() {

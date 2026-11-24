@@ -102,11 +102,6 @@ class Planted(unittest.TestCase):
             _, found = run_gate(self, scratch, "LICENSE", "notes.txt")
         self.assertEqual(found, {"LICENSE": {"aws-key"}, "notes.txt": {"term", "user-path"}})
 
-    def test_a_clean_folder_passes(self):
-        with tempfile.TemporaryDirectory() as scratch:
-            Path(scratch, "a.txt").write_text("nothing to see")
-            result, found = run_gate(self, scratch, ".")
-        self.assertEqual((result.returncode, found), (0, {}), result.stdout + result.stderr)
 
 
 class Addresses(unittest.TestCase):

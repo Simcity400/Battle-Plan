@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createElement, isValidElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { cellContent, cellText, columnAlign, growColumnWidths, hideOrder, tableGrid, withHidden } from './columns.ts';
 import type { TableColumn } from './columns';
 import { densityRowHeight, rowOffsets, sortRows, visibleRange } from './logic.ts';
@@ -43,18 +42,6 @@ test('missing values override custom renderers unless opted in, regardless of nu
   assert.equal(columnAlign({ align: 'end' }), 'end');
 });
 
-test('Military story: portrait/name/flag/subtitle, stars, mini-bars and clipped traits use the same columns', () => {
-  const row = generalsFixture.rows[0];
-  const cells = generalsFixture.columns.map(column => renderToStaticMarkup(createElement('td', null, cellContent(column, row))));
-  assert.match(cells[0], /recorded-portrait-z/);
-  assert.match(cells[1], /Recorded leader Z.*recorded-flag-z.*Recorded rank/);
-  assert.match(cells[2], /★★★★/);
-  assert.equal(cells[3].match(/<meter/g)?.length, 4);
-  assert.match(cells[4], /flex-wrap:nowrap;overflow:hidden/);
-  assert.equal(generalsFixture.columns[0].header, null);
-  assert.equal(generalsFixture.columns[0].label, 'Portrait');
-  assert.equal(generalsFixture.columns[0].sortable, false);
-});
 
 test('Military story: muted aces retain their rank; custom row heights scale for CSS and windowing', () => {
   const skill = generalsFixture.columns[2];

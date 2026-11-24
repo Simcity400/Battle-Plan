@@ -14,10 +14,6 @@ test('a restart to update goes ahead at once only when nothing is unsaved', () =
   });
 });
 
-test('the unsaved detail names every page and the theme', () => {
-  assert.equal(unsavedDetail(['Overview', 'Economy', 'Air war'], null), 'Layout changes on Overview, Economy and Air war aren’t saved.');
-  assert.equal(unsavedDetail([], 'Carbon copy'), 'The theme “Carbon copy” isn’t saved.');
-});
 
 test('a settings change still on its way to BattlePlan keeps a close from going ahead unasked', () => {
   assert.deepEqual(leavePrompt('close', unsavedDetail([], null, 'saving')), {

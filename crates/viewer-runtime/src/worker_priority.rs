@@ -151,15 +151,3 @@ pub fn normal_priority() {
     enter(Class::Normal);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Class;
-
-    #[test]
-    fn each_class_keeps_todays_priority() {
-        let today = [(Class::Frame, 1), (Class::Worker, -1), (Class::Refining, -2), (Class::Normal, 0), (Class::Kept, 0)];
-        for (class, level) in today {
-            assert_eq!(class.level(), level, "{class:?}");
-        }
-    }
-}

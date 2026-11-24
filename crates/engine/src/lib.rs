@@ -172,8 +172,6 @@ pub use engine_stability::cworld_threat;
 pub use engine_stability::dynamic_modifier_entry;
 pub use engine_stability::localization_root_layout;
 pub use engine_visibility::cplayer_status_cache;
-#[cfg(test)]
-mod model_input_cost;
 pub use engine_air_history::sair_wing_combat_data;
 pub use engine_air_history::sdamage_entry;
 pub use engine_characters::scientist_roster;

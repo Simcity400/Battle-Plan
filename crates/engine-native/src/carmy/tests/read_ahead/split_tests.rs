@@ -577,3 +577,4 @@ fn staged_maxima_settle_reads_no_staged_block_and_keeps_exact_rows() {
         }
     }
 }
+

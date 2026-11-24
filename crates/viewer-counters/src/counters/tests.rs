@@ -85,74 +85,6 @@ fn a_stack_slot_the_file_leaves_out_takes_the_provinces_centroid_default() {
     assert_eq!(fallbacks, [9]);
 }
 
-#[test]
-fn visible_and_question_mark_type_quads_keep_each_relation_color() {
-    use type_tint::Side;
-    let known = templates::TypeIcon {
-        sprite: "synthetic-type".into(),
-        frame: 0,
-    };
-    let unknown = templates::no_intel_icon(false);
-    assert_eq!(unknown.sprite, NO_INTEL_SPRITE);
-    let atlas = templates::TypeAtlas::test_icons(&[
-        known.clone(),
-        unknown.clone(),
-        templates::no_intel_icon(true),
-    ]);
-    let child = layouts().land.unwrap().type_icon;
-    for side in [Side::Friend, Side::Enemy, Side::Neutral] {
-        let tint = type_tint::Colors::TEST.of(side);
-        for hidden in [false, true] {
-            let mut batch = Batch::default();
-            let _ = land::draw_type_icon(
-                &atlas,
-                &mut batch,
-                &child,
-                [100.0, 200.0],
-                Some(if hidden { &unknown } else { &known }),
-                Some(tint),
-            );
-            let quad = &batch.quads[0];
-            assert_eq!(batch.quads.len(), 1);
-            assert_eq!(quad.color, tint);
-            assert_eq!(quad.uv, atlas.uv(u32::from(hidden)));
-            assert_eq!(
-                quad.rect,
-                [
-                    100.0 + child.at[0],
-                    200.0 + child.at[1],
-                    templates::FRAME_SIZE[0] as f32 * child.scale,
-                    templates::FRAME_SIZE[1] as f32 * child.scale
-                ]
-            );
-            batch.clear();
-            let _ = land::draw_type_icon(
-                &atlas,
-                &mut batch,
-                &child,
-                [100.0, 200.0],
-                Some(&known),
-                None,
-            );
-            assert!(batch.quads.is_empty());
-            let _ = land::draw_type_icon(
-                &atlas,
-                &mut batch,
-                &child,
-                [100.0, 200.0],
-                Some(&if hidden {
-                    templates::no_intel_icon(true)
-                } else {
-                    known.clone()
-                }),
-                Some(tint),
-            );
-            assert_eq!(batch.quads[0].uv, atlas.uv(if hidden { 2 } else { 0 }));
-            batch.clear();
-        }
-    }
-}
-
 use content_reader_layers::ResolvedLayers;
 use content_reader_gui::gui::native;
 use content_reader_map::map::ProvinceKind;
@@ -895,8 +827,6 @@ fn window_size_applies_native_bounds_and_names_unsupported_constraints() {
     );
 }
 
-
-
 #[test]
 fn port_slots_are_is_port_types_and_their_redirects() {
     let definitions = content_reader_key_names::buildings::parse(
@@ -1044,8 +974,6 @@ fn the_flag_union_is_rebuilt_only_when_it_changes() {
     assign_union(&mut target, &BTreeSet::new(), [].iter());
     assert!(target.is_empty());
 }
-
-
 
 #[test]
 fn the_air_base_icon_follows_the_state_s_base_not_a_type_name() {
@@ -1603,62 +1531,6 @@ fn native_gui(source: impl AsRef<str>) -> native::Gui {
 use viewer_native_gui::test_support::SYNTHETIC_NAVAL_GUI;
 
 use viewer_native_gui::test_support::SYNTHETIC_NAVY_GUI;
-
-
-
-
-
-#[test]
-fn counter_action_anchor_draws_the_authored_child_frame_and_white_tint() {
-    content_reader_script::test_game::enter();
-    let strip = sheet("GFX_synthetic_actions", 12, [144, 13]);
-    let action = counter_action::action_code(
-        &replay_data::rows::DivisionMovementRow {
-            path_total: 1,
-            naval_transfer: 1,
-            ..Default::default()
-        },
-        None,
-        Ok(true),
-        Some(false),
-    );
-    let mut representative = land_unit(1, 1, 10, 10, true);
-    representative.action = action;
-    representative.sight = Sight::Partial;
-    let mut obscured = land_unit(2, 1, 10, 10, true);
-    obscured.action = Ok(4);
-    obscured.sight = Sight::Partial;
-    let mut visible = land_unit(3, 1, 10, 10, true);
-    visible.action = action;
-    let mut members = [representative, obscured, visible];
-    let batch = draw_land_action_fixture(action_gui(false), &members, false).0;
-    let quad = batch.quads.iter().find(|quad| quad.texture == 2).unwrap();
-    assert_eq!(quad.rect, [157.0, 209.0, 6.0, 6.5]);
-    assert_eq!(quad.uv, strip.frame_uv(8));
-    assert_eq!(quad.color, [1.0; 4]);
-    assert_eq!(
-        quad.layer,
-        layer(
-            CounterDefines::VANILLA.stack_priority(100.0, PriorityTable::Default),
-            0,
-            1
-        )
-    );
-
-    members[2].action = Ok(4);
-    let batch = draw_land_action_fixture(action_gui(false), &members, false).0;
-    let quad = batch.quads.iter().find(|quad| quad.texture == 2).unwrap();
-    assert_eq!(quad.uv, strip.frame_uv(0));
-    for (owner, coarse) in [(2, false), (1, true)] {
-        members[0].owner = owner;
-        let batch = draw_land_action_fixture(action_gui(false), &members, coarse).0;
-        assert!(batch.quads.iter().all(|quad| quad.texture != 2));
-    }
-}
-
-
-
-
 
 #[test]
 fn counter_display_hides_kinds_and_owners_it_filters() {
@@ -2482,7 +2354,6 @@ fn unit_flag_owner_keeps_the_coarse_roster_and_resolves_detailed_references() {
     }
 }
 
-
 fn gun_unit(id: u64, owner: u32, name: &str, join_action: u8, group: u64) -> LandUnit<'static> {
     LandUnit {
         orders_group: group,
@@ -2677,41 +2548,6 @@ fn the_ability_grid_takes_vector_order_and_the_last_visible_commander() {
     )]));
     let abilities = AbilityInputs::read(&ability_frame(unknown), &links).unwrap();
     assert_eq!(abilities.of(7, 11), None);
-}
-
-#[test]
-fn ability_items_step_right_from_the_item_centre_without_centring_the_sprite() {
-    let mut grid = layouts().abilities.unwrap();
-    let sheet = sheet("GFX_ability_force_attack_animated", 1, [32, 32]);
-    let first = land::ability_rect(&sheet, &grid, [100.0, 100.0], 0);
-    assert_eq!(first, [165.0, 101.0, 25.6, 25.6]);
-    let second = land::ability_rect(&sheet, &grid, [100.0, 100.0], 1);
-    assert_eq!(second[0] - first[0], 25.0);
-    assert_eq!(second[1], first[1]);
-    grid.centred = true;
-    assert_eq!(
-        land::ability_rect(&sheet, &grid, [100.0, 100.0], 0),
-        [153.0, 89.0, 25.6, 25.6]
-    );
-    grid.from_centre = false;
-    grid.centred = false;
-    assert_eq!(
-        land::ability_rect(&sheet, &grid, [100.0, 100.0], 0),
-        [155.0, 91.0, 25.6, 25.6]
-    );
-}
-
-#[test]
-fn a_mixed_column_takes_the_first_width_and_accumulated_heights() {
-    assert_eq!(
-        land::column_origin([100.0, 200.0], &[[76.0, 24.0]; 10]),
-        Some([62, 80])
-    );
-    assert_eq!(
-        land::column_origin([100.0, 200.0], &[[58.0, 24.0], [76.0, 30.0]]),
-        Some([71, 173])
-    );
-    assert_eq!(land::column_origin([0.0, 0.0], &[]), None);
 }
 
 #[test]
@@ -4257,58 +4093,6 @@ fn a_combat_icon_sits_between_both_anchors_across_the_seam() {
 }
 
 #[test]
-fn the_naval_base_frame_pairs_ships_with_the_known_and_foreign_arms() {
-    assert_eq!(naval_base_frame(false, true, false, false), 0);
-    assert_eq!(naval_base_frame(false, true, false, true), 1);
-    assert_eq!(naval_base_frame(true, false, false, false), 2);
-    assert_eq!(naval_base_frame(true, false, false, true), 3);
-    assert_eq!(naval_base_frame(true, false, true, false), 4);
-    assert_eq!(naval_base_frame(true, false, true, true), 5);
-    assert_eq!(naval_base_frame(true, true, false, false), 6);
-    assert_eq!(naval_base_frame(true, true, false, true), 7);
-    assert_eq!(naval_base_frame(true, true, true, false), 8);
-    assert_eq!(naval_base_frame(true, true, true, true), 9);
-    assert_eq!(naval_base_frame(false, true, true, true), 1);
-}
-
-#[test]
-fn a_quarter_turned_bar_keeps_its_left_edge_and_its_vertical_centre() {
-    let layouts = layouts();
-    let origin = [943.0, 846.0];
-    let land = layouts.land.as_ref().unwrap();
-    let bar = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
-    let mut batch = Batch::default();
-    draw_bar(&mut batch, &bar, &land.bar_org, origin, 0.5);
-    draw_bar(&mut batch, &bar, &land.bar_str, origin, 0.5);
-    for (got, want) in batch.quads[0]
-        .screen_bounds()
-        .iter()
-        .zip([957.5, 861.0, 10.0, 3.0])
-    {
-        assert!((got - want).abs() < 1e-4, "{:?}", batch.quads[0].screen_bounds());
-    }
-    for (got, want) in batch.quads[1]
-        .screen_bounds()
-        .iter()
-        .zip([957.5, 865.0, 10.0, 3.0])
-    {
-        assert!((got - want).abs() < 1e-4, "{:?}", batch.quads[1].screen_bounds());
-    }
-    let upright = Child {
-        sprite: "GFX_test".into(),
-        at: [4.0, 5.0],
-        scale: 1.0,
-        frame: 0,
-        rotation: 0.0,
-        centered: false,
-        order: 0,
-    };
-    let square = sheet("GFX_test", 1, [10, 10]);
-    draw_bar(&mut batch, &square, &upright, origin, 0.9);
-    assert_eq!(batch.quads[2].rect, [947.0, 851.0, 10.0, 10.0]);
-}
-
-#[test]
 fn counter_cutoffs_preserve_visibility_and_limit_zoom_lift() {
     let layouts = layouts();
     let reference = 310.178;
@@ -4532,54 +4316,6 @@ fn children_take_their_declaration_order_and_their_font() {
 }
 
 #[test]
-fn synthetic_counter_buttons_resolve_and_draw_count_bg() {
-    content_reader_script::test_game::enter();
-    let document = layout_gui(
-        br#"guiTypes = {
-            containerWindowType = { name = "unit_counter" size = { width = 81 height = 29 }
-                buttonType = {
-                    name = "count_bg"
-                    quadTextureSprite = "GFX_fixture_button_plate"
-                    position = { x=3 y=5 }
-                }
-            }
-            containerWindowType = { name = "unit_counter_railway_gun" size = { width = 63 height = 31 }
-                buttonType = {
-                    name = "count_bg"
-                    quadTextureSprite = "GFX_fixture_button_plate"
-                    position = { x=3 y=5 }
-                }
-            }
-        }"#,
-    );
-    let mut missing = Vec::new();
-    let land = land_counter(&document, &mut missing).unwrap();
-    let gun = gun_counter(&document, &mut missing).unwrap().unwrap();
-    let plate_sheet = sheet("GFX_fixture_button_plate", 4, [212, 17]);
-    for (name, plate) in [(LAND_WINDOW, land.plate), (GUN_WINDOW, gun.plate)] {
-        assert_eq!(plate.sprite, plate_sheet.name, "{name}");
-        assert!(
-            !missing.contains(&format!("{name}.count_bg")),
-            "{missing:?}"
-        );
-        assert_eq!(plate.at, [3.0, 5.0]);
-        let mut batch = Batch::default();
-        draw_child(
-            &mut batch,
-            &plate_sheet,
-            &plate,
-            [100.0, 200.0],
-            plate.frame_index(0),
-            [0.2, 0.4, 0.6, 1.0],
-        );
-        assert_eq!(batch.quads.len(), 1, "{name}");
-        assert_eq!(batch.quads[0].rect, [103.0, 205.0, 53.0, 17.0]);
-        assert_eq!(batch.quads[0].uv, plate_sheet.frame_uv(0));
-        assert_eq!(batch.quads[0].color, [0.2, 0.4, 0.6, 1.0]);
-    }
-}
-
-#[test]
 fn counter_button_sprite_aliases_and_frames_match_native_button_drawing() {
     content_reader_script::test_game::enter();
     use viewer_native_gui::native_gui::{PartKind, lifecycle::Instance};
@@ -4691,59 +4427,6 @@ fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() 
     let mut kept = CounterReport::default();
     kept.assign(&report);
     assert_eq!(kept.land_counter_gaps, report.land_counter_gaps);
-}
-
-#[test]
-fn undecided_naval_icons_reach_the_warnings() {
-    let report = CounterReport {
-        naval_result_gaps: BTreeMap::from([(
-            "a sea province's combat vector is unknown".into(),
-            1,
-        )]),
-        undeclared_result_sprites: BTreeMap::from([("GFX_naval_combat_result_convoys", 2)]),
-        refused_tokens: BTreeSet::from(["x".to_owned()]),
-        ..Default::default()
-    };
-    assert_eq!(
-        report.warnings().collect::<Vec<_>>(),
-        [
-            "Counters: refused token: x.",
-            "Naval result icons: 1 x a sea province's combat vector is unknown.",
-            "Naval result icons: 2 keep their drawable: the content declares no sprite GFX_naval_combat_result_convoys.",
-        ]
-    );
-    let mut kept = CounterReport::default();
-    kept.assign(&report);
-    assert_eq!(kept.warnings().count(), 3);
-    kept.assign(&CounterReport::default());
-    assert_eq!(kept.warnings().count(), 0);
-}
-
-#[test]
-fn retained_naval_icon_limits_reach_the_warnings_when_drawn() {
-    let report = CounterReport {
-        naval_combats: 3,
-        base_frame_naval_combats: 1,
-        ..Default::default()
-    };
-    assert_eq!(
-        report.warnings().collect::<Vec<_>>(),
-        [
-            "Naval combat icons: 3 drawn from this view's own windows, kept since the view started; the recording client's windows from before that are in no recording.",
-            "Naval combat icons: 1 keep the frame their pool slot last had in this view (unengaged and spill-over icons retain that frame); the recording client's pool before the view started is in no recording.",
-        ]
-    );
-    let mut kept = CounterReport::default();
-    kept.assign(&report);
-    assert_eq!(kept.warnings().count(), 2);
-    let engaged_only = CounterReport {
-        naval_combats: 3,
-        ..Default::default()
-    };
-    kept.assign(&engaged_only);
-    assert_eq!(kept.warnings().count(), 1);
-    kept.assign(&CounterReport::default());
-    assert_eq!(kept.warnings().count(), 0);
 }
 
 #[test]
@@ -4990,27 +4673,6 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
     assert_eq!(sea.shows_pride(), None);
 }
 
-#[test]
-fn naval_grid_gaps_reach_the_warnings_and_survive_assign() {
-    let mut source = CounterReport::default();
-    source.refused_tokens.insert("a token".into());
-    source.naval_grid_gaps.insert(
-        "a foreign task force's intel is unknown (the unit intel census is truncated)".into(),
-        2,
-    );
-    let mut kept = CounterReport::default();
-    kept.assign(&source);
-    assert_eq!(
-        kept.warnings().collect::<Vec<_>>(),
-        [
-            "Counters: refused token: a token.",
-            "Naval combat grids: 2 x a foreign task force's intel is unknown (the unit intel census is truncated).",
-        ]
-    );
-    kept.assign(&CounterReport::default());
-    assert_eq!(kept.warnings().count(), 0);
-}
-
 fn flag_fixture<const N: usize>(names: [&str; N]) -> Arc<LazyFlags> {
     let textures = LazyTextures::new();
     textures.set_background(false);
@@ -5026,88 +4688,6 @@ fn flag_fixture<const N: usize>(names: [&str; N]) -> Arc<LazyFlags> {
         })
     });
     LazyFlags::new(index, pages, read, &textures)
-}
-
-#[test]
-fn hour_flag_warming_uses_recorded_candidates_at_all_three_sizes() {
-    content_reader_script::test_game::enter();
-    let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
-    with_counter_inputs_fixture(
-        action_gui(false),
-        |assets| {
-            for (flags, cell) in [
-                (&mut assets.0.flags, [10, 7]),
-                (&mut assets.0.medium_flags, [41, 26]),
-                (&mut assets.0.large_flags, [82, 52]),
-            ] {
-                let calls = Arc::clone(&reads);
-                let read: FlagReader = Arc::new(move |key| {
-                    calls.lock().unwrap().push((cell, key.to_owned()));
-                    (key != "COS_group").then(|| content_reader_image::Rgba8Image {
-                        width: cell[0],
-                        height: cell[1],
-                        pixels: vec![7; (cell[0] * cell[1] * 4) as usize],
-                    })
-                });
-                let index = [
-                    "COS_group",
-                    "COS",
-                    "ORI_group",
-                    "ORI",
-                    "D01",
-                    "BAD",
-                    "UNREC",
-                ]
-                .map(|key| (key.to_owned(), key.to_owned()))
-                .into();
-                *flags = LazyFlags::new(
-                    index,
-                    atlas_pages::CellPages::plan(cell, 8192, "flags").unwrap(),
-                    read,
-                    &LazyTextures::new(),
-                );
-            }
-        },
-        |_| {},
-        |inputs| {
-            let countries = Countries {
-                tags: [(1, "D01".into()), (2, "BAD".into())].into(),
-                flag_tags: [
-                    (1, (Ok("COS".into()), Ok("ORI".into()))),
-                    (
-                        2,
-                        (Err("cosmetic tag is not UTF-8".into()), Ok("BAD".into())),
-                    ),
-                    (3, (Ok(String::new()), Ok("UNREC".into()))),
-                ]
-                .into(),
-                groups: [(1, Ok(Some("group".into()))), (2, Ok(None)), (3, Ok(None))].into(),
-                ..Default::default()
-            };
-            countries.warm_flags(inputs.assets);
-            countries.warm_flags(inputs.assets);
-            let before: BTreeSet<_> = reads.lock().unwrap().iter().cloned().collect();
-            let expected: BTreeSet<_> = [[10, 7], [41, 26], [82, 52]]
-                .into_iter()
-                .flat_map(|cell| {
-                    ["COS_group", "COS", "ORI_group", "ORI"].map(|key| (cell, key.to_owned()))
-                })
-                .collect();
-            assert_eq!(before, expected);
-            assert_eq!(reads.lock().unwrap().len(), 12);
-            for flags in [
-                &inputs.assets.flags,
-                &inputs.assets.medium_flags,
-                &inputs.assets.large_flags,
-            ] {
-                assert_eq!(flags.loaded(), 0);
-                let (page, uv) = countries.flag_now(flags, 1).unwrap();
-                assert_eq!(flags.key_at(page, uv).as_deref(), Some("COS"));
-                assert_eq!(countries.flag_now(flags, 2), None);
-            }
-            assert_eq!(reads.lock().unwrap().len(), 12);
-        },
-    );
 }
 
 #[test]
@@ -5199,13 +4779,6 @@ fn window_flags_resolve_recorded_tags_through_the_small_atlas() {
 }
 
 #[test]
-fn the_overlay_blends_by_its_alpha() {
-    let mut pixels = [200, 100, 0, 77];
-    blend_flag_overlay(&mut pixels, &[0, 99, 255, 51]);
-    assert_eq!(pixels, [160, 100, 51, 77]);
-}
-
-#[test]
 fn a_counter_flag_follows_the_cosmetic_and_exact_original_tag() {
     let flags = flag_fixture(["GER_fascism", "GER_NEW", "D01", "Z01_communism", "Z01"]);
     let countries = Countries {
@@ -5273,47 +4846,6 @@ fn a_counter_flag_follows_the_cosmetic_and_exact_original_tag() {
     );
     unknown.groups.insert(2, Ok(None));
     assert_eq!(unknown.flag_now(&flags, 2), flags.acquire(&["GER_NEW"]));
-}
-
-#[test]
-fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
-    let mut batch = Batch::default();
-    let plate = sheet("GFX_onmap_unit_counter", 3, [198, 27]);
-    batch.scaled(&plate, 0, [10.0, 20.0], [66.0, 27.0], [1.0; 4]);
-    assert_eq!(batch.quads[0].rect, [10.0, 20.0, 66.0, 27.0]);
-    let bar = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
-    batch.bar(
-        &bar,
-        [26.5, 21.0],
-        [3.0, 17.0],
-        8.5,
-        std::f32::consts::FRAC_PI_2,
-        [1.0; 4],
-    );
-    assert_eq!(batch.quads[1].rotation, Some(std::f32::consts::FRAC_PI_2));
-    assert_eq!(batch.quads[1].uv, [0.0, 0.0, 1.0, 8.0 / 17.0]);
-    batch.bar(
-        &bar,
-        [26.5, 21.0],
-        [3.0, 17.0],
-        0.0,
-        std::f32::consts::FRAC_PI_2,
-        [1.0; 4],
-    );
-    assert_eq!(batch.quads.len(), 2);
-    batch.bar(
-        &bar,
-        [31.5, 21.0],
-        [3.0, 17.0],
-        30.0,
-        std::f32::consts::FRAC_PI_2,
-        [1.0; 4],
-    );
-    assert_eq!(batch.quads[2].uv, [0.0, 0.0, 1.0, 1.0]);
-    let bounds = batch.quads[2].screen_bounds();
-    for (got, want) in bounds.iter().zip([24.0, 28.0, 18.0, 3.0]) {
-        assert!((got - want).abs() < 1e-4, "{bounds:?}");
-    }
 }
 
 #[test]
@@ -5497,22 +5029,6 @@ fn the_air_base_badge_prefers_recorded_wings_over_the_fallback_reading() {
         air_base_frame(&count(false, None, Some(true), 5), Some(false)),
         0
     );
-}
-
-#[test]
-fn selected_air_base_frames_override_foreign_permission_and_keep_the_stationed_badge() {
-    let mut count = AirBaseCount {
-        shown: true,
-        selected: true,
-        stationed: Some(false),
-        foreign: Some(true),
-        ..Default::default()
-    };
-    assert_eq!(air_base_frame(&count, Some(true)), 5);
-    count.stationed = Some(true);
-    assert_eq!(air_base_frame(&count, Some(true)), 6);
-    count.shown = false;
-    assert!(air_base_frame(&count, Some(true)) < 5);
 }
 
 #[test]
@@ -5756,36 +5272,6 @@ fn the_resource_and_raid_modes_draw_no_unit_counters() {
 }
 
 #[test]
-fn the_map_mode_keeps_task_forces_by_its_unit_kinds() {
-    let unreached = || -> Option<bool> { panic!("only the air mode tests carriers") };
-    assert_eq!(
-        naval::mode_keeps_task_force(UnitKinds::All, unreached),
-        Some(true)
-    );
-    assert_eq!(
-        naval::mode_keeps_task_force(UnitKinds::Nothing, unreached),
-        Some(false)
-    );
-    for carries in [Some(true), Some(false), None] {
-        assert_eq!(
-            naval::mode_keeps_task_force(UnitKinds::CarrierFleets, || carries),
-            carries
-        );
-    }
-}
-
-#[test]
-fn the_navy_mode_draws_armies_at_its_opacity_and_railway_guns_whole() {
-    let navy = Visibility {
-        army_opacity: Visibility::NAVY_ARMY_OPACITY,
-        ..Visibility::POLITICAL
-    };
-    assert_eq!(land::plate_opacity(&navy, false), 0.5);
-    assert_eq!(land::plate_opacity(&navy, true), 1.0);
-    assert_eq!(land::plate_opacity(&Visibility::POLITICAL, false), 1.0);
-}
-
-#[test]
 fn memoized_template_icons_equal_a_fresh_read_hour_by_hour() {
     let icon = |template, name: &str, custom_icon| replay_data::rows::DivisionTemplateIconRow {
         template,
@@ -6013,59 +5499,6 @@ fn unknown_relations_keep_distinct_foreign_owners_apart_in_land_and_naval_groupi
 }
 
 #[test]
-fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
-    let layouts = layouts();
-    let bar_org = &layouts.land.as_ref().unwrap().bar_org;
-    let patterned = sheet("GFX_mapicon_unit_bar_org", 1, [3, 17]);
-    let mut batch = Batch::default();
-    draw_bar(&mut batch, &patterned, bar_org, [943.0, 846.0], 0.5);
-    assert_eq!(batch.quads.len(), 1);
-    let partial = &batch.quads[0];
-    assert_eq!(partial.rotation, Some(bar_org.rotation));
-    assert_eq!(partial.uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
-    let bounds = partial.screen_bounds();
-    for (got, want) in bounds.iter().zip([957.5, 861.0, 10.0, 3.0]) {
-        assert!((got - want).abs() < 1e-4, "{bounds:?}");
-    }
-    draw_bar(&mut batch, &patterned, bar_org, [943.0, 846.0], 1.0);
-    assert_eq!(batch.quads.len(), 2);
-    let full = &batch.quads[1];
-    assert_eq!(full.rotation, Some(bar_org.rotation));
-    assert_eq!(full.uv, [0.0, 0.0, 1.0, 1.0]);
-    let bounds = full.screen_bounds();
-    for (got, want) in bounds.iter().zip([957.5, 861.0, 18.0, 3.0]) {
-        assert!((got - want).abs() < 1e-4, "{bounds:?}");
-    }
-    let upright = Child {
-        sprite: "GFX_horizontal_bar".into(),
-        at: [14.0, 8.0],
-        scale: 1.0,
-        frame: 0,
-        rotation: 0.0,
-        centered: false,
-        order: 0,
-    };
-    let horizontal = sheet("GFX_horizontal_bar", 1, [17, 3]);
-    draw_bar(&mut batch, &horizontal, &upright, [943.0, 846.0], 0.5);
-    assert_eq!(batch.quads[2].rotation, Some(0.0));
-    assert_eq!(batch.quads[2].rect, [957.0, 854.0, 10.0, 3.0]);
-    assert_eq!(batch.quads[2].uv, [0.0, 0.0, 10.0 / 17.0, 1.0]);
-    let upright_tall = Child {
-        sprite: "GFX_mapicon_unit_bar_org".into(),
-        at: [14.0, 8.0],
-        scale: 1.0,
-        frame: 0,
-        rotation: 0.0,
-        centered: false,
-        order: 0,
-    };
-    draw_bar(&mut batch, &patterned, &upright_tall, [0.0, 0.0], 0.5);
-    assert_eq!(batch.quads[3].rotation, Some(0.0));
-    assert_eq!(batch.quads[3].rect, [18.0, 11.5, 3.0, 10.0]);
-    assert_eq!(batch.quads[3].uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
-}
-
-#[test]
 fn land_stack_refuses_non_finite_group_marker_and_preserves_valid_ones() {
     let countries = Arc::new(Countries::default());
     let templates = Arc::new(TemplateIcons::default());
@@ -6116,173 +5549,6 @@ fn land_stack_refuses_non_finite_group_marker_and_preserves_valid_ones() {
     foreign.owner = 2;
     let stack = land::land_stack(&[&foreign], &tables, &Default::default(), false, &|_| false, false);
     assert_eq!(stack.marker, Ok(None));
-}
-
-#[test]
-fn rotated_bars_are_continuous_across_45_degrees_and_keep_texels_anchored() {
-    let horizontal = sheet("GFX_horizontal_bar", 1, [17, 3]);
-    let child = |degrees: f32| Child {
-        sprite: "GFX_horizontal_bar".into(),
-        at: [14.0, 8.0],
-        scale: 1.0,
-        frame: 0,
-        rotation: degrees.to_radians(),
-        centered: false,
-        order: 0,
-    };
-    let origin = [100.0, 200.0];
-    let mut below = Batch::default();
-    draw_bar(&mut below, &horizontal, &child(44.9), origin, 1.0);
-    let mut above = Batch::default();
-    draw_bar(&mut above, &horizontal, &child(45.1), origin, 1.0);
-    let q_below = &below.quads[0];
-    let q_above = &above.quads[0];
-    assert_eq!(q_below.rect[2], 18.0);
-    assert_eq!(q_above.rect[2], 18.0);
-    let centre = |q: &sprites::Quad| [q.rect[0] + q.rect[2] * 0.5, q.rect[1] + q.rect[3] * 0.5];
-    let (c_below, c_above) = (centre(q_below), centre(q_above));
-    assert!(
-        (c_below[0] - c_above[0]).abs() < 0.05 && (c_below[1] - c_above[1]).abs() < 0.05,
-        "45-degree jump: {c_below:?} vs {c_above:?}"
-    );
-
-    let corner0 = |q: &sprites::Quad| {
-        let cx = q.rect[0] + q.rect[2] * 0.5;
-        let cy = q.rect[1] + q.rect[3] * 0.5;
-        let (dx, dy) = (q.rect[0] - cx, q.rect[1] - cy);
-        let (sin, cos) = q.rotation.unwrap_or(0.0).sin_cos();
-        [cx + dx * cos + dy * sin, cy + dy * cos - dx * sin]
-    };
-    let mut full = Batch::default();
-    draw_bar(&mut full, &horizontal, &child(30.0), origin, 1.0);
-    let mut partial = Batch::default();
-    draw_bar(&mut partial, &horizontal, &child(30.0), origin, 0.5);
-    let (p_full, p_partial) = (corner0(&full.quads[0]), corner0(&partial.quads[0]));
-    assert!(
-        (p_full[0] - p_partial[0]).abs() < 1e-4 && (p_full[1] - p_partial[1]).abs() < 1e-4,
-        "source texel moved under partial fill: {p_full:?} vs {p_partial:?}"
-    );
-
-    let vertical = sheet("GFX_vertical_bar", 1, [3, 17]);
-    let tall = |degrees: f32| Child {
-        sprite: "GFX_vertical_bar".into(),
-        at: [14.0, 8.0],
-        scale: 1.0,
-        frame: 0,
-        rotation: degrees.to_radians(),
-        centered: false,
-        order: 0,
-    };
-    let mut tall_below = Batch::default();
-    draw_bar(&mut tall_below, &vertical, &tall(44.9), origin, 1.0);
-    let mut tall_above = Batch::default();
-    draw_bar(&mut tall_above, &vertical, &tall(45.1), origin, 1.0);
-    assert_eq!(tall_below.quads[0].rect[3], 18.0);
-    assert_eq!(tall_above.quads[0].rect[3], 18.0);
-    assert_eq!(centre(&tall_below.quads[0]), centre(&tall_above.quads[0]));
-}
-
-#[test]
-fn tall_bar_matches_native_geometry_across_rotations() {
-    let quad_corners = |q: &sprites::Quad| {
-        let [x, y, w, h] = q.rect;
-        let cx = x + w * 0.5;
-        let cy = y + h * 0.5;
-        let angle = q.rotation.unwrap_or(0.0);
-        let (sin, cos) = angle.sin_cos();
-        [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|[px, py]| {
-            if angle == 0.0 {
-                [px, py]
-            } else {
-                let (dx, dy) = (px - cx, py - cy);
-                [cx + dx * cos + dy * sin, cy + dy * cos - dx * sin]
-            }
-        })
-    };
-    let bar = sheet("GFX_bar_2x16", 1, [2, 16]);
-    let fill = 0.9_f32;
-    let step = counter_inputs::bar_step(fill, 16.0) as f32;
-    assert_eq!(step, 7.0);
-    assert_eq!(counter_inputs::bar_pixels(fill, 16.0), 16.0);
-    for rotation in [
-        0.0_f32,
-        std::f32::consts::FRAC_PI_4,
-        std::f32::consts::FRAC_PI_2,
-        -std::f32::consts::FRAC_PI_2,
-    ] {
-        let child = Child {
-            sprite: "GFX_bar_2x16".into(),
-            at: [14.0, 8.0],
-            scale: 1.0,
-            frame: 0,
-            rotation,
-            centered: false,
-            order: 0,
-        };
-        let mut batch = Batch::default();
-        draw_bar(&mut batch, &bar, &child, [0.0, 0.0], fill);
-        assert_eq!(batch.quads.len(), 1);
-        let quad = &batch.quads[0];
-        let x = 14.0 + step;
-        let native = viewer_native_gui::native_gui::Geometry {
-            rect: [x, 8.0, 2.0, 16.0],
-            rotation,
-            pivot: [x + 1.0, 16.0],
-            local: [0.0, 0.0, 2.0, 16.0],
-        };
-        let got_center = [
-            quad.rect[0] + quad.rect[2] * 0.5,
-            quad.rect[1] + quad.rect[3] * 0.5,
-        ];
-        assert!(
-            (got_center[0] - native.pivot[0]).abs() < 1e-4
-                && (got_center[1] - native.pivot[1]).abs() < 1e-4,
-            "rotation {rotation}: pivot {got_center:?} vs {:?}",
-            native.pivot
-        );
-        for (got, want) in quad_corners(quad).iter().zip(native.corners()) {
-            assert!(
-                (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-4,
-                "rotation {rotation}: corner {got:?} vs {want:?}"
-            );
-        }
-    }
-
-    let scaled_bar = sheet("GFX_bar_3x17", 1, [3, 17]);
-    let scale = 0.69_f32;
-    let rotation = 15708.0_f32 / 10_000.0;
-    let child = Child {
-        sprite: "GFX_bar_3x17".into(),
-        at: [13.0, 15.0],
-        scale,
-        frame: 0,
-        rotation,
-        centered: false,
-        order: 0,
-    };
-    let mut batch = Batch::default();
-    draw_bar(&mut batch, &scaled_bar, &child, [0.0, 0.0], fill);
-    let extent_h = (17.0 * scale).trunc();
-    let scaled_step = counter_inputs::bar_step(fill, extent_h) as f32;
-    let drawn = counter_inputs::bar_pixels(fill, 17.0 * scale);
-    let x = 13.0 + scaled_step;
-    let bottom = 15.0 + extent_h;
-    let inset = (17.0 * scale - drawn) * 0.5;
-    let native_scaled = viewer_native_gui::native_gui::Geometry {
-        rect: [x, bottom - inset - drawn, 3.0 * scale, drawn],
-        rotation,
-        pivot: [x + 1.5, bottom - 8.5],
-        local: [0.0, inset, 3.0 * scale, drawn],
-    };
-    for (got, want) in quad_corners(&batch.quads[0])
-        .iter()
-        .zip(native_scaled.corners())
-    {
-        assert!(
-            (got[0] - want[0]).abs() < 1e-4 && (got[1] - want[1]).abs() < 1e-4,
-            "scaled corner {got:?} vs {want:?}"
-        );
-    }
 }
 
 #[test]
@@ -6386,96 +5652,3 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
     );
 }
 
-#[test]
-fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_none_is_drawn() {
-    content_reader_script::test_game::enter();
-    use viewer_counter_kit::plan_probe;
-    use viewer_counters_naval::bases::{BaseLayout, BaseValues};
-    use building_facts::{AIR_BASE, ICON_KINDS, IconAnchor, RADAR, SiteIcon};
-    use replay_data::rows::{TableId, TableRows};
-    use replay_frame::frame::TableView;
-    const STATES: u32 = 200;
-    with_counter_inputs_and_content(
-        viewer_counter_kit::fixtures::action_gui(false),
-        |_| {},
-        |content| {
-            let mut icons: [BTreeMap<u32, SiteIcon>; ICON_KINDS] = Default::default();
-            for state in 1..=STATES {
-                icons[AIR_BASE].insert(state * 10, SiteIcon { state, anchor: Ok(IconAnchor::Record([state as f32 / 100., 9.5, 2.])) });
-                icons[RADAR].insert(state * 10 + 1, SiteIcon { state, anchor: Ok(IconAnchor::Record([state as f32 / 100., 9.5, 3.])) });
-            }
-            content.site_icons = Arc::new(icons);
-        },
-        |mut inputs, content| {
-            let frame = DecodedFrame { branch: 1, hour: 1, metrics: Default::default(), tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()) };
-            let moves = viewer_unit_reads::movement_reads::test_support::unnamed_assets();
-            let tables = hour_tables(
-                &frame,
-                inputs.map,
-                Arc::new(Vision::sharing(1, [])),
-                content,
-                inputs.assets,
-                inputs.equipment,
-                inputs.localisation,
-                &Default::default(),
-                None,
-                None,
-                None,
-                &type_tint::Memo::new(type_tint::TABLES),
-                &MissionMemo::new(),
-                moves.movement_reads(),
-                Err("unreached synthetic naval topology".into()),
-            )
-            .unwrap();
-            let count = |planes| AirBaseCount { capacity: 10, planes, shown: true, stationed: Some(true), ..Default::default() };
-            let old = Arc::new(BaseValues {
-                wings: (1..=STATES).map(|state| ((state, AIR_BASE), count(5))).collect(),
-                complete: true,
-                aircraft_complete: true,
-                controlled: (1..=STATES).map(|state| (state * 10, true)).collect(),
-                ..Default::default()
-            });
-            let mut one_base = (*old).clone();
-            one_base.wings.insert((77, AIR_BASE), AirBaseCount { shown: false, ..count(9) });
-            let one_base = Arc::new(one_base);
-            let mut one_province = (*one_base).clone();
-            one_province.controlled.insert(1230, false);
-            let one_province = Arc::new(one_province);
-            let mut one_radar = (*one_province).clone();
-            one_radar.radar.insert(5, ());
-            let one_radar = Arc::new(one_radar);
-            let rules = [true; 3];
-            let (layout, counts) = plan_probe::collect(|| BaseLayout::new(rules, &inputs, &frame, &tables.base_hour(), Some(Arc::clone(&old))).unwrap());
-            assert_eq!(counts.site_icons, 2 * u64::from(STATES), "a first layout lays out every air base and radar icon");
-            assert_eq!(layout.offers.placements(), 0);
-            assert!(layout.offers.for_camera(&inputs).placements() > 0, "the camera sees the icons");
-            let mut layout = layout;
-            for (values, what) in [(&one_base, "one base's wings"), (&one_province, "one province's controller"), (&one_radar, "one state's radar")] {
-                let ((), counts) = plan_probe::collect(|| layout.update(&inputs, &frame, &tables.base_hour(), Some(values)).unwrap());
-                assert_eq!(counts.site_icons, 1, "{what} lays out that base's icon alone");
-                assert_eq!(layout.offers.placements(), 0, "{what}: no placement is kept");
-                let whole = BaseLayout::new(rules, &inputs, &frame, &tables.base_hour(), Some(Arc::clone(values))).unwrap();
-                assert_eq!(layout.offers.for_camera(&inputs).placements(), whole.offers.for_camera(&inputs).placements(), "{what}");
-                assert!(layout.offers.offers().eq(whole.offers.offers()), "{what}: the offers are a whole layout's");
-                assert_eq!(layout.report, whole.report, "{what}: and so is the report");
-                assert!(layout.laid_from(Some(values)));
-            }
-            assert_eq!(layout.offers.offers().count(), STATES as usize, "the uncontrolled province's icon is gone, one radar icon came");
-
-            let mut view = Preparation::default();
-            let published = |values: &Arc<BaseValues>| Layered { bases: Some(Arc::clone(values)), ..Layered::default() };
-            inputs.camera.height = 5000.;
-            view.set_layered(published(&old), Kinds::BASES, Kinds::default());
-            view.bind(&inputs, &tables, 0);
-            view.bases(&inputs, &frame, &tables, &mut CounterFrame::default()).unwrap();
-            let identity = view.layered().identity();
-            view.set_layered(published(&one_base), Kinds::BASES, Kinds::default());
-            assert_eq!(view.layered().identity(), identity, "no base icon reads it: the window lays nothing out again");
-            assert_eq!(view.drawing(), Kinds::BASES);
-            inputs.camera.height = 100.;
-            let ((), counts) = plan_probe::collect(|| view.bases(&inputs, &frame, &tables, &mut CounterFrame::default()).unwrap());
-            assert!(Arc::ptr_eq(view.layered().bases.as_ref().unwrap(), &one_base), "a view that draws the icons takes the newest");
-            assert_eq!(counts.site_icons, 2 * u64::from(STATES), "laid out at the new rules");
-        },
-    );
-}

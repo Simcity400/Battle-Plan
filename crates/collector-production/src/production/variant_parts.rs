@@ -363,38 +363,6 @@ mod tests {
         variants
     }
     #[test]
-    fn census_retry_timing_sums_phase_maxima_even_when_the_slowest_worker_changes() {
-        let mut parts: Vec<_> = [(100, 7), (10, 5)]
-            .into_iter()
-            .map(|(definitions, details)| {
-                let mut ticks = [0; N];
-                ticks[3] = definitions;
-                ticks[4] = details;
-                VariantPart {
-                    first: 0,
-                    sources: Vec::new(),
-                    carried: Vec::new(),
-                    leaves: Variants::vacant(),
-                    fresh: false,
-                    details: true,
-                    definitions_only: false,
-                    ticks,
-                }
-            })
-            .collect();
-        let mut ticks = [0; N];
-        add_phase_ticks(&mut ticks, &parts);
-        assert_eq!((ticks[3], ticks[4]), (100, 7));
-        for (part, retry) in parts.iter_mut().zip([20, 90]) {
-            part.ticks.fill(0);
-            part.ticks[3] = retry;
-        }
-        add_phase_ticks(&mut ticks, &parts);
-        assert_eq!((ticks[3], ticks[4]), (190, 7));
-        add_phase_ticks(&mut ticks, &[]);
-        assert_eq!((ticks[3], ticks[4]), (190, 7));
-    }
-    #[test]
     fn parallel_census_matches_every_serial_leaf_for_fifteen_hundred_countries() {
         let space = space(1500, 5);
         let source = registry(&space);

@@ -445,7 +445,6 @@ impl Observer {
         result
     }
 
-
     pub(crate) fn prepare(&self) {
         engine_allocation::advisory(|| self.prepare_storage());
     }
@@ -502,7 +501,6 @@ impl Observer {
     }
 }
 pub(crate) static LIVE: Observer = Observer::new(&TAP_IN_FLIGHT, &TAP_ESCAPED_UNWINDS);
-
 
 /// # Safety
 /// Run only while land-event storage remains live for the active session (or an isolated test
@@ -1454,8 +1452,6 @@ pub mod test_support {
         LIVE.enabled.store(false, Ordering::SeqCst);
     }
 
-
-
     pub fn lost() -> u64 {
         LIVE.lost.load(Ordering::Relaxed)
     }
@@ -2404,126 +2400,6 @@ mod tests {
         LIVE.enabled.store(enabled, Ordering::SeqCst);
         BASE.store(base, Ordering::SeqCst);
         DISPATCH.set(saved_dispatch);
-    }
-    #[test]
-    #[ignore = "print-only counted verdict-tap differential bench; owned test-process hook only"]
-    fn land_leader_tap_cost() {
-        let _guard = exclusive();
-        unsafe extern "system-unwind" fn native_target(side: usize) -> usize {
-            side
-        }
-        const SAMPLES: usize = 201;
-        const HITS: usize = 2048;
-        let enabled = LIVE.enabled.swap(true, Ordering::SeqCst);
-        let site = land_leader_tap_test_site as *const () as usize;
-        let base = site + 6 - native::DISPATCH_LEADER_RETURNS[0].0;
-        let saved_base = BASE.swap(base, Ordering::SeqCst);
-        let saved_dispatch = DISPATCH.get();
-        let sentinel = unsafe { ptr::read_unaligned(site as *const [u8; 16]) };
-        let mut hook = unsafe {
-            Hook::new_indirect_call(
-                site,
-                leader_tap_entry as *const () as usize,
-                sentinel,
-                tap_safety(),
-            )
-        }
-        .unwrap();
-        let mut vtable = [0usize; 30];
-        vtable[29] = native_target as *const () as usize;
-        let mut leader = vec![0u8; engine_native::cunit_leader::TYPE + 8];
-        let pointer = leader.as_mut_ptr() as usize;
-        leader[..8].copy_from_slice(
-            &((base + engine_native::carmy_leader::VTABLE_RVA.0) as u64).to_le_bytes(),
-        );
-        leader[engine_native::cunit_leader::TYPE..].copy_from_slice(&17u64.to_le_bytes());
-        for with_commander in [false, true] {
-            let context = if with_commander {
-                Dispatch {
-                    combat: 1,
-                    sides: [pointer, 0],
-                    winner: 2,
-                    ..NO_DISPATCH
-                }
-            } else {
-                NO_DISPATCH
-            };
-            let mut times: [Vec<u128>; 2] = std::array::from_fn(|_| Vec::with_capacity(SAMPLES));
-            let mut preserved = [0usize; 8];
-            for sample in 0..SAMPLES {
-                for step in 0..2 {
-                    let mode = (sample + step) % 2;
-                    assert!(hook.set_enabled(mode == 1).unwrap());
-                    DISPATCH.set(context);
-                    assert_eq!(
-                        unsafe {
-                            land_leader_tap_test_caller(
-                                pointer,
-                                vtable.as_ptr() as usize,
-                                preserved.as_mut_ptr(),
-                            )
-                        },
-                        pointer
-                    );
-                    let mut result = 0;
-                    let start = std::time::Instant::now();
-                    for _ in 0..HITS {
-                        DISPATCH.set(context);
-                        result = std::hint::black_box(unsafe {
-                            land_leader_tap_test_caller(
-                                pointer,
-                                vtable.as_ptr() as usize,
-                                preserved.as_mut_ptr(),
-                            )
-                        });
-                    }
-                    let elapsed = start.elapsed().as_nanos();
-                    assert_eq!(result, pointer);
-                    assert_eq!(DISPATCH.get().seen[0], mode == 1 && with_commander);
-                    assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 0);
-                    assert_eq!(LIVE.active.load(Ordering::SeqCst), 0);
-                    times[mode].push(elapsed);
-                }
-            }
-            let mut added = times[1]
-                .iter()
-                .zip(&times[0])
-                .map(|(tap, native)| *tap as i128 - *native as i128)
-                .collect::<Vec<_>>();
-            let negative_pairs = added.iter().filter(|&&delta| delta < 0).count();
-            added.sort_unstable();
-            for time in &mut times {
-                time.sort_unstable();
-            }
-            let ns_per_call = |ns: u128| ns as f64 / HITS as f64;
-            println!(
-                "LAND_LEADER_COST mode={} samples={SAMPLES} hits_per_batch={HITS} native_p50_ns_per_call={:.3} native_p95_ns_per_call={:.3} native_max_ns_per_call={:.3} tap_p50_ns_per_call={:.3} tap_p95_ns_per_call={:.3} tap_max_ns_per_call={:.3} added_p50_ns_per_call={:.3} added_p95_ns_per_call={:.3} added_max_ns_per_call={:.3} added_min_ns_per_call={:.3} negative_pairs={negative_pairs} in_flight_atomic_ops_per_call=2 profile={} scope=synthetic_uncontended_native_vs_installed_tap_identical_caller_and_context_reset",
-                if with_commander {
-                    "verdict_tap_with_commander"
-                } else {
-                    "verdict_tap_no_dispatch"
-                },
-                ns_per_call(times[0][SAMPLES / 2]),
-                ns_per_call(times[0][(SAMPLES - 1) * 95 / 100]),
-                ns_per_call(times[0][SAMPLES - 1]),
-                ns_per_call(times[1][SAMPLES / 2]),
-                ns_per_call(times[1][(SAMPLES - 1) * 95 / 100]),
-                ns_per_call(times[1][SAMPLES - 1]),
-                added[SAMPLES / 2] as f64 / HITS as f64,
-                added[(SAMPLES - 1) * 95 / 100] as f64 / HITS as f64,
-                added[SAMPLES - 1] as f64 / HITS as f64,
-                added[0] as f64 / HITS as f64,
-                if cfg!(debug_assertions) {
-                    "debug"
-                } else {
-                    "optimized"
-                }
-            );
-        }
-        assert!(hook.set_enabled(false).unwrap());
-        DISPATCH.set(saved_dispatch);
-        BASE.store(saved_base, Ordering::SeqCst);
-        LIVE.enabled.store(enabled, Ordering::SeqCst);
     }
     #[test]
     fn verdict_resolver_rust_unwind_retains_the_asm_owned_flight() {

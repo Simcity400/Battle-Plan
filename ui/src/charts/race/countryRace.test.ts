@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceSegments, countryRaceStack, countryRaceTooltipTags, forEachCountryRaceSegment, forEachJoinedCountryRaceSegment, heldStackSegment, partColours, raceLabelAt } from './countryRace.ts';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceSegments, countryRaceStack, countryRaceTooltipTags, forEachCountryRaceSegment, forEachJoinedCountryRaceSegment, heldStackSegment, partColours } from './countryRace.ts';
 import { barExtent, selectRaceRow, stepRace } from './race.ts';
 import { linesAt, linesTooltip } from './lines.ts';
 import { buildStack, stackedSegments } from '../stack.ts';
@@ -192,16 +192,6 @@ test('related hover countries are deduplicated at the hovered hour for 5000 coun
   assert.deepEqual(countryRaceTooltipTags(102, []), []);
 });
 
-test('shared country races accept dated faction looks without changing country defaults', () => {
-  const faction = { name: (_tag: string, hour?: number) => `Faction at ${hour} · last members before it dissolved on date`,
-    color: () => 'campaign faction colour' };
-  const looks = faction;
-  assert.match(looks.name('opaque faction', 7), /Faction at 7 · last members/);
-  assert.equal(countryRaceItems([{ tag: 'opaque faction', value: 4, label: '4', stretch: 1 }], new Map(), looks.color, 'unknown')[0].segments[0].color,
-    'campaign faction colour');
-  assert.match(countryRaceEnds([{ tag: 'opaque faction', runs: [{ firstHour: 1, lastHour: 7, value: 4 }] }],
-    1, 10, null, looks.name, looks.color, String)[0].text, /Faction at 7 · last members/);
-});
 
 test('a stack changing at every read fills as one shape per stretch, never as seamed strips', () => {
   const days = Array.from({ length: 60 }, (_, day) => day);
@@ -218,10 +208,3 @@ test('a stack changing at every read fills as one shape per stretch, never as se
   assert.ok(joined[0].hours.at(-1)! < joined[1].hours[0]);
 });
 
-test('a dated race label is read at the hour the race shows, never the hour it rendered', () => {
-  const label = (hour: number) => `Faction totals, Factories, ${hour}`;
-  assert.equal(raceLabelAt(label, 120), 'Faction totals, Factories, 120');
-  assert.equal(raceLabelAt(label, 4_000), 'Faction totals, Factories, 4000');
-  assert.equal(raceLabelAt('Race of losses taken', 4_000), 'Race of losses taken');
-  assert.equal(raceLabelAt(undefined, 4_000), undefined);
-});

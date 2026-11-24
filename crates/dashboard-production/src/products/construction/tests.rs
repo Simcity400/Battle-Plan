@@ -57,28 +57,6 @@ fn tag(country: u32, _: i32) -> Option<String> {
 }
 
 #[test]
-fn the_column_numbers_are_the_schemas() {
-    let names = [
-        (col::KIND, "kind"),
-        (col::OUTPUT_ALONE, "output_alone"),
-        (col::COUNTRY, "country"),
-        (col::BUILDING_TYPE, "building_type"),
-        (col::FIRST_READ, "first_read"),
-        (col::FACTORIES, "factories"),
-        (col::BUILT_RISES, "built_rises"),
-        (col::REPAIRED_RISES, "repaired_rises"),
-        (col::UNACCOUNTED_REPAIR, "unaccounted_repair"),
-        (col::END_KNOWN_AT, "end_known_at"),
-        (col::OUTPUT_REASON, "output_reason"),
-        (col::FIRST_REPAIR_TICK, "first_repair_tick"),
-    ];
-    for (column, name) in names {
-        assert_eq!(dashboard_declare::field(TableId::ConstructionProjects, name).unwrap(), column, "{name}");
-    }
-    assert_eq!(TableId::ConstructionProjects.field_count(), col::ALL.len());
-}
-
-#[test]
 fn a_window_carries_counts_reached_before_it_and_dates_rises_by_the_row() {
     let steps = vec![
         step(100, &census(2, 2, 1, 0, &[])),

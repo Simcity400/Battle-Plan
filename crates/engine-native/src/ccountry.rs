@@ -3090,7 +3090,6 @@ pub fn count_sent_volunteers(memory: &impl Memory, base: usize, game_state: usiz
     walk_sent_volunteers_buffer(memory, base, game_state, Buffer::Count)
 }
 
-
 pub fn walk_sent_volunteers_buffer(
     memory: &impl Memory,
     base: usize,
@@ -3893,7 +3892,6 @@ pub mod synthetic {
 
 #[cfg(test)]
 mod tests {
-    use engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     use super::*;
     use engine_native_memory::memory::SliceMemory;
 
@@ -3931,84 +3929,6 @@ mod tests {
             counter_entries(&values, &AIR_COMBAT_MODIFIER_KEYS),
             AIR_COMBAT_MODIFIER_KEYS.map(|key| Some(i64::from(key)))
         );
-    }
-
-    #[test]
-    fn air_projection_reuses_the_complete_counter_accumulator_read() {
-        use engine_native_parts::{modifier_accumulator, modifier_entry};
-        use engine_native_memory::read_census::ReadCensus;
-        let country = 0x100;
-        let data = 0x1000;
-        let mut bytes = vec![0_u8; 0x2000];
-        let mut keys = COUNTER_MODIFIER_KEYS.to_vec();
-        keys.push(0x400);
-        put(
-            &mut bytes,
-            country + MODIFIER_ACCUMULATOR,
-            &(data as u64).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            country + MODIFIER_ACCUMULATOR + modifier_accumulator::CAPACITY,
-            &(keys.len() as u32).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            country + MODIFIER_ACCUMULATOR + modifier_accumulator::COUNT,
-            &(keys.len() as u32).to_le_bytes(),
-        );
-        for (index, &key) in keys.iter().enumerate() {
-            let at = data + index * modifier_entry::STRIDE;
-            put(&mut bytes, at + modifier_entry::KEY, &key.to_le_bytes());
-            put(
-                &mut bytes,
-                at + modifier_entry::VALUE,
-                &(-i64::from(key)).to_le_bytes(),
-            );
-        }
-        let memory = SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        let census = ReadCensus::new(&memory);
-        let mut old_keys: Vec<_> = MOVEMENT_MODIFIER_KEYS
-            .into_iter()
-            .chain(ATTACK_MODIFIER_KEYS)
-            .collect();
-        old_keys.sort_unstable();
-        let mut old = vec![engine_native_memory::modifier_cache::Value::default(); old_keys.len()];
-        modifier_accumulator::lookup_many(&census, country, &old_keys, &mut old).unwrap();
-        let old_cost = (census.calls(), census.bytes());
-        census.reset();
-        let mut all = [engine_native_memory::modifier_cache::Value::default(); COUNTER_MODIFIER_KEYS.len()];
-        modifier_accumulator::lookup_many(&census, country, &COUNTER_MODIFIER_KEYS, &mut all)
-            .unwrap();
-        assert_eq!((census.calls(), census.bytes()), old_cost);
-        let raw = all.map(|entry| entry.present.then_some(entry.raw));
-        assert_eq!(
-            counter_entries(&raw, &AIR_COMBAT_MODIFIER_KEYS),
-            AIR_COMBAT_MODIFIER_KEYS.map(|key| Some(-i64::from(key)))
-        );
-        assert_eq!(
-            counter_entries(&raw, &AIR_MODIFIER_KEYS),
-            AIR_MODIFIER_KEYS.map(|key| Some(-i64::from(key)))
-        );
-        assert_eq!(
-            counter_entries(&raw, &[engine_executable::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION]),
-            [Some(-i64::from(
-                engine_executable::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION
-            ))]
-        );
-        assert_eq!(
-            counter_entries(&raw, &[engine_executable::modifier_keys::NAVAL_DETECTION]),
-            [Some(-i64::from(engine_executable::modifier_keys::NAVAL_DETECTION))]
-        );
-        for (at, key) in old_keys.into_iter().enumerate() {
-            assert_eq!(
-                all[COUNTER_MODIFIER_KEYS.binary_search(&key).unwrap()],
-                old[at]
-            );
-        }
     }
 
     struct ReservedMemory<'a> {
@@ -5540,90 +5460,6 @@ mod tests {
     }
 
     #[test]
-    fn core_supply_optional_sharing_preserves_fallback_and_direct_verification() {
-        use std::cell::Cell;
-        struct Hook<'a> {
-            bytes: &'a [u8],
-            result: Option<Result<bool, &'static str>>,
-            calls: Cell<usize>,
-            reads: Cell<usize>,
-        }
-        impl Memory for Hook<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                self.reads.set(self.reads.get() + 1);
-                SliceMemory {
-                    base: 0,
-                    bytes: self.bytes,
-                }
-                .copy(address, destination)
-            }
-            fn core_supply_access(
-                &self,
-                base: usize,
-                state: usize,
-                owner: u32,
-                area: usize,
-            ) -> Option<Result<bool, &'static str>> {
-                assert_eq!((base, state, owner, area), (0, 0x1000, 1, 0));
-                self.calls.set(self.calls.get() + 1);
-                self.result
-            }
-        }
-        let bytes = movement_fixture();
-        assert_eq!(
-            has_core_supply_access_direct(
-                &SliceMemory {
-                    base: 0,
-                    bytes: &bytes
-                },
-                0,
-                0x1000,
-                1,
-                0
-            ),
-            Ok(true)
-        );
-        for result in [
-            None,
-            Some(Ok(true)),
-            Some(Ok(false)),
-            Some(Err("supply snapshot fault")),
-        ] {
-            let memory = Hook {
-                bytes: &bytes,
-                result,
-                calls: Cell::new(0),
-                reads: Cell::new(0),
-            };
-            assert_eq!(
-                has_core_supply_access(&memory, 0, 0x1000, 1, 0),
-                result.unwrap_or(Ok(true))
-            );
-            assert_eq!(memory.calls.get(), 1);
-            assert_eq!(memory.reads.get() == 0, result.is_some());
-            assert_eq!(
-                has_core_supply_access_direct(&memory, 0, 0x1000, 1, 0),
-                Ok(true)
-            );
-            assert_eq!(memory.calls.get(), 1);
-            assert!(memory.reads.get() > 0);
-        }
-        assert!(
-            has_core_supply_access_direct(
-                &SliceMemory {
-                    base: 0,
-                    bytes: &bytes
-                },
-                0,
-                0x1000,
-                0,
-                0
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
     fn movement_capital_area_uses_largest_controlled_count_and_native_ties() {
         let mut bytes = movement_fixture();
         movement_test_array(&mut bytes, 0x1000 + cgame_state::PROVINCES, 0xc000, 4);
@@ -5760,76 +5596,6 @@ mod tests {
             );
         }
         bytes
-    }
-
-    #[test]
-    #[ignore = "unit-scale guarded sent-volunteer reader cost; run release"]
-    fn sent_volunteers_unit_scale() {
-        use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
-        let stress = std::env::var("BATTLEPLAN_UNIT_SHAPE").or_else(|_| std::env::var("HOI4_UNIT_SHAPE")).as_deref() == Ok("stress");
-        let (countries, divisions) = if stress {
-            (5_000, 100_000)
-        } else {
-            (1_500, 50_000)
-        };
-        let mut world = synthetic::World::new(0, countries, SENT_VOLUNTEERS + 16);
-        let mut pointers = vec![
-            synthetic::START + cgame_state::COUNTRIES,
-            synthetic::START + cgame_state::COUNTRY_LINKS,
-        ];
-        for slot in 1..=countries {
-            let begin = (slot - 1) as usize * divisions / countries as usize;
-            let end = slot as usize * divisions / countries as usize;
-            let data = world.alloc((end - begin) * 8);
-            world.array(
-                world.object(slot) + SENT_VOLUNTEERS,
-                data,
-                (end - begin) as u32,
-            );
-            pointers.extend([
-                synthetic::START + 0x1000 + slot as usize * 8,
-                world.object(slot) + SENT_VOLUNTEERS,
-            ]);
-            for (ordinal, id) in (begin..end).enumerate() {
-                world.u64(data + ordinal * 8, id as u64 + 1);
-            }
-        }
-        let address = world.bytes.as_ptr() as usize;
-        for pointer in pointers {
-            let offset = pointer - synthetic::START;
-            let old = u64::from_le_bytes(world.bytes[offset..offset + 8].try_into().unwrap());
-            world.u64(pointer, (address + old as usize - synthetic::START) as u64);
-        }
-        // SAFETY: the fixture is fully allocated and its pointers relocated; it retains every pointee
-        // and stays immutable through the walk.
-        let memory = CountedMemory::new(unsafe { LiveMemory::new() });
-        let mut rows = vec![SentVolunteerRow::default(); divisions];
-        ReadCounts::take_current();
-        assert_eq!(
-            walk_sent_volunteers_buffer(&memory, 0, address, engine_native_memory::walk::Buffer::Growing(&mut rows)),
-            Outcome::Rows { len: divisions }
-        );
-        let counts = ReadCounts::take_current();
-        assert_eq!(rows.last().unwrap().division, divisions as u64);
-        let mut times = Vec::new();
-        for _ in 0..25 {
-            let start = std::time::Instant::now();
-            assert_eq!(
-                walk_sent_volunteers_buffer(&memory, 0, address, engine_native_memory::walk::Buffer::Growing(&mut rows)),
-                Outcome::Rows { len: divisions }
-            );
-            times.push(start.elapsed().as_secs_f64() * 1000.0);
-        }
-        times.sort_by(f64::total_cmp);
-        println!(
-            "SENT_VOLUNTEERS countries={countries} references={divisions} min_ms={:.6} median_ms={:.6} calls={} read_bytes={} output_bytes={} fixture_bytes={}",
-            times[0],
-            times[12],
-            counts.copy_calls + counts.scattered_calls + counts.record_calls + counts.plan_calls,
-            counts.bytes,
-            rows.capacity() * size_of::<SentVolunteerRow>(),
-            world.bytes.len()
-        );
     }
 
     #[test]

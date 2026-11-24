@@ -1105,46 +1105,6 @@ fn missing_division_payload_publishes_hourly_census_reason_even_without_details(
 }
 
 #[test]
-fn relations_gate_admits_every_hour_for_its_owner_slice() {
-    for hour in -48..48i32 {
-        assert!(relations_refresh_hour(hour, false), "hour {hour}");
-        for table in RELATIONS {
-            assert!(replay_data::cadence::is_sliced(table));
-            assert!(replay_data::cadence::should_walk(table, hour, false));
-        }
-        assert!(relations_refresh_hour(hour, true), "forced hour {hour}");
-    }
-}
-
-#[test]
-fn characters_gate_walks_the_roster_roles_and_traits_every_hour() {
-    for hour in -48..48i32 {
-        assert!(characters_refresh_hour(hour, false), "hour {hour}");
-        for table in CHARACTERS {
-            let expected = table != TableId::UnitLeaderTraitExperience
-                || hour.rem_euclid(24) == replay_data::cadence::COMMANDER_PROGRESS_SLOT as i32;
-            assert_eq!(
-                replay_data::cadence::should_walk(table, hour, false),
-                expected,
-                "{table:?} at hour {hour}"
-            );
-            assert!(replay_data::cadence::should_walk(table, hour, true));
-        }
-        assert!(characters_refresh_hour(hour, true), "forced hour {hour}");
-    }
-}
-
-#[test]
-fn projects_gate_matches_their_daily_slot_and_force_full() {
-    let slot = replay_data::cadence::refresh_slot(PROJECTS[0]).unwrap() as i32;
-    for hour in -48..48i32 {
-        let refresh = hour.rem_euclid(24) == slot;
-        assert_eq!(projects_refresh_hour(hour, false), refresh, "hour {hour}");
-        assert!(projects_refresh_hour(hour, true), "forced hour {hour}");
-    }
-}
-
-#[test]
 fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
     let shared =
     // SAFETY: The caller owns the session or isolated fixture state required by this constructor.

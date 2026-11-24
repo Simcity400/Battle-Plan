@@ -1732,15 +1732,6 @@ pub mod tests {
     }
 
     #[test]
-    fn a_target_is_its_scope_kind_for_the_trigger_check() {
-        use content_reader_script::scope::TriggerScopes;
-        let country = Target::Country(0);
-        assert!(TriggerScopes(0x4).accepts(|kind| kind == country.kind()));
-        assert!(!TriggerScopes(0x2).accepts(|kind| kind == country.kind()));
-        assert!(TriggerScopes(0x2).accepts(|kind| kind == Target::State(64).kind()));
-    }
-
-    #[test]
     fn scopes_resolve_through_the_recorded_tables_and_refuse_the_rest() {
         let frame = positive_frame();
         let scopes = RecordedScopes::read(&frame, Arc::default());

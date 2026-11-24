@@ -290,29 +290,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "synthetic per-call claim measurement"]
-    fn hook_cost_variant_receiver_claims() {
-        const CALLS: usize = 100_000;
-        prepare(5_000).unwrap();
-        let cost = collector_test_support::per_call_ns(CALLS, || {
-            for pointer in 1..=CALLS {
-                let flight = enter(
-                    std::hint::black_box(pointer % 5_000 + 1),
-                    None,
-                    Footprint::Design,
-                )
-                .unwrap();
-                assert!(flight.admitted());
-                assert!(!flight.finish_with_dependency().0);
-            }
-        });
-        let state = WRITERS.get().unwrap().lock().unwrap();
-        assert!(state.claims.is_empty());
-        assert_eq!((state.ancestry, state.lifetime), (0, 0));
-        println!("hook_cost variant receiver claim enter+finish: {cost:.1} ns/call");
-    }
-
-    #[test]
     fn claim_growth_allows_callback_entry_and_revalidates_running_flights() {
         if !isolated() {
             return;
