@@ -422,16 +422,26 @@ fn candidate_held(word: u64) -> bool {
         == (u64::from(Role::DecisionWriter.held()) | CANDIDATE)
 }
 
-static WRITER_EPOCH: AtomicU64 = AtomicU64::new(0);
+static WRITER_GATE: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(0);
+#[inline(always)]
 pub(crate) fn writer_moved() {
-    WRITER_EPOCH.fetch_add(1, Ordering::SeqCst);
+    WRITER_GATE.mark_dirty();
 }
 pub(crate) fn writer_cut() -> Option<u64> {
-    let epoch = WRITER_EPOCH.load(Ordering::SeqCst);
-    (active() & !RETAIN == 0).then_some(epoch)
+    if FLIGHT.load(Ordering::SeqCst) & !RETAIN != 0 {
+        return None;
+    }
+    let e0 = WRITER_GATE.quiet_epoch()?;
+    let e1 = crate::script_event_observer::quiet_epoch()?;
+    let e2 = crate::war_provenance::quiet_epoch()?;
+    if FLIGHT.load(Ordering::SeqCst) & !RETAIN != 0 {
+        return None;
+    }
+    Some(e0.wrapping_add(e1).wrapping_add(e2))
 }
 pub(crate) fn writer_cut_holds(cut: u64) -> bool {
-    active() & !RETAIN == 0 && WRITER_EPOCH.load(Ordering::SeqCst) == cut
+    writer_cut() == Some(cut)
 }
 
 struct Owner {

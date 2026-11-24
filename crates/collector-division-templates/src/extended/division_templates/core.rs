@@ -1,5 +1,33 @@
 use super::*;
 use crate::template_changes::Changes;
+use std::{
+    collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
+};
+
+const HASH_MULTIPLIER: u64 = 11_400_714_819_323_198_485;
+
+#[derive(Default)]
+pub(super) struct TemplateHasher(u64);
+
+impl Hasher for TemplateHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = self.0.wrapping_mul(HASH_MULTIPLIER).wrapping_add(u64::from(byte));
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        let mixed = value.wrapping_mul(HASH_MULTIPLIER);
+        self.0 = mixed ^ (mixed >> 32);
+    }
+}
+
+pub(super) type TemplateIndex = HashMap<u64, u32, BuildHasherDefault<TemplateHasher>>;
 
 pub(super) type Certificate = [(u64, u64); 3];
 
@@ -105,6 +133,7 @@ struct Entry {
 #[derive(Default)]
 pub(super) struct Store {
     entries: Vec<Entry>,
+    index: TemplateIndex,
     live: Vec<u64>,
     payload_bytes: usize,
     changed: bool,
@@ -148,8 +177,13 @@ fn carries(entry: &Entry, pointer: usize, owner: u32, certificate: &Certificate)
 }
 
 impl Store {
+    fn lookup(&self, template: u64) -> Option<usize> {
+        self.index.get(&template).map(|&at| at as usize)
+    }
+
     pub fn forget(&mut self) {
         self.entries.clear();
+        self.index.clear();
         self.payload_bytes = 0;
     }
 
@@ -170,6 +204,7 @@ impl Store {
 
     pub fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * size_of::<Entry>()
+            + self.index.capacity() * (size_of::<u64>() + size_of::<u32>())
             + self.live.capacity() * size_of::<u64>()
             + (self.hints.capacity() + self.carried.capacity()) * size_of::<u32>()
             + self.payload_bytes
@@ -196,11 +231,7 @@ impl Store {
         let Some(at) = hinted(&self.entries, &self.hints, slot, template, |entry| {
             entry.template
         })
-        .or_else(|| {
-            self.entries
-                .binary_search_by_key(&template, |entry| entry.template)
-                .ok()
-        }) else {
+        .or_else(|| self.lookup(template)) else {
             return false;
         };
         remember_hint(&mut self.hints, slot, at);
@@ -222,23 +253,18 @@ impl Store {
         certificate: Option<Certificate>,
     ) -> bool {
         certificate.is_some_and(|certificate| {
-            self.entries
-                .binary_search_by_key(&template, |entry| entry.template)
-                .is_ok_and(|at| carries(&self.entries[at], pointer, owner, &certificate))
+            self.lookup(template)
+                .is_some_and(|at| carries(&self.entries[at], pointer, owner, &certificate))
         })
     }
 
     pub fn renewed(&self, template: u64) -> bool {
-        self.entries
-            .binary_search_by_key(&template, |entry| entry.template)
-            .is_ok_and(|at| self.entries[at].renewed)
+        self.lookup(template)
+            .is_some_and(|at| self.entries[at].renewed)
     }
 
     pub fn core_of(&self, template: u64) -> Option<native::IconCore<'_>> {
-        let entry = &self.entries[self
-            .entries
-            .binary_search_by_key(&template, |entry| entry.template)
-            .ok()?];
+        let entry = &self.entries[self.lookup(template)?];
         Some(native::IconCore {
             row: entry.core.row,
             bytes: &entry.core.bytes,
@@ -254,11 +280,7 @@ impl Store {
         let at = hinted(&self.entries, &self.carried, slot, template, |entry| {
             entry.template
         })
-        .or_else(|| {
-            self.entries
-                .binary_search_by_key(&template, |entry| entry.template)
-                .ok()
-        })?;
+        .or_else(|| self.lookup(template))?;
         let entry = &self.entries[at];
         entry.carried.then_some(native::IconCore {
             row: entry.core.row,
@@ -292,22 +314,24 @@ impl Store {
             self.changed = true;
             return;
         }
-        let found = self
-            .entries
-            .binary_search_by_key(&row.template, |entry| entry.template);
-        if found.is_ok_and(|at| self.entries[at].carried) {
+        let found = self.lookup(row.template);
+        if found.is_some_and(|at| self.entries[at].carried) {
             return;
         }
         let Some(core) = Core::read(row, bytes, counts, variants, names) else {
             self.changed = true;
-            if let Ok(at) = found {
-                let entry = self.entries.remove(at);
+            if let Some(at) = found {
+                let entry = self.entries.swap_remove(at);
+                self.index.remove(&row.template);
+                if let Some(moved) = self.entries.get(at) {
+                    self.index.insert(moved.template, at as u32);
+                }
                 self.payload_bytes -= entry.core.allocated_bytes();
             }
             return;
         };
         let at = match found {
-            Ok(at) => {
+            Some(at) => {
                 let entry = &mut self.entries[at];
                 self.changed |= entry.core != core;
                 self.payload_bytes -= entry.core.allocated_bytes();
@@ -317,42 +341,39 @@ impl Store {
                 entry.renewed = true;
                 at
             }
-            Err(at) => {
+            None => {
                 self.changed = true;
-                if engine_allocation::reserve(&mut self.entries, 1).is_err() {
+                let Ok(index) = u32::try_from(self.entries.len()) else {
+                    return;
+                };
+                if engine_allocation::reserve(&mut self.entries, 1).is_err()
+                    || engine_allocation::reserve_map(&mut self.index, 1).is_err()
+                {
                     return;
                 }
-                self.entries.insert(
-                    at,
-                    Entry {
-                        template: row.template,
-                        certificate,
-                        deployment,
-                        core,
-                        speed: None,
-                        carried: false,
-                        renewed: true,
-                    },
-                );
-                at
+                self.entries.push(Entry {
+                    template: row.template,
+                    certificate,
+                    deployment,
+                    core,
+                    speed: None,
+                    carried: false,
+                    renewed: true,
+                });
+                self.index.insert(row.template, index);
+                index as usize
             }
         };
         self.payload_bytes += self.entries[at].core.allocated_bytes();
     }
 
     pub fn speed(&self, template: u64) -> Option<&[u32]> {
-        let entry = &self.entries[self
-            .entries
-            .binary_search_by_key(&template, |entry| entry.template)
-            .ok()?];
+        let entry = &self.entries[self.lookup(template)?];
         entry.carried.then_some(entry.speed.as_deref()).flatten()
     }
 
     pub fn remember_speed(&mut self, template: u64, keys: Option<&[u32]>, changes: &dyn Changes) {
-        let Ok(at) = self
-            .entries
-            .binary_search_by_key(&template, |entry| entry.template)
-        else {
+        let Some(at) = self.lookup(template) else {
             self.changed = true;
             return;
         };
@@ -392,6 +413,10 @@ impl Store {
             }
             keep
         });
+        self.index.clear();
+        for (at, entry) in self.entries.iter().enumerate() {
+            self.index.insert(entry.template, at as u32);
+        }
     }
 }
 

@@ -582,13 +582,15 @@ impl Drop for Hooks {
 macro_rules! callback {
     ($name:ident, $site:expr, $filter:expr, ($first:ident, $second:ident $(, $arg:ident)*)) => {
         unsafe extern "system" fn $name($first: usize, $second: usize $(, $arg: usize)*) -> usize {
-            let timing = crate::hook_timing::enter(crate::hook_timing::Family::VariableChanges);
             let written = store(MUTATIONS[$site].1, $first, $second);
             let original: unsafe extern "system" fn($first: usize, $second: usize $(, $arg: usize)*) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
             if $filter && written == temporary() {
+                let timing =
+                    crate::hook_timing::enter_ungated(crate::hook_timing::Family::VariableChanges);
                 return timing.original(|| unsafe { original($first, $second $(, $arg)*) });
             }
+            let timing = crate::hook_timing::enter(crate::hook_timing::Family::VariableChanges);
             let _market=collector_observers::market_changes::variable_write(written);
             let _notification = WATCHES.notify(written, $site);
             let _project = collector_observers::project_variable_changes::writing(written);
@@ -646,12 +648,17 @@ macro_rules! context_site {
             third: usize,
             fourth: usize,
         ) -> usize {
-            let timing = crate::hook_timing::enter(crate::hook_timing::Family::VariableChanges);
             let end: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(END_CONTEXT.load(Ordering::Acquire)) };
             let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let written =
                 engine_mutations::script_variable_mutations::context_store(&memory, context);
+            if matches!(written, Ok(None)) {
+                let timing =
+                    crate::hook_timing::enter_ungated(crate::hook_timing::Family::VariableChanges);
+                return timing.original(|| unsafe { end(context, second, third, fourth) });
+            }
+            let timing = crate::hook_timing::enter(crate::hook_timing::Family::VariableChanges);
             let _market = match written {
                 Ok(Some(at)) => Some(collector_observers::market_changes::variable_write(at)),
                 Ok(None) => None,

@@ -182,6 +182,49 @@ fn runs_apply_in_place_like_an_independent_row_model() {
         taken.insert_keys(&[2], &[14]).is_err(),
         "a key another live row holds"
     );
+    let mut partial = Table::new(&KINDS).unwrap();
+    partial.insert_keys(&[0], &[10]).unwrap();
+    assert!(partial.insert_keys(&[1, 2], &[20, 10]).is_err());
+    assert_eq!(partial.slot(20), None);
+    assert_eq!(partial.key(1), None);
+    assert_eq!(partial.slot(10), Some(0));
+    assert_eq!(partial.key(0), Some(10));
+    assert!(partial.insert_keys(&[1, 2], &[30, 30]).is_err());
+    assert_eq!(partial.slot(30), None);
+    assert_eq!(partial.key(1), None);
+
+    thread_local! {
+        static DENY_ALLOC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    fn stopped() -> bool {
+        DENY_ALLOC.with(std::cell::Cell::get)
+    }
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            DENY_ALLOC.with(|flag| flag.set(false));
+            engine_allocation::set_stop_hook(None);
+        }
+    }
+    let target = (partial.live.words.capacity() * 64) as u32;
+    partial.resize(target as usize + 2).unwrap();
+    partial
+        .keys
+        .write_slots(&[target, target + 1], &[0, 0])
+        .unwrap();
+    let denied = {
+        let _reset = Reset;
+        engine_allocation::set_stop_hook(Some(stopped));
+        DENY_ALLOC.with(|flag| flag.set(true));
+        partial.insert_keys(&[target, target + 1], &[40, 41])
+    };
+    assert_eq!(denied.unwrap_err().kind(), std::io::ErrorKind::OutOfMemory);
+    assert_eq!(partial.slot(40), None);
+    assert_eq!(partial.key(target), None);
+    assert_eq!(partial.slot(41), None);
+    assert_eq!(partial.key(target + 1), None);
+    assert_eq!(partial.slot(10), Some(0));
+    assert_eq!(partial.key(0), Some(10));
 }
 
 #[test]

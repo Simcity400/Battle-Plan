@@ -1465,7 +1465,10 @@ countries: Array<CountryRef>,
 catalogue: boolean, };
 export type RaidTypeInfo = { token: string, name: string | null, missing: string | null, };
 export type RaidArtwork = { key: string, image: string | null, missing: string | null, };
-export type RaidPhaseRun = { firstHour: number, lastHour: number, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null, };
+export type RaidVictimSource = "completionCountry" | "fixedTarget" | "controllerAtFirstEndedRead" | "controllerAtObservedRead" | "captorAtFirstEndedRead" | "captorAtObservedRead";
+export type RaidEndedSource = "nativeEndDate" | "observedEndedRead";
+export type RaidVictimAt = { hour: number, tag: string | null, missing: string | null, source: RaidVictimSource | null, };
+export type RaidPhaseRun = { firstHour: number, lastHour: number, firstExact: boolean, afterHour: number | null, raider: string | null, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null, };
 export type RaidPreparationRun = [number, number, number, number];
 export type RaidEpisode = {
 /**
@@ -1475,11 +1478,11 @@ id: string,
 /**
  * The first and last hour its row lived within the span.
  */
-firstHour: number, lastHour: number, raider: string | null, victim: string | null,
+firstHour: number, firstHourExact: boolean, lastHour: number, raider: string | null, launchedRaider: string | null, endedRaider: string | null, victim: string | null,
 /**
  * Why the victim is not named, when it is not.
  */
-victimMissing: string | null,
+victimMissing: string | null, victimSource: RaidVictimSource | null, victims: Array<RaidVictimAt>,
 /**
  * The raid type's token and its name in the reader's language.
  */
@@ -1491,11 +1494,11 @@ icon: string | null, iconMissing: string | null, province: number | null, state:
 /**
  * Its last phase and outcome.
  */
-phase: number | null, phaseName: string | null, outcome: number | null, outcomeName: string | null,
+phase: number | null, phaseName: string | null, outcome: number | null, outcomeName: string | null, outcomeMissing: string | null,
 /**
  * Its phases over the span, in hour order.
  */
-runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launched: boolean, endedHour: number | null, succeeded: boolean, };
+runs: Array<RaidPhaseRun>, preparation: Array<RaidPreparationRun>, launchedHour: number | null, launchedExact: boolean, launched: boolean, endedHour: number | null, endedExact: boolean, endedSource: RaidEndedSource | null, disappearedHour: number | null, disappearedExact: boolean, succeeded: boolean, };
 export type RaidLogReply = {
 /**
  * False only when the content proves no raid type exists; true once a raid was recorded; none
@@ -1505,7 +1508,7 @@ available: boolean | null, unavailable: string | null,
 /**
  * The game's phase and outcome numbers a reader compares with.
  */
-phasePreparing: number, phaseEnded: number, outcomeNone: number,
+phasePreparing: number, phaseEnded: number, outcomeNone: number, outcomeFailure: number, outcomeLimitedSuccess: number, outcomeSuccess: number, outcomeCriticalSuccess: number, outcomeCanceled: number,
 /**
  * Every raid type the content declares, then each it holds undecided with why.
  */
@@ -3074,7 +3077,7 @@ reason: string | null,
  * The native operands that change what the event means.
  */
 notes: Array<string>, };
-export type DecisionLifecycleState = { "kind": "active" } | { "kind": "available" } | { "kind": "completed" } | { "kind": "failed", observedHour: number, } | { "kind": "aborted" } | { "kind": "reEnableCooldown" } | { "kind": "unsupported", raw: number, } | { "kind": "notRecorded", reason: string, };
+export type DecisionLifecycleState = { "kind": "active" } | { "kind": "available" } | { "kind": "completed" } | { "kind": "failed", observedHour: number, } | { "kind": "aborted" } | { "kind": "reEnableCooldown" } | { "kind": "unsupported", raw: number, } | { "kind": "notApplicable", reason: string, } | { "kind": "notRecorded", reason: string, };
 export type EventFeedRow = { id: string, hour: number,
 /**
  * The read supplying this fact; the head never shows it before this hour.

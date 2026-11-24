@@ -15,8 +15,8 @@ import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import { knownValue } from '../value.ts';
 import {
+  ensureTimeChartProjection,
   isTimeChartBinding,
-  timeChartProjection,
   type SerializedTiledLine,
   type TimeChartBinding,
 } from './declaration.ts';
@@ -60,8 +60,11 @@ function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
 }
 
 export function spriteHandleKey(handle: ArtHandle): string {
-  const key = handle.sprite ?? handle.choice;
-  return `${key}#${handle.frame ?? 0}`;
+  if (handle.kind === 'sprite') return `${handle.key}#${handle.frame ?? 0}`;
+  if (handle.kind === 'portrait') return `portrait:${handle.key}`;
+  if (handle.kind === 'flag') return `flag:${handle.choice}:${handle.size}`;
+  if (handle.kind === 'path') return `path:${handle.path}#${handle.frame ?? 0}`;
+  return `url:${handle.url}#${handle.frame ?? 0}`;
 }
 
 interface HeldTimeChart {
@@ -271,7 +274,7 @@ export function timeChartLaneView(
         held.artProvider = createLaneArtProvider(held.art, {
           index: held.identityIndex,
           resolveHandle: handle => {
-            if (handle.scope === 'sprite' && spriteMap) {
+            if (handle.kind === 'sprite' && spriteMap) {
               return spriteMap[spriteHandleKey(handle)] ?? PENDING_ART;
             }
             return PENDING_ART;
@@ -304,8 +307,11 @@ export function timeChartLaneView(
       if (binding.directModel) {
         model = binding.directModel;
       } else {
-        const proj = timeChartProjection(binding.kind);
-        if (!proj) {
+        const proj = ensureTimeChartProjection(binding.kind, binding.viewId, () => wake?.(input.widget));
+        if (proj === 'loading') {
+          return { surfaces: [], fields: {}, motion: false };
+        }
+        if (proj === 'unknown') {
           return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown time-chart kind: ${binding.kind}` };
         }
         const readView = buildReadView(
@@ -316,8 +322,8 @@ export function timeChartLaneView(
             pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
           },
           handle => {
-            if (handle.scope === 'sprite') {
-              const spriteKey = handle.sprite ?? handle.choice;
+            if (handle.kind === 'sprite') {
+              const spriteKey = handle.key;
               const frame = handle.frame ?? 0;
               const resolved = binding.spriteResolutions?.[spriteHandleKey(handle)];
               if (resolved?.status === 'ready' && resolved.url) {

@@ -89,6 +89,32 @@ export function valuedGroup(spec: LiveGroupSpec, values: readonly (number | stri
   };
 }
 
+export function answerGroup(answer: FollowedAnswer): GroupValues {
+  if (answer.kind === 'notRecorded') return missingGroup(answer.reason);
+  const rows = answer.rows;
+  const width = answer.columns;
+  return {
+    get(row, column) {
+      if (row < 0 || row >= rows || column < 0 || column >= width) return undefined;
+      const at = row * width + column;
+      if (cellState(answer, at) !== CELL.value) return undefined;
+      const safe = cellNumber(answer, at);
+      return safe !== null ? safe : Number(cellValue(answer, at));
+    },
+    raw(row, column) {
+      if (row < 0 || row >= rows || column < 0 || column >= width) return undefined;
+      const at = row * width + column;
+      if (cellState(answer, at) !== CELL.value) return undefined;
+      return cellValue(answer, at);
+    },
+    missing(row, column) {
+      if (row < 0 || row >= rows || column < 0 || column >= width) return NOT_READ;
+      const state = cellState(answer, row * width + column);
+      return rowReason(answer, row) ?? (state === CELL.missing ? NO_VALUE : NOT_RECORDED);
+    },
+  };
+}
+
 export class CellGroup implements GroupValues {
   seek?: number;
   start: number | null = null;
@@ -184,15 +210,14 @@ function indexOf(section: LiveSection): Index {
 export function sectionValues(section: LiveSection, groups: readonly GroupValues[]): LiveValues<number> {
   const { byKey } = indexOf(section);
   const { cells, kinds } = section;
-  const operand = (at: number, source: number) => {
-    const base = at + 3 + source * 3;
-    return { group: groups[cells[base]!]!, row: cells[base + 1]!, column: cells[base + 2]! };
-  };
   const evaluate = (at: number): number | string => {
     const kind = kinds[cells[at + 1]!]!, count = cells[at + 2]!;
     let first = 0, second = 0, sum = 0;
     for (let source = 0; source < count; source++) {
-      const { group, row, column } = operand(at, source);
+      const base = at + 3 + source * 3;
+      const group = groups[cells[base]!]!;
+      const row = cells[base + 1]!;
+      const column = cells[base + 2]!;
       const value = group.get(row, column);
       if (value === undefined) return group.missing(row, column);
       if (source === 0) first = value;
@@ -213,8 +238,8 @@ export function sectionValues(section: LiveSection, groups: readonly GroupValues
       if (at === undefined) return undefined;
       const kind = kinds[cells[at + 1]!]!, count = cells[at + 2]!;
       if (kind.op !== 'value' || kind.scale !== 1 || count !== 1) return undefined;
-      const { group, row, column } = operand(at, 0);
-      return group.raw?.(row, column);
+      const base = at + 3;
+      return groups[cells[base]!]!.raw?.(cells[base + 1]!, cells[base + 2]!);
     },
     missing: key => { const at = byKey.get(key); if (at === undefined) return NOT_LIVE_CELL; const value = evaluate(at); return typeof value === 'string' ? value : ''; },
   };

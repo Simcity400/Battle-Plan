@@ -106,6 +106,13 @@ test('a mission with a recorded Failed native state shows Failed with its observ
   assert.match(lifecycleLine(withheld), /mission failure state was not recorded/);
   assert.ok(decisionTooltip(withheld, tag => tag)[0].rows.some(row => row.label === 'Mission failure state' && row.value === 'Not recorded — mission failure state was not recorded'));
 
+  const instant = [
+    edge('decisionSelected', start, { row: { ...edge('decisionSelected', start).row, decisionState: { kind: 'notApplicable', reason: 'decision has no mission lifecycle state' } } }),
+  ];
+  const instantShown = at(instant, day(6, 1))!;
+  assert.equal(instantShown.status, 'taken');
+  assert.equal(instantShown.failureMissing, null);
+
   const unsupported = [
     edge('decisionActivated', start, { days: 30 }),
     edge('decisionTimedOut', end, { row: { ...edge('decisionTimedOut', end).row, decisionState: { kind: 'unsupported', raw: 99 } } }),

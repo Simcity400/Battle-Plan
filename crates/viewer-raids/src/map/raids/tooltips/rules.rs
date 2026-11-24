@@ -1,5 +1,5 @@
 use super::Tooltip;
-use engine_native_air::craid_instance::{outcome_key, phase_key};
+use engine_native_air::craid_instance::{OUTCOME_NONE, known_outcome_key, known_phase_key};
 use content_reader_localisation::localisation::Argument as Arg;
 use content_reader_localisation::localisation::Localisation;
 use viewer_foundation::tooltip_text::localise;
@@ -31,6 +31,19 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
     let mut out = Tooltip::default();
     let plain = |key| localise(loc, key, &[]);
     if input.ended {
+        let outcome = match input.outcome {
+            OUTCOME_NONE => {
+                out.refuse(TOOLTIP_RAID_RESULT, "raid outcome was not recorded".to_owned());
+                Ok("raid outcome was not recorded".to_owned())
+            }
+            code => match known_outcome_key(code) {
+                Some(key) => plain(key),
+                None => {
+                    out.refuse(TOOLTIP_RAID_RESULT, format!("unsupported raid outcome ({code})"));
+                    Ok(format!("Unsupported outcome ({code})"))
+                }
+            },
+        };
         out.line(
             false,
             0,
@@ -41,10 +54,7 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
                     TOOLTIP_RAID_RESULT,
                     &[
                         ("RAID_DESC", Arg::Text(&input.description?)),
-                        (
-                            "OUTCOME_TYPE",
-                            Arg::Text(&plain(outcome_key(input.outcome))?),
-                        ),
+                        ("OUTCOME_TYPE", Arg::Text(&outcome?)),
                     ],
                 )
             })(),
@@ -121,12 +131,22 @@ pub fn raid(loc: &Localisation, input: Raid, incoming: bool) -> Tooltip {
         plain(TOOLTIP_RAID_VIEW_DETAILS_PROMPT),
     );
     out.line(false, 1, RAID_INST_ITEM_DESC, input.description);
+    let phase = match known_phase_key(input.phase) {
+        Some(key) => plain(key),
+        None => {
+            out.refuse(
+                RAID_INST_PROGRESS_DESC,
+                format!("unsupported raid phase ({})", input.phase),
+            );
+            Ok(format!("Unsupported phase ({})", input.phase))
+        }
+    };
     out.line(
         false,
         2,
         RAID_INST_PROGRESS_DESC,
         input.progress.and_then(|progress| {
-            let phase = plain(phase_key(input.phase))?;
+            let phase = phase?;
             match progress {
                 Some(value) => localise(
                     loc,

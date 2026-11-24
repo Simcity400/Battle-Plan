@@ -7,7 +7,7 @@ fn access_raw(
         &engine_native_memory::memory::LiveMemory,
         usize,
         u64,
-    ) -> Result<(), &'static str>,
+    ) -> Result<bool, &'static str>,
 ) {
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         return;
@@ -20,9 +20,13 @@ fn access_raw(
             return;
         }
         let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
-        if let Err(reason) = observe(store, &memory, owner.base, generation) {
-            store.decisions.invalidate();
-            store.reject(reason);
+        match observe(store, &memory, owner.base, generation) {
+            Ok(false) => return,
+            Ok(true) => {}
+            Err(reason) => {
+                store.decisions.invalidate();
+                store.reject(reason);
+            }
         }
         script_demands(store);
     };
@@ -44,7 +48,8 @@ fn access(
 ) {
     access_raw(candidate, |store, memory, base, generation| {
         let world = native::provenance::World::new(memory, base)?;
-        observe(store, &world, memory, base, generation)
+        observe(store, &world, memory, base, generation)?;
+        Ok(true)
     });
 }
 fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'static str> {
@@ -94,7 +99,7 @@ pub fn instance(status: usize, pointer: usize, container: u8, operation: Operati
 pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
     access_raw(false, |store, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
-            return Ok(());
+            return Ok(false);
         };
         let world = native::provenance::World::new(memory, base)?;
         store.decision_selected(
@@ -107,13 +112,14 @@ pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
             DecisionChange::new(Operation::Update, slot.container),
             false,
             (state, days),
-        )
+        )?;
+        Ok(true)
     });
 }
 pub fn cut(pointer: usize) {
     access_raw(false, |store, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
-            return Ok(());
+            return Ok(false);
         };
         let world = native::provenance::World::new(memory, base)?;
         store.decision_selected(
@@ -126,17 +132,19 @@ pub fn cut(pointer: usize) {
             DecisionChange::new(Operation::PassCut, slot.container),
             false,
             (None, None),
-        )
+        )?;
+        Ok(true)
     });
 }
 pub fn retire(pointer: usize, swap: bool, visited: bool) {
     access_raw(false, |store, memory, base, generation| {
         if store.decisions.find(pointer).is_none() && store.decisions.uncertified(pointer).is_none()
         {
-            return Ok(());
+            return Ok(false);
         }
         let world = native::provenance::World::new(memory, base)?;
-        store.decision_retire(&world, memory, base, generation, pointer, swap, visited)
+        store.decision_retire(&world, memory, base, generation, pointer, swap, visited)?;
+        Ok(true)
     });
 }
 pub fn marker(status: usize, operation: Operation, container: u8, ordinal: u32, flags: u8) {
@@ -287,7 +295,7 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
     };
     access_raw(false, |store, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
-            return Ok(());
+            return Ok(false);
         };
         let world = native::provenance::World::new(memory, base)?;
         let flags = if ignored == Some(true) {
@@ -319,7 +327,8 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
             },
             false,
             (None, None),
-        )
+        )?;
+        Ok(true)
     });
 }
 
@@ -354,7 +363,7 @@ pub fn write_result(
     access_raw(false, |store, memory, base, generation| {
         if store.decisions.find(pointer).is_none() && store.decisions.uncertified(pointer).is_none()
         {
-            return Ok(());
+            return Ok(false);
         }
         let world = native::provenance::World::new(memory, base)?;
         recorded = store.decision_result(
@@ -367,7 +376,7 @@ pub fn write_result(
             source,
             "decision result reached an uncertified owner",
         )?;
-        Ok(())
+        Ok(true)
     });
     recorded
 }

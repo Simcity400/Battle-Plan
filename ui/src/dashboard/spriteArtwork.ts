@@ -1,3 +1,5 @@
+import type { ArtResolution, SpriteImage } from '../generated/dashboard';
+import { spriteImageToArt } from '../families/art/adapters.ts';
 import { drawableIcon } from './artwork.ts';
 
 export interface SpriteFrame { key: string; frame: number; recorded?: string; text?: boolean }
@@ -16,34 +18,59 @@ export function spriteFrames(sprites: Iterable<SpriteFrame | null | undefined>):
   return [...shown.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, sprite]) => sprite);
 }
 
-export function spriteIcons(reply: unknown, asked: readonly SpriteFrame[]): Map<string, string | null> {
+function parseSpriteItems(reply: unknown, asked: readonly SpriteFrame[]): Map<string, { readonly icon: string | null; readonly resolution: ArtResolution }> {
   const value = reply as { items?: unknown; warnings?: unknown };
   const malformed = () => new Error('The sprite artwork reply is malformed.');
   if (!value || typeof value !== 'object' || !Array.isArray(value.items)
     || !Array.isArray(value.warnings) || !value.warnings.every(note => typeof note === 'string')) throw malformed();
   const ids = new Set(asked.map(spriteId));
-  const icons = new Map<string, string | null>();
+  const out = new Map<string, { readonly icon: string | null; readonly resolution: ArtResolution }>();
   for (const item of value.items as unknown[]) {
-    const image = item as { key?: unknown; frame?: unknown; recorded?: unknown; text?: unknown; icon?: unknown };
+    const image = item as { key?: unknown; frame?: unknown; recorded?: unknown; text?: unknown; icon?: unknown; resolution?: unknown };
     if (!image || typeof image.key !== 'string' || typeof image.frame !== 'number' || !optionalKey(image.recorded) || !('icon' in image)
       || !(image.text === undefined || image.text === true)) throw malformed();
     const id = spriteId({ key: image.key, frame: image.frame, recorded: image.recorded as string | undefined, text: image.text === true });
-    if (!ids.has(id) || icons.has(id)) throw malformed();
-    icons.set(id, drawableIcon(image.icon));
+    if (!ids.has(id) || out.has(id)) throw malformed();
+    const icon = drawableIcon(image.icon);
+    const resolution = spriteImageToArt({
+      key: image.key,
+      frame: image.frame,
+      ...(image.recorded !== undefined ? { recorded: image.recorded as string } : {}),
+      ...(image.text === true ? { text: true } : {}),
+      icon,
+      ...(image.resolution !== undefined ? { resolution: image.resolution as ArtResolution } : {}),
+    } as SpriteImage);
+    out.set(id, { icon, resolution });
   }
+  return out;
+}
+
+export function spriteIcons(reply: unknown, asked: readonly SpriteFrame[]): Map<string, string | null> {
+  const parsed = parseSpriteItems(reply, asked);
+  const icons = new Map<string, string | null>();
+  for (const [id, entry] of parsed) icons.set(id, entry.icon);
   return icons;
 }
 
+export function spriteResolutions(reply: unknown, asked: readonly SpriteFrame[]): Map<string, ArtResolution> {
+  const parsed = parseSpriteItems(reply, asked);
+  const resolutions = new Map<string, ArtResolution>();
+  for (const [id, entry] of parsed) resolutions.set(id, entry.resolution);
+  return resolutions;
+}
+
 export class SpriteCaches {
-  private scopes = new Map<string, { users: number; icons: Map<string, string | null> }>();
+  private scopes = new Map<string, { users: number; icons: Map<string, string | null>; resolutions: Map<string, ArtResolution> }>();
 
   private held(scope: string) {
     let held = this.scopes.get(scope);
-    if (!held) { held = { users: 0, icons: new Map() }; this.scopes.set(scope, held); }
+    if (!held) { held = { users: 0, icons: new Map(), resolutions: new Map() }; this.scopes.set(scope, held); }
     return held;
   }
 
   icons(scope: string): Map<string, string | null> { return this.held(scope).icons; }
+
+  resolutions(scope: string): Map<string, ArtResolution> { return this.held(scope).resolutions; }
 
   hold(scope: string): () => void {
     const held = this.held(scope);

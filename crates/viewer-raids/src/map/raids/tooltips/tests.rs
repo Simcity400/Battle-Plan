@@ -95,17 +95,16 @@ fn own_phases_progress_and_diagnostic_return_select_the_lines() {
 #[test]
 fn ended_own_and_incoming_share_every_outcome_and_ignore_active_facts() {
     let keys = [
-        "NONE",
-        "FAILURE",
-        "LIMITED_SUCCESS",
-        "SUCCESS",
-        "CRITICAL_SUCCESS",
-        "CANCELED",
+        (1, "FAILURE"),
+        (2, "LIMITED_SUCCESS"),
+        (3, "SUCCESS"),
+        (4, "CRITICAL_SUCCESS"),
+        (5, "CANCELED"),
     ];
-    for (outcome, suffix) in keys.into_iter().enumerate() {
+    for (outcome, suffix) in keys {
         for incoming in [false, true] {
             let mut input = raid_input(5);
-            input.outcome = outcome as i32;
+            input.outcome = outcome;
             input.success = Err("must not read".into());
             input.progress = Err("must not read".into());
             let out = raid(&loc(), input, incoming);
@@ -119,6 +118,19 @@ fn ended_own_and_incoming_share_every_outcome_and_ignore_active_facts() {
             );
             assert!(out.refused.is_empty());
         }
+    }
+    for incoming in [false, true] {
+        let mut input = raid_input(5);
+        input.outcome = 0;
+        input.success = Err("must not read".into());
+        input.progress = Err("must not read".into());
+        let out = raid(&loc(), input, incoming);
+        assert_eq!(out.title, "raid description raid outcome was not recorded");
+        assert!(!out.title.contains("RAID_INST_OUTCOME_NONE"));
+        assert!(
+            out.refused
+                .contains_key("tooltip_raid_result: raid outcome was not recorded")
+        );
     }
 }
 
@@ -282,4 +294,31 @@ fn assembling_diagnostics_survive_unknown_final_gate_and_prepared_gate_stays_unk
         assert_eq!(out.refused.values().sum::<usize>(), 1);
         assert!(!out.title.contains("tooltip_launch_button_disabled"));
     }
+}
+
+#[test]
+fn unsupported_phase_and_outcome_codes_are_shown_visibly_with_raw_values() {
+    let mut ended = raid_input(5);
+    ended.outcome = 99;
+    let out = raid(&loc(), ended, false);
+    assert_eq!(out.title, "raid description Unsupported outcome (99)");
+    assert!(
+        out.refused
+            .contains_key("tooltip_raid_result: unsupported raid outcome (99)"),
+        "expected unsupported outcome refusal, got {:?}",
+        out.refused
+    );
+    assert!(!out.title.contains("RAID_INST_OUTCOME_NONE"));
+
+    let mut active = raid_input(42);
+    active.ended = false;
+    let out = raid(&loc(), active, false);
+    assert_eq!(out.title, "raid description\n\nUnsupported phase (42)");
+    assert!(
+        out.refused
+            .contains_key("raid_inst_progress_desc: unsupported raid phase (42)"),
+        "expected unsupported phase refusal, got {:?}",
+        out.refused
+    );
+    assert!(!out.title.contains("RAID_INST_PHASE_NONE"));
 }

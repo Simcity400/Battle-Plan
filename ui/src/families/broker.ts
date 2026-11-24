@@ -69,9 +69,9 @@ function readSignature(read: SourceTimeShape): unknown {
     case 'range':
       return ['range', read.coverage, read.product, read.firstHour, read.lastHour, read.params, read.dynamicKeys ?? []];
     case 'branch-to-hour':
-      return ['branch-to-hour', read.coverage, read.product, read.followQuery, read.params, read.dynamicKeys ?? []];
+      return ['branch-to-hour', read.coverage, read.product, read.followQuery, read.params, read.chunkHours ?? null, read.dynamicKeys ?? []];
     case 'trailing-window':
-      return ['trailing-window', read.coverage, read.product, read.windowHours, read.followQuery, read.params, read.dynamicKeys ?? []];
+      return ['trailing-window', read.coverage, read.product, read.windowHours, read.followQuery, read.params, read.chunkHours ?? null, read.dynamicKeys ?? []];
     case 'pixel-binned':
       return ['pixel-binned', read.coverage, read.family, read.tags, read.within ? [...read.within.entries()] : null, read.marks === true, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null];
     case 'exact-hover':
@@ -314,6 +314,185 @@ export function buildStaticRequest(
       validate: read.validate,
       entry,
       span: [span.firstHour, span.lastHour] as const,
+    };
+  }
+
+  return null;
+}
+
+export function stabilizeCanvasDimension(
+  measured: number | undefined,
+  previous: number | undefined,
+  deadbandPx = 2,
+): number | undefined {
+  if (measured === undefined || !Number.isFinite(measured) || measured <= 0) return previous;
+  if (previous !== undefined && Math.abs(measured - previous) < Math.max(1, deadbandPx)) {
+    return previous;
+  }
+  return Math.max(1, Math.round(measured));
+}
+
+export function needsPlaybackBoundedRead(
+  plan: SourcePlan | null,
+  subscriptions: readonly CompiledFollowSubscription[],
+): boolean {
+  if (!plan || subscriptions.length > 0 || plan.allowEmptyFollow || plan.refused || plan.unavailable) {
+    return false;
+  }
+  const entry = primaryStaticEntry(plan);
+  if (!entry) return false;
+  const read = entry.read;
+  if (read.shape === 'range') return true;
+  if (read.shape === 'branch-to-hour' || read.shape === 'trailing-window' || read.shape === 'point') {
+    return read.followQuery === null;
+  }
+  return false;
+}
+
+export interface PlaybackBoundedSpec extends StaticRequestSpec {
+  readonly provenInterval: readonly [lo: number, hi: number];
+  readonly anchorHour: number;
+}
+
+export function resolvePlaybackProvenInterval(
+  read: SourceTimeShape,
+  data: unknown,
+  requested: readonly [number, number],
+  hour: number,
+): readonly [number, number] {
+  if (read.shape === 'point') {
+    return read.provenInterval?.(data, hour) ?? requested;
+  }
+  if (read.shape === 'branch-to-hour' || read.shape === 'trailing-window') {
+    return read.provenInterval?.(data, requested, hour) ?? requested;
+  }
+  return requested;
+}
+
+export function buildPlaybackBoundedRequest(
+  plan: SourcePlan,
+  options: {
+    readonly branch: { readonly firstHour: number; readonly lastHour: number };
+    readonly effectiveEndHour: number;
+    readonly currentHour: number;
+    readonly gate: FrozenGate;
+    readonly previousProven?: readonly [number, number] | null;
+    readonly previousAnchorHour?: number | null;
+    readonly countriesKnown?: (first: number, last: number) => boolean;
+  },
+): PlaybackBoundedSpec | null {
+  const entry = primaryStaticEntry(plan);
+  if (!entry) return null;
+  const read = entry.read;
+  const first = options.branch.firstHour;
+  const end = Math.min(options.branch.lastHour, Math.max(first, Math.floor(options.effectiveEndHour)));
+  const cur = Math.max(first, Math.min(end, Math.floor(options.currentHour)));
+  const prev = options.previousProven;
+  const covered = !!prev && cur >= prev[0] && cur <= prev[1];
+
+  if (read.shape === 'branch-to-hour') {
+    if (read.followQuery !== null) return null;
+    let spanFirst = first;
+    let spanLast = end;
+    if (covered) {
+      spanFirst = prev[0];
+      spanLast = prev[1];
+    } else if (read.chunkHours && read.chunkHours > 0) {
+      const chunk = Math.max(1, Math.floor(read.chunkHours));
+      const offset = cur - first;
+      const chunkIndex = Math.floor(offset / chunk);
+      spanLast = Math.min(end, first + (chunkIndex + 1) * chunk - 1);
+    }
+    const span = options.gate.span(spanFirst, spanLast);
+    if (!span) return null;
+    const params = produceSpanParams(read.params, span, read.buildSpanParams);
+    if (!params) return null;
+    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
+    const interval: readonly [number, number] = [span.firstHour, span.lastHour];
+    return {
+      queryKey: planQueryKey(entry.source, entry.branch, read.product, params),
+      request,
+      dynamicKeys: read.dynamicKeys ?? [],
+      validate: read.validate,
+      entry,
+      span: interval,
+      provenInterval: interval,
+      anchorHour: span.lastHour,
+    };
+  }
+
+  if (read.shape === 'range') {
+    const span = options.gate.span(read.firstHour, read.lastHour);
+    if (!span) return null;
+    const params = produceSpanParams(read.params, span, read.buildSpanParams);
+    if (!params) return null;
+    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
+    const interval: readonly [number, number] = [span.firstHour, span.lastHour];
+    return {
+      queryKey: planQueryKey(entry.source, entry.branch, read.product, params),
+      request,
+      dynamicKeys: read.dynamicKeys ?? [],
+      validate: read.validate,
+      entry,
+      span: interval,
+      provenInterval: interval,
+      anchorHour: span.lastHour,
+    };
+  }
+
+  if (read.shape === 'trailing-window') {
+    if (read.followQuery !== null) return null;
+    let spanFirst: number;
+    let spanLast: number;
+    if (covered) {
+      spanFirst = prev[0];
+      spanLast = prev[1];
+    } else {
+      const lookahead = read.chunkHours && read.chunkHours > 0 ? Math.floor(read.chunkHours) : 0;
+      spanFirst = Math.max(first, cur - Math.max(1, read.windowHours) + 1);
+      spanLast = Math.min(end, cur + lookahead);
+    }
+    if (options.countriesKnown && !options.countriesKnown(spanFirst, spanLast)) return null;
+    const span = options.gate.span(spanFirst, spanLast);
+    if (!span) return null;
+    const params = produceSpanParams(read.params, span, read.buildSpanParams);
+    if (!params) return null;
+    const request = productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product: read.product, params });
+    const interval: readonly [number, number] = [span.firstHour, span.lastHour];
+    return {
+      queryKey: planQueryKey(entry.source, entry.branch, read.product, params),
+      request,
+      dynamicKeys: read.dynamicKeys ?? [],
+      validate: read.validate,
+      entry,
+      span: interval,
+      provenInterval: interval,
+      anchorHour: span.lastHour,
+    };
+  }
+
+  if (read.shape === 'point') {
+    if (read.followQuery !== null) return null;
+    const targetHour = covered && options.previousAnchorHour != null ? options.previousAnchorHour : cur;
+    const recorded = options.gate.recorded(targetHour);
+    if (recorded === null) return null;
+    const params = producePointParams(read, recorded, 'static');
+    if (!params) return null;
+    const product = read.exactProduct ?? read.product;
+    const request = read.channel === 'panel' && !read.exactProduct
+      ? forwardRequest(entry.source, product, params)
+      : productRequest({ sourceId: entry.source.id, revision: entry.source.revision, product, params });
+    const dynamicKeys = read.dynamicKeys ?? (read.channel === 'panel' && !read.exactProduct ? [read.hourParam ?? 'hour'] : []);
+    const interval: readonly [number, number] = covered ? prev : [recorded, recorded];
+    return {
+      queryKey: planQueryKey(entry.source, entry.branch, product, params),
+      request,
+      dynamicKeys,
+      validate: read.validate,
+      entry,
+      span: null,
+      provenInterval: interval,
+      anchorHour: recorded,
     };
   }
 

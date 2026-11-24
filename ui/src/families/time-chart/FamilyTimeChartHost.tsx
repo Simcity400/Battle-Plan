@@ -49,6 +49,7 @@ export interface FamilyTimeChartHostProps<TOptions> {
   readonly blockedState?: ReactNode;
   readonly extraWarnings?: readonly string[];
   readonly onViewportWidth?: (width: number) => void;
+  readonly onViewportSize?: (width: number, height: number) => void;
   readonly onHoverHour?: (hour: number | null) => void;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
   readonly onArtDemands?: (demands: readonly { readonly key: string; readonly frame: number }[]) => void;
@@ -77,6 +78,7 @@ export default function FamilyTimeChartHost<TOptions>({
   blockedState,
   extraWarnings,
   onViewportWidth,
+  onViewportSize,
   onHoverHour,
   onIdentityDemands,
   onArtDemands,
@@ -134,6 +136,7 @@ export default function FamilyTimeChartHost<TOptions>({
   const latestRef = useRef({
     buildBinding,
     onViewportWidth,
+    onViewportSize,
     onHoverHour,
     onIdentityDemands,
     onArtDemands,
@@ -148,6 +151,7 @@ export default function FamilyTimeChartHost<TOptions>({
   latestRef.current = {
     buildBinding,
     onViewportWidth,
+    onViewportSize,
     onHoverHour,
     onIdentityDemands,
     onArtDemands,
@@ -311,6 +315,7 @@ export default function FamilyTimeChartHost<TOptions>({
 
     const measure = () => {
       const rect = node.getBoundingClientRect();
+      latestRef.current.onViewportSize?.(rect.width, rect.height);
       const w = Math.max(0, Math.floor(rect.width));
       const h = Math.max(0, Math.floor(rect.height));
       if (w !== sizeRef.current.width || h !== sizeRef.current.height) {

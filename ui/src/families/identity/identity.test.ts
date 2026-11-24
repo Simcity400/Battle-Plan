@@ -11,6 +11,7 @@ import type {
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider } from './provider.ts';
+import { readIdentityAtHeadHour, subscribeIdentityAtHead } from './react.ts';
 import {
   IdentityIndex,
   countrySlotKey,
@@ -485,5 +486,54 @@ test('IdentityProvider plugs into BoundedReadView.who() in both worker snapshot 
   const settled = liveView.who('country', 'GER', 100);
   assert.deepEqual(settled.name, { status: 'ready', value: 'Early Republic' });
   unsub();
+  broker.dispose();
+});
+
+test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots when scope is null or keys are empty', async () => {
+  const transport: IdentityTransport = {
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+  };
+  const broker = new IdentityBroker({ transport });
+  let clockHour = 100;
+  let frameSubscribes = 0;
+  let anchorSubscribes = 0;
+  const clock = {
+    getHour: () => clockHour,
+    subscribeFrame: (_cb: () => void) => { frameSubscribes++; return () => {}; },
+    subscribe: (_cb: () => void) => { anchorSubscribes++; return () => {}; },
+  };
+  const held = { current: { key: '', hour: null as number | null } };
+
+  const unsubNoScope = subscribeIdentityAtHead(broker, clock, null, true, true, true, null, undefined, () => {});
+  const unsubNoKeys = subscribeIdentityAtHead(broker, clock, SCOPE, true, true, false, null, undefined, () => {});
+  assert.equal(frameSubscribes, 0, 'never subscribes to frame clock without both scope and keys');
+  assert.equal(anchorSubscribes, 0, 'never subscribes to anchor clock without both scope and keys');
+  unsubNoScope();
+  unsubNoKeys();
+
+  assert.equal(readIdentityAtHeadHour(broker, clock, null, true, [countryTagKey('GER')], h => h, null, undefined, held), null);
+  clockHour = 120;
+  assert.equal(readIdentityAtHeadHour(broker, clock, SCOPE, true, [], h => h, null, undefined, held), null);
+  clockHour = 140;
+  assert.equal(readIdentityAtHeadHour(broker, clock, SCOPE, true, [], h => h, null, undefined, held), null);
+
+  const unsubActive = subscribeIdentityAtHead(broker, clock, SCOPE, true, true, true, null, [0, 500], () => {});
+  assert.equal(frameSubscribes, 1, 'subscribes to frame clock once both scope and keys are present');
+  broker.setDemand({}, SCOPE, { asks: [{ key: countryTagKey('GER'), hour: 100 }], needFlags: false, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  clockHour = 100;
+  const h1 = readIdentityAtHeadHour(broker, clock, SCOPE, true, [countryTagKey('GER')], h => h, null, [0, 500], held);
+  clockHour = 125;
+  const h2 = readIdentityAtHeadHour(broker, clock, SCOPE, true, [countryTagKey('GER')], h => h, null, [0, 500], held);
+  assert.equal(h1, 100);
+  assert.equal(h2, 100, 'advancing within a loaded run keeps the held hour without triggering a React commit');
+  clockHour = 150;
+  const h3 = readIdentityAtHeadHour(broker, clock, SCOPE, true, [countryTagKey('GER')], h => h, null, [0, 500], held);
+  assert.equal(h3, 150, 'crossing the run boundary advances the hour');
+  unsubActive();
   broker.dispose();
 });

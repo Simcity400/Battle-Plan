@@ -1,4 +1,5 @@
 
+use collector_primitives::asymmetric::{FlightGate, FlightGuard};
 use std::{
     ptr,
     sync::atomic::{
@@ -8,9 +9,6 @@ use std::{
 };
 
 const BITS: usize = u64::BITS as usize;
-
-#[repr(align(64))]
-struct Hot(AtomicUsize);
 
 struct Bits {
     words: Vec<AtomicU64>,
@@ -46,7 +44,7 @@ pub struct DirtySet {
     capacity: AtomicUsize,
     requested: AtomicUsize,
     epoch: AtomicU64,
-    active: Hot,
+    active: FlightGate,
     enabled: AtomicBool,
     poisoned: AtomicBool,
     installs: AtomicU64,
@@ -77,7 +75,7 @@ impl DirtySet {
             capacity: AtomicUsize::new(0),
             requested: AtomicUsize::new(0),
             epoch: AtomicU64::new(1),
-            active: Hot(AtomicUsize::new(0)),
+            active: FlightGate::new(0),
             enabled: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             installs: AtomicU64::new(0),
@@ -133,18 +131,23 @@ impl DirtySet {
 
     #[inline]
     pub fn notify(&self, id: usize) -> Dirty<'_> {
-        self.active.0.fetch_add(1, SeqCst);
+        let flight = self.active.enter(false);
         let mark = self.mark(id);
-        Dirty { set: self, mark }
+        Dirty {
+            set: self,
+            mark,
+            _flight: flight,
+        }
     }
 
     pub fn notify_every(&self) -> Dirty<'_> {
-        self.active.0.fetch_add(1, SeqCst);
+        let flight = self.active.enter(false);
         self.everies.fetch_add(1, Relaxed);
         self.new_epoch();
         Dirty {
             set: self,
             mark: Mark::Every,
+            _flight: flight,
         }
     }
 
@@ -152,7 +155,7 @@ impl DirtySet {
         if !self.observing() {
             return None;
         }
-        if self.active.0.load(SeqCst) != 0 {
+        if self.active.any_active() {
             self.refused.fetch_add(1, Relaxed);
             return None;
         }
@@ -171,7 +174,7 @@ impl DirtySet {
             }
         }
         self.taken.fetch_add(taken, Relaxed);
-        if self.epoch.load(SeqCst) == epoch && self.active.0.load(SeqCst) == 0 {
+        if self.epoch.load(SeqCst) == epoch && !self.active.any_active() {
             Some(epoch)
         } else {
             self.refused.fetch_add(1, Relaxed);
@@ -188,12 +191,12 @@ impl DirtySet {
             if !self.offered.load(SeqCst).is_null() {
                 self.held.fetch_add(1, Relaxed);
             }
-            if self.active.0.load(SeqCst) == 0 {
+            if !self.draining.load(SeqCst).is_null() && !self.active.any_active() {
                 self.retire_drained();
             }
             return false;
         }
-        if self.active.0.load(SeqCst) != 0 {
+        if self.active.any_active() {
             if !self.offered.load(SeqCst).is_null() || !self.draining.load(SeqCst).is_null() {
                 self.deferred.fetch_add(1, Relaxed);
             }
@@ -217,7 +220,7 @@ impl DirtySet {
         }
         self.installs.fetch_add(1, Relaxed);
         self.draining.store(previous, SeqCst);
-        if self.active.0.load(SeqCst) == 0 {
+        if !self.active.any_active() {
             self.retire_drained();
         }
         true
@@ -294,7 +297,7 @@ impl DirtySet {
     }
 
     pub fn active(&self) -> usize {
-        self.active.0.load(SeqCst)
+        self.active.active()
     }
 
 }
@@ -316,6 +319,7 @@ enum Mark<'a> {
 pub struct Dirty<'a> {
     set: &'a DirtySet,
     mark: Mark<'a>,
+    _flight: FlightGuard<'a>,
 }
 
 impl Drop for Dirty<'_> {
@@ -332,7 +336,6 @@ impl Drop for Dirty<'_> {
             }
             Mark::Every => self.set.new_epoch(),
         }
-        self.set.active.0.fetch_sub(1, SeqCst);
     }
 }
 
