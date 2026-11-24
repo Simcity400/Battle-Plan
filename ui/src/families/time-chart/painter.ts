@@ -559,10 +559,10 @@ export function drawTimeChart(
           ctx.lineTo(pts[0]![0], baselineY);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, layout.top, 0, baselineY);
-          const topStop = rgbaColor(s.color, Number((0.26 * opacity).toFixed(3)), '');
+          const topStop = rgbaColor(s.color, 0.26 * opacity, '');
           if (topStop) {
             grad.addColorStop(0, topStop);
-            grad.addColorStop(1, rgbaColor(s.color, Number((0.02 * opacity).toFixed(3)), s.color));
+            grad.addColorStop(1, rgbaColor(s.color, 0.02 * opacity, s.color));
             ctx.globalAlpha = 1;
           } else {
             grad.addColorStop(0, s.color);

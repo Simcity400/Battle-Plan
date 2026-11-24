@@ -1,4 +1,4 @@
-use super::{Building, GroupCount, GroupKind, Index, ROSTER_UNREAD, SUBJECTS_UNREAD};
+use super::{Building, GroupCount, CountedGroup, Index, ROSTER_UNREAD, SUBJECTS_UNREAD};
 use dashboard_base::span::HourSpan;
 use std::collections::BTreeMap;
 
@@ -32,17 +32,17 @@ fn groups_are_ranked_by_their_count_at_the_hour_and_one_whose_count_is_unknown_i
         ],
         &[(250, 260)],
     );
-    let (missing, groups) = index.answer(GroupKind::Factions, 125);
+    let (missing, groups) = index.answer(CountedGroup::Factions, 125);
     assert_eq!(missing, None);
     assert_eq!(shown(&groups), [("1", Some(2)), ("2", Some(2)), ("3", Some(1))], "ties go to the earliest");
-    let (_, groups) = index.answer(GroupKind::Factions, 145);
+    let (_, groups) = index.answer(CountedGroup::Factions, 145);
     assert_eq!(shown(&groups), [("1", Some(2)), ("3", Some(1)), ("2", None)], "a roster not read whole is not ranked as zero");
     assert_eq!(groups[2].missing.as_deref(), Some(ROSTER_UNREAD));
-    let (_, groups) = index.answer(GroupKind::Factions, 210);
+    let (_, groups) = index.answer(CountedGroup::Factions, 210);
     assert_eq!(shown(&groups), [("2", Some(3)), ("1", Some(2)), ("3", Some(0))], "a dissolved faction is witnessed empty");
-    let (_, groups) = index.answer(GroupKind::Factions, 95);
+    let (_, groups) = index.answer(CountedGroup::Factions, 95);
     assert_eq!(shown(&groups), [("3", Some(1))], "a group begun after the hour is not there");
-    let (missing, groups) = index.answer(GroupKind::Factions, 255);
+    let (missing, groups) = index.answer(CountedGroup::Factions, 255);
     assert!(missing.is_some() && groups.iter().all(|group| group.count.is_none()), "an unread hour ranks nothing");
     assert_eq!((index.next_change(125), index.next_change(201), index.next_change(301)), (Some(130), Some(250), None));
 }
@@ -50,7 +50,7 @@ fn groups_are_ranked_by_their_count_at_the_hour_and_one_whose_count_is_unknown_i
 #[test]
 fn overlords_are_those_holding_a_subject_at_the_hour_and_an_unread_hour_names_none() {
     let index = index(&[("AAA", &[(100, 200)], &[]), ("BBB", &[(100, 150), (100, 300)], &[])], &[(160, 170)]);
-    assert_eq!(shown(&index.answer(GroupKind::Overlords, 120).1), [("BBB", Some(2)), ("AAA", Some(1))]);
-    assert_eq!(shown(&index.answer(GroupKind::Overlords, 250).1), [("BBB", Some(1))], "an overlord with no subject left is not ranked");
-    assert_eq!(index.answer(GroupKind::Overlords, 165), (Some(SUBJECTS_UNREAD.to_owned()), Vec::new()));
+    assert_eq!(shown(&index.answer(CountedGroup::Overlords, 120).1), [("BBB", Some(2)), ("AAA", Some(1))]);
+    assert_eq!(shown(&index.answer(CountedGroup::Overlords, 250).1), [("BBB", Some(1))], "an overlord with no subject left is not ranked");
+    assert_eq!(index.answer(CountedGroup::Overlords, 165), (Some(SUBJECTS_UNREAD.to_owned()), Vec::new()));
 }

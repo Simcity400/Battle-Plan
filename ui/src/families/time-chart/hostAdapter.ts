@@ -1,4 +1,5 @@
 import type { TiledLine } from '../../dashboard/tiles/view';
+import { displayedHour } from '../boundedView.ts';
 import type { FamilyGestureContext, FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { SerializedTiledLine } from '../sceneTiles.ts';
 import type { SourcePlan } from '../contract.ts';
@@ -180,6 +181,34 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
   pointerMode: 'continuous',
   navigation: 'points',
   parseHit: parseTimeChartHit,
+  resolveHitAction(hit, installed, fields) {
+    const target = installed.actionKeys.get(hit.key);
+    const metaObj = fields.meta as { readonly subject?: string } | undefined;
+    if (hit.kind === 'month') {
+      return {
+        installedId: installed.id,
+        owner: installed.owner,
+        subject: hit.subject ?? target?.subject ?? hit.key,
+        hour: displayedHour(installed.hour),
+        meta: {
+          frameHour: installed.hour,
+          ...(hit.hour !== undefined ? { monthFirstHour: hit.hour } : {}),
+          ...(metaObj?.subject ? { country: metaObj.subject } : {}),
+        },
+      };
+    }
+    const label = hit.label ?? target?.label;
+    const meta = hit.meta ?? target?.meta;
+    return {
+      installedId: installed.id,
+      owner: installed.owner,
+      subject: hit.subject ?? target?.subject ?? hit.key,
+      hour: displayedHour(hit.hour ?? target?.hour ?? installed.hour),
+      ...(hit.toggle || target?.toggle ? { toggle: true } : {}),
+      ...(label !== undefined ? { label } : {}),
+      ...(meta !== undefined ? { meta } : {}),
+    };
+  },
   inspectToken: key => key,
   gestures: createTimeChartGestures(),
   deriveAuditRows: model => model.auditRows ?? [],
