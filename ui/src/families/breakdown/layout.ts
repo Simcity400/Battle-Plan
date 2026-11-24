@@ -1,8 +1,8 @@
+import { contrastInkForFill } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BreakdownViewMode } from './options.ts';
 import {
   formatShare,
-  inkOnColour,
   partColour,
   resolveExpandedMap,
   resolveRingOpenKey,
@@ -340,7 +340,7 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
           const segW = (ch.value! / childSum) * usableW;
           if (segW < 0.5) continue;
           const segColor = i % 2 === 0 ? color : tintColour(color, 0.2);
-          const ink = inkOnColour(segColor);
+          const ink = contrastInkForFill(segColor, theme);
           const fullText = `${ch.name} ${ch.text}`;
           let inlineLabel: string | null = null;
           if (!narrow && segW >= 36) {
@@ -615,7 +615,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
     angle = a1 + gapRad;
 
     const color = partColour(part, theme);
-    const ink = inkOnColour(color);
+    const ink = contrastInkForFill(color, theme);
     const shareText = hatchedRing ? '' : formatShare(part.share);
 
     let label: RingInnerSlice['label'] = null;
@@ -661,7 +661,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
           const b1 = bAngle + bSpan;
           bAngle = b1 + childGap;
           const chColor = ci % 2 === 0 ? tintColour(color, 0.12) : tintColour(color, 0.30);
-          const chInk = inkOnColour(chColor);
+          const chInk = contrastInkForFill(chColor, theme);
           let arcLabel: RingOuterSlice['arcLabel'] = null;
           if (!hatchedRing && namesInRing && !narrow && w2 >= 15) {
             const rr = (r2i + r2o) / 2;
@@ -925,7 +925,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
 
     if (showGroup) {
       const groupColor = shadeColour(baseColor, 0.45);
-      const groupInk = inkOnColour(groupColor);
+      const groupInk = contrastInkForFill(groupColor, theme);
       const childArea: Rect = {
         x: rect.x + 2,
         y: rect.y + MOSAIC_GROUP_HEADER,
@@ -956,7 +956,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
           width: cr.width,
           height: cr.height,
           color: chColor,
-          ink: inkOnColour(chColor),
+          ink: contrastInkForFill(chColor, theme),
           hatched: hatchedAll,
           isGroup: false,
           headerHeight: 0,
@@ -1005,7 +1005,7 @@ function layoutMosaicView(input: BreakdownLayoutInput): MosaicViewLayout {
         width: rect.width,
         height: rect.height,
         color: baseColor,
-        ink: inkOnColour(baseColor),
+        ink: contrastInkForFill(baseColor, theme),
         hatched: hatchedAll,
         isGroup: false,
         headerHeight: 0,

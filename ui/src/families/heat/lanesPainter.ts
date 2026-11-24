@@ -2,6 +2,7 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
+  contrastInkForFill,
   drawCrosshairLine,
   drawDateTab,
   drawFlagSlot,
@@ -19,7 +20,7 @@ import {
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { mix, parseColor, readableText } from '../../shell/appearance/color.ts';
+import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle } from '../art/provider.ts';
@@ -271,8 +272,7 @@ function drawInRunLabel(
     ctx.restore();
     return;
   }
-  const rgb = parseColor(bgColor);
-  ctx.fillStyle = explicitTextColor ?? (rgb ? readableText(rgb) : theme.text);
+  ctx.fillStyle = explicitTextColor ?? contrastInkForFill(bgColor, theme);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x + 8, y + height / 2 + 0.5);
