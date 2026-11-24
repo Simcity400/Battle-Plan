@@ -1,5 +1,6 @@
 import '../../families/table/registerAll.ts';
 import '../../families/timeline/registerAll.ts';
+import { familyBarsLaneView } from '../../families/bars/laneView.ts';
 import type { LaneView, Painted, PaintInput, Scene } from '../lane.ts';
 import { familyTimelineLaneView } from '../../families/timeline/laneView.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';
@@ -88,6 +89,7 @@ function race(wake: (widget: number) => void): LaneView {
 export function drawnViews(kind: string, wake: (widget: number) => void): LaneView | undefined {
   if (kind === 'panel') return panelTexts();
   if (kind === 'table') return tableView(readingStructure, wake);
+  if (kind === 'bars') return familyBarsLaneView(wake);
   if (kind === 'timeline') return familyTimelineLaneView(wake);
   if (kind === 'race') return race(wake);
   return undefined;

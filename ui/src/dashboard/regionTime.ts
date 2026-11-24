@@ -1,4 +1,4 @@
-import { resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
+import { lastRecordedBranchHour, resolveWindow, type BoundTrack, type HourWindow, type WidgetSpec } from './model.ts';
 import { formatDateTime, gameDate } from './calendar.ts';
 
 import type { AnyRequestParams, HourRole, RecordingGap, RequestParams } from '../generated/dashboard';
@@ -220,16 +220,8 @@ export function recordedHour(track: Branch | undefined, hour: number | null | un
 
 export function lastRecordedHour(track: Branch | undefined): TrackHour | null {
   if (!track) return null;
-  const { firstHour, lastHour, gaps } = track.branch;
-  if (!Number.isSafeInteger(firstHour) || !Number.isSafeInteger(lastHour) || firstHour > lastHour) return null;
-  if (!gaps?.length) return lastHour as TrackHour;
-  let at = lastHour;
-  while (at >= firstHour) {
-    const gap = gapAt(track, at);
-    if (!gap) return at as TrackHour;
-    at = gap.firstHour - 1;
-  }
-  return null;
+  const hour = lastRecordedBranchHour(track.branch);
+  return hour === null ? null : hour as TrackHour;
 }
 
 export function bucketEdges(track: Branch, size: number): readonly number[] {

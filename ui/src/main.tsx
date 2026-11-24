@@ -14,7 +14,10 @@ import { applySavedAppearance } from './shell/appearance/useAppearance';
 import { desktopAvailable } from './shell/api';
 import { shareRecordingPreferences } from './shell/recordingPreferences';
 import { startPerf } from './shell/perf';
+import { registerGameWindow } from './dashboard/gameWindows';
+import EquipmentDesignerWindow from './dashboard/EquipmentDesignerWindow';
 
+registerGameWindow('equipmentDesigner', EquipmentDesignerWindow);
 applySavedAppearance();
 void startPerf().catch(error => console.error('Measurement unavailable:', error));
 if (desktopAvailable) void shareRecordingPreferences().catch(error => console.error('Campaign flags stay on this device:', error));

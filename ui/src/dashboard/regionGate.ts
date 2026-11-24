@@ -12,7 +12,7 @@ import { choiceAt, resolveChoice, type CountryHolder, type ReachedCountry } from
 import { boundCountryToken, datedCountrySpans, readDatedCountry, type BoundCountry, type DatedCountrySelection } from './datedCountry.ts';
 import { selectionChangeHours, worldFilterQuery, worldRequestTags } from './groups.ts';
 import { useCountryGroups } from './useCountryGroups.ts';
-import { axisAt, checkedTime, followedProduct, FOLLOW, recordedHour, refusedHours, regionFollows, regionHour, regionTrack, regionWindow, SPEC, type AxisHour,
+import { axisAt, checkedTime, followedProduct, FOLLOW, lastRecordedHour, recordedHour, refusedHours, regionFollows, regionHour, regionTrack, regionWindow, SPEC, type AxisHour,
   type BoundHour, type BoundWindow, type FollowQuery, type GatedHour, type GatedTime, type GatedWindow, type Outside, type PinTime, type Region, type RegionAction,
   type TimeRefusal, type TrackHour } from './regionTime.ts';
 import { epochOf, useRegion, useRegionHour, useRegionOutside } from './widgetTime.ts';
@@ -48,7 +48,7 @@ export type GateStage =
 
 export interface Gate {
   region: Region; track: BoundTrack | undefined; active: boolean;
-  hour: GatedHour | null; window: GatedWindow | null; outside: Outside | null; stage: GateStage; open: boolean;
+  hour: GatedHour | null; lastRecorded: GatedHour | null; window: GatedWindow | null; outside: Outside | null; stage: GateStage; open: boolean;
   country: CountryAt | null; members: MembersAt | null; groups: ReturnType<typeof useCountryGroups>; held: HeldCountry | null;
   hourAt: (axis: AxisHour) => GatedHour | null;
   recorded: (hour: number | null | undefined, within?: readonly Span[] | null) => GatedHour | null;
@@ -307,7 +307,9 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
   const hold = useCallback((holder: Holder | null | undefined, extent?: BoundWindow | null) => checkHold(holder, extent).held, [checkHold]);
   const holder = country?.holder ?? null;
   const held = useMemo(() => hold(holder), [hold, holder?.tag, holder?.origin]);
-  return { region, track, active, hour: gated, window, outside, stage, open, country, members, groups, held, hourAt, recorded, within, span, follow, checkFollow, time, checkTime, hold, checkHold };
+  const lastRecordedRaw = lastRecordedHour(track);
+  const lastRecorded = lastRecordedRaw !== null ? mint(lastRecordedRaw) : null;
+  return { region, track, active, hour: gated, lastRecorded, window, outside, stage, open, country, members, groups, held, hourAt, recorded, within, span, follow, checkFollow, time, checkTime, hold, checkHold };
 }
 
 export function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour: TrackHour | null, country: CountryAt | null, needsCountry: boolean,

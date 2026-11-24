@@ -270,6 +270,9 @@ pub async fn set_content_folders(
     window
         .state::<crate::popout::PopOuts>()
         .set_folders(&config);
+    window
+        .state::<crate::game_windows::GameWindows>()
+        .clear_cache();
     Ok(ContentFolders { warning, ..ContentFolders::of(&config) })
 }
 
@@ -479,6 +482,9 @@ pub async fn dashboard_map_settings(
         window
             .state::<crate::popout::PopOuts>()
             .mirror(&dashboard_core::protocol::MapAction::MapSettingsSaved);
+        window
+            .state::<crate::game_windows::GameWindows>()
+            .clear_cache();
     }
     response
 }
@@ -508,6 +514,9 @@ pub fn dashboard_release_source(
         };
         runtime.dispatch(DataCommand::Product { id: format!("follow-close-{source_id}"), request: close });
     }
+    window
+        .state::<crate::game_windows::GameWindows>()
+        .evict_source(&source_id);
     runtime.dispatch(DataCommand::Release { source_id });
     Ok(())
 }

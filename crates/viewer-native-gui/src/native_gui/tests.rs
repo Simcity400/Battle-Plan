@@ -420,6 +420,126 @@ fn unreproduced_kinds_and_custom_effects_are_refused_by_name() {
 }
 
 #[test]
+fn a_cornered_tile_button_uses_its_declared_size() {
+    content_reader_script::test_game::enter();
+    let bounds_of = |layout: &Layout| {
+        let PartKind::Tiles { ref quads, .. } = layout.parts[0].kind else {
+            panic!("not a tile");
+        };
+        let left = quads
+            .iter()
+            .map(|(rect, _)| rect[0])
+            .fold(f32::INFINITY, f32::min);
+        let top = quads
+            .iter()
+            .map(|(rect, _)| rect[1])
+            .fold(f32::INFINITY, f32::min);
+        let right = quads
+            .iter()
+            .map(|(rect, _)| rect[0] + rect[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let bottom = quads
+            .iter()
+            .map(|(rect, _)| rect[1] + rect[3])
+            .fold(f32::NEG_INFINITY, f32::max);
+        [left, top, right, bottom]
+    };
+
+    let map_centered_gui = gui(
+        "buttonType = { name = \"centered\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 100 y = 80 } size = { x = 110 y = 58 } centerposition = yes }",
+    );
+    let map_window = map_centered_gui.template("w").unwrap();
+    let map_resources = fixture();
+    let map_bindings = Bindings {
+        regions: true,
+        ..Bindings::default()
+    };
+    let map_centered = layout(map_window, None, &map_resources, &map_bindings)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bounds_of(&map_centered), [85.0, 70.0, 115.0, 90.0]);
+    assert_eq!(
+        drawable_extent(&map_window.children[0], &map_resources, &map_bindings).unwrap(),
+        Some([30, 20])
+    );
+
+    let sized = laid_bound(
+        "buttonType = { name = \"preview\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 5 y = 7 } size = { x = 111 y = 58 } }",
+        None,
+        |_, bindings| bindings.size_cornered_buttons = true,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(bounds_of(&sized), [5.0, 7.0, 5.0 + 111.0, 7.0 + 58.0]);
+
+    let default_sized = laid_bound(
+        "buttonType = { name = \"plain\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 5 y = 7 } }",
+        None,
+        |_, bindings| bindings.size_cornered_buttons = true,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(bounds_of(&default_sized), [5.0, 7.0, 5.0 + 30.0, 7.0 + 20.0]);
+
+    let centered = laid_bound(
+        "buttonType = { name = \"centered\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 100 y = 80 } size = { x = 110 y = 58 } centerposition = yes }",
+        None,
+        |_, bindings| bindings.size_cornered_buttons = true,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(bounds_of(&centered), [45.0, 51.0, 155.0, 109.0]);
+
+    let standard_gui = read(
+        b"guiTypes = { windowType = { name = \"w\" size = { x = 400 y = 300 } \
+          guiButtonType = { name = \"std_centered\" spriteType = \"GFX_cornered\" \
+          position = { x = 100 y = 80 } size = { x = 110 y = 58 } centerposition = yes scale = 2.0 } } }",
+    );
+    let standard_resources = fixture_with(standard_gui);
+    let standard_window = standard_resources.gui_type(b"w").unwrap();
+    let standard_bindings = Bindings {
+        viewport: Some([800, 600]),
+        regions: true,
+        size_cornered_buttons: true,
+        ..Bindings::default()
+    };
+    let standard_centered =
+        fixed_window_layout(standard_window, &standard_resources, &standard_bindings)
+            .unwrap()
+            .unwrap();
+    assert_eq!(bounds_of(&standard_centered), [45.0, 51.0, 155.0, 109.0]);
+    assert_eq!(
+        drawable_extent(
+            &standard_window.children[0],
+            &standard_resources,
+            &standard_bindings,
+        )
+        .unwrap(),
+        Some([110, 58])
+    );
+
+    let checkbox = laid_bound(
+        "checkboxType = { name = \"cb\" quadTextureSprite = \"GFX_cornered\" \
+         position = { x = 5 y = 7 } size = { x = 110 y = 58 } }",
+        None,
+        |_, bindings| bindings.size_cornered_buttons = true,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(bounds_of(&checkbox), [5.0, 7.0, 5.0 + 30.0, 7.0 + 20.0]);
+    let cb_region = checkbox
+        .regions
+        .iter()
+        .find(|region| region.path.ends_with(".cb"))
+        .unwrap();
+    assert_eq!(cb_region.rect, [5.0, 7.0, 30.0, 20.0]);
+}
+
+#[test]
 fn a_frame_animated_sprite_follows_its_clock() {
     content_reader_script::test_game::enter();
     let body = "iconType = { name = \"a\" spriteType = \"GFX_animated\" }";

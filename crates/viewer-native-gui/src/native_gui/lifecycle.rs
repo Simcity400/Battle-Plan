@@ -457,6 +457,7 @@ pub struct Instance {
     active_known: std::cell::Cell<Option<bool>>,
     revision: u64,
     laid: std::cell::RefCell<Option<Laid>>,
+    size_cornered_buttons: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1182,6 +1183,7 @@ impl Instance {
             active_known: std::cell::Cell::new(None),
             revision: 0,
             laid: std::cell::RefCell::new(None),
+            size_cornered_buttons: false,
             idle_tick: false,
             kept: false,
             held: Vec::new(),
@@ -3105,15 +3107,25 @@ impl Instance {
             || self.kept
     }
 
+    pub fn set_size_cornered_buttons(&mut self, enabled: bool) {
+        if self.size_cornered_buttons != enabled {
+            self.size_cornered_buttons = enabled;
+            self.revision = self.revision.wrapping_add(1);
+            *self.laid.borrow_mut() = None;
+        }
+    }
+
     pub fn bindings(&self, root: &Element, resources: &dyn Resources) -> Result<Bindings, String> {
         let empty = Bindings {
             viewport: Some(self.viewport),
+            size_cornered_buttons: self.size_cornered_buttons,
             ..Bindings::default()
         };
         let objects = self.objects(root, resources, &empty)?;
         let mut bindings = Bindings {
             bound: HashMap::with_capacity(objects.len()),
             viewport: Some(self.viewport),
+            size_cornered_buttons: self.size_cornered_buttons,
             time: self.time,
             ..Bindings::default()
         };
