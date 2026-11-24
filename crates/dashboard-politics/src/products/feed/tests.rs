@@ -660,17 +660,20 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
             }),
         }
     };
-    let pack = |read_hour: i32, coverage: EventFeedCoverage, events: Vec<EventFeedEvent>| EventFeedHistoryRow {
-        generation: 1,
-        read_hour,
-        coverage,
-        counts: Some(EventFeedCounts::default()),
-        outstanding: 0,
-        failure: None,
-        script_refusals: 0,
-        events,
-        script_tokens: tokens.to_vec(),
-        script_scopes: Vec::new(),
+    let pack = |read_hour: i32, coverage: EventFeedCoverage, events: Vec<EventFeedEvent>| {
+        let count = events.len() as u64;
+        EventFeedHistoryRow {
+            generation: 1,
+            read_hour,
+            coverage,
+            counts: Some(EventFeedCounts { acquired: count, settled: count, failed: 0, rejected: 0 }),
+            outstanding: 0,
+            failure: None,
+            script_refusals: 0,
+            events,
+            script_tokens: tokens.to_vec(),
+            script_scopes: Vec::new(),
+        }
     };
     let with_pack = |branch: u64, hour: i32, row: Option<EventFeedHistoryRow>| {
         let mut frame = source(branch, hour, Some(1));
