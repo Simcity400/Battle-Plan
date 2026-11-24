@@ -13,7 +13,6 @@ import { sceneReadView, type SceneSources } from './scene.ts';
 import { knownValue, valueFromWireCell, type Value } from './value.ts';
 
 export interface SerializedTiledLine {
-  readonly rev: number;
   readonly source: string;
   readonly tag: string;
   readonly head: string;
@@ -38,14 +37,15 @@ export interface SeriesHeadSource {
 }
 
 export interface TiledSources {
-  readonly tiledLines?: readonly SerializedTiledLine[];
-  readonly keepTiled?: readonly number[];
-  readonly tiledBySource?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  readonly tiledBySource?: Readonly<Record<string, Readonly<Record<string, SerializedTiledLine>>>>;
   readonly headSourceBySeries?: Readonly<Record<string, SeriesHeadSource>>;
 }
 
+const hydrated = new WeakMap<SerializedTiledLine, TiledLine>();
+
 function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
-  return {
+  let line = hydrated.get(raw);
+  if (!line) hydrated.set(raw, line = {
     tag: raw.tag,
     head: raw.head,
     decimals: raw.decimals,
@@ -60,7 +60,8 @@ function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
     missing: [...raw.missing],
     parts: [...raw.parts],
     marks: raw.marks,
-  };
+  });
+  return line;
 }
 
 const rowIndexes = new WeakMap<readonly string[], ReadonlyMap<string, number>>();
@@ -87,38 +88,41 @@ export function answerRowOf(answer: FollowedAnswer | undefined, tag: string): nu
   return rows.get(tag) ?? -1;
 }
 
+const keyIndexes = new WeakMap<readonly { readonly tag: string; readonly part: string }[], ReadonlyMap<string, { readonly tag: string; readonly part: string }>>();
+
+function keyOf(keys: readonly { readonly tag: string; readonly part: string }[], tag: string): { readonly tag: string; readonly part: string } | undefined {
+  let index = keyIndexes.get(keys);
+  if (!index) keyIndexes.set(keys, index = new Map(keys.map(key => [keyId(key), key])));
+  return index.get(tag);
+}
+
 function headRow(answer: FollowedAnswer, head: SeriesHeadSource, tag: string): number {
   if (head.keys && head.partBits !== undefined) {
-    const matched = head.keys.find(key => keyId(key) === tag);
+    const matched = keyOf(head.keys, tag);
     return matched ? followedRow(answer, matched, head.partBits) : -1;
   }
   return head.tags.length ? rowIndexOf(head.tags).get(tag) ?? -1 : answerRowOf(answer, tag);
 }
 
 export class SceneTiles {
-  private readonly lines = new Map<number, TiledLine>();
   private readonly cursors = new Map<string, BoundedSeriesCursor>();
 
-  sync(binding: TiledSources): void {
-    if (binding.tiledLines) for (const raw of binding.tiledLines) if (!this.lines.has(raw.rev)) this.lines.set(raw.rev, hydrateTiledLine(raw));
-    if (binding.keepTiled) {
-      const keep = new Set(binding.keepTiled);
-      for (const rev of [...this.lines.keys()]) if (!keep.has(rev)) this.lines.delete(rev);
-    }
-  }
-
   series(scene: Scene, sources: SceneSources, binding: TiledSources, hour: number): ReadonlyMap<string, ReadonlyMap<string, BoundedSeries>> | undefined {
-    if (!binding.tiledBySource) return undefined;
+    if (!binding.tiledBySource) {
+      this.cursors.clear();
+      return undefined;
+    }
+    const active = new Set<string>();
     let answers: BoundedReadView | null = null;
     const bySource = new Map<string, ReadonlyMap<string, BoundedSeries>>();
-    for (const [source, revs] of Object.entries(binding.tiledBySource)) {
+    for (const [source, lines] of Object.entries(binding.tiledBySource)) {
       const head = binding.headSourceBySeries?.[source];
       const answer = head ? (answers ??= sceneReadView(scene, sources, hour)).answer(head.answerName) : undefined;
       const byTag = new Map<string, BoundedSeries>();
-      for (const [tag, rev] of Object.entries(revs)) {
-        const line = this.lines.get(rev);
-        if (!line) continue;
+      for (const [tag, raw] of Object.entries(lines)) {
+        const line = hydrateTiledLine(raw);
         const key = `${source}\u0000${tag}`;
+        active.add(key);
         let cursor = this.cursors.get(key);
         if (!cursor) this.cursors.set(key, cursor = new BoundedSeriesCursor());
         let headPoint: WitnessedPoint | null = null;
@@ -137,6 +141,7 @@ export class SceneTiles {
       }
       bySource.set(source, byTag);
     }
+    for (const key of this.cursors.keys()) if (!active.has(key)) this.cursors.delete(key);
     return bySource;
   }
 }

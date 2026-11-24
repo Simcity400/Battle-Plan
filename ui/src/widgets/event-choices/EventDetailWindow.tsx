@@ -12,6 +12,8 @@ import './eventDetailWindow.css';
 export interface EventDetailSubject {
   readonly key: string;
   readonly hour: number;
+  readonly firedHour?: number;
+  readonly asOfHour?: number;
   readonly title: string | null;
   readonly countryTag: string | null;
   readonly countryName: string | null;
@@ -52,13 +54,16 @@ export default function EventDetailWindow({ subject, anchor, onClose }: EventDet
   const chosenOption = chosenIndex >= 0 ? options[chosenIndex]! : null;
   const chosenLetter = chosenIndex >= 0 ? optionLetter(chosenIndex) : null;
 
+  const asOfHour = subject ? (subject.asOfHour ?? subject.hour) : null;
+  const firedHour = subject ? (subject.firedHour ?? subject.hour) : null;
+
   return (
     <DetailWindowHost
       open={subject !== null}
       subject={subject?.key ?? null}
-      hour={subject?.hour ?? null}
+      hour={asOfHour}
       title={titleText}
-      day={subject ? dayLabel(subject.hour) : ''}
+      day={asOfHour !== null ? dayLabel(asOfHour) : ''}
       placement="center"
       anchor={anchor}
       className="evd-window"
@@ -77,7 +82,7 @@ export default function EventDetailWindow({ subject, anchor, onClose }: EventDet
               ) : (
                 <span className="evd-missing-inline">Country not recorded</span>
               )}
-              <span className="evd-time">{formatDateTime(subject.hour)}</span>
+              <span className="evd-time">{firedHour !== null ? `Fired ${formatDateTime(firedHour)}` : ''}</span>
             </div>
 
             <div className="evd-art">
@@ -125,11 +130,13 @@ export default function EventDetailWindow({ subject, anchor, onClose }: EventDet
                     ? <ScriptedSpan text={chosenOption.name} reason={reasons.gaps} />
                     : 'Option text not recorded'}
                 </span>
-                {subject.chosenHour !== null ? <span className="evd-footer-date">{dayLabel(subject.chosenHour)}</span> : null}
+                {subject.chosenHour !== null ? <span className="evd-footer-date">Chosen {dayLabel(subject.chosenHour)}</span> : null}
               </span>
             ) : subject.chosenOrdinal !== null ? (
               <span className="evd-footer-choice">
+                <strong className="evd-footer-letter">{optionLetter(Math.max(0, subject.chosenOrdinal))}</strong>
                 <span className="evd-missing-inline">Option text not recorded</span>
+                {subject.chosenHour !== null ? <span className="evd-footer-date">Chosen {dayLabel(subject.chosenHour)}</span> : null}
               </span>
             ) : (
               <span className="evd-footer-status">{subject.noChoiceReason ?? 'Choice not recorded'}</span>

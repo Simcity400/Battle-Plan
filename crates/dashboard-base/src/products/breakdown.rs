@@ -1,4 +1,5 @@
 use crate::Source;
+use crate::products::artwork::sprites::SpriteFrame;
 use content_reader_layers::content::ResolvedContent;
 use dashboard_core::config::LoadContext;
 use serde::Serialize;
@@ -36,6 +37,8 @@ pub struct BreakdownPart {
     #[doc = " Unique among its siblings."]
     pub key: String,
     pub name: String,
+    #[doc = " Why `name` is only an identifier: the recording names it nowhere."]
+    pub name_missing: Option<String>,
     #[doc = " Its place in the recording's own order of the parts at its level: colours follow it, so a"]
     #[doc = " filtered or reordered breakdown keeps them."]
     pub ordinal: u32,
@@ -53,6 +56,8 @@ pub struct BreakdownPart {
     pub count: Option<u64>,
     #[doc = " The latest hour one of its amounts was read; none where the product does not date them."]
     pub last: Option<i32>,
+    #[doc = " Its picture, where the product names one."]
+    pub art: Option<SpriteFrame>,
     #[doc = " In display order. Their known amounts add up to this part's: an amount given to this part"]
     #[doc = " itself and to none of them is the last known child, `other`."]
     pub children: Vec<BreakdownPart>,
@@ -81,17 +86,29 @@ pub enum Amount {
 pub struct Node {
     pub key: String,
     pub name: String,
+    pub name_missing: Option<String>,
     pub ordinal: u32,
     pub other: bool,
+    pub art: Option<SpriteFrame>,
 }
 
 impl Node {
     pub fn new(key: impl Into<String>, name: impl Into<String>, ordinal: u32) -> Self {
-        Self { key: key.into(), name: name.into(), ordinal, other: false }
+        Self { key: key.into(), name: name.into(), name_missing: None, ordinal, other: false, art: None }
+    }
+
+    pub fn name_missing(mut self, reason: Option<String>) -> Self {
+        self.name_missing = reason;
+        self
     }
 
     pub fn other(mut self) -> Self {
         self.other = true;
+        self
+    }
+
+    pub fn with_art(mut self, art: Option<SpriteFrame>) -> Self {
+        self.art = art;
         self
     }
 }
@@ -281,6 +298,7 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
                 parent_share: share_of(&branch.sum, parent),
                 key: branch.node.key,
                 name: branch.node.name,
+                name_missing: branch.node.name_missing,
                 ordinal: branch.node.ordinal,
                 other: branch.node.other,
                 raw: branch.sum.raw(),
@@ -288,6 +306,7 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
                 reason: branch.sum.reason(),
                 count: branch.sum.count,
                 last: branch.sum.last,
+                art: branch.node.art,
                 children,
             }
         })

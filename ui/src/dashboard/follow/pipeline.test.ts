@@ -134,7 +134,8 @@ test('identity and statics are supplied apart from the binding: one snapshot per
     const other = pipeline.acquire('other|0', { offset: 0, pin: null });
     for (const id of [slow, other]) {
       pipeline.present(id, 'drawn');
-      pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }], dated: { h: 0, c: 100 } }, {}, { family: 'test', kind: 'test' });
+      pipeline.bind(id, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] }, {}, { family: 'test', kind: 'test' });
+      pipeline.supply(id, { dated: { h: 0, c: 100 } });
     }
     clock.seek(10);
     assert.ok(await settle(() => pipeline.view(slow)?.mode === 'picture' && pipeline.view(other)?.mode === 'picture'));
@@ -152,12 +153,12 @@ test('identity and statics are supplied apart from the binding: one snapshot per
     assert.equal(pipeline.page.stats.rejected.binding ?? 0, 0, 'no picture in flight is retired for the binding');
     assert.ok(pipeline.page.stats.installs > installs, 'the pictures drawn meanwhile are installed');
     const sent = posted.slice(start);
-    assert.equal(sent.filter(item => item.type === 'identity' && (item.message as { snapshot: unknown }).snapshot !== null).length, 10, 'each snapshot crosses to the lane once, though two widgets read it');
+    assert.equal(sent.flatMap(item => item.type === 'payloads' ? (item.message as { put?: unknown[] }).put ?? [] : []).length, 10, 'each snapshot crosses to the lane once, though two widgets read it');
     assert.equal(sent.filter(item => item.type === 'bind').length, 0);
     assert.ok(Math.max(...sent.filter(item => item.type === 'supply').map(item => item.bytes)) < 80, 'a widget names its snapshot; it does not carry a copy');
     pipeline.unmount(slow);
     pipeline.unmount(other);
-    assert.ok(posted.some(item => item.type === 'identity' && (item.message as { snapshot: unknown }).snapshot === null), 'a snapshot no widget reads is dropped from the lane');
+    assert.ok(posted.some(item => item.type === 'payloads' && ((item.message as { drop?: unknown[] }).drop?.length ?? 0) > 0), 'a snapshot no widget reads is dropped from the lane');
   } finally { close(); }
 });
 
@@ -1007,4 +1008,4 @@ test('F7: releasing one of two tokens sharing a subscription on the same widget 
     env.close();
   }
 });
-
+

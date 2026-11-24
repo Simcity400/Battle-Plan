@@ -1,5 +1,5 @@
 import { setToken } from '../../dashboard/options.ts';
-import type { AirMissionsReply, AirMissionTheatre } from '../../generated/dashboard';
+import type { AirMissionsReply } from '../../generated/dashboard';
 
 const text = (value: unknown): value is string => typeof value === 'string';
 const optionalText = (value: unknown) => value === null || text(value);
@@ -16,11 +16,6 @@ export function validateAirMissions(value: unknown): AirMissionsReply {
     || !Array.isArray(reply.regions) || !reply.regions.every(region => region && text(region.region) && optionalText(region.name) && optionalText(region.missing) && strings(region.missions)))
     throw new Error('The air missions reply is malformed.');
   return reply;
-}
-
-export function theatreRegions(theatres: readonly AirMissionTheatre[] | null | undefined, chosen: readonly string[]): Set<string> | null {
-  if (!chosen.length) return null;
-  return new Set((theatres ?? []).filter(theatre => chosen.includes(theatre.id)).flatMap(theatre => theatre.regions));
 }
 
 export function choicesAt(listed: readonly { id: string; name: string }[], chosen: readonly string[]) {

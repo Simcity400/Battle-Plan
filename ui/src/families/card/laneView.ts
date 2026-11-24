@@ -21,7 +21,7 @@ const cardLane: LaneFamily<FamilyCardBinding, CardModel, CardLayout> = {
   },
   redraw: () => Infinity,
   status: model => (model.rows.length > 0 || model.empty !== undefined ? 'picture' : 'scene'),
-  view: () => [],
+  view: [],
   layout: (model, _binding, surface) => layoutCards(model, surface.width, surface.height),
   paint(ctx, frame) {
     drawCards(ctx, {

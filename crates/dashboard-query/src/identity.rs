@@ -123,6 +123,7 @@ pub struct Holders {
     pub tags: BTreeMap<String, Vec<HolderRun>>,
     pub unknown: Vec<(i32, i32, String)>,
     slots: OnceLock<BTreeMap<u32, SlotHistory>>,
+    edges: OnceLock<Vec<i32>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -133,7 +134,19 @@ struct SlotHistory {
 
 impl Holders {
     pub fn new(tags: BTreeMap<String, Vec<HolderRun>>, unknown: Vec<(i32, i32, String)>) -> Self {
-        Self { tags, unknown, slots: OnceLock::new() }
+        Self { tags, unknown, slots: OnceLock::new(), edges: OnceLock::new() }
+    }
+
+    pub fn next_change(&self, hour: i32) -> Option<i32> {
+        let edges = self.edges.get_or_init(|| {
+            let runs = self.tags.values().flatten().map(|run| (run.first, run.last));
+            let unknown = self.unknown.iter().map(|(first, last, _)| (*first, *last));
+            let mut edges: Vec<i32> = runs.chain(unknown).flat_map(|(first, last)| [first, last.saturating_add(1)]).collect();
+            edges.sort_unstable();
+            edges.dedup();
+            edges
+        });
+        edges.get(edges.partition_point(|&edge| edge <= hour)).copied()
     }
 
     fn slots(&self) -> &BTreeMap<u32, SlotHistory> {

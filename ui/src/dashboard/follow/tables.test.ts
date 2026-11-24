@@ -160,5 +160,12 @@ test('changedAnswerRows reports only exact mutated rows inside patched chunks an
   assert.deepEqual(changedAnswerRows(base, step2), [2, 19, 31]);
 
   const otherBase = rows({ keys, columns: 2, values: keys.flatMap(k => [k * 10n, k * 20n]), names });
-  assert.equal(changedAnswerRows(base, otherBase), null, 'different backing buffer returns null');
+  assert.deepEqual(changedAnswerRows(base, otherBase), [], 'the same rows in another buffer (the worker\'s next hour) changed nothing');
+  const reread = parseAnswer(serializeAnswer(step2)) as FollowedRows;
+  assert.deepEqual(changedAnswerRows(base, reread), [2, 19, 31], 'rows compare across buffers: only the mutated ones');
+  assert.deepEqual(changedAnswerRows(step1, reread), [31]);
+  const fewer = rows({ keys: keys.slice(1), columns: 2, values: keys.slice(1).flatMap(k => [k * 10n, k * 20n]), names: names.slice(1) });
+  assert.equal(changedAnswerRows(base, fewer), null, 'other rows cannot be compared row by row');
+  const moved = rows({ keys: keys.map(k => k + 100n), columns: 2, values: keys.flatMap(k => [k * 10n, k * 20n]), names });
+  assert.equal(changedAnswerRows(base, moved), null, 'other keys cannot be compared row by row');
 });

@@ -81,6 +81,8 @@ export type FamilySkeletonKind = 'table' | 'chart';
 export type FamilyArtDemand = ArtHandle;
 
 export interface FamilyStaticSources {
+  readonly stamp: object;
+  readonly proof: readonly [lo: number, hi: number] | null;
   readonly panels?: Readonly<Record<string, unknown>>;
   readonly answers?: Readonly<Record<string, FollowedAnswer>>;
   readonly shifts?: Readonly<Record<string, number>>;
@@ -89,7 +91,7 @@ export interface FamilyStaticSources {
 }
 
 export interface FamilyStaticProof {
-  read(): { readonly hour: number; readonly proof: readonly [lo: number, hi: number] } | null;
+  read(): { readonly bundle: object; readonly hour: number; readonly proof: readonly [lo: number, hi: number] } | null;
   subscribe(changed: () => void): () => void;
 }
 
@@ -272,7 +274,7 @@ export function familyBinding<TOptions, TBinding, TSettings>(
     pauseFlush: ctx.pauseFlush,
     ...(ctx.window ? { window: ctx.window } : {}),
   };
-  return { ...base, ...extras } as TBinding & FamilyBaseBinding<TOptions>;
+  return { ...extras, ...base } as TBinding & FamilyBaseBinding<TOptions>;
 }
 
 export function requestedRowWindow<TSettings>(

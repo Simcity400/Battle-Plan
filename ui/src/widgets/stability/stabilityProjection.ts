@@ -1,4 +1,3 @@
-import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
@@ -32,7 +31,10 @@ import {
   missingSpansOf,
   rankEntry,
   rankedOrder,
-  seriesHeadAt,
+  auditReading,
+  headReading,
+  headValueOf,
+  type HeadReading,
   withinMapOf,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { breakdownRows, linesPerMeasure, type Measure } from './stabilityData.ts';
@@ -139,11 +141,21 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const rowOf = new Map(tags.map((tag, row) => [tag, row]));
     const stabByTag = new Map<string, number | null>();
     const warByTag = new Map<string, number | null>();
+    const readings: [string, HeadReading | null][] = [];
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i]!;
       const member = memberAt(options.membership, tag, hour);
-      if (options.showStability) stabByTag.set(tag, member ? seriesHeadAt(readView, 'stability', tag, i, 5, 100) : null);
-      if (options.showWarSupport) warByTag.set(tag, member ? seriesHeadAt(readView, 'warSupport', tag, i, 5, 100) : null);
+      if (!member) continue;
+      if (options.showStability) {
+        const reading = headReading(readView, 'stability', { tag }, 5, 100);
+        readings.push([single ? 'stability' : `${tag}:stability`, reading]);
+        stabByTag.set(tag, headValueOf(reading));
+      }
+      if (options.showWarSupport) {
+        const reading = headReading(readView, 'warSupport', { tag }, 5, 100);
+        readings.push([single ? 'warSupport' : `${tag}:warSupport`, reading]);
+        warByTag.set(tag, headValueOf(reading));
+      }
     }
 
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
@@ -277,9 +289,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       empty: !options.showStability && !options.showWarSupport
         ? { message: 'Both lines are switched off in the settings.' }
         : null,
-      auditRows: series.slice(0, 8).flatMap(s =>
-        s.endLabel ? [auditRow(s.id, s.endLabel.value)] : [],
-      ),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatRecordedPercent)),
     };
   },
 });
