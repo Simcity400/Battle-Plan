@@ -124,7 +124,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  max-width: 100%;
+  max-width: calc(100% + 12px);
   min-width: 0;
   padding: 4px 6px;
   margin: 0 -6px;
@@ -217,6 +217,17 @@
   align-items: center;
   flex: none;
   color: var(--accent);
+}
+
+.tf-th .tf-sort-arrow {
+  width: 9px;
+  height: 11px;
+  flex: none;
+}
+
+.tf-th .tf-th-grip {
+  width: 7px;
+  height: 11px;
 }
 
 .tf-th-static {
