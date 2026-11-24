@@ -38,6 +38,7 @@ import type {
   RaidTallyReply,
   RaidTallySlotRun,
 } from '../../generated/dashboard';
+import { validateRaidTallyAt } from './raidTallyRaceProjection.ts';
 
 const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 const COLOURED = 8;
@@ -114,20 +115,6 @@ export function validateRaidTallyReply(value: unknown): RaidTallyReply {
     && Array.isArray(value.warnings) && value.warnings.every(isText);
   if (!ok) throw new Error('The raid tally reply is malformed.');
   return value as unknown as RaidTallyReply;
-}
-
-export function validateRaidTallyAtReply(value: unknown): RaidTallyAtReply {
-  const ok = isRecord(value)
-    && isInt(value.hour)
-    && maybe(value.missing, isText)
-    && isInt(value.unattributed) && value.unattributed >= 0
-    && Array.isArray(value.rows) && value.rows.every(row => isRecord(row)
-      && isInt(row.slot) && row.slot >= 0
-      && isInt(row.launched) && row.launched >= 0
-      && isInt(row.succeeded) && row.succeeded >= 0)
-    && Array.isArray(value.warnings) && value.warnings.every(isText);
-  if (!ok) throw new Error('The raid tally point reply is malformed.');
-  return value as unknown as RaidTallyAtReply;
 }
 
 export function raidTallyProof(
@@ -224,7 +211,7 @@ function buildHoverDetail(
     };
   }
   const rows = options.membership
-    ? reply.rows.filter(row => memberAt(options.membership, countryKey(row.slot), hour))
+    ? reply.rows.filter(row => memberAt(options.membership, countryKey(row.country), hour))
     : reply.rows;
   if (rows.length === 0) {
     return {
@@ -234,12 +221,26 @@ function buildHoverDetail(
     };
   }
   const items: TooltipListItem[] = rows.map(row => {
-    const key = countryKey(row.slot);
-    const label = raidTallySlotLabel(readView, row.slot, hour);
+    const key = countryKey(row.country);
+    const label = typeof row.country === 'number'
+      ? raidTallySlotLabel(readView, row.country, hour)
+      : (() => {
+          const who = readView.who('country', key, hour);
+          return who.name.status === 'ready' ? who.name.value : row.tag;
+        })();
     const look = looks.get(key);
     const atHour = look ? seriesLookAt(look, hour) : null;
     const who = readView.who('country', key, hour);
     const flagUrl = artUrlOf(flagChoiceArt(readView, who.flagChoice));
+    if (row.missing !== null) {
+      return {
+        label,
+        missingReason: row.missing,
+        tone: 'muted' as const,
+        ...(atHour ? { swatch: atHour.color } : {}),
+        ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+      };
+    }
     return {
       label,
       value: formatHoverRowValue(options.metric, row.launched, row.succeeded),
@@ -286,9 +287,11 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       };
     }
 
+    const hasEarlierGap = reply.missing.some(span => span.firstHour < floorHour);
     const warnings = [
       ...reply.warnings,
       ...(reply.unattributed > 0 ? [`${reply.unattributed} raids have no named raider and are not counted.`] : []),
+      ...(hasEarlierGap ? ['Raids during an unrecorded stretch before this date are not counted.'] : []),
     ];
     const gaps: ChartGap[] = [
       ...options.gaps,
@@ -511,8 +514,8 @@ export const raidTallyLinesDeclaration: TimeChartWidgetDeclaration<RaidTallyLine
           read: {
             shape: 'exact-hover',
             product: 'raid-tally-at',
-            params: { branchId: ctx.branch.id, countries, top, metric },
-            validate: validateRaidTallyAtReply,
+            params: { branchId: ctx.branch.id, countries, ...(top !== null ? { top } : {}), metric },
+            validate: validateRaidTallyAt,
           },
         },
       ],

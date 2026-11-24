@@ -841,7 +841,8 @@ fn a_narrow_range_counts_only_its_own_raids_and_raids_are_available_only_once_on
 
 #[test]
 fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps_slots_distinct() {
-    use super::tally::{RaidTally, RaidTallyAt, RaidTallyAtParams, RaidTallyMetric, RaidTallyParams};
+    use super::{RaidTallyAt, RaidTallyAtParams, RaidTallyMetric};
+    use super::tally::{RaidTally, RaidTallyParams};
 
     let make_source = |frames: Vec<DecodedFrame>| {
         let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
@@ -929,14 +930,14 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
 
     let hover_11 = RaidTallyAt::load(
         &source,
-        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, metric: RaidTallyMetric::Both, hour: 11 },
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], group: None, top: None, metric: RaidTallyMetric::Both, hour: 11 },
         &ctx,
         &cancel,
     )
     .unwrap();
     assert_eq!(hover_11.missing, None);
     assert_eq!(hover_11.rows.len(), 1);
-    assert_eq!((hover_11.rows[0].slot, hover_11.rows[0].launched, hover_11.rows[0].succeeded), (7, 1, 0));
+    assert_eq!((&hover_11.rows[0].country, hover_11.rows[0].launched, hover_11.rows[0].succeeded), (&Country::Slot(7), 1, 0));
 
     let mut unread_target_frame = make_frame(
         1,
@@ -983,7 +984,7 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
 
     let hover_gap = RaidTallyAt::load(
         &gap_source,
-        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![], top: Some(3), metric: RaidTallyMetric::Both, hour: 11 },
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![], group: None, top: Some(3), metric: RaidTallyMetric::Both, hour: 11 },
         &ctx,
         &cancel,
     )

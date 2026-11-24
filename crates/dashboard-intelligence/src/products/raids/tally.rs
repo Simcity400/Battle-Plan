@@ -1,7 +1,7 @@
 use super::{
-    Content, Identity, RAID_COLUMNS, RAID_TYPE, TARGET_COLUMNS, TargetIdentity, cell_at,
-    coalesce_spans, has_hour_in_range, lane_value, missing, pieces, scope_of, steps_of, successful,
-    validate,
+    Content, Identity, RAID_COLUMNS, RAID_TYPE, RaidTallyMetric, TARGET_COLUMNS, TargetIdentity,
+    cell_at, coalesce_spans, has_hour_in_range, lane_value, missing, pieces, scope_of, steps_of,
+    successful, validate,
 };
 use dashboard_base::{
     Source,
@@ -20,14 +20,8 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub enum RaidTallyMetric {
-    #[default]
-    Both,
-    Launched,
-    Succeeded,
+fn default_metric() -> RaidTallyMetric {
+    RaidTallyMetric::Both
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -39,7 +33,7 @@ pub struct RaidTallyParams {
     pub countries: Vec<Country>,
     #[serde(default)]
     pub top: Option<u32>,
-    #[serde(default)]
+    #[serde(default = "default_metric")]
     pub metric: RaidTallyMetric,
     pub hour: i32,
 }
@@ -86,42 +80,6 @@ pub struct RaidTallyReply {
 }
 
 dashboard_base::reply_warnings!(RaidTallyReply);
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RaidTallyAtParams {
-    pub branch_id: String,
-    #[serde(default)]
-    pub countries: Vec<Country>,
-    #[serde(default)]
-    pub top: Option<u32>,
-    #[serde(default)]
-    pub metric: RaidTallyMetric,
-    pub hour: i32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct RaidTallyAtRow {
-    pub slot: u32,
-    pub launched: u32,
-    pub succeeded: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct RaidTallyAtReply {
-    pub hour: i32,
-    pub missing: Option<String>,
-    pub rows: Vec<RaidTallyAtRow>,
-    pub unattributed: u32,
-    pub warnings: Vec<String>,
-}
-
-dashboard_base::reply_warnings!(RaidTallyAtReply);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EventKind {
@@ -604,7 +562,6 @@ impl Product for RaidTally {
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
-            RaidTallyMetric::decl(),
             RaidTallyParams::decl(),
             RaidTallySpan::decl(),
             RaidTallySlotRun::decl(),
@@ -705,102 +662,6 @@ impl Product for RaidTally {
             missing: bounded_missing,
             warnings: warnings.into_iter().collect(),
         };
-        dashboard_base::products::check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
-
-pub struct RaidTallyAt;
-
-impl Product for RaidTallyAt {
-    const KEY: &'static str = "raid-tally-at";
-    const CONTENT_DEPENDENT: bool = false;
-    const INTERACTIVE: bool = true;
-    type Params = RaidTallyAtParams;
-    const FIELDS: dashboard_base::products::Fields =
-        dashboard_base::fields![branchId, countries, top, metric, hour: Read, "countries[]"];
-    type Reply = RaidTallyAtReply;
-
-    #[cfg(any(test, feature = "export-types"))]
-    fn types() -> Vec<String> {
-        vec![RaidTallyAtParams::decl(), RaidTallyAtRow::decl(), RaidTallyAtReply::decl()]
-    }
-
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate(&params.branch_id, &params.countries)
-    }
-
-    fn load(
-        source: &Source,
-        params: &Self::Params,
-        _context: &LoadContext,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Self::Reply> {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let query = dashboard_base::queries::query(
-            source,
-            params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?,
-        )?;
-        let index = cached_branch_index(source, &params.branch_id, &query)?;
-        let hour = params.hour;
-
-        if hour < index.branch_first || hour > index.branch_last {
-            return Ok(RaidTallyAtReply {
-                hour,
-                missing: Some("Outside the recorded branch.".to_owned()),
-                rows: Vec::new(),
-                unattributed: 0,
-                warnings: Vec::new(),
-            });
-        }
-        if let Some(gap) = index.missing.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour) {
-            return Ok(RaidTallyAtReply {
-                hour,
-                missing: Some(gap.reason.clone()),
-                rows: Vec::new(),
-                unattributed: 0,
-                warnings: Vec::new(),
-            });
-        }
-
-        let ev_end = index.events.partition_point(|ev| ev.hour <= hour);
-        let mut counts: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
-        for ev in &index.events[..ev_end] {
-            let entry = counts.entry(ev.slot).or_insert((0, 0));
-            match ev.kind {
-                EventKind::Launched => entry.0 += 1,
-                EventKind::Succeeded => entry.1 += 1,
-            }
-        }
-        let unattributed = index.unattributed_hours.partition_point(|&h| h <= hour) as u32;
-
-        let rows = if let Some(top) = params.top {
-            let mut ranked: Vec<(u32, (u32, u32))> = counts
-                .into_iter()
-                .filter(|&(_, (l, s))| metric_nonzero(params.metric, l, s))
-                .collect();
-            ranked.sort_by(|a, b| {
-                metric_rank_key(params.metric, b.1.0, b.1.1)
-                    .cmp(&metric_rank_key(params.metric, a.1.0, a.1.1))
-                    .then_with(|| a.0.cmp(&b.0))
-            });
-            ranked
-                .into_iter()
-                .take(top as usize)
-                .map(|(slot, (launched, succeeded))| RaidTallyAtRow { slot, launched, succeeded })
-                .collect()
-        } else {
-            let (slots, _) = resolve_explicit_slots(&query, &params.countries, hour);
-            slots
-                .into_iter()
-                .map(|slot| {
-                    let (launched, succeeded) = counts.get(&slot).copied().unwrap_or((0, 0));
-                    RaidTallyAtRow { slot, launched, succeeded }
-                })
-                .collect()
-        };
-
-        let reply = RaidTallyAtReply { hour, missing: None, rows, unattributed, warnings: Vec::new() };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }

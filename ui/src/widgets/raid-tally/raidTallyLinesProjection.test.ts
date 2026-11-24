@@ -19,9 +19,9 @@ import {
   raidTallyLinesProjection,
   raidTallyProof,
   unresolvedSlotLabel,
-  validateRaidTallyAtReply,
   validateRaidTallyReply,
 } from './raidTallyLinesProjection.ts';
+import { validateRaidTallyAt } from './raidTallyRaceProjection.ts';
 
 function fakeIdentity(slots: Record<number, { tag: string; name: string; colour: string }>): IdentityProvider {
   return {
@@ -154,16 +154,24 @@ test('raid-tally lines breaks across unread Raids spans, keeps distinct unresolv
   assert.throws(() => validateRaidTallyReply({ ...reply, hour: 120 }));
 
   const hoverAt105: RaidTallyAtReply = {
+    branchId: '1',
     hour: 105,
+    firstHour: 100,
+    lastHour: 109,
+    metric: 'both',
+    available: true,
+    unavailable: null,
     missing: null,
     rows: [
-      { slot: 7, launched: 1, succeeded: 0 },
-      { slot: 11, launched: 0, succeeded: 0 },
+      { country: 7, tag: 'AAA', launched: 1, succeeded: 0, missing: null },
+      { country: 11, tag: '', launched: 0, succeeded: 0, missing: null },
     ],
     unattributed: 0,
+    unattributedLaunched: 0,
+    unattributedSucceeded: 0,
     warnings: [],
   };
-  assert.equal(validateRaidTallyAtReply(hoverAt105), hoverAt105);
+  assert.equal(validateRaidTallyAt(hoverAt105), hoverAt105);
 
   const identity = fakeIdentity({
     7: { tag: 'AAA', name: 'Alpha Republic', colour: '#4488cc' },
@@ -218,10 +226,18 @@ test('raid-tally lines breaks across unread Raids spans, keeps distinct unresolv
   );
 
   const unreadHover: RaidTallyAtReply = {
+    branchId: '1',
     hour: 115,
+    firstHour: 110,
+    lastHour: 119,
+    metric: 'both',
+    available: true,
+    unavailable: null,
     missing: 'Raids were not recorded at these hours',
     rows: [],
     unattributed: 0,
+    unattributedLaunched: 0,
+    unattributedSucceeded: 0,
     warnings: [],
   };
   const unreadView = createBoundedReadView({
