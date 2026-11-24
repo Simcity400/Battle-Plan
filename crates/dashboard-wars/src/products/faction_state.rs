@@ -1,5 +1,6 @@
 use content_reader_politics::faction_templates::FactionTemplateProducts as _;
 
+pub mod country_goals;
 pub mod details;
 mod goals;
 pub mod history;

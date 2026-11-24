@@ -317,6 +317,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             Ok("Relation titles resolve through the recorded content stack by each recorded relation type; which relations a country held requires a recording.".into())
         }
         key if key == <faction_state::details::FactionDetails as at_hour::AtHour>::KEY
+            || key == <faction_state::country_goals::CountryFactionGoals as at_hour::AtHour>::KEY
             || key == faction_state::history::FactionState::KEY
             || key == <faction_state::rewards::FactionGoalRewards as at_hour::AtHour>::KEY =>
         {

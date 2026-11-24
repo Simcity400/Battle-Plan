@@ -1263,6 +1263,7 @@ mod tests {
                 description: None,
                 base_duration_days: None,
                 icon,
+                sprite: None,
             },
             None,
         )

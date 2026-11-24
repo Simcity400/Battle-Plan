@@ -4,6 +4,7 @@ pub mod agency_content;
 pub mod decryption;
 pub mod espionage;
 pub mod operative_content;
+pub mod operative_matrix;
 pub mod placements;
 pub mod roster;
 

@@ -19,6 +19,7 @@ import {
 export function flagEntryToArt(entry: DrawnFlagEntry | undefined): ArtResolution {
   if (!entry) return PENDING_ART;
   if (entry.failed) return failedArt(entry.failed.message, true);
+  if (entry.resolution) return entry.resolution;
   if (entry.image?.resolution) return entry.image.resolution;
   if (entry.url) {
     return readyArt(entry.url, {
@@ -131,8 +132,10 @@ export function toFlagSlotState<TBitmap extends CanvasImageSource>(
     case 'failed':
       return { kind: 'failed' };
     case 'noArtExpected':
-    case 'confirmedMissing':
+      return { kind: 'none' };
     case 'refused':
+      return { kind: 'refused', reason: state.reason };
+    case 'confirmedMissing':
       return { kind: 'missing', ...(tag ? { tag } : {}) };
   }
 }
