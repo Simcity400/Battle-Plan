@@ -2033,6 +2033,23 @@ test('cell kinds for converted tables: an item column takes the spare width, two
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
+
+  const withAction: TableColumnSpec[] = [
+    kinds[0]!,
+    { key: 'name', label: 'Organisation', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+    { key: 'size', label: 'Size', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+    { key: 'spare', label: '', as: 'plain', offered: ['plain'], priority: 2 },
+    { key: 'view', label: '', as: 'plain', offered: ['plain'], priority: 3, cellKind: 'action', sortable: false },
+  ];
+  const named = 'Army Ordnance Department';
+  const tipRows = resolveTableRows({ hour: 1, columns: withAction, rows: [{
+    key: 'org', name: named, tooltipAction: 'Open its organisation window',
+    cells: { pic: { value: knownValue(named), iconSlot: true }, name: { value: knownValue(named) }, size: { value: zeroValue(0) }, spare: { value: knownValue('stray') }, view: { value: knownValue('View'), actionLabel: 'View' } },
+  }] }, tableSettingsOf(undefined, withAction, { density: 'normal', sort: { column: 'size', direction: 'descending' } }));
+  const tip = deriveTableTooltip(tipRows, 'org', withAction, 1)!;
+  assert.equal(tip.title, named, 'the name column, not the picture before it, is the title');
+  assert.deepEqual(tip.rows.map(row => row.label), ['Size'], 'no unlabelled row, no repeated name, no action word');
+  assert.equal(tip.note, 'Open its organisation window', 'an action column contributes only its hint');
 });
 
 test('tree rows align whether or not they can open: a level with openable rows gives every row of that level the chevron lane, children start under their parent\'s name', () => {
