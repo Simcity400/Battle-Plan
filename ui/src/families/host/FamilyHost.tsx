@@ -1096,7 +1096,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     options,
     theme,
     reducedMotion,
-    staticSources,
     pagedRows,
     tiledSeries,
     tiledRevision,

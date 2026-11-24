@@ -13,6 +13,7 @@ const DEVICE_LIMIT: u32 = 16384;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Failure {
     Undecodable(String),
+    Unsupported(String),
     Undefined(String),
     Device(String),
     OverBudget(String),
