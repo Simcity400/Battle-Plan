@@ -20,7 +20,6 @@ export interface IndustrialOrganisationSelection {
   branchId: string;
   hour: number;
   organisation: string;
-  tag?: string;
   subView?: 'traits' | 'history' | 'policy';
 }
 

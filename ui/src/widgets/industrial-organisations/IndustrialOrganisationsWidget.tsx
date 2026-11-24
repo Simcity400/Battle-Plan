@@ -82,12 +82,19 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const dispatch = drillControl.dispatch;
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
-  const [stored, setPicked] = useState<{ owner: object; selection: IndustrialOrganisationSelection; title: string } | null>(null);
+  const [stored, setPicked] = useState<{ owner: object; selection: IndustrialOrganisationSelection } | null>(null);
   const picked = stored?.owner === owner ? stored : null;
+  const pickedKey = useRef<string | null>(null);
+  pickedKey.current = picked?.selection.organisation ?? null;
   const [windowLines, setWindowLines] = useState<readonly string[]>(NO_WARNINGS);
   const onWindowDiagnostics = useCallback((lines: string[]) =>
     setWindowLines(previous => previous.length === lines.length && previous.every((line, index) => line === lines[index]) ? previous : lines), []);
-  const [windowShown, setWindowShown] = useState<ShownWindow | null>(null);
+  const [windowShown, setWindowShown] = useState<{ subject: string; shown: ShownWindow } | null>(null);
+  const onWindowShown = useCallback((shown: ShownWindow | null) => {
+    const subject = pickedKey.current;
+    setWindowShown(shown && subject !== null ? { subject, shown } : null);
+  }, []);
+  const matchedShown = picked && windowShown?.subject === picked.selection.organisation ? windowShown.shown : null;
   const closeForHandover = useCallback(() => {
     dispatch({ type: 'close' });
     setWindowLines(NO_WARNINGS);
@@ -153,7 +160,6 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
     setInheritedPos(inherited);
     setPicked({
       owner,
-      title: row.name ?? NAME_UNAVAILABLE,
       selection: {
         kind: 'industrialOrganisation',
         sourceId: track.source.id,
@@ -161,7 +167,6 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
         branchId: track.branch.id,
         hour: openHour,
         organisation: row.key,
-        tag: data?.tag ?? countryFromKey(tag),
       },
     });
     dispatch({ type: 'open', breakdown: POLICY.id, hour: openHour, follow: drillControl.followsAt(openHour) });
@@ -188,8 +193,7 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
         rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} narrow={narrowTableOf(options)} hoursPerSecond={hoursPerSecond}
         onRowClick={OrgWindow ? open : undefined} tooltip={tooltip} live={tableLive} />;
   const main = <div ref={head.root} className="industrial-organisations-main">{body}</div>;
-  const activeRow = picked ? rows.find(row => row.key === picked.selection.organisation) : undefined;
-  const title = activeRow?.name ?? picked?.title ?? POLICY.label;
+  const title = matchedShown?.title ?? POLICY.label;
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="industrial-organisations">
     {header}
     {main}
@@ -198,12 +202,12 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
       subject={picked ? picked.selection.organisation : null}
       hour={at}
       title={title}
-      day={shut ? '' : windowShown ? windowDayLabel(windowShown) : at === null ? '' : dayLabel(at)}
+      day={shut ? '' : matchedShown ? windowDayLabel(matchedShown) : at === null ? '' : dayLabel(at)}
       placement="center"
       anchor={anchor}
       returnFocus={picked && typeof CSS !== 'undefined' ? `tr[data-table-row="${CSS.escape(picked.selection.organisation)}"]` : undefined}
       initialPosition={inheritedPos}
-      settled={windowShown !== null}
+      settled={matchedShown !== null}
       onPositionChange={onPositionChange}
       headerActions={<FollowControl following={drillControl.following} onFollow={drillControl.follow} onPause={drillControl.pause} />}
       className="detail-window-game"
@@ -218,7 +222,7 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
             active={active}
             client={runtime.client}
             onDiagnostics={onWindowDiagnostics}
-            onShown={setWindowShown}
+            onShown={onWindowShown}
             onClose={closeDrill}
           />
           : null}

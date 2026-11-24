@@ -1,7 +1,8 @@
 use super::{
     ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowError, GameWindowRender,
-    GameWindowRequest, GameWindowTooltip, RenderParams, Service, WindowCacheKey, container_holder,
-    equipment_designer::{RenderContext, compute_read_hour},
+    GameWindowRequest, GameWindowTooltip, Prepared, RenderParams, Service, WindowCacheKey,
+    container_holder,
+    equipment_designer::{RenderContext, compute_read_hour, witnessed_rows, witnessed_single_key},
     layout_window, missing_window_refusal, strip_markup,
 };
 use content_reader_defines::defines;
@@ -94,8 +95,6 @@ impl SubView {
 #[serde(rename_all = "camelCase")]
 struct Target {
     organisation: String,
-    #[serde(default)]
-    tag: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -158,7 +157,7 @@ pub struct OrganisationViewData {
     pub custom_name: String,
     pub recorded_icon: String,
     pub details: RecordedDetails,
-    pub policy_costs: BTreeMap<String, PolicySummary>,
+    pub policy_costs: Result<BTreeMap<String, PolicySummary>, String>,
     pub history: Option<Vec<HistoryEntry>>,
     pub history_reason: Option<String>,
     pub funds_defines: Result<FundsDefines, String>,
@@ -270,16 +269,16 @@ fn resolve_owner_tag(
     row: &IndustrialOrganisationRow,
     countries: &[replay_data::rows::CountryRow],
     links: &[replay_data::rows::CountryLinkRow],
-    fallback_tag: Option<&str>,
 ) -> Option<String> {
     let lookup = |raw: u32| -> Option<String> {
         let slot = link_slot(links, raw)?;
         let country = countries.iter().find(|entry| entry.canonical_slot == slot)?;
-        std::str::from_utf8(&country.tag).ok().map(str::to_owned)
+        std::str::from_utf8(&country.tag)
+            .ok()
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_owned)
     };
-    lookup(row.owner)
-        .or_else(|| lookup(row.country))
-        .or_else(|| fallback_tag.map(str::to_owned))
+    lookup(row.owner).or_else(|| lookup(row.country))
 }
 
 fn format_days_remaining(cooldown_hour: Option<i32>, request_hour: i32) -> Option<i32> {
@@ -291,16 +290,32 @@ fn format_days_remaining(cooldown_hour: Option<i32>, request_hour: i32) -> Optio
 fn extract_details(
     row: &IndustrialOrganisationDetailsRow,
     lexical: &[LexicalTokenRow],
+    warnings: &mut Vec<String>,
 ) -> OrganisationDetails {
-    let spell_list = |tokens: &[u32]| -> Vec<String> {
-        tokens
-            .iter()
-            .filter_map(|&tok| spell(lexical, tok))
-            .collect()
+    let mut spell_list = |what: &str, tokens: &[u32]| -> Vec<String> {
+        let mut spelled = Vec::with_capacity(tokens.len());
+        for &token in tokens {
+            match spell(lexical, token) {
+                Some(text) => spelled.push(text),
+                None => warnings.push(format!(
+                    "Not recorded: {what} token {token} is not spelled in LexicalTokens; it is left out of the window."
+                )),
+            }
+        }
+        spelled
     };
-    let policy_token = (row.state.policy != UNSELECTED_POLICY)
-        .then(|| spell(lexical, row.state.policy))
-        .flatten();
+    let policy_token = if row.state.policy == UNSELECTED_POLICY {
+        None
+    } else {
+        let spelled = spell(lexical, row.state.policy);
+        if spelled.is_none() {
+            warnings.push(format!(
+                "Not recorded: attached policy token {} is not spelled in LexicalTokens.",
+                row.state.policy
+            ));
+        }
+        spelled
+    };
     OrganisationDetails {
         funds_raw: row.state.funds_raw,
         size: row.state.size,
@@ -315,9 +330,9 @@ fn extract_details(
         auto_upgrade: row.state.upgrades != 0,
         policy_token,
         cooldown_hour: row.state.cooldown_hour,
-        unlocked: spell_list(&row.unlocked),
-        queued: spell_list(&row.queued),
-        allowed_policies: spell_list(&row.allowed_policies),
+        unlocked: spell_list("unlocked trait", &row.unlocked),
+        queued: spell_list("queued trait", &row.queued),
+        allowed_policies: spell_list("allowed policy", &row.allowed_policies),
     }
 }
 
@@ -372,7 +387,7 @@ fn extract_history(
                 let display = if raw_name.is_empty() { eq.clone() } else { raw_name };
                 (display, eq)
             })
-            .unwrap_or_else(|| (format!("Variant #{}", row.variant), String::new()));
+            .unwrap_or_else(|| (NOT_RECORDED_VALUE.to_owned(), String::new()));
         let design_hour = match row.design_hour {
             Recorded::Value(hour) => hour,
             Recorded::NotRecorded => None,
@@ -429,14 +444,6 @@ fn loc_or(localisation: &Localisation, key: &str) -> String {
         .map(|raw| expand_loc_refs(localisation, &strip_markup(raw), 4))
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| key.to_owned())
-}
-
-fn loc_fallback(localisation: &Localisation, key: &str, fallback: &str) -> String {
-    localisation
-        .get(key)
-        .map(|raw| expand_loc_refs(localisation, &strip_markup(raw), 4))
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| fallback.to_owned())
 }
 
 fn loc_for_owner(localisation: &Localisation, owner_tag: Option<&str>, key: &str) -> Option<String> {
@@ -575,21 +582,6 @@ fn format_signed_value_fixed5(raw: i64) -> String {
     }
 }
 
-fn stat_is_lower_better(name: &str) -> bool {
-    matches!(
-        name,
-        "build_cost_ic"
-            | "production_cost_factor"
-            | "production_resource_need_factor"
-            | "production_resource_penalty_factor"
-            | "fuel_consumption"
-            | "surface_visibility"
-            | "sub_visibility"
-            | "supply_consumption"
-            | "weight"
-    )
-}
-
 fn stat_is_percent(name: &str) -> bool {
     if is_production_stat(name) || name.ends_with("_factor") || name.ends_with("_bonus") {
         return true;
@@ -628,29 +620,20 @@ fn stat_label(name: &str, localisation: &Localisation) -> String {
             }
         }
     }
-    name.replace('_', " ")
-}
-
-fn format_bonus_colored(name: &str, raw: i64, localisation: &Localisation) -> String {
-    let label = stat_label(name, localisation);
-    let value = if stat_is_percent(name) {
-        format_signed_percent_fixed5(raw)
-    } else {
-        format_signed_value_fixed5(raw)
-    };
-    let positive_good = !stat_is_lower_better(name);
-    let color = if (raw >= 0) == positive_good { 'G' } else { 'R' };
-    format!("{label}: {COLOR}{color}{value}{COLOR}!")
+    name.to_owned()
 }
 
 fn format_bonus_plain(name: &str, raw: i64, localisation: &Localisation) -> String {
-    let label = stat_label(name, localisation);
     let value = if stat_is_percent(name) {
         format_signed_percent_fixed5(raw)
     } else {
         format_signed_value_fixed5(raw)
     };
-    format!("{label}: {value}")
+    loc_fill(
+        localisation,
+        "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIER_ITEM",
+        &[("NAME", &stat_label(name, localisation)), ("VALUE", &value)],
+    )
 }
 
 fn find_child<'a>(parent: &'a Element, segment: &str) -> Option<&'a Element> {
@@ -725,20 +708,48 @@ fn set_frame_by_name(instance: &mut Instance, root: &Element, name: &str, frame:
     }
 }
 
-fn format_points_line(localisation: &Localisation, value_str: &str) -> String {
-    if let Some(raw) = localisation.get("INDUSTRIAL_ORG_DETAIL_TRAIT_POINTS") {
-        let clean = strip_markup(raw);
-        if let Some(pos) = clean.find("$VALUE")
-            && let Some(end) = clean[pos + 1..].find('$')
-        {
-            let mut out = String::new();
-            out.push_str(&clean[..pos]);
-            out.push_str(value_str);
-            out.push_str(&clean[pos + end + 2..]);
+fn loc_fill(localisation: &Localisation, key: &str, values: &[(&str, &str)]) -> String {
+    let Some(raw) = localisation.get(key) else {
+        let shown: Vec<&str> = values.iter().map(|(_, value)| *value).collect();
+        return format!("{key} {}", shown.join(" "));
+    };
+    let text = strip_markup(raw);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find('$') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('$') else {
+            out.push('$');
+            out.push_str(after);
             return out;
+        };
+        let token = &after[..end];
+        let name = token.split('|').next().unwrap_or(token);
+        match values.iter().find(|(placeholder, _)| *placeholder == name) {
+            Some((_, value)) => out.push_str(value),
+            None => out.push_str(&expand_loc_refs(localisation, &format!("${token}$"), 4)),
         }
+        rest = &after[end + 1..];
     }
-    format!("Trait points: {value_str}")
+    out.push_str(rest);
+    out
+}
+
+fn modifier_item(localisation: &Localisation, name_key: &str, value: &str) -> String {
+    loc_fill(
+        localisation,
+        "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIER_ITEM",
+        &[("NAME", &loc_or(localisation, name_key)), ("VALUE", value)],
+    )
+}
+
+fn format_points_line(localisation: &Localisation, value_str: &str) -> String {
+    loc_fill(
+        localisation,
+        "INDUSTRIAL_ORG_DETAIL_TRAIT_POINTS",
+        &[("VALUE", value_str)],
+    )
 }
 
 fn collect_template_assets(
@@ -875,7 +886,7 @@ fn configure_detail_main(
                 tooltips.insert(
                     size_el.path.clone(),
                     GameWindowTooltip {
-                        title: loc_fallback(localisation, "INDUSTRIAL_ORG_SIZE", "Size"),
+                        title: loc_or(localisation, "INDUSTRIAL_ORG_SIZE"),
                         body: Some(body),
                         detail: None,
                     },
@@ -886,11 +897,7 @@ fn configure_detail_main(
                     points_el.path.clone(),
                     GameWindowTooltip {
                         title: format_points_line(localisation, &details.points.to_string()),
-                        body: Some(loc_fallback(
-                            localisation,
-                            "INDUSTRIAL_ORG_DETAIL_TRAIT_POINTS_DELAYED",
-                            "Trait points are used to unlock traits in the organisation tree.",
-                        )),
+                        body: Some(loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_TRAIT_POINTS_DELAYED")),
                         detail: None,
                     },
                 );
@@ -959,23 +966,19 @@ fn configure_detail_main(
                     instance,
                     root,
                     "open_policies_window/open_policies_text",
-                    loc_fallback(localisation, "INDUSTRIAL_ORG_POLICY_BUTTON", "Policy"),
+                    loc_or(localisation, "INDUSTRIAL_ORG_POLICY_BUTTON"),
                 );
                 set_text_by_name(
                     instance,
                     root,
                     "open_policies_window/click_to_open_policies_text",
-                    loc_fallback(localisation, "NONE", "None"),
+                    loc_or(localisation, "NONE"),
                 );
                 if let Some(btn) = find_direct(root, "open_policies_window/open_policies") {
                     tooltips.insert(
                         btn.path.clone(),
                         GameWindowTooltip {
-                            title: loc_fallback(
-                                localisation,
-                                "INDUSTRIAL_ORG_POLICY_BUTTON",
-                                "Policy",
-                            ),
+                            title: loc_or(localisation, "INDUSTRIAL_ORG_POLICY_BUTTON"),
                             body: Some("No policy attached at this hour.".to_owned()),
                             detail: None,
                         },
@@ -1021,11 +1024,7 @@ fn configure_detail_main(
                 tooltips.insert(
                     queue_btn.path.clone(),
                     GameWindowTooltip {
-                        title: loc_fallback(
-                            localisation,
-                            "INDUSTRIAL_ORG_DETAIL_WINDOW_OPEN_QUEUE_BUTTON",
-                            "Trait Queue",
-                        ),
+                        title: loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_WINDOW_OPEN_QUEUE_BUTTON"),
                         body: Some(body),
                         detail: None,
                     },
@@ -1058,7 +1057,7 @@ fn configure_detail_main(
                 instance,
                 root,
                 "open_policies_window/open_policies_text",
-                loc_fallback(localisation, "INDUSTRIAL_ORG_POLICY_BUTTON", "Policy"),
+                loc_or(localisation, "INDUSTRIAL_ORG_POLICY_BUTTON"),
             );
             set_text_by_name(
                 instance,
@@ -1118,7 +1117,7 @@ fn configure_policy_main(
         instance,
         root,
         "title/instruction",
-        loc_fallback(localisation, "INDUSTRIAL_ORG_POLICY_BUTTON", "Policies"),
+        loc_or(localisation, "INDUSTRIAL_ORG_POLICY_BUTTON"),
     );
 }
 
@@ -1171,11 +1170,7 @@ fn compose_funds_progressbar(
             (
                 pct,
                 GameWindowTooltip {
-                    title: loc_fallback(
-                        localisation,
-                        "INDUSTRIAL_ORG_DETAIL_TOOLTIP_FUNDS_HEADER",
-                        "Funds",
-                    ),
+                    title: loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_TOOLTIP_FUNDS_HEADER"),
                     body: Some(body),
                     detail: None,
                 },
@@ -1184,11 +1179,7 @@ fn compose_funds_progressbar(
         RecordedDetails::Unavailable(reason) => (
             0,
             GameWindowTooltip {
-                title: loc_fallback(
-                    localisation,
-                    "INDUSTRIAL_ORG_DETAIL_TOOLTIP_FUNDS_HEADER",
-                    "Funds",
-                ),
+                title: loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_TOOLTIP_FUNDS_HEADER"),
                 body: Some(format!(
                     "Not recorded: funds are unavailable at this hour ({reason})."
                 )),
@@ -1342,15 +1333,11 @@ fn compose_aggregated_bonuses(
     match &prepared.data.details {
         RecordedDetails::Unavailable(reason) => {
             push_separator(
-                loc_fallback(
-                    localisation,
-                    "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIERS",
-                    "Attributes",
-                ),
+                loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIERS"),
                 plan,
             )?;
             push_modifier(
-                format!("Details: {NOT_RECORDED_VALUE}"),
+                NOT_RECORDED_VALUE.to_owned(),
                 Some(GameWindowTooltip {
                     title: "Not recorded".to_owned(),
                     body: Some(format!(
@@ -1363,44 +1350,50 @@ fn compose_aggregated_bonuses(
         }
         RecordedDetails::Available(details) => {
             push_separator(
-                loc_fallback(
-                    localisation,
-                    "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIERS",
-                    "Attributes",
-                ),
+                loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_MIO_MODIFIERS"),
                 plan,
             )?;
             push_modifier(
-                format!(
-                    "Research Bonus: {COLOR}G{}{COLOR}!",
-                    format_signed_percent_fixed5(details.research_bonus_raw)
+                modifier_item(
+                    localisation,
+                    "MODIFIER_MIO_RESEARCH_BONUS_MIO_CONTEXT",
+                    &format_signed_percent_fixed5(details.research_bonus_raw),
                 ),
                 None,
                 plan,
             )?;
             if details.funds_gain_factor_raw != 0 {
                 push_modifier(
-                    format!(
-                        "Funds Gain: {COLOR}G{}{COLOR}!",
-                        format_signed_percent_fixed5(details.funds_gain_factor_raw)
+                    modifier_item(
+                        localisation,
+                        "MODIFIER_MIO_FUNDS_GAIN",
+                        &format_signed_percent_fixed5(details.funds_gain_factor_raw),
                     ),
                     None,
                     plan,
                 )?;
             }
             if details.size_cost_factor_raw != 0 {
-                let color = if details.size_cost_factor_raw <= 0 { 'G' } else { 'R' };
                 push_modifier(
-                    format!(
-                        "Size Up Cost: {COLOR}{color}{}{COLOR}!",
-                        format_signed_percent_fixed5(details.size_cost_factor_raw)
+                    modifier_item(
+                        localisation,
+                        "MODIFIER_MIO_FUNDS_SIZE_UP_REQUIREMENT",
+                        &format_signed_percent_fixed5(details.size_cost_factor_raw),
                     ),
                     None,
                     plan,
                 )?;
             }
             if details.task_capacity != 0 {
-                push_modifier(format!("Task Capacity: {}", details.task_capacity), None, plan)?;
+                push_modifier(
+                    modifier_item(
+                        localisation,
+                        "MODIFIER_MIO_TASK_CAPACITY",
+                        &details.task_capacity.to_string(),
+                    ),
+                    None,
+                    plan,
+                )?;
             }
 
             let tree = prepared
@@ -1409,11 +1402,7 @@ fn compose_aggregated_bonuses(
                 .and_then(|cat| cat.tree(&prepared.data.token).ok().flatten());
             if let Some(initial) = tree.and_then(|t| t.initial) {
                 push_separator(
-                    loc_fallback(
-                        localisation,
-                        "INDUSTRIAL_ORG_DETAIL_INITIAL_TRAIT_BONUSES",
-                        "Initial Trait",
-                    ),
+                    loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_INITIAL_TRAIT_BONUSES"),
                     plan,
                 )?;
                 let initial_name = resolve_trait_name(
@@ -1422,21 +1411,25 @@ fn compose_aggregated_bonuses(
                     prepared.data.owner_tag.as_deref(),
                     localisation,
                 );
-                push_modifier(format!("{COLOR}Y{initial_name}{COLOR}!"), None, plan)?;
+                push_modifier(
+                    loc_fill(
+                        localisation,
+                        "INDUSTRIAL_ORG_DETAIL_MIO_INITIAL_TRAIT_ITEM",
+                        &[("NAME", &initial_name)],
+                    ),
+                    None,
+                    plan,
+                )?;
             }
 
             let totals = aggregate_bonuses(&prepared.data, tree, prepared.org_db.as_deref());
             if !totals.is_empty() {
                 push_separator(
-                    loc_fallback(
-                        localisation,
-                        "INDUSTRIAL_ORG_DETAIL_EQUIPMENT_BONUSES",
-                        "Equipment Bonuses",
-                    ),
+                    loc_or(localisation, "INDUSTRIAL_ORG_DETAIL_EQUIPMENT_BONUSES"),
                     plan,
                 )?;
                 for (name, value) in totals {
-                    push_bonus(format_bonus_colored(&name, value, localisation), plan)?;
+                    push_bonus(format_bonus_plain(&name, value, localisation), plan)?;
                 }
             }
         }
@@ -2041,17 +2034,35 @@ fn compose_history_lists(
             });
         }
         Some(entries) => {
-            for (idx, entry) in entries.iter().enumerate() {
-                let y = idx as i32 * 104;
-                if y + 100 > max_y {
-                    break;
-                }
+            let step = item_tpl
+                .container()
+                .map(|container| container.size.size[1].value)
+                .filter(|&height| height > 0)
+                .ok_or_else(|| {
+                    GameWindowError::refused(
+                        "Template 'industrial_organisation_history_item' declares no height, so its rows cannot be stacked.",
+                    )
+                })?;
+            let visible = usize::try_from(max_y / step).unwrap_or(0);
+            if entries.len() > visible {
+                plan.warnings.push(format!(
+                    "{} of {} history entries lie below the visible list and are not drawn: the game window scrolls, this picture does not.",
+                    entries.len() - visible,
+                    entries.len()
+                ));
+            }
+            for (idx, entry) in entries.iter().take(visible).enumerate() {
+                let y = idx as i32 * step;
                 let archetype_label = if entry.archetype.is_empty() {
                     String::new()
                 } else {
                     loc_or(localisation, &entry.archetype)
                 };
-                let fact = format!("Units produced: {}", entry.units);
+                let fact = loc_fill(
+                    localisation,
+                    "INDUSTRIAL_ORG_DETAIL_WINDOW_HISTORY_ENTRY_FLAVOR_UNITS_PRODUCED",
+                    &[("NUMBER", &entry.units.to_string())],
+                );
                 let layout = layout_window(item_tpl, resources, viewport, |instance| {
                     set_text_by_name(instance, item_tpl, "equipment_name", entry.name.clone());
                     set_text_by_name(
@@ -2093,16 +2104,30 @@ fn compose_policy_list(
             "policy_item",
         )));
     };
-    let Some(list_el) = find_direct(root, "policy_list_window/policy_list") else {
-        return Ok(());
-    };
-    let Some(holder) = main_layout
+    let list_el = find_direct(root, "policy_list_window/policy_list").ok_or_else(|| {
+        GameWindowError::refused(format!(
+            "Window '{POLICY_WINDOW_NAME}' is missing required list 'policy_list_window/policy_list'."
+        ))
+    })?;
+    let holder = main_layout
         .holders
         .iter()
         .find(|h| h.path == list_el.path)
-    else {
-        return Ok(());
-    };
+        .ok_or_else(|| {
+            GameWindowError::refused(format!(
+                "Policy list '{}' produced no layout holder.",
+                list_el.path
+            ))
+        })?;
+    let step = item_tpl
+        .container()
+        .map(|container| container.size.size[1].value)
+        .filter(|&height| height > 0)
+        .ok_or_else(|| {
+            GameWindowError::refused(
+                "Template 'policy_item' declares no height, so its rows cannot be stacked.",
+            )
+        })?;
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
     let max_y = holder.content[1].max(0);
     let has_sprite = |name: &str| resources.sprite_info(name.as_bytes()).is_some();
@@ -2156,11 +2181,16 @@ fn compose_policy_list(
             {
                 tokens.insert(0, attached.clone());
             }
-            for (idx, token) in tokens.iter().enumerate() {
-                let y = idx as i32 * 102;
-                if y + 100 > max_y {
-                    break;
-                }
+            let visible = usize::try_from(max_y / step).unwrap_or(0);
+            if tokens.len() > visible {
+                plan.warnings.push(format!(
+                    "{} of {} policies lie below the visible list and are not drawn: the game window scrolls, this picture does not.",
+                    tokens.len() - visible,
+                    tokens.len()
+                ));
+            }
+            for (idx, token) in tokens.iter().take(visible).enumerate() {
+                let y = idx as i32 * step;
                 let key = token.to_ascii_lowercase();
                 let policy_def = prepared
                     .org_db
@@ -2169,13 +2199,19 @@ fn compose_policy_list(
                 let name = resolve_policy_name(token, policy_def, localisation);
                 let icon = resolve_policy_icon(policy_def, has_sprite);
                 let is_attached = attached_lower.as_deref() == Some(key.as_str());
-                let cost_str = prepared
-                    .data
-                    .policy_costs
-                    .get(&key)
-                    .and_then(|s| s.cost)
-                    .map(|c| format!("{c} PP"))
-                    .unwrap_or_else(|| NOT_RECORDED_VALUE.to_owned());
+                let (cost_str, cost_missing) = match &prepared.data.policy_costs {
+                    Ok(costs) => match costs.get(&key).and_then(|summary| summary.cost) {
+                        Some(cost) => (cost.to_string(), None),
+                        None => (
+                            NOT_RECORDED_VALUE.to_owned(),
+                            Some("Not recorded: this policy's attach cost is not in the recorded policy costs at this hour.".to_owned()),
+                        ),
+                    },
+                    Err(reason) => (
+                        NOT_RECORDED_VALUE.to_owned(),
+                        Some(format!("Not recorded: policy costs are unavailable at this hour ({reason}).")),
+                    ),
+                };
                 let layout = layout_window(item_tpl, resources, viewport, |instance| {
                     hide_by_name(instance, item_tpl, "ai_value");
                     set_frame_by_name(
@@ -2192,9 +2228,7 @@ fn compose_policy_list(
                 let mut overrides = BTreeMap::new();
                 if let Some(btn) = find_direct(item_tpl, "background_button") {
                     let mut lines = Vec::new();
-                    if is_attached {
-                        lines.push("Currently attached".to_owned());
-                    }
+                    lines.extend(cost_missing);
                     if let Some(def) = policy_def {
                         for (_, group_bonuses) in &def.groups {
                             for bonus in group_bonuses {
@@ -2363,7 +2397,7 @@ pub fn render_data(
                 }
             }
 
-            Ok((
+            Ok(Prepared::uncached(
                 assets,
                 PreparedMio {
                     data,
@@ -2457,6 +2491,11 @@ pub fn render_data(
                     )?;
                 }
             }
+            plan.title = Some(resolve_org_name(
+                &prepared.data,
+                prepared.org_db.as_deref(),
+                localisation,
+            ));
             Ok(plan)
         },
     )
@@ -2513,24 +2552,21 @@ pub fn render(
         }
     };
 
-    let organisations = frame
-        .complete::<tables::IndustrialOrganisations>()
-        .map_err(|error| {
-            GameWindowError::refused(format!(
-                "Military industrial organisations are not recorded at this hour: {error}"
-            ))
-        })?;
-    let org_row = organisations
-        .binary_search_by_key(&org_id, |row| row.organisation)
-        .ok()
-        .map(|idx| &organisations[idx])
-        .ok_or_else(|| {
-            GameWindowError::refused(format!(
-                "Military industrial organisation {} is not recorded at hour {}.",
-                target.organisation, request.hour
-            ))
-        })?;
-    let lexical = frame.complete::<tables::LexicalTokens>().map_err(|error| {
+    let org_row = witnessed_single_key::<tables::IndustrialOrganisations, _>(&frame, org_id, |row| {
+        row.organisation
+    })
+    .map_err(|error| {
+        GameWindowError::refused(format!(
+            "Military industrial organisations are not recorded at this hour: {error}"
+        ))
+    })?
+    .ok_or_else(|| {
+        GameWindowError::refused(format!(
+            "Military industrial organisation {} is not recorded at hour {}.",
+            target.organisation, request.hour
+        ))
+    })?;
+    let (lexical, _) = witnessed_rows::<tables::LexicalTokens>(&frame).map_err(|error| {
         GameWindowError::refused(format!(
             "Lexical tokens are not recorded at this hour: {error}"
         ))
@@ -2541,57 +2577,76 @@ pub fn render(
             target.organisation
         ))
     })?;
-    let countries = frame.complete::<tables::Countries>().unwrap_or_default();
-    let links = frame.complete::<tables::CountryLinks>().unwrap_or_default();
-    let owner_tag = resolve_owner_tag(org_row, countries, links, target.tag.as_deref());
-
-    let mut samples = Vec::new();
-    if let Some(sampled) = frame.sampled_at(TableId::IndustrialOrganisations) {
-        samples.push((TableId::IndustrialOrganisations, sampled));
-    }
-
-    let details = match frame.complete::<tables::IndustrialOrganisationDetails>() {
-        Ok(rows) => {
-            if let Some(sampled) = frame.sampled_at(TableId::IndustrialOrganisationDetails) {
-                samples.push((TableId::IndustrialOrganisationDetails, sampled));
+    let mut read_tables = vec![TableId::IndustrialOrganisations, TableId::LexicalTokens];
+    let owner_tag = match (
+        frame.complete::<tables::Countries>(),
+        frame.complete::<tables::CountryLinks>(),
+    ) {
+        (Ok(countries), Ok(links)) => {
+            read_tables.extend([TableId::Countries, TableId::CountryLinks]);
+            let owner = resolve_owner_tag(org_row, countries, links);
+            if owner.is_none() {
+                extra_warnings.push(
+                    "The organisation's owner has no recorded country at this hour: country-specific names and art are not used.".to_owned(),
+                );
             }
-            match rows.binary_search_by_key(&org_id, |row| row.organisation) {
-                Ok(idx) => RecordedDetails::Available(Box::new(extract_details(
-                    &rows[idx], lexical,
-                ))),
-                Err(_) => RecordedDetails::Unavailable(
-                    "no organisation details row was recorded for this organisation at this hour"
-                        .to_owned(),
-                ),
-            }
+            owner
         }
-        Err(error) => RecordedDetails::Unavailable(error.to_string()),
+        (countries, links) => {
+            let why = countries.err().or(links.err()).map(|error| error.to_string()).unwrap_or_default();
+            extra_warnings.push(format!(
+                "The organisation's owner is unknown because countries are not recorded at this hour ({why}): country-specific names and art are not used."
+            ));
+            None
+        }
+    };
+
+    let details = match witnessed_single_key::<tables::IndustrialOrganisationDetails, _>(&frame, org_id, |row| row.organisation) {
+        Ok(Some(row)) => {
+            read_tables.push(TableId::IndustrialOrganisationDetails);
+            RecordedDetails::Available(Box::new(extract_details(row, lexical, &mut extra_warnings)))
+        }
+        Ok(None) => {
+            read_tables.push(TableId::IndustrialOrganisationDetails);
+            RecordedDetails::Unavailable(
+                "no organisation details row was recorded for this organisation at this hour".to_owned(),
+            )
+        }
+        Err(error) => RecordedDetails::Unavailable(error),
     };
 
     let policy_costs = match frame.complete::<tables::IndustrialOrganisationPolicies>() {
-        Ok(rows) => {
-            if let Some(sampled) = frame.sampled_at(TableId::IndustrialOrganisationPolicies) {
-                samples.push((TableId::IndustrialOrganisationPolicies, sampled));
+        Ok(rows) => match frame.complete::<tables::CountryLinks>() {
+            Ok(links) => {
+                read_tables.push(TableId::IndustrialOrganisationPolicies);
+                Ok(extract_policy_costs(rows, org_row.country, links, lexical))
             }
-            extract_policy_costs(rows, org_row.country, links, lexical)
-        }
-        Err(_) => BTreeMap::new(),
+            Err(error) => Err(error.to_string()),
+        },
+        Err(error) => Err(error.to_string()),
     };
 
-    let (history, history_reason) = match frame.complete::<tables::IndustrialOrganisationHistory>()
-    {
-        Ok(rows) => {
-            if sub_view == SubView::History
-                && let Some(sampled) = frame.sampled_at(TableId::IndustrialOrganisationHistory)
-            {
-                samples.push((TableId::IndustrialOrganisationHistory, sampled));
-            }
+    let (history, history_reason) = match frame.complete::<tables::IndustrialOrganisationHistory>() {
+        Ok(rows) if sub_view == SubView::History => {
+            read_tables.push(TableId::IndustrialOrganisationHistory);
             let variants = frame.complete::<tables::VariantDefinitions>().ok();
+            if variants.is_some() {
+                read_tables.push(TableId::VariantDefinitions);
+            } else {
+                extra_warnings.push(
+                    "Design names in the history are not recorded at this hour (VariantDefinitions is unavailable).".to_owned(),
+                );
+            }
             (Some(extract_history(rows, org_id, variants, lexical)), None)
         }
+        Ok(_) => (None, None),
         Err(error) => (None, Some(error.to_string())),
     };
 
+    let samples: Vec<(TableId, i32)> = read_tables
+        .iter()
+        .filter_map(|&id| frame.sampled_at(id).map(|hour| (id, hour)))
+        .collect();
     let (read_hour, cadence_warning) = compute_read_hour(request.hour, &samples);
     if let Some(warning) = cadence_warning {
         extra_warnings.push(warning);
@@ -2622,6 +2677,7 @@ pub fn render(
         visual_revision: visual_revision.to_owned(),
         language: language.to_owned(),
         force_pow2_textures: decode.force_pow2_textures,
+        art_stack: layers.art_stack_key(),
         window: sub_view.window_name().to_owned(),
     };
     render_data(

@@ -14,7 +14,6 @@ export default function IndustrialOrganisationWindow({
   onShown,
   onClose,
 }: GameWindowProps<IndustrialOrganisationSelection | MioPolicySelection>) {
-  const tag = selection.kind === 'industrialOrganisation' ? selection.tag : undefined;
   const subView = selection.kind === 'mioPolicyChooser'
     ? 'policy'
     : selection.subView;
@@ -24,9 +23,9 @@ export default function IndustrialOrganisationWindow({
     branchId: selection.branchId,
     hour: selection.hour,
     kind: selection.kind,
-    target: tag ? { organisation: selection.organisation, tag } : { organisation: selection.organisation },
+    target: { organisation: selection.organisation },
     ...(subView ? { subView } : {}),
-  }), [selection.sourceId, selection.revision, selection.branchId, selection.hour, selection.kind, selection.organisation, tag, subView]);
+  }), [selection.sourceId, selection.revision, selection.branchId, selection.hour, selection.kind, selection.organisation, subView]);
 
   return <GameWindowView
     client={client}
