@@ -13,7 +13,8 @@ import { perfLog } from '../../shell/perf.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { auditIdOf } from '../audit.ts';
 import { displayedHour } from '../boundedView.ts';
-import type { BoundedReadView, DisplayedHour, EntityKind, FamilySourceSubscription, InstalledAction, InstalledActionTarget, InstalledPicture, MirrorModel } from '../contract.ts';
+import type { ArtResolutions } from '../art/provider.ts';
+import type { ArtHandle, BoundedReadView, DisplayedHour, EntityKind, FamilySourceSubscription, InstalledAction, InstalledActionTarget, InstalledPicture, MirrorModel } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import {
   attachAuditWatch,
@@ -170,6 +171,8 @@ export interface FamilyTableHostProps<TOptions> {
   readonly countryLooks?: CountryLooksMap;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
+  readonly artResolutions?: ArtResolutions;
+  readonly onArtDemands?: (demands: readonly ArtHandle[]) => void;
   readonly onViewportSize?: (width: number, height: number) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
@@ -238,6 +241,8 @@ export default function FamilyTableHost<TOptions>({
   countryLooks,
   identitySnapshot = null,
   onIdentityDemands,
+  artResolutions,
+  onArtDemands,
   onViewportSize,
   selectedKey = null,
   onActivate,
@@ -403,6 +408,8 @@ export default function FamilyTableHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    artResolutions,
+    onArtDemands,
     onViewportSize,
     selectedKey,
     onActivate,
@@ -425,6 +432,8 @@ export default function FamilyTableHost<TOptions>({
     exactReadView,
     identitySnapshot,
     onIdentityDemands,
+    artResolutions,
+    onArtDemands,
     onViewportSize,
     selectedKey,
     onActivate,
@@ -506,6 +515,7 @@ export default function FamilyTableHost<TOptions>({
       scrollTop: st,
       theme: cur.theme,
       ...(cur.identitySnapshot ? { identitySnapshot: cur.identitySnapshot } : {}),
+      ...(cur.artResolutions ? { artResolutions: cur.artResolutions } : {}),
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
       expanded: expandedRef.current,
@@ -707,6 +717,8 @@ export default function FamilyTableHost<TOptions>({
       if (demandsField && latestRef.current.onIdentityDemands) {
         latestRef.current.onIdentityDemands(demandsField);
       }
+      const artField = shown?.fields?.artDemands as readonly ArtHandle[] | undefined;
+      if (artField && latestRef.current.onArtDemands) latestRef.current.onArtDemands(artField);
 
       if (!visible || !shown?.fields || shown.id === undefined) {
         installedPictureRef.current = null;
@@ -950,7 +962,7 @@ export default function FamilyTableHost<TOptions>({
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
-  }, [pipe, enabled, bind, options, settings, theme, reducedMotion, staticSources, identitySnapshot, selectedKey, expanded, subsReady, auditable, exactReadView, audit.captureActive]);
+  }, [pipe, enabled, bind, options, settings, theme, reducedMotion, staticSources, identitySnapshot, artResolutions, selectedKey, expanded, subsReady, auditable, exactReadView, audit.captureActive]);
 
   useFamilyPauseFlush(runtime.clock, () => {
     if (!pipeline || pipe === null) return;

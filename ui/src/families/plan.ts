@@ -231,9 +231,8 @@ export type ArtHandle =
     }
   | {
       readonly kind: 'portrait';
-      readonly key: string;
-      readonly owner?: string;
-      readonly recorded?: string;
+      readonly leader: string;
+      readonly hour: number;
     }
   | {
       readonly kind: 'path';

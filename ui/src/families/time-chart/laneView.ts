@@ -6,8 +6,8 @@ import type { TiledLine } from '../../dashboard/tiles/view';
 import type { LaneView, Painted, PaintInput } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
-import { PENDING_ART, artHandleKey, type ArtResolution } from '../art/types.ts';
+import { createLaneArtProvider, laneArtDemand } from '../art/provider.ts';
+import type { ArtResolution } from '../art/types.ts';
 import { BoundedSeriesCursor, createBoundedReadView, type WitnessedPoint } from '../boundedView.ts';
 import type { ArtDemand, ArtHandle, ArtProvider, BoundedSeries, EntityKind, IdentityDemand, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
@@ -67,7 +67,7 @@ interface HeldTimeChart {
   identitySnapshot: IdentitySnapshot | null | undefined;
   identityIndex: IdentityIndex | null;
   identityProvider: IdentityProvider | undefined;
-  spriteResolutions: Readonly<Record<string, ArtResolution>> | undefined;
+  artResolutions: Readonly<Record<string, ArtResolution>> | undefined;
   artProvider: ArtProvider;
   tiledByRev: Map<number, TiledLine>;
   cursors: Map<string, BoundedSeriesCursor>;
@@ -227,7 +227,7 @@ export function timeChartLaneView(
           identitySnapshot: undefined,
           identityIndex: null,
           identityProvider: undefined,
-          spriteResolutions: undefined,
+          artResolutions: undefined,
           artProvider: createLaneArtProvider(art),
           tiledByRev: new Map(),
           cursors: new Map(),
@@ -254,24 +254,15 @@ export function timeChartLaneView(
       }
 
       const snapshotChanged = held.identitySnapshot !== binding.identitySnapshot;
-      const spritesChanged = held.spriteResolutions !== binding.spriteResolutions;
+      const spritesChanged = held.artResolutions !== binding.artResolutions;
       if (snapshotChanged || spritesChanged) {
         if (snapshotChanged) {
           held.identitySnapshot = binding.identitySnapshot;
           held.identityIndex = binding.identitySnapshot ? IdentityIndex.fromSnapshot(binding.identitySnapshot) : null;
           held.identityProvider = held.identityIndex ? createSnapshotIdentityProvider(held.identityIndex) : undefined;
         }
-        held.spriteResolutions = binding.spriteResolutions;
-        const spriteMap = binding.spriteResolutions;
-        held.artProvider = createLaneArtProvider(held.art, {
-          index: held.identityIndex,
-          resolveHandle: handle => {
-            if (handle.kind === 'sprite' && spriteMap) {
-              return spriteMap[artHandleKey(handle)] ?? PENDING_ART;
-            }
-            return PENDING_ART;
-          },
-        });
+        held.artResolutions = binding.artResolutions;
+        held.artProvider = createLaneArtProvider(held.art, { index: held.identityIndex, resolutions: binding.artResolutions });
       }
 
       if (held.canvas.width !== backingWidth) held.canvas.width = backingWidth;
@@ -313,19 +304,7 @@ export function timeChartLaneView(
           (kind, key, atHour) => {
             pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
           },
-          handle => {
-            if (handle.kind === 'sprite') {
-              const resolved = binding.spriteResolutions?.[artHandleKey(handle)];
-              if (resolved?.status === 'ready' && resolved.url) {
-                demandedArtUrls.add(resolved.url);
-              } else if (!resolved || resolved.status === 'pending') {
-                pendingSpriteDemands.set(artHandleKey(handle), handle);
-              }
-              return;
-            }
-            const url = artUrlForHandle(handle, held!.identityIndex);
-            if (url) demandedArtUrls.add(url);
-          },
+          handle => laneArtDemand(handle, held!.identityIndex, binding.artResolutions, demandedArtUrls, pendingSpriteDemands),
         );
         model = proj.project(readView, binding.options);
       }
