@@ -6,7 +6,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import type { BoundedReadView } from '../../families/plan.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded, valueFromLive, valueFromNullable, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notApplicable, notRecorded, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import type { CountryFactionGoalsReply, FactionDetailReply, FactionGoalDefinition } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -53,7 +53,7 @@ export function goalProgress(live: Parameters<typeof valueFromLive>[0], ordinal:
 const fraction = (value: Value<number>): Value<number> => value.kind === 'known' ? knownValue(Math.max(0, Math.min(1, value.value / 100))) : value;
 
 const goalName = (definition: FactionGoalDefinition): Value<string> =>
-  valueFromNullable(definition.name, { kind: 'notRecorded', reason: definition.reason ?? 'Goal name unavailable' });
+  textValue(definition.name, definition.reason ?? 'Goal name unavailable');
 
 function goalIcon(definition: FactionGoalDefinition, readView: BoundedReadView): string | undefined {
   if (definition.icon === null) return undefined;

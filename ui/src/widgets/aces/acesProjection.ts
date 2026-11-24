@@ -5,7 +5,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import type { BoundedReadView } from '../../families/plan.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { AirAce, AirAcesReply } from '../../generated/dashboard';
 import { validateAces } from './acesData.ts';
@@ -36,7 +36,7 @@ function countryOf(tag: string | null, readView: BoundedReadView): { readonly fl
   const shown = countryRowPresentation(readView, tag);
   return {
     flag: { icon: shown.media.kind === 'flag' ? shown.media.iconUrl : undefined, pending: shown.media.kind === 'flag' && shown.media.art.status === 'pending' },
-    country: shown.labelMissing ? notRecorded('Country name not recorded') : knownValue(shown.label),
+    country: shown.labelMissing ? notRecorded('Country name not recorded') : textValue(shown.label, 'Country name not recorded'),
   };
 }
 
@@ -46,7 +46,7 @@ export function aceSince(ace: AirAce): Value<string> {
 
 const wingValue = (ace: AirAce): Value<string> => ace.wing === null
   ? knownValue('No wing')
-  : valueFromNullable(ace.wingName, { kind: 'notRecorded', reason: 'Wing name not recorded' });
+  : textValue(ace.wingName, 'Wing name not recorded');
 
 function aircraftValue(ace: AirAce): Value<string> {
   if (ace.wing === null) return knownValue('None');
@@ -59,10 +59,10 @@ const [PORTRAIT, COUNTRY, ACE, WING, SINCE] = COLUMNS;
 
 const ACE_COLUMNS: readonly DeclarativeColumnSpec<AceRow, AcesOptions>[] = [
   { ...PORTRAIT!, priority: 4, sortable: false, iconSlot: true, icon: row => row.portrait.icon, iconPending: row => row.portrait.pending,
-    value: row => row.ace.portrait === null ? notRecorded(row.ace.portraitMissing ?? 'Portrait not recorded') : knownValue(row.ace.name ?? 'Portrait') },
+    value: row => row.ace.portrait === null ? notRecorded(row.ace.portraitMissing ?? 'Portrait not recorded') : textValue(row.ace.name, 'Ace name not recorded') },
   { ...COUNTRY!, priority: 1, iconSlot: true, icon: row => row.flag.icon, iconPending: row => row.flag.pending, country: row => row.ace.tag, value: row => row.country },
   { ...ACE!, priority: 0, text: true, hideable: false, widest: ['Philipp Schultz'],
-    value: row => valueFromNullable(row.ace.name, { kind: 'notRecorded', reason: 'Ace name not recorded' }) },
+    value: row => textValue(row.ace.name, 'Ace name not recorded') },
   { ...WING!, priority: 2, text: true, widest: ['Sturzkampfgeschwader 2'], value: row => wingValue(row.ace) },
   { ...SINCE!, priority: 3, numeric: true, widest: ['30 Sep 1941'], value: row => aceSince(row.ace),
     sortValue: row => valueFromNullable(row.ace.firstSeen, { kind: 'notRecorded', reason: 'First sighting not recorded' }) },
@@ -81,7 +81,7 @@ function aceTooltip(row: AceRow): TooltipExtraRow[] {
     rows.push({ label: 'Killed', value: death.byHour === null || death.lastAlive === null
       ? notRecorded('Date of death not recorded')
       : knownValue(`after ${formatDateOnly(death.lastAlive)}, by ${formatDateOnly(death.byHour)}`) });
-    if (death.killerAce) rows.push({ label: 'Killed by', value: valueFromNullable(death.killerName, { kind: 'notRecorded', reason: 'Killer ace name not recorded' }) });
+    if (death.killerAce) rows.push({ label: 'Killed by', value: textValue(death.killerName, 'Killer ace name not recorded') });
     rows.push({ label: 'Killer country', value: row.killerCountry ?? notRecorded('Killer country not recorded') });
   }
   return rows;

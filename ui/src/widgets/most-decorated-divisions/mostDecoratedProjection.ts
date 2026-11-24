@@ -5,7 +5,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import type { BoundedReadView } from '../../families/plan.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notRecorded, valueFromNullable, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import type { CareerRow, CareerTemplate, DivisionCareersReply } from '../../generated/dashboard';
 import { validateDivisionCareers } from '../division-service-record/careersData.ts';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
@@ -36,7 +36,7 @@ function countryOf(tag: string | null, readView: BoundedReadView): { readonly fl
   const shown = countryRowPresentation(readView, tag);
   return {
     flag: { icon: shown.media.kind === 'flag' ? shown.media.iconUrl : undefined, pending: shown.media.kind === 'flag' && shown.media.art.status === 'pending' },
-    country: shown.labelMissing ? notRecorded('Country name not recorded') : knownValue(shown.label),
+    country: shown.labelMissing ? notRecorded('Country name not recorded') : textValue(shown.label, 'Country name not recorded'),
   };
 }
 
@@ -60,14 +60,14 @@ const [KIND, COUNTRY, DIVISION, MEDALS, EXPERIENCE, KILLS] = COLUMNS;
 
 const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedOptions>[] = [
   { ...KIND!, priority: 5, sortable: false, iconSlot: true, icon: item => item.kind.icon, iconPending: item => item.kind.pending,
-    value: item => valueFromNullable(item.template?.name ?? null, { kind: 'notRecorded', reason: 'Template name unavailable' }) },
+    value: item => textValue(item.template?.name ?? null, 'Template name unavailable') },
   { ...COUNTRY!, priority: 1, iconSlot: true, icon: item => item.flag.icon, iconPending: item => item.flag.pending, country: item => item.row.tag, value: item => item.country },
   { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['175 Guangxi Juntuán'],
-    value: item => valueFromNullable(item.row.name, { kind: 'notRecorded', reason: item.row.nameMissing ?? 'Division name unavailable' }) },
+    value: item => textValue(item.row.name, item.row.nameMissing ?? 'Division name unavailable') },
   { ...MEDALS!, priority: 2, numeric: true, format: 'integer', widest: ['99'],
     value: item => count(item.row.facts.medals, item.row.facts.historyMissing ?? 'Medals not recorded') },
   { ...EXPERIENCE!, priority: 4, text: true, widest: ['Veterans'],
-    value: item => valueFromNullable(item.row.facts.levelName, { kind: 'notRecorded', reason: 'Experience not recorded' }),
+    value: item => textValue(item.row.facts.levelName, 'Experience not recorded'),
     sortValue: item => item.row.facts.experienceRaw === null ? notRecorded('Experience not recorded') : knownValue(BigInt(item.row.facts.experienceRaw)) },
   { ...KILLS!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'],
     value: item => count(item.row.facts.kills, 'Casualties dealt not recorded') },
