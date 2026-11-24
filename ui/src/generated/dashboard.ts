@@ -3862,7 +3862,15 @@ theatres?: Array<string>,
 /**
  * How many of the most active regions are shown, without `regions`.
  */
-top?: number, };
+top?: number,
+/**
+ * Ranks the rows by their activity over the whole days from this hour to the view's first hour, kept per source and extended by the days added since.
+ */
+rankFrom?: number,
+/**
+ * Every region with a score in the view, unranked, and `absent`: the cells of a region without one.
+ */
+every?: boolean, };
 export type AirTimelineReply = {
 /**
  * The first hour of the view's first day.
@@ -3883,7 +3891,11 @@ sides: Array<AirSide>, legend: Array<number>,
 /**
  * The viewpoint side's index, at the last day it is present.
  */
-viewpoint: number | null, viewpointCountryStyle?: AirCountryStyle, gaps: Array<HourSpan>, rows: Array<AirTimelineRow>, scale: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
+viewpoint: number | null, gaps: Array<HourSpan>, rows: Array<AirTimelineRow>,
+/**
+ * With `every`: the days of a region without a score, as runs.
+ */
+absent?: Array<[number, AirDayCell | null]>, scale: number, badBelow: number, goodAbove: number, warnings: Array<string>, };
 export type AirTimelineRow = { region: number, name: string | null,
 /**
  * Why the name is not shown.
@@ -3905,7 +3917,6 @@ viewpoints: Array<[number, string]>, unknown: Array<number>, noAirObject: Array<
 filtered: boolean, };
 export type AirDayPart = { side: number, tag: string, friendly: string, };
 export type AirReadout = { "kind": "leading", side: number, share_bp: number, as_of_hour: number, } | { "kind": "contested", as_of_hour: number, } | { "kind": "viewpoint", side: number | null, share_bp: number, as_of_hour: number, } | { "kind": "noActivity", as_of_hour: number, } | { "kind": "notRecorded", reason: string, };
-export type AirCountryStyle = { tag: string, hour: number, name: string | null, nameMissing: string | null, color: [number, number, number] | null, colorMissing: string | null, };
 export type OperationTypeTokens = {
 /**
  * The definition's token, as the content names it.
@@ -6290,6 +6301,7 @@ fallback: AirCell, scale: number, badBelow: number, goodAbove: number, warnings:
 export type AirMode = "sides" | "viewpoint";
 export type AirRegionOrder = "contested" | "active" | "name";
 export type AirAnchor = { tag: string, hour: number, };
+export type AirCountryStyle = { tag: string, hour: number, name: string | null, nameMissing: string | null, color: [number, number, number] | null, colorMissing: string | null, };
 export type AirSide = { key: string,
 /**
  * Its anchor faction's id.
@@ -6383,7 +6395,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "air-statistics-regions": {},
   "air-superiority": { "hour": "read" },
   "air-superiority-choices": {},
-  "air-superiority-timeline": { "firstHour": "start", "lastHour": "end" },
+  "air-superiority-timeline": { "firstHour": "start", "lastHour": "end", "rankFrom": "start" },
   "aircraft-catalogue": {},
   "army-losses": { "hour": "read" },
   "army-size": {},
@@ -6569,7 +6581,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-statistics-regions": { "branchId": "leaf", "country": "any" },
   "air-superiority": { "branchId": "leaf", "hour": "leaf", "mode": "leaf", "order": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-choices": { "branchId": "leaf" },
-  "air-superiority-timeline": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
+  "air-superiority-timeline": { "branchId": "leaf", "every": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "rankFrom": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "aircraft-catalogue": { "count": "leaf", "first": "leaf", "origin": "node", "origin.mod": "leaf", "query": "leaf" },
   "army-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "limit": "leaf", "stack": "leaf", "view": "node", "view.kind": "leaf", "view.ledgers": "node", "view.ledgers[]": "leaf", "view.month": "leaf" },
   "army-size": { "branchId": "leaf", "byType": "leaf", "countFor": "leaf", "countries": "node", "countries[]": "any", "measure": "leaf", "top": "leaf", "window": "leaf" },
@@ -6755,7 +6767,7 @@ export type RequestParams<E, B> = {
   "air-statistics-regions": {};
   "air-superiority": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "air-superiority-choices": {};
-  "air-superiority-timeline": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
+  "air-superiority-timeline": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null; readonly "rankFrom"?: B | null };
   "aircraft-catalogue": {};
   "army-losses": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "army-size": {};
@@ -6931,6 +6943,6 @@ export type RequestParams<E, B> = {
   "world-tension-stack": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
 };
 /** The top-level fields every product that names them dates as a plain hour, for a request whose product is not known where it is built. */
-export type AnyRequestParams<E, B> = { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "fromHour"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "rankHour"?: E | null; readonly "read"?: E | null; readonly "to"?: B | null };
+export type AnyRequestParams<E, B> = { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "from"?: B | null; readonly "fromHour"?: B | null; readonly "hour"?: E | null; readonly "lastHour"?: B | null; readonly "rankFrom"?: B | null; readonly "rankHour"?: E | null; readonly "read"?: E | null; readonly "to"?: B | null };
 /** Each map option until the user chooses: the game's own default for those it saves in settings.txt, the app's for the rest. */
 export const MAP_OPTION_DEFAULTS = { dayNight: true, alliedPlans: false, fog: true, countryCounterColours: false, playerCounters: false, radar: false } as const;

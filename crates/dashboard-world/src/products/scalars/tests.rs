@@ -152,6 +152,97 @@ fn the_game_score_top_is_ranked_in_the_product_and_refused_by_name_while_any_cou
 }
 
 #[test]
+fn game_score_top_advance_invalidates_only_when_membership_coverage_or_ranking_changes() {
+    use dashboard_base::products::at_hour::Edits;
+    use dashboard_query::identity::{Holder, HolderRun, Holders};
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::{DecodedFrame, Metrics, TableView, not_selected};
+    use std::collections::BTreeMap;
+
+    let score = |country: u32, total: Recorded<i64>, army: Recorded<i64>| CountryGameScoreRow {
+        country,
+        total,
+        army,
+        navy: Recorded::Value(0),
+        air: Recorded::Value(0),
+        industry: Recorded::Value(0),
+        land: Recorded::Value(0),
+        ..CountryGameScoreRow::default()
+    };
+    let make_frame = |rows: Vec<CountryGameScoreRow>| {
+        let mut tables = std::array::from_fn(|_| not_selected());
+        tables[TableId::CountryGameScores.index()] = TableView::Complete(TableRows::CountryGameScores(rows)).into();
+        DecodedFrame { branch: 1, hour: 100, tables, metrics: Metrics::default() }
+    };
+    let holders = Holders::new(
+        BTreeMap::from([
+            ("GER".to_owned(), vec![HolderRun { first: 0, last: 200, holder: Holder::Found { slot: 1, id: 1 }, starts_segment: true }]),
+            ("ITA".to_owned(), vec![HolderRun { first: 0, last: 200, holder: Holder::Found { slot: 2, id: 2 }, starts_segment: true }]),
+            ("SOV".to_owned(), vec![HolderRun { first: 0, last: 200, holder: Holder::Found { slot: 3, id: 3 }, starts_segment: true }]),
+        ]),
+        Vec::new(),
+    );
+    let columns: [usize; 6] = std::array::from_fn(|i| {
+        dashboard_declare::field(TableId::CountryGameScores, ["total", "army", "navy", "air", "industry", "land"][i]).unwrap()
+    });
+    let base_rows = [
+        score(1, Recorded::Value(500), Recorded::Value(100)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::Value(300), Recorded::Value(50)),
+    ];
+    let cells = dashboard_follow::live::Cells::default();
+    for (tag, row) in [("GER", &base_rows[0]), ("ITA", &base_rows[1]), ("SOV", &base_rows[2])] {
+        game_score::name_cells(&cells, tag, row, &columns);
+    }
+    let live = cells.finish();
+    let params = game_score::GameScoreParams {
+        branch_id: "1".into(),
+        top: Some(game_score::GameScoreTopParams { count: 2, by: "total".into() }),
+    };
+    let held_top = serde_json::json!({ "tags": ["GER", "ITA"], "missing": null });
+    let mask_of = |name: &str| 1u64 << dashboard_declare::field(TableId::CountryGameScores, name).unwrap();
+    let edit = |country: u32, mask: u64| Edits {
+        tables: BTreeMap::from([(TableId::CountryGameScores, BTreeMap::from([(u128::from(country), mask)]))]),
+        ..Edits::default()
+    };
+
+    let army_changed = make_frame(vec![
+        score(1, Recorded::Value(500), Recorded::Value(999)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::Value(300), Recorded::Value(50)),
+    ]);
+    assert!(game_score::advance_keeps(&army_changed, &params, &holders, &edit(1, mask_of("army")), &live, Some(&held_top)).unwrap());
+
+    let same_order = make_frame(vec![
+        score(1, Recorded::Value(550), Recorded::Value(100)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::Value(300), Recorded::Value(50)),
+    ]);
+    assert!(game_score::advance_keeps(&same_order, &params, &holders, &edit(1, mask_of("total")), &live, Some(&held_top)).unwrap());
+
+    let swapped_order = make_frame(vec![
+        score(1, Recorded::Value(500), Recorded::Value(100)),
+        score(2, Recorded::Value(600), Recorded::Value(200)),
+        score(3, Recorded::Value(300), Recorded::Value(50)),
+    ]);
+    assert!(!game_score::advance_keeps(&swapped_order, &params, &holders, &edit(2, mask_of("total")), &live, Some(&held_top)).unwrap());
+
+    let membership_changed = make_frame(vec![
+        score(1, Recorded::Value(500), Recorded::Value(100)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::Value(450), Recorded::Value(50)),
+    ]);
+    assert!(!game_score::advance_keeps(&membership_changed, &params, &holders, &edit(3, mask_of("total")), &live, Some(&held_top)).unwrap());
+
+    let coverage_lost = make_frame(vec![
+        score(1, Recorded::Value(500), Recorded::Value(100)),
+        score(2, Recorded::Value(400), Recorded::Value(200)),
+        score(3, Recorded::NotRecorded, Recorded::Value(50)),
+    ]);
+    assert!(!game_score::advance_keeps(&coverage_lost, &params, &holders, &edit(3, mask_of("total")), &live, Some(&held_top)).unwrap());
+}
+
+#[test]
 fn factory_groups_are_named_by_every_type_their_flag_counts_and_an_ambiguous_type_by_none() {
     use content_reader_key_names::buildings::{Buildings, FactoryFlags};
     let flags = |military, naval, general, rocket| FactoryFlags { military_production: military, naval_production: naval, general_production: general, rocket_production: rocket };

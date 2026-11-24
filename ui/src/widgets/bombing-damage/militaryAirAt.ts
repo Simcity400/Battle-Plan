@@ -2,6 +2,7 @@ import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsReadout } from '../../families/bars/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
+import { formatCompactScalar } from '../../families/valueFormat.ts';
 import type { MilitaryAirAtReply, MilitaryAirAtRow, MilitaryAirFamily, MilitaryAirMetric } from '../../generated/dashboard';
 
 export const MILITARY_AIR_AT = 'military-air-at';
@@ -30,6 +31,7 @@ export interface MilitaryAirAtOptions {
   readonly unit: string;
   readonly ratio: boolean;
   readonly chosen: readonly string[] | null;
+  readonly paired?: { readonly solid: string; readonly outline: string };
 }
 
 export function militaryAirParams(ctx: FamilyPlanContext, family: MilitaryAirFamily, metric: MilitaryAirMetric, filters: { readonly regions?: readonly number[]; readonly causes?: readonly number[] } = {}): Record<string, unknown> {
@@ -83,11 +85,23 @@ function amount(raw: string, complete: boolean, options: MilitaryAirAtOptions): 
   return { value, format, numeric: Math.max(0, Number(big)) / options.scale };
 }
 
-function ratioText(row: MilitaryAirAtRow): string | null {
+function ratioFigure(row: MilitaryAirAtRow): string | null {
   const dealt = BigInt(row.dealt), taken = BigInt(row.taken);
   if (!row.complete || dealt < 0n || taken <= 0n) return null;
   const hundredths = (dealt * 100n + taken / 2n) / taken;
-  return `${hundredths / 100n}.${String(hundredths % 100n).padStart(2, '0')} : 1`;
+  return `${hundredths / 100n}.${String(hundredths % 100n).padStart(2, '0')}`;
+}
+
+function wholeCompact(raw: string, options: MilitaryAirAtOptions, complete: boolean): string {
+  const scale = BigInt(options.scale);
+  const whole = (BigInt(raw) + scale / 2n) / scale;
+  return `${complete ? '' : '\u2265'}${formatCompactScalar(whole, { decimals: 0 }).text}`;
+}
+
+function pairedReadout(row: MilitaryAirAtRow, options: MilitaryAirAtOptions): BarsReadout {
+  const ratio = ratioFigure(row);
+  const figures = `${wholeCompact(row.dealt, options, row.complete)} / ${wholeCompact(row.taken, options, row.complete)}`;
+  return { primary: ratio ? `${figures} \u00b7 ${ratio}` : figures };
 }
 
 function missingRow(readView: BoundedReadView, key: string, reason: string): BarsDataRow {
@@ -102,7 +116,12 @@ function missingRow(readView: BoundedReadView, key: string, reason: string): Bar
 }
 
 export function militaryAirModel(readView: BoundedReadView, options: MilitaryAirAtOptions): BarsModel {
-  const base = { form: 'two-sided' as const, hour: readView.hour, animateOrder: true, leftHeader: options.leftHeader, rightHeader: options.rightHeader, scaleUnit: options.unit, ...(options.ratio ? { readoutHeader: 'Ratio' } : {}) };
+  const base = {
+    form: 'two-sided' as const, hour: readView.hour, animateOrder: true, leftHeader: options.leftHeader, rightHeader: options.rightHeader, scaleUnit: options.unit,
+    ...(options.paired
+      ? { twoSidedLayout: 'stacked-pair' as const, legend: [{ key: 'solid', label: options.paired.solid, color: '' }, { key: 'outline', label: options.paired.outline, color: '' }] }
+      : options.ratio ? { readoutHeader: 'Ratio' } : {}),
+  };
   const refused = readView.refused('main');
   if (refused) return { ...base, rows: [], empty: refused, emptyKind: 'unavailable' };
   const panel = readView.panel('main');
@@ -118,8 +137,8 @@ export function militaryAirModel(readView: BoundedReadView, options: MilitaryAir
     const pres = countryRowPresentation(readView, row.tag);
     const taken = amount(row.taken, row.complete, options);
     const dealt = amount(row.dealt, row.complete, options);
-    const ratio = options.ratio ? ratioText(row) : null;
-    const readout: BarsReadout | undefined = ratio ? { primary: ratio, secondary: 'Ratio' } : undefined;
+    const ratio = options.ratio ? ratioFigure(row) : null;
+    const readout: BarsReadout | undefined = options.paired ? pairedReadout(row, options) : ratio ? { primary: `${ratio} : 1`, secondary: 'Ratio' } : undefined;
     const key = `${row.tag}\u0000${row.identity}`;
     answered.add(row.tag);
     answered.add(countryKey(Number(row.identity.split(':')[0])));

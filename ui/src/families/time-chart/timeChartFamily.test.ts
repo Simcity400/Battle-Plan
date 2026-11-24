@@ -19,6 +19,7 @@ import { registerTimeChart, type TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
 import { timeChartLaneView } from './laneView.ts';
+import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { formatChartAxisValue, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { buildLineSubpaths } from './painter.ts';
@@ -105,6 +106,16 @@ function mockCanvas(width: number, height: number): { readonly canvas: Offscreen
   } as unknown as Canvas2D;
   const canvas = { width, height, getContext: () => ctx } as unknown as OffscreenCanvas;
   return { canvas, ctx, ops };
+}
+
+function laneOn(created: { readonly ctx: Canvas2D }) {
+  (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(width: number, height: number) { this.width = width; this.height = height; }
+    getContext() { return created.ctx; }
+  };
+  return timeChartLaneView(() => {});
 }
 
 describe('time-chart BoundedSeries & Foundation C integration', () => {
@@ -403,7 +414,7 @@ describe('time-chart laneView integration', () => {
     });
 
     const created = mockCanvas(600, 240);
-    const view = timeChartLaneView(undefined, { createCanvas: () => ({ canvas: created.canvas, ctx: created.ctx }) });
+    const view = laneOn(created);
     const state = new Map<string, unknown>();
     let seq = 1;
     const binding: TimeChartBinding = {
@@ -414,6 +425,8 @@ describe('time-chart laneView integration', () => {
       extent: [H1936, H1936 + 100 * 24],
       width: 600,
       height: 240,
+      scrollTop: 0,
+      theme: LANE_THEME,
       audit: true,
       auditId: 7,
     };
@@ -488,7 +501,7 @@ describe('time-chart laneView integration', () => {
     assert.deepEqual([zoomedTransform.xFrom, zoomedTransform.xTo], zoomWindow, 'the bound zoom window is the drawn x domain');
 
     view.unmount?.(1, state);
-    assert.equal(state.has('time-chart'), false);
+    assert.equal(state.size, 0, 'unmount leaves nothing held');
   });
 
   it('projects command-power with joined balance, stepped dashed ceiling, muted Maximum label, and spend ticks', () => {
@@ -776,7 +789,7 @@ describe('time-chart picture authority', () => {
       }),
     });
     const created = mockCanvas(600, 240);
-    const view = timeChartLaneView(undefined, { createCanvas: () => ({ canvas: created.canvas, ctx: created.ctx }) });
+    const view = laneOn(created);
     const state = new Map<string, unknown>();
     let seq = 1;
     const hour = H1936 + 95;
@@ -789,7 +802,7 @@ describe('time-chart picture authority', () => {
       subs: [],
       pictures: [],
       model: {
-        family: 'time-chart', kind: 'test-correction', options: {}, sources: {}, extent: [H1936, H1936 + 95], width: 600, height: 240,
+        family: 'time-chart', kind: 'test-correction', options: {}, sources: {}, extent: [H1936, H1936 + 95], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME,
         tiledLines: [tiled(rev, first, last)], keepTiled: [rev], tiledBySource: { main: { GER: rev } },
       } satisfies TimeChartBinding,
       hour,
@@ -802,6 +815,20 @@ describe('time-chart picture authority', () => {
     const before = created.ops.filter(op => op === 'clearRect').length;
     paint(2, 30, 10);
     assert.equal(created.ops.filter(op => op === 'clearRect').length, before + 1, 'the corrected history is drawn');
+
+    const bound = (rev: number, first: number, last: number) => ({
+      family: 'time-chart', kind: 'test-correction', options: {}, sources: {}, extent: [H1936, H1936 + 95], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME,
+      tiledLines: [tiled(rev, first, last)], keepTiled: [rev], tiledBySource: { main: { GER: rev } },
+    } satisfies TimeChartBinding);
+    const surface = { width: 600, height: 240, dpr: 1 };
+    assert.equal(assertQuietFrames(() => timeChartLaneView(() => {}), { label: 'chart', binding: bound(1, 10, 30), hour, speed: 24 }, 24, surface), hour + 1, 'a playing chart changes every hour');
+    const held = bound(1, 10, 30);
+    assertFreshPaint(() => timeChartLaneView(() => {}), [
+      { label: 'held', binding: held, hour, check: true },
+      { label: 'earlier', binding: held, hour: hour - 20, speed: 24, check: true },
+      { label: 'back to the head', binding: held, hour, check: true },
+      { label: 'corrected history', binding: bound(2, 30, 10), hour, check: true },
+    ], surface);
   });
   it('reads head rows by an index, not a scan per tag', () => {
     registerTimeChart({
@@ -823,14 +850,14 @@ describe('time-chart picture authority', () => {
     Object.defineProperty(tags, 'indexOf', { value: () => { throw new Error('scanned the tag list'); } });
     const answer = parseFollowed(message(10, [{ id: 1, answer: { keys: [1n, 2n], columns: 1, values: [5n, 7n] } }])).answers[0]!.answer;
     const created = mockCanvas(600, 240);
-    const view = timeChartLaneView(undefined, { createCanvas: () => ({ canvas: created.canvas, ctx: created.ctx }) });
+    const view = laneOn(created);
     const hour = H1936 + 95;
     const line = (tag: string) => ({ rev: tag === 'GER' ? 11 : 12, source: 'main', tag, head: 'h', decimals: 0, binHours: 96, from: H1936, to: hour, width: 1,
       buckets: [makeBucket(H1936, hour, 1)], missing: [], parts: [], marks: null });
     const painted = view.paint({
       widget: 1, subs: [], pictures: [],
       model: {
-        family: 'time-chart', kind: 'test-head-index', options: {}, sources: {}, extent: [H1936, hour], width: 600, height: 240, audit: true, auditId: 1,
+        family: 'time-chart', kind: 'test-head-index', options: {}, sources: {}, extent: [H1936, hour], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME, audit: true, auditId: 1,
         tiledLines: [line('GER'), line('ITA')], keepTiled: [11, 12], tiledBySource: { main: { GER: 11, ITA: 12 } },
         headSourceBySeries: { main: { answerName: 'main', tags } },
         staticAnswers: { main: answer },
