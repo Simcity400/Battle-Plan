@@ -2,6 +2,8 @@
 use dashboard_base::{Source, products::{Country as ParamCountry, LoadContext, at_hour::{At, AtHour}, validate_country}};
 use crate::products::intelligence::{Country, IDENTITY, Tags, branch};
 use dashboard_follow::live::{Cells, Source as Cell};
+use dashboard_query::series::ranked::GroupSelection;
+use dashboard_world::products::group_members::GroupsAt;
 use replay_data::rows::{IntelNetworkSummaryRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -64,6 +66,10 @@ pub struct IntelCoverageParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub basis: Option<IntelCoverageBasis>,
+    #[doc = " A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries` and `top`."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -110,7 +116,15 @@ pub struct IntelCoverageReply {
     #[doc = " renders nothing for it."]
     pub read_hour: Option<i32>,
     pub missing: Option<String>,
+    #[doc = " Why the countries to show are not known at this hour (a group whose membership is not recorded); none are shown then."]
+    pub chosen_missing: Option<String>,
     pub warnings: Vec<String>,
+}
+
+impl IntelCoverageReply {
+    fn empty(countries: Vec<Country>, scale: i64, read_hour: Option<i32>, missing: Option<String>, chosen_missing: Option<String>) -> Self {
+        Self { countries, networks: Vec::new(), displayed: Vec::new(), cells: Vec::new(), max_value: 0, scale, read_hour, missing, chosen_missing, warnings: Vec::new() }
+    }
 }
 
 dashboard_base::reply_warnings!(IntelCoverageReply);
@@ -244,11 +258,11 @@ impl AtHour for IntelNetworkCoverage {
     const KEY: &'static str = "intel-network-coverage";
     const TITLE: &'static str = "Intel network coverage";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = IntelCoverageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, touching, measure, basis];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, touching, measure, basis, group];
     type Reply = IntelCoverageReply;
-    type Context = ();
+    type Context = GroupsAt;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -268,6 +282,9 @@ impl AtHour for IntelNetworkCoverage {
         if let Some(countries) = &params.countries {
             countries.iter().try_for_each(validate_country)?;
         }
+        if params.group.is_some() && (params.top.is_some() || params.countries.as_ref().is_some_and(|list| !list.is_empty())) {
+            return Err("A matrix names a group, a top or countries, one of them");
+        }
         Ok(())
     }
 
@@ -276,7 +293,15 @@ impl AtHour for IntelNetworkCoverage {
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(())
+        Ok(GroupsAt::default())
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.context.valid_through(params.group.as_ref(), at.hour)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -289,40 +314,27 @@ impl AtHour for IntelNetworkCoverage {
         };
         let tags = match Tags::read(frame) {
             Ok(tags) => tags,
-            Err(error) => {
-                return Ok(IntelCoverageReply {
-                    countries: Vec::new(),
-                    networks: Vec::new(),
-                    displayed: Vec::new(),
-                    cells: Vec::new(),
-                    max_value: 0,
-                    scale,
-                    read_hour,
-                    missing: Some(error.to_string()),
-                    warnings: Vec::new(),
-                });
-            }
+            Err(error) => return Ok(IntelCoverageReply::empty(Vec::new(), scale, read_hour, Some(error.to_string()), None)),
         };
         let countries = tags.present();
-        let selected: Option<HashSet<String>> = params.countries.as_ref().filter(|list| !list.is_empty()).map(|list| {
-            list.iter().filter_map(|country| at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned))).collect()
-        });
+        let selected: Option<HashSet<String>> = match &params.group {
+            Some(group) => {
+                let members = at.context.members(group, at.hour)?;
+                if let Some(refused) = members.refused {
+                    return Ok(IntelCoverageReply::empty(countries, scale, read_hour, None, Some(refused)));
+                }
+                Some(members.tags.into_iter().collect())
+            }
+            None => params.countries.as_ref().filter(|list| !list.is_empty()).map(|list| {
+                list.iter().filter_map(|country| at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned))).collect()
+            }),
+        };
         Ok(match networks(frame, &tags, at.live) {
             Ok((networks, rows)) => {
                 let (displayed, cells, max_value, scale) = build_matrix(&countries, &rows, &tags, selected.as_ref(), params.top, params.touching == Some(true), measure, basis);
-                IntelCoverageReply { countries, networks, displayed, cells, max_value, scale, read_hour, missing: None, warnings: Vec::new() }
+                IntelCoverageReply { countries, networks, displayed, cells, max_value, scale, read_hour, missing: None, chosen_missing: None, warnings: Vec::new() }
             }
-            Err(error) => IntelCoverageReply {
-                countries,
-                networks: Vec::new(),
-                displayed: Vec::new(),
-                cells: Vec::new(),
-                max_value: 0,
-                scale,
-                read_hour,
-                missing: Some(error.to_string()),
-                warnings: Vec::new(),
-            },
+            Err(error) => IntelCoverageReply::empty(countries, scale, read_hour, Some(error.to_string()), None),
         })
     }
 }
@@ -383,6 +395,56 @@ mod tests {
         let (displayed, cells, _, _) = build_matrix(&countries, &rows, &tags, None, Some(2), false, IntelCoverageMeasure::Covered, IntelCoverageBasis::Controlled);
         assert_eq!(displayed.iter().filter_map(|c| c.tag.as_deref()).collect::<Vec<_>>(), vec!["AAA", "BBB"]);
         assert!(matches!(cells[1], IntelCoverageCell::Present { value: 4, .. }), "the second raw id's network is drawn, not shown as absent: {:?}", cells[1]);
+    }
+
+    #[test]
+    fn a_group_is_its_members_at_the_asked_hour_and_unknown_membership_shows_no_country() {
+        use dashboard_query::{identity::Holders, series::ranked::{GroupKind, GroupMembership}};
+        use dashboard_world::products::groups::{CountryGroupReply, MembershipRun, UnobservedHours};
+        use dashboard_base::span::HourSpan;
+        use std::sync::{Arc, atomic::AtomicBool};
+        let mut frame = DecodedFrame { branch: 1, hour: 500, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+            CountryRow { id: 1, canonical_slot: 1, tag: b"AAA".to_vec(), ..CountryRow::default() },
+            CountryRow { id: 2, canonical_slot: 2, tag: b"BBB".to_vec(), ..CountryRow::default() },
+            CountryRow { id: 3, canonical_slot: 3, tag: b"CCC".to_vec(), ..CountryRow::default() },
+        ]));
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow { id: 1, canonical_slot: 1 },
+            CountryLinkRow { id: 2, canonical_slot: 2 },
+            CountryLinkRow { id: 3, canonical_slot: 3 },
+        ]));
+        let network = |owner_country, target_country| IntelNetworkSummaryRow { owner_country, target_country, covered_controlled_states: 1, covered_core_states: 1, controlled_strength_sum: 0, core_strength_sum: 0, max_state_strength: 0, covered_worth: 0, ordinal: 0 };
+        *frame.tables[TableId::IntelNetworkSummaries.index()] = TableView::Complete(TableRows::IntelNetworkSummaries(vec![network(1, 2), network(2, 1)]));
+        let run = |tag: &str, first_hour, last_hour| MembershipRun { tag: tag.into(), first_hour, last_hour };
+        let reply = CountryGroupReply {
+            branch_id: "1".into(),
+            humans: vec![run("AAA", 0, 1000), run("BBB", 600, 1000)],
+            factions: Vec::new(),
+            wars: Vec::new(),
+            war_starts: Vec::new(),
+            capitulations: Vec::new(),
+            identity_changes: Vec::new(),
+            country_identities: Vec::new(),
+            unobserved: UnobservedHours { humans: vec![HourSpan { first_hour: 300, last_hour: 320 }], ..UnobservedHours::default() },
+            warnings: Vec::new(),
+        };
+        let groups = GroupsAt::new(Arc::new(reply), 0);
+        let holders = Holders::new(Default::default(), Vec::new());
+        let group = GroupSelection { kind: GroupKind::Humans, id: None, tag: None, membership: GroupMembership::Hour };
+        let params = IntelCoverageParams { branch_id: "1".into(), countries: None, top: None, touching: None, measure: None, basis: None, group: Some(group) };
+        let live = Cells::default();
+        let cancelled = AtomicBool::new(false);
+        let at = |hour: i32| At { owner: None, holders: &holders, hour, context: &groups, cancelled: &cancelled, live: &live };
+        let shown = |hour: i32| {
+            let reply = IntelNetworkCoverage::reply(&frame, &params, &at(hour)).unwrap();
+            (reply.displayed.iter().filter_map(|country| country.tag.clone()).collect::<Vec<_>>(), reply.chosen_missing)
+        };
+        assert_eq!(shown(500), (vec!["AAA".to_owned()], None), "a country joining at 600 is not shown at 500");
+        assert_eq!(shown(700), (vec!["AAA".to_owned(), "BBB".to_owned()], None));
+        let (none, refused) = shown(310);
+        assert!(none.is_empty() && refused.is_some(), "unknown membership is never a guess or a union");
+        assert_eq!(IntelNetworkCoverage::valid_through(&frame, &params, &at(500)), 599, "the reply holds only until the next member joins");
     }
 }
 

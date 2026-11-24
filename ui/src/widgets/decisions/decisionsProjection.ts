@@ -126,8 +126,11 @@ function decisionCostInfo(
 }
 
 function decisionTimerCell(at: DecisionAt): { readonly cell: TableCell; readonly nextChangeAt: number } {
-  if (at.status !== 'active' || !at.timer) {
+  if (at.status !== 'active') {
     return { cell: { value: notApplicable('No active timer'), blank: true }, nextChangeAt: Infinity };
+  }
+  if (!at.timer) {
+    return { cell: { value: notRecorded('Decision duration was not recorded'), missingFigure: 'Duration' }, nextChangeAt: Infinity };
   }
   const left = daysLeft(at);
   const totalDays = Math.max(1, at.timer.days);

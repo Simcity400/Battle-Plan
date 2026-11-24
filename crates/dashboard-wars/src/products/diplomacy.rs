@@ -6,8 +6,10 @@ use dashboard_query::{
     Query,
     identity::{Holder, Holders},
     read,
+    series::ranked::GroupSelection,
     timeline::{Join, Stretch},
 };
+use dashboard_world::products::group_members::GroupsAt;
 use replay_recording::columnar_frames::Recording;
 use replay_lanes::{lanes, points::Cell};
 use replay_columnar::manifest::Status;
@@ -73,6 +75,10 @@ pub struct DiplomaticRelationsParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub order: Option<OpinionOrder>,
+    #[doc = " A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries` and `top`."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -114,8 +120,8 @@ pub struct OpinionOwner {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomaticRelationsReply {
-    #[doc = " Why the asked top countries are not known: factories, which rank them, were not read whole, or a row names an unresolved country. No owners then."]
-    pub top_missing: Option<String>,
+    #[doc = " Why the countries to show are not known at this hour: factories, which rank a top, were not read whole or name an unresolved country, or a group's membership is not recorded. No owners then."]
+    pub chosen_missing: Option<String>,
     pub owners: Vec<OpinionOwner>,
     pub cells: Vec<OpinionMatrixCell>,
     pub domain: [i32; 2],
@@ -259,10 +265,30 @@ fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u
     Ok(ranked.into_iter().map(|(tag, _)| Country::from(tag)).collect())
 }
 
+fn chosen_at(frame: &DecodedFrame, params: &DiplomaticRelationsParams, holders: &Holders, hour: i32, groups: &GroupsAt) -> io::Result<Result<Vec<Country>, String>> {
+    if let Some(group) = &params.group {
+        let members = groups.members(group, hour)?;
+        return Ok(match members.refused {
+            Some(refused) => Err(refused),
+            None => Ok(members.tags.iter().map(|tag| Country::from(tag.as_str())).collect()),
+        });
+    }
+    Ok(match (params.countries.is_empty(), params.top) {
+        (true, Some(limit)) => top_countries_at(frame, holders, hour, limit),
+        (true, None) => Ok(Vec::new()),
+        (false, _) => Ok(params.countries.clone()),
+    })
+}
+
+fn ranks_top(params: &DiplomaticRelationsParams) -> bool {
+    params.group.is_none() && params.countries.is_empty() && params.top.is_some()
+}
+
 pub struct DiplomacyContext {
     looks: Option<Arc<dashboard_world::products::styles::BranchLooks>>,
     factions: Arc<Vec<dashboard_world::products::groups::FactionGroup>>,
     warnings: Vec<String>,
+    groups: GroupsAt,
 }
 
 impl AtHour for DiplomaticRelations {
@@ -271,7 +297,7 @@ impl AtHour for DiplomaticRelations {
     const CONTENT_DEPENDENT: bool = false;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads country appearance looks and faction name/membership runs from branch history context at at.hour");
     type Params = DiplomaticRelationsParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, order];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", top, order, group];
     type Reply = DiplomaticRelationsReply;
     type Context = DiplomacyContext;
 
@@ -284,12 +310,16 @@ impl AtHour for DiplomaticRelations {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        params.countries.iter().try_for_each(validate_country)
+        params.countries.iter().try_for_each(validate_country)?;
+        if params.group.is_some() && (params.top.is_some() || !params.countries.is_empty()) {
+            return Err("A matrix names a group, a top or countries, one of them");
+        }
+        Ok(())
     }
 
     fn tables(params: &Self::Params) -> Vec<TableId> {
         let mut out = vec![TableId::RelationOpinions, TableId::SliceReads, TableId::CountryLinks];
-        if params.countries.is_empty() && params.top.is_some() {
+        if ranks_top(params) {
             out.push(TableId::CountryFactories);
         }
         out
@@ -299,7 +329,7 @@ impl AtHour for DiplomaticRelations {
         match step {
             0 => {
                 let mut reads = vec![Read::all(TableId::CountryLinks)];
-                if params.countries.is_empty() && params.top.is_some() {
+                if ranks_top(params) {
                     reads.push(Read::all(TableId::CountryFactories));
                 }
                 return reads;
@@ -307,10 +337,9 @@ impl AtHour for DiplomaticRelations {
             1 => {}
             _ => return Vec::new(),
         }
-        let chosen: Vec<Country> = if params.countries.is_empty() {
-            params.top.map_or_else(Vec::new, |limit| top_countries_at(held, at.holders, at.hour, limit).unwrap_or_default())
-        } else {
-            params.countries.clone()
+        let chosen: Vec<Country> = match chosen_at(held, params, at.holders, at.hour, &at.context.groups) {
+            Ok(Ok(chosen)) => chosen,
+            Ok(Err(_)) | Err(_) => Vec::new(),
         };
         let mut ids: Vec<u32> = aliases(held, &named(&holder_ids(at.holders, &chosen, at.hour))).into_keys().collect();
         ids.sort_unstable();
@@ -324,33 +353,30 @@ impl AtHour for DiplomaticRelations {
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings: Vec::new() })
+        Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings: Vec::new(), groups: GroupsAt::default() })
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
         let mut warnings = Vec::new();
+        let groups = GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())?;
         let Some(branch) = params.branch_id.parse::<u64>().ok() else {
-            return Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings });
+            return Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings, groups });
         };
         let Ok(query) = dashboard_base::queries::query(source, branch) else {
-            return Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings });
+            return Ok(DiplomacyContext { looks: None, factions: Arc::new(Vec::new()), warnings, groups });
         };
         let looks = Some(Arc::new(dashboard_world::products::styles::BranchLooks::load(source, &query.timeline, load, &mut warnings)?));
         let factions = match dashboard_world::products::groups::shared(source, &query, load, &AtomicBool::new(false)) {
             Ok(reply) => Arc::new(reply.factions.clone()),
             Err(_) => Arc::new(Vec::new()),
         };
-        Ok(DiplomacyContext { looks, factions, warnings })
+        Ok(DiplomacyContext { looks, factions, warnings, groups })
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let (chosen, top_missing): (Vec<Country>, Option<String>) = match (params.countries.is_empty(), params.top) {
-            (true, Some(limit)) => match top_countries_at(frame, at.holders, at.hour, limit) {
-                Ok(chosen) => (chosen, None),
-                Err(why) => (Vec::new(), Some(why)),
-            },
-            (true, None) => (Vec::new(), None),
-            (false, _) => (params.countries.clone(), None),
+        let (chosen, chosen_missing): (Vec<Country>, Option<String>) = match chosen_at(frame, params, at.holders, at.hour, &at.context.groups)? {
+            Ok(chosen) => (chosen, None),
+            Err(why) => (Vec::new(), Some(why)),
         };
         let mut warnings = at.context.warnings.clone();
         let mut metadata: HashMap<String, (Option<String>, Option<String>, Option<[u8; 3]>, Option<String>, Option<String>)> = HashMap::new();
@@ -411,7 +437,7 @@ impl AtHour for DiplomaticRelations {
         if unresolved > 0 {
             warnings.push(format!("{unresolved} chosen countries have no holder at this hour; their opinions are not known."));
         }
-        Ok(DiplomaticRelationsReply { top_missing, owners, cells, domain, warnings })
+        Ok(DiplomaticRelationsReply { chosen_missing, owners, cells, domain, warnings })
     }
 }
 

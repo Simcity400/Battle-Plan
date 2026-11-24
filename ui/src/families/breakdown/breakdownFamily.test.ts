@@ -9,10 +9,11 @@ import type { IdentityProvider } from '../plan.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { resolvePlaybackProvenInterval } from '../broker.ts';
 import type { FamilyTheme } from '../contract.ts';
-import { assertFreshPaint, assertQuietFrames } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas } from '../laneRuntime.fixture.ts';
+import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { parseBreakdownHit } from './hostAdapter.ts';
-import { familyBreakdownLaneView } from './laneView.ts';
+import { breakdownLane } from './laneView.ts';
 import { hitTestBreakdown, layoutBreakdown, type PartsViewLayout, type RingViewLayout, type MosaicViewLayout } from './layout.ts';
 import { buildBreakdownTooltip, partColour, breakdownLevel, PATH, type BreakdownModel } from './model.ts';
 import { deriveBreakdownAudit, deriveBreakdownNavAndMirror } from './structure.ts';
@@ -205,8 +206,8 @@ test('political power spending reads the product at the displayed hour', () => {
   });
   const held = lane(reply(spent()));
   const surface = { width: 600, height: 300, dpr: 1 };
-  assertQuietFrames(() => familyBreakdownLaneView(() => {}), { label: 'spending', binding: held, hour: START + 10 }, 24, surface);
-  assertFreshPaint(() => familyBreakdownLaneView(() => {}), [
+  assertQuietFrames(() => createLaneView(breakdownLane, () => {}), { label: 'spending', binding: held, hour: START + 10 }, 24, surface);
+  assertFreshPaint(() => createLaneView(breakdownLane, () => {}), [
     { label: 'spent', binding: held, hour: START + 10, check: true },
     { label: 'later', binding: lane(reply(partlyKnown(), { hour: START + 20 })), hour: START + 20, speed: 24 },
     { label: 'seek back', binding: held, hour: START + 10, check: true },
@@ -392,6 +393,28 @@ test('a breakdown reply proves the stretch it stands through, so a quiet hundred
   let asks = 1;
   for (let hour = START + 11; hour <= START + 110; hour++) if (hour > proof[1]) asks++;
   assert.equal(asks, 1);
+});
+
+test('the art asked for is the flags the laid-out rows draw, found once per layout, never a collapsed child and never again for a hover', async () => {
+  const ready = (url: string) => ({ status: 'ready', assetId: url, url, origin: 'game', file: url, frame: { index: 0, count: 1, width: 18, height: 12 }, provenance: 'current' }) as never;
+  const flagged = model(spent());
+  const parts = flagged.parts.map(part => ({ ...part, flagArt: ready(`asset://${part.key}.png`), children: part.children?.map(child => ({ ...child, flagArt: ready(`asset://${child.key}.png`) })) }));
+  registerFamilyProjection({ kind: 'test-breakdown-art', family: 'breakdown', project: () => ({ ...flagged, parts }) });
+  const fetched: string[] = [];
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(breakdownLane, () => {}, { fetchBitmap: async url => { fetched.push(url); return { width: 18, height: 12, close() {} } as never; } }), recording.canvases, { width: 600, height: 300, dpr: 1 });
+    const binding = { family: 'breakdown', kind: 'test-breakdown-art', options: { view: 'parts', namesInRing: true, digits: 0 }, sources: {}, scrollTop: 0, theme: THEME, width: 600, height: 300, expanded: { Decisions: false } };
+    lane.paint({ label: 'closed', binding, hour: START + 10 });
+    for (let i = 0; i < 8; i++) await null;
+    assert.ok(fetched.length > 0 && fetched.every(url => !url.includes('Plan')), `a collapsed part's children are not asked for: ${fetched.join(', ')}`);
+    const asked = fetched.length;
+    lane.paint({ label: 'hovered', binding, hour: START + 10, inspect: 'row:Decisions' });
+    for (let i = 0; i < 8; i++) await null;
+    assert.equal(fetched.length, asked, 'a hover asks for nothing more');
+  } finally {
+    recording.restore();
+  }
 });
 
 test('a name the recording does not hold is the key with its reason, never passed off as a name', () => {
