@@ -1224,7 +1224,13 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         color: CHART_MEASURE_COLOURS.bopRight,
         role: 'primary',
         step: true,
-        points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.4 }],
+        points: [{ hour: H1936, value: 0.2 }, { hour: H1936 + 200, value: 0.9 }],
+        endLabel: {
+          icon: { art: readyArt('bop'), label: 'Balance of power' },
+          name: 'Very Long Consolidated Power Range Name',
+          shortName: 'Very Long Consolidated Power Range Name',
+          value: '0.36',
+        },
       }],
       overlays: [
         { position: 'top-right', text: 'Benito Mussolini', arrow: 'right', color: CHART_MEASURE_COLOURS.bopRight },
@@ -1233,8 +1239,19 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     };
     const { ctx, ops } = mockCanvas(960, 160);
     const layout = layoutTimeChart(withOverlays, 960, 160, FONT, measure);
-    drawTimeChart(ctx, withOverlays, layout, undefined, null, 1);
-    assert.ok(ops.includes('text:Benito Mussolini'), 'top-right overlay renders on wide 160px plot');
+    drawTimeChart(ctx, withOverlays, layout, LANE_THEME, null, 1);
+    const overlayTextIdx = ops.indexOf('text:Benito Mussolini');
+    const plateIdx = ops.lastIndexOf('roundRect', overlayTextIdx);
+    assert.ok(overlayTextIdx > 0, 'top-right overlay renders on wide 160px plot');
+    assert.ok(plateIdx > 0 && plateIdx < overlayTextIdx, 'side overlay paints a surface plate behind the label so the line stays clear');
     assert.ok(ops.includes('text:Grand Council of Fascism'), 'bottom-right overlay renders on wide 160px plot');
+    assert.ok(layout.endLabels[0]?.name?.endsWith('…'), 'long end-label name truncates to fit the right gutter');
+    assert.equal(layout.endLabels[0]?.value, '0.36');
+
+    const narrowLayout = layoutTimeChart(withOverlays, 320, 160, FONT, measure);
+    const narrowLabel = narrowLayout.endLabels[0]!;
+    assert.equal(narrowLabel.value, '0.36', 'value never truncates before the name');
+    assert.ok(narrowLabel.name === null || narrowLabel.name.endsWith('…'), 'narrow end-label truncates or drops name before clipping value');
+    assert.ok(narrowLabel.x + narrowLabel.width <= 320, 'fitted end-label stays inside the chart width');
   });
 });
