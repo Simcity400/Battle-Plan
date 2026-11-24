@@ -36,7 +36,6 @@ export const timelineHostAdapter: FamilyHostAdapter<TimelineModel, unknown, Fami
     return extent ? { height: extent.height } : null;
   },
   getRowStride: () => DEFAULT_STRIDE,
-  getRowRange: (fields, key) => extentOf(fields)?.rows[key] ?? null,
   deriveAuditRows: model => deriveTimelineAudit(model),
   auditOrdered: true,
   buildBinding: ctx => (ctx.theme ? {

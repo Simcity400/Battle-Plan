@@ -21,8 +21,8 @@ function artworkRequest(tag: string): [string, (number | null)[]] {
 }
 
 const SPEC: FactSpec<ImageFact> = {
-  product: 'technology-artwork', perRequest: 8,
-  requestOrder: 'wanted',
+  product: 'technology-artwork', perRequest: 64,
+  requestOrder: 'wanted', shared: true,
   params: (_branch, _hour, tags): TechnologyArtworkParams => {
     const requests = tags.map(artworkRequest);
     const tokens = requests.map(([token]) => token);

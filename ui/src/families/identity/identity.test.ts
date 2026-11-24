@@ -63,6 +63,7 @@ function sampleFacts(): CountryFactsReply {
 function sampleIdentities(): CountryIdentitiesReply {
   return {
     branchId: '1',
+    known: [{ firstHour: 0, lastHour: 500 }],
     countries: [
       {
         tag: 'GER',
@@ -382,7 +383,7 @@ test('1,500 countries use one facts request, batched flags, zero requests advanc
 
   const transport: IdentityTransport = {
     loadFacts: async () => { factsCalls++; return factsReply; },
-    loadIdentities: async () => ({ branchId: '1', countries: [], unknown: [], warnings: [] }),
+    loadIdentities: async () => ({ branchId: '1', known: [], countries: [], unknown: [], warnings: [] }),
     loadGroups: async () => sampleGroups(),
     loadStyles: (_scope, _hour, _tags, signal) => new Promise((_res, rej) => {
       signal.addEventListener('abort', () => { abortedStyles++; rej(new DOMException('Aborted', 'AbortError')); }, { once: true });
@@ -536,4 +537,46 @@ test('useIdentityAtHead does not subscribe to the frame clock or churn snapshots
   assert.equal(h3, 150, 'crossing the run boundary advances the hour');
   unsubActive();
   broker.dispose();
+});
+
+test('coalesced sparse identity runs stay missing on unrecorded gaps outside known spans', () => {
+  const index = new IdentityIndex(SCOPE, [0, 40]);
+  index.setFacts({ ...sampleFacts(), known: [[10, 10], [30, 30]] }, true);
+  index.setIdentities({
+    branchId: '1',
+    known: [{ firstHour: 10, lastHour: 10 }, { firstHour: 30, lastHour: 30 }],
+    countries: [
+      {
+        tag: 'GER',
+        identities: [{ firstHour: 10, lastHour: 30, slot: 1, countryId: 10 }],
+        unresolved: [],
+      },
+    ],
+    unknown: [],
+    warnings: [],
+  });
+
+  const at10 = index.resolve(countrySlotKey(1), 10);
+  assert.equal(at10.kind, 'known');
+  assert.deepEqual(at10.tag, { kind: 'known', value: 'GER' });
+  assert.deepEqual(at10.valid, [10, 10]);
+  assert.equal(at10.nextBoundary, 11);
+
+  const gap20 = index.resolve(countrySlotKey(1), 20);
+  assert.equal(gap20.kind, 'known');
+  assert.equal(gap20.holder.kind, 'missing');
+  assert.equal(gap20.tag.kind, 'missing');
+  assert.deepEqual(gap20.valid, [11, 29]);
+  assert.equal(gap20.nextBoundary, 30);
+  assert.equal(index.slotHolderAt(1, 20), null);
+
+  const byTagGap = index.resolve(countryTagKey('GER'), 20);
+  assert.equal(byTagGap.kind, 'known');
+  assert.equal(byTagGap.holder.kind, 'missing');
+  assert.deepEqual(byTagGap.valid, [11, 29]);
+
+  const at30 = index.resolve(countrySlotKey(1), 30);
+  assert.equal(at30.kind, 'known');
+  assert.deepEqual(at30.tag, { kind: 'known', value: 'GER' });
+  assert.deepEqual(at30.valid, [30, 30]);
 });

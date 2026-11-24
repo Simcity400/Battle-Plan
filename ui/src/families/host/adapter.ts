@@ -141,6 +141,7 @@ export interface FamilyMetaState {
 
 export interface FamilyBindingContext<TOptions> {
   readonly kind: string;
+  readonly view: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -160,6 +161,10 @@ export interface FamilyBindingContext<TOptions> {
   readonly audit: boolean;
   readonly auditId: number | undefined;
   readonly pauseFlush: number;
+}
+
+export interface FamilyAuditContext {
+  readonly viewport: FamilyViewportState;
 }
 
 export interface FamilyContextHit {
@@ -203,12 +208,11 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly resolveHitAction?: (hit: ParsedFamilyHit, installed: InstalledPicture, fields: Readonly<Record<string, unknown>>) => InstalledAction | null;
   readonly getScrollExtent?: (fields: Readonly<Record<string, unknown>>) => FamilyScrollExtent | null;
   readonly getRowStride?: (fields: Readonly<Record<string, unknown>>) => number;
-  readonly getRowRange?: (fields: Readonly<Record<string, unknown>>, key: string) => readonly [top: number, height: number] | null;
   readonly getPageStep?: (fields: Readonly<Record<string, unknown>>, viewport: FamilyViewportState) => number;
   readonly getGridMetrics?: (fields: Readonly<Record<string, unknown>>) => FamilyGridMetrics | null;
   readonly parseGridKey?: (key: string | null) => { readonly row: number; readonly column: number } | null;
   readonly formatGridKey?: (row: number, column: number) => string;
-  readonly deriveAuditRows?: (model: TModel, hour: number) => readonly AuditRow[];
+  readonly deriveAuditRows?: (model: TModel, hour: number, context: FamilyAuditContext) => readonly AuditRow[];
   readonly auditOrdered?: boolean;
   readonly gestures?: FamilyGestureHandlers;
 }

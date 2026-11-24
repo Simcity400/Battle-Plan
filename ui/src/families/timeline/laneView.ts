@@ -39,7 +39,6 @@ export interface FamilyTimelineBinding<TOptions = unknown> {
 
 export interface TimelineExtentField {
   readonly height: number;
-  readonly rows: Readonly<Record<string, readonly [number, number]>>;
 }
 
 export function isFamilyTimelineBinding(value: unknown): value is FamilyTimelineBinding {
@@ -102,7 +101,7 @@ function navOf(layout: TimelineLayout): FamilyNavTuple[] {
   for (const placed of layout.lanes) {
     const lane = placed.lane;
     const tree = lane.expandable ? (layout.lanes[placed.ordinal + 1]?.lane.parentKey === lane.key ? 1 : 0) : -1;
-    nav.push([lane.key, lane.label, nav.length, tree, lane.parentKey ?? '', lane.meta ?? null]);
+    nav.push([lane.key, lane.label, nav.length, tree, lane.parentKey ?? '', lane.meta ?? null, placed.y, placed.height]);
   }
   return nav;
 }
@@ -333,9 +332,7 @@ export function familyTimelineLaneView(wake: (widget: number) => void, laneOptio
           notes: model.notes ?? [],
           warnings: model.warnings,
         };
-        const rows: Record<string, readonly [number, number]> = {};
-        for (const placed of layout.lanes) rows[placed.lane.key] = [placed.y, placed.height];
-        const extent: TimelineExtentField = { height: layout.contentHeight + AXIS_HEIGHT, rows };
+        const extent: TimelineExtentField = { height: layout.contentHeight + AXIS_HEIGHT };
         const nav = navOf(layout);
         const mirror = mirrorOf(layout);
         held.structureFields = {

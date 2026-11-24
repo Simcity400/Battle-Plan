@@ -8,6 +8,7 @@ import {
   compareValueRows,
   compareValues,
   knownValue,
+  textValue,
   notApplicable,
   notRecorded,
   partialValue,
@@ -329,3 +330,9 @@ test('missing-value vocabulary, compact K/M formatting, and N / max preserve exa
   assert.equal(missingVal.missingReason, 'Count missing');
 });
 
+
+test('text from a product that is blank or absent is not recorded, with the reason', () => {
+  assert.deepEqual(textValue('  ', 'Name not localised'), notRecorded('Name not localised'));
+  assert.deepEqual(textValue(null, 'Name not localised'), notRecorded('Name not localised'));
+  assert.deepEqual(textValue('Brest', 'Name not localised'), knownValue('Brest'));
+});
