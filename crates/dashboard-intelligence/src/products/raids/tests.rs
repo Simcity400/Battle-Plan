@@ -523,6 +523,42 @@ impl Seen {
     }
 }
 
+fn malformed(reply: &super::RaidLogReply) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in &reply.episodes {
+        let mut bad = |rule: &str| out.push(format!("{}: {rule}", e.id));
+        let increasing = |hours: Vec<i32>| hours.windows(2).all(|pair| pair[0] < pair[1]);
+        if e.first_hour > e.last_hour {
+            bad("first hour after the last");
+        }
+        if e.victim.is_none() == e.victim_missing.is_none() || (e.victim.is_none() && e.victim_source.is_some()) {
+            bad("victim");
+        }
+        if e.victims.is_empty() || !increasing(e.victims.iter().map(|v| v.hour).collect()) || e.victims.iter().any(|v| v.tag.is_none() == v.missing.is_none() || (v.tag.is_none() && v.source.is_some())) {
+            bad("victim witnesses");
+        }
+        if !increasing(e.ends.iter().map(|end| end.hour).collect()) {
+            bad("end witnesses not strictly increasing");
+        }
+        if e.runs.iter().any(|run| run.first_hour > run.last_hour) || e.runs.windows(2).any(|pair| pair[0].last_hour >= pair[1].first_hour) {
+            bad("runs");
+        }
+        if e.preparation.iter().any(|run| run.0 > run.1) || e.preparation.windows(2).any(|pair| pair[0].1 >= pair[1].0) {
+            bad("preparation");
+        }
+        if (e.launched_hour.is_some() && !e.launched) || (e.launched_exact && e.launched_hour.is_none()) {
+            bad("launch");
+        }
+        if e.disappeared_exact && e.disappeared_hour.is_none() {
+            bad("disappearance");
+        }
+        if e.succeeded_hour.is_some() && e.ends.is_empty() {
+            bad("a success without an end");
+        }
+    }
+    out
+}
+
 #[test]
 fn every_raid_episode_case_gives_the_full_reply_cut_at_each_hour_as_the_reply_through_that_hour() {
     use RaidVictimSource::{CompletionCountry as DONE, ControllerAtFirstEndedRead as ENDED, ControllerAtObservedRead as SEEN};
@@ -662,7 +698,9 @@ fn every_raid_episode_case_gives_the_full_reply_cut_at_each_hour_as_the_reply_th
         }
         let hours: Vec<i32> = stretches.iter().flatten().map(|at| at.hour).collect();
         for &to in &hours {
-            let actual = load_product(&segments, "1", None, Some(to)).episodes;
+            let through = load_product(&segments, "1", None, Some(to));
+            failed.extend(malformed(&through).into_iter().map(|fault| format!("{name}: the reply through {to} is malformed: {fault}")));
+            let actual = through.episodes;
             let expected: Vec<RaidEpisode> = full.episodes.iter().filter_map(|episode| episode_at(episode, to)).collect();
             if actual != expected {
                 failed.push(format!("{name}: the reply through {to} is not the full reply at {to}\n  got  {actual:?}\n  want {expected:?}"));
@@ -670,7 +708,9 @@ fn every_raid_episode_case_gives_the_full_reply_cut_at_each_hour_as_the_reply_th
         }
         let clip = |e: &RaidEpisode| (e.id.clone(), e.raider_slot, e.succeeded_hour, e.ends.last().and_then(|end| end.raider.clone()), e.victims.last().and_then(|v| v.tag.clone()));
         for &from in &hours {
-            let got: Vec<_> = load_product(&segments, "1", Some(from), None).episodes.iter().map(clip).collect();
+            let ranged = load_product(&segments, "1", Some(from), None);
+            failed.extend(malformed(&ranged).into_iter().map(|fault| format!("{name}: the reply from {from} is malformed: {fault}")));
+            let got: Vec<_> = ranged.episodes.iter().map(clip).collect();
             let expected: Vec<_> = full.episodes.iter().filter(|e| e.last_hour >= from).map(clip).collect();
             if got != expected {
                 failed.push(format!("{name}: the reply from {from} is not the full reply clipped there\n  got  {got:?}\n  want {expected:?}"));

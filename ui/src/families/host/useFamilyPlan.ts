@@ -8,8 +8,8 @@ import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
-import { resolveWindow, type WidgetSpec } from '../../dashboard/model';
-import { resolveOptions, type OptionField, type OptionValue } from '../../dashboard/options';
+import { resolveWindow, type WidgetBase } from '../../dashboard/model';
+import type { OptionValue } from '../../dashboard/options';
 import { prepareGate, preparing } from '../../dashboard/prepare.ts';
 import { loadProduct, peekProduct, productKey, useProduct } from '../../dashboard/products';
 import { asFailure, type Failure } from '../../dashboard/queryError.ts';
@@ -85,6 +85,7 @@ import {
   effectiveCountryUnobserved,
   extractFactionData,
   freezeGate,
+  planOwner,
   selectionUnobservedReason,
   trackGate,
   type FrozenGate,
@@ -163,12 +164,12 @@ export interface UseFamilyPlanInput<TAux, TExtra> {
   readonly subject: string;
   readonly emptyCampaign: string;
   readonly icon?: IconName;
-  readonly optionFields?: readonly OptionField[];
+  readonly options: Readonly<Record<string, OptionValue>>;
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
   readonly captureExtra?: (ctx: FamilyPlanContext<TAux>, countryLooks: CountryLooksMap | undefined) => TExtra;
-  readonly widget: WidgetSpec;
+  readonly widget: WidgetBase;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
   readonly hoverHour?: number | null;
@@ -225,7 +226,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     kind,
     subject,
     emptyCampaign,
-    optionFields,
+    options,
     countries: policy,
     aux: auxSpec,
     sources: buildSources,
@@ -272,10 +273,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
-  const options = useMemo(
-    () => resolveOptions(optionFields ?? [], widget.options),
-    [optionFields, widget.options],
-  );
   const isSingle = policy.mode === 'single';
   const isFilter = policy.mode === 'filter';
   const isMulti = policy.mode === 'multi';
@@ -285,7 +282,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     widget,
     SPEC,
     active,
-    isSingle ? { country: { stored: widget.options?.country, setOption } } : undefined,
+    isSingle ? { country: { stored: options.country, setOption } } : undefined,
   );
   const coverage = useRegionCoverage(runtime, useRegion(widget));
 
@@ -572,16 +569,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
-    () => JSON.stringify([
-      kind,
-      track?.source.id ?? '',
-      track?.source.revision ?? '',
-      track?.branch.id ?? '',
-      track?.axisOffset ?? 0,
-      widget.time,
-      isSingle ? countryTag : widget.countries,
-    ]),
-    [kind, track?.source.id, track?.source.revision, track?.branch.id, track?.axisOffset, widget.time, isSingle, countryTag, widget.countries],
+    () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),
+    [kind, track, widget.time, isSingle, countryTag, widget.countries],
   );
 
   const ctx = useMemo<FamilyPlanContext<TAux> | null>(() => {

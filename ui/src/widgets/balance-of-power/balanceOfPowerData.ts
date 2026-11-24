@@ -3,7 +3,7 @@ import type { BalanceHistory, CountryRef, BalanceRange, BalanceRecord, BalanceSi
 import type { PoliticsStateAt } from '../../dashboard/politicsHistory';
 import type { Span } from '../../charts/series';
 import { runAt } from '../../charts/series.ts';
-import { formatFixed, formatSigned } from '../../charts/valueAxis.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import { object, opaqueTag } from '../../dashboard/validation.ts';
 import { fixed5Text, integerText, isHolderTags, isPoliticsRuns, readAt, tagAt, validatePoliticsHistory, valueAt } from '../../dashboard/politicsHistory.ts';
 
@@ -92,9 +92,12 @@ export function sideName(balance: Pick<BalanceHistory, 'left' | 'right'>, side: 
   return names[side] ?? [balance.left, balance.right].find(item => item?.token === side)?.name ?? null;
 }
 
-export const valueText = (raw: string | bigint) => formatFixed(raw, BALANCE_SCALE, 2);
-export const exactValue = (raw: string | bigint) => formatSigned(raw, BALANCE_SCALE, BALANCE_SCALE);
-export const changeText = (raw: string | bigint) => formatSigned(raw, BALANCE_SCALE, BALANCE_SCALE);
+export const valueText = (raw: string | bigint) =>
+  formatScalar(typeof raw === 'bigint' ? raw : BigInt(raw), { decimals: BALANCE_SCALE, maxDecimals: 2, fixedDecimals: true });
+export const exactValue = (raw: string | bigint) =>
+  formatScalar(typeof raw === 'bigint' ? raw : BigInt(raw), { decimals: BALANCE_SCALE, maxDecimals: BALANCE_SCALE, signed: true });
+export const changeText = (raw: string | bigint) =>
+  formatScalar(typeof raw === 'bigint' ? raw : BigInt(raw), { decimals: BALANCE_SCALE, maxDecimals: BALANCE_SCALE, signed: true });
 export const plotValue = (raw: string | bigint) => Number(typeof raw === 'bigint' ? raw : BigInt(raw)) / UNIT;
 
 export function balanceAxis(balance: Pick<BalanceHistory, 'ranges'> | null): { min: number; max: number; ticks: number[] | undefined } {

@@ -906,16 +906,12 @@ fn episodes(
         let mut ends: Vec<RaidEndAt> = Vec::new();
         for end in &acc.ends {
             let raider = raider_at(end.ended);
-            let mut at = if end.native {
+            let at = if end.native {
                 RaidEndAt { hour: end.hour, ended_hour: end.ended, exact: true, source: RaidEndedSource::NativeEndDate, raider }
             } else {
                 RaidEndAt { hour: end.hour, ended_hour: end.ended, exact: exact_at(end.ended, end.stretch, acc.raw_first, unclipped_first_exact, &acc.runs, &complete_by_stretch), source: RaidEndedSource::ObservedEndedRead, raider }
             };
-            if at.hour < from {
-                at.hour = from;
-                if !end.native {
-                    (at.ended_hour, at.exact) = (from, false);
-                }
+            if at.hour <= from {
                 ends.clear();
             }
             ends.push(at);

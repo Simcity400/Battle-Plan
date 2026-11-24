@@ -1,4 +1,4 @@
-import type { WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 import { useAirChoices } from '../../dashboard/useAirSuperiority';
 import AirSuperiorityRegionWidget from './AirSuperiorityRegionWidget';
-export default { render: AirSuperiorityRegionWidget, useOptionChoices: useAirChoices } satisfies WidgetRenderer;
+export default { render: AirSuperiorityRegionWidget, useOptionChoices: useAirChoices } satisfies FamilyViewRenderer;

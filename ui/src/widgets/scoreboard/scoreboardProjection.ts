@@ -193,6 +193,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
   nextChange(readView, options) {
     const hour = readView.hour;
     return Math.min(
+      nextLookChange(options.looks, hour),
       nextHoldersChange(options.holders, hour),
       nextRangesChange(options.unobserved, hour),
       nextMembershipChange(options.membership, hour),

@@ -60,7 +60,7 @@ import type {
   SourceEntry,
   SourcePlan,
 } from './plan.ts';
-import type { FrozenGate } from './sources.ts';
+import { planOwner, type FrozenGate } from './sources.ts';
 import { TailWindowController, type DatedLogRow, type TableRowSource } from './table/rowSource.ts';
 import { knownValue } from './value.ts';
 
@@ -621,6 +621,27 @@ function makeEntry(overrides: Partial<Entry<FakeBmp>> & { widget: number; id: nu
     ...overrides,
   };
 }
+
+test("R5-S1: a widget on the selected country is owned by the country it resolves to, so a paused switch from A to B never keeps A's picture", () => {
+  const branch = { id: 'b', firstHour: 0, lastHour: 500 };
+  const on = (selectedSlot: number) => ({ id: 'main', axisOffset: 0, selectedSlot, source: { id: 's', revision: 'r', metadata: {} }, branch }) as unknown as BoundTrack;
+  const time = { mode: 'follow' } as WidgetSpec['time'];
+  const selected = planOwner('factions', on(3), time, { kind: 'selected' }, undefined);
+  assert.equal(planOwner('factions', on(3), time, { kind: 'selected' }, undefined), selected, 'the same country keeps its owner');
+  const switched = planOwner('factions', on(7), time, { kind: 'selected' }, undefined);
+  assert.notEqual(switched, selected, 'a branch-wide request with the selection unchanged still changes owner when the selected country does');
+  assert.equal(planOwner('factions', on(3), time, { kind: 'tags', tags: ['GER'] }, undefined), planOwner('factions', on(7), time, { kind: 'tags', tags: ['GER'] }, undefined), 'named countries do not follow the dashboard country');
+
+  const page = new Page<FakeBmp>({ lanes: 1 });
+  page.mount(1, { route: 1, lane: 0, owner: selected, surfaces: [makeSurface()] });
+  page.publish(100, { playing: false, seek: 1 });
+  page.offer({ lane: 0, serial: 1, entries: [makeEntry({ widget: 1, id: 1, binding: 1, owner: selected, gen: { seek: 1, reset: 0 } })] });
+  page.frame();
+  assert.equal(page.view(1).installedOwner, selected);
+  page.rebind(1, { owner: switched });
+  assert.equal(page.view(1).mode, 'reading', "B shows loading, not A's picture");
+  assert.equal(page.view(1).installedOwner, undefined);
+});
 
 test('seeking through a gap and returning to the same hour with a new owner clears installed state and inspection, and rejects late entries from the old owner', () => {
   const posted: { readonly inspect?: readonly (readonly [number, string])[] }[] = [];

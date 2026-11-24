@@ -1,4 +1,4 @@
 import StabilityWidget from './StabilityWidget';
-import type { WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 
-export default { render: StabilityWidget } satisfies WidgetRenderer;
+export default { render: StabilityWidget } satisfies FamilyViewRenderer;

@@ -1,19 +1,19 @@
-import type { ComponentType } from 'react';
+import { useMemo, type ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
 import DefaultCountryChip from '../dashboard/CountryChip';
-import type { FamilyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
+import type { FamilyViewProps, FamilyWidgetDeclaration, WidgetProps, WidgetRenderer } from '../dashboard/definitions';
 import { familyHost } from '../families/host/registry';
 import type { FamilyViewModule } from '../families/manifest';
 import type { WidgetSpec } from '../dashboard/model';
-import { resolveWidgetActiveView } from './manifest';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
+import { viewSlotProps } from './viewProps.ts';
 
 type Slot = 'render' | 'countryChip' | 'subjectMenu';
 const nothing = () => null;
-const declaredRenderers = new WeakMap<object, Map<string, ComponentType<WidgetProps>>>();
+const declaredRenderers = new WeakMap<object, Map<string, ComponentType<FamilyViewProps>>>();
 
-function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: string): ComponentType<WidgetProps> {
+function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: string): ComponentType<FamilyViewProps> {
   let byView = declaredRenderers.get(declaration);
   if (!byView) declaredRenderers.set(declaration, byView = new Map());
   let held = byView.get(view);
@@ -25,7 +25,7 @@ function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: stri
       projection: declaration.projection,
       declaration,
     };
-    held = (props: WidgetProps) => {
+    held = (props: FamilyViewProps) => {
       const Host = familyHost(spec.family);
       return Host ? <Host spec={spec} {...props} /> : <WidgetState kind="unavailable" message={`Family host unavailable: ${spec.family}`} />;
     };
@@ -77,8 +77,9 @@ export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer
       return held;
     };
     const ViewSlot = (props: { readonly widget?: WidgetSpec }) => {
-      const Slot = forView(resolveWidgetActiveView(kind, props.widget?.options));
-      return <Slot {...props} />;
+      const handed = useMemo(() => viewSlotProps(kind, props), [props]);
+      const Slot = forView(handed.view);
+      return <Slot {...handed} />;
     };
     Object.assign(renderer, { [slot]: ViewSlot });
   }

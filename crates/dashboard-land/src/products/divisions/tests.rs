@@ -74,7 +74,7 @@ fn a_medal_s_picture_is_its_definition_s_sprite_at_its_authored_frame() {
 #[test]
 fn decorated_divisions_answer_the_first_in_order_with_unread_measures_last_and_ties_by_the_other_measures() {
     use super::careers::{DecoratedRank, Measures, first_in_order};
-    let division = |id: u64, medals: Option<i32>, experience: Option<i64>, casualties_taken: Option<i32>| Measures { id, medals, experience, casualties_taken };
+    let division = |id: u64, medals: Option<i32>, experience: Option<i64>, casualties_taken: Option<i32>| Measures { id, medals, experience, casualties_taken, name: None };
     let world = vec![
         division(1, Some(0), Some(10), Some(5)),
         division(2, None, Some(90), Some(900)),
@@ -87,7 +87,11 @@ fn decorated_divisions_answer_the_first_in_order_with_unread_measures_last_and_t
     assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::Medals, true, 10)), [5, 3, 4, 1, 6, 2], "ties fall to experience, then casualties taken, then id; an unread medal total is last");
     assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::Medals, true, 3)), [5, 3, 4], "only the first of the order is answered");
     assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::Medals, false, 3)), [4, 1, 6], "ascending keeps the unread last too");
-    assert_eq!(ids(first_in_order(world, DecoratedRank::CasualtiesTaken, true, 2)), [2, 5]);
+    assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::CasualtiesTaken, true, 2)), [2, 5]);
+    let named = |at: usize, name: Option<&str>| Measures { name: name.map(super::careers::name_key), ..world[at].clone() };
+    let by_name = vec![named(0, Some("bravo")), named(1, None), named(2, Some("Alpha")), named(3, Some("Bravo")), named(4, Some("Échelon"))];
+    assert_eq!(ids(first_in_order(by_name.clone(), DecoratedRank::DivisionName, false, 10)), [3, 4, 1, 5, 2], "names fold case first; a division without a name follows the named ones");
+    assert_eq!(ids(first_in_order(by_name, DecoratedRank::CountryName, true, 10)), [5, 1, 4, 3, 2], "descending keeps the unnamed last too");
 }
 
 #[test]
@@ -109,4 +113,47 @@ fn decorated_divisions_hold_until_the_country_filter_next_changes() {
     assert_eq!(filter_valid_through(Some(&spans), 250), 299);
     assert_eq!(filter_valid_through(Some(&spans), 399), 399, "and leaves again after 399");
     assert_eq!(filter_valid_through(Some(&spans), 400), i32::MAX);
+}
+
+#[test]
+fn a_quiet_hour_of_decorated_divisions_visits_no_row_while_a_division_moves_and_tokens_stay_unread() {
+    use super::careers::{DecoratedDivisions, DecoratedDivisionsParams, DecoratedRank};
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, at_hour::exact_panel}, test_fixtures::{CAMPAIGN, played, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{DivisionHistoryRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow, DivisionStatusRow, TableId, TableRows};
+    use replay_frame::frame::{DecodedFrame, TableView};
+    use std::sync::{Arc, atomic::AtomicBool};
+    const FIRST: i32 = 1_000;
+    const LAST: i32 = 1_020;
+    const VETERAN: i32 = 1_015;
+    let ids = [1u64, 2, 3];
+    let frame = |hour: i32| -> DecodedFrame {
+        let mut frame = source(1, hour, Some(1));
+        let experience = |id: u64| if id == 1 && hour >= VETERAN { 300 } else { 30 * id as i64 };
+        let divisions = ids.iter().map(|&id| DivisionRow { id, roster_owner: 9001, logical_owner: 9001, template: 1, province: if id == 1 { 100 + hour as u32 } else { 7 }, ..Default::default() }).collect();
+        let status = ids.iter().map(|&id| DivisionStatusRow { division: id, entrenchment: i64::from(hour), experience: Recorded::Value(Some(experience(id))), career_counter: Recorded::Value(Some(10)), ..Default::default() }).collect();
+        let inputs = ids.iter().map(|&id| DivisionLandInputsRow { division: id, manpower: vec![DivisionManpowerContributor { country: 9001, amount: 10 }], ..Default::default() }).collect();
+        let history = ids.iter().map(|&id| DivisionHistoryRow { division: id, list: DivisionHistoryRow::SUMMARY, available: 1, amount: 1, ..Default::default() }.into()).collect();
+        *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(divisions));
+        *frame.tables[TableId::DivisionStatus.index()] = TableView::Complete(TableRows::DivisionStatus(status));
+        *frame.tables[TableId::DivisionLandInputs.index()] = TableView::Complete(TableRows::DivisionLandInputs(inputs));
+        *frame.tables[TableId::DivisionHistory.index()] = TableView::Complete(TableRows::DivisionHistory(history));
+        frame
+    };
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(SourceKey { source_id: "decorated-quiet".into(), revision: "1".into() }, "decorated.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let asked = serde_json::to_value(DecoratedDivisionsParams { branch_id: "1".into(), countries: None, by: DecoratedRank::Experience, descending: true, count: 2 }).unwrap();
+    let panel = exact_panel::<DecoratedDivisions>(&source, &LoadContext { content: None }, &asked).unwrap();
+    let reads = played(&source.replay(), panel.exact().unwrap(), FIRST, LAST);
+    assert!(reads.len() >= 15 && reads.iter().all(|read| !read.pending));
+    let ranked = |value: &Arc<dashboard_follow::panel::PanelData>| -> Vec<String> {
+        value.as_ref().as_ref().unwrap()["divisions"].as_array().unwrap().iter().map(|row| row["division"].as_str().unwrap().to_owned()).collect()
+    };
+    let at = |hour: i32| reads.iter().position(|read| read.hour == hour).unwrap();
+    assert_eq!(ranked(&reads[1].value), ["3", "2"], "the two most experienced, from the populated recording");
+    assert_eq!(ranked(&reads[at(VETERAN)].value), ["1", "3"], "a ranked measure that changes is ranked again");
+    for (place, read) in reads.iter().enumerate().skip(2).filter(|(_, read)| read.hour != VETERAN) {
+        assert_eq!((read.rows, read.visited), (0, 0), "hour {}: a move and a dug-in change are not ranked or shown, and unread tokens stay unread", read.hour);
+        assert!(Arc::ptr_eq(&read.value, &reads[place - 1].value), "hour {} keeps the held reply", read.hour);
+    }
 }
