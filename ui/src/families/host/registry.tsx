@@ -1,21 +1,38 @@
 import type { ComponentType } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
-import type { AnyBarsWidgetDeclaration } from '../bars/declaration.ts';
-import DeclaredBarsWidget from '../bars/DeclaredBarsWidget';
+import { barsHostAdapter } from '../bars/hostAdapter.ts';
+import { heatLanesHostAdapter, heatMatrixHostAdapter } from '../heat/hostAdapter.ts';
 import type { FamilyViewModule } from '../manifest.ts';
 import type { FamilyId } from '../plan.ts';
 import DeclaredTableWidget from '../table/DeclaredTableWidget';
 import type { AnyTableWidgetDeclaration } from '../table/declaration.ts';
-import type { TimeChartWidgetDeclaration } from '../time-chart/declaration.ts';
-import DeclaredTimeChartWidget from '../time-chart/DeclaredTimeChartWidget';
-import type { AnyTimelineWidgetDeclaration } from '../timeline/declaration.ts';
-import DeclaredTimelineWidget from '../timeline/DeclaredTimelineWidget';
+import { timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
+import type { FamilyHostAdapter } from './adapter.ts';
+import DeclaredFamilyWidget, { type DeclaredFamilyWidgetDeclaration } from './DeclaredFamilyWidget.tsx';
 
 export interface FamilyHostProps extends WidgetProps {
   readonly spec: FamilyViewModule;
 }
 
 const hosts = new Map<FamilyId, ComponentType<FamilyHostProps>>();
+const adapters = new Map<FamilyId, FamilyHostAdapter<any, any, any>>();
+
+function AdaptedFamilyHost({ spec, ...props }: FamilyHostProps) {
+  const adapter = adapters.get(spec.family);
+  if (!adapter) return null;
+  return (
+    <DeclaredFamilyWidget
+      {...props}
+      adapter={adapter}
+      declaration={spec.declaration as DeclaredFamilyWidgetDeclaration<any, any, any>}
+    />
+  );
+}
+
+export function registerFamilyAdapter(family: FamilyId, adapter: FamilyHostAdapter<any, any, any>): void {
+  adapters.set(family, adapter);
+  hosts.set(family, AdaptedFamilyHost);
+}
 
 export function registerFamilyHost(family: FamilyId, host: ComponentType<FamilyHostProps>): void {
   hosts.set(family, host);
@@ -33,20 +50,9 @@ function TableFamilyHostAdapter({ spec, ...props }: FamilyHostProps) {
   return <DeclaredTableWidget declaration={spec.declaration as AnyTableWidgetDeclaration} {...props} />;
 }
 
-function BarsFamilyHostAdapter({ spec, ...props }: FamilyHostProps) {
-  return <DeclaredBarsWidget declaration={spec.declaration as AnyBarsWidgetDeclaration} {...props} />;
-}
-
-function TimeChartFamilyHostAdapter({ spec, ...props }: FamilyHostProps) {
-  return <DeclaredTimeChartWidget declaration={spec.declaration as TimeChartWidgetDeclaration<any, any>} {...props} />;
-}
-
-function TimelineFamilyHostAdapter({ spec, ...props }: FamilyHostProps) {
-  return <DeclaredTimelineWidget declaration={spec.declaration as AnyTimelineWidgetDeclaration} {...props} />;
-}
-
 registerFamilyHost('table', TableFamilyHostAdapter);
-registerFamilyHost('bars', BarsFamilyHostAdapter);
-registerFamilyHost('time-chart', TimeChartFamilyHostAdapter);
-registerFamilyHost('series', TimeChartFamilyHostAdapter);
-registerFamilyHost('timeline', TimelineFamilyHostAdapter);
+registerFamilyAdapter('bars', barsHostAdapter);
+registerFamilyAdapter('time-chart', timeChartHostAdapter);
+registerFamilyAdapter('series', timeChartHostAdapter);
+registerFamilyAdapter('heat-matrix', heatMatrixHostAdapter);
+registerFamilyAdapter('heat-lanes', heatLanesHostAdapter);
