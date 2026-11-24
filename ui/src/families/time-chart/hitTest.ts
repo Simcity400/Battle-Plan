@@ -52,6 +52,7 @@ export function parseChartInspect(key: string | null | undefined): ParsedChartIn
 function sampleBoundedAt(
   bounded: BoundedSeries,
   hour: number,
+  scale = 1,
 ): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean } | null {
   if (bounded.runs && bounded.runs.length > 0) {
     let lo = 0;
@@ -61,7 +62,10 @@ function sampleBoundedAt(
       const run = bounded.runs.at(mid)!;
       if (hour < run.firstHour) hi = mid - 1;
       else if (hour > run.lastHour) lo = mid + 1;
-      else return { value: run.value, min: run.value, max: run.value, exact: true };
+      else {
+        const v = run.value * scale;
+        return { value: v, min: v, max: v, exact: true };
+      }
     }
     return null;
   }
@@ -70,7 +74,7 @@ function sampleBoundedAt(
   const bucket = bounded.buckets.at(idx);
   if (!bucket || hour < bucket.firstHour || hour > bucket.lastHour) return null;
   const exact = bucket.firstHour === bucket.lastHour || bucket.minValue === bucket.maxValue;
-  return { value: bucket.lastValue, min: bucket.minValue, max: bucket.maxValue, exact };
+  return { value: bucket.lastValue * scale, min: bucket.minValue * scale, max: bucket.maxValue * scale, exact };
 }
 
 export function sampleSeriesValueAt(
@@ -80,7 +84,7 @@ export function sampleSeriesValueAt(
 ): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean } | null {
   if (hour > until) return null;
   if (series.bounded) {
-    const sampled = sampleBoundedAt(series.bounded, hour);
+    const sampled = sampleBoundedAt(series.bounded, hour, series.valueScale ?? 1);
     if (sampled) return sampled;
     if (series.headValue != null && Number.isFinite(series.headValue) && Math.abs(hour - until) <= series.bounded.binHours) {
       return { value: series.headValue, min: series.headValue, max: series.headValue, exact: true };
@@ -399,6 +403,11 @@ export function deriveTimeChartTooltip(
 
   const hour = parsed.hour;
   const items = seriesTooltipItemsAt(model, hour);
+  const detail = model.hoverDetail && model.hoverDetail.hour === hour ? model.hoverDetail.items : null;
+  if (detail?.length) {
+    if (items.length) items.push({ ...detail[0]!, divider: true }, ...detail.slice(1));
+    else items.push(...detail);
+  }
   if (!items.length) return null;
   return {
     hour,

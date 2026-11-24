@@ -106,7 +106,11 @@ export type Artwork = { token: string, name: string | null, description: string 
 /**
  * The artwork URL of the first authored sprite frame.
  */
-icon: string | null, };
+icon: string | null,
+/**
+ * The sprite the icon was drawn from, for the art resolver.
+ */
+sprite?: string, };
 export type ArtOrigin = { "kind": "baseGame" } | { "kind": "dlc", id: string, name: string, } | { "kind": "mod", id: string, name: string, } | { "kind": "visualMod", id: string, name: string, } | { "kind": "builtin", id: string, };
 export type ArtFrame = { frameIndex: number, frameCount: number, frameWidth: number, frameHeight: number, textureWidth: number, textureHeight: number, outputWidth: number, outputHeight: number, };
 export type ArtProvenance = { fromCurrentInstall: boolean, label: string, scopeKey: string, };
