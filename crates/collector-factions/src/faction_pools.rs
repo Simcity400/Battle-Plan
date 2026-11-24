@@ -1,3 +1,4 @@
+use collector_primitives::asymmetric::{FlightGate, FlightGuard};
 use engine_allocation as allocation;
 use engine_native_memory::Memory;
 use engine_resources::cstrategic_resource_pool as native;
@@ -6,39 +7,40 @@ use std::{
     ptr,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU64, Ordering},
     },
 };
 static POINTER: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
 static CLOSED: AtomicBool = AtomicBool::new(false);
-static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-static READERS: AtomicUsize = AtomicUsize::new(0);
-static VERSION: AtomicU64 = AtomicU64::new(0);
+static FLIGHT_GATE: FlightGate = FlightGate::new(0);
+static HAZARD_GATE: FlightGate = FlightGate::new(0);
 static NEXT_PHASE: AtomicU64 = AtomicU64::new(0);
 static MISSED: AtomicBool = AtomicBool::new(false);
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    FLIGHT_GATE.active()
 }
-struct Flight;
+struct Flight(FlightGuard<'static>);
 impl Flight {
+    #[inline(always)]
     fn new() -> Self {
-        ACTIVE.fetch_add(1, Ordering::SeqCst);
-        VERSION.fetch_add(1, Ordering::SeqCst);
-        Self
-    }
-}
-impl Drop for Flight {
-    fn drop(&mut self) {
-        VERSION.fetch_add(1, Ordering::SeqCst);
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        Self(FLIGHT_GATE.enter(true))
     }
 }
 fn stamp(ignore_missed: bool) -> Option<u64> {
-    let version = VERSION.load(Ordering::SeqCst);
-    (active() == 0
-        && (ignore_missed || !MISSED.load(Ordering::SeqCst))
-        && VERSION.load(Ordering::SeqCst) == version)
-        .then_some(version)
+    let version = FLIGHT_GATE.quiet_epoch()?;
+    (ignore_missed || !MISSED.load(Ordering::SeqCst)).then_some(version)
+}
+#[inline(always)]
+fn set_bit(word: &AtomicU64, bit: u64) {
+    if word.load(Ordering::Relaxed) & bit == 0 {
+        word.fetch_or(bit, Ordering::SeqCst);
+    }
+}
+#[inline(always)]
+fn set_flag(flags: &AtomicU8, flag: u8) {
+    if flags.load(Ordering::Relaxed) & flag == 0 {
+        flags.fetch_or(flag, Ordering::Relaxed);
+    }
 }
 struct Cell {
     id: u64,
@@ -136,7 +138,9 @@ impl Storage {
         let Ok(at) = map.binary_search_by_key(&receiver, |value| value.0) else {
             return;
         };
-        let slot = map[at].1;
+        self.write_at(map[at].1, resource, index, value, add);
+    }
+    fn write_at(&self, slot: usize, resource: bool, index: usize, value: i64, add: bool) {
         let cell = &self.cells[slot];
         let target = if resource {
             cell.resources.get(index)
@@ -161,10 +165,10 @@ impl Storage {
             target.store(value, Ordering::Relaxed);
         }
         if resource {
-            cell.resource_dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+            set_bit(&cell.resource_dirty[index / 64], 1u64 << (index % 64));
         }
-        cell.flags.fetch_or(flag, Ordering::Relaxed);
-        self.dirty[slot / 64].fetch_or(1u64 << (slot % 64), Ordering::SeqCst);
+        set_flag(&cell.flags, flag);
+        set_bit(&self.dirty[slot / 64], 1u64 << (slot % 64));
     }
     fn rebuild(&self, memory: &impl Memory) {
         for (index, cell) in self.cells.iter().enumerate() {
@@ -280,14 +284,11 @@ pub fn observe(receiver: usize, resource: bool, index: usize, value: i64, add: b
     } else {
         &storage.owners
     };
-    if map
-        .binary_search_by_key(&receiver, |value| value.0)
-        .is_err()
-    {
+    let Ok(at) = map.binary_search_by_key(&receiver, |value| value.0) else {
         return;
-    }
+    };
     let _flight = Flight::new();
-    storage.write(receiver, resource, index, value, add);
+    storage.write_at(map[at].1, resource, index, value, add);
     drop(hazard);
 }
 thread_local! {static PHASES:std::cell::Cell<[Option<(u64,u64,u32)>;2]>=const{std::cell::Cell::new([None;2])};}
@@ -370,8 +371,8 @@ pub fn phase_call(receiver: usize, kind: usize, original: impl FnOnce() -> usize
         let cell = &storage.cells[index];
         cell.phases[kind].store(epoch, Ordering::Relaxed);
         cell.phase_members[kind].store(count as u64, Ordering::Relaxed);
-        cell.flags.fetch_or(1, Ordering::Relaxed);
-        storage.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+        set_flag(&cell.flags, 1);
+        set_bit(&storage.dirty[index / 64], 1u64 << (index % 64));
     }
     drop(std::mem::ManuallyDrop::into_inner(flight));
     drop(std::mem::ManuallyDrop::into_inner(hazard));
@@ -402,8 +403,8 @@ pub fn boundary_call(receiver: usize, kind: usize, original: impl FnOnce() -> us
         {
             let cell = &storage.cells[index];
             cell.phases[kind].store(phase, Ordering::Relaxed);
-            cell.flags.fetch_or(1, Ordering::Relaxed);
-            storage.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+            set_flag(&cell.flags, 1);
+            set_bit(&storage.dirty[index / 64], 1u64 << (index % 64));
         } else {
             storage.invalid.fetch_or(1, Ordering::SeqCst);
         }
@@ -412,16 +413,11 @@ pub fn boundary_call(receiver: usize, kind: usize, original: impl FnOnce() -> us
     drop(std::mem::ManuallyDrop::into_inner(hazard));
     result
 }
-struct Hazard;
+struct Hazard(FlightGuard<'static>);
 impl Hazard {
+    #[inline(always)]
     fn new() -> Self {
-        READERS.fetch_add(1, Ordering::SeqCst);
-        Self
-    }
-}
-impl Drop for Hazard {
-    fn drop(&mut self) {
-        READERS.fetch_sub(1, Ordering::SeqCst);
+        Self(HAZARD_GATE.enter(false))
     }
 }
 pub fn rebuild() {
@@ -721,7 +717,7 @@ impl Store {
         if self.shape || self.force || self.storage.is_none() {
             let result = Storage::new(&self.held).and_then(|mut storage| {
                 CLOSED.store(true, Ordering::SeqCst);
-                if active() != 0 || READERS.load(Ordering::SeqCst) != 0 {
+                if FLIGHT_GATE.quiet_epoch().is_none() || HAZARD_GATE.quiet_epoch().is_none() {
                     CLOSED.store(false, Ordering::SeqCst);
                     return Err("faction pool publication overlaps a writer");
                 }
@@ -906,7 +902,7 @@ impl Drop for Store {
         if std::ptr::eq(POINTER.load(Ordering::SeqCst), &raw const *storage) {
             CLOSED.store(true, Ordering::SeqCst);
             POINTER.store(ptr::null_mut(), Ordering::SeqCst);
-            if active() != 0 || READERS.load(Ordering::SeqCst) != 0 {
+            if FLIGHT_GATE.quiet_epoch().is_none() || HAZARD_GATE.quiet_epoch().is_none() {
                 std::mem::forget(storage);
             }
         }

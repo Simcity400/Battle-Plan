@@ -64,21 +64,60 @@ unsafe fn pass(status: usize, arg: usize, index: usize, container: u8) -> usize 
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
-    let admitted = if container != rows::REMOVAL {
-        true
+    let opened = if container != rows::REMOVAL {
+        begin(status, container)
+    } else if let (Some(active_addr), Some(count_addr)) = (
+        status.checked_add(runtime::REMOVAL_PASS_ACTIVE),
+        runtime::HEADERS
+            .get(container as usize)
+            .and_then(|offset| status.checked_add(offset + engine_native_memory::cpdx_array::COUNT)),
+    ) {
+        let mut active_byte = [0_u8; 1];
+        let mut count_bytes = [0_u8; 4];
+        if memory.copy_scattered(
+            [active_addr, count_addr],
+            &mut [&mut active_byte[..], &mut count_bytes[..]],
+        ) == 2
+        {
+            if active_byte[0] != 0 {
+                false
+            } else {
+                match u32::try_from(i32::from_le_bytes(count_bytes)) {
+                    Ok(0) => false,
+                    Ok(n) => {
+                        feed::decisions::marker(status, Operation::PassBegin, container, n, 0);
+                        true
+                    }
+                    Err(_) => {
+                        feed::refuse("decision pass count is negative");
+                        false
+                    }
+                }
+            }
+        } else {
+            let admitted = match field::<u8>(&memory, status, runtime::REMOVAL_PASS_ACTIVE) {
+                Ok(value) => value == 0,
+                Err(reason) => {
+                    feed::refuse(reason);
+                    false
+                }
+            };
+            admitted && begin(status, container)
+        }
     } else {
-        match field::<u8>(&memory, status, runtime::REMOVAL_PASS_ACTIVE) {
+        let admitted = match field::<u8>(&memory, status, runtime::REMOVAL_PASS_ACTIVE) {
             Ok(value) => value == 0,
             Err(reason) => {
                 feed::refuse(reason);
                 false
             }
-        }
+        };
+        admitted && begin(status, container)
     };
     let mut anchor = Anchor {
         status,
         container,
-        opened: admitted && begin(status, container),
+        opened,
         completed: false,
     };
     type Original = unsafe extern "system-unwind" fn(usize, usize) -> usize;
@@ -360,19 +399,46 @@ global_entry!(global_states, 11);
 global_entry!(owned_states, 12);
 global_entry!(controlled_states, 13);
 global_entry!(related_states, 14);
+fn filter_headers(
+    memory: &impl Memory,
+    headers: [usize; 2],
+) -> Option<[engine_native_memory::cpdx_array::Array; 2]> {
+    let mut raw0 = [0_u8; 16];
+    let mut raw1 = [0_u8; 16];
+    if memory.copy_scattered(headers, &mut [&mut raw0[..], &mut raw1[..]]) != 2 {
+        return None;
+    }
+    let a0 = engine_native_memory::cpdx_array::Array::from_header(raw0, runtime::CANDIDATE_STRIDE)?;
+    let a1 = engine_native_memory::cpdx_array::Array::from_header(raw1, runtime::CANDIDATE_STRIDE)?;
+    Some([a0, a1])
+}
 unsafe extern "system-unwind" fn filter(status: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let headers = [
         status + runtime::CANDIDATE_HEADERS[2],
         status + runtime::CANDIDATE_HEADERS[3],
     ];
-    let before = headers.map(candidate_count);
+    let before = match filter_headers(&memory, headers) {
+        Some([a0, a1]) => [Ok(a0.count), Ok(a1.count)],
+        None => headers.map(candidate_count),
+    };
     type Original = unsafe extern "system-unwind" fn(usize) -> usize;
     let original: Original = unsafe { std::mem::transmute(ORIGINAL[15].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(status) });
-    for ((header, kind), before) in headers.into_iter().zip([2u8, 3u8]).zip(before) {
-        appended_candidates_for(header, before, Some((status, kind)));
+    if let (Ok(b0), Ok(b1), Some([a0, a1])) = (before[0], before[1], filter_headers(&memory, headers))
+    {
+        if b0 != a0.count {
+            appended_candidates_for(headers[0], Ok(b0), Some((status, 2)));
+        }
+        if b1 != a1.count {
+            appended_candidates_for(headers[1], Ok(b1), Some((status, 3)));
+        }
+    } else {
+        for ((header, kind), before) in headers.into_iter().zip([2u8, 3u8]).zip(before) {
+            appended_candidates_for(header, before, Some((status, kind)));
+        }
     }
     flight.returned();
     result
@@ -464,8 +530,7 @@ unsafe fn detour(a: usize, b: usize, c: usize, index: usize) -> usize {
     if unit == Unit::CandidateFinalization {
         #[cfg(test)]
         super::staging::published(super::staging::Published::Candidates { status: a });
-        feed::decisions::marker(a, Operation::Rebuild, 3, 0, 0);
-        clear_candidates(a);
+        feed::decisions::finalize_candidates(a);
     }
     detour.publish(|witness| match witness {
         Witness::Reactivated {

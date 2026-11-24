@@ -790,21 +790,16 @@ fn append(
         attempted_since(attempted, &ENTRY_CONSUMED),
         Ordering::Release,
     );
-    let attempted = match &name {
-        Some(name) => {
-            let bytes = name.byte_len() as u64;
-            NAME_ATTEMPTS
-                .fetch_add(bytes, Ordering::Relaxed)
-                .wrapping_add(bytes)
-        }
-        None => NAME_ATTEMPTS.load(Ordering::Relaxed),
-    };
-    raise(
-        &NAME_DEMAND,
-        attempted_since(attempted, &NAME_CONSUMED),
-        Ordering::Release,
-    );
     if let Some(name) = &name {
+        let bytes = name.byte_len() as u64;
+        let attempted = NAME_ATTEMPTS
+            .fetch_add(bytes, Ordering::Relaxed)
+            .wrapping_add(bytes);
+        raise(
+            &NAME_DEMAND,
+            attempted_since(attempted, &NAME_CONSUMED),
+            Ordering::Release,
+        );
         raise(&NAME_STRIDE, name.byte_len(), Ordering::Release);
     }
     let Some(buffer) = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing)
@@ -1166,7 +1161,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         }
     };
     pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
-    let recipient = if kind == 1 {
+    let recipient_and_name = if kind == 1 {
         if let Some(located) = located.as_ref() {
             REGISTRY.with(|registry| {
                 native::air_held_with(
@@ -1189,22 +1184,21 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 None,
             )
         }
+        .map(|(recipient, taken)| (recipient, None, taken))
     } else if located.is_some() {
         REGISTRY.with(|registry| {
-            native::unit_with(&memory, base, pointer, kind, &mut registry.borrow_mut())
+            native::unit_with_name(&memory, base, pointer, kind, Some(&mut registry.borrow_mut()))
         })
+        .map(|(recipient, name, taken)| (recipient, Some(name), taken))
     } else {
-        native::unit(&memory, base, pointer, kind).map(|recipient| (recipient, false))
-    }
-    .map(|(recipient, taken)| {
-        if taken {
-            HELD.increment(if kind == 1 { 1 } else { 2 });
-        }
-        recipient
-    });
-    match recipient {
-        Ok(recipient) => {
-            let name = (kind != 1).then(|| native::stored_name(&memory, pointer, kind));
+        native::unit_with_name(&memory, base, pointer, kind, None)
+            .map(|(recipient, name, taken)| (recipient, Some(name), taken))
+    };
+    match recipient_and_name {
+        Ok((recipient, name, taken)) => {
+            if taken {
+                HELD.increment(if kind == 1 { 1 } else { 2 });
+            }
             let (name, name_reason) = match name {
                 Some(Ok(n)) => (Some(n), None),
                 Some(Err(reason)) => (None, Some(reason)),

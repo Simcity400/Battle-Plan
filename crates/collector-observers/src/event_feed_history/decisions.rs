@@ -696,9 +696,48 @@ impl Store {
         let Some(slot) = self.decisions.uncertified(pointer) else {
             return Ok(false);
         };
-        self.observation(generation)?;
         let owner = world.country_object(slot.owner)?;
         let hour = world.hour()?;
+        self.decision_result_resolved(
+            world, memory, base, generation, slot.owner, owner, hour, pointer, results, source,
+            reason,
+        )
+    }
+    pub(crate) fn decision_result_resolved<M: Memory>(
+        &mut self,
+        world: &World<'_, M>,
+        memory: &M,
+        base: usize,
+        generation: u64,
+        country: usize,
+        owner: CountryIdentity,
+        hour: i32,
+        pointer: usize,
+        results: (Option<i32>, Option<i32>),
+        source: EventFeedSource,
+        reason: &'static str,
+    ) -> Result<bool, &'static str> {
+        if let Some(slot) = self.decisions.find(pointer) {
+            self.decision_selected_source_resolved(
+                world,
+                memory,
+                base,
+                generation,
+                country,
+                owner,
+                || Ok(hour),
+                pointer,
+                DecisionChange::new(Operation::Update, slot.container),
+                false,
+                results,
+                Some(source),
+            )?;
+            return Ok(true);
+        }
+        let Some(slot) = self.decisions.uncertified(pointer) else {
+            return Ok(false);
+        };
+        self.observation(generation)?;
         let row = native::record(memory, base, pointer, slot.container)?;
         let value = record_fact(
             world,
@@ -806,6 +845,57 @@ impl Store {
         if refusal.retry {
             super::recovery_needed();
         }
+    }
+    pub(crate) fn decision_retire_resolved<M: Memory>(
+        &mut self,
+        world: &World<'_, M>,
+        memory: &M,
+        base: usize,
+        generation: u64,
+        owner: CountryIdentity,
+        hour: i32,
+        pointer: usize,
+        swap: bool,
+        visited: bool,
+    ) -> Result<(), &'static str> {
+        let Some(slot) = self.decisions.find(pointer) else {
+            if self.decisions.uncertified(pointer).is_some() {
+                self.decisions.remove(pointer);
+            }
+            return Ok(());
+        };
+        if visited {
+            let cut = DecisionChange::new(Operation::PassCut, slot.container);
+            self.decision_selected_source_resolved(
+                world,
+                memory,
+                base,
+                generation,
+                slot.owner,
+                owner,
+                || Ok(hour),
+                pointer,
+                cut,
+                false,
+                (None, None),
+                None,
+            )?;
+        }
+        let mut change = DecisionChange::new(Operation::Erase, slot.container);
+        if visited {
+            change.flags |= replay_data::event_feed_rows::decisions::ITERATION;
+        }
+        if swap {
+            change.flags |= replay_data::event_feed_rows::decisions::SWAP;
+        }
+        self.decisions.remove(pointer);
+        self.script_known(
+            memory,
+            base,
+            generation,
+            hour,
+            fact(memory, owner, change, Some(slot.id)),
+        )
     }
     pub(crate) fn decision_retire<M: Memory>(
         &mut self,

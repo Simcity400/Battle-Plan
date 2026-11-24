@@ -1,17 +1,13 @@
 use super::Account;
+use collector_primitives::asymmetric::{FlightGate, FlightGuard};
 use engine_allocation as allocation;
 use std::{
     ptr,
     sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, Ordering},
 };
-#[repr(align(64))]
-struct Hot(AtomicU64);
-const ACTIVE_BITS: u32 = 20;
-const ACTIVE_MASK: u64 = (1 << ACTIVE_BITS) - 1;
-const VERSION_STEP: u64 = 1 << ACTIVE_BITS;
 static POINTER: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
 static CLOSED: AtomicBool = AtomicBool::new(false);
-static STATE: Hot = Hot(AtomicU64::new(0));
+static FLIGHT_GATE: FlightGate = FlightGate::new(0);
 static MISSED: AtomicBool = AtomicBool::new(false);
 pub const INITIATIVE: usize = 0;
 pub const CONTRIBUTION: usize = 1;
@@ -28,32 +24,23 @@ pub enum Operation {
     Add,
     Subtract,
 }
-pub struct Flight;
+pub struct Flight(FlightGuard<'static>);
 impl Flight {
-    #[inline]
+    #[inline(always)]
     pub fn new() -> Self {
-        STATE.0.fetch_add(VERSION_STEP + 1, Ordering::SeqCst);
-        Self
-    }
-}
-impl Drop for Flight {
-    #[inline]
-    fn drop(&mut self) {
-        STATE
-            .0
-            .fetch_add(VERSION_STEP.wrapping_sub(1), Ordering::SeqCst);
+        Self(FLIGHT_GATE.enter(true))
     }
 }
 pub fn active() -> usize {
-    (STATE.0.load(Ordering::SeqCst) & ACTIVE_MASK) as usize
+    FLIGHT_GATE.active()
 }
 pub fn baseline_stamp() -> Option<u64> {
-    let state = STATE.0.load(Ordering::SeqCst);
-    (state & ACTIVE_MASK == 0).then_some(state >> ACTIVE_BITS)
+    FLIGHT_GATE.quiet_epoch()
 }
 pub fn quiet() -> Option<u64> {
-    let state = STATE.0.load(Ordering::SeqCst);
-    (state & ACTIVE_MASK == 0 && !MISSED.load(Ordering::SeqCst)).then_some(state >> ACTIVE_BITS)
+    (!MISSED.load(Ordering::SeqCst))
+        .then(|| FLIGHT_GATE.quiet_epoch())
+        .flatten()
 }
 struct Slot {
     address: usize,
@@ -225,9 +212,12 @@ impl Storage {
         for &at in indices {
             self.slots[index].projection_sources[at].store(source[at], Ordering::Relaxed);
         }
-        self.slots[index]
-            .projection_derived
-            .fetch_or(1 << term, Ordering::Relaxed);
+        let bit = 1_u64 << term;
+        if self.slots[index].projection_derived.load(Ordering::Relaxed) & bit == 0 {
+            self.slots[index]
+                .projection_derived
+                .fetch_or(bit, Ordering::Relaxed);
+        }
         self.mark_dirty(index);
     }
     fn refresh(&self, address: usize, projection: bool, numerator: i64, denominator: i64) {
@@ -448,7 +438,7 @@ pub struct Holder {
 impl Holder {
     pub fn install(&mut self, mut storage: Box<Storage>) -> Result<(), &'static str> {
         CLOSED.store(true, Ordering::SeqCst);
-        if active() != 0 {
+        if FLIGHT_GATE.quiet_epoch().is_none() {
             CLOSED.store(false, Ordering::SeqCst);
             return Err("faction operand publication overlaps a writer");
         }
@@ -486,7 +476,7 @@ impl Drop for Holder {
         if ptr::eq(POINTER.load(Ordering::SeqCst), &raw const *storage) {
             CLOSED.store(true, Ordering::SeqCst);
             POINTER.store(ptr::null_mut(), Ordering::SeqCst);
-            if active() != 0 {
+            if FLIGHT_GATE.quiet_epoch().is_none() {
                 std::mem::forget(storage);
             }
         }

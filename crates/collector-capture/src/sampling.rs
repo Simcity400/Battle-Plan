@@ -1919,6 +1919,11 @@ impl Shared {
         self.retired_parked_pending.load(Ordering::Acquire)
     }
 
+    pub fn needs_steady_park(&self) -> bool {
+        self.unparked_frames.load(Ordering::Acquire) >= crate::frame_pool::STEADY
+            && self.frames.steady_idle()
+    }
+
     pub fn park_idle_steady_frame(&self) -> bool {
         if self.unparked_frames.load(Ordering::Acquire) < crate::frame_pool::STEADY
             || !self.frames.steady_idle()

@@ -173,12 +173,14 @@ pub fn start_held(
     let game_state = u64::from_le_bytes(raw[11]) as usize;
     let mut backlink = [0_u8; 8];
     let mut surrender = [0_u8; 4];
+    let mut owner_id = [0_u8; 4];
     let mut countries_header = [0_u8; 16];
     let mut links_header = [0_u8; 16];
     let second_ok = (|| -> Option<()> {
         let addresses = [
             owner.checked_add(ccountry::FUEL_STATUS)?,
             owner.checked_add(ccountry::SURRENDER_TARGET)?,
+            owner.checked_add(ccountry::ID)?,
             game_state.checked_add(cgame_state::COUNTRIES)?,
             game_state.checked_add(cgame_state::COUNTRY_LINKS)?,
         ];
@@ -187,10 +189,11 @@ pub fn start_held(
             &mut [
                 &mut backlink[..],
                 &mut surrender[..],
+                &mut owner_id[..],
                 &mut countries_header[..],
                 &mut links_header[..],
             ],
-        ) == 4)
+        ) == 5)
             .then_some(())
     })()
     .is_some();
@@ -207,7 +210,14 @@ pub fn start_held(
         };
         let (country, taken) = match held {
             Some(held) if held.owner == owner => (held.country, true),
-            _ => (countries.of_pointer(owner)?, false),
+            _ => {
+                let id = u32::from_le_bytes(owner_id);
+                let resolved = match countries.verify_canonical_pointer(owner, id) {
+                    Some(country) => country,
+                    None => countries.of_pointer(owner)?,
+                };
+                (resolved, false)
+            }
         };
         if u64::from_le_bytes(backlink) != status as u64 {
             return Err("fuel award owner backlink mismatch");
@@ -516,6 +526,105 @@ pub fn unit_with(
         },
         taken,
     ))
+}
+
+pub fn unit_with_name(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    kind: u32,
+    registry: Option<&mut Registry>,
+) -> Result<(Recipient, Result<StoredName, &'static str>, bool), &'static str> {
+    let class = match kind {
+        0 => 0_u32,
+        2 => 1_u32,
+        _ => return Err("fuel recipient kind unsupported"),
+    };
+    let expected_vtable = engine_sites::at(
+        base,
+        if class == 0 {
+            engine_native::carmy::VTABLE_RVA
+        } else {
+            engine_native::ctask_force::VTABLE_RVA
+        },
+    )
+    .ok_or("counter unit module overflow")? as u64;
+    if pointer != 0
+        && let Some(owner_addr) = pointer.checked_add(cunit::ROSTER_OWNER)
+    {
+        let mut header = [0_u8; 32];
+        let mut owner_bytes = [0_u8; 4];
+        let name_read = if kind == 0 {
+            pointer
+                .checked_add(engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER)
+                .and_then(|member_addr| {
+                    let mut member_bytes = [0_u8; 8];
+                    (memory.copy_scattered(
+                        [pointer, owner_addr, member_addr],
+                        &mut [&mut header[..], &mut owner_bytes[..], &mut member_bytes[..]],
+                    ) == 3)
+                        .then_some((
+                            u64::from_le_bytes(member_bytes) as usize,
+                            [0_u8; msvc_string::STRIDE],
+                        ))
+                })
+        } else {
+            pointer.checked_add(0x258).and_then(|name_addr| {
+                let mut name_header = [0_u8; msvc_string::STRIDE];
+                (memory.copy_scattered(
+                    [pointer, owner_addr, name_addr],
+                    &mut [&mut header[..], &mut owner_bytes[..], &mut name_header[..]],
+                ) == 3)
+                    .then_some((name_addr, name_header))
+            })
+        };
+        if let Some((name_ptr, name_header)) = name_read {
+            let vtable = u64::from_le_bytes(header[..8].try_into().unwrap());
+            let actual_class = u32::from_le_bytes(header[8..12].try_into().unwrap());
+            let handle = u64::from_le_bytes(header[24..32].try_into().unwrap());
+            if actual_class != class || handle >> 32 == 0 || vtable != expected_vtable {
+                return Err(if actual_class != class && [0, 1, 13].contains(&actual_class) {
+                    "fuel recipient unit class mismatch"
+                } else {
+                    "counter unit identity invalid"
+                });
+            }
+            let (resolved, taken) = match registry {
+                Some(registry) => {
+                    let taken = registry.0.holds(base, handle);
+                    (registry.0.resolve(memory, base, handle)?, taken)
+                }
+                None => (creference_registry::resolve(memory, base, handle)?, false),
+            };
+            if resolved != pointer.checked_add(0x10) {
+                return Err("counter unit registry identity mismatch");
+            }
+            let name = if kind == 0 {
+                name_ptr
+                    .checked_add(0x60)
+                    .ok_or("fuel recipient name address overflow")
+                    .and_then(|at| msvc_string::Descriptor::read(memory, at).map(StoredName))
+            } else {
+                msvc_string::Descriptor::from_header(memory, name_ptr, name_header).map(StoredName)
+            };
+            return Ok((
+                Recipient {
+                    kind,
+                    reference: handle,
+                    owner: u32::from_le_bytes(owner_bytes),
+                    host: 0,
+                },
+                name,
+                taken,
+            ));
+        }
+    }
+    let (recipient, taken) = match registry {
+        Some(registry) => unit_with(memory, base, pointer, kind, registry)?,
+        None => (unit(memory, base, pointer, kind)?, false),
+    };
+    let name = stored_name(memory, pointer, kind);
+    Ok((recipient, name, taken))
 }
 pub fn air(
     memory: &impl Memory,

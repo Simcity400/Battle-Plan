@@ -5367,6 +5367,7 @@ impl SizingThread {
                 if collector_lifetime::world_lifetime::invalidating()
                     || self.sizing.hint_demand.load(Ordering::Relaxed)
                     || self.sizing.idle_growth_requested.load(Ordering::Relaxed)
+                    || shared.needs_steady_park()
                 {
                     thread.thread().unpark();
                 }
