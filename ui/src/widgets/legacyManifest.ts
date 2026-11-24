@@ -51,7 +51,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'intel-network-coverage', load: () => import('./intel-network-coverage') },
   { kind: 'international-market', load: () => import('./international-market') },
   { kind: 'land-battles', load: () => import('./land-battles') },
-  { kind: 'lend-lease-balance', load: () => import('./lend-lease-balance') },
   { kind: 'map', load: () => import('./map') },
   { kind: 'market-ledger', load: () => import('./market-ledger') },
   { kind: 'military-factory-spending', load: () => import('./military-factory-spending') },
