@@ -280,6 +280,10 @@ fn share_of(part: &Sum, whole: Option<i128>) -> Option<f64> {
     }
 }
 
+fn exact_share_of(part: &Sum, parent: Option<i128>) -> Option<f64> {
+    (part.state() == BreakdownState::Known).then(|| share_of(part, parent)).flatten()
+}
+
 fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Vec<BreakdownPart> {
     let mut children = children;
     children.sort_by(|a, b| {
@@ -291,11 +295,11 @@ fn parts(children: Vec<Branch>, whole: Option<i128>, parent: Option<i128>) -> Ve
     children
         .into_iter()
         .map(|branch| {
-            let own_whole = branch.sum.whole().filter(|_| whole.is_some());
+            let own_whole = branch.sum.whole().filter(|_| whole.is_some() && branch.sum.state() == BreakdownState::Known);
             let children = parts(branch.children, whole, own_whole);
             BreakdownPart {
                 share: share_of(&branch.sum, whole),
-                parent_share: share_of(&branch.sum, parent),
+                parent_share: exact_share_of(&branch.sum, parent),
                 key: branch.node.key,
                 name: branch.node.name,
                 name_missing: branch.node.name_missing,
@@ -333,7 +337,7 @@ fn assemble(decimals: u8, mut root: Branch, unrecorded: &Unrecorded, qualified: 
     Breakdown {
         decimals,
         total: BreakdownTotal { raw: if unwitnessed { None } else { root.sum.raw() }, state, reason },
-        parts: parts(root.children, whole, whole),
+        parts: parts(root.children, whole, whole.filter(|_| state == BreakdownState::Known)),
         unrecorded_hours: unrecorded.hours,
     }
 }
