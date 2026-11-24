@@ -1323,15 +1323,21 @@ fn region_alpha_mask(
     }))
 }
 
+pub struct RegionActions<'a> {
+    pub close_paths: &'a [&'a str],
+    pub tooltips: &'a BTreeMap<String, GameWindowTooltip>,
+    pub views: &'a BTreeMap<String, String>,
+}
+
 pub fn regions_from_layout(
     roots: &[&Element],
     regions: &[Region],
     origin: [f32; 2],
     resources: &dyn Resources,
     localisation: &Localisation,
-    close_paths: &[&str],
-    overrides: &BTreeMap<String, GameWindowTooltip>,
+    actions: &RegionActions<'_>,
 ) -> Vec<GameWindowRegion> {
+    let RegionActions { close_paths, tooltips: overrides, views } = *actions;
     let icons = RegistryIcons { resources };
     let mut out = Vec::new();
     for region in regions {
@@ -1413,7 +1419,8 @@ pub fn regions_from_layout(
                     }
                 })
         };
-        if close || tooltip.is_some() {
+        let view = (!through && !close).then(|| views.get(&region.path).cloned()).flatten();
+        if close || tooltip.is_some() || view.is_some() {
             out.push(GameWindowRegion {
                 path: region.path.clone(),
                 rect: [x0, y0, width, height],
@@ -1421,7 +1428,7 @@ pub fn regions_from_layout(
                 disabled: region.disabled,
                 close,
                 passthrough: through,
-                view: None,
+                view,
                 tooltip,
                 alpha_mask,
                 scroll: None,
@@ -2144,8 +2151,7 @@ impl Service {
                 output.origin,
                 &assets,
                 cached.localisation.as_ref(),
-                close_paths,
-                &main_tooltips,
+                &RegionActions { close_paths, tooltips: &main_tooltips, views: &plan.view_links },
             );
             let sub_region_groups: Vec<(usize, Vec<GameWindowRegion>)> = plan
                 .sub_windows
@@ -2164,8 +2170,7 @@ impl Service {
                         output.origin,
                         &assets,
                         cached.localisation.as_ref(),
-                        &sub_close,
-                        &sub.tooltip_overrides,
+                        &RegionActions { close_paths: &sub_close, tooltips: &sub.tooltip_overrides, views: &BTreeMap::new() },
                     );
                     if !sub.path_prefix.is_empty() {
                         for region in &mut sub_regions {
@@ -2177,11 +2182,6 @@ impl Service {
                 .collect();
             let part_paths: Vec<&str> = layout.parts.iter().map(|part| part.path.as_str()).collect();
             let mut regions = paint_ordered_regions(&part_paths, main_regions, sub_region_groups);
-            for region in &mut regions {
-                if !region.passthrough && !region.close {
-                    region.view = plan.view_links.get(&region.path).cloned();
-                }
-            }
             for mut region in plan.extra_regions {
                 region.rect[0] -= output.origin[0];
                 region.rect[1] -= output.origin[1];

@@ -254,6 +254,11 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
                     alwaystransparent = yes
                     pdx_tooltip = "CLOSE_TIP"
                 }
+                buttonType = {
+                    name = "plain_tab"
+                    position = { x = 10 y = 60 }
+                    spriteType = "GFX_even"
+                }
             }
         }"#,
         [400, 300],
@@ -288,9 +293,21 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
         [0.0, 0.0],
         &resources,
         &localisation,
-        &["close_button", "ghost_close"],
-        &BTreeMap::new(),
+        &RegionActions { close_paths: &["close_button", "ghost_close"], tooltips: &BTreeMap::new(), views: &BTreeMap::new() },
     );
+    let tab = root.find(native::Kind::Button, "plain_tab").unwrap().path.clone();
+    assert!(regions.iter().all(|region| region.path != tab), "a control with no tooltip and no action has no region");
+    let views = BTreeMap::from([(tab.clone(), "history".to_owned())]);
+    let with_view = regions_from_layout(
+        &[root],
+        &layout.regions,
+        [0.0, 0.0],
+        &resources,
+        &localisation,
+        &RegionActions { close_paths: &["close_button", "ghost_close"], tooltips: &BTreeMap::new(), views: &views },
+    );
+    let tab_region = with_view.iter().find(|region| region.path == tab).expect("a tab's action keeps its region without a tooltip");
+    assert_eq!((tab_region.view.as_deref(), tab_region.tooltip.is_none()), (Some("history"), true));
     let close = regions.iter().find(|region| region.close).unwrap();
     assert_eq!(close.rect, [90.0, 4.0, 20.0, 10.0]);
     assert_eq!(
@@ -339,8 +356,7 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
         [0.0, 0.0],
         &resources,
         &localisation,
-        &["close_button", "ghost_close"],
-        &ghost_tips,
+        &RegionActions { close_paths: &["close_button", "ghost_close"], tooltips: &ghost_tips, views: &BTreeMap::new() },
     );
     for name in ["ghost_icon", "ghost_close"] {
         let ghost = explained
@@ -398,8 +414,7 @@ fn regions_map_nested_backgrounds_disabled_fallback_close_and_skip_passthrough()
         [0.0, 0.0],
         &alpha_resources,
         &localisation,
-        &["close_button"],
-        &BTreeMap::new(),
+        &RegionActions { close_paths: &["close_button"], tooltips: &BTreeMap::new(), views: &BTreeMap::new() },
     );
     let alpha_close = alpha_regions.iter().find(|region| region.close).unwrap();
     let mask = alpha_close.alpha_mask.as_ref().unwrap();
