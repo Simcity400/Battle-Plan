@@ -70,7 +70,7 @@ test('an AI country hatches Need and Balance in the header and has no net column
 test('the Short or over and Produced − Need = Balance headers are as wide as their words', () => {
   const columns = stockpileColumns('sum', null);
   const settings = tableSettingsOf(undefined, columns, STOCKPILE_BASE);
-  const widths = measureFixedColumnWidths(buildColumnLayouts(columns, settings), settings, { font: 'sans-serif', fontSize: 13 }, text => text.length * 10);
+  const widths = measureFixedColumnWidths(buildColumnLayouts(columns, settings), settings, { font: 'sans-serif', fontSize: { small: 12, body: 13 } }, text => text.length * 10);
   assert.ok(widths.net! >= 'ShortOver'.length * 10, `net ${widths.net}`);
   assert.ok(widths.sum! >= 'ProducedNeedBalance−='.length * 10, `sum ${widths.sum}`);
 });
