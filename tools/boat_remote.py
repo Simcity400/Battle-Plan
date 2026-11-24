@@ -534,7 +534,8 @@ elif mode in {'check', 'build', 'test', 'ui'}:
                     if subprocess.run(['rustup', 'component', 'add', 'clippy'], cwd=SRC).returncode:
                         print('Clippy could not be installed on this VM', file=sys.stderr, flush=True)
                         sys.exit(80)
-                command = ['cargo', 'xwin', *args, '--target', TARGET]
+                split = args.index('--') if '--' in args else len(args)
+                command = ['cargo', 'xwin', *args[:split], '--target', TARGET, *args[split:]]
                 if mode in {'build', 'test'}:
                     command.append('--message-format=json-render-diagnostics')
                     cache_started = True
