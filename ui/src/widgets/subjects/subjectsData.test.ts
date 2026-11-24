@@ -116,8 +116,8 @@ test('each overlord heads its subjects, dated as the game dates them, coloured b
   const colours = levelColours(levels, ['c0', 'c1', 'c2', 'c3'], 'other');
   const { lanes, info } = subjectLanes(views, byToken, colours, 160, options, text, reply.unobserved);
   assert.deepEqual(lanes.map(lane => [lane.identity?.label, lane.label]), [
-    ['United Kingdom', '1 subject'], ['Canada', 'Puppet · since day 10'],
-    ['Free Republic', '2 subjects'], ['Modded Realm', 'Puppet · since day 50'], ['Colon Land', 'Level not recorded · since day 120'],
+    ['United Kingdom', '1 subject'], ['Canada', 'Puppet · Since day 10'],
+    ['Free Republic', '2 subjects'], ['Modded Realm', 'Puppet · Since day 50'], ['Colon Land', 'Level not recorded · Since day 120'],
   ]);
   assert.equal(lanes[0].heading, true);
   assert.equal(lanes[1].depth, 1);
@@ -135,12 +135,12 @@ test('ended and unrecorded stretches are said honestly, and can be hidden or nar
   const at = (hour: number, extra: Partial<LaneOptions> = {}) => subjectLanes(views, byToken, colours, hour, { ...options, ...extra }, text, reply.unobserved)
     .lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
   assert.ok(at(220).includes('Modded Realm: Ended day 200'));
-  assert.ok(at(260).includes('Modded Realm: Autonomy level name unavailable · since day 250'));
+  assert.ok(at(260).includes('Modded Realm: Autonomy level name unavailable · Since day 250'));
   assert.ok(at(305).includes('Modded Realm: Last recorded day 299'));
   assert.ok(at(320).includes('Modded Realm: Ended by day 310'));
   assert.ok(at(305).includes('Free Republic: Subjects not recorded'));
   assert.ok(!at(320, { ended: false }).some(label => label.startsWith('Modded Realm')));
-  assert.deepEqual(at(320, { countries: new Set(['CAN']), countryIds: identities.selected(['CAN']) }), ['United Kingdom: 1 subject', 'Canada: Puppet · since day 10']);
+  assert.deepEqual(at(320, { countries: new Set(['CAN']), countryIds: identities.selected(['CAN']) }), ['United Kingdom: 1 subject', 'Canada: Puppet · Since day 10']);
   assert.deepEqual(at(320, { order: 'name', subjects: 'name' }).filter(label => !label.includes('·')).slice(0, 1), ['Free Republic: 1 subject']);
 });
 
@@ -168,7 +168,7 @@ test('a relation continued across an unrecorded stretch is still held; a new sta
   assert.deepEqual(view('BBB').stretches.map(item => [item.firstHour, item.lastHour]), [[100, 199], [210, 300]]);
   const colours = levelColours(levels, ['c0', 'c1'], 'other');
   const labels = subjectLanes([overlord], byToken, colours, 300, options, text, gap.unobserved).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
-  assert.deepEqual(labels.slice(1), ['AAA: Puppet · since day 50', 'BBB: Puppet · since day 205']);
+  assert.deepEqual(labels.slice(1), ['AAA: Puppet · Since day 50', 'BBB: Puppet · Since day 205']);
 });
 
 test('a change of tag of a subject or its overlord keeps one lane and one overlord', () => {
@@ -188,7 +188,7 @@ test('a change of tag of a subject or its overlord keeps one lane and one overlo
   assert.equal(overlordTagAt(views[0], 280), 'D02');
   const colours = levelColours(levels, ['c0', 'c1'], 'other');
   const labels = subjectLanes(views, byToken, colours, 280, options, text, []).lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
-  assert.deepEqual(labels, ['D02: 2 subjects', 'BBB: Puppet · since day 50', 'CCC: Autonomy level name unavailable · since day 70']);
+  assert.deepEqual(labels, ['D02: 2 subjects', 'BBB: Puppet · Since day 50', 'CCC: Autonomy level name unavailable · Since day 70']);
   assert.equal(overlordViews(renamed).length, 2);
 });
 
@@ -317,7 +317,7 @@ test('proved subject aliases across a native gap retain one relation but never s
   const layout = subjectLanes(views, byToken, new Map(), 10, options, { ...text, country: tag => { asked.push(tag); return text.country(tag); } }, []);
   assert.equal(layout.lanes[0].label, 'Subjects not recorded');
   assert.equal(layout.lanes[1].identity?.label, 'Unknown country');
-  assert.equal(layout.lanes[1].label, 'Level not recorded · since day 0');
+  assert.equal(layout.lanes[1].label, 'Last recorded day 9', 'inside the identity gap, the reading after it is not yet known');
   assert.deepEqual([...new Set(asked)], ['O']);
   assert.deepEqual(laneCountries(layout.lanes, layout.info, 10), ['O']);
   const later = subjectLanes(views, byToken, new Map(), 15, options, text, []);

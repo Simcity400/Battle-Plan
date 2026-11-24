@@ -58,31 +58,6 @@ function flagStateOf(
   return { kind: 'pending' };
 }
 
-function drawBreadcrumb(ctx: Canvas2D, layout: BreakdownLayout, theme: FamilyTheme): void {
-  if (!layout.crumbRect || layout.crumbs.length <= 1) return;
-  const { x, y, width, height } = layout.crumbRect;
-  const cy = y + height / 2;
-  ctx.save();
-  ctx.font = `500 11.5px ${theme.font}`;
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  let cursor = x;
-  for (let i = 0; i < layout.crumbs.length; i++) {
-    const crumb = layout.crumbs[i]!;
-    const isLast = i === layout.crumbs.length - 1;
-    if (i > 0) {
-      ctx.fillStyle = theme.muted;
-      ctx.fillText('›', cursor, cy);
-      cursor += textWidth(ctx, '›') + 6;
-    }
-    ctx.fillStyle = isLast ? theme.text : theme.accent;
-    const shown = fitText(ctx, crumb.label, Math.max(20, x + width - cursor));
-    ctx.fillText(shown, cursor, cy);
-    cursor += textWidth(ctx, shown) + 6;
-  }
-  ctx.restore();
-}
-
 function drawTotalLine(ctx: Canvas2D, line: TotalLineLayout, theme: FamilyTheme): void {
   const { rect, total, periodLabel, comparison, partialTabRect } = line;
   const cy = rect.y + rect.height / 2;
@@ -149,7 +124,6 @@ function drawTotalLine(ctx: Canvas2D, line: TotalLineLayout, theme: FamilyTheme)
 function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsViewLayout): void {
   const { theme, hour, scrollTop, inspectedKey, selectedKey, focusedKey, artCache } = input;
   const tokens = resolveKitTokens(theme);
-  drawBreadcrumb(ctx, layout, theme);
   drawTotalLine(ctx, layout.totalLine, theme);
 
   const viewTop = layout.bodyTop;
@@ -369,7 +343,6 @@ function wedgePath(ctx: Canvas2D, cx: number, cy: number, rIn: number, rOut: num
 
 function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingViewLayout): void {
   const { theme, scrollTop, inspectedKey, selectedKey, focusedKey } = input;
-  drawBreadcrumb(ctx, layout, theme);
 
   if (layout.topLine) {
     const { rect, text, comparison, partialTabRect } = layout.topLine;
@@ -687,7 +660,6 @@ function drawMosaicTile(
 
 function drawMosaicView(ctx: Canvas2D, input: BreakdownPaintInput, layout: MosaicViewLayout): void {
   const { theme, inspectedKey, focusedKey } = input;
-  drawBreadcrumb(ctx, layout, theme);
   drawTotalLine(ctx, layout.totalLine, theme);
 
   for (const tile of layout.tiles) {

@@ -37,7 +37,7 @@ export default function DoctrineMasteryView(props: WidgetProps) {
   const onActivate = useCallback((action: InstalledAction) => {
     if (!track || !tag || !action.meta || typeof action.meta !== 'object') return;
     const meta = action.meta as DoctrineTrackMeta;
-    if (!meta.rewards?.length || meta.subId === null) return;
+    if ((!meta.rewards?.length && meta.rewardsUnknown === null) || meta.subId === null) return;
     setOpened({ on: openedOn(track, tag), key: action.subject, meta, hour: action.hour });
   }, [track, tag]);
 
@@ -87,7 +87,10 @@ export default function DoctrineMasteryView(props: WidgetProps) {
             <p className="dossier-missing">{shown.meta.folderTitle}</p>
             {rewards.error && <WidgetState kind="error" scale="section" failure={rewards.error} onRetry={rewards.retry} />}
             <section className="dossier-section">
-              <h4>Steps ({shown.meta.unlocked} of {shown.meta.rewards.length} unlocked)</h4>
+              <h4>{shown.meta.rewardsUnknown === null
+                ? `Steps (${shown.meta.unlocked} of ${shown.meta.rewards.length} unlocked)`
+                : `Steps (${shown.meta.unlocked} unlocked)`}</h4>
+              {shown.meta.rewardsUnknown !== null && <p className="dossier-missing">{shown.meta.rewardsUnknown}</p>}
               {shown.meta.rewards.map((reward, index) => {
                 const needed = thresholds[index];
                 const unlocked = index < shown.meta.unlocked;

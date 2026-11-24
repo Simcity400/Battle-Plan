@@ -1207,6 +1207,12 @@ test('advancing through an open bucket and a growing mark cluster costs what cha
   const fresh = boundTiledSeries(line, displayedHour(900));
   assert.deepEqual(fresh.buckets.at(0), cursor.advance(line, 900).buckets.at(0));
 
+  const brokenRuns: Run[] = [{ firstHour: 0, lastHour: 9, value: 1, breakBefore: true }, { firstHour: 10, lastHour: 19, value: 2 }];
+  const brokenLine: TiledLine = { ...line, summary: { ...line.summary, runs: brokenRuns } };
+  const brokenCursor = new BoundedSeriesCursor();
+  brokenCursor.advance(brokenLine, 3);
+  assert.deepEqual(brokenCursor.advance(brokenLine, 4).buckets.at(0), boundTiledSeries(brokenLine, displayedHour(4)).buckets.at(0), 'a resumed cut observes a run’s break once, as a fresh cut does');
+
   const pointLine: TiledLine = { ...line, summary: { ...line.summary, runs: undefined } };
   const pointCursor = new BoundedSeriesCursor();
   const low = pointCursor.advance(pointLine, 105, { prefixPoints: [{ hour: 100, value: 1 }] });

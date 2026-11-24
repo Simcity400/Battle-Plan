@@ -127,7 +127,12 @@ fn part<'a>(score: &'a CountryGameScoreRow, by: &str) -> Option<(&'a Recorded<i6
     })
 }
 
-pub(super) fn top(scored: &[(&str, &CountryGameScoreRow)], ask: &GameScoreTopParams) -> GameScoreTop {
+pub(super) fn holders_unresolved(holders: &dashboard_query::identity::Holders, hour: i32) -> bool {
+    holders.unknown.iter().any(|&(first, last, _)| first <= hour && hour <= last)
+        || holders.tags.values().flatten().any(|run| run.first <= hour && hour <= run.last && run.holder == dashboard_query::identity::Holder::Unresolved)
+}
+
+pub(super) fn top(scored: &[(&str, &CountryGameScoreRow)], unplaced: &[&CountryGameScoreRow], ask: &GameScoreTopParams) -> GameScoreTop {
     let mut known = Vec::with_capacity(scored.len());
     let mut unread = 0usize;
     for &(tag, score) in scored {
@@ -147,6 +152,21 @@ pub(super) fn top(scored: &[(&str, &CountryGameScoreRow)], ask: &GameScoreTopPar
     }
     known.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
     known.truncate(usize::try_from(ask.count).unwrap_or(usize::MAX));
+    let full = known.len() >= usize::try_from(ask.count).unwrap_or(usize::MAX);
+    let floor = known.last().map(|&(value, _)| value);
+    let contending = unplaced.iter().filter(|score| match part(score, &ask.by) {
+        Some((Recorded::Value(value), CountryGameScoreRow::KNOWN)) => !full || floor.is_none_or(|floor| *value >= floor),
+        _ => true,
+    }).count();
+    if contending > 0 {
+        return GameScoreTop {
+            tags: Vec::new(),
+            missing: Some(format!(
+                "The top {} by {} score is not known: {contending} scored countries could not be matched to a tag at this hour and could be among them",
+                ask.count, ask.by
+            )),
+        };
+    }
     GameScoreTop { tags: known.into_iter().map(|(_, tag)| tag.to_owned()).collect(), missing: None }
 }
 
@@ -283,6 +303,8 @@ impl AtHour for GameScore {
             columns[at] = dashboard_declare::field(TableId::CountryGameScores, name)?;
         }
         let named = Named::new(at.holders, frame.hour);
+        let unresolved = params.top.is_some() && holders_unresolved(at.holders, frame.hour);
+        let mut unplaced = Vec::new();
         let mut unheld = 0usize;
         let mut scored = Vec::with_capacity(if params.top.is_some() { scores.len() } else { 0 });
         for score in scores {
@@ -292,10 +314,13 @@ impl AtHour for GameScore {
                     reply.rows.push(row(tag, score));
                     if params.top.is_some() { scored.push((tag, score)); }
                 }
-                None => unheld += 1,
+                None => {
+                    unheld += 1;
+                    if unresolved { unplaced.push(score); }
+                }
             }
         }
-        if let Some(ask) = &params.top { reply.top = Some(top(&scored, ask)); }
+        if let Some(ask) = &params.top { reply.top = Some(top(&scored, &unplaced, ask)); }
         reply.rows.sort_unstable_by(|a, b| a.tag.cmp(&b.tag));
         if unheld > 0 {
             reply.warnings.push(format!("{unheld} scored countries are held by no tag at this hour and are not shown"));
