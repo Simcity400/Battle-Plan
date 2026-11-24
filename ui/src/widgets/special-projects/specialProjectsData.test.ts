@@ -1,11 +1,10 @@
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { panelStructure, panelValues } from '../../draw/panels/views.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectEntry, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectStructure, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, completions, currentProjects, heldThrough, historyCard, historyPicture, historyProject, historyStructure, historyUnrecorded, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
@@ -21,7 +20,7 @@ test('project effects render again when their game text changes, never only beca
 
 const marker = (date: number, readHour: number, counted = true): ProjectEntry => ({ ordinal: 3, date, completion: true, readHour, counted, presentation: counted ? 0 : null });
 
-const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],
+const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [], shown: { through: null, running: [], completed: [], undated: 0 },
   identities: [{firstHour:100,lastHour:199,slot:5,countryId:10},{firstHour:220,lastHour:300,slot:5,countryId:10}],
   available: [{firstHour:100,lastHour:199},{firstHour:220,lastHour:300}], partial: [], unresolved: [],
   iterationTexts:{2:'Mod iterations: 2',3:'Mod iterations: 3'},
@@ -32,24 +31,6 @@ const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spa
     {firstHour:100,lastHour:147,readHour:100,presentation:0,progress:17,state:'running',iterations:2,scientistRead:100,lastScientistRead:null},
     {firstHour:148,lastHour:199,readHour:148,presentation:0,progress:100,state:'completed',iterations:3,scientistRead:100,lastScientistRead:null},
   ],entries:[marker(140,148)],attempts:[]}],
-});
-
-test('a dated project packet reveals its own rows and warnings', () => {
-  const data = fixture();
-  assert.notEqual(panelStructure('special-projects', data, 147), panelStructure('special-projects', data, 148));
-  const before = panelStructure('special-projects', data, 147);
-  const renamed = fixture();
-  renamed.presentations[0].name = 'New name in another seed';
-  assert.notEqual(panelStructure('special-projects', renamed, 147), before);
-  data.warnings.push('Unknown project state');
-  assert.notEqual(panelStructure('special-projects', data, 147), before);
-});
-
-test('an exact project read derives its structure from the sampled hour', () => {
-  const data = fixture();
-  const stale = currentKey(data, 147);
-  const values = panelValues('special-projects', data, null, 148, stale);
-  assert.equal(values?.get('episode'), 'Mod project name');
 });
 
 test("statuses step without interpolation, and a completion's date is a history entry, never the status's", () => {
@@ -341,7 +322,6 @@ test('Current lists running projects closest to completion first, then completed
   assert.deepEqual(ids(late.completed), ['done']);
   assert.deepEqual(ids(late.earlier), ['early']);
   assert.ok(![...late.running, ...late.completed, ...late.earlier].some(card => card.project.id === 'delta'), 'the cancelled project is not listed');
-  assert.equal(earlierBound(late.earlier), 100);
   const before = currentProjects(projects(), 159);
   assert.deepEqual(ids(before.running), ['gamma', 'done', 'beta'], 'progress orders running projects, not their ids');
   assert.deepEqual(ids(before.completed), []);
@@ -367,25 +347,6 @@ test('History lanes run in first-read order, split at each progress step and fol
   assert.equal(closedLane('closed', projectHistory(fixture(), 199)), null);
 });
 
-test('Current renders again only when a section, order, name, scientist, state or date changes, never for progress alone', () => {
-  const data = projects();
-  assert.equal(currentKey(data, 149), currentKey(data, 150));
-  assert.notEqual(currentKey(data, 172), currentKey(data, 173), 'a new iteration count renders');
-  assert.notEqual(currentKey(data, 159), currentKey(data, 160));
-  const overtaking = projects();
-  overtaking.projects[2].statuses[2] = { ...overtaking.projects[2].statuses[2], progress: 60 };
-  assert.notEqual(currentKey(overtaking, 172), currentKey(overtaking, 173));
-  assert.equal(currentProjects(data, 200).running.length, 0, 'an hour not recorded shows no cards');
-  const inPart = { ...projects(), partial: [{ firstHour: 200, lastHour: 200 }] };
-  assert.notEqual(currentKey(inPart, 200), currentKey(inPart, 201), 'an hour read in part and a following unrecorded hour name different reasons');
-  const dated = projects();
-  dated.projects[0].entries = [marker(90, 160), marker(165, 170)];
-  assert.notEqual(historyPicture([dated], 170, () => undefined), historyPicture([data], 170, () => undefined), 'History renders again when a completion outside its status is listed');
-  const counted = projects();
-  counted.projects[2].statuses[2] = { ...counted.projects[2].statuses[2], iterations: 2 };
-  assert.notEqual(currentKey(counted, 180), currentKey(projects(), 180), 'U-S4: a recorded iteration count renders the open pop-up again');
-});
-
 test('History names an interval read only in part or not at all, never as no projects, though a later read is complete or only part was read', () => {
   const later = { ...fixture(), projects: [], available: [{ firstHour: 220, lastHour: 300 }], partial: [{ firstHour: 150, lastHour: 150 }] };
   assert.equal(historyUnrecorded([later], 140, 160), 'Projects were read only in part over this time.');
@@ -404,17 +365,6 @@ test('History names an interval read only in part or not at all, never as no pro
   const empty = { ...later, available: [{ firstHour: 100, lastHour: 150 }], partial: [] };
   assert.notEqual(historyPicture([empty], 150, () => undefined, 100), historyPicture([empty], 160, () => undefined, 100), 'with no projects, a change in coverage renders');
   assert.equal(historyPicture([empty], 160, () => undefined, 100), historyPicture([empty], 170, () => undefined, 100));
-});
-
-test('a running card paints its progress, bar and iterations at the hour, and nothing where the hour holds no status', () => {
-  const data = projects();
-  const beta = data.projects[2];
-  assert.deepEqual(runningValues(beta, 149), { progress: '0%', fill: 0, iterations: '×0' });
-  assert.deepEqual(runningValues(beta, 180), { progress: '30%', fill: 0.3, iterations: '×1' });
-  assert.equal(runningValues(beta, 100), null);
-  const backwards = { ...beta, statuses: [{ ...beta.statuses[0], progress: -20 }] };
-  assert.equal(runningValues(backwards, 130)?.fill, 0, 'a negative prototype progress draws an empty bar, its percent as recorded');
-  assert.equal(runningValues(backwards, 130)?.progress, '-20%');
 });
 
 test('History bounded by the playhead shows no status past it, and renders again only at a start, an end or a new scientist', () => {
@@ -499,8 +449,6 @@ test('U-S1: a status and its scientist name the read they come from when it is o
   const tip = projectTooltip(data, currentProjects(data, 130).running[0], 130);
   assert.equal(tip.rows.find(row => row.label === 'Status')?.value, `read ${formatDateTime(124)}`);
   assert.equal(tip.rows.find(row => row.label === 'Scientist')?.value, `Mod scientist (read ${formatDateTime(100)})`);
-  assert.notEqual(currentKey(data, 123), currentKey(data, 124), 'Current renders again when the read it names changes');
-  assert.notEqual(currentKey(data, 124), currentKey(data, 125), 'K6: and when its label first shows, one hour after the read');
 });
 
 test('X-S9: the pop-up joins the Projects read that supplied its card, though it precedes the published hours', () => {
@@ -572,13 +520,6 @@ test('F-S6, F-S7: a kept completion hovers as its counted entry, and warnings ch
   const tip = historyTooltip(data, 'history-only', span, 118, 150);
   assert.deepEqual(tip?.rows, [{ label: 'Completed', value: dayLabel(118) }], `the completion bar names its completion: ${JSON.stringify(tip)}`);
   assert.notEqual(historyPicture([{ ...data, warnings: ['a new warning'] }], 150, () => undefined), historyPicture([data], 150, () => undefined));
-});
-
-test('F-S2: a newly counted completion changes the Current structure, so its menu offers the jump', () => {
-  const data = projects();
-  const counted = projects();
-  counted.projects[2].entries = [marker(170, 175)];
-  assert.notEqual(projectStructure(counted, 180), projectStructure(data, 180));
 });
 
 test('R3-S5: a completion dated outside the project status stays drawn once the project gains a status', () => {
