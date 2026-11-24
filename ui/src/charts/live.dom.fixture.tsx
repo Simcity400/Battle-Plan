@@ -12,8 +12,6 @@ import Sunburst from './sunburst/Sunburst';
 import type { SunburstItem, SunburstValues } from './sunburst/Sunburst';
 import DrillParts from './drill/DrillParts';
 import type { DrillPart, LiveDrillParts } from './drill/DrillParts';
-import FlowDiagram from './flow/FlowDiagram';
-import type { FlowValues } from './flow/FlowDiagram';
 import { canvasElement } from './surface';
 import '../styles.css';
 
@@ -101,12 +99,6 @@ const drillParts = (a: number | null, b: number | null): DrillPart[] => [
 ];
 const drillLive = new LiveCell<ReturnType<LiveDrillParts['read']>>({ parts: drillParts(30, 10) });
 
-const flowValues = (value: number | null): FlowValues => value === null ? { nodes: [], links: [], message: 'Not recorded at this hour' } : {
-  nodes: [{ id: 's', side: 'source', label: 'Source', color: '#aa3333', order: 's' }, { id: 't', side: 'target', label: 'Target', color: '#3333aa', order: 't' },
-    { id: 'u', side: 'target', label: 'Other', color: '#33aa33', order: 'u' }],
-  links: [{ id: 'st', source: 's', target: 't', value, color: '#aa3333', order: 'st' }, { id: 'su', source: 's', target: 'u', value: 10, color: '#aa3333', order: 'su' }], message: null };
-const flowLive = new LiveCell<FlowValues>(flowValues(10));
-
 export const fixture = {
   settle,
   commits: () => ({ ...commits }),
@@ -161,14 +153,6 @@ export const fixture = {
   async pushDrill(a: number | null, b: number | null) { drillLive.set({ parts: drillParts(a, b) }); await settle(); },
   drill: () => [...roots.get('drill')!.host.querySelectorAll('.drill-parts > li')].map(row => [row.querySelector('.drill-part-label')?.textContent, row.querySelector('b')?.textContent]),
 
-  async mountFlow(live: boolean) {
-    const { root } = host('flow', 500, 300);
-    const values = flowValues(10);
-    root.render(counted('flow', <FlowDiagram key={String(live)} label="Synthetic flow" nodes={values.nodes} links={values.links} stretch="one" active live={live ? flowLive : undefined} />));
-    await settle();
-  },
-  async pushFlow(value: number | null) { flowLive.set(flowValues(value)); await settle(); },
-  flowTexts: () => lastFrame('flow').texts,
 
   picture: (id: string) => canvasOf(id).toDataURL(),
   unmount(id: string) { roots.get(id)?.root.render(<></>); },

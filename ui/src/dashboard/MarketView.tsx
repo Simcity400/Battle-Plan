@@ -1,19 +1,27 @@
 import { useRef } from 'react';
 import type { ReactNode } from 'react';
-import { dayLabel } from '../../charts/draw';
-import { liveKey } from '../../charts/live';
-import type { LiveValues } from '../../charts/live';
-import WidgetState from '../../components/WidgetState';
-import { VirtualList } from '../../components/VirtualList';
-import type { MarketAt, MarketItem, MarketLevel, MarketGrant } from './types';
-import { priceLevel, rawAmount } from './marketData';
+import { dayLabel } from '../charts/draw';
+import { liveKey } from '../charts/live';
+import type { LiveValues } from '../charts/live';
+import WidgetState from '../components/WidgetState';
+import { VirtualList } from '../components/VirtualList';
+import type { MarketGrant, MarketItem, MarketLevel } from '../generated/dashboard';
+import { priceLevel, type MarketAt } from './market.ts';
+import './marketView.css';
+function rawAmount(raw: string, denominator = 100000n, places = 5): string {
+  const value = BigInt(raw), magnitude = value < 0n ? -value : value;
+  const whole = magnitude / denominator;
+  const fraction = ((magnitude % denominator) * 10n ** BigInt(places) / denominator).toString().padStart(places, '0').replace(/0+$/, '');
+  return `${value < 0n ? '-' : ''}${whole}${fraction ? `.${fraction}` : ''}`;
+}
+
 const actor = (tag: string | null) => tag ?? 'Country name unavailable';
 function Items({ title, items, share = false }: { title: string; items: MarketItem[]; share?: boolean }) {
   return <div className="market-items"><h4>{title}</h4>{items.length ? <dl>{items.map((item, index) => <div key={index}><dt title={item.variant}>{item.name ?? 'Equipment name unavailable'}</dt><dd title={`Recorded amount: ${item.amountRaw}`}>{rawAmount(item.amountRaw, share ? 1000n : 100000n)}{share ? '%' : ''}</dd></div>)}</dl> : <p>None</p>}</div>;
 }
 function Levels({ levels }: { levels: MarketLevel[] }) { return levels.length ? <div className="market-items"><h4>Asking price levels</h4><dl>{levels.map((level, index) => <div key={index}><dt title={level.variant}>{level.name ?? 'Equipment name unavailable'}</dt><dd>{priceLevel(level.level)}</dd></div>)}</dl></div> : <p>Normal asking price unless specified.</p>; }
 function Grants({ grants }: { grants: MarketGrant[] }) { return grants.length ? <div className="market-items"><h4>Subsidies</h4>{grants.map((grant, index) => <p key={index}>{rawAmount(grant.cicRaw)} CIC · {grant.archetype ?? 'Archetype unavailable'} · {grant.trigger !== null ? 'Conditional eligibility' : grant.targets.length ? grant.targets.join(', ') : 'No eligible countries'}</p>)}</div> : <p>No subsidies.</p>; }
-export default function TradeMarketView({ data, selected, onPick, values, deliveries }: { data: MarketAt; selected?: string | null; onPick?: (key: string) => void;
+export default function MarketView({ data, selected, onPick, values, deliveries }: { data: MarketAt; selected?: string | null; onPick?: (key: string) => void;
   values?: LiveValues<number>; deliveries?: ReactNode }) {
   const root = useRef<HTMLDivElement>(null);
   const offers = data.offers?.filter(row => !selected || selected === `offer:${row.country}`) ?? null;

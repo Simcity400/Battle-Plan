@@ -5,7 +5,6 @@ import type { Root } from 'react-dom/client';
 import EquipmentProducedWidget from '../widgets/equipment-produced/EquipmentProducedWidget';
 import NavalSupremacyWidget from '../widgets/naval-supremacy/NavalSupremacyWidget';
 import ProductionSpendingWidget from '../widgets/production-spending/ProductionSpendingWidget';
-import TradeFlowsWidget from '../widgets/trade-flows/TradeFlowsWidget';
 import AirKillsLossesWidget from '../widgets/air-kills-losses/AirKillsLossesWidget';
 import { MeasuredWidget } from './widgetPerf.ts';
 import { WINDOW_HOURS } from './heldWindows.ts';
@@ -69,17 +68,6 @@ function spending(params: Record<string, unknown>) {
     total: runs, totalWithoutRefits: runs, equipmentTotal: runs, equipmentTotalWithoutRefits: runs, repairs: null, window: index, firstHour, lastHour };
 }
 
-function trade(params: Record<string, unknown>) {
-  const firstHour = params.from as number, lastHour = params.to as number;
-  const runs = days(params.window as number).filter(day => day >= firstHour && day + 23 <= lastHour);
-  return { branchId: '1', decimals: 5, resources: [{ id: 1, token: 'steel', ordinal: 1, name: 'Steel', icon: null }], countries: TAGS,
-    countryIdentities: TAGS.map(tag => ({ tag, runs: identities(tag).map(run => ({ ...run, firstHour, lastHour })) })), firstHour, lastHour, known: [{ firstHour, lastHour }], partial: [],
-    flows: [{ seller: 0, buyer: 1, resource: 1, sellerIdentity: '[1,1]', buyerIdentity: '[2,2]', sellerTags: runs.map(() => 0), buyerTags: runs.map(() => 1),
-      firstHours: runs, lastHours: runs.map(day => day + 23), deliveredRaw: runs.map(day => String(1_000_000 + (day % 7) * 1000)),
-      factories: runs.map(() => 1), convoysAssigned: runs.map(() => 0), convoysRequired: runs.map(() => 0), deals: runs.map(() => 1) }],
-    warnings: [] };
-}
-
 function air(params: Record<string, unknown>) {
   const index = params.window as number, [firstHour, lastHour] = hoursOf(index);
   const identity = (tag: string) => `${TAGS.indexOf(tag) + 1}:${TAGS.indexOf(tag) + 1}`;
@@ -99,7 +87,6 @@ function reply(product: string, params: Record<string, unknown>): unknown {
     case 'equipment-produced-types': return { branchId: '1', types: [{ key: 'infantry_equipment', name: 'Infantry equipment' }], mostDelivered: 'infantry_equipment', warnings: [] };
     case 'naval-supremacy': return supremacy(params);
     case 'production-spending': return spending(params);
-    case 'trade-flows': return trade(params);
     case 'military-air-ledger': return air(params);
     case 'country-styles': return { branchId: '1', hour: params.hour, styles: [], warnings: [] };
     case 'country-facts': return { branchId: '1', known: [[0, HOURS - 1]], names: [], reasons: [], flags: [], countries: [], warnings: [] };
@@ -138,7 +125,7 @@ function Counted({ id, children }: { id: string; children: ReactNode }) {
   </Boundary></MeasuredWidget>;
 }
 
-export const PRODUCTS = { produced: 'equipment-produced', supremacy: 'naval-supremacy', spending: 'production-spending', trade: 'trade-flows', air: 'military-air-ledger' } as const;
+export const PRODUCTS = { produced: 'equipment-produced', supremacy: 'naval-supremacy', spending: 'production-spending', air: 'military-air-ledger' } as const;
 
 export const fixture = {
   async mount() {
@@ -158,7 +145,6 @@ export const fixture = {
       {box('produced', <EquipmentProducedWidget {...widget('produced', 'equipment-produced', both, { count: 'ic' })} />)}
       {box('supremacy', <NavalSupremacyWidget {...widget('supremacy', 'naval-supremacy', one)} />)}
       {box('spending', <ProductionSpendingWidget {...widget('spending', 'production-spending', one)} />)}
-      {box('trade', <TradeFlowsWidget {...widget('trade', 'trade-flows', { kind: 'all' })} />)}
       {box('air', <AirKillsLossesWidget {...widget('air', 'air-kills-losses', both)} />)}
     </>);
     await settle(60);
