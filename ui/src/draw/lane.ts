@@ -579,7 +579,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const [id, owner] of this.presented) if (owner.widget === widget) this.presented.delete(id);
   }
 
-  bind(widget: number, binding: Binding, model?: unknown, retry = false) {
+  bind(widget: number, binding: Binding, model?: unknown, retry = false, remounted = false) {
     const held = this.widgets.get(widget);
     if (!held) return;
     const ownerChanged = binding.owner !== undefined && held.binding.owner !== undefined && binding.owner !== held.binding.owner;
@@ -589,7 +589,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (model !== undefined) held.own = this.store.resolve(model);
     if (model !== undefined || ownerChanged) held.model = this.compose(held);
     this.bounded(held);
-    const keepSurfaces = !ownerChanged && !retry && held.installed !== null
+    const keepSurfaces = !ownerChanged && !retry && !remounted && held.installed !== null
       && prev.pin === binding.pin && prev.offset === binding.offset
       && prev.surfaces.length === binding.surfaces.length
       && prev.surfaces.every((surface, at) => {

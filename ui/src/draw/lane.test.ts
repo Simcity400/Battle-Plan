@@ -3484,7 +3484,7 @@ test('N widgets on a lane: when one changes (including same-owner rebind on unch
     paint(input): Painted {
       const surface = input.binding.surfaces[0];
       if (!surface || surface.width <= 0 || surface.height <= 0) {
-        return { surfaces: [], fields: {}, motion: false };
+        return { surfaces: [], fields: {}, motion: false, waiting: true };
       }
       const val = input.pictures[0]?.parts[0]?.value;
       const num = val?.kind === 'answer' && val.answer.kind === 'rows' ? String(cellValue(val.answer, 0)) : 'none';
@@ -3507,6 +3507,7 @@ test('N widgets on a lane: when one changes (including same-owner rebind on unch
   lane = new Lane<Fake>({
     lane: 0,
     lanes: 1,
+    clock: () => 0,
     views: () => view,
     crop: async sources => sources.map((source): Fake => {
       const meta = source as unknown as { widget: number; content: string };
@@ -3529,7 +3530,7 @@ test('N widgets on a lane: when one changes (including same-owner rebind on unch
   lane.follow(60, 'followed');
   lane.mount(6, [60], 'view');
   lane.bind(6, { generation: 1, owner: 'o6', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null });
-  page.mount(6, { route: ROUTE, lane: 0, owner: 'o6', surfaces: [] });
+  page.mount(6, { route: ROUTE, lane: 0, owner: 'o6', surfaces: [{ install() {}, clear() {} }] });
   lane.bindRoute(60, ROUTE, NATIVE, 0);
 
   lane.receive('follow', message(10, [1, 2, 3, 4, 5, 6].map(i => ({ id: i * 10, hour: 10, answer: rows([1n], [BigInt(i)]) })), false, NATIVE, 0));
@@ -3537,6 +3538,7 @@ test('N widgets on a lane: when one changes (including same-owner rebind on unch
   await flush();
   page.frame();
   assert.equal(cropped.length, 5, 'initial frame crops the 5 visible widgets and 0 for the zero-sized widget');
+  assert.notEqual(page.view(6).mode, 'picture', 'zero-sized widget waits without presenting an empty picture');
   cropped.length = 0;
 
   page.rebind(2, { owner: 'o2' });
@@ -3549,8 +3551,19 @@ test('N widgets on a lane: when one changes (including same-owner rebind on unch
   assert.equal(page.view(2).mode, 'picture', 'same-owner rebind keeps the installed picture without re-cropping');
   cropped.length = 0;
 
+  const replacement = { installs: 0, install() { this.installs++; }, clear() {} };
+  page.remount(2, [replacement]);
+  lane.bind(2, { generation: 3, owner: 'o2', surfaces: [{ width: 100, height: 40, dpr: 1 }], offset: 0, pin: null }, undefined, false, true);
+  page.publish(20, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.deepEqual(cropped, [2], 'remounting an equal-size page surface forces a fresh crop without kept-content refusal');
+  assert.equal(page.view(2).mode, 'picture');
+  assert.equal(replacement.installs, 1);
+  cropped.length = 0;
+
   page.rebind(2, { owner: 'o2-next' });
-  lane.bind(2, { generation: 3, owner: 'o2-next', surfaces: [{ width: 100, height: 40, dpr: 1 }], offset: 0, pin: null });
+  lane.bind(2, { generation: 4, owner: 'o2-next', surfaces: [{ width: 100, height: 40, dpr: 1 }], offset: 0, pin: null });
   page.publish(20, { playing: false, seek: 0 });
   await flush();
   page.frame();

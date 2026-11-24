@@ -83,6 +83,7 @@ export type LaneStatus = 'picture' | 'scene' | { readonly refused: string };
 
 export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly family: FamilyId;
+  readonly incremental?: boolean;
   boundary(model: TModel, hour: number): number;
   redraw(model: TModel, hour: number): number;
   status(model: TModel): LaneStatus;
@@ -424,8 +425,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
       const binding = input.model;
       const surface = input.binding.surfaces[0];
+      if (!surface || surface.width <= 0 || surface.height <= 0) return WAITING;
       const waiting: Painted = { ...EMPTY, nextChangeAt: input.hour + 1 };
-      if (!isBinding(binding) || !surface || surface.width <= 0 || surface.height <= 0 || !binding.theme) return waiting;
+      if (!isBinding(binding) || !binding.theme) return waiting;
       const theme = binding.theme;
       const projection = projectionOf(binding, input.widget);
       if (projection === 'loading') return WAITING;
@@ -580,7 +582,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           return result;
         };
         const painted = drawCanvas();
-        markCanvasPainted(keep.canvas, drawCanvas);
+        if (!family.incremental) markCanvasPainted(keep.canvas, drawCanvas);
         keep.motion = painted === true;
         keep.expiry = typeof painted === 'number' ? painted : Infinity;
         keep.drawn = { binding, model, layout, hour: drawn };

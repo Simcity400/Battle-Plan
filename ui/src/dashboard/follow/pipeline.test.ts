@@ -1009,3 +1009,31 @@ test('F7: releasing one of two tokens sharing a subscription on the same widget 
   }
 });
 
+test('replacing a mounted PageSurface with a new equal-size PageSurface installs cleanly on the first frame', async () => {
+  const drawn: LaneView = {
+    paint: input => ({
+      surfaces: input.binding.surfaces.map(() => ({ source: { width: 80, height: 40 }, content: `h:${input.hour}` })),
+      fields: {},
+      motion: false,
+    }),
+  };
+  const { pipeline, clock, send, source, settle, close } = inProcess({ views: kind => kind === 'drawn' ? drawn : undefined });
+  try {
+    const id = pipeline.acquire('remount-eq|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state' }, 'followed')!;
+    pipeline.present(id, 'drawn');
+    const first = { installs: 0, install() { this.installs++; }, clear() {} };
+    pipeline.bind(id, [first], { surfaces: [{ width: 80, height: 40, dpr: 1 }] });
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [42n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture' && first.installs === 1));
+
+    const second = { installs: 0, install() { this.installs++; }, clear() {} };
+    pipeline.bind(id, [second], { surfaces: [{ width: 80, height: 40, dpr: 1 }] });
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture' && second.installs === 1), 'equal-size surface replacement receives a fresh bitmap');
+  } finally {
+    close();
+  }
+});
+

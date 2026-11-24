@@ -187,7 +187,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'unfollow': lane.unfollow(m.sub); break;
       case 'mount': lane.mount(m.widget, m.subs, m.view, m.model); break;
       case 'unmount': lane.unmount(m.widget); break;
-      case 'bind': lane.bind(m.widget, m.binding, m.model, m.retry); break;
+      case 'bind': lane.bind(m.widget, m.binding, m.model, m.retry, m.remounted); break;
       case 'supply': lane.supply(m.widget, m); break;
       case 'payloads': lane.payloads(m); break;
       case 'exact': lane.exact(m.sub, m.hour, m.data, m.refused); break;
