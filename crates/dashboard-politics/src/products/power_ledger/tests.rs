@@ -1285,3 +1285,35 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
         assert_eq!(reply.reconciliation.reason.as_deref(), Some(super::HOLDER_UNRESOLVED), "R4-S6: an unresolved holder in {from}..{to} is not \"not held\"");
     }
 }
+
+#[test]
+fn spending_markers_are_payments_at_their_own_hour_shown_once_read_with_the_next_read_as_their_change() {
+    let source = recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let span = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, to: LAST };
+    let held = super::markers::build(&source, &query, &span, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+
+    let before = held.at(103);
+    assert!(before.markers.is_empty(), "the decision paid at 103 is read at 104: not shown before");
+    assert_eq!(before.next_change, Some(104));
+
+    let first = held.at(110);
+    let shown: Vec<_> = first.markers.iter().map(|marker| (marker.hour, marker.dated, marker.since, marker.payments, marker.charge_raw.clone())).collect();
+    assert_eq!(shown, [(103, true, None, 1, Some("5000000".into()))], "one marker at the payment's own hour, never at a bin's closing hour");
+    assert_eq!(first.next_change, Some(120));
+    let gaps: Vec<_> = first.unrecorded.iter().map(|gap| (gap.first_hour, gap.last_hour)).collect();
+    assert_eq!(gaps, [(FIRST, FIRST)], "an hour whose spending was not counted is said, never left as no spending");
+
+    let last = held.at(LAST);
+    assert_eq!(last.markers.iter().map(|marker| marker.hour).collect::<Vec<_>>(), [103, 120]);
+    assert_eq!(last.next_change, None);
+
+    let mut whole = asked(&source, FIRST, LAST);
+    let item = whole.payments[0].item;
+    whole.payments[1].item = item;
+    whole.payments[1].payments = 3;
+    whole.payments[0].hour = None;
+    let undated = super::markers::index(&whole, Vec::new()).at(LAST);
+    let shown: Vec<_> = undated.markers.iter().map(|marker| (marker.hour, marker.dated, marker.since, marker.payments)).collect();
+    assert_eq!(shown, [(104, false, None, 1), (120, true, Some(105), 3)], "an undated payment is placed by its read; several in one read say the interval they fall in and their count");
+}

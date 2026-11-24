@@ -639,7 +639,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (!entries.length) return '';
     return JSON.stringify(entries.map(e => {
       const r = e.read as Extract<typeof e.read, { shape: 'pixel-binned' }>;
-      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.keys ?? null, r.within ? [...r.within.entries()] : null, r.marks === true, r.top ?? null, lastHour];
+      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.keys ?? null, r.within ? [...r.within.entries()] : null, r.top ?? null, lastHour];
     }));
   }, [plan, lastHour]);
 
@@ -710,7 +710,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 binHours,
                 index,
                 ...keyedTileParams(tags.map(id => byId.get(id)!), within, gateSpanRef.current),
-                ...(read.marks ? { withMarks: true } : {}),
               }
             : {
                 branchId: entry.branch,
@@ -721,7 +720,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 ...(within
                   ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => gateSpanRef.current(span.firstHour, span.lastHour) ?? [])] as const) }
                   : {}),
-                ...(read.marks ? { withMarks: true } : {}),
               },
         });
       const ask = async (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
@@ -741,7 +739,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
                 sourceId: entry.source.id,
                 revision: entry.source.revision,
                 product: 'series-tiles',
-                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
+                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}), hour: gated },
               });
               return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
             },
@@ -749,7 +747,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         : undefined;
       const tv = new TileView(
         tileCache(runtime.client),
-        { key: laneKey, tags: laneTags, within: read.within, lastHour, marks: read.marks === true, ask, prepared, promote, ...(top ? { top } : {}) },
+        { key: laneKey, tags: laneTags, within: read.within, lastHour, ask, prepared, promote, ...(top ? { top } : {}) },
         publish,
       );
       views.set(entry.name, tv);

@@ -175,6 +175,7 @@ const OWN: &[Registered] = &[
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDCOUNTRY,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT,
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN,
+    dashboard_politics::registrations::POWER_LEDGER_MARKERS_POWERSPENDMARKERS,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS,
 ];
@@ -276,6 +277,7 @@ const MOVED_OWN: &[&str] = &[
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDCOUNTRY.key,
     dashboard_production::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT.key,
     dashboard_politics::registrations::POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN.key,
+    dashboard_politics::registrations::POWER_LEDGER_MARKERS_POWERSPENDMARKERS.key,
     dashboard_air::registrations::AIR_SUPERIORITY_TIMELINE_AIRSUPERIORITYTIMELINE.key,
     dashboard_intelligence::registrations::INTELLIGENCE_ESPIONAGE_ESPIONAGETYPETOKENS.key,
 ];
