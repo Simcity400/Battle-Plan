@@ -1,6 +1,7 @@
 use dashboard_follow::panel::{ExactReader, Panel, ProductRead, ProductReader};
 use dashboard_query::{Query, log::{self, BucketCache, FacetFilter}, series::{MissingSpan, PAGE_LIMIT, hour_of}};
 use replay_columnar::manifest::Status;
+use replay_recording::columnar_frames::{Damage, DamageScope, TableCoverage};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -147,24 +148,24 @@ pub struct LogTailReply {
 
 crate::reply_warnings!(LogTailReply);
 
-type CoverageKey = (u64, u64, [u8; 16], u64, usize);
+type BlockCoverageKey = (u64, u64, [u8; 16], u32, u32, usize);
 
 #[derive(Default)]
 pub struct CoverageCache {
-    by_branch_table: HashMap<CoverageKey, Arc<Vec<MissingSpan>>>,
+    by_block: HashMap<BlockCoverageKey, Arc<Vec<MissingSpan>>>,
 }
 
 impl CoverageCache {
     pub fn clear(&mut self) {
-        self.by_branch_table.clear();
+        self.by_block.clear();
     }
 
-    fn get(&self, key: &CoverageKey) -> Option<Arc<Vec<MissingSpan>>> {
-        self.by_branch_table.get(key).map(Arc::clone)
+    fn get(&self, key: &BlockCoverageKey) -> Option<Arc<Vec<MissingSpan>>> {
+        self.by_block.get(key).map(Arc::clone)
     }
 
-    fn insert(&mut self, key: CoverageKey, spans: Arc<Vec<MissingSpan>>) {
-        self.by_branch_table.insert(key, spans);
+    fn insert(&mut self, key: BlockCoverageKey, spans: Arc<Vec<MissingSpan>>) {
+        self.by_block.insert(key, spans);
     }
 }
 
@@ -184,48 +185,106 @@ fn unheld(query: &Query<'_>, from: i32, to: i32) -> Vec<MissingSpan> {
         .collect()
 }
 
-fn unread(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i32) -> io::Result<Vec<MissingSpan>> {
-    let recording = query.replay.recording();
+fn push_coalesced(out: &mut Vec<MissingSpan>, first_hour: i32, last_hour: i32, reason: String) {
+    match out.last_mut() {
+        Some(held) if held.reason == reason && held.last_hour + 1 == first_hour => held.last_hour = last_hour,
+        _ => out.push(MissingSpan { first_hour, last_hour, reason }),
+    }
+}
+
+fn unread_run_range(
+    recording: &replay_recording::columnar_frames::Recording,
+    run: u32,
+    log: &dashboard_declare::Log,
+    from: i32,
+    to: i32,
+) -> io::Result<Vec<MissingSpan>> {
     let mut out: Vec<MissingSpan> = Vec::new();
-    for stretch in query.timeline.within(from, to) {
-        for run in dashboard_query::read::statuses(recording, stretch.run, log.table, stretch.first, stretch.last)? {
-            let reason = match run.status {
-                Status::Complete => continue,
-                Status::NotRecorded => format!("The {} log was not recorded here", log.name),
-                Status::Truncated { missing } => format!("The {} log was read in part here ({missing} rows not read)", log.name),
-                Status::Unavailable { reason } => {
-                    let held = dashboard_query::cost::storage(|| replay_lanes::lanes::at_keys(recording, stretch.run, log.table, run.first, None, replay_lanes::lanes::Keys::These(&[])))?;
-                    held.strings.get(reason).map_or_else(|| format!("The {} log was not available here", log.name), |text| String::from_utf8_lossy(text).into_owned())
-                }
-            };
-            match out.last_mut() {
-                Some(held) if held.reason == reason && held.last_hour + 1 == run.first => held.last_hour = run.last,
-                _ => out.push(MissingSpan { first_hour: run.first, last_hour: run.last, reason }),
+    for status_run in dashboard_query::read::statuses(recording, run, log.table, from, to)? {
+        let reason = match status_run.status {
+            Status::Complete => continue,
+            Status::NotRecorded => format!("The {} log was not recorded here", log.name),
+            Status::Truncated { missing } => format!("The {} log was read in part here ({missing} rows not read)", log.name),
+            Status::Unavailable { reason } => {
+                let held = dashboard_query::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, log.table, status_run.first, None, replay_lanes::lanes::Keys::These(&[])))?;
+                held.strings.get(reason).map_or_else(|| format!("The {} log was not available here", log.name), |text| String::from_utf8_lossy(text).into_owned())
             }
-        }
+        };
+        push_coalesced(&mut out, status_run.first, status_run.last, reason);
     }
     Ok(out)
 }
 
-fn clip_spans(spans: &[MissingSpan], from: i32, to: i32) -> Vec<MissingSpan> {
-    if from > to || spans.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for span in spans {
-        if span.first_hour > to {
-            break;
-        }
-        if span.last_hour < from {
+fn unread(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i32, cache: Option<&Mutex<CoverageCache>>) -> io::Result<Vec<MissingSpan>> {
+    let recording = query.replay.recording();
+    let index = log.table.index();
+    let rev = recording.revision();
+    let mut out: Vec<MissingSpan> = Vec::new();
+    for stretch in query.timeline.within(from, to) {
+        let Some(cache) = cache else {
+            for span in unread_run_range(recording, stretch.run, log, stretch.first, stretch.last)? {
+                push_coalesced(&mut out, span.first_hour, span.last_hour, span.reason);
+            }
+            continue;
+        };
+        let valid_from = if recording.predates(index).is_some() {
+            None
+        } else {
+            match recording.table_coverage(index, stretch.run) {
+                TableCoverage::Valid => None,
+                TableCoverage::WithheldAll(reason) => {
+                    return Err(Damage::wrap(DamageScope::Withheld { table: index as u32 }, invalid(reason.to_owned())));
+                }
+                TableCoverage::WithheldBefore { ordinal, reason } => {
+                    let valid = recording.run(stretch.run)?.first_hour + ordinal as i32;
+                    if stretch.last < valid {
+                        return Err(Damage::wrap(DamageScope::Withheld { table: index as u32 }, invalid(reason.to_owned())));
+                    }
+                    Some(valid)
+                }
+            }
+        };
+        let held = recording.run(stretch.run)?;
+        let s_from = stretch.first.max(held.first_hour).max(valid_from.unwrap_or(i32::MIN));
+        let s_to = stretch.last.min(held.last_hour());
+        let (Some(first_ord), Some(last_ord)) = (held.ordinal(s_from), held.ordinal(s_to)) else {
+            continue;
+        };
+        if first_ord > last_ord {
             continue;
         }
-        out.push(MissingSpan {
-            first_hour: span.first_hour.max(from),
-            last_hour: span.last_hour.min(to),
-            reason: span.reason.clone(),
-        });
+        let first_block = held.place(first_ord).0;
+        let last_block = held.place(last_ord).0;
+        for block in first_block..=last_block {
+            let block_first = held.block_first_hour(block);
+            let block_len = held.block(block as usize).1 as i32;
+            let block_last = block_first + block_len - 1;
+            let whole_block = valid_from.is_none_or(|valid| valid <= block_first);
+            let key = (rev.number, rev.length, rev.root, stretch.run, block, index);
+            let block_spans = if whole_block {
+                if let Some(hit) = cache.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
+                    hit
+                } else {
+                    let spans = Arc::new(unread_run_range(recording, stretch.run, log, block_first, block_last)?);
+                    cache.lock().unwrap_or_else(PoisonError::into_inner).insert(key, Arc::clone(&spans));
+                    spans
+                }
+            } else {
+                let b_from = block_first.max(valid_from.unwrap_or(i32::MIN));
+                Arc::new(unread_run_range(recording, stretch.run, log, b_from, block_last)?)
+            };
+            for span in block_spans.iter() {
+                if span.first_hour > s_to {
+                    break;
+                }
+                if span.last_hour < s_from {
+                    continue;
+                }
+                push_coalesced(&mut out, span.first_hour.max(s_from), span.last_hour.min(s_to), span.reason.clone());
+            }
+        }
     }
-    out
+    Ok(out)
 }
 
 fn append_unobserved(out: &mut Vec<MissingSpan>, facets: &[FacetFilter], from: i32, to: i32) {
@@ -257,27 +316,10 @@ pub fn missing_with(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, 
     if from > to {
         return Ok(Vec::new());
     }
-    let Some(cache) = cache else {
-        let mut out = unheld(query, from, to);
-        out.extend(unread(query, log, from, to)?);
-        out.sort_by_key(|span| (span.first_hour, span.last_hour));
-        return Ok(out);
-    };
-    let rev = query.replay.recording().revision();
-    let key = (rev.number, rev.length, rev.root, query.timeline.id, log.table.index());
-    let indexed = if let Some(hit) = cache.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
-        hit
-    } else {
-        let full_from = query.timeline.first;
-        let full_to = query.timeline.last;
-        let mut all = unheld(query, full_from, full_to);
-        all.extend(unread(query, log, full_from, full_to)?);
-        all.sort_by_key(|span| (span.first_hour, span.last_hour));
-        let arc = Arc::new(all);
-        cache.lock().unwrap_or_else(PoisonError::into_inner).insert(key, Arc::clone(&arc));
-        arc
-    };
-    Ok(clip_spans(&indexed, from, to))
+    let mut out = unheld(query, from, to);
+    out.extend(unread(query, log, from, to, cache)?);
+    out.sort_by_key(|span| (span.first_hour, span.last_hour));
+    Ok(out)
 }
 
 fn reader_for<'q, 'a>(query: &'q Query<'a>, log: &'static dashboard_declare::Log, caches: Option<&LogCaches>) -> io::Result<log::Reader<'q, 'a>> {
@@ -308,14 +350,11 @@ pub fn page_with<R>(
     let selection = reader.select(&params.facets, query.timeline.first, to)?;
     let page = reader.page_with(&selection.patterns, selection.groups.len(), from, to, cursor, params.page_size, selection.overlap)?;
     let rows = page.rows.iter().map(|paged| map(paged, selection.groups[paged.group].as_ref())).collect();
-    let coverage_from = if page.first > page.base { page.rows.first().map_or(from, |paged| paged.row.hour) } else { from };
-    let coverage_to = if page.end < page.last { page.rows.last().map_or(to, |paged| paged.row.hour) } else { to };
-    let mut gaps = missing_with(query, log, coverage_from, coverage_to, caches.map(|c| c.coverage.as_ref()))?;
-    append_unobserved(&mut gaps, &params.facets, coverage_from, coverage_to);
+    let mut gaps = missing_with(query, log, from, to, caches.map(|c| c.coverage.as_ref()))?;
+    append_unobserved(&mut gaps, &params.facets, from, to);
     Ok((page, rows, gaps))
 }
 
-#[allow(clippy::too_many_arguments, reason = "a log tail request names its log, filters, range, offset, limit, facet counts and row mapper")]
 pub fn tail<R>(
     query: &Query<'_>,
     log_name: &str,
@@ -330,7 +369,6 @@ pub fn tail<R>(
     tail_with(query, log_name, facets, from, to, offset, limit, count_facets, None, map)
 }
 
-#[allow(clippy::too_many_arguments, reason = "a log tail request names its log, filters, range, offset, limit, facet counts, caches and row mapper")]
 pub fn tail_with<R>(
     query: &Query<'_>,
     log_name: &str,
@@ -362,23 +400,11 @@ pub fn tail_with<R>(
         let count = reader.total_with(&count_selection.patterns, from, to, count_selection.overlap)?;
         totals.push(LogFacetTotal { key: ask.key.clone(), total: count.to_string() });
     }
-    let covers_end = page.offset + page.rows.len() as u64 >= page.total;
-    let coverage_from = if offset > 0 || (count_facets.is_empty() && !covers_end) {
-        page.rows.last().map_or(from, |paged| paged.row.hour)
-    } else {
-        from
-    };
-    let coverage_to = if offset > 0 {
-        page.rows.first().map_or(to, |paged| paged.row.hour)
-    } else {
-        to
-    };
-    let mut gaps = missing_with(query, log, coverage_from, coverage_to, caches.map(|c| c.coverage.as_ref()))?;
-    append_unobserved(&mut gaps, facets, coverage_from, coverage_to);
+    let mut gaps = missing_with(query, log, from, to, caches.map(|c| c.coverage.as_ref()))?;
+    append_unobserved(&mut gaps, facets, from, to);
     Ok((page, rows, totals, gaps))
 }
 
-#[allow(clippy::too_many_arguments, reason = "checking whether a log tail is unchanged across quiet hours names its query, log, selections, filters, caches, previous reply and hour span")]
 pub fn quiet_tail_missing(
     query: &Query<'_>,
     log_name: &str,
@@ -389,7 +415,7 @@ pub fn quiet_tail_missing(
     from: Option<f64>,
     prev_hour: i32,
     hour: i32,
-    prev_reply: &LogTailReply,
+    _prev_reply: &LogTailReply,
 ) -> io::Result<Option<Vec<MissingSpan>>> {
     if hour <= prev_hour {
         return Ok(None);
@@ -401,29 +427,16 @@ pub fn quiet_tail_missing(
     }
     let reader = reader_for(query, log, Some(caches))?;
     let check_from = (prev_hour + 1).max(from);
-    if reader.has_any_with(&selection.patterns, check_from, hour, selection.overlap)? {
+    if reader.has_any_in(selection, check_from, hour)? {
         return Ok(None);
     }
     for cs in count_selections {
-        if reader.has_any_with(&cs.patterns, check_from, hour, cs.overlap)? {
+        if reader.has_any_in(cs, check_from, hour)? {
             return Ok(None);
         }
     }
-    let total: u64 = prev_reply.total.parse().unwrap_or(0);
-    let offset: u64 = prev_reply.offset.parse().unwrap_or(0);
-    let covers_end = offset + prev_reply.rows.len() as u64 >= total;
-    let coverage_from = if offset > 0 || (count_selections.is_empty() && !covers_end) {
-        prev_reply.rows.last().map_or(from, |row| row.hour)
-    } else {
-        from
-    };
-    let coverage_to = if offset > 0 {
-        prev_reply.rows.first().map_or(hour, |row| row.hour)
-    } else {
-        hour
-    };
-    let mut gaps = missing_with(query, log, coverage_from, coverage_to, Some(caches.coverage.as_ref()))?;
-    append_unobserved(&mut gaps, facets, coverage_from, coverage_to);
+    let mut gaps = missing_with(query, log, from, hour, Some(caches.coverage.as_ref()))?;
+    append_unobserved(&mut gaps, facets, from, hour);
     Ok(Some(gaps))
 }
 

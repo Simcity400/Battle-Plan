@@ -559,6 +559,23 @@ fn staggered_membership_intervals_match_exact_counts_without_quadratic_sweep() {
     let expected = events(&query, from, to, |_, _, country| country == 9001).len() as u64;
     assert_eq!(total, expected, "1,500 staggered intervals ending together count each matching event once");
     assert!(checked <= 20_000, "1,500 staggered intervals must not perform a quadratic active-set sweep, got {checked}");
+
+    let run = selection.patterns[0].run;
+    let country_shift = facet_shift(1);
+    let mask = u128::from(u32::MAX) << country_shift;
+    let distinct: Vec<Pattern> = (0..1_500u32)
+        .map(|i| Pattern {
+            run,
+            first: from + i as i32,
+            last: to,
+            mask,
+            value: u128::from(9001 + i) << country_shift,
+            group: i as usize,
+        })
+        .collect();
+    let (distinct_total, distinct_checked) = count_patterns_checked(|| reader.total_with(&distinct, from, to, Overlap::FirstMatch).unwrap());
+    assert_eq!(distinct_total, expected, "1,500 distinct staggered patterns ending together count exactly");
+    assert!(distinct_checked <= 20_000, "1,500 distinct staggered patterns must not perform a quadratic sweep, got {distinct_checked}");
 }
 
 #[test]
@@ -597,13 +614,14 @@ fn quiet_advance_does_not_walk_expired_historical_patterns() {
     let query = fixture.query();
     let reader = market(&query);
     let from = FIRST;
-    let quiet_hour = (FIRST + 1_200..=FIRST + 1_300).find(|&hour| fixture::market(hour).is_empty()).unwrap();
+    let quiet_hour = (FIRST + 2_200..=FIRST + 2_300).find(|&hour| fixture::market(hour).is_empty()).unwrap();
     let mut membership: Vec<CountrySpan> = (0..1_000)
-        .map(|i| CountrySpan { country: Country::from("GER"), first_hour: from + i, last_hour: from + i })
+        .map(|i| CountrySpan { country: Country::from("GER"), first_hour: from + i * 2, last_hour: from + i * 2 })
         .collect();
     membership.push(CountrySpan { country: Country::from("GER"), first_hour: quiet_hour - 5, last_hour: quiet_hour + 5 });
     let filter = FacetFilter { name: "country".into(), membership, ..Default::default() };
     let selection = reader.select(&[filter], from, quiet_hour + 5).unwrap();
+    assert!(selection.patterns.len() >= 1_000, "test must exercise at least 1,000 distinct historical patterns");
     let ((has, examined), checked) = count_patterns_checked(|| count_examined(|| reader.has_any_in(&selection, quiet_hour, quiet_hour).unwrap()));
     assert!(!has);
     assert_eq!(examined, 0);

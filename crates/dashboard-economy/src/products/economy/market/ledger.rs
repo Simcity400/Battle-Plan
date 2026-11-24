@@ -195,7 +195,6 @@ impl VariantNameCache {
         cache.lock().unwrap_or_else(PoisonError::into_inner).entries.as_ref().map_or(0, |(_, _, map)| map.len())
     }
 
-    #[allow(clippy::too_many_arguments, reason = "variant resolution names its cache, seeker, run, hour, variant ids and content")]
     fn resolve<'a>(
         cache: &Mutex<Self>,
         recording: &'a replay_recording::columnar_frames::Recording,
@@ -422,7 +421,6 @@ pub struct MarketLedgerTailParams {
     pub count_facets: Vec<LogFacetCountAsk>,
 }
 
-#[allow(clippy::too_many_arguments, reason = "loading a dated market tail passes its query, caches, context, params and hour")]
 fn load_tail_at(
     query: &Query<'_>,
     links: &BTreeMap<u32, Arc<dashboard_base::queries::country_ids::RunLinks>>,
