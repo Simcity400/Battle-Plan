@@ -49,18 +49,6 @@ export function scoreCountries(selection: CountrySelection, fallback: string[], 
   return selection.kind === 'all' ? { ...resolved, reason: null } : resolved;
 }
 
-export function scoreRows(reply: GameScoreReply, choice: { all: boolean; tags: readonly string[]; top: number | null; hour: number },
-  member: ((tag: string, hour: number) => boolean) | null, by: ScorePart, score: ScoreOf): GameScoreRow[] {
-  if (choice.top != null) {
-    return reply.rows.filter(row => row[by].missing === null && score(row.tag, by) !== undefined)
-      .sort((a, b) => score(b.tag, by)! - score(a.tag, by)! || (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0))
-      .slice(0, choice.top);
-  }
-  if (choice.all) return reply.rows;
-  const chosen = new Set(choice.tags);
-  return reply.rows.filter(row => (member ? member(row.tag, choice.hour) : chosen.has(row.tag)));
-}
-
 export function factionGroup(groups: CountryGroupReply | undefined, tag: string, hour: number): TableGroup {
   if (!groups) return { key: 'faction-not-recorded', label: 'Faction not known yet', order: 2 };
   const index = countryIdentityIndex(groups.countryIdentities);
