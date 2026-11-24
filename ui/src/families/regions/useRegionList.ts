@@ -22,7 +22,7 @@ export type RegionList =
 const CLOSED: RegionList = { kind: 'loading' };
 const NO_ASKS: readonly { readonly key: ReturnType<typeof regionKey>; readonly hour: number }[] = [];
 
-export function useRegionList(client: DashboardClient, track: BoundTrack | undefined, active: boolean): RegionList {
+export function useRegionList(client: DashboardClient, track: BoundTrack | undefined, active: boolean, hour: number | null): RegionList {
   const open = active && !!track;
   const request = useMemo(
     () => (open && track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'strategic-regions', params: { branchId: track.branch.id } }) : null),
@@ -30,15 +30,15 @@ export function useRegionList(client: DashboardClient, track: BoundTrack | undef
   );
   const listed = useProduct<StrategicRegionsReply>(client, request, open, undefined, track?.source);
   const scope = useIdentityScope(client, track?.source, track?.branch.id, open);
-  const hour = track?.branch.lastHour ?? 0;
   const regions = open ? listed.data?.regions : undefined;
-  const asks = useMemo(() => (regions ? regions.map(region => ({ key: regionKey(region.id), hour })) : NO_ASKS), [regions, hour]);
+  const asks = useMemo(() => (regions && hour !== null ? regions.map(region => ({ key: regionKey(region.id), hour })) : NO_ASKS), [regions, hour]);
   const names = useIdentities(client, track?.source, open ? scope : null, asks, { active: open });
   return useMemo((): RegionList => {
     if (!open) return CLOSED;
     if (listed.error) return { kind: 'failed', failure: listed.error, retry: listed.retry };
     if (!regions) return CLOSED;
     const entries = regions.map((region): RegionListEntry => {
+      if (hour === null) return { id: region.id, label: `Region ${region.id}`, nameMissing: true, sea: region.sea };
       const named = names.resolve(regionKey(region.id), hour);
       const name = named.kind === 'known' && named.name.kind === 'known' ? named.name.value : null;
       const reason = named.kind === 'known' && named.name.kind === 'missing' ? named.name.reason

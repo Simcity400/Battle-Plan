@@ -185,7 +185,7 @@ export type FormattedValue =
   | { readonly kind: 'zero'; readonly text: string; readonly exact: string; readonly spoken: string; readonly audit: string }
   | { readonly kind: 'notRecorded'; readonly label: string; readonly reason: string; readonly gameWindow?: boolean; readonly spoken: string; readonly audit: string }
   | { readonly kind: 'notApplicable'; readonly label: '\u2014'; readonly reason: string; readonly spoken: string; readonly audit: string }
-  | { readonly kind: 'partial'; readonly text: string; readonly exact: string; readonly reason: string; readonly atLeast?: boolean; readonly spoken: string; readonly audit: string };
+  | { readonly kind: 'partial'; readonly text: string; readonly exact: string; readonly reason: string; readonly spoken: string; readonly audit: string };
 
 export const NOT_RECORDED_LABEL = 'Not recorded';
 export const NOT_APPLICABLE_LABEL = '\u2014';
@@ -289,7 +289,6 @@ export function formatShare(share: number): string {
 export function formatProgress(fraction: number): string {
   assertFiniteNumber(fraction, 'formatProgress');
   if (fraction <= 0) return '0%';
-  if (fraction >= 1) return '100%';
   const { units, scale } = decimalOf(fraction);
   return `${(units * 100n) / 10n ** BigInt(scale)}%`;
 }
@@ -426,7 +425,6 @@ export function formatValueState(value: Value, format?: ValueFormat, options?: F
         text,
         exact,
         reason: value.reason,
-        ...(value.atLeast ? { atLeast: true } : {}),
         spoken,
         audit: spoken,
       };
@@ -598,7 +596,6 @@ export function valueStateProps(value: Value, format?: ValueFormat, narrow = fal
         kind: 'partial',
         text: formatted.exact,
         reason: formatted.reason,
-        ...(formatted.atLeast ? { atLeast: true } : {}),
         ...(narrow ? { narrow: true } : {}),
       };
   }

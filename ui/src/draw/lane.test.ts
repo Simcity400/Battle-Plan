@@ -13,7 +13,7 @@ import { splitForLanes } from '../dashboard/follow/split.ts';
 import { componentReading } from '../dashboard/follow/useFollowed.ts';
 import { installedEntry } from '../dashboard/follow/store.ts';
 import type { Pipeline } from '../dashboard/follow/pipeline';
-import { PayloadSender } from '../dashboard/follow/payloads.ts';
+import { PayloadSender, PayloadStore } from '../dashboard/follow/payloads.ts';
 import { boundDated } from '../families/host/dated.ts';
 
 interface Fake extends Bitmap { content: string; closed: boolean }
@@ -249,6 +249,28 @@ test('R4-S6: an open picture closes when a finite static bound is supplied later
   panel.lane.receive('panels', panels([{ id: 0, hour: 30, kind: 'completed' }]));
   await panel.step(30, { playing: false });
   assert.equal(panel.page.view(1).through, 28, 'nor does a panel confirmation');
+});
+
+test('R5-S4: paused on an open picture first confirmed at 30, a finite proof [28, 28] invalidates it, on the followed or the panel channel', async () => {
+  const followed = rig();
+  followed.mount(1, [{ id: 5, channel: 'followed' }]);
+  followed.lane.bindRoute(5, ROUTE, NATIVE);
+  followed.lane.receive('follow', message(30, [{ id: 5, hour: 30, answer: rows([1n], [1n]) }], false, NATIVE));
+  await followed.step(30, { playing: false });
+  assert.deepEqual([followed.page.view(1).mode, followed.page.view(1).h, followed.page.view(1).through], ['picture', 30, 30], 'an open followed picture first and confirmed at 30');
+  followed.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await followed.step(30, { playing: false });
+  assert.notEqual(followed.page.view(1).mode, 'picture', 'its hours and its proof do not meet: the page shows no current picture at 30');
+
+  const panel = rig();
+  panel.mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  panel.lane.bindRoute(3, ROUTE, NATIVE);
+  panel.lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 30, kind: 'completed' }]));
+  await panel.step(30, { playing: false });
+  assert.deepEqual([panel.page.view(1).mode, panel.page.view(1).h], ['picture', 30]);
+  panel.lane.supply(1, { dated: { h: 28, c: 28 } });
+  await panel.step(30, { playing: false });
+  assert.notEqual(panel.page.view(1).mode, 'picture', 'nor on the panel channel');
 });
 
 const at: LaneView = {
@@ -3428,6 +3450,20 @@ test('payloads are taken in on every message, not at paint: two binds between pa
   assert.deepEqual(seen.at(-1), ['GER', 'ITA'], 'the tile the first bind brought is still there for the second');
   assert.equal(crossed, 2, 'each tile crossed once');
   sender.release(second);
+});
+
+test('a keyed container holding a scalar crosses whole, so 0, 1, null and an empty panel decode apart, and object entries still cross one by one', () => {
+  const store = new PayloadStore();
+  let crossed = 0;
+  const sender = new PayloadSender(message => { crossed += message.put?.length ?? 0; store.apply(structuredClone(message)); });
+  const decoded = (staticPanels: object) => (store.resolve(structuredClone(sender.acquire({ staticPanels }).wire)) as { staticPanels: unknown }).staticPanels;
+  assert.deepEqual([{ main: 0 }, { main: 1 }, { main: null }, {}].map(decoded), [{ main: 0 }, { main: 1 }, { main: null }, {}]);
+  const a = { rows: [1] };
+  const b = { rows: [2] };
+  decoded({ main: a, other: b });
+  const before = crossed;
+  assert.deepEqual(decoded({ main: a, other: { rows: [3] } }), { main: a, other: { rows: [3] } });
+  assert.equal(crossed - before, 1, 'only the changed entry crosses');
 });
 
 test('a date-only supply for a stamp the lane does not hold is dropped, and a new owner clears the previous owner’s statics', async () => {

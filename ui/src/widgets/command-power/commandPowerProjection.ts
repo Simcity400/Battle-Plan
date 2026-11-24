@@ -3,9 +3,9 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
+import { chartAxis, chartWindow, DEFAULT_POWER_SETTINGS, powerChartSettings, type PowerChartSettings } from '../../families/time-chart/settings.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { formatCompactRational, formatCompactScalar, formatRational, formatScalar } from '../../families/valueFormat.ts';
 import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import {
   branchGapsOf,
@@ -19,6 +19,7 @@ import {
   spendMarkersOf,
   withinMapOf,
   auditReading,
+  formatPowerAmount,
   headReading,
   headValueOf,
   type HeadReading,
@@ -32,22 +33,11 @@ export interface CommandPowerOptions {
   readonly extent: readonly [number, number];
   readonly gaps: readonly ChartGap[];
   readonly surface: string;
+  readonly settings?: PowerChartSettings;
   readonly showCeiling: boolean;
 }
 
 
-function formatEndAmount(reading: KnownHeadReading): string {
-  if (reading.raw !== undefined && reading.denominator !== undefined) {
-    const absWhole = (reading.raw < 0n ? -reading.raw : reading.raw) / reading.denominator;
-    return absWhole >= 10_000n
-      ? formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text
-      : formatRational(reading.raw, reading.denominator, { maxDecimals: 0 });
-  }
-  if (!Number.isFinite(reading.value)) return '';
-  return Math.abs(reading.value) >= 1e4
-    ? formatCompactScalar(Math.trunc(reading.value), 'integer').text
-    : formatScalar(reading.value, 'integer');
-}
 
 export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerFamilyProjection({
   kind: 'command-power',
@@ -61,6 +51,9 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
     const ceilingMap = options.showCeiling ? readView.series('ceiling') : undefined;
     const tags = options.tags;
     const single = tags.length === 1;
+    const settings = options.settings ?? DEFAULT_POWER_SETTINGS;
+    const format = (reading: KnownHeadReading) => formatPowerAmount(reading, settings.decimals);
+    const view = chartWindow(settings, hour, options.extent[0]);
 
     const headByTag = new Map<string, HeadReading | null>();
     const ceilingByTag = new Map<string, HeadReading | null>();
@@ -117,7 +110,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
         color,
         role: isTail ? 'tail' : 'primary',
         step: false,
-        area: single,
+        area: single && settings.area,
         bounded,
         headValue,
         headHour: hour,
@@ -127,13 +120,13 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
         icon: single ? measureIcon : undefined,
         missingSpans: missingSpansOf(bounded),
         rank,
-        endLabel: isTail || !mainReading || !('value' in mainReading)
+        endLabel: isTail || !settings.endLabels || !mainReading || !('value' in mainReading)
           ? null
           : {
               ...(single ? { icon: measureIcon } : { flag }),
               name: single ? (options.showCeiling ? 'Command power' : null) : name,
               fullName: single ? 'Command power' : name,
-              value: formatEndAmount(mainReading),
+              value: formatPowerAmount(mainReading, settings.decimals),
             },
       });
 
@@ -153,12 +146,12 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
           headValue: ceilingHead,
           headHour: hour,
           rank,
-          endLabel: !ceilingReading || !('value' in ceilingReading)
+          endLabel: !settings.endLabels || !ceilingReading || !('value' in ceilingReading)
             ? null
             : {
                 name: single ? 'Maximum' : `${name} max`,
                 fullName: single ? 'Maximum command power' : `${name} maximum`,
-                value: formatEndAmount(ceilingReading),
+                value: formatPowerAmount(ceilingReading, settings.decimals),
                 valueMuted: true,
               },
         });
@@ -173,12 +166,13 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       mode: 'lines',
       hour,
       extent: options.extent,
-      yAxis: { format: 'power', decimals: 0 },
+      ...(view ? { view } : {}),
+      yAxis: { format: 'power', decimals: settings.decimals, ...chartAxis(settings) },
       series,
       markers: spent.markers.length > 0 ? spent.markers : undefined,
       ...(spent.warnings.length > 0 ? { warnings: spent.warnings } : {}),
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatEndAmount)),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, format)),
     };
   },
 });
@@ -273,6 +267,7 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
       extent,
       gaps: branchGapsOf(ctx.branch),
       surface,
+      settings: powerChartSettings(ctx.options),
       showCeiling: ctx.options.ceiling !== false,
     };
   },

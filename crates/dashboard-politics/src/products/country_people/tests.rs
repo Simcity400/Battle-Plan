@@ -17,6 +17,21 @@ fn an_exile_is_kept_with_its_identity_missing_when_countries_are_unread_and_an_u
 }
 
 #[test]
+fn an_exile_keeps_its_slot_and_deployed_air_from_the_links_when_only_country_names_are_unread() {
+    use replay_data::rows::{CountryDeployedManpowerRow, CountryLinkRow};
+    let mut frame = dashboard_base::test_fixtures::source(1, 100, Some(1_000));
+    let rows = vec![CountryStabilityInputRow { country: 9001, exile_host: Recorded::Value(Some(9002)), ..Default::default() }];
+    frame.tables[TableId::CountryStabilityInputs.index()] = TableView::Complete(TableRows::CountryStabilityInputs(rows)).into();
+    *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "names unreadable".into() };
+    let links = vec![CountryLinkRow { id: 9001, canonical_slot: 5 }, CountryLinkRow { id: 9002, canonical_slot: 6 }];
+    frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links)).into();
+    let deployed = vec![CountryDeployedManpowerRow { slot: 5, exile_air: Recorded::Value(3), ..Default::default() }];
+    frame.tables[TableId::CountryDeployedManpower.index()] = TableView::Complete(TableRows::CountryDeployedManpower(deployed)).into();
+    let (exiles, _) = exile_rows(&frame, |_, _| true);
+    assert_eq!(exiles.iter().map(|row| (row.slot, row.exile.tag.as_deref(), row.exile.deployed_air)).collect::<Vec<_>>(), [(Some(5), None, Some(3))]);
+}
+
+#[test]
 fn election_rules_keep_native_calendar_and_cache() {
     use game_model::calendar::HOUR_EPOCH;
     let january_31 = HOUR_EPOCH + 1936 * 365 * 24 + 30 * 24 + 7;

@@ -72,6 +72,9 @@ interface TableShape {
   readonly rowAuditCache: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly FamilyAuditRow[] }>;
   readonly sortSig: string;
   readonly orderKeys: readonly string[];
+}
+
+interface TableMotion {
   readonly markers: ReadonlyMap<string, RankMarker>;
   readonly glide: ReadonlyMap<string, GlideOffset>;
 }
@@ -205,25 +208,6 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
       : updateColumnMaximaIncremental(prev.maxima, prev.flatRows, prev.rowIndex, flatRows, rowIndex, columns.columns, model.changedKeys, prev.model.hour, model.hour))
     : computeColumnMaxima(flatRows, columns.columns, model.hour);
   const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
-  const forward = prev !== null && step.speed > 0 && model.hour > prev.model.hour && prev.sortSig === sortSig;
-  const markers = rankMarkersOn && forward
-    ? rankMarkers(prev.orderKeys, dataKeys, step.now, new Map(prev.markers), rankHoldForSpeed(step.speed))
-    : new Map<string, RankMarker>();
-  const glideMs = glideDurationForSpeed(step.speed, binding.reducedMotion === true);
-  const glide = new Map<string, GlideOffset>();
-  if (prev && forward && glideMs > 0 && !panes && !prev.panes) {
-    const oldIndex = new Map<string, number>();
-    prev.flatRows.forEach((item, index) => { if (item.kind === 'data') oldIndex.set(item.key, index); });
-    flatRows.forEach((item, index) => {
-      if (item.kind !== 'data') return;
-      const before = oldIndex.get(item.key);
-      if (before !== undefined && before !== index) glide.set(item.key, { from: (before - index) * rowHeight, to: 0, started: step.now });
-      else {
-        const existing = prev.glide.get(item.key);
-        if (existing && step.now - existing.started < glideMs) glide.set(item.key, existing);
-      }
-    });
-  }
   const shape: TableShape = {
     model, options: binding.options, settings, expanded, width, theme,
     flatRows, rowIndex, hasGroups, incremental: inc !== null,
@@ -232,7 +216,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
     widthKey, fixedWidths, allLayouts, columns, rowHeightMode, rowHeight, rowGeom,
     windowOffset, totalCount, totalHeight, maxima, maximaCols,
     rowAuditCache: inc && prev ? prev.rowAuditCache : new WeakMap(),
-    sortSig, orderKeys: dataKeys, markers, glide,
+    sortSig, orderKeys: dataKeys,
   };
   shapes.set(model, shape);
   return shape;
@@ -252,9 +236,47 @@ function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Su
   return { shape, localScrollTop, rowWindow, tops, heights, focusedIndex, height: surface.height };
 }
 
+const NO_MOTION: TableMotion = { markers: new Map(), glide: new Map() };
+const motions = new WeakMap<TableShape, { readonly continuity: number; readonly motion: TableMotion }>();
+
+function motionOf(frame: TableFrame): TableMotion {
+  const shape = frame.layout.shape;
+  const held = motions.get(shape);
+  if (held && held.continuity === frame.continuity) return held.motion;
+  const motion = transition(shape, frame);
+  motions.set(shape, { continuity: frame.continuity, motion });
+  return motion;
+}
+
+function transition(shape: TableShape, frame: TableFrame): TableMotion {
+  const prev = frame.before?.layout.shape;
+  if (!prev || prev.sortSig !== shape.sortSig || shape.model.hour <= prev.model.hour) return NO_MOTION;
+  const prior = motions.get(prev)?.motion ?? NO_MOTION;
+  const started = frame.changedAt;
+  const markers = shape.rankMarkersOn
+    ? rankMarkers(prev.orderKeys, shape.orderKeys, started, prior.markers, rankHoldForSpeed(frame.speed))
+    : new Map<string, RankMarker>();
+  const glideMs = glideDurationForSpeed(frame.speed, frame.binding.reducedMotion === true);
+  const glide = new Map<string, GlideOffset>();
+  if (glideMs > 0 && !shape.panes && !prev.panes) {
+    const oldIndex = new Map<string, number>();
+    prev.flatRows.forEach((item, index) => { if (item.kind === 'data') oldIndex.set(item.key, index); });
+    shape.flatRows.forEach((item, index) => {
+      if (item.kind !== 'data') return;
+      const before = oldIndex.get(item.key);
+      if (before !== undefined && before !== index) glide.set(item.key, { from: (before - index) * shape.rowHeight, to: 0, started });
+      else {
+        const existing = prior.glide.get(item.key);
+        if (existing && started - existing.started < glideMs) glide.set(item.key, existing);
+      }
+    });
+  }
+  return { markers, glide };
+}
+
 function liveGlide(frame: TableFrame): { readonly duration: number; readonly glide: ReadonlyMap<string, GlideOffset> } {
   const duration = glideDurationForSpeed(frame.speed, frame.binding.reducedMotion === true);
-  const all = frame.layout.shape.glide;
+  const all = motionOf(frame).glide;
   if (duration === 0 || all.size === 0) return { duration, glide: new Map() };
   const live = new Map<string, GlideOffset>();
   for (const [key, g] of all) if (frame.now - g.started < duration) live.set(key, g);
@@ -263,7 +285,7 @@ function liveGlide(frame: TableFrame): { readonly duration: number; readonly gli
 
 function liveMarkers(frame: TableFrame): Map<string, RankMarker> {
   const live = new Map<string, RankMarker>();
-  for (const [key, m] of frame.layout.shape.markers) if (m.until > frame.now) live.set(key, m);
+  for (const [key, m] of motionOf(frame).markers) if (m.until > frame.now) live.set(key, m);
   return live;
 }
 
@@ -394,7 +416,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     const rowKey = focus ? key : inspectedRow(key);
     if (!rowKey) return null;
     const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns, frame.model.hour);
-    return content ? { hour: frame.model.hour, rowKey, content } : null;
+    return content ? { rowKey, content } : null;
   },
   structure({ model, layout, binding }) {
     const shape = layout.shape;

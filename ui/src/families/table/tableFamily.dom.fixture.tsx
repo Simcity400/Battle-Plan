@@ -434,6 +434,44 @@ window.tableFamilyDom = {
     return { mutations, installs: installs - installsBefore, samePicture: (pipeline.view(pipeId)?.id ?? null) === paintsBefore };
   },
 
+  async focusAcrossWithheldMirror() {
+    const body = hostNode!.querySelector<HTMLTableSectionElement>('table tbody')!;
+    const table = body.closest('table')!;
+    const row = body.querySelector<HTMLTableRowElement>('tr[data-row-key]')!;
+    const key = row.dataset.rowKey!;
+    const focusedKey = () => (document.activeElement as HTMLElement | null)?.dataset.rowKey ?? null;
+    row.focus();
+    await until(() => (pipeline.view(pipeId)?.fields?.focusTooltip as { text?: { rowKey?: string } | null } | undefined)?.text?.rowKey === key, 2000);
+    let sent = pipeline.view(pipeId)?.h ?? 0;
+    const feed = (hour: number) => {
+      while (sent < hour + 6) {
+        sent++;
+        sendHour(sent, [BigInt(85 + sent), 40n, 30n, -1n], [BigInt(sent * 10), BigInt(sent * 20), 0n, 0n]);
+      }
+    };
+    feed(sent);
+    const stopFeed = clock.onPublish((_prev, next) => feed(next.hour));
+    try {
+      holdCadence(performance.now());
+      clock.setSpeed(48);
+      clock.setPlaying(true);
+      const withheld = await until(() => body.children.length === 0, 4000);
+      const parked = document.activeElement === table;
+      clock.setPlaying(false);
+      const returned = await until(() => body.children.length > 0, 2000);
+      const restored = focusedKey();
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await until(() => focusedKey() !== null && focusedKey() !== key, 2000);
+      return { key, withheld, parked, returned, restored, afterDown: focusedKey() };
+    } finally {
+      cadenceHold = false;
+      heldTimers.clear();
+      stopFeed();
+      clock.setPlaying(false);
+      (document.activeElement as HTMLElement | null)?.blur();
+    }
+  },
+
   async verifyRepaintAndHeld() {
     const hashCanvas = async () => {
       const canvas = hostNode!.querySelector<HTMLCanvasElement>('canvas.fh-canvas')!;
