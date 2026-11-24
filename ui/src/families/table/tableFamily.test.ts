@@ -737,7 +737,7 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
     assert.equal((p1.fields.focusTooltip?.value as { text: { rowKey: string } } | undefined)?.text.rowKey, 'GER', 'focusTooltip tracks focused GER independently of hover');
 
     const p2 = paintAt(rowsB, 1100, 1440, 'row:FRA', 'GER');
-    assert.deepEqual((p2.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['GER', 'FRA'], 'throttled inside 1s window');
+    assert.equal(p2.fields.mirror, undefined, 'inside the 1 s window the mirror of changed rows is withheld, never the old rows beside the new picture');
 
     const p3 = paintAt(rowsB, 2100, 1440, 'row:FRA', 'GER');
     assert.deepEqual((p3.fields.mirror!.value as { rows: { key: string }[] }).rows.map(r => r.key), ['FRA', 'GER'], 'dirty mirror flushes when due even without a new model change');

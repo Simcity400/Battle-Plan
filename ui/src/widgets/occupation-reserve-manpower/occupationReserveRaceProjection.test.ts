@@ -4,7 +4,7 @@ import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/mode
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
-import { layoutTimeChart } from '../../families/time-chart/layout.ts';
+import { hoverTimeChartLayout, layoutTimeChart } from '../../families/time-chart/layout.ts';
 import { timeChartLaneView } from '../../families/time-chart/laneView.ts';
 import { LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 import type { OccupationReserveReply, ReserveHistoryReply } from '../../generated/dashboard';
@@ -189,7 +189,7 @@ test('occupation-reserve-manpower breakdown projects causal stacked step bands, 
   assert.equal(model.note, 'Negative entries: Italy −50');
   assert.deepEqual(model.auditRows?.map(r => [r.key, r.value]), [['__total__', '400'], ['9', '400']]);
 
-  const layout = layoutTimeChart(model, 600, 260, 'sans-serif', t => t.length * 6, 150, null);
+  const layout = hoverTimeChartLayout(layoutTimeChart(model, 600, 260, 'sans-serif', t => t.length * 6), model.hour, 'sans-serif', t => t.length * 6, 150, null);
   const tip = deriveTimeChartTooltip(model, layout, 'plot:150');
   assert.ok(tip?.payload?.items?.some(item => item.label === 'Kingdom of Hungary' && item.value === '300'), 'hover resolves source name at hovered hour');
   assert.ok(tip?.payload?.items?.some(item => item.label === 'Negative entries'));
