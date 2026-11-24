@@ -24,12 +24,8 @@ export function bindFamilyManifest(entries: readonly FamilyViewEntry[]): void {
   }
 }
 
-export function registerFamilyProjection<TModel, TOptions>(
-  projection: FamilyProjection<TModel, TOptions>,
-  view = DEFAULT_VIEW,
-  familyOverride?: FamilyId,
-): FamilyProjection<TModel, TOptions> {
-  projections.set(registryKey(familyOverride ?? projection.family, projection.kind, view), projection as FamilyProjection<any, any>);
+export function registerFamilyProjection<P extends FamilyProjection<any, any>>(projection: P, view = DEFAULT_VIEW): P {
+  projections.set(registryKey(projection.family, projection.kind, view), projection);
   return projection;
 }
 

@@ -6,7 +6,7 @@ import type { HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type { MeterModel, MeterProjection, MeterRow } from '../../families/meter/model.ts';
-import { registerMeterProjection } from '../../families/meter/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext } from '../../families/plan.ts';
 import type { ArtResult } from '../../families/contract.ts';
 import type { AutonomyLevelsReply, AutonomySubject, SubjectLevel } from '../../generated/dashboard';
@@ -105,7 +105,7 @@ function row(readView: BoundedReadView, reply: AutonomyLevelsReply, item: Autono
   };
 }
 
-export const autonomyLevelsProjection: MeterProjection<AutonomyLevelsOptions> = registerMeterProjection({
+export const autonomyLevelsProjection: MeterProjection<AutonomyLevelsOptions> = registerFamilyProjection({
   family: 'meters',
   kind: 'autonomy',
   nextChange(readView, options): number {

@@ -15,7 +15,8 @@ import { commandPowerProjection } from '../../widgets/command-power/commandPower
 import { stabilityProjection } from '../../widgets/stability/stabilityProjection.ts';
 import { experienceProjection } from '../../widgets/experience/experienceProjection.ts';
 import { fuelProjection } from '../../widgets/fuel/fuelProjection.ts';
-import { registerTimeChart, type TimeChartBinding } from './declaration.ts';
+import { type TimeChartBinding } from './declaration.ts';
+import { registerFamilyProjection } from '../registry.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
 import { timeChartLaneView } from './laneView.ts';
@@ -376,7 +377,7 @@ describe('time-chart layout & rules C1-C12', () => {
 
 describe('time-chart laneView integration', () => {
   it('paints a registered chart over BoundedReadView with LaneArtCache demands, hit-tests lines, emits tooltip and audit rows', () => {
-    registerTimeChart({
+    registerFamilyProjection({
       kind: 'test-pp',
       family: 'time-chart',
       variant: 'line',
@@ -772,7 +773,7 @@ describe('time-chart picture authority', () => {
     assert.equal(itaAhead, gerAhead, 'a country keeps its colour when another overtakes it');
   });
   it('repaints a same-hour correction of history', () => {
-    registerTimeChart({
+    registerFamilyProjection({
       kind: 'test-correction',
       family: 'time-chart',
       variant: 'line',
@@ -831,7 +832,7 @@ describe('time-chart picture authority', () => {
     ], surface);
   });
   it('reads head rows by an index, not a scan per tag', () => {
-    registerTimeChart({
+    registerFamilyProjection({
       kind: 'test-head-index',
       family: 'time-chart',
       variant: 'line',
