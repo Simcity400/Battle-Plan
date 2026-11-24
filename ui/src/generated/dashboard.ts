@@ -571,7 +571,8 @@ export type CampaignClockReply = { available: boolean, recordedSeconds: number |
 export type ApmParams = { branchId: string, group: ApmGroup, registry: boolean, hour: number | null, firstHour: number | null, lastHour: number | null, tags: Array<string> | null, membership: Array<ApmMembership> | null, players: Array<string>, buckets: number, };
 export type ApmReply = { available: boolean, players: Array<ApmPlayer>, series: Array<ApmSeries>, warnings: Array<string>, };
 export type ApmGroup = "country" | "player";
-export type ApmPlayer = { id: string, name: string | null, nameMissing: string | null, tags: Array<string>, };
+export type ApmPlayerRun = { firstHour: number, lastHour: number, tag: string, name: string | null, nameMissing: string | null, };
+export type ApmPlayer = { id: string, name: string | null, nameMissing: string | null, tags: Array<string>, runs: Array<ApmPlayerRun>, };
 export type ApmValue = { apm: number | null, confirmedApm: number | null, orders: string | null, pausedOrders: string | null, unpausedMinutes: number | null, complete: boolean,
 /**
  * Part of the period no capture observed; orders and minutes both leave it out.
@@ -1215,7 +1216,7 @@ export type TensionValueMode = "share" | "recorded";
 export type WorldTensionStackParams = { branchId: string, firstHour: number, lastHour: number, layers: number, values: TensionValueMode, countries: Array<string> | null, width: number | null, };
 export type TensionStackBand = { slot: number, tag: string | null, remembered: boolean, values: Array<number | null>, minValues: Array<number | null>, maxValues: Array<number | null>, endValue: number | null, endRaw: string | null, };
 export type TensionStackOther = { count: number, values: Array<number | null>, endValue: number | null, };
-export type TensionStackEvent = { hour: number, tag: string | null, remembered: boolean, reason: string, addedRaw: string, firstRead: number, lastRead: number | null, };
+export type TensionStackEvent = { hour: number, slot: number | null, secondCountry: number, place: number, tag: string | null, remembered: boolean, reason: string, addedRaw: string, firstRead: number, lastRead: number | null, };
 export type WorldTensionStackReply = { branchId: string, tensionScale: number, contributionScale: number, ceilingRaw: string, endHour: number | null, cappedEndTension: number | null, downsampled: boolean, hours: Array<number>, total: Array<number | null>, bands: Array<TensionStackBand>, other: TensionStackOther | null, events: Array<TensionStackEvent>, missing: Array<MissingSpan>, nextChangeHour: number | null, warnings: Array<string>, };
 export type FactoryGroupsParams = { branchId: string, };
 export type FactoryGroupBuilding = {
