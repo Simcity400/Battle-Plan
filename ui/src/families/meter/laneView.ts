@@ -5,11 +5,11 @@ import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
 import { LaneArtCache, type LaneArtFetcher } from '../art/laneCache.ts';
-import { artUrlForHandle, createLaneArtProvider } from '../art/provider.ts';
+import { createLaneArtProvider, laneArtDemand } from '../art/provider.ts';
 import type { ArtResolution } from '../art/types.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import { createBoundedReadView } from '../boundedView.ts';
-import type { ArtDemand, ArtProvider, BoundedReadView, EntityKind, FamilyTheme, IdentityDemand, IdentityProvider } from '../contract.ts';
+import type { ArtDemand, ArtHandle, ArtProvider, BoundedReadView, EntityKind, FamilyTheme, IdentityDemand, IdentityProvider } from '../contract.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
@@ -70,6 +70,7 @@ interface HeldFamilyMeter {
   artProvider: ArtProvider;
   demandedArtUrls: readonly string[];
   identityDemandsField: FieldEntry | null;
+  artDemandsField: FieldEntry | null;
   kept: Map<string, { text: string; content: string }>;
   wake?: () => void;
 
@@ -313,6 +314,7 @@ export function familyMeterLaneView(
           artProvider: createLaneArtProvider(art),
           demandedArtUrls: [],
           identityDemandsField: null,
+          artDemandsField: null,
           kept: new Map(),
           prevParts: [],
           prevOptions: undefined,
@@ -390,19 +392,20 @@ export function familyMeterLaneView(
       } else {
         const pendingIdentityDemands = new Map<string, readonly [EntityKind, string, number]>();
         const demandedArt = new Set<string>();
+        const artAsks = new Map<string, ArtHandle>();
         const readView = meterReadViewFromScene(input, bound, input.hour, {
           identity: held.identityProvider,
           onIdentityDemand: (kind, key, atHour) => {
             pendingIdentityDemands.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
           },
           art: held.artProvider,
-          onArtDemand: handle => {
-            const url = artUrlForHandle(handle, held!.identityIndex, held!.artResolutions);
-            if (url) demandedArt.add(url);
-          },
+          onArtDemand: handle => laneArtDemand(handle, held!.identityIndex, held!.artResolutions, demandedArt, artAsks),
         });
         model = projection.project(readView, bound.options);
         held.demandedArtUrls = [...demandedArt];
+        held.artDemandsField = artAsks.size
+          ? { value: [...artAsks.values()], content: cachedField(held, 'artDemands', JSON.stringify([...artAsks.keys()]), content) }
+          : null;
         const demandsList = [...pendingIdentityDemands.values()];
         if (demandsList.length) {
           const dText = JSON.stringify(demandsList);
@@ -499,6 +502,7 @@ export function familyMeterLaneView(
       const fields: Record<string, FieldEntry> = {};
 
       if (held.identityDemandsField) fields.identityDemands = held.identityDemandsField;
+      if (held.artDemandsField) fields.artDemands = held.artDemandsField;
 
       if (modelChanged || !held.metaField) {
         const mSig = JSON.stringify([

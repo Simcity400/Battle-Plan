@@ -4,53 +4,27 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { openedOn } from '../../dashboard/gameWindows';
 import { useGate } from '../../dashboard/regionGate';
-import { artHandleKey, failedArt, missingArt, readyArt, type ArtResolution } from '../../families/art/types.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
 import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget.tsx';
 import { meterHostAdapter } from '../../families/meter/hostAdapter.ts';
-import { researchAt, researchArtwork, researchRecordedTemplates } from '../research/researchData';
+import { useArtResolutions } from '../../dashboard/useSpriteArtwork.ts';
+import type { ArtHandle } from '../../families/plan.ts';
+import { researchAt } from '../research/researchData';
 import ResearchExplanation from '../research/ResearchExplanation';
 import { TechnologyEffects } from '../research/TechnologyWindow';
-import { historyTokens, useResearchReply } from '../research/useResearch';
-import { useTechnologyArtwork } from '../research/useTechnologyArtwork';
+import { useResearchReply } from '../research/useResearch';
 import { activeResearchDeclaration, type ActiveResearchRowMeta } from './activeResearchProjection.ts';
 import '../research/research.css';
 import '../../components/Dossier.css';
 
-const NO_TOKENS: readonly string[] = [];
+const NO_HANDLES: readonly ArtHandle[] = [];
 
 export default function ActiveResearchView(props: WidgetProps) {
   const { widget, runtime, active } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const history = useResearchReply(widget, runtime, active);
   const { track, tag, data } = history;
-  const tokens = useMemo(
-    () => (data ? [...new Set(historyTokens(data.history).map(use => (typeof use === 'string' ? use : use[0])))] : NO_TOKENS),
-    [data],
-  );
-  const recorded = useMemo(() => researchRecordedTemplates(data?.history), [data]);
-  const images = useTechnologyArtwork(runtime.client, track, tokens, active && !!data, recorded);
-  const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
-
-  const artResolutions = useMemo<Readonly<Record<string, ArtResolution>>>(() => {
-    const out: Record<string, ArtResolution> = {};
-    for (const token of tokens) {
-      const fail = images.failures.get(token);
-      if (fail) {
-        out[artHandleKey({ kind: 'sprite', key: `technology:${token}`, frame: 0 })] = failedArt(fail.message, true);
-        continue;
-      }
-      const entry = images.artwork.get(token);
-      if (entry) {
-        out[artHandleKey({ kind: 'sprite', key: `technology:${token}`, frame: 0 })] = entry.icon
-          ? readyArt(entry.icon, { assetId: `technology:${token}` })
-          : missingArt('Art missing from the current installation');
-      }
-    }
-    return out;
-  }, [tokens, images.artwork, images.failures]);
-
   const [opened, setOpened] = useState<{
     readonly on: string;
     readonly key: string;
@@ -80,17 +54,21 @@ export default function ActiveResearchView(props: WidgetProps) {
   const detailEntry = shown && detailSlot && shown.meta.opened.firstObservedHour !== null
     ? detailSlot.entries.find(e => e.token === shown.meta.token && e.databaseIndex === shown.meta.databaseIndex && e.firstObservedHour === shown.meta.opened.firstObservedHour) ?? null
     : null;
-  const detailIcon = shown ? artwork.get(shown.meta.token)?.icon ?? undefined : undefined;
+  const detailHandles = useMemo<readonly ArtHandle[]>(
+    () => (shown ? [{ kind: 'technology', token: shown.meta.token, databaseIndex: shown.meta.databaseIndex }] : NO_HANDLES),
+    [shown],
+  );
+  const resolveArt = useArtResolutions(runtime, track, detailHandles, active && detailHandles.length > 0);
+  const detailArt = detailHandles[0] ? resolveArt(detailHandles[0]) : null;
+  const detailIcon = detailArt?.status === 'ready' ? detailArt.url : undefined;
 
   return <div ref={hostRef} className="fh-detail-anchor">
     <DeclaredFamilyWidget
       {...props}
       adapter={meterHostAdapter}
       declaration={activeResearchDeclaration}
-      artResolutions={artResolutions}
       selectedKey={shown?.key ?? null}
       onActivate={onActivate}
-      extraWarnings={images.warnings}
     />
     <DetailWindowHost
       open={Boolean(shown && track && tag)}

@@ -179,7 +179,7 @@ export const activeResearchProjection: MeterProjection<ActiveResearchProjectionO
       researchingCount++;
       const name = techNameOf(options.history, item.read, item.token);
       const folder = folderNameFor(options.history, item.token, item.databaseIndex);
-      const artResult = readView.art({ kind: 'sprite', key: `technology:${item.token}`, frame: 0 });
+      const artResult = readView.art({ kind: 'technology', token: item.token, databaseIndex: item.databaseIndex });
       const pctText = numbers.fraction === null ? undefined : numbers.percent;
       const daysText = numbers.left === null ? undefined : numbers.days;
       const opened = openedResearch(item);

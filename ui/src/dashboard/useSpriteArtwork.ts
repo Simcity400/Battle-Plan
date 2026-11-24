@@ -4,13 +4,13 @@ import type { DashboardClient, ProductRequest } from './client';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { loadTransientProduct } from './products.ts';
-import { SpriteCaches, portraitResolutions, spriteFrames, spriteHandle, spriteResolutions, textureResolutions } from './spriteArtwork.ts';
+import { SpriteCaches, portraitResolutions, spriteFrames, spriteHandle, spriteResolutions, technologyResolutions, textureResolutions } from './spriteArtwork.ts';
 import type { SpriteFrame } from './spriteArtwork.ts';
 import { PerClient } from './prepare.ts';
 import { productRequest } from './request.ts';
 import { inFrame } from './frameUpdates.ts';
 import type { GatedHour } from './regionTime';
-import type { ArtResolution as GeneratedArtResolution, LeaderPortraitsReply } from '../generated/dashboard';
+import type { ArtResolution as GeneratedArtResolution, LeaderPortraitsReply, TechnologyArtworkReply } from '../generated/dashboard';
 import { NO_ART, PENDING_ART, artHandleKey, failedArt, type ArtResolution } from '../families/art/types.ts';
 import type { ArtHandle } from '../families/plan.ts';
 
@@ -32,6 +32,7 @@ export async function fetchArtHandles(load: ArtLoad, track: Pick<BoundTrack, 'so
   const sprites: SpriteFrame[] = [];
   const textures: { path: string; frame: number; frames: number }[] = [];
   const portraits = new Map<number, string[]>();
+  const technologies = new Map<string, Set<number>>();
   for (const handle of handles) {
     if (handle.kind === 'sprite') {
       sprites.push({ key: handle.key, frame: handle.frame ?? 0, ...(handle.recorded !== undefined ? { recorded: handle.recorded } : {}), ...(handle.text ? { text: true } : {}) });
@@ -41,6 +42,10 @@ export async function fetchArtHandles(load: ArtLoad, track: Pick<BoundTrack, 'so
       const list = portraits.get(handle.hour);
       if (list) list.push(handle.leader);
       else portraits.set(handle.hour, [handle.leader]);
+    } else if (handle.kind === 'technology') {
+      const indices = technologies.get(handle.token) ?? new Set<number>();
+      if (handle.databaseIndex !== null && handle.databaseIndex > 0) indices.add(handle.databaseIndex);
+      technologies.set(handle.token, indices);
     }
   }
   const replies: Promise<ReadonlyMap<string, GeneratedArtResolution>>[] = [];
@@ -55,6 +60,14 @@ export async function fetchArtHandles(load: ArtLoad, track: Pick<BoundTrack, 'so
       productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'unit-leader-portraits', params: { branchId: track.branch.id, hour: hour as GatedHour, references, edge: PORTRAIT_EDGE } }),
       signal,
     ).then(reply => portraitResolutions(reply as LeaderPortraitsReply, hour)));
+  }
+  if (technologies.size) {
+    const tokens = [...technologies.keys()].sort();
+    const recorded = Object.fromEntries(tokens.filter(token => technologies.get(token)!.size).map(token => [token, [...technologies.get(token)!].sort((a, b) => a - b)]));
+    replies.push(load(
+      productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'technology-artwork', params: Object.keys(recorded).length ? { tokens, recorded } : { tokens } }),
+      signal,
+    ).then(reply => technologyResolutions(reply as TechnologyArtworkReply, handles)));
   }
   const merged = new Map<string, GeneratedArtResolution>();
   for (const reply of await Promise.all(replies)) for (const [id, resolution] of reply) merged.set(id, resolution);

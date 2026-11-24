@@ -200,7 +200,7 @@ test('activeResearchProjection renders researching, idle, missing, stale caption
   };
 
   const art: ArtProvider = {
-    resolve: handle => handle.kind === 'sprite' && handle.key === 'technology:basic_machine_tools'
+    resolve: handle => handle.kind === 'technology' && handle.token === 'basic_machine_tools'
       ? readyArt('asset://tech/basic_machine_tools.png')
       : missingArt('Art missing from the current installation'),
   };

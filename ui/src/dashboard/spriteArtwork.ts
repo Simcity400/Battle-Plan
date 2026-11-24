@@ -1,8 +1,8 @@
-import type { ArtResolution, LeaderPortraitsReply, SpriteImage } from '../generated/dashboard';
+import type { ArtResolution, LeaderPortraitsReply, SpriteImage, TechnologyArtworkReply } from '../generated/dashboard';
 import type { ArtHandle } from '../families/plan.ts';
 import { spriteImageToArt } from '../families/art/adapters.ts';
-import { artHandleKey } from '../families/art/types.ts';
-import { drawableIcon } from './artwork.ts';
+import { artHandleKey, missingArt, readyArt } from '../families/art/types.ts';
+import { artworkEntry, drawableIcon } from './artwork.ts';
 import { asFailure } from './queryError.ts';
 
 export interface SpriteFrame { key: string; frame: number; recorded?: string; text?: boolean }
@@ -83,6 +83,20 @@ export function textureResolutions(reply: unknown, asked: readonly ArtHandle[]):
 export function portraitResolutions(reply: LeaderPortraitsReply, hour: number): Map<string, ArtResolution> {
   if (!reply || !Array.isArray(reply.portraits)) throw new Error('The unit leader portraits reply is malformed.');
   return new Map(reply.portraits.map(portrait => [artHandleKey({ kind: 'portrait', leader: portrait.reference, hour }), portrait.resolution]));
+}
+
+export function technologyResolutions(reply: TechnologyArtworkReply, handles: readonly ArtHandle[]): Map<string, ArtResolution> {
+  if (!reply || !Array.isArray(reply.items) || !reply.items.every(artworkEntry)) throw new Error('The technology artwork reply is malformed.');
+  const byToken = new Map(reply.items.map(item => [item.token, drawableIcon(item.icon)]));
+  const out = new Map<string, ArtResolution>();
+  for (const handle of handles) {
+    if (handle.kind !== 'technology') continue;
+    const icon = byToken.get(handle.token);
+    out.set(artHandleKey(handle), icon === undefined
+      ? missingArt('Technology artwork was not returned for this technology')
+      : icon ? readyArt(icon, { assetId: `technology:${handle.token}` }) : missingArt('Art missing from the current installation'));
+  }
+  return out;
 }
 
 export const SPRITE_BATCH = 64;
