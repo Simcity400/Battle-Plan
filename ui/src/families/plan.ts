@@ -239,6 +239,11 @@ export type ArtHandle =
       readonly hour: number;
     }
   | {
+      readonly kind: 'technology';
+      readonly token: string;
+      readonly databaseIndex: number | null;
+    }
+  | {
       readonly kind: 'path';
       readonly path: string;
       readonly frame?: number;

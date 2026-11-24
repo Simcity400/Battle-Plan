@@ -331,14 +331,17 @@ test('Rust ArtResolution on CountryFlagImage and SpriteImage passes straight thr
   assert.deepEqual(parsed.get(missingKey), missingSpiritRes);
 });
 
-test('sprite, portrait and relative-path handles are asked of their products and drawn from the answer by the lane', async () => {
+test('sprite, portrait, technology and relative-path handles are asked of their products and drawn from the answer by the lane', async () => {
   const sprite: ArtHandle = { kind: 'sprite', key: 'GFX_x', frame: 0, text: true };
   const portrait: ArtHandle = { kind: 'portrait', leader: '12', hour: 300 };
   const path: ArtHandle = { kind: 'path', path: 'gfx/interface/icon.dds', frame: 1, frames: 2 };
+  const radar: ArtHandle = { kind: 'technology', token: 'radar', databaseIndex: 7 };
+  const unjoined: ArtHandle = { kind: 'technology', token: 'mod_tech', databaseIndex: null };
+  const absent: ArtHandle = { kind: 'technology', token: 'gone_tech', databaseIndex: 3 };
   const asks = new Map<string, ArtHandle>();
   const urls = new Set<string>();
-  for (const handle of [sprite, portrait, path, { kind: 'url', url: 'https://art.test/a.png' } as const]) laneArtDemand(handle, null, undefined, urls, asks);
-  assert.deepEqual([...asks.values()], [sprite, portrait, path]);
+  for (const handle of [sprite, portrait, path, radar, unjoined, absent, { kind: 'url', url: 'https://art.test/a.png' } as const]) laneArtDemand(handle, null, undefined, urls, asks);
+  assert.deepEqual([...asks.values()], [sprite, portrait, path, radar, unjoined, absent]);
   assert.deepEqual([...urls], ['https://art.test/a.png']);
 
   const requests: { product: string; params: unknown }[] = [];
@@ -347,13 +350,21 @@ test('sprite, portrait and relative-path handles are asked of their products and
   const answered = await fetchArtHandles(async request => {
     requests.push({ product: request.product, params: request.params });
     if (request.product === 'unit-leader-portraits') return { portraits: [{ reference: '12', image: null, missing: missing.reason, resolution: missing }], warnings: [] };
+    if (request.product === 'technology-artwork') {
+      return { items: [
+        { token: 'radar', name: 'Radar', description: null, baseDurationDays: 100, icon: 'http://artwork.localhost/0123456789abcdef0123456789abcdef.png' },
+        { token: 'mod_tech', name: 'Mod technology', description: null, baseDurationDays: null, icon: null },
+      ], warnings: [] };
+    }
     return {
       items: [{ key: 'GFX_x', frame: 0, text: true, icon: 'art://drawn', resolution: ready }],
       textures: [{ path: 'gfx/interface/icon.dds', frame: 1, frames: 2, resolution: ready }],
       warnings: [],
     };
   }, { source: { id: 's', revision: 'r' }, branch: { id: '1' } } as never, [...asks.values()], new AbortController().signal);
-  assert.deepEqual(requests.map(request => request.product).sort(), ['sprite-artwork', 'unit-leader-portraits']);
+  assert.deepEqual(requests.map(request => request.product).sort(), ['sprite-artwork', 'technology-artwork', 'unit-leader-portraits']);
+  assert.deepEqual(requests.find(request => request.product === 'technology-artwork')!.params,
+    { tokens: ['gone_tech', 'mod_tech', 'radar'], recorded: { gone_tech: [3], radar: [7] } }, 'one request; a definition read without a recorded index asks by token');
   assert.deepEqual(requests.find(request => request.product === 'sprite-artwork')!.params, {
     sprites: [{ key: 'GFX_x', frame: 0, text: true }],
     textures: [{ path: 'gfx/interface/icon.dds', frame: 1, frames: 2 }],
@@ -361,6 +372,9 @@ test('sprite, portrait and relative-path handles are asked of their products and
   const resolutions = Object.fromEntries(answered);
   assert.deepEqual(resolutions[artHandleKey(portrait)], missing);
   assert.deepEqual(resolutions[artHandleKey(path)], ready);
+  assert.equal(resolutions[artHandleKey(radar)]?.status, 'ready');
+  assert.deepEqual(resolutions[artHandleKey(unjoined)], missingArt('Art missing from the current installation'));
+  assert.deepEqual(resolutions[artHandleKey(absent)], missingArt('Technology artwork was not returned for this technology'));
 
   const lane = createLaneArtProvider(new LaneArtCache(), { resolutions });
   assert.equal(lane.resolve(portrait).status, 'confirmedMissing');
