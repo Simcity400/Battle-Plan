@@ -3,6 +3,7 @@ import type { MarkCluster, MarkSummary } from '../../charts/markSummary';
 import type { Run } from '../../charts/series';
 import type { HourSpan, MissingSpan, TilePart } from '../../generated/dashboard';
 import { TileCache } from './cache.ts';
+import { countryKey } from '../countryKey.ts';
 import { tileHead, valueAtHead } from './head.ts';
 import { FIRST_BREAK, HAS_BREAK, LEVEL, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, tileLast, tilesOf } from './tile.ts';
 import type { Tile, TileReply } from './tile.ts';
@@ -27,6 +28,19 @@ export interface TileLane {
   ask(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): Promise<TileReply>;
   prepared?: boolean;
   promote?(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): void;
+  top?: TileTop;
+}
+
+export interface TileTop {
+  ask(binHours: number, index: number, hour: number): Promise<TileReply>;
+}
+
+export interface TileRanked {
+  readonly tags: readonly string[];
+  readonly hour: number;
+  readonly from: number;
+  readonly until: number;
+  readonly refused: string | null;
 }
 
 export interface SpannedLine { summary: Pick<ChartSummary, 'from' | 'to'>; missing: readonly MissingSpan[] }
@@ -66,6 +80,10 @@ export class TileView {
   private assembled: Assembled | null = null;
   private failure: unknown = null;
   private closed = false;
+  private ranked: TileRanked | null = null;
+  private rankHour: number | null = null;
+  private rankAsked = 0;
+  private rankPending = false;
   private readonly cache: TileCache;
   private readonly lane: TileLane;
   private readonly changed: () => void;
@@ -77,6 +95,60 @@ export class TileView {
 
   get current(): ReadonlyMap<string, TiledLine> | null { return this.lines; }
   get error(): unknown { return this.failure; }
+  get top(): TileRanked | null { return this.ranked; }
+  get isTop(): boolean { return !!this.lane.top; }
+
+  private get tags(): readonly string[] {
+    return this.lane.top ? this.ranked?.tags ?? [] : this.lane.tags;
+  }
+
+  setHour(hour: number): void {
+    if (this.closed || !this.lane.top) return;
+    this.rankHour = hour;
+    const held = this.ranked;
+    if (held && hour >= held.from && hour <= held.until) return;
+    if (this.rankPending) return;
+    this.askTop();
+  }
+
+  private askTop(): void {
+    const top = this.lane.top, wanted = this.wanted, hour = this.rankHour;
+    if (!top || !wanted || hour === null) return;
+    const binHours = wanted.binHours, index = Math.max(wanted.first, Math.min(wanted.last, Math.floor(hour / (TILE_BINS * binHours))));
+    const asked = ++this.rankAsked;
+    this.rankPending = true;
+    this.asked++;
+    void top.ask(binHours, index, hour).then(reply => {
+      if (this.closed || asked !== this.rankAsked) return;
+      this.rankPending = false;
+      const ranking = reply.ranking;
+      if (!ranking || !Array.isArray(reply.lines)) throw new Error('The chart tile reply names no top.');
+      const tags = reply.lines.map(held => countryKey(held.country));
+      const tiles = tilesOf(reply, tags, binHours, index, tag => tileKey(this.lane, tag, binHours, index));
+      for (const tile of tiles) this.cache.put(Object.assign(tile, { askedFor: this.lane.lastHour }));
+      this.ranked = { tags, hour: ranking.hour, from: ranking.from, until: ranking.until, refused: ranking.refused };
+      this.repin();
+      this.fetch();
+      this.assemble();
+      const now = this.rankHour;
+      if (now !== null && (now < ranking.from || now > ranking.until)) this.askTop();
+    }).catch(error => {
+      if (this.closed || asked !== this.rankAsked) return;
+      this.rankPending = false;
+      this.failure = error;
+      this.changed();
+    });
+  }
+
+  private repin(): void {
+    const wanted = this.wanted;
+    if (!wanted) return;
+    const keys: string[] = [];
+    for (let index = wanted.first; index <= wanted.last; index++) for (const tag of this.tags) keys.push(tileKey(this.lane, tag, wanted.binHours, index));
+    this.cache.pin(keys);
+    this.cache.unpin(wanted.keys);
+    wanted.keys = keys;
+  }
 
   setView(view: TileViewport): void {
     if (this.closed || view.to < view.from) return;
@@ -89,10 +161,11 @@ export class TileView {
     const held = this.wanted;
     if (held && held.binHours === binHours && held.first === first && held.last === last && held.width === view.width && held.cell === cell) return;
     const keys: string[] = [];
-    for (let index = first; index <= last; index++) for (const tag of this.lane.tags) keys.push(tileKey(this.lane, tag, binHours, index));
+    for (let index = first; index <= last; index++) for (const tag of this.tags) keys.push(tileKey(this.lane, tag, binHours, index));
     this.cache.pin(keys);
     if (held) this.cache.unpin(held.keys);
     this.wanted = { binHours, first, last, width: view.width, cell, keys };
+    if (this.lane.top && !this.ranked && this.rankHour !== null) this.askTop();
     this.fetch();
     const made = this.assembled;
     if (made && made.binHours === binHours && made.width === view.width && made.cell === cell && made.first <= first && last <= made.last) return;
@@ -116,7 +189,7 @@ export class TileView {
     if (!wanted) return;
     for (let index = wanted.first; index <= wanted.last; index++) {
       const lacking: string[] = [], waiting = new Set<Promise<void>>();
-      for (const tag of this.lane.tags) {
+      for (const tag of this.tags) {
         const key = tileKey(this.lane, tag, wanted.binHours, index);
         const tile = this.cache.get(key);
         if (tile && fresh(tile, this.lane.lastHour)) continue;
@@ -156,8 +229,9 @@ export class TileView {
   private assemble(): void {
     const wanted = this.wanted;
     if (this.closed || !wanted) return;
+    if (this.lane.top && !this.ranked) return;
     const tiles: Tile[][] = [];
-    for (const tag of this.lane.tags) {
+    for (const tag of this.tags) {
       const own: Tile[] = [];
       for (let index = wanted.first; index <= wanted.last; index++) {
         const tile = this.cache.get(tileKey(this.lane, tag, wanted.binHours, index));
@@ -168,7 +242,7 @@ export class TileView {
     }
     const span = TILE_BINS * wanted.binHours;
     const lines = new Map<string, TiledLine>();
-    this.lane.tags.forEach((tag, at) => lines.set(tag, line(tag, tileHead(this.lane.key, tag), tiles[at], wanted.first * span, (wanted.last + 1) * span - 1,
+    this.tags.forEach((tag, at) => lines.set(tag, line(tag, tileHead(this.lane.key, tag), tiles[at], wanted.first * span, (wanted.last + 1) * span - 1,
       wanted.width, this.lane.marks === true ? wanted.cell : null)));
     this.lines = lines;
     this.assembled = { binHours: wanted.binHours, first: wanted.first, last: wanted.last, width: wanted.width, cell: wanted.cell };
