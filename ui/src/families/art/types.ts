@@ -36,7 +36,7 @@ export function artHandleKey(handle: ArtHandle): string {
     case 'sprite':
       return JSON.stringify(['sprite', handle.key, handle.frame ?? 0, handle.recorded ?? null, handle.text === true]);
     case 'portrait':
-      return JSON.stringify(['portrait', handle.key, handle.owner ?? null, handle.recorded ?? null]);
+      return JSON.stringify(['portrait', handle.leader, handle.hour]);
     case 'path':
       return JSON.stringify(['path', handle.path, handle.frame ?? 0, handle.frames ?? 1]);
     case 'url':

@@ -160,7 +160,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision?: number;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly extent?: readonly [number, number] | null;
   readonly plan?: SourcePlan | null;
   readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
@@ -203,7 +203,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   tiledSeries,
   tiledRevision = 0,
   hovers,
-  spriteResolutions,
+  artResolutions,
   extent = null,
   plan = null,
   exactReadView,
@@ -354,7 +354,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     staticSources,
     tiledSeries,
     hovers,
-    spriteResolutions,
+    artResolutions,
     extent,
     plan,
     exactReadView,
@@ -476,7 +476,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       ...(staticAnswers && Object.keys(staticAnswers).length ? { staticAnswers } : {}),
       ...(cur.tiledSeries ? { tiledSeries: cur.tiledSeries } : {}),
       ...(cur.hovers ? { hovers: cur.hovers } : {}),
-      ...(cur.spriteResolutions ? { spriteResolutions: cur.spriteResolutions } : {}),
+      ...(cur.artResolutions ? { artResolutions: cur.artResolutions } : {}),
       extent: cur.extent,
       plan: cur.plan,
       viewport,
@@ -619,7 +619,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const node = bodyRef.current;
     if (node && metrics) {
       const vp = viewportRef.current;
-      const nextLeft = revealGridAxis(column, metrics.cellSize, node.scrollLeft, Math.max(1, vp.width - metrics.gridLeft));
+      const nextLeft = revealGridAxis(column, metrics.cellWidth ?? metrics.cellSize, node.scrollLeft, Math.max(1, vp.width - metrics.gridLeft));
       const nextTop = revealGridAxis(row, metrics.cellSize, node.scrollTop, Math.max(1, vp.height - metrics.gridTop));
       if (nextLeft !== node.scrollLeft) node.scrollLeft = vp.scrollLeft = nextLeft;
       if (nextTop !== node.scrollTop) node.scrollTop = vp.scrollTop = nextTop;
@@ -958,7 +958,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     tiledSeries,
     tiledRevision,
     hovers,
-    spriteResolutions,
+    artResolutions,
     extent,
     plan,
     identitySnapshot,

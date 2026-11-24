@@ -27,6 +27,50 @@ export const TIME_CHART_VIEWS: readonly FamilyViewEntry[] = [
       mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
     ),
   },
+  {
+    kind: 'command-power',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'command-power',
+      DEFAULT_VIEW,
+      () => import('../command-power/commandPowerProjection.ts'),
+      mod => ({ projection: mod.commandPowerProjection, declaration: mod.commandPowerDeclaration }),
+    ),
+  },
+  {
+    kind: 'stability',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'stability',
+      DEFAULT_VIEW,
+      () => import('../stability/stabilityProjection.ts'),
+      mod => ({ projection: mod.stabilityProjection, declaration: mod.stabilityDeclaration }),
+    ),
+  },
+  {
+    kind: 'experience',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'experience',
+      DEFAULT_VIEW,
+      () => import('../experience/experienceProjection.ts'),
+      mod => ({ projection: mod.experienceProjection, declaration: mod.experienceDeclaration }),
+    ),
+  },
+  {
+    kind: 'fuel',
+    view: DEFAULT_VIEW,
+    family: 'time-chart',
+    loadSpec: timeChartSpec(
+      'fuel',
+      DEFAULT_VIEW,
+      () => import('../fuel/fuelProjection.ts'),
+      mod => ({ projection: mod.fuelProjection, declaration: mod.fuelDeclaration }),
+    ),
+  },
 ];
 
 export const timeChartFamilyManifest: FamilyManifestModule = {

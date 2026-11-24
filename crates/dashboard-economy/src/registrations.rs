@@ -1,6 +1,5 @@
 dashboard_base::register_products! {
     ECONOMY_RESOURCES_RESOURCESIZES => crate::products::economy::resources::ResourceSizes,
-    ECONOMY_LEND_LEASE_PARTNERS_LENDLEASEPARTNERS => crate::products::economy::lend_lease_partners::LendLeasePartners,
     CONVOYS_CONVOYHEALTH => crate::products::convoys::ConvoyHealth,
     TRADE_FLOWS_TRADEFLOWS => crate::products::trade_flows::TradeFlows,
     ECONOMY_MARKET_HISTORY_LENDLEASEHISTORY => crate::products::economy::market::history::LendLeaseHistory,

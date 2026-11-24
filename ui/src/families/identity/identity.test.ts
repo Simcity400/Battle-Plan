@@ -13,11 +13,13 @@ import type {
 } from '../../generated/dashboard';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { artUrlForHandle, flagArtHandle, mergeArtDemands } from '../art/provider.ts';
-import { artHandleKey } from '../art/types.ts';
+import { toFlagSlotState } from '../art/adapters.ts';
+import { NO_ART, artHandleKey, missingArt, refusedArt } from '../art/types.ts';
+import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
-import type { ArtHandle } from '../plan.ts';
+import type { ArtHandle, DisplayedHour } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
-import { createBrokerIdentityProvider, createSnapshotIdentityProvider } from './provider.ts';
+import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
 import { readIdentityAtHeadHour, subscribeIdentityAtHead } from './react.ts';
 import {
   IdentityIndex,
@@ -678,4 +680,87 @@ test('coalesced sparse identity runs stay missing on unrecorded gaps outside kno
   assert.equal(at30.kind, 'known');
   assert.deepEqual(at30.tag, { kind: 'known', value: 'GER' });
   assert.deepEqual(at30.valid, [30, 30]);
+});
+
+test('a country the lane asks for and the snapshot lacks becomes a broker demand and returns in the next snapshot', async () => {
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: () => deferred<CountryIdentitiesReply>().promise,
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, choices) => ({
+      size,
+      flags: choices.map((choice, flag) => ({ flag, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${choice.keys[0]}` })),
+      unavailable: [],
+      warnings: [],
+    }),
+  };
+  const broker = new IdentityBroker({ transport });
+  const owner = {};
+  const laneView = (snapshot: ReturnType<IdentityBroker['snapshotOf']>, demands: [string, string, number][]) => createBoundedReadView({
+    hour: 200,
+    identity: createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(snapshot))),
+    onIdentityDemand: (kind, key, atHour) => { demands.push([kind, key, atHour]); },
+  });
+
+  const demands: [string, string, number][] = [];
+  const first = laneView(broker.snapshotOf(SCOPE, undefined, [0, 500]), demands);
+  assert.equal(first.who('country', 'ALP', 120).name.status, 'pending');
+  assert.deepEqual(demands, [['country', 'ALP', 120]]);
+
+  broker.setDemand(owner, SCOPE, { asks: demands.map(([kind, key, hour]) => ({ key: parseEntityKey(kind as 'country', key), hour })), needFlags: true, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+
+  const after: [string, string, number][] = [];
+  const second = laneView(broker.snapshotOf(SCOPE, undefined, [0, 500]), after);
+  const alp = second.who('country', 'ALP', 120);
+  assert.deepEqual(alp.name, { status: 'ready', value: 'Alpha' });
+  assert.equal(alp.flagChoice?.status, 'ready');
+  assert.equal(artUrlForHandle(flagArtHandle(alp.flagChoice!.status === 'ready' ? alp.flagChoice!.value : '', 'panel'), IdentityIndex.fromSnapshot(broker.snapshotOf(SCOPE))), 'flag://GER_a');
+  broker.dispose();
+});
+
+test('a status is carried, not rebuilt: unresolved holders, failures across the worker snapshot, retried flags and refused art', async () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  index.setFacts(sampleFacts(), true);
+  index.setIdentities({ ...sampleIdentities(), countries: [{ tag: 'GER', identities: [], unresolved: [{ firstHour: 0, lastHour: 500 }] }] });
+  index.setGroupsFailure(new RefusedError('Unsupported faction table'));
+  const worker = createSnapshotIdentityProvider(IdentityIndex.fromSnapshot(structuredClone(index.exportSnapshot())));
+  const ger = worker.resolve('country', 'GER', 100 as DisplayedHour);
+  assert.deepEqual(ger.tag, { status: 'ready', value: 'GER' });
+  assert.equal(ger.holder.status, 'absent');
+  assert.deepEqual(worker.resolve('faction', '7', 100 as DisplayedHour).name, { status: 'failed', reason: 'Unsupported faction table', retryable: false });
+
+  let now = 0;
+  const timers: { at: number; run: () => void }[] = [];
+  let flagCalls = 0;
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => sampleFacts(),
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: () => deferred<CountryGroupReply>().promise,
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size, choices) => {
+      flagCalls++;
+      if (flagCalls === 1) throw new TypeError('connection reset');
+      return { size, flags: choices.map((choice, flag) => ({ flag, asset: 'a.tga', key: 'k', width: 41, height: 26, png: `flag://${choice.keys[0]}` })), unavailable: [], warnings: [] };
+    },
+  };
+  const broker = new IdentityBroker({ transport, clock: { now: () => now, after: (ms, run) => { timers.push({ at: now + ms, run }); return () => {}; } } });
+  broker.setDemand({}, SCOPE, { asks: [{ key: countryTagKey('GER'), hour: 100 }], needFlags: true, flagSize: 'panel' });
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(flagCalls, 1);
+  assert.ok(broker.flagFor(SCOPE, 'panel', FLAG_A)?.failed);
+  assert.equal(timers.length, 1, 'a retryable flag failure schedules its retry');
+  now = timers[0]!.at;
+  timers[0]!.run();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(flagCalls, 2);
+  assert.equal(broker.flagFor(SCOPE, 'panel', FLAG_A)?.url, 'flag://GER_a');
+  broker.dispose();
+
+  assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
+  assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
+  assert.deepEqual(toFlagSlotState(missingArt('No flag file'), 'GER'), { kind: 'missing', tag: 'GER' });
 });
