@@ -290,7 +290,7 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
       view: 'bars',
       label: 'Bars',
       family: 'bars',
-      options: [regionPickerControl()],
+      options: [regionPickerControl(), rowHeightControl()],
       loadSpec: async () => ({ family: 'bars', kind: 'synthetic-dual', view: 'bars', projection: { family: 'bars', kind: 'synthetic-dual', project: () => ({}) } }),
     },
   ];
@@ -303,7 +303,16 @@ test('scopedOptionFields and manifestViewSwitch support a second family view on 
   assert.equal(resolveActiveView(undefined, undefined, entries, legacy), 'table');
   assert.equal(resolveActiveView({ view: 'bars' }, undefined, entries, legacy), 'bars');
   assert.deepEqual(scopedOptionFields(undefined, 'table', entries, legacy).map(field => field.key), ['view', 'rowHeight', 'barsBehind']);
-  assert.deepEqual(scopedOptionFields(undefined, 'bars', entries, legacy).map(field => field.key), ['view', 'regions']);
+  assert.deepEqual(scopedOptionFields(undefined, 'bars', entries, legacy).map(field => field.key), ['view', 'regions', 'rowHeight']);
+  const tableFields = scopedOptionFields(undefined, 'table', entries, legacy);
+  const barsFields = scopedOptionFields(undefined, 'bars', entries, legacy);
+  const rowHeightField = tableFields.find(field => field.key === 'rowHeight')!;
+  const otherValue = rowHeightField.kind === 'choice' ? rowHeightField.choices.find(choice => choice.value !== rowHeightField.default)!.value : null;
+  assert.ok(otherValue);
+  const stored = setOption(tableFields, { view: 'table' }, 'rowHeight', otherValue)!;
+  assert.equal(resolveOptions(tableFields, stored).rowHeight, otherValue, 'the table view reads the row height it stored');
+  assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).rowHeight, rowHeightField.default, 'the bars view keeps its own row height');
+  assert.equal(resolveOptions(barsFields, { ...stored, view: 'bars' }).view, 'bars', 'the view switch itself is shared by the kind');
   assert.deepEqual(manifestViewSwitch(undefined, entries, legacy), {
     option: 'view',
     choices: [{ value: 'table', label: 'Table' }, { value: 'bars', label: 'Bars' }],

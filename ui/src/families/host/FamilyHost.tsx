@@ -145,6 +145,7 @@ function currentDpr(): number {
 export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, TBinding = unknown> {
   readonly adapter: FamilyHostAdapter<TModel, TOptions, TBinding>;
   readonly declaration: FamilyProjection<TModel, TOptions>;
+  readonly view: string;
   readonly options: TOptions;
   readonly label: string;
   readonly subject: string;
@@ -187,6 +188,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
 export default function FamilyHost<TModel = unknown, TOptions = unknown, TBinding = unknown>({
   adapter,
   declaration,
+  view,
   options,
   label,
   subject,
@@ -343,6 +345,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const latest = {
     adapter,
     declaration,
+    view,
     options,
     theme,
     reducedMotion,
@@ -464,6 +467,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const staticAnswers = cur.staticSources?.answers;
     const binding = curAdapter.buildBinding({
       kind: cur.declaration.kind,
+      view: cur.view,
       options: cur.options,
       sources: sourceIdsRef.current,
       ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),
@@ -936,6 +940,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     enabled,
     bind,
     declaration,
+    view,
     options,
     theme,
     reducedMotion,

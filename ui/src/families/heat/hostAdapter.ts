@@ -113,6 +113,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
   buildBinding: ctx => ({
     family: 'heat-matrix',
     kind: ctx.kind,
+    view: ctx.view,
     options: ctx.options,
     sources: ctx.sources,
     ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
@@ -191,6 +192,7 @@ export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, Fa
   buildBinding: ctx => ({
     family: 'heat-lanes',
     kind: ctx.kind,
+    view: ctx.view,
     options: ctx.options,
     sources: ctx.sources,
     ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),

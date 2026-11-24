@@ -170,6 +170,7 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
     return {
       family: 'time-chart',
       kind: ctx.kind,
+      viewId: ctx.view,
       options: ctx.options,
       sources: ctx.sources,
       extent: ctx.extent,

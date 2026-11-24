@@ -74,7 +74,7 @@ test('table family plays live with zero React commits, zero layout reads on inst
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px, y: pyRow0, button: 'left', clickCount: 1 });
 
       const clicked = await act<string[]>('readActivated()');
-      assert.deepEqual(clicked, ['GER'], `click activates inspected row GER after re-sort, and drag-out-and-back >4px cancels (afterClick1=${JSON.stringify(afterClick1)})`);
+      assert.deepEqual(clicked, ['FRA'], `a click after a re-sort activates the row its own hit names in the installed picture (FRA), not the cached hover, and drag-out-and-back >4px cancels (afterClick1=${JSON.stringify(afterClick1)})`);
 
       const focused = await act<{ key: string; ready: boolean }>('focusFirstAndWaitTooltip()');
       assert.equal(focused.ready, true, 'focused row FRA receives its own focusTooltip');

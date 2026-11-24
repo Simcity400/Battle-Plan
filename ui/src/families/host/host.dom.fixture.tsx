@@ -211,6 +211,7 @@ function fixtureTableAdapter(): FamilyHostAdapter<unknown, typeof OPTIONS, Famil
     buildBinding: ctx => ({
       family: 'table',
       kind: ctx.kind,
+      view: ctx.view,
       options: ctx.options,
       settings: SETTINGS,
       sources: ctx.sources,
@@ -333,6 +334,7 @@ function renderApp() {
                 <FamilyHost
                   adapter={GENERIC_ADAPTER}
                   declaration={scoreboardProjection}
+                  view="default"
                   options={OPTIONS}
                   label="Scoreboard Generic"
                   subject="scoreboard"

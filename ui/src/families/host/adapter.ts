@@ -141,6 +141,7 @@ export interface FamilyMetaState {
 
 export interface FamilyBindingContext<TOptions> {
   readonly kind: string;
+  readonly view: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
