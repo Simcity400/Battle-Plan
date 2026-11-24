@@ -88,7 +88,7 @@ test('the chart draws the answer, keeps an unnamed range and side by key with it
   assert.equal(line.endLabel?.value, '0.36');
   assert.deepEqual(named.overlays?.map(item => item.text), ['East Assembly', 'West Council']);
   assert.deepEqual(named.gaps?.map(gap => [gap.firstHour, gap.lastHour]), [[0, 500]]);
-  assert.match(named.auditRows![0]!.value!, /^\+0\.36000\|Upper Hand\|range_high\|East Assembly\|West Council$/);
+  assert.equal(named.auditRows![0]!.value, '+0.36|Upper Hand|range_high|East Assembly|West Council');
 
   const unnamed = project(800, [['history', hist], ['state', detail([record(0, 'bop_a', {
     range: { token: 'range_high', name: null, reason: 'missing localisation', min: '25000', max: '100000' },
@@ -107,7 +107,7 @@ test('a hover reads the record at the hit hour: unread is not "Not active", and 
   assert.equal(unread.items[0]!.missingReason, 'The balance of power was not recorded at this hour');
   assert.equal(hover(450, detail([])).items[0]!.value, 'Not active', 'read and not a member is not active');
   const at = hover(600, detail([record(0, 'bop_a', { change: { daily: '1000', weekly: '0', weeklyChange: '7000', shown: 'daily', rate: '1000' } })]));
-  assert.ok(at.items.some(item => item.label === 'Daily change' && item.value === '+0.01000'), 'a daily drift is never a zero weekly change');
+  assert.ok(at.items.some(item => item.label === 'Daily change' && item.value === '+0.01'), 'a daily drift is never a zero weekly change');
   const other = hover(600, detail([record(9, 'bop_a', { range: { token: 'range_low', name: 'Other', min: null, max: null } })]));
   assert.ok(other.items.some(item => item.label === 'Range' && item.missingReason), 'another record of the same balance is never joined');
 });
