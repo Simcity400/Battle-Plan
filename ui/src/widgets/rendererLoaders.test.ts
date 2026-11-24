@@ -61,15 +61,27 @@ test('every widget module loads with its registered lazy body and the catalogue 
       }
       if (renderer.usePresets) assert.equal(registered.usePresets, renderer.usePresets, `${meta.kind} presets are available on first catalogue open`);
     }
-    const { FAMILY_VIEWS: views, FAMILY_VIEW_UI: overrides } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
-    for (const entry of (views as readonly FamilyViewEntry[]).filter(item => Object.hasOwn(overrides, item.kind))) {
+    const { FAMILY_VIEWS: views, LEGACY_WIDGETS: legacy, OPTION_CHOICES: kindChoices } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
+    const legacyKeys = new Set((legacy as readonly { kind: string; view?: string }[]).map(item => viewKey(item.kind, item.view)));
+    for (const entry of views as readonly FamilyViewEntry[]) {
+      const key = viewKey(entry.kind, entry.view);
+      assert.equal(legacyKeys.has(key), false, `${key} is not shadowed by a LEGACY_WIDGETS entry`);
       const renderer = await load(entry.kind, entry.view);
       const spec = await entry.loadSpec();
       const drawn = renderer.declaration;
-      const named = `${viewKey(entry.kind, entry.view)} draws the declaration its manifest entry names`;
+      const named = `${key} draws the declaration its manifest entry names`;
       assert.deepEqual([drawn?.family, drawn?.kind], [spec.declaration.family, spec.declaration.kind], named);
       assert.equal(drawn?.projection, spec.declaration.projection, named);
     }
+    const choiceHooks = new Map<string, Set<unknown>>();
+    for (const entry of [...views as readonly FamilyViewEntry[], ...legacy as readonly { kind: string; view?: string }[]]) {
+      const hooks = choiceHooks.get(entry.kind) ?? new Set<unknown>();
+      const kindHook = Object.hasOwn(kindChoices, entry.kind) ? await kindChoices[entry.kind]() : undefined;
+      hooks.add(kindHook ?? (await load(entry.kind, entry.view)).useOptionChoices);
+      choiceHooks.set(entry.kind, hooks);
+    }
+    const lost = [...choiceHooks].filter(([, hooks]) => hooks.size > 1).map(([kind]) => kind);
+    assert.deepEqual(lost, [], 'every view of a kind loads the recording’s option choices, whichever view loads first');
   } finally { await vite.close(); }
 });
 

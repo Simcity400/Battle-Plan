@@ -94,7 +94,7 @@ export function buildShareRowsModel(input: ShareRowsInput): BarsModel {
   };
 }
 
-export function barsRegionRows(model: BarsModel, layout: { readonly bodyTop: number; readonly rowTops: readonly number[]; readonly rowHeights: readonly number[]; readonly nameX: number }): RegionRowsField | null {
+export function barsRegionRows(model: BarsModel, layout: { readonly bodyTop: number; readonly rowTops: readonly number[]; readonly rowHeights: readonly number[]; readonly nameX: number; readonly nameWidth: number }): RegionRowsField | null {
   const rows: RegionRowRef[] = [];
   let add: RegionRowsField['add'] = null;
   model.rows.forEach((row, index) => {
@@ -112,5 +112,5 @@ export function barsRegionRows(model: BarsModel, layout: { readonly bodyTop: num
       active: row.group !== 'picked' || (row.segments ?? []).some(segment => segment.share > 0),
     });
   });
-  return rows.length || add || model.regionsActive ? { rows, add, nameLeft: layout.nameX, ...(model.regionsActive ? { active: model.regionsActive } : {}) } : null;
+  return rows.length || add || model.regionsActive ? { rows, add, nameLeft: layout.nameX, nameRight: layout.nameX + layout.nameWidth, ...(model.regionsActive ? { active: model.regionsActive } : {}) } : null;
 }

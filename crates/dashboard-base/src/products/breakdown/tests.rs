@@ -188,3 +188,22 @@ fn a_part_is_dated_by_the_latest_read_among_its_amounts() {
     let held = built.build();
     assert_eq!((held.at(20).0.parts[0].last, held.at(40).0.parts[0].last), (Some(12), Some(30)), "a dated history dates each part by its reads up to the hour");
 }
+
+#[test]
+fn a_share_of_a_parent_is_given_only_when_both_amounts_are_known() {
+    let decisions = node("decisions", 0);
+    let partly = [
+        leaf(&[decisions.clone(), node("war", 0)], Amount::Known(640)),
+        leaf(&[decisions, node("economy", 1)], Amount::Partial(352, "some output was not recorded".into())),
+        leaf(&[node("daily", 1)], Amount::Known(2071)),
+    ];
+    let reply = breakdown(0, &partly, &Unrecorded::default());
+    let decisions = reply.parts.iter().find(|part| part.key == "decisions").expect("decisions");
+    assert_eq!(decisions.state, BreakdownState::Partial);
+    assert!(decisions.children.iter().all(|child| child.parent_share.is_none()), "a part whose output is partly missing is no denominator: never 100% of it");
+    assert_eq!(decisions.parent_share, None, "nor is a partial part a share of the whole");
+    let daily = reply.parts.iter().find(|part| part.key == "daily").expect("daily");
+    assert!(daily.parent_share.is_none(), "the whole is partial, so no part is an exact share of it");
+    let known = breakdown(0, &partly[..1], &Unrecorded::default());
+    assert_eq!(known.parts[0].children[0].parent_share, Some(1.0), "a known child of a known part keeps its share");
+}

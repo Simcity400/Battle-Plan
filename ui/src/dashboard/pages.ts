@@ -134,10 +134,6 @@ export function savePages(pages: PageEntry[], storage?: PageStorage): string | n
   catch { return 'Couldn’t save your pages on this device. They still apply for this session.'; }
 }
 
-export function keptPageStates<T>(states: ReadonlyMap<PageId, T>, shown: PageId, pages: readonly PageId[]): T[] {
-  return [...states].filter(([id]) => id !== shown && pages.includes(id)).map(([, state]) => state);
-}
-
 export function movePage(pages: PageEntry[], from: number, to: number): PageEntry[] {
   const next = [...pages];
   const [page] = next.splice(from, 1);

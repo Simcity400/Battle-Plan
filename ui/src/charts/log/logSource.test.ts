@@ -1,7 +1,7 @@
 import { gatedHour } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { aheadThrough, askedPages, binPages, countsAhead, cumulativeCounts, drawnAhead, failedPage, heldPage, logPageRequest, missingNote, missingThrough, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from './logSource.ts';
+import { aheadThrough, askedPages, binPages, countsAhead, cumulativeCounts, drawnAhead, failedPage, logPageRequest, missingNote, missingThrough, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from './logSource.ts';
 import type { LogRow } from './logData';
 import { tailFollowParams } from '../../families/table/logHelpers.ts';
 
@@ -166,27 +166,12 @@ test('a count painted each frame adds the rows drawn past the cut as the clock r
   assert.deepEqual(drawnAhead(shownPages(10, 4, held([0, 2]), new Map()), 2).map(row => row.hour), [104, 106, 115, 117], 'a page not held adds nothing');
 });
 
-test('a page answered for the spec shown is held, though the list mounted while its spec was still loading', () => {
-  const mounted = noPages<string[], string>(null);
-  const held = heldPage(mounted, 'spec', 'spec', 4, ['row'], ['note']);
-  assert.equal(held.lane, 'spec');
-  assert.deepEqual([...held.rows], [[4, ['row']]]);
-  assert.deepEqual([...held.notes], [[4, ['note']]]);
-  assert.deepEqual([...pagesOf(held, 'spec').rows.keys()], [4], 'the list reads the page it was answered');
+test('failed pages bind to the shown spec and ignore answers for superseded specs', () => {
   const failure = new Error('Refused');
   const failed = failedPage(noPages<string[], string>(null), 'spec', 'spec', 5, failure);
   assert.equal(failed.lane, 'spec');
   assert.equal(failed.errors.get(5), failure, 'a failed page shows its failure, never loading');
-  const answered = heldPage(failed, 'spec', 'spec', 5, ['row'], undefined);
-  assert.equal(answered.errors.size, 0, "an answer clears the page's failure");
-});
-
-test("an answer for a spec no longer shown changes nothing, and one for the spec shown keeps none of an earlier spec's pages", () => {
-  const earlier = heldPage(noPages<string[], never>('earlier'), 'earlier', 'earlier', 1, ['old'], undefined);
-  assert.equal(heldPage(earlier, 'shown', 'earlier', 2, ['late'], undefined), earlier);
-  assert.equal(failedPage(earlier, 'shown', 'earlier', 2, new Error('Refused')), earlier);
-  const shown = heldPage(earlier, 'shown', 'shown', 2, ['new'], undefined);
-  assert.equal(shown.lane, 'shown');
-  assert.deepEqual([...shown.rows], [[2, ['new']]]);
-  assert.equal(pagesOf(earlier, 'shown').rows.size, 0);
+  assert.equal(failedPage(failed, 'shown', 'spec', 2, new Error('Refused')), failed);
+  assert.equal(pagesOf(failed, 'shown').rows.size, 0);
+  assert.equal(pagesOf(failed, 'spec'), failed);
 });

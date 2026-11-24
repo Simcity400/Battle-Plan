@@ -24,8 +24,6 @@ export interface MarkSummary {
   tiles?: true;
 }
 
-export const clusterShown = (summary: MarkSummary, cluster: MarkCluster, until: number | null) => !summary.tiles || until === null || cluster.lastHour <= until;
-
 const shown = new WeakMap<MarkSummary, { whole: number; part: number; clusters: readonly MarkCluster[] }>();
 
 export function shownClusters(summary: MarkSummary, until: number | null): readonly MarkCluster[] {
@@ -76,38 +74,6 @@ export function markClusterAt(point: { x: number; y: number }, frame: PlotFrame,
     if (next <= distance && (next < distance || !found || BigInt(cluster.firstOrdinal) < BigInt(found.firstOrdinal))) { found = cluster; distance = next; }
   }
   return found;
-}
-
-export function markIndex(source: readonly EventBadge[]) {
-  const badges = source.map((badge, index) => ({ badge, index })).sort((a, b) => a.badge.hour - b.badge.hour || a.index - b.index).map(entry => entry.badge);
-  const lower = (hour: number) => {
-    let first = 0, last = badges.length;
-    while (first < last) { const middle = first + Math.floor((last - first) / 2); if (badges[middle].hour < hour) first = middle + 1; else last = middle; }
-    return first;
-  };
-  return {
-    summary(from: number, to: number, width: number): MarkSummary {
-      const clusters: MarkCluster[] = [];
-      if (!(to >= from) || !(width > 0)) return { from, to, width, clusters };
-      const cells = Math.max(1, Math.ceil(width / 18));
-      let first = lower(from);
-      const end = lower(to + Number.EPSILON * Math.max(1, Math.abs(to)) * 2);
-      for (let cell = 0; cell < cells && first < end; cell++) {
-        const boundary = from + (to - from) * (cell + 1) / cells;
-        const last = cell === cells - 1 ? end : Math.min(end, lower(boundary));
-        if (last > first) clusters.push({ firstHour: badges[first].hour, lastHour: badges[last - 1].hour,
-          firstOrdinal: String(first), count: String(last - first), ...(last - first === 1 ? { badge: badges[first] } : {}) });
-        first = last;
-      }
-      return { from, to, width, clusters };
-    },
-    page(firstOrdinal: number, count: number): readonly EventBadge[] { return badges.slice(firstOrdinal, firstOrdinal + count); },
-    at(hour: number): readonly EventBadge[] {
-      const first = lower(hour); let last = first;
-      while (last < badges.length && badges[last].hour === hour) last++;
-      return badges.slice(first, last);
-    },
-  };
 }
 
 export const eventCount = (count: string | number) => `${count} ${String(count) === '1' ? 'event' : 'events'}`;

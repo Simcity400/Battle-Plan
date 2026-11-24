@@ -8,7 +8,7 @@ import type { Run } from '../../charts/series';
 import { useProduct } from '../../dashboard/products';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { BattleViewContext } from '../battles/BattleLogView';
-import { battleValueText } from '../battles/battleRows';
+import { battlePartial, battleValueText, markPartial } from '../battles/battleRows';
 import { battleOutcome, courseDivisions, courseEquipment, courseExtent, courseManpower, drillChartHour, exactEquipment, lengthText, peakText, validateLandBattleCourse, wholeEquipment } from './landBattleCourse';
 import type { DesignLoss, SideLook } from './landBattleCourse';
 import type { LandBattleRow } from './landBattlesData';
@@ -76,7 +76,7 @@ export default function LandBattleDrill({ row, context, colours, looks, terrain,
   const outcome = battleOutcome(row);
   const dates = [row.start ? `${row.start.bound === 'by' ? 'by ' : ''}${dayLabel(row.start.hour)}` : 'Start not recorded',
     outcome.kind === 'ongoing' ? 'ongoing' : row.end && 'hour' in row.end ? dayLabel(row.end.hour) : 'ending not recorded'].join(' – ');
-  const facts = [terrain, dates, row.length.value === null ? null : lengthText(row.length.value, row.length.atLeast === true, true)].filter(Boolean).join(' · ');
+  const facts = [terrain, dates, row.length.value === null ? null : markPartial(lengthText(row.length.value, true), battlePartial(row.length))].filter(Boolean).join(' · ');
   const totals = row.sides.map((side, index) => {
     const raw = row.lossRead?.equipmentRaw?.[index];
     const value = side.losses.find(entry => entry.label === 'Equipment lost');
@@ -95,8 +95,8 @@ export default function LandBattleDrill({ row, context, colours, looks, terrain,
           {looks[index].unknown && <span className="is-muted">{looks[index].unknown}</span>}</div>
         <dl className="lb-drill-facts-list">
           <dt>Most divisions at once</dt><dd>{row.sidePeaks ? peakText(row.sidePeaks[index]) : 'Not recorded'}</dd>
-          <dt>Divisions at the last read</dt><dd>{side.counts[0] ? battleValueText(side.counts[0]) : 'Not recorded'}</dd>
-          <dt>Manpower lost</dt><dd>{manpowerLost ? battleValueText(manpowerLost) : 'Not recorded'}</dd>
+          <dt>Divisions at the last read</dt><dd>{side.counts[0] ? markPartial(battleValueText(side.counts[0]), battlePartial(side.counts[0])) : 'Not recorded'}</dd>
+          <dt>Manpower lost</dt><dd>{manpowerLost ? markPartial(battleValueText(manpowerLost), battlePartial(manpowerLost)) : 'Not recorded'}</dd>
           <dt>Equipment lost</dt><dd>{totals[index].replace(/ lost$/, '')}</dd>
         </dl>
       </div>;

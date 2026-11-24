@@ -1,9 +1,29 @@
 import type { FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import { parseRegionHitKey } from '../regions/regionRows.ts';
 import type { FamilyBarsBinding } from './laneView.ts';
-import { barsAuditWindow, layoutFamilyBars } from './layout.ts';
 import { deriveBarsAudit, type BarsModel } from './model.ts';
-import { pickAudit } from './pickList.ts';
+import { pickAudit, pickedKey } from './pickList.ts';
+
+function installedAuditWindow(
+  nav: readonly (readonly unknown[])[],
+  meta: unknown,
+  scrollTop: number,
+): { readonly first: number; readonly count: number } | null {
+  const viewport = (meta as { readonly rowViewport?: { readonly height?: unknown } } | undefined)?.rowViewport;
+  if (typeof viewport?.height !== 'number') return null;
+  const topEdge = Math.max(0, scrollTop);
+  const bottomEdge = topEdge + viewport.height;
+  let first = Infinity;
+  let last = -1;
+  for (const entry of nav) {
+    const [key, , index, , , , top, height] = entry;
+    if (typeof key !== 'string' || pickedKey(key) !== null || typeof index !== 'number' || typeof top !== 'number' || typeof height !== 'number') continue;
+    if (top + height <= topEdge || top >= bottomEdge) continue;
+    first = Math.min(first, index);
+    last = Math.max(last, index);
+  }
+  return last < 0 ? { first: 0, count: 0 } : { first, count: last - first + 1 };
+}
 
 export function parseBarsHit(hitKey: string | null): ParsedFamilyHit | null {
   if (!hitKey) return null;
@@ -35,10 +55,15 @@ export const barsHostAdapter: FamilyHostAdapter<BarsModel, unknown, FamilyBarsBi
     const meta = fields.meta as { readonly scrollHeight?: number } | undefined;
     return meta?.scrollHeight !== undefined ? { height: meta.scrollHeight } : null;
   },
-  deriveAuditRows: (model, _hour, { viewport }) => [
-    ...(model.pickList ? pickAudit(model.pickList) : []),
-    ...deriveBarsAudit(model, { window: barsAuditWindow(layoutFamilyBars(model, viewport.width, viewport.height), viewport.scrollTop) }),
-  ],
+  deriveAuditRows: (model, _hour, { viewport, fields }) => {
+    const nav = Array.isArray(fields.nav) ? fields.nav as readonly (readonly unknown[])[] : [];
+    const pickShown = nav.some(entry => pickedKey(String(entry[0])) !== null);
+    const window = installedAuditWindow(nav, fields.meta, viewport.scrollTop);
+    return [
+      ...(model.pickList && pickShown ? pickAudit(model.pickList) : []),
+      ...(window ? deriveBarsAudit(model, { window }) : []),
+    ];
+  },
   auditOrdered: true,
   buildBinding: ctx => ({ reducedMotion: ctx.reducedMotion }),
 };

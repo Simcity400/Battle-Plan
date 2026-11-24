@@ -11,12 +11,12 @@ import { useProduct } from './products';
 import { availabilityReason, availabilityRequest, scopeReason, validateWidgetAvailability } from './widgetAvailability';
 import WidgetPreview from './WidgetPreview';
 import { catalogueEntries, matchesWidget, placedCount, widgetGroups } from './widgetCategories';
-import { widgetViewOptions } from '../widgets/manifest';
+import { presetWidget, widgetViewOptions, type PresetWidget } from '../widgets/manifest';
 import type { CatalogueEntry, WidgetGroup } from './widgetCategories';
 
 type Add = (kind: string, initial?: Pick<WidgetSpec, 'title' | 'options'>) => void;
 type Entry = CatalogueEntry<WidgetDefinition>;
-const initialOf = (entry: Entry) => entry.initial as Pick<WidgetSpec, 'title' | 'options'> | undefined;
+const initialOf = (entry: Entry) => (entry.initial ? presetWidget(entry.definition.kind, entry.initial as PresetWidget) : undefined) as Pick<WidgetSpec, 'title' | 'options'> | undefined;
 interface Shared { runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; disabled: boolean; onAdd: Add }
 
 function useAdded(): [boolean, () => void] {

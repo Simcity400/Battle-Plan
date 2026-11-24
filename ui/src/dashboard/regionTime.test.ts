@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OpenedSources } from './openedSources.ts';
 import { REQUEST_HOURS } from '../generated/dashboard.ts';
-import { at, axisAt, bucketEdges, bucketRead, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, validTime, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion, SETTINGS_DETAIL, SPEC, UNRECORDED_MESSAGE, type RegionAction, type TrackHour } from './regionTime.ts';
+import { at, axisAt, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, SPEC, UNRECORDED_MESSAGE, type RegionAction, type TrackHour } from './regionTime.ts';
 import { drillAction, reduceDrill, CLOSED } from '../charts/drill/drillState.ts';
 import { gateStage } from './regionGate.ts';
 import { gatedRead, readData } from './gatedRead.ts';
@@ -73,8 +73,8 @@ test('a pinned widget’s drill told to follow playback reads the playback hour,
 
 test('a region’s window ends at its hour; an unrecorded hour has no window', () => {
   const history = widget({ mode: 'follow' });
-  assert.deepEqual(resolveRegion({ widget: history, action: FOLLOW }, late, tracks, axisAt(105)).window, { firstHour: 1005, lastHour: 1005 });
-  assert.equal(resolveRegion({ widget: history, action: FOLLOW }, late, tracks, axisAt(111)).window, null);
+  assert.deepEqual(regionWindow({ widget: history, action: FOLLOW }, late, tracks, axisAt(105)), { firstHour: 1005, lastHour: 1005 });
+  assert.equal(regionHour({ widget: history, action: FOLLOW }, late, tracks, axisAt(111)), null);
   assert.equal(regionWindow({ widget: history, action: at(Number.NaN) }, late, tracks, axisAt(105)), null);
   assert.equal(regionWindow({ widget: history, action: SPEC }, undefined, tracks, axisAt(105)), null, 'no track, no window');
 });
@@ -98,7 +98,7 @@ test('only a recorded track hour is a track hour; the region key tells regions r
 });
 
 test('a gated read reaches its data only when the gate is open and the read landed; every other state names itself', () => {
-  const outside = { message: OUTSIDE_MESSAGE, detail: SETTINGS_DETAIL };
+  const outside = { message: OUTSIDE_MESSAGE, detail: 'Change this widget’s time setting to view a recorded date.' };
   const gate = (stage: Parameters<typeof gatedRead>[0]['stage'], at: number | null = 1005) => ({ stage, hour: at as never });
   const landed = { kind: 'dated', data: [1, 2], hour: 1005, retry() {} } as const;
   assert.equal(readData(gatedRead(gate({ stage: 'outside', outside }), landed)), undefined, 'data a gate refuses is never reachable, even if it landed');
@@ -116,7 +116,7 @@ test('a gated read reaches its data only when the gate is open and the read land
 });
 
 test('the gate’s stages run in a fixed order, and a country that holds nothing once its history is known is absent, never loading', () => {
-  const outside = { message: OUTSIDE_MESSAGE, detail: SETTINGS_DETAIL };
+  const outside = { message: OUTSIDE_MESSAGE, detail: 'Change this widget’s time setting to view a recorded date.' };
   const groups = { data: {}, error: undefined, retry() {} } as unknown as Parameters<typeof gateStage>[6];
   const country = (at: Partial<NonNullable<Parameters<typeof gateStage>[3]>>) => ({ chosen: 'GER', tag: 'GER', absent: false, reason: null, holders: null, historyHeld: true,
     aliases: null, ...at }) as unknown as Parameters<typeof gateStage>[3];
@@ -149,7 +149,6 @@ test('a declared gap is not a recorded hour: every region time and pick inside i
   const picked = { widget: widget({ mode: 'follow' }), action: at(1006.4) };
   assert.equal(regionHour(picked, gapped, [gapped], axisAt(0)), null, 'a pick inside the gap is no hour');
   assert.deepEqual(regionOutside(picked, gapped, [gapped], axisAt(0)), gap, 'and keeps the gap and its reason');
-  assert.deepEqual(resolveRegion(picked, gapped, [gapped], axisAt(0)).outside, gap);
   const drilled = reduceDrill(reduceDrill(CLOSED, { type: 'open', breakdown: 'detail', hour: 1003, follow: false }), { type: 'pick', hour: 1005 });
   assert.deepEqual(regionOutside({ widget: widget({ mode: 'follow' }), action: drillAction(drilled) }, gapped, [gapped], axisAt(0)),
     gap, 'a drill picked inside the gap says why, never just “outside”');
@@ -238,6 +237,7 @@ test('the validators follow every role the contract declares, for every product 
 });
 test('a saved time is made only from checked windows, and persists nothing but its value', () => {
   const tracks = [{ id: 'main', branch: GAPPED }];
+  const validTime = (time: Parameters<typeof checkedTime>[0], list: typeof tracks, ref?: string) => checkedTime(time, list, ref).time;
   assert.equal(validTime({ mode: 'pin', windows: { main: { firstOffset: 5, lastOffset: 5 } } }, tracks), null, 'a pin inside the gap');
   assert.equal(validTime({ mode: 'pin', windows: { main: { firstOffset: 3, lastOffset: 12 } } }, tracks), null, 'a pin past the track');
   assert.equal(validTime({ mode: 'pin', windows: { other: { firstOffset: 3, lastOffset: 3 } } }, tracks), null, 'a window for no track');
@@ -253,17 +253,6 @@ test('a saved time is made only from checked windows, and persists nothing but i
   assert.deepEqual(validTime({ mode: 'pin', windows: { main: { firstOffset: 3, lastOffset: 3 }, short: { firstOffset: 3, lastOffset: 3 } } }, [...tracks, short])?.value,
     { mode: 'pin', windows: { main: { firstOffset: 3, lastOffset: 3 } } }, 'a short track does not invalidate the pin of the others');
   assert.match(checkedTime({ mode: 'pin', windows: { main: { firstOffset: 5, lastOffset: 5 } } }, tracks).refused ?? '', /nothing to pin/, 'a refused pin says why');
-});
-
-test('a product’s buckets are boundaries, and each bucket is read at one recorded hour', () => {
-  const branch = { branch: { firstHour: 100, lastHour: 2000, gaps: [{ firstHour: 720, lastHour: 730, reason: 'unreadable' }] } };
-  assert.deepEqual(bucketEdges(branch, 720), [720, 1440]);
-  assert.equal(bucketRead(branch, 105, 720), 100);
-  assert.equal(bucketRead(branch, 719, 720), 100, 'every hour of a bucket asks the same representative');
-  assert.equal(bucketRead(branch, 1000, 720), 731, 'a bucket opening in a gap is read at its first recorded hour');
-  assert.equal(bucketRead(branch, null, 720), null);
-  assert.equal(bucketRead(branch, 1000, 720, [{ firstHour: 900, lastHour: 1300 }]), 900, 'a held country’s bucket is read at its first recorded hour inside the country’s runs');
-  assert.equal(bucketRead(branch, 1000, 720, [{ firstHour: 100, lastHour: 719 }]), null, 'a bucket outside the country’s runs has no representative');
 });
 
 test('coverage spans name the run of hours that share one coverage answer', () => {

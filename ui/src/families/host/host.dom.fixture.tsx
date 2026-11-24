@@ -1,7 +1,7 @@
 import { Profiler } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { flushSync } from 'react-dom';
-import { APPEARANCE_EVENT } from '../../charts/tokens.ts';
+import { APPEARANCE_EVENT } from '../../shell/appearance/events.ts';
 import { tooltipStore } from '../../charts/tooltip.ts';
 import TooltipLayer from '../../charts/TooltipLayer.tsx';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -24,6 +24,8 @@ import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection
 import { tableHostAdapter } from '../table/hostAdapter.ts';
 import TableChrome from '../table/TableChrome.tsx';
 import FamilyHost from './FamilyHost.tsx';
+import DeclaredFamilyWidget, { type DeclaredFamilyWidgetProps } from './DeclaredFamilyWidget.tsx';
+import type { FamilyPlanContext, SourcePlan } from '../contract.ts';
 import type { FamilyStaticSources } from './adapter.ts';
 import '../../styles.css';
 
@@ -76,8 +78,9 @@ const sourceB = makeSource('camp-B');
 const client = {
   available: true,
   openFollow: (opened: readonly MessagePort[]) => { ports = opened; return Promise.resolve(); },
-  product: async (request: { product: string }) => {
+  product: async (request: { product: string; sourceId: string; revision: string; params: { hour?: number } }) => {
     if (request.product === 'follow') return { data: { available: true, route: NATIVE } };
+    if (request.product === 'span-history') return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { through: request.params.hour } };
     return { data: { available: true } };
   },
 } as unknown as DashboardClient;
@@ -225,6 +228,7 @@ pipeline.onInstall = ((id: number, listener: () => void) => origOnInstall(id, ()
 let container: HTMLDivElement | null = null;
 let commits = 0;
 let bindCount = 0;
+let boundIds: number[] = [];
 let staticCommits = 0;
 let staticSupplies: { readonly id: number; readonly statics: boolean }[] = [];
 let lastBoundModel: unknown = null;
@@ -238,11 +242,13 @@ let currentState = {
   genericBlocked: false,
   genericBodyFocus: false,
   statics: null as FamilyStaticSources | null,
+  spanMounted: false,
 };
 
 const origBind = pipeline.bind.bind(pipeline);
 pipeline.bind = ((...args: Parameters<typeof pipeline.bind>) => {
   bindCount++;
+  boundIds.push(args[0]);
   lastBoundModel = args[4];
   return origBind(...args);
 }) as typeof pipeline.bind;
@@ -267,6 +273,36 @@ const SUBS_BY_SOURCE = new Map<DashboardSource, ReturnType<typeof makeSubs>>([
   [sourceA, makeSubs(sourceA)],
   [sourceB, makeSubs(sourceB)],
 ]);
+
+const SPAN_ADAPTER = { ...tableHostAdapter, settings: { resolve: () => SETTINGS } };
+const SPAN_DECLARATION = {
+  family: 'table',
+  kind: 'scoreboard',
+  label: 'Span',
+  subject: 'span',
+  emptyCampaign: 'No campaign',
+  countries: { mode: 'none' },
+  sources: (ctx: FamilyPlanContext): SourcePlan => ({
+    owner: 'span',
+    entries: [{
+      name: 'unread',
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: 0,
+      read: {
+        shape: 'branch-to-hour',
+        coverage: { mode: 'population', form: 'all' },
+        product: 'span-history' as never,
+        followQuery: null,
+        params: { branchId: ctx.branch.id },
+        buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
+        dynamicKeys: ['hour'],
+      },
+    }],
+  }),
+  projection: scoreboardProjection,
+  projectionOptions: (_ctx: FamilyPlanContext, extra: { readonly extent: readonly [number, number] }) => ({ ...OPTIONS, firstHour: extra.extent[0] }),
+};
 
 function renderApp() {
   const rt = RUNTIME_BY_SOURCE.get(currentState.source)!;
@@ -351,6 +387,11 @@ function renderApp() {
                 />
               </div>
             </Profiler>
+          )}
+          {currentState.spanMounted && (
+            <div data-slot="span" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
+              <DeclaredFamilyWidget {...({ adapter: SPAN_ADAPTER, chrome: TableChrome, declaration: SPAN_DECLARATION, widget, options: {}, runtime: rt, active: true } as unknown as DeclaredFamilyWidgetProps)} />
+            </div>
           )}
           {currentState.statics && (
             <Profiler id="static-host" onRender={() => { staticCommits++; }}>
@@ -747,6 +788,42 @@ window.hostDom = {
       mode: `${pipeline.view(pipeS)?.mode} ${pipeline.view(pipeS)?.reason ?? ''}`,
     };
     currentState = { ...currentState, statics: null };
+    renderApp();
+    return result;
+  },
+
+  async testSpanEndOnly() {
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    clock.setPlaying(false);
+    clock.seek(300);
+    currentState = { ...currentState, spanMounted: true };
+    renderApp();
+    let pipeS = -1;
+    await until(() => {
+      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="span"] canvas.fh-canvas');
+      if (!canvas?.dataset.placement) return false;
+      pipeS = Number(canvas.dataset.placement);
+      return pipeS > 0;
+    });
+    await until(() => staticSupplies.some(item => item.id === pipeS && item.statics));
+    await frames(4);
+    boundIds = [];
+    staticSupplies = [];
+    const from = clock.getSnapshot().hour;
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    await frames(60);
+    const result = {
+      hoursAdvanced: clock.getSnapshot().hour - from,
+      answers: staticSupplies.filter(item => item.id === pipeS && item.statics).length,
+      binds: boundIds.filter(id => id === pipeS).length,
+      mode: `${pipeline.view(pipeS)?.mode} ${pipeline.view(pipeS)?.reason ?? ''}`,
+    };
+    clock.setPlaying(false);
+    await frames(4);
+    currentState = { ...currentState, spanMounted: false };
     renderApp();
     return result;
   },

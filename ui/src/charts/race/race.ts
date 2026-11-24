@@ -1,7 +1,6 @@
 import { approach } from '../easing.ts';
 import { nextRows } from '../rowMotion.ts';
 import type { MovingRow } from '../rowMotion';
-import { compareTags } from '../../dashboard/tagOrder.ts';
 import { stackEdges } from '../stack.ts';
 import type { Edge } from '../stack';
 import { linearTicks } from '../valueAxis.ts';
@@ -49,12 +48,6 @@ export const RACE_LEAVE_MS = 450;
 const SETTLED = 1e-3;
 const AXIS_ROOM = 1.06;
 
-export function rankItems(items: readonly RaceItem[], count: number): RaceItem[] {
-  return items.filter(item => Number.isFinite(item.value))
-    .sort((a, b) => b.value - a.value || compareTags(a.key, b.key))
-    .slice(0, Math.max(0, Math.floor(count)));
-}
-
 export interface PartWidth { solid: number; hatched: number }
 
 export const partTotal = (width: PartWidth) => width.solid + (width.solid < 0 ? -width.hatched : width.hatched);
@@ -89,8 +82,6 @@ function itemExtent(item: RaceItem): Edge {
   return withInset({ low: Math.min(0, total), high: Math.max(0, total) }, item.inset?.value);
 }
 export const rowExtent = (row: Pick<RaceRow, 'item' | 'widths' | 'inset'>) => withInset(barExtent(drawnWidths(row)), row.inset);
-
-export const barLength = (item: RaceItem) => { const extent = itemExtent(item); return extent.high - extent.low; };
 
 export function raceMax(items: readonly RaceItem[]): number {
   return axisOf(items).max;

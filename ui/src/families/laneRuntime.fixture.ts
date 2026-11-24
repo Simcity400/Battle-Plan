@@ -3,6 +3,7 @@ import type { Picture } from '../dashboard/follow/facts.ts';
 import { PayloadSender, PayloadStore } from '../dashboard/follow/payloads.ts';
 import type { LaneView, Painted, Sub, Value } from '../draw/lane.ts';
 import type { FamilyTheme } from './contract.ts';
+import type { FamilyTooltipField } from './host/tooltips.ts';
 
 export const LANE_THEME: FamilyTheme = {
   surface: '#16181d', raised: '#1e2128', dark: true, text: '#eef1f6', muted: '#8c95a6', line: '#2e3440', lineSoft: '#222630',
@@ -141,6 +142,7 @@ export interface LaneStep {
   readonly inspect?: string | null;
   readonly speed?: number;
   readonly seek?: number;
+  readonly pin?: number | null;
   readonly owner?: string;
   readonly generation?: number;
   readonly now?: number;
@@ -183,7 +185,7 @@ export function driveLane(view: LaneView, canvases: RecordedCanvas[], surface = 
         hour: step.hour,
         seek: step.seek ?? 0,
         speed: step.speed ?? 0,
-        binding: { generation: step.generation ?? 1, surfaces: [surface], offset: 0, pin: null, ...(step.owner !== undefined ? { owner: step.owner } : {}) },
+        binding: { generation: step.generation ?? 1, surfaces: [surface], offset: 0, pin: step.pin ?? null, ...(step.owner !== undefined ? { owner: step.owner } : {}) },
         inspect: step.inspect ?? null,
         now: step.now ?? 1000,
       }, state, () => `c${++seq}`);
@@ -228,6 +230,82 @@ export function assertFreshPaint(makeView: () => LaneView, steps: readonly LaneS
       assert.deepEqual(fieldValues(painted, null), fieldValues(freshPainted, withheld), `${step.label}: every field equals a fresh paint, a cadence-gated one or is withheld until due, never stale`);
       assert.equal(painted.mode, freshPainted.mode, `${step.label}: the mode equals a fresh paint`);
       assert.equal(painted.nextChangeAt, freshPainted.nextChangeAt, `${step.label}: the proven interval equals a fresh paint`);
+    }
+  } finally {
+    recording.restore();
+  }
+}
+
+export interface LaneTransition {
+  readonly from: LaneStep;
+  readonly to: LaneStep;
+  readonly refused?: LaneStep;
+}
+
+export function assertContinuity(makeView: () => LaneView, change: LaneTransition, surface?: { width: number; height: number; dpr: number }): void {
+  const recording = installRecordingCanvas();
+  const started = 1000;
+  try {
+    const fresh = (step: LaneStep) => {
+      const lane = driveLane(makeView(), recording.canvases, surface);
+      lane.paint(step);
+      return lane.picture();
+    };
+    const play = (refusal: boolean) => {
+      const lane = driveLane(makeView(), recording.canvases, surface);
+      lane.paint({ ...change.from, speed: 24, seek: 1, now: started });
+      if (refusal) {
+        const refused = lane.paint({ ...change.refused!, speed: 24, seek: 1, now: started + 5 });
+        assert.equal(refused.mode, 'refused', `${change.refused!.label}: the step between is refused`);
+      }
+      const moved = lane.paint({ ...change.to, speed: 24, seek: 1, now: started + 10 });
+      return { lane, moved };
+    };
+    const at = (step: Partial<LaneStep>): LaneStep => ({ ...change.to, speed: 24, seek: 1, now: started + 20, ...step });
+    const moving = play(false);
+    assert.notDeepEqual(moving.lane.picture(), fresh(at({})), `${change.to.label}: the step from ${change.from.label} draws a transition a fresh paint does not`);
+    moving.lane.paint(at({}));
+    assert.notDeepEqual(moving.lane.picture(), fresh(at({})), `${change.to.label}: a same-hour animation tick keeps the transition`);
+    const later = change.to.hour + 1 < (moving.moved.nextChangeAt ?? Infinity);
+    const cuts: [string, Partial<LaneStep>][] = [
+      ['a seek to the same hour', { seek: 2 }],
+      ['a pin at the hour', { pin: change.to.hour }],
+      ['a paused seek to the same hour', { seek: 2, speed: 0 }],
+      ...(later ? [
+        ['a seek inside the held interval', { hour: change.to.hour + 1, seek: 2 }],
+        ['a pause that moved the hour inside the held interval', { hour: change.to.hour + 1, speed: 0 }],
+      ] as [string, Partial<LaneStep>][] : []),
+    ];
+    for (const [label, cut] of cuts) {
+      const { lane } = play(false);
+      lane.paint(at(cut));
+      assert.deepEqual(lane.picture(), fresh(at(cut)), `${change.to.label}: after ${label} the picture equals a fresh paint, even with the model reused`);
+    }
+    if (change.refused) {
+      const { lane } = play(true);
+      assert.deepEqual(lane.picture(), fresh({ ...change.to, speed: 24, seek: 1, now: started + 10 }), `${change.to.label}: a refused frame between leaves no older placement to glide from`);
+    }
+  } finally {
+    recording.restore();
+  }
+}
+
+export const firstRow = (painted: Painted): string => `row:${String((painted.fields.nav?.value as readonly (readonly unknown[])[] | undefined)?.[0]?.[0])}`;
+
+export function assertTooltipDated(makeView: () => LaneView, step: LaneStep, hovered: string | ((painted: Painted) => string), later = 5, surface?: { width: number; height: number; dpr: number }): void {
+  const recording = installRecordingCanvas();
+  const tip = (painted: Painted) => (painted.fields.tooltip?.value as FamilyTooltipField | undefined)?.text ?? null;
+  try {
+    const lane = driveLane(makeView(), recording.canvases, surface);
+    const drawn = lane.paint({ ...step, inspect: null });
+    const inspect = typeof hovered === 'string' ? hovered : hovered(drawn);
+    for (const at of [step.hour + later, step.hour + later + 1]) {
+      assert.ok(at < (drawn.nextChangeAt ?? Infinity), `${step.label}: the picture drawn at ${step.hour} stands through hour ${at}`);
+      const shown = tip(lane.paint({ ...step, hour: at, inspect }));
+      const fresh = tip(driveLane(makeView(), recording.canvases, surface).paint({ ...step, hour: at, inspect }));
+      assert.ok(fresh, `${step.label}: ${inspect} has a tooltip`);
+      assert.equal(shown?.hour, at, `${step.label}: a hover at hour ${at} on a picture drawn at ${step.hour} is dated ${at}`);
+      assert.deepEqual(shown, fresh, `${step.label}: the tooltip at hour ${at} equals a fresh paint's`);
     }
   } finally {
     recording.restore();
