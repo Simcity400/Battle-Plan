@@ -1,3 +1,4 @@
+import { validNoRegions } from '../../families/regions/regionRows.ts';
 import type { MinefieldsReply } from '../../generated/dashboard';
 
 const text = (value: unknown): value is string => typeof value === 'string';
@@ -10,7 +11,8 @@ export function validateMinefields(value: unknown): MinefieldsReply {
     || !Array.isArray(reply.regions) || !reply.regions.every(region => !!region && count(region.region) && count(region.unknownOwners)
       && typeof region.pinned === 'boolean' && (region.missing === null || text(region.missing))
       && Array.isArray(region.owners) && region.owners.every(owner => !!owner && text(owner.tag)))
-    || !Array.isArray(reply.unknown) || !reply.unknown.every(region => !!region && count(region.region) && count(region.unknownOwners)))
+    || !Array.isArray(reply.unknown) || !reply.unknown.every(region => !!region && count(region.region) && count(region.unknownOwners))
+    || !validNoRegions(reply.empty))
     throw new Error('The minefields reply is malformed.');
   return reply;
 }
