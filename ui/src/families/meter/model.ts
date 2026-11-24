@@ -26,6 +26,7 @@ export type MeterBar =
       readonly kind: 'threshold';
       readonly fraction: number | null;
       readonly ticks: readonly ThresholdTick[];
+      readonly ends?: boolean;
       readonly color?: string;
       readonly height?: number;
     };
@@ -43,6 +44,7 @@ export interface MeterRow {
   readonly subtitle?: string;
   readonly muted?: boolean;
   readonly art?: MeterArt;
+  readonly flag?: MeterFlag;
   readonly pair?: MeterPairLabel;
   readonly bar: MeterBar;
   readonly figure?: string;

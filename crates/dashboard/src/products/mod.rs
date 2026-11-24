@@ -13,6 +13,7 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     dashboard_world::registrations::SCALARS_NUCLEARARSENAL,
     dashboard_world::registrations::SCALARS_WORLDTENSION,
     dashboard_world::registrations::SCALARS_FACTORYPARTS,
+    dashboard_world::registrations::AUTONOMY_LEVELS_AUTONOMYLEVELS,
     dashboard_land::registrations::EXPERIENCE_COUNTRYEXPERIENCE,
     dashboard_land::registrations::TRAINING_QUEUE_TRAININGQUEUE,
     dashboard_wars::registrations::DIPLOMACY_DIPLOMATICRELATIONS,

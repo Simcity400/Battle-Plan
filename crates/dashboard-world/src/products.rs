@@ -5,6 +5,7 @@ pub mod styles;
 pub mod country_flags;
 pub mod land_owners;
 pub mod subjects;
+pub mod autonomy_levels;
 pub mod territory;
 pub mod place_names;
 pub mod sea_regions;
