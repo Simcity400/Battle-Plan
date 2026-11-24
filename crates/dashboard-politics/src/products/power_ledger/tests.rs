@@ -972,6 +972,8 @@ fn reconciliation_verifies_identity_for_political_and_command_power_and_withhold
             gained_raw: Some((123 * PP).to_string()),
             lost_at_cap_raw: Some("0".into()),
             spent_raw: Some((52 * PP).to_string()),
+            allocated_raw: Some("0".into()),
+            released_raw: Some("0".into()),
             closing_raw: Some((171 * PP).to_string()),
             other_changes_raw: Some("0".into()),
             reason: None,
@@ -981,6 +983,8 @@ fn reconciliation_verifies_identity_for_political_and_command_power_and_withhold
 
     let pp_from_start = asked(&src, FIRST, 146);
     assert_eq!(pp_from_start.reconciliation.opening_raw, None);
+    assert_eq!(pp_from_start.reconciliation.allocated_raw, None);
+    assert_eq!(pp_from_start.reconciliation.released_raw, None);
     assert_eq!(pp_from_start.reconciliation.other_changes_raw, None);
     assert!(pp_from_start.reconciliation.reason.is_some());
 
@@ -994,17 +998,29 @@ fn reconciliation_verifies_identity_for_political_and_command_power_and_withhold
             gained_raw: Some((10 * PP).to_string()),
             lost_at_cap_raw: Some((30 * PP).to_string()),
             spent_raw: Some("0".into()),
+            allocated_raw: Some((25 * PP).to_string()),
+            released_raw: Some("0".into()),
             closing_raw: Some((75 * PP).to_string()),
-            other_changes_raw: Some((-25 * PP).to_string()),
+            other_changes_raw: Some("0".into()),
             reason: None,
         },
-        "CP hold of 25 CP after over-cap grant reports exact -25 CP other_changes"
+        "CP hold of 25 CP after over-cap grant attributes 25 CP to allocated and reconciles to exact 0 other_changes"
     );
     let cp_released = spending(&src, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 116 }, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(
-        cp_released.reconciliation.other_changes_raw.as_deref(),
-        Some("0"),
-        "CP hold followed by release cancels out to exact 0 other_changes"
+        cp_released.reconciliation,
+        SpendReconciliation {
+            opening_raw: Some((120 * PP).to_string()),
+            gained_raw: Some((10 * PP).to_string()),
+            lost_at_cap_raw: Some((30 * PP).to_string()),
+            spent_raw: Some("0".into()),
+            allocated_raw: Some((25 * PP).to_string()),
+            released_raw: Some((25 * PP).to_string()),
+            closing_raw: Some((100 * PP).to_string()),
+            other_changes_raw: Some("0".into()),
+            reason: None,
+        },
+        "CP hold followed by release reports both allocated and released totals with 0 other_changes"
     );
 
     let run0: Vec<DecodedFrame> = (FIRST..=106).map(|hour| make_frame(1, hour)).collect();
@@ -1012,6 +1028,8 @@ fn reconciliation_verifies_identity_for_political_and_command_power_and_withhold
     let split = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, run0), records(2, run1)]).unwrap().into_timelines(&Default::default()).unwrap();
     let split_src = Source::from_replay(dashboard_base::SourceKey { source_id: "power-reconcile-split".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(split), &AtomicBool::new(false)).unwrap();
     let split_reply = asked(&split_src, 102, 112);
+    assert_eq!(split_reply.reconciliation.allocated_raw, None);
+    assert_eq!(split_reply.reconciliation.released_raw, None);
     assert_eq!(split_reply.reconciliation.other_changes_raw, None);
     assert!(split_reply.reconciliation.reason.is_some());
 
@@ -1036,10 +1054,125 @@ fn reconciliation_verifies_identity_for_political_and_command_power_and_withhold
     let held_src = Source::from_replay(dashboard_base::SourceKey { source_id: "power-reconcile-held".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(held_replay), &AtomicBool::new(false)).unwrap();
     let held_reply = asked(&held_src, 102, 108);
     assert_eq!(held_reply.reconciliation.gained_raw, None);
+    assert_eq!(held_reply.reconciliation.allocated_raw, None);
+    assert_eq!(held_reply.reconciliation.released_raw, None);
     assert_eq!(held_reply.reconciliation.other_changes_raw, None);
     assert!(
         held_reply.reconciliation.reason.as_deref().is_some_and(|reason| reason.contains("was not read at this hour")),
         "held Complete status without fresh read withholds reconciliation: {:?}",
         held_reply.reconciliation
+    );
+}
+
+#[test]
+fn command_power_ground_crews_capped_refunds_and_allocation_clamps_reconcile() {
+    let make_frame = |hour: i32| {
+        let mut frame = source(1, hour, Some(1_000));
+        let cp = match hour {
+            ..=103 => 100 * PP,
+            104..=105 => 80 * PP,
+            106..=107 => 100 * PP,
+            108..=109 => 85 * PP,
+            _ => 95 * PP,
+        };
+        set(
+            &mut frame,
+            TableId::Countries,
+            TableRows::Countries(vec![CountryRow {
+                id: GER,
+                canonical_slot: SLOT,
+                tag: b"GER".to_vec(),
+                command_power_raw: cp,
+                border_land_doctrine_level: Recorded::Value(None),
+                ..Default::default()
+            }]),
+        );
+        set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: SLOT }]));
+        let changes = match hour {
+            104 => vec![CountryPowerChangeRow {
+                country: GER,
+                sequence: 1,
+                epoch: 1,
+                hour: 104,
+                currency: PowerCurrency::Command,
+                operation: PowerOperation::Subtract,
+                balance_before_raw: 100 * PP,
+                balance_after_raw: 80 * PP,
+                requested_delta_raw: Some(-20 * PP),
+                cause: PowerCause::AirAction,
+                site: PowerSite::GroundCrew,
+                ..Default::default()
+            }],
+            106 => vec![CountryPowerChangeRow {
+                country: GER,
+                sequence: 2,
+                epoch: 1,
+                hour: 106,
+                currency: PowerCurrency::Command,
+                operation: PowerOperation::Refund,
+                balance_before_raw: 80 * PP,
+                balance_after_raw: 100 * PP,
+                requested_delta_raw: Some(20 * PP),
+                cause: PowerCause::AllocationRefund,
+                site: PowerSite::GroundCrew,
+                ..Default::default()
+            }],
+            108 => vec![CountryPowerChangeRow {
+                country: GER,
+                sequence: 3,
+                epoch: 1,
+                hour: 108,
+                currency: PowerCurrency::Command,
+                operation: PowerOperation::AllocationClamp,
+                balance_before_raw: 100 * PP,
+                balance_after_raw: 85 * PP,
+                requested_delta_raw: None,
+                cause: PowerCause::CapCorrection,
+                site: PowerSite::AllocateCommandPower,
+                ..Default::default()
+            }],
+            110 => vec![CountryPowerChangeRow {
+                country: GER,
+                sequence: 4,
+                epoch: 1,
+                hour: 110,
+                currency: PowerCurrency::Command,
+                operation: PowerOperation::Refund,
+                balance_before_raw: 85 * PP,
+                balance_after_raw: 95 * PP,
+                requested_delta_raw: Some(25 * PP),
+                cause: PowerCause::AllocationRefund,
+                site: PowerSite::AddCommandPower,
+                ..Default::default()
+            }],
+            _ => Vec::new(),
+        };
+        set(&mut frame, TableId::CountryPowerChanges, TableRows::CountryPowerChanges(changes));
+        set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(Vec::new()));
+        set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(Vec::new()));
+        let capture = PoliticsCaptureCoverageRow { country: GER, epoch: 1, since_hour: FIRST, through_hour: hour, streams: PoliticsCaptureCoverageRow::ALL_STREAMS, ..Default::default() };
+        set(&mut frame, TableId::PoliticsCaptureCoverage, TableRows::PoliticsCaptureCoverage(vec![capture]));
+        frame
+    };
+    let frames: Vec<DecodedFrame> = (FIRST..=112).map(make_frame).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let src = Source::from_replay(dashboard_base::SourceKey { source_id: "power-reconcile-cp-shapes".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let query = dashboard_base::queries::query(&src, 1).unwrap();
+    let naming = naming::context(&src, &LoadContext { content: None }).unwrap();
+    let reply = spending(&src, &query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 112 }, &naming, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        reply.reconciliation,
+        SpendReconciliation {
+            opening_raw: Some((100 * PP).to_string()),
+            gained_raw: Some("0".into()),
+            lost_at_cap_raw: Some((30 * PP).to_string()),
+            spent_raw: Some("0".into()),
+            allocated_raw: Some((20 * PP).to_string()),
+            released_raw: Some((45 * PP).to_string()),
+            closing_raw: Some((95 * PP).to_string()),
+            other_changes_raw: Some("0".into()),
+            reason: None,
+        },
+        "ground-crew start/stop, allocation clamp, and capped refund reconcile to exact 0 other_changes"
     );
 }
