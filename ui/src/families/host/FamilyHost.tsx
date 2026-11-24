@@ -323,6 +323,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const lastMirrorKeyRef = useRef('');
   const lastMirrorObjRef = useRef<MirrorModel | null>(null);
+  const lastMirrorSelectedRef = useRef<string | null>(null);
   const lastVisibleRef = useRef<boolean | null>(null);
   const lastExtentRef = useRef({ width: -1, height: -1 });
   const lastRawMetaRef = useRef<{ mode: string; reason: string | null; failureOrigin: FailureOrigin; raw: unknown } | null>(null);
@@ -455,13 +456,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const kind = latestRef.current.adapter.mirror ?? 'none';
     const selected = latestRef.current.selectedKey ?? null;
     if (kind === 'table') {
-      syncTableMirror(mirrorBodyRef.current, mirror, {
+      const moved = syncTableMirror(mirrorBodyRef.current, mirror, {
         selectedKey: selected,
+        rowsFocusable: (latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows',
         focusedKeyRef,
         focusInsideRef,
         restoringFocusRef,
         lastMirrorKeyRef,
       });
+      if (moved) queueMicrotask(() => bindRef.current());
       return;
     }
     if (kind !== 'listbox') return;
@@ -899,8 +902,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
 
       const mirror = fields.mirror as MirrorModel | undefined;
-      if (mirror && mirror !== lastMirrorObjRef.current) {
+      const selectedNow = cur.selectedKey ?? null;
+      if (mirror && (mirror !== lastMirrorObjRef.current || selectedNow !== lastMirrorSelectedRef.current)) {
         lastMirrorObjRef.current = mirror;
+        lastMirrorSelectedRef.current = selectedNow;
         syncMirrorRef.current(mirror);
       }
 
@@ -1009,6 +1014,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       stopPointer();
       stopInstall();
       auditWatch.dispose();
+      lastMirrorObjRef.current = null;
+      syncMirrorRef.current(null);
       installedPictureRef.current = null;
       installedFieldsRef.current = EMPTY_FIELDS;
       navRef.current = EMPTY_NAV;
