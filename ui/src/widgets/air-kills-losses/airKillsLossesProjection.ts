@@ -13,6 +13,13 @@ export const airKillsLossesProjection: BarsProjection<MilitaryAirAtOptions> = re
   project: (readView, options) => militaryAirModel(readView, options),
 }, 'butterfly');
 
+export const airKillsLossesPairedProjection: BarsProjection<MilitaryAirAtOptions> = registerBarsProjection({
+  kind: 'air-kills-losses',
+  family: 'bars',
+  nextChange: () => Infinity,
+  project: (readView, options) => militaryAirModel(readView, options),
+}, 'paired');
+
 const numbers = (value: OptionValue | undefined) => contentSet(value ?? '').map(contentKey).map(Number).filter(Number.isInteger);
 
 function sources(ctx: FamilyPlanContext) {
@@ -49,4 +56,15 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
   }),
   jumpToDate: true,
   keyByBranch: true,
+};
+
+export const airKillsLossesPairedDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptions> = {
+  ...airKillsLossesDeclaration,
+  projection: airKillsLossesPairedProjection,
+  projectionOptions: ctx => ({
+    ...airKillsLossesDeclaration.projectionOptions(ctx),
+    leftHeader: 'Own losses',
+    rightHeader: 'Destroyed',
+    paired: { solid: 'Destroyed (solid)', outline: 'Own losses (outline)' },
+  }),
 };

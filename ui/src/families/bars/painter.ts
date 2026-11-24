@@ -43,6 +43,7 @@ import {
   type BarsModel,
   type BarsRowMedia,
   type BarsSegment,
+  type BarsValueField,
 } from './model.ts';
 
 export interface BarsGlideOffset {
@@ -193,12 +194,83 @@ function drawShareSegments(
   ctx.restore();
 }
 
+function drawStackedPair(ctx: Canvas2D, row: BarsDataRow, layout: BarsLayout, theme: FamilyTheme, fill: string, middleY: number): void {
+  const span = layout.plotWidth;
+  const h = layout.barHeight;
+  const solidY = Math.round(middleY - h - 1.5);
+  const outlineY = Math.round(middleY + 1.5);
+  const sides = [
+    { measure: row.right, y: solidY, solid: true },
+    { measure: row.left, y: outlineY, solid: false },
+  ];
+  const missing = sides.filter(side => side.measure && !measured(side.measure.value));
+  if (missing.length === 2) {
+    const kind = formatBarsValueField(row.right!.value).kind;
+    drawMissingMark(ctx, layout.plotLeft, middleY, span, theme, { notApplicable: kind === 'notApplicable' });
+  } else {
+    for (const side of sides) {
+      if (!side.measure) continue;
+      if (!measured(side.measure.value)) {
+        drawHatchRect(ctx, layout.plotLeft, side.y, Math.min(span, 10), h, 0, theme);
+        continue;
+      }
+      const numeric = side.measure.numeric ?? 0;
+      if (numeric <= 0) continue;
+      const w = Math.min(span, Math.max(2, (numeric / layout.scaleMax) * span));
+      if (side.solid) {
+        drawBar(ctx, layout.plotLeft, side.y, w, h, fill, 'right');
+      } else {
+        ctx.save();
+        ctx.strokeStyle = fill;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(layout.plotLeft + 0.5, side.y + 0.5, Math.max(1, w - 1), h - 1, [0, 2, 2, 0]);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+  if (layout.showReadout && row.readout) {
+    ctx.save();
+    ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+    ctx.fillStyle = theme.text;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(ellipsise(row.readout.primary, layout.readoutWidth, t => textWidth(ctx, t)), layout.readoutX + layout.readoutWidth, middleY);
+    ctx.restore();
+  }
+}
+
+function measured(field: BarsValueField): boolean {
+  const kind = formatBarsValueField(field).kind;
+  return kind !== 'notRecorded' && kind !== 'notApplicable';
+}
+
 function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: FamilyTheme): void {
   if (layout.headerHeight <= 0) return;
   const middleY = layout.headerTop + layout.headerHeight / 2;
   ctx.save();
   ctx.textBaseline = 'middle';
-  if (model.form === 'two-sided' && layout.twoSidedLayout === 'paired') {
+  if (model.form === 'two-sided' && layout.twoSidedLayout === 'stacked-pair') {
+    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+    ctx.textAlign = 'left';
+    let cursor = layout.nameX;
+    const swatch = 9;
+    (model.legend ?? []).forEach((item, at) => {
+      const top = Math.round(middleY - swatch / 2);
+      ctx.fillStyle = theme.text;
+      ctx.strokeStyle = theme.muted;
+      if (at === 0) {
+        ctx.fillRect(cursor, top, swatch, swatch);
+      } else {
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cursor + 0.5, top + 0.5, swatch - 1, swatch - 1);
+      }
+      ctx.fillStyle = theme.muted;
+      ctx.fillText(item.label, cursor + swatch + 6, middleY);
+      cursor += swatch + 6 + textWidth(ctx, item.label) + 18;
+    });
+  } else if (model.form === 'two-sided' && layout.twoSidedLayout === 'paired') {
     ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
     ctx.fillStyle = theme.text;
     ctx.textAlign = 'center';
@@ -541,6 +613,11 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         if (rightName.truncated) truncatedKeys.push(right.key);
         drawRowMedia(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, icons, artCache);
       }
+      continue;
+    }
+
+    if (model.form === 'two-sided' && layout.twoSidedLayout === 'stacked-pair') {
+      drawStackedPair(ctx, row, layout, theme, barColor, middleY);
       continue;
     }
 
