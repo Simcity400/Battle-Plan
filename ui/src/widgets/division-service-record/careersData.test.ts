@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { experienceRatio, headerDetail, recordRows, topDivision, validateDivisionRecord } from './careersData.ts';
+import { headerDetail, recordRows, topDivision, validateDivisionRecord } from './careersData.ts';
 import type { CareerFacts, CareerRow, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
 
 const facts = (extra: Partial<CareerFacts> = {}): CareerFacts => ({ medals: 3, awards: [], historyMissing: null, experienceRaw: '60000', level: 2, levelName: 'Veteran', casualtiesTaken: 1234, ...extra });
@@ -20,12 +20,6 @@ test('header parts are missing on their own, never zero', () => {
   assert.equal(headerDetail('Infantry', facts()), 'Infantry · 3 medals · Veteran · 1,234 casualties taken');
   assert.equal(headerDetail(null, facts({ medals: null, casualtiesTaken: null, levelName: null })), '— · — · — · —');
   assert.equal(headerDetail('Infantry', null), 'Infantry · — · — · —');
-});
-
-test('experience shows only as a share of the full scale', () => {
-  assert.equal(experienceRatio(facts()), 0.6);
-  assert.equal(experienceRatio(facts({ experienceRaw: null })), null);
-  assert.equal(experienceRatio(facts({ experienceRaw: '4294967295' })), null, 'the arithmetic sentinel is not drawn');
 });
 
 test('the automatic record follows Most decorated divisions’ first row, only when it holds a medal', () => {

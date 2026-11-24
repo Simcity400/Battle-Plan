@@ -1,5 +1,4 @@
 import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/dashboard';
-import { withoutHours } from '../charts/timeline/runState.ts';
 import { factionChoiceLabel } from './factionNames.ts';
 import { compareTags } from './tagOrder.ts';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
@@ -288,21 +287,6 @@ export function noMembersAt(selection: CountrySelection, resolved: ResolvedCount
   if (selection.kind !== 'group' || resolved.top != null || resolved.factionId != null || resolved.tags.length || resolved.reason || !groups) return null;
   const { reason } = worldFilter(selection, [], groups, hour);
   return reason === null ? null : { reason };
-}
-
-export function projectResolvedCountries(resolved: ResolvedCountries, filter: ReturnType<typeof countryMatchFilter>): ResolvedCountries {
-  if (resolved.reason || resolved.top != null || resolved.factionId != null || filter.membership === null) return resolved;
-  const membership = new Map<string, MembershipRun[]>();
-  const known = filter.unobserved.length ? withoutHours([...filter.membership].sort((a, b) => a.firstHour - b.firstHour),
-    [...filter.unobserved].sort((a, b) => a.firstHour - b.firstHour)) : filter.membership;
-  for (const run of known) {
-    const runs = membership.get(run.tag);
-    if (runs) runs.push(run); else membership.set(run.tag, [run]);
-  }
-  const unobserved = new Map(resolved.unobserved.map(span => [JSON.stringify([span.firstHour, span.lastHour]), span]));
-  for (const span of filter.unobserved) unobserved.set(JSON.stringify([span.firstHour, span.lastHour]), span);
-  return { ...resolved, tags: [...membership.keys()], membership,
-    unobserved: [...unobserved.values()].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour) };
 }
 
 export interface WorldRequestTags { tags: string[]; ready: boolean; reason: string | null }

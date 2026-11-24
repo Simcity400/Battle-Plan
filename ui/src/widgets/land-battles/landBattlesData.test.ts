@@ -5,9 +5,9 @@ import type { CountryGroupReply, LandBattlesManifestReply } from '../../generate
 import type { CountrySelection } from '../../dashboard/model';
 import type { LandBattle, LandBattleRow, LandBattlesWindow } from './landBattlesData.ts';
 import type { BattleValue } from '../battles/battleRows.ts';
-import { battleChangeHours, battleState, battleStateRows } from '../battles/battleRows.ts';
-import { battleWarnings, battleWindowIndex, battleWindows, rankedLandBattleRows, landBattleChanges, landBattleRow, landBattleRows, landBattlePlaceRequests, landWindowPlaces, namedLandBattles,
-  shownCensusHour, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking } from './landBattlesData.ts';
+import { battleChangeHours, battlePlaceRequests as landBattlePlaceRequests, battleState, battleStateRows, battleWarnings, battleWindowIndex, battleWindows, namedBattles as namedLandBattles, shownBattleCensusHour as shownCensusHour } from '../battles/battleRows.ts';
+import { rankedLandBattleRows, landBattleChanges, landBattleRow, landBattleRows, landWindowPlaces,
+  validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking } from './landBattlesData.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import { casualtyRankingNote, landCasualtyText, landLossText } from './landBattlesData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';

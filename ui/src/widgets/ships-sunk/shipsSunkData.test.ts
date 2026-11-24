@@ -5,7 +5,7 @@ import { logCountryRequests } from '../../charts/log/logData.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { engineHour, formatDateTime } from '../../dashboard/calendar.ts';
 import { countryMatch } from '../../dashboard/groups.ts';
-import { manifestClassChoices, shipAction, shipClassChoices, shipClassName, shipCountryLabels, shipCountryRequests, shipCauseLabel, shipDescription, shipLogOrder, shipLogRows, shipTooltip,
+import { manifestClassChoices, shipAction, shipClassKey, shipClassName, shipCountryLabels, shipCauseLabel, shipDescription, shipLogOrder, shipLogRows, shipTooltip,
   validateShipsSunkReply } from './shipsSunkData.ts';
 
 function row(overrides: Partial<ShipsSunkRow> = {}): ShipsSunkRow {
@@ -32,8 +32,6 @@ test('ships become visible at their supplying read while countries, ordering and
   assert.deepEqual(wanted, [['victim tag', 90]]);
   const recovered = shipLogRows(data, 110, [], 'victim', () => true, null);
   assert.deepEqual(recovered.map(item => [item.key, item.hour]), [['0', 102], ['1', 102], ['2', 90]]);
-  assert.deepEqual(shipCountryRequests(recovered, data),
-    [{ hour: 102, tag: 'victim tag' }, { hour: 102, tag: 'mod attacker' }, { hour: 90, tag: 'victim tag' }, { hour: 90, tag: 'mod attacker' }]);
   assert.equal(shipLogRows(data, 120, [], 'both', () => true, 103).length, 1);
   assert.equal(shipLogRows(data, 120, [], 'sinker', tag => tag === 'mod attacker', null).length, 4);
 });
@@ -47,10 +45,6 @@ test('retained ships name and flag countries from the supplying read, with dated
     row({ sinkHour: read + 1, knownAt: read + 2, victimAsOf: read + 2 })];
   const rows = shipLogRows(validateShipsSunkReply(data), read + 2, [], 'both', () => true, null);
   assert.deepEqual(rows.map(item => item.hour), [read + 1, sink]);
-  assert.deepEqual(shipCountryRequests(rows, data), [
-    { hour: read + 2, tag: 'victim tag' }, { hour: read + 1, tag: 'mod attacker' },
-    { hour: read, tag: 'victim tag' }, { hour: read, tag: 'mod attacker' },
-  ]);
   const labelAt = (hour: number) => (tag: string) => ({ name: `${tag} at ${hour}`, flag: `flag-${tag}-${hour}` });
   const retained = data.rows[0];
   const labels = shipCountryLabels(retained, labelAt);
@@ -78,9 +72,6 @@ test('retained ships name and flag countries from the supplying read, with dated
 test('modded class chips and sea zone are supplied by content; missing labels stay visible', () => {
   const data = fixture();
   data.classes.push({ token: 777, key: 'unused', name: 'Unused class', icon: null });
-  const choices = shipClassChoices(data, 'campaign');
-  assert.equal(choices.length, 2);
-  assert.equal(choices.find(choice => choice.value === 'mod/sea vessel')?.label, 'Extra mod ship class');
   assert.equal(contentKey(setToken('mod/sea vessel')), 'mod/sea vessel');
   assert.equal(shipLogRows(data, 120, ['mod/sea vessel'], 'both', () => true, null).length, 3);
   assert.match(shipDescription(data, data.rows[0], 'Victim at event', 'Attacker at event'), /Extra mod ship class.*Renamed mod sea/);
@@ -90,9 +81,9 @@ test('modded class chips and sea zone are supplied by content; missing labels st
   data.rows[0].recordedNameIndex = null;
   assert.equal(shipClassName(data, data.rows[0]), 'Class name unavailable');
   assert.equal(shipClassName(data, data.rows[3]), 'Class name unavailable');
-  const unknownChoice = shipClassChoices(data, 'campaign').find(choice => choice.hint === 'Key: 888')!;
-  assert.equal(shipLogRows(data, 120, [unknownChoice.value], 'both', () => true, null, shipLogOrder(data), 'campaign').length, 1);
-  assert.equal(shipLogRows(data, 120, [unknownChoice.value], 'both', () => true, null, shipLogOrder(data), 'other campaign').length, 0);
+  const unknownKey = shipClassKey(data, data.classes[1], 'campaign');
+  assert.equal(shipLogRows(data, 120, [unknownKey], 'both', () => true, null, shipLogOrder(data), 'campaign').length, 1);
+  assert.equal(shipLogRows(data, 120, [unknownKey], 'both', () => true, null, shipLogOrder(data), 'other campaign').length, 0);
   assert.equal(shipTooltip(data, data.rows[0], 'Victim', 'Attacker').rows?.some(item => item.label === 'Combat reference' || item.label === 'Province'), false);
 });
 
@@ -100,17 +91,12 @@ test('class titles preserve authored empty and key-equal text while duplicate fi
   const data = fixture();
   data.classes[0].name = '';
   assert.equal(shipClassName(data, data.rows[0]), '');
-  assert.equal(shipClassChoices(data, 'campaign').find(choice => choice.value === 'mod/sea vessel')?.label, '');
   data.classes[0].name = data.classes[0].key;
   assert.equal(shipClassName(data, data.rows[0]), 'mod/sea vessel');
   data.classes[0].name = null;
   data.recordedNames[0] = '';
   assert.equal(shipClassName(data, data.rows[0]), '', 'a known empty literal is independent of a missing content title');
   data.rows.forEach(row => { row.recordedNameIndex = null; });
-  const choices = shipClassChoices(data, 'campaign');
-  assert.deepEqual(choices.map(choice => choice.label), ['Class name unavailable', 'Class name unavailable']);
-  assert.equal(new Set(choices.map(choice => choice.value)).size, 2);
-  assert.deepEqual(choices.map(choice => choice.hint), ['Key: mod/sea vessel', 'Key: 888']);
   assert.equal(shipTooltip(data, data.rows[0], 'Victim', 'Attacker').rows.find(row => row.label === 'Class key')?.value, 'mod/sea vessel');
   assert.doesNotMatch(shipDescription(data, data.rows[0], 'Victim', 'Attacker'), /mod\/sea vessel/);
 });
@@ -155,7 +141,6 @@ test('one token shares content and artwork while recorded class fallback names s
   data.rows[1].recordedNameIndex = 1;
   assert.equal(shipClassName(validateShipsSunkReply(data), data.rows[0]), 'Recorded design');
   assert.equal(shipClassName(data, data.rows[1]), 'Another recorded design');
-  assert.equal(shipClassChoices(data, 'campaign').length, 2);
 });
 
 test('ships log retains fifty thousand sinking rows while only visible countries are requested', context => {
@@ -174,18 +159,6 @@ test('ships log retains fifty thousand sinking rows while only visible countries
   assert.equal(playbackRows[0], ordered[25000]);
 });
 
-
-
-test('duplicate unknown class choices stay distinct without showing campaign tokens', () => {
-  const data = fixture();
-  data.classes.forEach(type => { type.name = null; type.key = null; });
-  data.rows.forEach(row => { row.recordedNameIndex = null; });
-  const choices = shipClassChoices(data, 'private-campaign');
-  assert.equal(new Set(choices.map(choice => choice.value)).size, choices.length);
-  assert.deepEqual(choices.map(choice => choice.label), ['Class name unavailable', 'Class name unavailable']);
-  assert.deepEqual(choices.map(choice => choice.hint), ['Key: 999', 'Key: 888']);
-  assert.ok(choices.every(choice => !choice.label.includes('private-campaign')));
-});
 
 
 test('the class choice covers the manifest classes, named or keyed, without campaign tokens in labels', () => {
