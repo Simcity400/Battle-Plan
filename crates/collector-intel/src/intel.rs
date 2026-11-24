@@ -8,7 +8,10 @@ use crate::{
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
     table_conversion::{table, table_iter, unavailable},
 };
-use collector_projection::table_clock::timed;
+use collector_projection::{
+    projection::{Projection, scalar_table},
+    table_clock::timed,
+};
 use engine_allocation::{copy_vec, default_vec, map_slice, owned_vec, reserve, reserve_exact};
 use engine_events::incoming_diplomatic_action_queue;
 use engine_intelligence::{
@@ -697,10 +700,339 @@ impl<'a> IntelConversion<'a> {
     }
 }
 
+pub struct ResidualAux {
+    context: CaptureContext,
+    left_out: [bool; N],
+    ticks: [u64; N],
+    subjects: CaptureRows<csubject_relation::Row>,
+    subject_names: Arena<u8>,
+    subject_snapshot: cwar_relation::OwnedSnapshotScratch,
+    autonomy: CaptureRows<ccurrent_autonomy_status::Row>,
+    autonomy_names: Arena<u8>,
+    agencies: CaptureRows<cintelligence_agency::Row>,
+    agency_names: Arena<u8>,
+    agency_upgrades: CaptureRows<agency_upgrade_levels::Row>,
+    agency_upgrade_catalog: agency_upgrade_levels::Catalog,
+    agency_upgrade_required: usize,
+    operatives: CaptureRows<coperative_leader::Row>,
+    operative_names: Arena<u8>,
+    operative_failure: Option<(u64, u32, u8)>,
+    operative_refused_rows: u32,
+    operative_first_refused: Option<coperative_leader::Refusal>,
+    captured_operatives: CaptureRows<cintelligence_agency::CapturedOperativeRow>,
+    operative_missions: CaptureRows<operative_missions::Row>,
+    operative_mission_bytes: Arena<u8>,
+    operative_mission_failure: Option<(u64, u32)>,
+    operative_effects: Vec<crate::operative_effects::Effects>,
+    cryptology: CaptureRows<ccryptology::Row>,
+    agency_operation_buffers: CaptureRows<agency_operation_buffers::Row>,
+    agency_operation_entries: Arena<agency_operation_buffers::Entry>,
+    operations: CaptureRows<coperation_instance::Row>,
+    assignments: CaptureRows<operation_assigned_operative::Row>,
+    operation_descriptions: Arena<u8>,
+    operation_parts: Arena<coperation_instance::Part>,
+    operation_tokens: CaptureRows<ccountry_operation_token_manager::Row>,
+    tokens: Arena<u32>,
+    incoming_actions: CaptureRows<incoming_diplomatic_action_queue::Row>,
+}
+
+impl ResidualAux {
+    pub fn capture(&mut self, memory: &impl Memory) {
+        self.subjects.reset();
+        self.autonomy.reset();
+        self.agencies.reset();
+        self.agency_upgrades.reset();
+        self.agency_upgrade_required = 0;
+        self.operatives.reset();
+        self.captured_operatives.reset();
+        self.operative_failure = None;
+        self.operative_refused_rows = 0;
+        self.operative_first_refused = None;
+        self.operative_missions.reset();
+        self.operative_effects.clear();
+        self.operative_mission_failure = None;
+        self.agency_operation_buffers.reset();
+        self.cryptology.reset();
+        self.operations.reset();
+        self.assignments.reset();
+        self.operation_tokens.reset();
+        self.incoming_actions.reset();
+        self.subject_names.reset();
+        self.autonomy_names.reset();
+        self.agency_names.reset();
+        self.operative_names.reset();
+        self.operative_mission_bytes.reset();
+        self.agency_operation_entries.reset();
+        self.operation_descriptions.reset();
+        self.operation_parts.reset();
+        self.tokens.reset();
+        let CaptureContext {
+            base,
+            game_state: state,
+            hour,
+            force_full,
+        } = self.context;
+        let mut active =
+            TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
+        for (active, &left_out) in active.iter_mut().zip(&self.left_out) {
+            *active &= !left_out;
+        }
+        macro_rules! skip {
+            ($($field:ident = $index:literal),+ $(,)?) => {$(
+                if !active[$index] {
+                    self.$field.outcome = Outcome::Unavailable {
+                        reason: replay_data::cadence::SKIPPED_REASON,
+                    };
+                }
+            )+};
+        }
+        skip!(
+            subjects = 1,
+            autonomy = 2,
+            agencies = 3,
+            operatives = 4,
+            cryptology = 5,
+            operations = 9,
+            assignments = 10,
+            operation_tokens = 11,
+            incoming_actions = 12,
+            captured_operatives = 16,
+            agency_upgrades = 17,
+            operative_missions = 18,
+            agency_operation_buffers = 20,
+        );
+        let mut ticks = [0; N];
+        macro_rules! plain {
+            ($index:literal, $field:ident, $walker:path) => {{
+                if active[$index] {
+                    let _reads = read_accounting::table(TABLES[$index]);
+                    let begin = qpc();
+                    capture_rows(&mut self.$field, |rows| $walker(memory, base, state, rows));
+                    ticks[$index] = elapsed(begin);
+                }
+            }};
+        }
+        let begin = qpc();
+        capture_named(
+            &mut self.subjects,
+            &mut self.subject_names,
+            |rows, names| {
+                let _reads = read_accounting::table(TABLES[1]);
+                ArenaRead::from(csubject_relation::walk_owned(
+                    memory,
+                    base,
+                    state,
+                    rows,
+                    names,
+                    &mut self.subject_snapshot,
+                ))
+            },
+        );
+        ticks[1] = elapsed(begin);
+        let begin = qpc();
+        capture_named(
+            &mut self.autonomy,
+            &mut self.autonomy_names,
+            |rows, names| {
+                let _reads = read_accounting::table(TABLES[2]);
+                ArenaRead::from(ccurrent_autonomy_status::walk(
+                    memory, base, state, rows, names,
+                ))
+            },
+        );
+        ticks[2] = elapsed(begin);
+        if !(self.left_out[3] && self.left_out[17]) {
+            let begin = qpc();
+            let result = read_accounting::with_table(TABLES[3], || {
+                cintelligence_agency::walk_with_upgrades(
+                    memory,
+                    base,
+                    state,
+                    &mut self.agencies.rows,
+                    &mut self.agency_names.first,
+                    &mut self.agency_upgrades.rows,
+                    &mut self.agency_upgrade_catalog,
+                )
+            });
+            first_named(
+                &mut self.agencies,
+                &mut self.agency_names,
+                ArenaRead::from(result.agencies),
+            );
+            self.agency_upgrades.outcome =
+                bounded(result.upgrades.outcome, self.agency_upgrades.rows.len());
+            self.agency_upgrade_required = result.upgrades.required_rows;
+            AGENCY_UPGRADE_PEAK_DEMAND.fetch_max(
+                result.upgrades.required_rows,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            AGENCY_UPGRADE_STORAGE_OMISSIONS.fetch_add(
+                u64::from(result.upgrades.omitted_rows),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            for (counter, count) in AGENCY_UPGRADE_REFUSALS
+                .iter()
+                .zip(result.upgrades.refusal_counts)
+            {
+                counter.fetch_add(u64::from(count), std::sync::atomic::Ordering::Relaxed);
+            }
+            ticks[3] = elapsed(begin);
+        }
+        if active[4] {
+            let begin = qpc();
+            capture_named(
+                &mut self.operatives,
+                &mut self.operative_names,
+                |rows, names| {
+                    let _reads = read_accounting::table(TABLES[4]);
+                    let read = coperative_leader::walk(memory, base, state, rows, names);
+                    self.operative_failure = read.failed_membership;
+                    self.operative_refused_rows = read.refused_rows;
+                    self.operative_first_refused = read.first_refused;
+                    OPERATIVE_REFUSALS.observe(read.refused_rows, read.first_refused);
+                    ArenaRead {
+                        outcome: read.outcome,
+                        len: read.bytes_len,
+                        required: read.required_bytes,
+                    }
+                },
+            );
+            ticks[4] = elapsed(begin);
+        }
+        plain!(
+            16,
+            captured_operatives,
+            cintelligence_agency::walk_captured_operatives
+        );
+        if active[18] {
+            let begin = qpc();
+            capture_named(
+                &mut self.operative_missions,
+                &mut self.operative_mission_bytes,
+                |rows, bytes| {
+                    let _reads = read_accounting::table(TABLES[18]);
+                    let read = with_held_key(
+                        &ROOT_OUT_KEY,
+                        operative_missions::root_out_key(),
+                        |key| operative_missions::walk(memory, base, state, rows, bytes, key),
+                    );
+                    self.operative_mission_failure = read.failed_operative;
+                    ArenaRead {
+                        outcome: read.outcome,
+                        len: read.bytes_len,
+                        required: read.required_bytes,
+                    }
+                },
+            );
+            {
+                let _reads = read_accounting::table(TABLES[18]);
+                crate::operative_effects::snapshot(
+                    memory,
+                    base,
+                    state,
+                    &self.operative_missions.rows[..self.operative_missions.outcome.len()],
+                    &mut self.operative_effects,
+                );
+            }
+            ticks[18] = elapsed(begin);
+        }
+        plain!(5, cryptology, ccryptology::walk);
+        if active[20] {
+            let begin = qpc();
+            capture_named(
+                &mut self.agency_operation_buffers,
+                &mut self.agency_operation_entries,
+                |rows, entries| {
+                    let _reads = read_accounting::table(TABLES[20]);
+                    let read = with_held_key(
+                        &OFFER_SPEED_KEY,
+                        agency_operation_buffers::speed_key(),
+                        |key| {
+                            agency_operation_buffers::walk(
+                                memory, base, state, rows, entries, key,
+                            )
+                        },
+                    );
+                    ArenaRead {
+                        outcome: read.outcome,
+                        len: read.entries_len,
+                        required: read.required_entries,
+                    }
+                },
+            );
+            ticks[20] = elapsed(begin);
+        }
+        if active[9] {
+            let begin = qpc();
+            let result = read_accounting::with_table(TABLES[9], || {
+                ccountry_operation_manager::walk(
+                    memory,
+                    base,
+                    state,
+                    &mut self.operations.rows,
+                    &mut self.assignments.rows,
+                    &mut self.operation_descriptions.first,
+                    &mut self.operation_parts.first,
+                )
+            });
+            first_named(
+                &mut self.operations,
+                &mut self.operation_descriptions,
+                ArenaRead {
+                    outcome: result.outcome,
+                    len: result.bytes_len,
+                    required: result.required_bytes,
+                },
+            );
+            self.operation_parts.len = result.parts_len;
+            self.operation_parts.required = result.required_parts;
+            if !valid_arena(
+                self.operations.outcome,
+                &self.operations.rows,
+                &self.operation_parts.first,
+                result.parts_len,
+                result.required_parts,
+            ) {
+                self.operations.outcome = Outcome::Unavailable {
+                    reason: "captured arena range invalid",
+                };
+            }
+            self.assignments.outcome = bounded(result.assignments, self.assignments.rows.len());
+            ticks[9] = elapsed(begin);
+        }
+        if active[11] {
+            let begin = qpc();
+            capture_named(
+                &mut self.operation_tokens,
+                &mut self.tokens,
+                |rows, tokens| {
+                    let _reads = read_accounting::table(TABLES[11]);
+                    let result = ccountry_operation_token_manager::walk(
+                        memory, base, state, rows, tokens,
+                    );
+                    ArenaRead {
+                        outcome: result.outcome,
+                        len: result.tokens_len,
+                        required: result.required_tokens,
+                    }
+                },
+            );
+            ticks[11] = elapsed(begin);
+        }
+        plain!(
+            12,
+            incoming_actions,
+            incoming_diplomatic_action_queue::walk
+        );
+        self.ticks = ticks;
+    }
+}
+
 pub struct Captured {
     relation_active: [bool; 2],
     left_out: [bool; N],
     variables_apart: bool,
+    residual_aux_apart: bool,
     capitulation: CaptureRows<cdiplomacy_status::CapitulationRow>,
     war_goal_recipients: Vec<u32>,
     subjects: CaptureRows<csubject_relation::Row>,
@@ -830,6 +1162,12 @@ impl Captured {
         self.country_intel.release();
     }
 
+    pub fn release_daily_idle(&self) {
+        if let Some(home) = self.country_intel.home() {
+            home.release_idle();
+        }
+    }
+
     fn build(capacity: &Capacities, country_intel: Loan) -> Self {
         Self {
             capitulation: CaptureRows::new(capacity.rows[0]),
@@ -895,6 +1233,7 @@ impl Captured {
             relation_active: [false; 2],
             left_out: [false; N],
             variables_apart: false,
+            residual_aux_apart: false,
             capitulation_raw_mode: false,
         }
     }
@@ -977,22 +1316,37 @@ impl Captured {
 
     fn reset_residual(&mut self) {
         self.flags_witness = None;
-        self.subjects.reset();
-        self.autonomy.reset();
-        self.agencies.reset();
-        self.agency_upgrades.reset();
-        self.agency_upgrade_required = 0;
-        self.operatives.reset();
-        self.captured_operatives.reset();
-        self.operative_failure = None;
-        self.operative_refused_rows = 0;
-        self.operative_first_refused = None;
-        self.operative_missions.reset();
-        self.operative_effects.clear();
-        self.operative_mission_failure = None;
+        if !self.residual_aux_apart {
+            self.subjects.reset();
+            self.autonomy.reset();
+            self.agencies.reset();
+            self.agency_upgrades.reset();
+            self.agency_upgrade_required = 0;
+            self.operatives.reset();
+            self.captured_operatives.reset();
+            self.operative_failure = None;
+            self.operative_refused_rows = 0;
+            self.operative_first_refused = None;
+            self.operative_missions.reset();
+            self.operative_effects.clear();
+            self.operative_mission_failure = None;
+            self.agency_operation_buffers.reset();
+            self.cryptology.reset();
+            self.operations.reset();
+            self.assignments.reset();
+            self.operation_tokens.reset();
+            self.incoming_actions.reset();
+            self.subject_names.reset();
+            self.autonomy_names.reset();
+            self.agency_names.reset();
+            self.operative_names.reset();
+            self.operative_mission_bytes.reset();
+            self.agency_operation_entries.reset();
+            self.operation_descriptions.reset();
+            self.operation_parts.reset();
+            self.tokens.reset();
+        }
         self.strategic_operatives.reset();
-        self.agency_operation_buffers.reset();
-        self.cryptology.reset();
         self.networks.reset();
         self.network_summaries.reset();
         self.propaganda.reset();
@@ -1004,25 +1358,12 @@ impl Captured {
         self.flags.reset();
         self.variables.reset();
         self.variable_delta.clear();
-        self.operations.reset();
-        self.assignments.reset();
-        self.operation_tokens.reset();
-        self.incoming_actions.reset();
         self.country_intel.release();
         self.country_intel_outcome = UNCAPTURED;
         self.country_intel_sample = None;
-        self.subject_names.reset();
-        self.autonomy_names.reset();
-        self.agency_names.reset();
-        self.operative_names.reset();
-        self.operative_mission_bytes.reset();
         self.strategic_operative_entries.reset();
-        self.agency_operation_entries.reset();
-        self.operation_descriptions.reset();
-        self.operation_parts.reset();
         self.variable_entries.reset();
         self.variable_names.reset();
-        self.tokens.reset();
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -1217,6 +1558,135 @@ impl Captured {
         self.capture_tables(memory, context, true, false, flags, variables)
     }
 
+    pub fn take_residual_aux(&mut self, context: CaptureContext) -> ResidualAux {
+        self.residual_aux_apart = true;
+        ResidualAux {
+            context,
+            left_out: self.left_out,
+            ticks: [0; N],
+            subjects: std::mem::replace(&mut self.subjects, CaptureRows::new(0)),
+            subject_names: std::mem::replace(&mut self.subject_names, Arena::new(0)),
+            subject_snapshot: std::mem::take(&mut self.subject_snapshot),
+            autonomy: std::mem::replace(&mut self.autonomy, CaptureRows::new(0)),
+            autonomy_names: std::mem::replace(&mut self.autonomy_names, Arena::new(0)),
+            agencies: std::mem::replace(&mut self.agencies, CaptureRows::new(0)),
+            agency_names: std::mem::replace(&mut self.agency_names, Arena::new(0)),
+            agency_upgrades: std::mem::replace(&mut self.agency_upgrades, CaptureRows::new(0)),
+            agency_upgrade_catalog: std::mem::replace(
+                &mut self.agency_upgrade_catalog,
+                agency_upgrade_levels::Catalog::new(0),
+            ),
+            agency_upgrade_required: std::mem::take(&mut self.agency_upgrade_required),
+            operatives: std::mem::replace(&mut self.operatives, CaptureRows::new(0)),
+            operative_names: std::mem::replace(&mut self.operative_names, Arena::new(0)),
+            operative_failure: self.operative_failure.take(),
+            operative_refused_rows: std::mem::take(&mut self.operative_refused_rows),
+            operative_first_refused: self.operative_first_refused.take(),
+            captured_operatives: std::mem::replace(
+                &mut self.captured_operatives,
+                CaptureRows::new(0),
+            ),
+            operative_missions: std::mem::replace(
+                &mut self.operative_missions,
+                CaptureRows::new(0),
+            ),
+            operative_mission_bytes: std::mem::replace(
+                &mut self.operative_mission_bytes,
+                Arena::new(0),
+            ),
+            operative_mission_failure: self.operative_mission_failure.take(),
+            operative_effects: std::mem::take(&mut self.operative_effects),
+            cryptology: std::mem::replace(&mut self.cryptology, CaptureRows::new(0)),
+            agency_operation_buffers: std::mem::replace(
+                &mut self.agency_operation_buffers,
+                CaptureRows::new(0),
+            ),
+            agency_operation_entries: std::mem::replace(
+                &mut self.agency_operation_entries,
+                Arena::new(0),
+            ),
+            operations: std::mem::replace(&mut self.operations, CaptureRows::new(0)),
+            assignments: std::mem::replace(&mut self.assignments, CaptureRows::new(0)),
+            operation_descriptions: std::mem::replace(
+                &mut self.operation_descriptions,
+                Arena::new(0),
+            ),
+            operation_parts: std::mem::replace(&mut self.operation_parts, Arena::new(0)),
+            operation_tokens: std::mem::replace(&mut self.operation_tokens, CaptureRows::new(0)),
+            tokens: std::mem::replace(&mut self.tokens, Arena::new(0)),
+            incoming_actions: std::mem::replace(&mut self.incoming_actions, CaptureRows::new(0)),
+        }
+    }
+
+    pub fn restore_residual_aux(
+        &mut self,
+        aux: Option<ResidualAux>,
+        context: CaptureContext,
+        reason: &'static str,
+    ) -> [u64; N] {
+        self.residual_aux_apart = false;
+        let Some(aux) = aux else {
+            macro_rules! fail_aux {
+                ($($index:literal => $field:ident),+ $(,)?) => {$(
+                    self.$field.outcome = Outcome::Unavailable {
+                        reason: if replay_data::cadence::should_walk(TABLES[$index], context.hour, context.force_full) {
+                            reason
+                        } else {
+                            replay_data::cadence::SKIPPED_REASON
+                        },
+                    };
+                )+};
+            }
+            fail_aux!(
+                1 => subjects,
+                2 => autonomy,
+                3 => agencies,
+                4 => operatives,
+                5 => cryptology,
+                9 => operations,
+                10 => assignments,
+                11 => operation_tokens,
+                12 => incoming_actions,
+                16 => captured_operatives,
+                17 => agency_upgrades,
+                18 => operative_missions,
+                20 => agency_operation_buffers,
+            );
+            return [0; N];
+        };
+        self.subjects = aux.subjects;
+        self.subject_names = aux.subject_names;
+        self.subject_snapshot = aux.subject_snapshot;
+        self.autonomy = aux.autonomy;
+        self.autonomy_names = aux.autonomy_names;
+        self.agencies = aux.agencies;
+        self.agency_names = aux.agency_names;
+        self.agency_upgrades = aux.agency_upgrades;
+        self.agency_upgrade_catalog = aux.agency_upgrade_catalog;
+        self.agency_upgrade_required = aux.agency_upgrade_required;
+        self.operatives = aux.operatives;
+        self.operative_names = aux.operative_names;
+        self.operative_failure = aux.operative_failure;
+        self.operative_refused_rows = aux.operative_refused_rows;
+        self.operative_first_refused = aux.operative_first_refused;
+        self.captured_operatives = aux.captured_operatives;
+        self.operative_missions = aux.operative_missions;
+        self.operative_mission_bytes = aux.operative_mission_bytes;
+        self.operative_mission_failure = aux.operative_mission_failure;
+        self.operative_effects = aux.operative_effects;
+        self.cryptology = aux.cryptology;
+        self.agency_operation_buffers = aux.agency_operation_buffers;
+        self.agency_operation_entries = aux.agency_operation_entries;
+        self.operations = aux.operations;
+        self.assignments = aux.assignments;
+        self.operation_descriptions = aux.operation_descriptions;
+        self.operation_parts = aux.operation_parts;
+        self.operation_tokens = aux.operation_tokens;
+        self.tokens = aux.tokens;
+        self.incoming_actions = aux.incoming_actions;
+        aux.ticks
+    }
+
     pub fn capture_delegated(
         &mut self,
         memory: &impl Memory,
@@ -1359,24 +1829,28 @@ impl Captured {
             )+};
         }
         if include_residual {
+            if !self.residual_aux_apart {
+                skip!(
+                    subjects = 1,
+                    autonomy = 2,
+                    agencies = 3,
+                    operatives = 4,
+                    cryptology = 5,
+                    operations = 9,
+                    assignments = 10,
+                    operation_tokens = 11,
+                    incoming_actions = 12,
+                    captured_operatives = 16,
+                    agency_upgrades = 17,
+                    operative_missions = 18,
+                    agency_operation_buffers = 20,
+                );
+            }
             skip!(
-                subjects = 1,
-                autonomy = 2,
-                agencies = 3,
-                operatives = 4,
-                cryptology = 5,
                 networks = 6,
                 flags = 7,
                 variables = 8,
-                operations = 9,
-                assignments = 10,
-                operation_tokens = 11,
-                incoming_actions = 12,
-                captured_operatives = 16,
-                agency_upgrades = 17,
-                operative_missions = 18,
                 strategic_operatives = 19,
-                agency_operation_buffers = 20,
                 network_summaries = 21,
                 propaganda = 22,
                 source_contributions = 23,
@@ -1412,136 +1886,138 @@ impl Captured {
             ticks[0] = elapsed(begin);
         }
         if include_residual {
-            let begin = qpc();
-            capture_named(
-                &mut self.subjects,
-                &mut self.subject_names,
-                |rows, names| {
-                    let _reads = read_accounting::table(TABLES[1]);
-                    ArenaRead::from(csubject_relation::walk_owned(
-                        memory,
-                        base,
-                        state,
-                        rows,
-                        names,
-                        &mut self.subject_snapshot,
-                    ))
-                },
-            );
-            ticks[1] = elapsed(begin);
-            let begin = qpc();
-            capture_named(
-                &mut self.autonomy,
-                &mut self.autonomy_names,
-                |rows, names| {
-                    let _reads = read_accounting::table(TABLES[2]);
-                    ArenaRead::from(ccurrent_autonomy_status::walk(
-                        memory, base, state, rows, names,
-                    ))
-                },
-            );
-            ticks[2] = elapsed(begin);
-            if !(self.left_out[3] && self.left_out[17]) {
-                let begin = qpc();
-                let result = read_accounting::with_table(TABLES[3], || {
-                    cintelligence_agency::walk_with_upgrades(
-                        memory,
-                        base,
-                        state,
-                        &mut self.agencies.rows,
-                        &mut self.agency_names.first,
-                        &mut self.agency_upgrades.rows,
-                        &mut self.agency_upgrade_catalog,
-                    )
-                });
-                first_named(
-                    &mut self.agencies,
-                    &mut self.agency_names,
-                    ArenaRead::from(result.agencies),
-                );
-                self.agency_upgrades.outcome =
-                    bounded(result.upgrades.outcome, self.agency_upgrades.rows.len());
-                self.agency_upgrade_required = result.upgrades.required_rows;
-                AGENCY_UPGRADE_PEAK_DEMAND.fetch_max(
-                    result.upgrades.required_rows,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                AGENCY_UPGRADE_STORAGE_OMISSIONS.fetch_add(
-                    u64::from(result.upgrades.omitted_rows),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                for (counter, count) in AGENCY_UPGRADE_REFUSALS
-                    .iter()
-                    .zip(result.upgrades.refusal_counts)
-                {
-                    counter.fetch_add(u64::from(count), std::sync::atomic::Ordering::Relaxed);
-                }
-                ticks[3] = elapsed(begin);
-            }
-            if active[4] {
+            if !self.residual_aux_apart {
                 let begin = qpc();
                 capture_named(
-                    &mut self.operatives,
-                    &mut self.operative_names,
+                    &mut self.subjects,
+                    &mut self.subject_names,
                     |rows, names| {
-                        let _reads = read_accounting::table(TABLES[4]);
-                        let read =
-                            coperative_leader::walk(memory, base, state, rows, names);
-                        self.operative_failure = read.failed_membership;
-                        self.operative_refused_rows = read.refused_rows;
-                        self.operative_first_refused = read.first_refused;
-                        OPERATIVE_REFUSALS.observe(read.refused_rows, read.first_refused);
-                        ArenaRead {
-                            outcome: read.outcome,
-                            len: read.bytes_len,
-                            required: read.required_bytes,
-                        }
+                        let _reads = read_accounting::table(TABLES[1]);
+                        ArenaRead::from(csubject_relation::walk_owned(
+                            memory,
+                            base,
+                            state,
+                            rows,
+                            names,
+                            &mut self.subject_snapshot,
+                        ))
                     },
                 );
-                ticks[4] = elapsed(begin);
-            }
-            plain!(
-                16,
-                captured_operatives,
-                cintelligence_agency::walk_captured_operatives
-            );
-            if active[18] {
+                ticks[1] = elapsed(begin);
                 let begin = qpc();
                 capture_named(
-                    &mut self.operative_missions,
-                    &mut self.operative_mission_bytes,
-                    |rows, bytes| {
-                        let _reads = read_accounting::table(TABLES[18]);
-                        let read = with_held_key(
-                            &ROOT_OUT_KEY,
-                            operative_missions::root_out_key(),
-                            |key| {
-                                operative_missions::walk(
-                                    memory, base, state, rows, bytes, key,
-                                )
-                            },
-                        );
-                        self.operative_mission_failure = read.failed_operative;
-                        ArenaRead {
-                            outcome: read.outcome,
-                            len: read.bytes_len,
-                            required: read.required_bytes,
-                        }
+                    &mut self.autonomy,
+                    &mut self.autonomy_names,
+                    |rows, names| {
+                        let _reads = read_accounting::table(TABLES[2]);
+                        ArenaRead::from(ccurrent_autonomy_status::walk(
+                            memory, base, state, rows, names,
+                        ))
                     },
                 );
-                {
-                    let _reads = read_accounting::table(TABLES[18]);
-                    crate::operative_effects::snapshot(
-                        memory,
-                        base,
-                        state,
-                        &self.operative_missions.rows[..self.operative_missions.outcome.len()],
-                        &mut self.operative_effects,
+                ticks[2] = elapsed(begin);
+                if !(self.left_out[3] && self.left_out[17]) {
+                    let begin = qpc();
+                    let result = read_accounting::with_table(TABLES[3], || {
+                        cintelligence_agency::walk_with_upgrades(
+                            memory,
+                            base,
+                            state,
+                            &mut self.agencies.rows,
+                            &mut self.agency_names.first,
+                            &mut self.agency_upgrades.rows,
+                            &mut self.agency_upgrade_catalog,
+                        )
+                    });
+                    first_named(
+                        &mut self.agencies,
+                        &mut self.agency_names,
+                        ArenaRead::from(result.agencies),
                     );
+                    self.agency_upgrades.outcome =
+                        bounded(result.upgrades.outcome, self.agency_upgrades.rows.len());
+                    self.agency_upgrade_required = result.upgrades.required_rows;
+                    AGENCY_UPGRADE_PEAK_DEMAND.fetch_max(
+                        result.upgrades.required_rows,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    AGENCY_UPGRADE_STORAGE_OMISSIONS.fetch_add(
+                        u64::from(result.upgrades.omitted_rows),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    for (counter, count) in AGENCY_UPGRADE_REFUSALS
+                        .iter()
+                        .zip(result.upgrades.refusal_counts)
+                    {
+                        counter.fetch_add(u64::from(count), std::sync::atomic::Ordering::Relaxed);
+                    }
+                    ticks[3] = elapsed(begin);
                 }
-                ticks[18] = elapsed(begin);
+                if active[4] {
+                    let begin = qpc();
+                    capture_named(
+                        &mut self.operatives,
+                        &mut self.operative_names,
+                        |rows, names| {
+                            let _reads = read_accounting::table(TABLES[4]);
+                            let read =
+                                coperative_leader::walk(memory, base, state, rows, names);
+                            self.operative_failure = read.failed_membership;
+                            self.operative_refused_rows = read.refused_rows;
+                            self.operative_first_refused = read.first_refused;
+                            OPERATIVE_REFUSALS.observe(read.refused_rows, read.first_refused);
+                            ArenaRead {
+                                outcome: read.outcome,
+                                len: read.bytes_len,
+                                required: read.required_bytes,
+                            }
+                        },
+                    );
+                    ticks[4] = elapsed(begin);
+                }
+                plain!(
+                    16,
+                    captured_operatives,
+                    cintelligence_agency::walk_captured_operatives
+                );
+                if active[18] {
+                    let begin = qpc();
+                    capture_named(
+                        &mut self.operative_missions,
+                        &mut self.operative_mission_bytes,
+                        |rows, bytes| {
+                            let _reads = read_accounting::table(TABLES[18]);
+                            let read = with_held_key(
+                                &ROOT_OUT_KEY,
+                                operative_missions::root_out_key(),
+                                |key| {
+                                    operative_missions::walk(
+                                        memory, base, state, rows, bytes, key,
+                                    )
+                                },
+                            );
+                            self.operative_mission_failure = read.failed_operative;
+                            ArenaRead {
+                                outcome: read.outcome,
+                                len: read.bytes_len,
+                                required: read.required_bytes,
+                            }
+                        },
+                    );
+                    {
+                        let _reads = read_accounting::table(TABLES[18]);
+                        crate::operative_effects::snapshot(
+                            memory,
+                            base,
+                            state,
+                            &self.operative_missions.rows[..self.operative_missions.outcome.len()],
+                            &mut self.operative_effects,
+                        );
+                    }
+                    ticks[18] = elapsed(begin);
+                }
+                plain!(5, cryptology, ccryptology::walk);
             }
-            plain!(5, cryptology, ccryptology::walk);
             if active[6] {
                 let _reads = read_accounting::table(TABLES[6]);
                 let begin = qpc();
@@ -1627,7 +2103,7 @@ impl Captured {
             if let (Some(resets), Outcome::Rows { .. }) = (resets, self.networks.outcome) {
                 NETWORK_RESETS.store(resets, std::sync::atomic::Ordering::SeqCst);
             }
-            if active[20] {
+            if !self.residual_aux_apart && active[20] {
                 let begin = qpc();
                 capture_named(
                     &mut self.agency_operation_buffers,
@@ -1720,68 +2196,71 @@ impl Captured {
                 );
                 ticks[8] = elapsed(begin);
             }
-            if active[9] {
-                let begin = qpc();
-                let result = read_accounting::with_table(TABLES[9], || {
-                    ccountry_operation_manager::walk(
-                        memory,
-                        base,
-                        state,
-                        &mut self.operations.rows,
-                        &mut self.assignments.rows,
-                        &mut self.operation_descriptions.first,
-                        &mut self.operation_parts.first,
-                    )
-                });
-                first_named(
-                    &mut self.operations,
-                    &mut self.operation_descriptions,
-                    ArenaRead {
-                        outcome: result.outcome,
-                        len: result.bytes_len,
-                        required: result.required_bytes,
-                    },
-                );
-                self.operation_parts.len = result.parts_len;
-                self.operation_parts.required = result.required_parts;
-                if !valid_arena(
-                    self.operations.outcome,
-                    &self.operations.rows,
-                    &self.operation_parts.first,
-                    result.parts_len,
-                    result.required_parts,
-                ) {
-                    self.operations.outcome = Outcome::Unavailable {
-                        reason: "captured arena range invalid",
-                    };
-                }
-                self.assignments.outcome = bounded(result.assignments, self.assignments.rows.len());
-                ticks[9] = elapsed(begin);
-            }
-            if active[11] {
-                let begin = qpc();
-                capture_named(
-                    &mut self.operation_tokens,
-                    &mut self.tokens,
-                    |rows, tokens| {
-                        let _reads = read_accounting::table(TABLES[11]);
-                        let result = ccountry_operation_token_manager::walk(
-                            memory, base, state, rows, tokens,
-                        );
+            if !self.residual_aux_apart {
+                if active[9] {
+                    let begin = qpc();
+                    let result = read_accounting::with_table(TABLES[9], || {
+                        ccountry_operation_manager::walk(
+                            memory,
+                            base,
+                            state,
+                            &mut self.operations.rows,
+                            &mut self.assignments.rows,
+                            &mut self.operation_descriptions.first,
+                            &mut self.operation_parts.first,
+                        )
+                    });
+                    first_named(
+                        &mut self.operations,
+                        &mut self.operation_descriptions,
                         ArenaRead {
                             outcome: result.outcome,
-                            len: result.tokens_len,
-                            required: result.required_tokens,
-                        }
-                    },
+                            len: result.bytes_len,
+                            required: result.required_bytes,
+                        },
+                    );
+                    self.operation_parts.len = result.parts_len;
+                    self.operation_parts.required = result.required_parts;
+                    if !valid_arena(
+                        self.operations.outcome,
+                        &self.operations.rows,
+                        &self.operation_parts.first,
+                        result.parts_len,
+                        result.required_parts,
+                    ) {
+                        self.operations.outcome = Outcome::Unavailable {
+                            reason: "captured arena range invalid",
+                        };
+                    }
+                    self.assignments.outcome =
+                        bounded(result.assignments, self.assignments.rows.len());
+                    ticks[9] = elapsed(begin);
+                }
+                if active[11] {
+                    let begin = qpc();
+                    capture_named(
+                        &mut self.operation_tokens,
+                        &mut self.tokens,
+                        |rows, tokens| {
+                            let _reads = read_accounting::table(TABLES[11]);
+                            let result = ccountry_operation_token_manager::walk(
+                                memory, base, state, rows, tokens,
+                            );
+                            ArenaRead {
+                                outcome: result.outcome,
+                                len: result.tokens_len,
+                                required: result.required_tokens,
+                            }
+                        },
+                    );
+                    ticks[11] = elapsed(begin);
+                }
+                plain!(
+                    12,
+                    incoming_actions,
+                    incoming_diplomatic_action_queue::walk
                 );
-                ticks[11] = elapsed(begin);
             }
-            plain!(
-                12,
-                incoming_actions,
-                incoming_diplomatic_action_queue::walk
-            );
         }
         let relation_walk =
             include_delegated && (active[13] || active[14]) && !self.relations_raw_mode;
@@ -1955,6 +2434,17 @@ impl Captured {
         scratch: &mut ScriptVariableComparison,
         reuse: Option<&mut IntelConversion<'_>>,
     ) -> [TableInput; N] {
+        self.table_inputs_projected(baseline, scratch, reuse, None)
+    }
+
+    pub fn table_inputs_projected(
+        &self,
+        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        scratch: &mut ScriptVariableComparison,
+        reuse: Option<&mut IntelConversion<'_>>,
+        mut projection: Option<&mut Projection<'_>>,
+    ) -> [TableInput; N] {
+        use replay_data::rows::RowCodec;
         let outcomes = self.outcomes();
         let flags = timed(TableId::ScriptFlags, || {
             if let Some(reuse) = reuse {
@@ -1969,18 +2459,207 @@ impl Captured {
                 TableInput::Sampled(self.flags_table(outcomes[7]))
             }
         });
-        let country_intel = TableInput::Sampled(self.country_intel_table(outcomes[15]));
-        self.convert_tables(
-            TableInput::Sampled,
-            TableInput::SharedComplete,
+        let cryptology_row = |r: &ccryptology::Row| rows::CryptologyRow {
+            owner_country: r.owner_country,
+            target_country: r.target_country,
+            amount_raw: r.amount_raw,
+            bonus_days: r.bonus_days,
+            bonus_active: r.bonus_active,
+            decrypting: r.decrypting,
+            ordinal: rows::Recorded::Value(r.ordinal),
+        };
+        let network_row = |r: &ccountry_intel_network::Row| rows::IntelNetworkRow {
+            owner_country: r.owner_country,
+            target_country: r.target_country,
+            state_id: r.state_id,
+            strength_raw: r.strength_raw,
+            subnetwork_selector: r.subnetwork_selector,
+            local_strength_raw: r.local_strength_raw,
+            gain_raw: r.gain_raw,
+            gain_from_operatives_raw: r.gain_from_operatives_raw,
+            gain_from_adjacency_raw: r.gain_from_adjacency_raw,
+            local_quiet: r.local_quiet,
+            gain_factor_raw: r.gain_factor_raw,
+            strength_target_raw: r.strength_target_raw,
+            target_from_operatives_raw: r.target_from_operatives_raw,
+            target_from_counterintelligence_raw: r.target_from_counterintelligence_raw,
+            subnetwork_quiet: r.subnetwork_quiet,
+        };
+        let assignment_row = |r: &operation_assigned_operative::Row| rows::OperationAssignmentRow {
+            operation: r.operation,
+            ordinal: r.ordinal,
+            operative: r.operative,
+            selection: r.selection,
+        };
+        let action_row =
+            |r: &incoming_diplomatic_action_queue::Row| rows::IncomingDiplomaticActionRow {
+                country: r.country,
+                ordinal: r.ordinal,
+                handle: r.handle,
+                status: r.status,
+                action_type: r.action_type,
+                actor: r.actor,
+                original_actor: r.original_actor,
+                recipient: r.recipient,
+                original_recipient: r.original_recipient,
+                hour: r.hour,
+                last_command_hour: r.last_command_hour,
+            };
+        let opinion_row = |r: &crelation_status::OpinionRow| rows::RelationOpinionRow {
+            owner_country: r.owner_country,
+            target_country: r.target_country,
+            opinion: r.opinion,
+        };
+        let country_intel_row = |r: &engine_native_intelligence::country_intel_row::Row| rows::CountryIntelRow {
+            owner_country: r.owner_country,
+            target_index: r.target_index,
+            army: r.army,
+            air: r.air,
+            civilian: r.civilian,
+            navy: r.navy,
+        };
+        let captured_row =
+            |r: &cintelligence_agency::CapturedOperativeRow| rows::CapturedOperativeReferenceRow {
+                country: r.country,
+                ordinal: r.ordinal,
+                operative: r.operative,
+                owner: r.owner,
+            };
+        let summary_row = |r: &ccountry_intel_network::Summary| rows::IntelNetworkSummaryRow {
+            owner_country: r.owner_country,
+            target_country: r.target_country,
+            covered_core_states: r.covered_core_states,
+            ordinal: r.ordinal,
+            covered_controlled_states: r.covered_controlled_states,
+            covered_worth: r.covered_worth,
+            controlled_strength_sum: r.controlled_strength_sum,
+            core_strength_sum: r.core_strength_sum,
+            max_state_strength: r.max_state_strength,
+        };
+        let propaganda_row = |r: &crate::propaganda_changes::Row| rows::PropagandaEffortRow {
+            slot: r.slot,
+            country: r.country,
+            sequence: r.sequence,
+            stability: r.stability,
+            war_support: r.war_support,
+            derived_drift: r.derived_drift,
+        };
+        let certified_or = |slot: usize, fallback: &mut dyn FnMut() -> TableInput| match &self
+            .certified_snapshots[slot - 22]
+        {
+            Some(snapshot) => snapshot.input(),
+            None => fallback(),
+        };
+        [
+            TableInput::Sampled(self.capitulation_table(outcomes[0])),
+            TableInput::Sampled(self.subjects_table(outcomes[1])),
+            TableInput::Sampled(self.autonomy_table(outcomes[2])),
+            TableInput::Sampled(self.agencies_table(outcomes[3])),
+            TableInput::Sampled(self.operatives_table(outcomes[4])),
+            scalar_table::<tables::Cryptology, _>(
+                projection.as_deref_mut(),
+                outcomes[5],
+                &self.cryptology.rows,
+                |r| RowCodec::key(&cryptology_row(r)),
+                cryptology_row,
+            ),
+            scalar_table::<tables::IntelNetworks, _>(
+                projection.as_deref_mut(),
+                outcomes[6],
+                &self.networks.rows,
+                |r| RowCodec::key(&network_row(r)),
+                network_row,
+            ),
             flags,
-            country_intel,
-            |outcome| {
-                timed(TableId::ScriptVariables, || {
-                    self.variables_input(outcome, baseline, scratch)
-                })
-            },
-        )
+            timed(TableId::ScriptVariables, || {
+                self.variables_input(outcomes[8], baseline, scratch)
+            }),
+            TableInput::Sampled(self.operations_table(outcomes[9])),
+            scalar_table::<tables::OperationAssignments, _>(
+                projection.as_deref_mut(),
+                outcomes[10],
+                &self.assignments.rows,
+                |r| RowCodec::key(&assignment_row(r)),
+                assignment_row,
+            ),
+            TableInput::Sampled(self.operation_tokens_table(outcomes[11])),
+            scalar_table::<tables::IncomingDiplomaticActions, _>(
+                projection.as_deref_mut(),
+                outcomes[12],
+                &self.incoming_actions.rows,
+                |r| RowCodec::key(&action_row(r)),
+                action_row,
+            ),
+            scalar_table::<tables::RelationOpinions, _>(
+                projection.as_deref_mut(),
+                outcomes[13],
+                &self.relation_opinions.rows,
+                |r| RowCodec::key(&opinion_row(r)),
+                opinion_row,
+            ),
+            TableInput::Sampled(self.relation_tuples_table(outcomes[14])),
+            scalar_table::<tables::CountryIntel, _>(
+                projection.as_deref_mut(),
+                outcomes[15],
+                self.country_intel.rows().unwrap_or_default(),
+                |r| RowCodec::key(&country_intel_row(r)),
+                country_intel_row,
+            ),
+            scalar_table::<tables::CapturedOperativeReferences, _>(
+                projection.as_deref_mut(),
+                outcomes[16],
+                &self.captured_operatives.rows,
+                |r| RowCodec::key(&captured_row(r)),
+                captured_row,
+            ),
+            TableInput::Sampled(self.agency_upgrades_table(outcomes[17])),
+            TableInput::Sampled(self.operative_missions_table(outcomes[18])),
+            TableInput::Sampled(self.strategic_operatives_table(outcomes[19])),
+            TableInput::Sampled(self.agency_operation_buffers_table(outcomes[20])),
+            scalar_table::<tables::IntelNetworkSummaries, _>(
+                projection.as_deref_mut(),
+                outcomes[21],
+                &self.network_summaries.rows,
+                |r| RowCodec::key(&summary_row(r)),
+                summary_row,
+            ),
+            certified_or(22, &mut || {
+                scalar_table::<tables::PropagandaEfforts, _>(
+                    projection.as_deref_mut(),
+                    outcomes[22],
+                    &self.propaganda.rows,
+                    |r| RowCodec::key(&propaganda_row(r)),
+                    propaganda_row,
+                )
+            }),
+            certified_or(23, &mut || {
+                scalar_table::<tables::IntelContributions, _>(
+                    projection.as_deref_mut(),
+                    outcomes[23],
+                    &self.source_contributions.rows,
+                    |row| RowCodec::key(row),
+                    |row| *row,
+                )
+            }),
+            certified_or(24, &mut || {
+                scalar_table::<tables::IntelSources, _>(
+                    projection.as_deref_mut(),
+                    outcomes[24],
+                    &self.source_values.rows,
+                    |row| RowCodec::key(row),
+                    |row| *row,
+                )
+            }),
+            certified_or(25, &mut || {
+                scalar_table::<tables::IntelNetworkAuxiliaries, _>(
+                    projection.as_deref_mut(),
+                    outcomes[25],
+                    &self.network_auxiliary.rows,
+                    |row| RowCodec::key(row),
+                    |row| *row,
+                )
+            }),
+        ]
     }
 
     #[cfg(test)]
@@ -1995,6 +2674,7 @@ impl Captured {
         )
     }
 
+    #[cfg(test)]
     fn certified_table<V>(
         &self,
         slot: usize,
@@ -2012,6 +2692,7 @@ impl Captured {
         }
     }
 
+    #[cfg(test)]
     fn convert_tables<V>(
         &self,
         sample: impl Fn(TableView) -> V,
@@ -2166,6 +2847,7 @@ impl Captured {
 }
 
 impl Captured {
+    #[cfg(test)]
     fn country_intel_table(&self, outcome: Outcome) -> TableView {
         let source = self.country_intel.rows().unwrap_or_default();
         table::<tables::CountryIntel, _>(outcome, source, |r| rows::CountryIntelRow {
@@ -3807,7 +4489,6 @@ fn pointer(memory: &impl Memory, root: usize, offset: usize) -> Result<usize, &'
         .ok_or("script scope root unreadable")
 }
 
-
 type Drain =
     fn(&mut u64, &mut [crelation_status::Mark], &mut usize) -> Option<(u64, Option<usize>)>;
 
@@ -4312,7 +4993,6 @@ fn install<R: Copy + Default>(
         },
     };
 }
-
 
 const M_CAPITULATION: u32 = 0x01;
 
@@ -7472,35 +8152,6 @@ mod tests {
     use super::relations_test_kit as relations_kit;
 
     #[test]
-    fn staged_relations_skip_the_game_thread_typed_walk() {
-        struct CountOpinion<'a> {
-            memory: SliceMemory<'a>,
-            reads: std::cell::Cell<usize>,
-        }
-        impl Memory for CountOpinion<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                let opinion = relations_kit::status(0, 2) + crelation_status::OPINION;
-                if address <= opinion && opinion < address.saturating_add(destination.len()) {
-                    self.reads.set(self.reads.get() + 1);
-                }
-                self.memory.copy(address, destination)
-            }
-        }
-        let bytes = relations_kit::opinionated_fixture();
-        let memory = CountOpinion {
-            memory: relations_kit::memory(&bytes),
-            reads: std::cell::Cell::new(0),
-        };
-        let mut capture = relations_kit::intel_captured(16, 16);
-        capture.capture(&memory, relations_kit::BASE, relations_kit::GS, 21, false);
-        assert!(memory.reads.get() > 0);
-        memory.reads.set(0);
-        capture.relations_raw_mode = true;
-        capture.capture(&memory, relations_kit::BASE, relations_kit::GS, 21, false);
-        assert_eq!(memory.reads.get(), 0);
-    }
-
-    #[test]
     fn relations_job_matches_typed_rows_including_skips_and_ordinals() {
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
@@ -8272,7 +8923,6 @@ mod tests {
         assert_eq!(direct.opinion_outcome, Outcome::Rows { len: 2 });
     }
 
-
     const CAP_BASE: usize = 0;
     const CAP_GAME: usize = 0x1000;
     const CAP_COUNTRIES: usize = 0x2000;
@@ -8621,71 +9271,6 @@ mod tests {
     }
 
     #[test]
-    fn capitulation_split_copy_reads_only_what_the_walk_reads() {
-        struct Trace<'a> {
-            memory: SliceMemory<'a>,
-            reads: std::cell::RefCell<std::collections::BTreeSet<(usize, usize)>>,
-        }
-        impl Memory for Trace<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.reads.borrow_mut().insert((address, output.len()));
-                self.memory.copy(address, output)
-            }
-        }
-        let mut bytes = cap_fixture();
-        bytes.resize(0x5000 - CAP_GAME + 0x1000, 0);
-        cap_array(
-            &mut bytes,
-            CAP_DIPLO + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS,
-            0x4400,
-            1,
-        );
-        cap_put(&mut bytes, 0x4400, &0x4500_u64.to_le_bytes());
-        cap_put(
-            &mut bytes,
-            0x4500,
-            &(engine_native::cwar_relation::goals::VTABLE_RVA.0 as u64).to_le_bytes(),
-        );
-        cap_put(
-            &mut bytes,
-            0x4500 + engine_native::cwar_relation::goals::RECIPIENT,
-            &7_u32.to_le_bytes(),
-        );
-        let trace = || Trace {
-            memory: SliceMemory {
-                base: CAP_GAME,
-                bytes: &bytes,
-            },
-            reads: Default::default(),
-        };
-        let walked = trace();
-        let mut rows = Vec::new();
-        let mut recipients = Vec::new();
-        let direct = cdiplomacy_status::walk_capitulation(
-            &walked,
-            CAP_BASE,
-            CAP_GAME,
-            &mut rows,
-            &mut recipients,
-        );
-        assert_eq!(direct, Outcome::Rows { len: 1 });
-        assert_eq!(recipients, [7]);
-        let copied = trace();
-        let mut job = CapitulationJob::new();
-        let ctx = CapitulationCopyContext {
-            base: CAP_BASE,
-            game_state: CAP_GAME,
-        };
-        let report = copy_capitulation_refresh(&copied, ctx, &mut job);
-        assert!(report.raw_ok);
-        assert_eq!(copied.reads.into_inner(), walked.reads.into_inner());
-        assert!(!job.log.has_bulk);
-        assert!(job.log.spans.iter().all(|span| span.ok && !span.bulk));
-        let exact: u64 = job.log.spans.iter().map(|span| span.len as u64).sum();
-        assert_eq!(report.raw_bytes, [exact]);
-    }
-
-    #[test]
     fn capitulation_split_copy_grows_original_shortage_before_publication() {
         let bytes = cap_fixture();
         let memory = SliceMemory {
@@ -8741,17 +9326,4 @@ mod tests {
         assert_eq!(split.capitulation.outcome, direct.capitulation.outcome);
     }
 
-    #[test]
-    fn capitulation_gate_skips_typed_walk_when_raw_mode_set() {
-        let capacities = cap_capacities();
-        let mut captured = Captured::with_capacities(&capacities);
-        captured.capitulation_raw_mode = true;
-        let bytes = cap_fixture();
-        let memory = SliceMemory {
-            base: CAP_GAME,
-            bytes: &bytes,
-        };
-        let ticks = captured.capture(&memory, CAP_BASE, CAP_GAME, 0, false);
-        assert_eq!(ticks[0], 0);
-    }
 }

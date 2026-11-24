@@ -543,6 +543,187 @@ impl Captured {
         rows::Recorded::Value(inputs)
     }
 
+    pub fn table_inputs(
+        &self,
+        mut projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> [replay_frame::frame::TableInput; N] {
+        use replay_data::rows::RowCodec;
+        use replay_frame::frame::TableInput;
+        if projection.is_none() {
+            return self.tables().map(TableInput::Sampled);
+        }
+        [
+            collector_projection::projection::scalar_table::<tables::StateBuildings, _>(
+                projection.as_deref_mut(),
+                self.buildings.state_buildings.outcome,
+                &self.buildings.state_buildings.rows,
+                |r| RowCodec::key(&building(r)),
+                building,
+            ),
+            collector_projection::projection::scalar_table::<tables::ProvinceBuildings, _>(
+                projection.as_deref_mut(),
+                self.buildings.province_buildings.outcome,
+                &self.buildings.province_buildings.rows,
+                |r| RowCodec::key(&building(r)),
+                building,
+            ),
+            collector_projection::projection::scalar_table::<tables::StateBaseResources, _>(
+                projection.as_deref_mut(),
+                self.base_resources.outcome,
+                &self.base_resources.rows,
+                |row| {
+                    RowCodec::key(&rows::StateBaseResourceRow {
+                        state: row.state,
+                        resource: row.resource,
+                        ordinal: row.ordinal,
+                        amount: row.amount,
+                    })
+                },
+                |row| rows::StateBaseResourceRow {
+                    state: row.state,
+                    resource: row.resource,
+                    ordinal: row.ordinal,
+                    amount: row.amount,
+                },
+            ),
+            collector_projection::projection::scalar_table::<tables::BuildingConstruction, _>(
+                projection.as_deref_mut(),
+                self.building_construction.outcome,
+                &self.building_construction.rows,
+                |row| {
+                    RowCodec::key(&rows::BuildingConstructionRow {
+                        id: row.id,
+                        country: row.country,
+                        queue_ordinal: row.queue_ordinal,
+                        ..Default::default()
+                    })
+                },
+                |row| rows::BuildingConstructionRow {
+                    id: row.id,
+                    country: row.country,
+                    queue_ordinal: row.queue_ordinal,
+                    active_factories: row.active_factories,
+                    cost: row.cost,
+                    speed: row.speed,
+                    produced: row.produced,
+                    priority: row.priority,
+                    amount: row.amount,
+                    created_hour: row.created_hour,
+                    building_type: row.building_type,
+                    target_flags: row.target_flags,
+                    target_location: row.target_location,
+                    target_state: row.target_state,
+                    target_country: row.target_country,
+                    repair_levels: row.repair_levels,
+                },
+            ),
+            TableInput::Sampled(railway_table(&self.railway_construction, &self.routes)),
+            TableInput::Sampled(settings_table(
+                &self.settings,
+                &self.group_laws,
+                self.fallback_law,
+                &self.law_bytes,
+                &self.occupied,
+            )),
+            TableInput::Sampled(law_table(&self.laws, &self.law_bytes)),
+            TableInput::Sampled(table::<tables::StateGarrisons, _>(
+                self.garrisons.outcome,
+                &self.garrisons.rows,
+                |row| rows::StateGarrisonRow {
+                    controller: row.controller,
+                    occupied: row.occupied,
+                    state: row.state,
+                    required_manpower: row.required_manpower,
+                    strength_ratio: row.strength_ratio,
+                    garrison_required: row.garrison_required,
+                    serialized_flag: row.serialized_flag,
+                    equipment: self.garrison_equipment(row),
+                },
+            )),
+            collector_projection::projection::scalar_table::<tables::StateAssignedManpower, _>(
+                projection.as_deref_mut(),
+                self.assigned_manpower.outcome,
+                &self.assigned_manpower.rows,
+                |row| {
+                    RowCodec::key(&rows::StateAssignedManpowerRow {
+                        controller: row.controller,
+                        occupied: row.occupied,
+                        state: row.state,
+                        ordinal: row.ordinal,
+                        source_country: row.source_country,
+                        amount: row.amount,
+                    })
+                },
+                |row| rows::StateAssignedManpowerRow {
+                    controller: row.controller,
+                    occupied: row.occupied,
+                    state: row.state,
+                    ordinal: row.ordinal,
+                    source_country: row.source_country,
+                    amount: row.amount,
+                },
+            ),
+            collector_projection::projection::scalar_table::<tables::CountryOccupationReserveManpower, _>(
+                projection.as_deref_mut(),
+                self.reserve_manpower.outcome,
+                &self.reserve_manpower.rows,
+                |row| {
+                    RowCodec::key(&rows::CountryOccupationReserveManpowerRow {
+                        country: row.country,
+                        ordinal: row.ordinal,
+                        source_country: row.source_country,
+                        amount: row.amount,
+                    })
+                },
+                |row| rows::CountryOccupationReserveManpowerRow {
+                    country: row.country,
+                    ordinal: row.ordinal,
+                    source_country: row.source_country,
+                    amount: row.amount,
+                },
+            ),
+            collector_projection::projection::scalar_table::<tables::StateResistance, _>(
+                projection.as_deref_mut(),
+                self.resistance.outcome,
+                &self.resistance.rows,
+                |row| {
+                    RowCodec::key(&rows::StateResistanceRow {
+                        state: row.state,
+                        country: row.country,
+                        ..Default::default()
+                    })
+                },
+                |row| rows::StateResistanceRow {
+                    state: row.state,
+                    country: row.country,
+                    level: row.level,
+                    speed: row.speed,
+                    compliance: row.compliance,
+                    compliance_speed: row.compliance_speed,
+                    active: row.active,
+                    ..Default::default()
+                },
+            ),
+            collector_projection::projection::scalar_table::<tables::CountryCollaboration, _>(
+                projection,
+                self.collaboration.outcome,
+                &self.collaboration.rows,
+                |row| {
+                    RowCodec::key(&rows::CountryCollaborationRow {
+                        source: row.source,
+                        target: row.target,
+                        progress: row.progress,
+                    })
+                },
+                |row| rows::CountryCollaborationRow {
+                    source: row.source,
+                    target: row.target,
+                    progress: row.progress,
+                },
+            ),
+        ]
+    }
+
     pub fn tables(&self) -> [TableView; N] {
         [
             table::<tables::StateBuildings, _>(

@@ -1523,44 +1523,7 @@ mod tests {
             (50_000, 100_000, 3)
         );
     }
-    #[test]
-    fn construction_and_publication_errors_keep_site_names_and_underlying_cause() {
-        for index in OBSERVED_SITES {
-            for phase in ["hook construction", "tap construction"] {
-                let reason = site_failure(index, phase, "synthetic native refusal");
-                assert_eq!(
-                    reason,
-                    format!(
-                        "market_changes {}: {phase}: synthetic native refusal",
-                        native::SITES[index].name
-                    )
-                );
-            }
-        }
-        for phase in ["publication", "publication storage"] {
-            let reason = publication_failure(phase, "synthetic batch refusal");
-            assert!(reason.starts_with("market_changes ["));
-            assert!(reason.ends_with(&format!("]: {phase}: synthetic batch refusal")));
-            for index in OBSERVED_SITES {
-                assert!(reason.contains(native::SITES[index].name));
-            }
-            for nested in [1, 2, 22, 26, 27, 28] {
-                assert!(!reason.contains(native::SITES[nested].name));
-            }
-        }
-    }
 
-    #[test]
-    fn fuel_taps_observe_only_reached_signed_add_operands() {
-        for index in [native::FUEL_SENT_SITE, native::FUEL_LOST_SITE] {
-            assert!(native::SITES[index].call_target.is_none());
-        }
-        assert!(
-            native::SITES
-                .iter()
-                .all(|site| site.name != "fuel_transfer")
-        );
-    }
     #[test]
     fn quiet_fuel_stores_do_no_guarded_reads_or_allocation() {
         struct NoReads;

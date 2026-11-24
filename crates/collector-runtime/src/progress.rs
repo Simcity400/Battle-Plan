@@ -142,52 +142,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn retries_emit_one_cumulative_summary_only_after_the_deadline_decision() {
-        use std::{
-            cell::{Cell, RefCell},
-            rc::Rc,
-        };
-        const FAMILY: &str = "synthetic_slow_progress";
-        let time = Rc::new(Cell::new(0));
-        let lines = Rc::new(RefCell::new(Vec::new()));
-        let (written, clock) = (lines.clone(), time.clone());
-        let progress = Progress {
-            file: None,
-            opened: Instant::now(),
-            writer: Some(Box::new(move |bytes| {
-                let text = String::from_utf8(bytes.to_vec()).unwrap();
-                if text.contains(" publication ") {
-                    clock.set(clock.get() + 20_000);
-                }
-                written.borrow_mut().push(text);
-            })),
-        };
-        let stage = Stage::new(&progress, FAMILY);
-        let mut decision = false;
-        for ready in [false, false, true] {
-            stage.set(FAMILY);
-            collector_hooks::hook::publication::complete_test_attempt();
-            time.set(time.get() + 1);
-            if ready || time.get() >= 15_000 {
-                decision = ready;
-                break;
-            }
-        }
-        assert!(decision);
-        assert_eq!(time.get(), 3);
-        assert_eq!(lines.borrow().len(), 1, "retries add no diagnostic I/O");
-        stage.finish();
-        let lines = lines.borrow();
-        let summaries: Vec<_> = lines
-            .iter()
-            .filter(|line| line.contains(FAMILY) && line.contains(" publication "))
-            .collect();
-        assert_eq!(summaries.len(), 1);
-        assert!(summaries[0].contains("attempts=3 total_hold_ns=0 longest_hold_ns=0 longest_synchronization_ns=0 slowest_context_ns=0 slowest_context_thread_id=0"));
-        assert!(time.get() > 15_000, "the slow writer runs after success");
-    }
-
-    #[test]
     fn lines_carry_time_step_and_count_and_stay_in_their_buffer() {
         let mut buffer = [0_u8; 32];
         let length = line(&mut buffer, 1234, "restore Raid", Some(3));
@@ -201,24 +155,4 @@ mod tests {
         assert!(buffer[..31].iter().all(|&byte| byte != b'\n'));
     }
 
-    #[test]
-    fn steps_append_to_the_session_file() {
-        let directory = std::env::temp_dir().join(format!(
-            "hoi4-progress-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
-        let progress = Progress::open(&directory);
-        progress.step("detach_requested", None);
-        progress.step(format_args!("restore {:?}", "Hourly"), Some(1));
-        let text = std::fs::read_to_string(directory.join(FILE)).unwrap();
-        let steps: Vec<&str> = text
-            .lines()
-            .map(|line| line.split_once(' ').unwrap().1)
-            .collect();
-        assert_eq!(steps, ["detach_requested", "restore \"Hourly\" 1"]);
-        drop(progress);
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
 }

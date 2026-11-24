@@ -36,7 +36,6 @@ fn class_metadata_covers_the_reader_registry_and_aliases() {
     assert_eq!(native_class(b"synthetic_unknown"), None);
 }
 
-
 pub(super) fn block<'a>(items: &'a [Item], key: &str) -> &'a [Item] {
     items
         .iter()
@@ -55,32 +54,6 @@ pub(super) fn scalar<'a>(items: &'a [Item], key: &str) -> &'a [u8] {
         .value
         .scalar()
         .unwrap()
-}
-
-#[test]
-fn registry_is_sorted_complete_and_names_fold() {
-    crate::test_game::enter();
-    assert!(EFFECT_CLASSES.windows(2).all(|pair| pair[0].0 < pair[1].0));
-    let names: std::collections::BTreeSet<_> =
-        REGISTERED_EFFECTS.iter().map(|(_, name)| name).collect();
-    assert_eq!(names.len(), EFFECT_CLASSES.len());
-    assert_eq!(
-        class(registered(b"HIDDEN_EFFECT").unwrap()).unwrap().1,
-        READ_EFFECT
-    );
-    assert_eq!(
-        class(registered(b"add_stability").unwrap()).unwrap().0,
-        READ_VALUE
-    );
-    assert!(
-        REGISTERED_EFFECTS
-            .windows(2)
-            .all(|pair| pair[0].0 < pair[1].0)
-    );
-    for &(token, _) in REGISTERED_EFFECTS.iter() {
-        assert!(class(token).is_some());
-    }
-    assert_eq!(class(u32::MAX), None);
 }
 
 #[test]

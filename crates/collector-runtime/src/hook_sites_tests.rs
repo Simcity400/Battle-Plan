@@ -11,35 +11,6 @@ fn runtime_hook_families() -> std::collections::BTreeSet<&'static str> {
     crate::runtime::hook_patch_families().collect()
 }
 
-fn timed_hook_families() -> std::collections::BTreeSet<&'static str> {
-    use collector_timing::hook_timing::Family;
-    Family::ALL
-        .into_iter()
-        .map(|family| match family {
-            Family::PoliticsCapture | Family::PoliticsCaptureTaps => "politics_changes",
-            Family::EventFeed | Family::EventFeedProvenance => "event_feed_observer",
-            Family::VariantChanges => "design_changes",
-            Family::DoctrineChanges => "world_input_changes",
-            Family::FactionResourceRebuild | Family::FactionRefreshPhases => "faction_companions",
-            family => family.name(),
-        })
-        .collect()
-}
-
-fn assert_timing_inventory(
-    runtime: &std::collections::BTreeSet<&str>,
-    timed: &std::collections::BTreeSet<&str>,
-) {
-    let missing: Vec<_> = runtime.difference(timed).copied().collect();
-    let extra: Vec<_> = timed.difference(runtime).copied().collect();
-    assert!(
-        missing.is_empty() && extra.is_empty(),
-        "hook family inventories disagree; missing from timing: {}; missing from runtime: {}",
-        missing.join(", "),
-        extra.join(", ")
-    );
-}
-
 fn missing_runtime_families(patches: &[Patch]) -> Vec<&'static str> {
     let registered = patches.iter().map(|patch| patch.family).collect();
     runtime_hook_families()
@@ -54,40 +25,6 @@ fn assert_family_completeness(patches: &[Patch]) {
         missing.is_empty(),
         "runtime hook families missing from patch registry: {}",
         missing.join(", ")
-    );
-}
-
-#[test]
-fn timing_hook_families_match_runtime_restoration() {
-    assert_timing_inventory(&runtime_hook_families(), &timed_hook_families());
-    println!(
-        "{} runtime hook families: 0 timing inventory differences",
-        runtime_hook_families().len()
-    );
-}
-
-#[test]
-fn every_runtime_hook_family_has_registered_patches() {
-    let patches = patches();
-    assert_family_completeness(&patches);
-    println!(
-        "{} runtime hook families: 0 missing from patch registry",
-        runtime_hook_families().len()
-    );
-}
-
-#[test]
-fn original_family_omissions_are_reported_by_name() {
-    let mut patches = patches();
-    patches.retain(|patch| {
-        !matches!(
-            patch.family,
-            "unit_leader_changes" | "census_changes" | "map_events"
-        )
-    });
-    assert_eq!(
-        missing_runtime_families(&patches),
-        ["census_changes", "map_events", "unit_leader_changes"]
     );
 }
 

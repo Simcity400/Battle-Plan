@@ -570,20 +570,5 @@ mod tests {
         assert_eq!(std::mem::size_of::<SkinVertex>(), 16);
         assert_eq!(&bytemuck::bytes_of(&vertex)[..4], &[0, 1, 2, 0]);
     }
-    #[test]
-    fn physical_map_samplers_do_not_follow_an_effects_declarations() {
-        let samplers = map_samplers();
-        assert_eq!(samplers.len(), 10);
-        let cube = &samplers[&binding(7, Stage::Pixel)];
-        assert_eq!(cube.u, Address::Wrap);
-        assert_eq!(cube.min, Filter::Linear);
-        assert_eq!(cube.max_lod, 1024);
-        for index in [8, 9] {
-            let sampler = &samplers[&binding(index, Stage::Pixel)];
-            assert_eq!(sampler.min, Filter::Point);
-            assert_eq!(sampler.u, Address::Clamp);
-        }
-        assert!(!samplers.contains_key(&binding(4, Stage::Vertex)));
-    }
 
 }

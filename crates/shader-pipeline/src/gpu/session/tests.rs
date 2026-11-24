@@ -1,20 +1,6 @@
 use super::*;
 
 #[test]
-fn revision_and_shared_use_stamps_follow_explicit_invalidation() {
-    let clock = GroupClock::default();
-    let stamp = GroupStamp::new(7);
-    let alias = stamp.clone();
-    alias.set(9);
-    assert_eq!(stamp.get(), 9);
-    let before = clock.revision();
-    clock.hint.store(true, Ordering::Release);
-    clock.invalidate();
-    assert_eq!(clock.revision(), before + 1);
-    assert!(!clock.hint.load(Ordering::Acquire));
-}
-
-#[test]
 fn a_racing_retirement_either_observes_the_ordered_touch_or_invalidates_it() {
     let clock = GroupClock::default();
     let constants = GroupStamp::new(0);

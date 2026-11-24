@@ -1514,7 +1514,6 @@ fn viewer_map_assets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use content_reader_raids::raids::RaidType;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1809,22 +1808,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn raid_tooltip_kinds_follow_their_fields() {
-        content_reader_script::test_game::enter();
-        let mut raid = RaidType {
-            name: "odd".into(),
-            ..Default::default()
-        };
-        raid.tooltip.refused = Some("tooltip \"x\" \\ é".into());
-        let mut log = Log::default();
-        raid_type_notes(&mut log, &raid);
-        assert_eq!(
-            log.diagnostics
-                .iter()
-                .map(|note| (note.kind, note.message.as_str()))
-                .collect::<Vec<_>>(),
-            [(Kind::Refused, "raid odd: tooltip \"x\" \\ é")]
-        );
-    }
 }

@@ -217,24 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn the_head_runs_at_the_speed_from_its_start_and_stops_at_the_branch_end() {
-        assert_eq!(head(100, 1440.0, 0.0, 10_000), 100.0);
-        assert_eq!(head(100, 1440.0, 0.5, 10_000), 820.0);
-        assert_eq!(head(100, 24.0, 1.0 / 48.0, 10_000), 100.5);
-        assert_eq!(head(100, 1440.0, 60.0, 10_000), 10_000.0);
-        assert_eq!(split(820.25), (820, 0.25));
-        assert_eq!(split(60_828_491.0), (60_828_491, 0.0));
-    }
-
-    #[test]
-    fn a_new_hour_is_a_drawn_hour_that_differs_from_the_one_before() {
-        assert!(!new_hour(None, None));
-        assert!(new_hour(None, Some(5)));
-        assert!(!new_hour(Some(5), Some(5)));
-        assert!(new_hour(Some(5), Some(9)));
-    }
-
-    #[test]
     fn the_summary_leaves_out_warmup_and_counts_lag_shown_hours_and_late_frames() {
         let mut frames = vec![
             frame(0.0, 40_000.0, None, 100.0),

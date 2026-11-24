@@ -175,6 +175,46 @@ pub fn province_count(memory: &impl Memory, address: usize) -> Result<u32, &'sta
         .ok_or("unit history province vector invalid")
 }
 
+const PROVINCE_HEADER_FIELDS: [engine_native_memory::memory::RecordField; 1] = [engine_native_memory::memory::RecordField {
+    source_offset: PROVINCES,
+    destination_offset: 0,
+    len: 16,
+}];
+const PROVINCE_HEADER_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&PROVINCE_HEADER_FIELDS, 16).expect("valid record layout");
+
+pub fn province_counts(
+    memory: &impl Memory,
+    addresses: &[usize],
+    out: &mut [Result<u32, &'static str>],
+) {
+    debug_assert_eq!(addresses.len(), out.len());
+    const BATCH: usize = 64;
+    let mut bytes = [0u8; BATCH * 16];
+    for (addrs, results) in addresses.chunks(BATCH).zip(out.chunks_mut(BATCH)) {
+        let mut start = 0;
+        while start < addrs.len() {
+            let copied = memory.copy_records(
+                engine_native_memory::memory::RecordSources::Pointers(&addrs[start..]),
+                &PROVINCE_HEADER_LAYOUT,
+                &mut bytes[start * 16..addrs.len() * 16],
+            );
+            let complete = start + copied;
+            for slot in start..complete {
+                let header: [u8; 16] = bytes[slot * 16..slot * 16 + 16].try_into().unwrap();
+                results[slot] = Array::from_header(header, 8)
+                    .map(|array| array.count)
+                    .ok_or("unit history province vector invalid");
+            }
+            if complete == addrs.len() {
+                break;
+            }
+            results[complete] = province_count(memory, addrs[complete]);
+            start = complete + 1;
+        }
+    }
+}
+
 pub fn entry(memory: &impl Memory, base: usize, address: usize) -> Result<Entry, &'static str> {
     let raw = read::<[u8; ENTRY_SIZE]>(memory, address).ok_or("unit history entry unreadable")?;
     let u64_at = |offset: usize| u64::from_le_bytes(raw[offset..offset + 8].try_into().unwrap());

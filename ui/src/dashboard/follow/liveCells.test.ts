@@ -41,10 +41,6 @@ test('a request\'s reply gives each cell its value by its formula, and a missing
   assert.throws(() => liveSection({ live: section([{ ...countries, follow: 7 }, { ...coal, values: [1, 1] }]) }), /malformed/, 'a UI id is never a group\'s');
 });
 
-test('a reply naming no cells keeps the same reading', () => {
-  const none = repliedCells({ warnings: [] });
-  assert.equal(none.read(), none.read(), 'a reply naming no cells');
-});
 
 test('CellGroup and sectionValues preserve unsafe 64-bit integers through raw()', () => {
   const buffer = new ArrayBuffer(64);

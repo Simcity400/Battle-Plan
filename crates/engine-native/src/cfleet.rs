@@ -222,11 +222,23 @@ enum Pending {
     Failure(&'static str),
 }
 
+pub struct ShipNaming<'a> {
+    pub ship_names: &'a mut Vec<u8>,
+    pub name_len: &'a mut usize,
+    pub name_required: &'a mut usize,
+    pub ship_overrides: &'a mut Vec<u8>,
+    pub override_len: &'a mut usize,
+    pub override_required: &'a mut usize,
+    pub quiet: fn() -> Option<(u64, u64)>,
+}
+
 struct ShipRun {
     pending: [Pending; SHIP_RUN],
     len: usize,
     pointers: [usize; SHIP_RUN],
-    records: [u8; SHIP_RUN * cship::ROW_STRIDE],
+    records: [u8; SHIP_RUN * cship::ROW_EXTENDED_STRIDE],
+    members: crate::cname_group_member::MemberBatch,
+    equipment: cship::EquipmentMemo,
 }
 
 impl ShipRun {
@@ -235,7 +247,9 @@ impl ShipRun {
             pending: [Pending::Failure(""); SHIP_RUN],
             len: 0,
             pointers: [0; SHIP_RUN],
-            records: [0; SHIP_RUN * cship::ROW_STRIDE],
+            records: [0; SHIP_RUN * cship::ROW_EXTENDED_STRIDE],
+            members: crate::cname_group_member::MemberBatch::default(),
+            equipment: cship::EquipmentMemo::default(),
         }
     }
 
@@ -246,9 +260,10 @@ impl ShipRun {
         base: usize,
         ships: &mut Output<'_, cship::Row>,
         visit: &mut impl FnMut(usize, &mut cship::Row),
+        naming: &mut Option<ShipNaming<'_>>,
     ) {
         if self.len == SHIP_RUN {
-            self.flush(memory, base, ships, visit);
+            self.flush(memory, base, ships, visit, naming);
         }
         self.pending[self.len] = entry;
         self.len += 1;
@@ -260,6 +275,7 @@ impl ShipRun {
         base: usize,
         ships: &mut Output<'_, cship::Row>,
         visit: &mut impl FnMut(usize, &mut cship::Row),
+        naming: &mut Option<ShipNaming<'_>>,
     ) {
         let mut count = 0;
         for entry in &self.pending[..self.len] {
@@ -268,17 +284,62 @@ impl ShipRun {
                 count += 1;
             }
         }
+        let expected = engine_sites::at(base, cship::VTABLE_RVA).map(|vtable| vtable as u64);
+        let mut crew_token = None;
+        let mut crew_stable = false;
+        let mut extended = false;
         let complete = if count != 0 && ships.may_take() {
-            memory.copy_records(
-                engine_native_memory::memory::RecordSources::Pointers(&self.pointers[..count]),
-                &cship::ROW_LAYOUT,
-                &mut self.records[..count * cship::ROW_STRIDE],
-            ) / cship::ROW_FIELDS.len()
+            if let Some(naming) = naming.as_ref() {
+                crew_token = (naming.quiet)();
+                let ext = memory.copy_records(
+                    engine_native_memory::memory::RecordSources::Pointers(&self.pointers[..count]),
+                    &cship::ROW_EXTENDED_LAYOUT,
+                    &mut self.records[..count * cship::ROW_EXTENDED_STRIDE],
+                ) / cship::ROW_EXTENDED_FIELDS.len();
+                crew_stable = crew_token.is_some() && (naming.quiet)() == crew_token;
+                if ext == count {
+                    extended = true;
+                    ext
+                } else {
+                    memory.copy_records(
+                        engine_native_memory::memory::RecordSources::Pointers(&self.pointers[..count]),
+                        &cship::ROW_LAYOUT,
+                        &mut self.records[..count * cship::ROW_STRIDE],
+                    ) / cship::ROW_FIELDS.len()
+                }
+            } else {
+                memory.copy_records(
+                    engine_native_memory::memory::RecordSources::Pointers(&self.pointers[..count]),
+                    &cship::ROW_LAYOUT,
+                    &mut self.records[..count * cship::ROW_STRIDE],
+                ) / cship::ROW_FIELDS.len()
+            }
         } else {
             0
         };
-        let expected = engine_sites::at(base, cship::VTABLE_RVA)
-            .map(|vtable| vtable as u64);
+        let mut member_ptrs = [0_usize; SHIP_RUN];
+        if extended && let Some(expected_vtable) = expected {
+            for at in 0..count {
+                let rec = &self.records
+                    [at * cship::ROW_EXTENDED_STRIDE..(at + 1) * cship::ROW_EXTENDED_STRIDE];
+                let vtable = u64::from_le_bytes(rec[0..8].try_into().unwrap());
+                let handle = u64::from_le_bytes(rec[8..16].try_into().unwrap());
+                if vtable == expected_vtable
+                    && handle != 0
+                    && handle as u32 == cship::HANDLE_TYPE
+                {
+                    member_ptrs[at] =
+                        usize::try_from(u64::from_le_bytes(rec[72..80].try_into().unwrap()))
+                            .unwrap_or(0);
+                }
+            }
+            self.members.capture(memory, &member_ptrs[..count]);
+        }
+        let stride = if extended {
+            cship::ROW_EXTENDED_STRIDE
+        } else {
+            cship::ROW_STRIDE
+        };
         let mut index = 0;
         let mut fell_back = false;
         for entry in &self.pending[..self.len] {
@@ -304,7 +365,7 @@ impl ShipRun {
                     }
                     let mut row = match expected {
                         Some(expected) if at < complete => cship::decode_row(
-                            &self.records[at * cship::ROW_STRIDE..(at + 1) * cship::ROW_STRIDE],
+                            &self.records[at * stride..at * stride + cship::ROW_STRIDE],
                             expected,
                             task,
                             task_id,
@@ -319,6 +380,65 @@ impl ShipRun {
                         row
                     });
                     if let Ok(row) = &mut row {
+                        if let Some(naming) = naming.as_mut() {
+                            let captured = if extended
+                                && at < complete
+                                && (crew_stable || crew_token.is_none())
+                            {
+                                let rec = &self.records[at * cship::ROW_EXTENDED_STRIDE
+                                    ..(at + 1) * cship::ROW_EXTENDED_STRIDE];
+                                let crew = crew_stable.then(|| {
+                                    [
+                                        i32::from_le_bytes(rec[64..68].try_into().unwrap()),
+                                        i32::from_le_bytes(rec[68..72].try_into().unwrap()),
+                                    ]
+                                });
+                                let member_ptr = member_ptrs[at];
+                                let header = if member_ptr != 0 {
+                                    self.members.member(memory, at, member_ptr)
+                                } else {
+                                    Err("ship cached name member pointer unreadable or null")
+                                };
+                                cship::decode_batched_names_and_crew(
+                                    memory,
+                                    base,
+                                    member_ptr,
+                                    header,
+                                    crew,
+                                    naming.ship_names,
+                                    naming.name_len,
+                                    naming.name_required,
+                                    naming.ship_overrides,
+                                    naming.override_len,
+                                    naming.override_required,
+                                    &mut self.equipment,
+                                )
+                            } else {
+                                cship::capture_names_and_crew(
+                                    memory,
+                                    base,
+                                    ship,
+                                    row.id,
+                                    naming.ship_names,
+                                    naming.name_len,
+                                    naming.name_required,
+                                    naming.ship_overrides,
+                                    naming.override_len,
+                                    naming.override_required,
+                                    naming.quiet,
+                                )
+                            };
+                            row.name = captured.name;
+                            if let Some((_, len)) = row.name {
+                                *naming.name_len += len;
+                            }
+                            row.naming = captured.naming;
+                            if let Some(op) = row.naming {
+                                *naming.override_len += op.override_name.1;
+                            }
+                            row.acquired_manpower = captured.crew.map(|value| value[0]);
+                            row.required_manpower = captured.crew.map(|value| value[1]);
+                        }
                         visit(ship, row);
                     }
                     ships.push(row);
@@ -383,6 +503,7 @@ fn walk_named(
         names,
         batched,
         |_| {},
+        None,
     )
 }
 
@@ -411,6 +532,40 @@ pub fn walk_timed_with_management(
         Some(names),
         true,
         management,
+        None,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Batches fleet, task force, ship, naming, and naval management census in one walk."
+)]
+pub fn walk_timed_with_management_and_names(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    fleets: &mut Vec<Row>,
+    task_forces: &mut Vec<ctask_force::Row>,
+    ships: &mut Vec<cship::Row>,
+    now: impl FnMut(usize) -> u64,
+    visit: impl FnMut(usize, &mut cship::Row),
+    names: &mut Vec<u8>,
+    management: impl FnMut(CensusVisit),
+    ship_naming: ShipNaming<'_>,
+) -> TimedCapture {
+    walk_named_observed(
+        memory,
+        base,
+        game_state,
+        engine_native_memory::walk::Buffer::Growing(fleets),
+        engine_native_memory::walk::Buffer::Growing(task_forces),
+        engine_native_memory::walk::Buffer::Growing(ships),
+        now,
+        visit,
+        Some(names),
+        true,
+        management,
+        Some(ship_naming),
     )
 }
 
@@ -427,6 +582,7 @@ fn walk_named_observed(
     mut names: Option<&mut Vec<u8>>,
     batched: bool,
     mut management: impl FnMut(CensusVisit),
+    mut ship_naming: Option<ShipNaming<'_>>,
 ) -> TimedCapture {
     let mut names_used = 0;
     let invalid_reference = if names.is_some() {
@@ -566,6 +722,7 @@ fn walk_named_observed(
                                     base,
                                     &mut ship_output,
                                     &mut visit,
+                                    &mut ship_naming,
                                 );
                                 read_ticks[2] =
                                     read_ticks[2].saturating_add(now(0).saturating_sub(ship_start));
@@ -603,6 +760,7 @@ fn walk_named_observed(
                                             base,
                                             &mut ship_output,
                                             &mut visit,
+                                            &mut ship_naming,
                                         );
                                     }
                                     return Ok(());
@@ -644,6 +802,7 @@ fn walk_named_observed(
                                 base,
                                 &mut ship_output,
                                 &mut visit,
+                                &mut ship_naming,
                             );
                         } else {
                             ship_output.error.get_or_insert(reason);
@@ -659,7 +818,7 @@ fn walk_named_observed(
         Ok((fleet_output.finish(), task_output.finish()))
     })();
     let ship_start = now(2);
-    run.flush(source, base, &mut ship_output, &mut visit);
+    run.flush(source, base, &mut ship_output, &mut visit, &mut ship_naming);
     read_ticks[2] = read_ticks[2].saturating_add(now(0).saturating_sub(ship_start));
     let capture = match result {
         Ok((fleets, task_forces)) => Capture {

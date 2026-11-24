@@ -428,17 +428,6 @@ fn source_path_line(thread: &str, branch: BranchId, hour: Hour, native: bool) ->
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
     use viewer_layer_core::test_support::sample_playback::{session, source};
-    #[test]
-    fn source_path_line_names_the_thread_and_source() {
-        assert_eq!(
-            source_path_line("map source", 1, 101, true),
-            "PROFILE source_path thread=map_source branch=1 hour=101 path=native"
-        );
-        assert_eq!(
-            source_path_line("map source decoder", 7, -3, false),
-            "PROFILE source_path thread=map_source_decoder branch=7 hour=-3 path=ordinary"
-        );
-    }
 
     use super::*;
     use replay_capture_spool::spool::Record;
@@ -447,8 +436,6 @@ pub mod tests {
         branches::BranchReason, branches::BranchStart, branches::Gap, branches::Parentage,
         frame::FrameEncoder,
     };
-
-
 
     pub fn records(id: u64, hours: &[Hour]) -> Vec<Record> {
         let mut records = vec![

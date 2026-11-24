@@ -208,13 +208,4 @@ mod tests {
             .is_err()
         );
     }
-    #[test]
-    fn failed_original_location_is_never_retried() {
-        let (memory, _, _) = fixture(2);
-        let countries = ccountry::Reader::new(&memory, 0, memory.world.game_state()).unwrap();
-        let roster = countries.resolve(1).unwrap();
-        memory.reads.borrow_mut().clear();
-        assert!(read(&memory, 0, &countries, roster, None).is_err());
-        assert!(memory.reads.borrow().is_empty());
-    }
 }

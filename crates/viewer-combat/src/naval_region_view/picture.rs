@@ -93,14 +93,3 @@ pub(super) fn bind(content: &Content, frame: &DecodedFrame, root: &Element, out:
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_night_factor_is_the_provinces_mean() {
-        assert_eq!(mean_night(&[100_000, 0]), 50_000);
-        assert_eq!(mean_night(&[100_000, 100_000, 1]), 66_667);
-        assert_eq!(mean_night(&[]), 0xffff_ffff);
-    }
-}

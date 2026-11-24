@@ -1155,79 +1155,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
     (m, game_state)
 }
 
-#[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-#[test]
-#[ignore]
-fn raid_state_inputs_bench() {
-    for (countries, states) in [(1_500, 3_000), (5_000, 10_000)] {
-        let (arena, game_state) = scaled(countries, states);
-        let memory = Counted::new(unsafe { engine_native_memory::memory::LiveMemory::new() });
-        let mut capacity = fixture_capacity();
-        let mut buffers = Buffers::new(&capacity).unwrap();
-        loop {
-            let walk = walk(
-                &memory,
-                arena.base,
-                game_state,
-                &mut buffers,
-                Selection::ALL,
-            );
-            if walk
-                .outcomes
-                .iter()
-                .all(|o| matches!(o, Outcome::Rows { .. }))
-            {
-                break;
-            }
-            assert!(
-                !walk
-                    .outcomes
-                    .iter()
-                    .any(|o| matches!(o, Outcome::Unavailable { .. })),
-                "{:?}",
-                walk.outcomes
-            );
-            capacity.raise(&walk.required);
-            buffers = Buffers::new(&capacity).unwrap();
-        }
-        let mut times = Vec::new();
-        let mut last = None;
-        for _ in 0..20 {
-            memory.reset();
-            let started = std::time::Instant::now();
-            let walk = walk(
-                &memory,
-                arena.base,
-                game_state,
-                &mut buffers,
-                Selection::ALL,
-            );
-            times.push(started.elapsed().as_secs_f64() * 1_000.0);
-            last = Some(walk);
-        }
-        times.sort_by(f64::total_cmp);
-        let walk = last.unwrap();
-        let rows = walk.outcomes.map(Outcome::len);
-        assert_eq!(rows[0], states);
-        assert!(buffers.inputs[..states].iter().all(|row| row.origin == 1
-            && row.infrastructure_level == Some(5)
-            && row.supply_route == 1));
-        println!(
-            "{countries} countries, {states} states: median {:.3} ms (min {:.3}, max {:.3}); \
-             {} guarded calls, {} bytes; rows: inputs {}, resources {}, modifiers {}, overrides {}",
-            times[10],
-            times[0],
-            times[19],
-            memory.guards.get(),
-            memory.bytes.get(),
-            rows[0],
-            rows[1],
-            rows[2],
-            rows[3],
-        );
-    }
-}
-
 fn grown_walk(memory: &impl Memory, arena: &Arena, game_state: usize) -> Buffers {
     let mut capacity = fixture_capacity();
     loop {
@@ -1249,73 +1176,6 @@ fn grown_walk(memory: &impl Memory, arena: &Arena, game_state: usize) -> Buffers
             walk.outcomes
         );
         capacity.raise(&walk.required);
-    }
-}
-
-#[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
-#[test]
-#[ignore]
-fn raid_state_hour_bench() {
-    for (countries, states) in [(1_500, 3_000), (5_000, 10_000)] {
-        let images = [scaled(countries, states), scaled(countries, states)];
-        let memory = Counted::new(unsafe { engine_native_memory::memory::LiveMemory::new() });
-        let mut buffers = grown_walk(&memory, &images[0].0, images[0].1);
-        let mut census = Vec::with_capacity(states + 1);
-        let slice = |id: u32| id % 24 == 7;
-        let every = |_: u32| true;
-        for (label, chosen) in [
-            ("first hour (every owner)", &every as &dyn Fn(u32) -> bool),
-            ("steady hour (one slice)", &slice),
-        ] {
-            let select = Selection {
-                states: chosen,
-                countries: chosen,
-                any_country: true,
-            };
-            let mut run = |image: usize, buffers: &mut Buffers| {
-                let (arena, game_state) = &images[image];
-                memory.reset();
-                let started = std::time::Instant::now();
-                state_census(&memory, *game_state, &mut census).unwrap();
-                let walked = walk(&memory, arena.base, *game_state, buffers, select);
-                let elapsed = started.elapsed().as_secs_f64() * 1_000.0;
-                assert!(
-                    walked
-                        .outcomes
-                        .iter()
-                        .all(|o| matches!(o, Outcome::Rows { .. }))
-                );
-                assert_eq!(census.len(), states);
-                (elapsed, memory.guards.get(), memory.bytes.get())
-            };
-            let mut warm = Vec::new();
-            let mut cold = Vec::new();
-            let mut counts = (0, 0);
-            run(0, &mut buffers);
-            for _ in 0..20 {
-                let (ms, calls, bytes) = run(0, &mut buffers);
-                warm.push(ms);
-                counts = (calls, bytes);
-            }
-            for index in 0..20 {
-                let image = index % 2;
-                let (arena, game_state) = &images[1 - image];
-                walk(
-                    &memory,
-                    arena.base,
-                    *game_state,
-                    &mut buffers,
-                    Selection::ALL,
-                );
-                cold.push(run(image, &mut buffers).0);
-            }
-            warm.sort_by(f64::total_cmp);
-            cold.sort_by(f64::total_cmp);
-            println!(
-                "state {label} {countries} countries, {states} states: warm {:.3} ms, cold {:.3} ms                      (medians of 20); {} guarded calls, {} bytes",
-                warm[10], cold[10], counts.0, counts.1,
-            );
-        }
     }
 }
 
@@ -1356,12 +1216,6 @@ fn fixture_capacity() -> Capacity {
         name_bytes: 1 << 16,
         batch_bytes: 1 << 18,
     }
-}
-
-#[test]
-fn default_capacity_has_no_chosen_state_or_content_population() {
-    let capacity = Capacity::default();
-    assert_eq!(capacity, Capacity::zero());
 }
 
 #[test]

@@ -263,7 +263,6 @@ pub fn record_decoded(reused: u64, walked: u64) {
     DECODED[1].fetch_add(walked, Ordering::Relaxed);
 }
 
-
 pub struct Hooks {
     hooks: Vec<Hook>,
 }
@@ -378,41 +377,6 @@ callback!(refresh_capacity, 13, (base));
 mod tests {
     use super::*;
     use engine_mutations::air_base_mutations::Receiver;
-
-    #[test]
-    #[ignore = "per-call air-base callback microbenchmark; run only without a live game benchmark"]
-    fn hook_cost_air_base_carry_dispatch() {
-        const CALLS: usize = 100_000;
-        unsafe extern "system-unwind" fn original(pool: usize) -> usize {
-            std::hint::black_box(pool)
-        }
-        let handle = (7_u64 << 32) | 0x43;
-        let offset = Receiver::Pool.handle().unwrap();
-        let mut pool = vec![0_u8; offset + 8];
-        pool[offset..].copy_from_slice(&handle.to_ne_bytes());
-        let pointer = pool.as_ptr() as usize;
-        WATCHES.registry.offer(1);
-        WATCHES.registry.boundary(false);
-        WATCHES.registry.set_enabled(true);
-        WATCHES.sequence(handle).unwrap();
-        ORIGINAL[9].store(original as *const () as usize, Ordering::Release);
-        let callback: unsafe extern "system-unwind" fn(usize) -> usize = rebind_pool_definition;
-        let nanos = collector_test_support::per_call_ns(CALLS, || {
-            for _ in 0..CALLS {
-                std::hint::black_box(unsafe { std::hint::black_box(callback)(pointer) });
-            }
-        });
-        let registry = collector_test_support::per_call_ns(CALLS, || {
-            for _ in 0..CALLS {
-                drop(std::hint::black_box(
-                    WATCHES.registry.notify(handle as usize),
-                ));
-            }
-        });
-        println!(
-            "hook_cost air_base pool rebind: callback={nanos:.1} ns/call, registry={registry:.1} ns/call"
-        );
-    }
 
     #[test]
     fn a_site_names_its_base_by_handle_and_an_unread_receiver_names_none() {

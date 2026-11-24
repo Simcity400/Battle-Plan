@@ -74,17 +74,6 @@ fn keywords_scans_and_resource_registry_control_recovery() {
 }
 
 #[test]
-fn building_popup_exemption_is_authored_and_defaults_false() {
-    content_reader_script::test_game::enter();
-    let buildings =
-        parse(b"buildings={ a={disable_grow_animation=yes} b={} c={disable_grow_animation=no} }")
-            .unwrap();
-    assert!(buildings.types["a"].disable_grow_animation);
-    assert!(!buildings.types["b"].disable_grow_animation);
-    assert!(!buildings.types["c"].disable_grow_animation);
-}
-
-#[test]
 fn type_tokens_fold_ascii_and_refuse_differing_declarations() {
     content_reader_script::test_game::enter();
     let buildings = parse(

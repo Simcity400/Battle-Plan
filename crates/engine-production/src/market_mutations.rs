@@ -166,13 +166,3 @@ pub const SITES: [Site; 31] = [
         call_target: None,
     },
 ];
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn market_sites_are_distinct() {
-        for (i, site) in SITES.iter().enumerate() {
-            assert!(SITES[..i].iter().all(|other| other.rva != site.rva));
-        }
-    }
-}

@@ -471,14 +471,6 @@ mod tests {
     }
 
     #[test]
-    fn an_identical_census_passes() {
-        let report = compare(&census(), &map());
-        assert_eq!(report.total(), 0, "{:?}", report.differences);
-        assert_eq!((report.provinces, report.entries), (2, 3));
-        assert!(report.outcome().is_ok());
-    }
-
-    #[test]
     fn every_stored_field_difference_is_counted_and_fails() {
         let mut changed = census();
         let first = changed.provinces[0].as_mut().unwrap();

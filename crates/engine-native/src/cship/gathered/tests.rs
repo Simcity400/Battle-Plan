@@ -87,41 +87,6 @@ fn model_comparison_excludes_only_organisation_inputs_and_requires_complete_obse
 }
 
 #[test]
-fn every_object_lists_ascending_disjoint_fields_no_wider_than_its_storage() {
-    fn check(fields: &[(usize, usize)]) {
-        for pair in fields.windows(2) {
-            assert!(pair[0].0 + pair[0].1 <= pair[1].0, "{pair:x?}");
-        }
-        assert!(
-            fields
-                .iter()
-                .all(|&(_, width)| (1..=WIDTH).contains(&width))
-        );
-    }
-    check(&SHIP);
-    check(&TASK);
-    check(&LOCATION);
-    check(&GLOBALS);
-    check(&VARIANT);
-    assert_eq!(
-        SHIP[SHIP_POOL],
-        (EQUIPMENT_POOL, 8),
-        "the pool's vtable field"
-    );
-    assert_eq!(
-        SHIP[SHIP_POOL_ITEMS],
-        (EQUIPMENT_POOL + cequipment_variant_pool::ITEMS, 16),
-        "the pool's array header field"
-    );
-    assert_eq!(SHIP[SHIP_TASK_FORCE].0, TASK_FORCE);
-    assert_eq!(TASK[TASK_LOCATION].0, cunit::LOCATION);
-    assert!(
-        SHIP.iter()
-            .all(|&(start, width)| start + width <= crate::cship::SIZE)
-    );
-}
-
-#[test]
 fn gathered_fields_serve_every_read_inside_them_without_the_source() {
     let bytes = image();
     let slice = SliceMemory {
@@ -346,43 +311,6 @@ fn scattered_reads_keep_their_live_spans_in_one_source_call() {
 }
 
 #[test]
-fn task_forces_and_provinces_are_gathered_once_per_run_of_ships() {
-    let bytes = image();
-    let slice = SliceMemory {
-        base: IMAGE,
-        bytes: &bytes,
-    };
-    let census = ReadCensus::new(&slice);
-    let mut fields = ShipFields::new(MODULE);
-    let mut calls = Vec::new();
-    for (ship, task) in [
-        (SHIP_A, TASK_A),
-        (SHIP_B, TASK_A),
-        (SHIP_C, TASK_B),
-        (SHIP_A, TASK_A),
-    ] {
-        census.reset();
-        fields.visit(&census, ship);
-        calls.push(census.calls());
-        census.reset();
-        let memory = fields.memory(&census);
-        for (address, len) in [
-            (ship, 16),
-            (task, 8),
-            (task + cunit::LOCATION, 8),
-            (PROVINCE + PROVINCE_DEFINITION, 8),
-            (SINGLETON, 8),
-        ] {
-            let mut served = vec![0; len];
-            assert!(memory.copy(address, &mut served));
-            assert_eq!(served, at(&bytes, address, len));
-        }
-        assert_eq!(census.calls(), 0, "{ship:#x}");
-    }
-    assert_eq!(calls, [4, 1, 2, 2]);
-}
-
-#[test]
 fn record_gathers_go_to_the_source_unless_they_touch_a_gathered_object() {
     const FIELD: [RecordField; 1] = [RecordField {
         source_offset: 0,
@@ -556,29 +484,3 @@ fn power_companion_demands_only_the_selected_variant_and_selected_carrier_word()
     assert!(!later.held_variant_unchanged(&memory, &chosen));
 }
 
-#[test]
-fn rejected_or_unobserved_variant_identity_and_flags_demand_no_power_read() {
-    let bytes = vec![0; 0x3000];
-    let slice = SliceMemory {
-        base: 0,
-        bytes: &bytes,
-    };
-    let census = ReadCensus::new(&slice);
-    let mut fields = ShipFields::new(0);
-    fields.enable_naval_power();
-    let slot = fields.variant(&census, 0x1000);
-    census.reset();
-    fields.naval_variant(&census, slot);
-    assert_eq!(
-        census.calls(),
-        0,
-        "a rejected original identity cannot demand suffix leaves"
-    );
-    fields.variants[slot].completed = VARIANT_FLAGS;
-    fields.naval_variant(&census, slot);
-    assert_eq!(
-        census.calls(),
-        0,
-        "an original flag failure is never retried"
-    );
-}

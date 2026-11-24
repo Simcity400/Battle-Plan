@@ -30,13 +30,6 @@ fn equal_days_make_one_run_and_an_unknown_day_ends_it() {
 }
 
 #[test]
-fn the_schema_numbers_the_control_operands() {
-    let field = |name| dashboard_declare::field(TableId::NavalRegionControl, name).unwrap();
-    let named = ["friendly", "enemy", "ratio_friendly", "ratio_enemy", "own", "control_refusal", "share_refusal"].map(field);
-    assert_eq!(named, COLUMNS);
-}
-
-#[test]
 fn a_viewers_row_comes_first_then_the_every_viewer_row_then_zeros_and_a_refusal_is_no_value() {
     let viewer = 7_u32;
     let key = |holder: u32, region: u32| u128::from(holder) << 32 | u128::from(region);

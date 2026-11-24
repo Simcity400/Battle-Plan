@@ -54,7 +54,6 @@ impl Layer for Reads {
         Ok(())
     }
 
-
     fn carried(&self) -> Carried {
         Carried::default()
     }
@@ -91,7 +90,6 @@ impl Layer for Probe {
     fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
-
 
     fn carried(&self) -> Carried {
         Carried::default()

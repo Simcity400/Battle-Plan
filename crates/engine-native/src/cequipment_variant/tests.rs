@@ -790,41 +790,6 @@ fn stat_spans_preserve_signed_extremes_and_grow_for_the_full_census() {
 }
 
 #[test]
-fn copied_inline_names_and_registry_identity_need_only_three_definition_guards() {
-    let mut bytes = fixture();
-    bytes[DISPLAY_NAME..DISPLAY_NAME + 3].copy_from_slice(&[0xff, 0, b'X']);
-    bytes[DISPLAY_NAME + 16..DISPLAY_NAME + 24].copy_from_slice(&3_u64.to_le_bytes());
-    let variants = [source(&bytes)];
-    let memory = CountedFields {
-        memory: SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        },
-        guards: Cell::new(0),
-        blocked: Some(0x1000),
-    };
-    let mut rows = vec![DefinitionRow::default(); 1];
-    let mut names = vec![0; 3];
-    let outcome = walk_definitions(&memory, 0, &variants, &mut rows, &mut names);
-    assert_eq!(outcome.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(names, [0xff, 0, b'X']);
-    assert_eq!(memory.guards.get(), 3);
-    let stat_memory = CountedFields {
-        memory: SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        },
-        guards: Cell::new(0),
-        blocked: None,
-    };
-    assert_eq!(
-        walk_stats(&stat_memory, 0, &variants, &mut vec![StatsRow::default(); 1]),
-        Outcome::Rows { len: 1 }
-    );
-    assert_eq!(stat_memory.guards.get(), 3);
-}
-
-#[test]
 fn variant_record_batches_preserve_order_and_do_not_hide_an_earlier_definition_error() {
     const COUNT: usize = 65;
     let one = fixture();

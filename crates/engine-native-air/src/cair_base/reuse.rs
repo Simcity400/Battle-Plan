@@ -26,6 +26,9 @@ pub struct HeldBase<'a> {
 
 pub trait RegistrationReuse {
     fn previous(&self, handle: u64, pointer: usize) -> Option<HeldBase<'_>>;
+    fn trusted_carried(&self, _handle: u64, _pointer: usize) -> bool {
+        false
+    }
     fn reused(&mut self, handle: u64, pointer: usize);
     fn begin(&mut self, handle: u64, pointer: usize);
     fn container(&mut self, country: u32);
@@ -45,33 +48,42 @@ impl<M: Memory> Reader<'_, M> {
         reuse: &mut (dyn RegistrationReuse + '_),
     ) -> bool {
         let RegistrationBase { pointer, handle } = observed;
+        let trusted = reuse.trusted_carried(handle, pointer);
         let Some(held) = reuse.previous(handle, pointer) else {
             return false;
         };
         let output = held.output;
-        let Ok(containers) = self.array(pointer, COUNTRY_CONTAINERS) else {
-            return false;
-        };
         let sought = slots.dense;
-        if containers.count != output.slots || sought != output.sought_plan {
-            return false;
-        }
-        let plan = if sought {
-            dense_plan(
-                self.memory,
-                self.base,
-                pointer,
-                containers,
-                countries.arrays(),
-                &mut state.scratch.plan,
-            )
-            .ok()
+        let (indexed_count, is_dense) = if trusted {
+            if sought != output.sought_plan {
+                return false;
+            }
+            (output.slots as usize, output.plan.is_some())
         } else {
-            None
+            let Ok(containers) = self.array(pointer, COUNTRY_CONTAINERS) else {
+                return false;
+            };
+            if containers.count != output.slots || sought != output.sought_plan {
+                return false;
+            }
+            let plan = if sought {
+                dense_plan(
+                    self.memory,
+                    self.base,
+                    pointer,
+                    containers,
+                    countries.arrays(),
+                    &mut state.scratch.plan,
+                )
+                .ok()
+            } else {
+                None
+            };
+            if plan.map(|len| &state.scratch.plan[..len]) != output.plan {
+                return false;
+            }
+            (containers.count as usize, plan.is_some())
         };
-        if plan.map(|len| &state.scratch.plan[..len]) != output.plan {
-            return false;
-        }
         let (Some(rows_end), Some(wings_end), Some(pools), Some(required_wings)) = (
             state.len.checked_add(output.rows.len()),
             state.wings_len.checked_add(output.wings.len()),
@@ -117,8 +129,8 @@ impl<M: Memory> Reader<'_, M> {
         state.wings_len = wings_end;
         state.required_pools = pools;
         state.required_wings = required_wings;
-        state.required_indexed = state.required_indexed.max(containers.count as usize);
-        state.dense_bases += usize::from(plan.is_some());
+        state.required_indexed = state.required_indexed.max(indexed_count);
+        state.dense_bases += usize::from(is_dense);
         state.reused_bases += 1;
         reuse.reused(handle, pointer);
         true

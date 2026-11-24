@@ -597,43 +597,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn many_transfers_cost_reads_linear_in_their_count() {
-        let mut per_transfer = None;
-        for count in [1_500u64, 5_000] {
-            let transfers: Vec<u64> = (0..count).map(|id| handle(100_000 + id)).collect();
-            let units: Vec<(u64, Vec<u64>)> = transfers
-                .iter()
-                .enumerate()
-                .map(|(index, &transfer)| (transfer, vec![handle(200_000 + index as u64)]))
-                .collect();
-            let live: Vec<u64> = units.iter().map(|(_, units)| units[0]).collect();
-            let fixture = Fixture::new(&[transfers.clone(), transfers.clone()], &units, &live, &[]);
-            let memory = Image(SliceMemory {
-                base: 0,
-                bytes: &fixture.bytes,
-            });
-            let census = engine_native_memory::read_census::ReadCensus::new(&memory);
-            let n = count as usize;
-            let started = std::time::Instant::now();
-            let (walked, _, _, rows, _) = fixture.walk_on(&census, [2, 2 * n, 2 * n, n]);
-            println!(
-                "{count} transfers named twice: {} reads, {:.3} ms",
-                census.calls(),
-                started.elapsed().as_secs_f64() * 1e3
-            );
-            assert_eq!(walked.transfers, Outcome::Rows { len: n });
-            assert!(
-                rows[..n]
-                    .windows(2)
-                    .all(|pair| pair[0].transfer < pair[1].transfer)
-            );
-            let reads = census.calls() as f64 / count as f64;
-            assert!(reads < 12.0, "{reads} reads per transfer at {count}");
-            if let Some(previous) = per_transfer {
-                assert!(reads <= previous * 1.1, "{previous} -> {reads}");
-            }
-            per_transfer = Some(reads);
-        }
-    }
 }

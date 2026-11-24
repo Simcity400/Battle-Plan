@@ -384,6 +384,93 @@ fn spooled(table: TableId) -> bool {
     SPOOL_TABLES.contains(&table) || crate::history::reads(table)
 }
 
+fn baseline_retention(
+    table: TableId,
+    live_columnar: bool,
+) -> replay_frame::frame::BaselineRetention {
+    use replay_data::cadence::Cadence;
+    use replay_frame::frame::BaselineRetention;
+    if !live_columnar {
+        return BaselineRetention::Full;
+    }
+    if matches!(
+        table,
+        TableId::DivisionTemplateIcons
+            | TableId::CountryTemplateState
+            | TableId::CharacterPortraits
+            | TableId::HiredAdvisors
+            | TableId::CountryCharacters
+            | TableId::CountryRetiredCharacters
+            | TableId::ShipModels
+            | TableId::RailEdges
+            | TableId::DivisionPanelStats
+            | TableId::DivisionHistory
+            | TableId::CharacterRoleTraits
+            | TableId::StateResistance
+    ) {
+        return BaselineRetention::Meta;
+    }
+    if spooled(table)
+        || table == TableId::SliceReads
+        || collector_characters::extended::characters::SHADOW_TABLES.contains(&table)
+        || matches!(
+            table,
+            TableId::CountryMarket
+                | TableId::MarketContractTerms
+                | TableId::LendLeaseAgreements
+                | TableId::AdvisorTokens
+                | TableId::DivisionTemplates
+                | TableId::CombatLogObservers
+                | TableId::RailCooldowns
+                | TableId::VariantDefinitions
+                | TableId::VariantModules
+                | TableId::VariantStats
+                | TableId::VariantUpgrades
+                | TableId::WeatherProvinces
+                | TableId::ScriptVariables
+                | TableId::Provinces
+                | TableId::States
+        )
+    {
+        return BaselineRetention::Full;
+    }
+    if matches!(
+        table,
+        TableId::EventFeedHistory
+            | TableId::LandCombatResults
+            | TableId::NavalResults
+            | TableId::AirLossEvents
+            | TableId::BuildingBombingDamage
+            | TableId::CountryPowerChanges
+            | TableId::GovernmentChanges
+            | TableId::MarketEvents
+            | TableId::EquipmentDestruction
+            | TableId::OperationCompletions
+            | TableId::NuclearStrikes
+            | TableId::CombatEngagementRefreshes
+            | TableId::CountryExperienceGains
+            | TableId::DivisionEquipmentDeletions
+            | TableId::PeaceBids
+            | TableId::PeaceSettlements
+            | TableId::VariantChanges
+            | TableId::VariantBonusSnapshots
+            | TableId::DesignCountryModifiers
+            | TableId::DesignCountryTemplates
+            | TableId::DesignObserverContext
+            | TableId::DesignOrganisationLiveness
+            | TableId::MapEvents
+            | TableId::CountryPowerDaily
+            | TableId::CountryPowerDailyCosts
+    ) {
+        return BaselineRetention::Drop;
+    }
+    if replay_data::cadence::cadence(table) == Cadence::Hourly {
+        BaselineRetention::Full
+    } else {
+        BaselineRetention::Drop
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static KEEP_EVERY_TABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -487,10 +574,12 @@ struct Campaign<B: SegmentBackend = FileBackend, S: Schedule = Unrestricted> {
         Option<crate::spool_writer::ReceiptStorage>,
     )>,
     staggered_cache: TableCache<CachedTable>,
+    staggered_complete: [bool; TABLE_COUNT],
     staggered_branch: Option<BranchId>,
     country_intel_sample: Option<replay_data::rows::ReservedCountryIntelSample>,
     country_intel_hour: Option<i32>,
     sliced_cache: TableCache<Arc<TableRows>>,
+    sliced_owners: [Option<Vec<u32>>; TABLE_COUNT],
     sliced_reads: ReadHours,
     sliced_branch: Option<BranchId>,
     pending_slices: Vec<(TableId, Arc<replay_data::sliced::SliceUpdate>)>,
@@ -555,10 +644,12 @@ impl<S: Schedule> Campaign<FileBackend, S> {
             submitted_context: Vec::new(),
             closing: Vec::new(),
             staggered_cache: TableCache::new(),
+            staggered_complete: [false; TABLE_COUNT],
             staggered_branch: None,
             country_intel_sample: None,
             country_intel_hour: None,
             sliced_cache: TableCache::new(),
+            sliced_owners: std::array::from_fn(|_| None),
             sliced_reads: ReadHours::new(),
             sliced_branch: None,
             pending_slices: Vec::new(),
@@ -588,8 +679,10 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         self.encoder = FrameEncoder::new();
         self.pending_slices.clear();
         self.staggered_cache.clear();
+        self.staggered_complete.fill(false);
         self.staggered_branch = None;
         self.sliced_cache.clear();
+        self.sliced_owners.fill(None);
         self.sliced_reads.clear();
         self.sliced_branch = None;
         self.country_intel_sample = None;
@@ -675,6 +768,13 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         Ok(observation.branch)
     }
 
+    fn owner_sliced(&self, table: TableId) -> bool {
+        replay_data::cadence::is_sliced(table)
+            && !replay_data::sliced::is_keyed(table)
+            && !spooled(table)
+            && self.columnar.is_live()
+    }
+
     fn try_merge_sliced_inputs<'a>(
         &mut self,
         source: &mut FrameInput,
@@ -684,6 +784,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         self.settle_failed_slices();
         if self.sliced_branch != Some(source.branch) {
             self.sliced_cache.clear();
+            self.sliced_owners.fill(None);
             self.sliced_reads.clear();
             self.sliced_branch = Some(source.branch);
         }
@@ -711,6 +812,78 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
             let captured = |owner| selection.contains(owner);
             let live = |owner| selection.live(owner);
             match input {
+                TableInput::Sampled(TableView::Complete(rows)) if self.owner_sliced(table) => {
+                    let fresh = std::mem::replace(rows, TableRows::empty(table));
+                    if selection.force_full || replay_data::sliced::replaces_whole(&fresh) {
+                        let owners = replay_data::sliced::try_owners(&fresh)?;
+                        self.sliced_reads.merge(table, &owners, selection, hour)?;
+                        self.sliced_cache.remove(&table);
+                        self.sliced_owners[table.index()] = Some(owners);
+                        *input = TableInput::SharedComplete(Arc::new(fresh));
+                    } else if let Some(previous) = self.sliced_cache.remove(&table) {
+                        match replay_data::sliced::merge_slice(&previous, fresh, captured, live) {
+                            Ok(merged) => {
+                                let owners = replay_data::sliced::try_owners(&merged)?;
+                                self.sliced_reads.merge(table, &owners, selection, hour)?;
+                                self.sliced_owners[table.index()] = Some(owners);
+                                *input = TableInput::SharedComplete(Arc::new(merged));
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                                return Err(error);
+                            }
+                            Err(_) => {
+                                *input =
+                                    TableInput::Sampled(unavailable("sliced table merge failed"));
+                                if let Some(family) =
+                                    collector_certificates::slicing::family_of(table)
+                                {
+                                    unpublished |= 1 << family;
+                                }
+                                retry = true;
+                            }
+                        }
+                    } else if let (Some(previous_owners), Some(token)) = (
+                        self.sliced_owners[table.index()].as_deref(),
+                        self.encoder
+                            .untracked_slice_token(table, source.branch, hour, force),
+                    ) {
+                        let fresh_owners = replay_data::sliced::try_owners(&fresh)?;
+                        match replay_data::sliced::SliceUpdate::for_owners(
+                            previous_owners,
+                            fresh,
+                            captured,
+                            live,
+                        ) {
+                            Ok((update, next_owners)) => {
+                                self.sliced_reads
+                                    .merge(table, &fresh_owners, selection, hour)?;
+                                self.sliced_owners[table.index()] = Some(next_owners);
+                                *input = TableInput::SliceUpdate {
+                                    token,
+                                    update: Arc::new(update),
+                                };
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                                return Err(error);
+                            }
+                            Err(_) => {
+                                *input =
+                                    TableInput::Sampled(unavailable("sliced table merge failed"));
+                                if let Some(family) =
+                                    collector_certificates::slicing::family_of(table)
+                                {
+                                    unpublished |= 1 << family;
+                                }
+                                retry = true;
+                            }
+                        }
+                    } else {
+                        *input = TableInput::Sampled(unavailable(
+                            "sliced table has no earlier complete rows on this branch; full refresh requested",
+                        ));
+                        retry = true;
+                    }
+                }
                 TableInput::Sampled(TableView::Complete(rows)) => {
                     let fresh = std::mem::replace(rows, TableRows::empty(table));
                     let update = (!selection.force_full
@@ -724,9 +897,14 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                             .filter(|(_, baseline)| Arc::ptr_eq(baseline, previous))
                             .map(|(token, _)| (token, previous))
                     });
+                    let mut fresh_owners = None;
                     let merged = if let Some((token, previous)) = update {
-                        match replay_data::sliced::SliceUpdate::new(previous, fresh, captured, live)
-                        {
+                        if !replay_data::sliced::is_keyed(table) {
+                            fresh_owners = Some(replay_data::sliced::try_owners(&fresh)?);
+                        }
+                        match replay_data::sliced::SliceUpdate::diff_owners(
+                            previous, fresh, captured, live,
+                        ) {
                             Ok(update) => Merged::Update(token, update),
                             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                                 return Err(error);
@@ -771,9 +949,10 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                         continue;
                     };
                     if !replay_data::sliced::is_keyed(table) {
-                        let owners = match &merged {
-                            Merged::Rows(rows) => replay_data::sliced::try_owners(rows)?,
-                            Merged::Update(_, update) => {
+                        let owners = match (&merged, fresh_owners) {
+                            (_, Some(owners)) => owners,
+                            (Merged::Rows(rows), None) => replay_data::sliced::try_owners(rows)?,
+                            (Merged::Update(_, update), None) => {
                                 replay_data::sliced::try_owners(update.rows())?
                             }
                         };
@@ -819,6 +998,15 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                         reads.extend(old.copied());
                         frame_reads[table.index()] = Some(reads);
                     }
+                    if self.sliced_cache.get(&table).is_none()
+                        && self.owner_sliced(table)
+                        && self.sliced_owners[table.index()].is_some()
+                        && let Some(native_previous) =
+                            self.columnar.materialize_complete(table, source.branch)?
+                    {
+                        self.sliced_cache.insert(table, Arc::new(native_previous));
+                        retry = true;
+                    }
                     if let Some(previous) = self.sliced_cache.get(&table) {
                         *input = TableInput::Sampled(
                             match replay_data::sliced::merge_slice(previous, fresh, replaced, live)
@@ -853,6 +1041,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                     .is_some_and(|family| unpublished & (1 << family) != 0)
                 {
                     self.sliced_cache.remove(&table);
+                    self.sliced_owners[table.index()] = None;
                     self.pending_slices.retain(|(pending, _)| *pending != table);
                     let previous = std::mem::take(&mut self.sliced_reads.0[table.index()]);
                     if frame_reads[table.index()].is_none() {
@@ -940,6 +1129,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
     ) -> io::Result<[bool; TABLE_COUNT]> {
         if self.staggered_branch != Some(source.branch) {
             self.staggered_cache.clear();
+            self.staggered_complete.fill(false);
             self.country_intel_sample = None;
             self.country_intel_hour = None;
             self.staggered_branch = Some(source.branch);
@@ -959,6 +1149,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                 TableInput::Sampled(TableView::Unavailable { reason })
                 if reason == replay_data::cadence::SKIPPED_REASON
             );
+            let cache_staggered = !self.columnar.is_live() || spooled(table) || conversion_cache;
             if is_skip {
                 skipped[index] = true;
                 if !may_carry {
@@ -969,6 +1160,22 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                             reason: engine_allocation::string("hourly table was not acquired")?,
                         },
                     );
+                    continue;
+                }
+                if !cache_staggered {
+                    if let Some(cached) = self.staggered_cache.get(&table) {
+                        *input = cached.input()?;
+                    } else if !self.staggered_complete[index]
+                        || !self
+                            .columnar
+                            .has_complete(table, source.branch, source.hour)
+                    {
+                        *input = TableInput::Sampled(TableView::Unavailable {
+                            reason: engine_allocation::string(
+                                "staggered cache empty on new branch; full refresh required",
+                            )?,
+                        });
+                    }
                     continue;
                 }
                 let restarting = !self.spool.is_open();
@@ -997,6 +1204,81 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                     });
                 }
             } else {
+                if !cache_staggered {
+                    let compared_complete = matches!(
+                        input,
+                        TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. }
+                    ) && self.staggered_complete[index]
+                        && self
+                            .columnar
+                            .has_complete(table, source.branch, source.hour);
+                    let complete = matches!(
+                        input,
+                        TableInput::Sampled(TableView::Complete(_))
+                            | TableInput::SharedComplete(_)
+                    ) || compared_complete;
+                    if table == TableId::CountryIntel {
+                        self.country_intel_hour = complete.then_some(source.hour);
+                        self.country_intel_sample = if complete {
+                            intel_sample
+                                .and_then(Result::ok)
+                                .filter(|sample| sample.sample_hour == source.hour)
+                        } else {
+                            None
+                        };
+                    }
+                    match input {
+                        TableInput::Sampled(TableView::Complete(_))
+                        | TableInput::SharedComplete(_) => {
+                            self.staggered_complete[index] = true;
+                            self.staggered_cache.remove(&table);
+                        }
+                        TableInput::ComparedEqual(_) | TableInput::ComparedChanges { .. }
+                            if compared_complete =>
+                        {
+                            self.staggered_complete[index] = true;
+                            self.staggered_cache.remove(&table);
+                        }
+                        TableInput::Sampled(TableView::Truncated { rows, missing }) => {
+                            self.staggered_complete[index] = false;
+                            self.staggered_cache.insert(
+                                table,
+                                CachedTable::Truncated {
+                                    rows: rows.try_clone()?,
+                                    missing: *missing,
+                                },
+                            );
+                        }
+                        TableInput::Sampled(TableView::Unavailable { reason }) => {
+                            self.staggered_complete[index] = false;
+                            self.staggered_cache.insert(
+                                table,
+                                CachedTable::Unavailable {
+                                    reason: engine_allocation::string(reason)?,
+                                },
+                            );
+                        }
+                        TableInput::Sampled(TableView::NotRecorded { .. }) => {
+                            self.staggered_complete[index] = false;
+                            self.staggered_cache.remove(&table);
+                        }
+                        TableInput::ComparedEqual(_)
+                        | TableInput::ComparedChanges { .. }
+                        | TableInput::SliceUpdate { .. }
+                        | TableInput::UniformOptionalI32 { .. } => {
+                            self.staggered_complete[index] = false;
+                            self.staggered_cache.insert(
+                                table,
+                                CachedTable::Unavailable {
+                                    reason: engine_allocation::string(
+                                        "a native comparison cannot supply a shared recovery snapshot",
+                                    )?,
+                                },
+                            );
+                        }
+                    }
+                    continue;
+                }
                 let cached = match input {
                     TableInput::Sampled(TableView::Complete(rows)) => {
                         let rows = Arc::new(std::mem::replace(rows, TableRows::empty(table)));
@@ -1018,7 +1300,8 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                     TableInput::Sampled(TableView::NotRecorded { .. }) => continue,
                     TableInput::ComparedEqual(_)
                     | TableInput::ComparedChanges { .. }
-                    | TableInput::SliceUpdate { .. } => CachedTable::Unavailable {
+                    | TableInput::SliceUpdate { .. }
+                    | TableInput::UniformOptionalI32 { .. } => CachedTable::Unavailable {
                         reason: engine_allocation::string(
                             "a native comparison cannot supply a shared recovery snapshot",
                         )?,
@@ -1180,7 +1463,9 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         unknown: u64,
         work: &mut WorkSample,
     ) -> io::Result<()> {
-        self.write_with(source.into(), (qpc, signal), unknown, work, None, || {})
+        let mut source = source.into();
+        source.round_to_display();
+        self.write_with(source, (qpc, signal), unknown, work, None, || {})
     }
 
     fn write_with(
@@ -1213,6 +1498,8 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                 .span(collector_workers::spool_phases::Phase::Write) };
             let _ = self.spool.finish_segment();
             self.disk_branch = None;
+            self.staggered_complete.fill(false);
+            self.sliced_owners.fill(None);
             if !self.spool.is_queued()
                 && error.kind() != io::ErrorKind::OutOfMemory
                 && !collector_memory::terminal::failed()
@@ -1254,16 +1541,21 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
             let _phase =
                 collector_memory::terminal::enter(collector_memory::terminal::Phase::Encode);
             let mut segments = match helpers {
-                Some(helpers) => crate::spool_segments::encode(
+                Some(helpers) => crate::spool_segments::encode_keeping(
                     &self.encoder,
                     &source,
                     (branch, hour, restarting),
+                    spooled,
                     helpers,
                 ),
                 None => std::array::from_fn(|_| None),
             };
-            self.encoder
-                .prepare_contained(source, restarting, &mut segments, |table, error| {
+            self.encoder.prepare_rounded_contained_keeping(
+                source,
+                restarting,
+                &mut segments,
+                spooled,
+                |table, error| {
                     let reason = validation_refusal(
                         &mut self
                             .validation_refusals
@@ -1276,7 +1568,9 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                         error,
                     )?;
                     self.staggered_cache.remove(&table);
+                    self.staggered_complete[table.index()] = false;
                     self.sliced_cache.remove(&table);
+                    self.sliced_owners[table.index()] = None;
                     self.projection_scratch.forget(table);
                     self.intel_shadow.forget(table);
                     self.pending_slices.retain(|(id, _)| *id != table);
@@ -1373,7 +1667,10 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
     fn commit_baseline(&mut self, prepared: replay_frame::frame::PreparedFrame) -> io::Result<()> {
         engine_allocation::reserve(&mut self.retired, 1)?;
         let released = self.release_slices();
-        let retired = self.encoder.commit_retiring(prepared)?;
+        let live_columnar = self.columnar.is_live();
+        let retired = self
+            .encoder
+            .commit_retiring_mode(prepared, |table| baseline_retention(table, live_columnar))?;
         self.adopt_slices(released);
         self.retired.push(retired);
         Ok(())
@@ -2039,6 +2336,18 @@ impl<S: Schedule> Processor<S> {
         true
     }
 
+    pub fn attach_priority(
+        &self,
+        pipeline: engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
+    ) {
+        self.writer.attach_priority(pipeline.clone());
+        self.journal_thread.attach_priority(pipeline);
+    }
+
+    pub fn writer_thread_ids(&self) -> [Option<u32>; 2] {
+        [self.writer.thread_id(), self.journal_thread.thread_id()]
+    }
+
     pub fn set_backlogged(&mut self, backlogged: bool) {
         self.backlogged = backlogged;
     }
@@ -2549,6 +2858,19 @@ impl<S: Schedule> Processor<S> {
         campaign
             .try_apply_staggered_inputs(&mut source, captured.extended.country_intel_sample())?;
         campaign.assemble_reserved_intel_sample(&mut source);
+        for table in [
+            TableId::ProductionLineOutput,
+            TableId::OperationCompletions,
+            TableId::MapEvents,
+            TableId::ConstructionLineOutput,
+            TableId::CountryFuel,
+            TableId::ReservedCountryNaming,
+        ]
+        .into_iter()
+        .chain(collector_politics::politics::TABLES)
+        {
+            source.tables[table.index()].round_to_display();
+        }
         if let Some(layout) = &captured.fixed_layout {
             collector_metadata::fixed_layout::apply(&mut source.tables, layout)?;
         }
@@ -3890,7 +4212,8 @@ fn sampled_frame(source: FrameInput) -> replay_frame::frame::DecodedFrame {
                 TableInput::SharedComplete(rows) => TableView::Complete((*rows).clone()),
                 TableInput::ComparedEqual(_)
                 | TableInput::ComparedChanges { .. }
-                | TableInput::SliceUpdate { .. } => {
+                | TableInput::SliceUpdate { .. }
+                | TableInput::UniformOptionalI32 { .. } => {
                     panic!("fixture expected ordinary sampled rows")
                 }
             })
@@ -4346,6 +4669,7 @@ fn convert_with_helper(
         costs.thread(started);
         span.finish();
         take_in(&converted, map, &mut packs, Some(&costs));
+        collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
     };
     let own = || {
         let started = std::time::Instant::now();
@@ -6923,10 +7247,12 @@ mod tests {
                 submitted_context: Vec::new(),
                 closing: Vec::new(),
                 staggered_cache: TableCache::new(),
+                staggered_complete: [false; TABLE_COUNT],
                 staggered_branch: None,
                 country_intel_sample: None,
                 country_intel_hour: None,
                 sliced_cache: TableCache::new(),
+                sliced_owners: std::array::from_fn(|_| None),
                 sliced_reads: ReadHours::new(),
                 sliced_branch: None,
                 pending_slices: Vec::new(),
@@ -8934,7 +9260,7 @@ mod tests {
         );
         let mut frame: FrameInput = staggered_frame(branch, hour, false).into();
         for (index, input) in native
-            .table_inputs(Some(&mut reuse))
+            .table_inputs(Some(&mut reuse), None)
             .into_iter()
             .enumerate()
         {
@@ -9719,5 +10045,338 @@ mod tests {
             "post-truncation refresh must be a snapshot, not delta/unchanged"
         );
         assert_eq!(decoder.apply(&frame).unwrap(), second);
+    }
+
+    #[test]
+    fn non_spooled_daily_tables_skip_staggered_cache_and_encoder_baselines() {
+        struct TempDir(PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TempDir(std::env::temp_dir().join(format!(
+            "battleplan-non-spooled-daily-{}",
+            std::process::id()
+        )));
+        let _ = fs::remove_dir_all(&dir.0);
+        fs::create_dir_all(&dir.0).unwrap();
+        let journal_thread = crate::columnar::JournalThread::start().unwrap();
+        let (mut campaign, _) = campaign();
+        campaign.columnar = crate::columnar::Columnar::open(
+            &dir.0,
+            "non-spooled-daily",
+            &session(),
+            &journal_thread,
+        );
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut first: FrameInput = staggered_frame(branch, 0, false).into();
+        campaign.apply_staggered_inputs(&mut first);
+        assert!(campaign.staggered_cache.get(&DAILY).is_none());
+        campaign
+            .write(first, 1000, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+        assert!(campaign.encoder.committed_rows(DAILY).is_none());
+        assert!(campaign.encoder.committed_rows(TableId::Clock).is_some());
+        for table in [
+            TableId::DivisionPanelStats,
+            TableId::DivisionHistory,
+            TableId::CharacterRoleTraits,
+            TableId::StateResistance,
+        ] {
+            assert_eq!(
+                baseline_retention(table, true),
+                replay_frame::frame::BaselineRetention::Meta,
+                "{table:?}"
+            );
+        }
+        for table in [
+            TableId::DivisionStatus,
+            TableId::DivisionPanelSources,
+            TableId::WeatherProvinces,
+            TableId::RailCooldowns,
+            TableId::DivisionTemplates,
+        ] {
+            assert_eq!(
+                baseline_retention(table, true),
+                replay_frame::frame::BaselineRetention::Full,
+                "{table:?}"
+            );
+        }
+        campaign.columnar.finish();
+    }
+
+    #[test]
+    fn truncated_owner_sliced_read_preserves_rows_and_missing_through_live_writer() {
+        use collector_certificates::slicing::SliceSelection;
+        struct TempDir(PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TempDir(std::env::temp_dir().join(format!(
+            "battleplan-h1-sliced-{}",
+            std::process::id()
+        )));
+        let _ = fs::remove_dir_all(&dir.0);
+        fs::create_dir_all(&dir.0).unwrap();
+        let journal_thread = crate::columnar::JournalThread::start().unwrap();
+        let (mut campaign, _) = campaign();
+        campaign.columnar =
+            crate::columnar::Columnar::open(&dir.0, "h1-sliced", &session(), &journal_thread);
+        assert!(campaign.owner_sliced(TableId::ResearchInputs));
+
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let initial = research_rows(&[(1, 0, 5, 0), (2, 0, 6, 0)]);
+        let mut first = sliced_input(branch, 0, TableView::Complete(initial));
+        let full_sel = SliceSelection::for_test(0, true, &[]).with_census(&[1, 2]);
+        assert!(!merge_with(&mut campaign, &mut first, full_sel));
+        assert!(campaign.sliced_cache.get(&TableId::ResearchInputs).is_none());
+        assert!(campaign.sliced_owners[TableId::ResearchInputs.index()].is_some());
+        campaign
+            .write(first, 1000, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 1, Some(1)).unwrap();
+        let partial = research_rows(&[(1, 0, 99, 1)]);
+        let mut second = sliced_input(
+            branch,
+            1,
+            TableView::Truncated {
+                rows: partial,
+                missing: 7,
+            },
+        );
+        let partial_sel = SliceSelection::for_test(1, false, &[1]).with_census(&[1, 2]);
+        assert!(merge_with(&mut campaign, &mut second, partial_sel));
+        let expected = research_rows(&[(1, 0, 99, 1), (2, 0, 6, 0)]);
+        assert!(
+            matches!(
+                merged(&second),
+                TableInput::Sampled(TableView::Truncated { rows, missing: 7 }) if *rows == expected
+            ),
+            "truncated owner-sliced read must merge against native baseline and preserve missing count"
+        );
+        campaign
+            .write(second, 1001, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 2, Some(1)).unwrap();
+        let queued_slice = research_rows(&[(2, 0, 22, 2)]);
+        let mut queued = sliced_input(branch, 2, TableView::Complete(queued_slice));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut queued,
+            SliceSelection::for_test(2, false, &[2]).with_census(&[1, 2])
+        ));
+        let expected_after_queued = research_rows(&[(1, 0, 5, 0), (2, 0, 22, 2)]);
+        assert!(
+            matches!(
+                merged(&queued),
+                TableInput::SharedComplete(rows) if **rows == expected_after_queued
+            ),
+            "queued non-full owner slice after truncation must merge onto saved complete baseline"
+        );
+        assert_eq!(
+            campaign.sliced_reads.0[TableId::ResearchInputs.index()],
+            [(1, 0), (2, 2)]
+        );
+        assert!(campaign.sliced_cache.get(&TableId::ResearchInputs).is_none());
+        campaign
+            .write(queued, 1002, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+        assert_eq!(
+            campaign.sliced_reads.0[TableId::ResearchInputs.index()],
+            [(1, 0), (2, 2)]
+        );
+
+        let branch = campaign.observe(None, 3, Some(1)).unwrap();
+        let refreshed = research_rows(&[(1, 0, 5, 3), (2, 0, 6, 3)]);
+        let mut third = sliced_input(branch, 3, TableView::Complete(refreshed));
+        assert!(!merge_with(
+            &mut campaign,
+            &mut third,
+            SliceSelection::for_test(3, true, &[]).with_census(&[1, 2])
+        ));
+        assert!(campaign.sliced_cache.get(&TableId::ResearchInputs).is_none());
+        campaign
+            .write(third, 1003, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+        campaign.columnar.finish();
+    }
+
+    #[test]
+    fn skipped_non_spooled_daily_table_preserves_failure_reason_and_truncated_rows() {
+        struct TempDir(PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TempDir(std::env::temp_dir().join(format!(
+            "battleplan-h2-daily-{}",
+            std::process::id()
+        )));
+        let _ = fs::remove_dir_all(&dir.0);
+        fs::create_dir_all(&dir.0).unwrap();
+        let journal_thread = crate::columnar::JournalThread::start().unwrap();
+        let (mut campaign, _) = campaign();
+        campaign.columnar =
+            crate::columnar::Columnar::open(&dir.0, "h2-daily", &session(), &journal_thread);
+
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut hour0: FrameInput = staggered_frame(branch, 0, false).into();
+        hour0.tables[DAILY.index()] = TableInput::Sampled(TableView::Unavailable {
+            reason: "native daily table failed".into(),
+        });
+        campaign.apply_staggered_inputs(&mut hour0);
+        campaign
+            .write(hour0, 1000, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 1, Some(1)).unwrap();
+        let mut hour1: FrameInput = staggered_frame(branch, 1, true).into();
+        campaign.apply_staggered_inputs(&mut hour1);
+        assert!(
+            matches!(
+                &hour1.tables[DAILY.index()],
+                TableInput::Sampled(TableView::Unavailable { reason })
+                if reason == "native daily table failed"
+            ),
+            "skipped hour after failure must keep the real failure reason"
+        );
+        campaign
+            .write(hour1, 1001, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 2, Some(1)).unwrap();
+        let partial = daily_rows(9);
+        let mut hour2: FrameInput = staggered_frame(branch, 2, false).into();
+        hour2.tables[DAILY.index()] = TableInput::Sampled(TableView::Truncated {
+            rows: partial.clone(),
+            missing: 4,
+        });
+        campaign.apply_staggered_inputs(&mut hour2);
+        campaign
+            .write(hour2, 1002, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 3, Some(1)).unwrap();
+        let mut hour3: FrameInput = staggered_frame(branch, 3, true).into();
+        campaign.apply_staggered_inputs(&mut hour3);
+        assert!(
+            matches!(
+                &hour3.tables[DAILY.index()],
+                TableInput::Sampled(TableView::Truncated { rows, missing: 4 })
+                if *rows == partial
+            ),
+            "skipped hour after truncation must keep partial rows and missing count"
+        );
+        campaign
+            .write(hour3, 1003, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 4, Some(1)).unwrap();
+        let mut hour4: FrameInput = staggered_frame(branch, 4, false).into();
+        hour4.tables[DAILY.index()] = TableInput::Sampled(TableView::Complete(daily_rows(10)));
+        hour4.tables[TableId::VariantDefinitions.index()] =
+            TableInput::Sampled(TableView::Complete(TableRows::VariantDefinitions(vec![
+                replay_data::rows::VariantDefinitionRow {
+                    id: 1,
+                    equipment_token: 2,
+                    ..Default::default()
+                },
+            ])));
+        campaign.apply_staggered_inputs(&mut hour4);
+        assert!(campaign.staggered_cache.get(&DAILY).is_none());
+        assert!(campaign.staggered_cache.get(&TableId::VariantDefinitions).is_none());
+        campaign
+            .write(hour4, 1004, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 5, Some(1)).unwrap();
+        let mut hour5: FrameInput = staggered_frame(branch, 5, true).into();
+        hour5.tables[TableId::VariantDefinitions.index()] =
+            TableInput::Sampled(unavailable(replay_data::cadence::SKIPPED_REASON));
+        campaign.apply_staggered_inputs(&mut hour5);
+        assert!(matches!(
+            &hour5.tables[DAILY.index()],
+            TableInput::Sampled(TableView::Unavailable { reason })
+            if reason == replay_data::cadence::SKIPPED_REASON
+        ));
+        assert!(matches!(
+            &hour5.tables[TableId::VariantDefinitions.index()],
+            TableInput::Sampled(TableView::Unavailable { reason })
+            if reason == replay_data::cadence::SKIPPED_REASON
+        ));
+        campaign
+            .write(hour5, 1005, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 6, Some(1)).unwrap();
+        let (token, _) = campaign
+            .encoder
+            .observed_comparison_baseline::<tables::VariantDefinitions>(branch, 6, false)
+            .unwrap();
+        let mut hour6: FrameInput = staggered_frame(branch, 6, true).into();
+        hour6.tables[TableId::VariantDefinitions.index()] = TableInput::ComparedEqual(token);
+        campaign.apply_staggered_inputs(&mut hour6);
+        assert!(campaign.staggered_cache.get(&TableId::VariantDefinitions).is_none());
+        campaign
+            .write(hour6, 1006, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 7, Some(1)).unwrap();
+        let mut hour7: FrameInput = staggered_frame(branch, 7, true).into();
+        hour7.tables[TableId::VariantDefinitions.index()] =
+            TableInput::Sampled(unavailable(replay_data::cadence::SKIPPED_REASON));
+        campaign.apply_staggered_inputs(&mut hour7);
+        assert!(matches!(
+            &hour7.tables[TableId::VariantDefinitions.index()],
+            TableInput::Sampled(TableView::Unavailable { reason })
+            if reason == replay_data::cadence::SKIPPED_REASON
+        ));
+        campaign
+            .write(hour7, 1007, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 8, Some(1)).unwrap();
+        let (token, _) = campaign
+            .encoder
+            .observed_comparison_baseline::<tables::VariantDefinitions>(branch, 8, false)
+            .unwrap();
+        let mut hour8: FrameInput = staggered_frame(branch, 8, true).into();
+        hour8.tables[TableId::VariantDefinitions.index()] = TableInput::ComparedChanges {
+            token,
+            indices: vec![0],
+            rows: TableRows::VariantDefinitions(vec![
+                replay_data::rows::VariantDefinitionRow {
+                    id: 1,
+                    equipment_token: 3,
+                    ..Default::default()
+                },
+            ]),
+        };
+        campaign.apply_staggered_inputs(&mut hour8);
+        assert!(campaign.staggered_cache.get(&TableId::VariantDefinitions).is_none());
+        campaign
+            .write(hour8, 1008, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+
+        let branch = campaign.observe(None, 9, Some(1)).unwrap();
+        let mut hour9: FrameInput = staggered_frame(branch, 9, true).into();
+        hour9.tables[TableId::VariantDefinitions.index()] =
+            TableInput::Sampled(unavailable(replay_data::cadence::SKIPPED_REASON));
+        campaign.apply_staggered_inputs(&mut hour9);
+        assert!(matches!(
+            &hour9.tables[TableId::VariantDefinitions.index()],
+            TableInput::Sampled(TableView::Unavailable { reason })
+            if reason == replay_data::cadence::SKIPPED_REASON
+        ));
+        campaign
+            .write(hour9, 1009, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+        campaign.columnar.finish();
     }
 }

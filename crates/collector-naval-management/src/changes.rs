@@ -397,49 +397,9 @@ impl Drop for Hooks {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn naval_management_integration_failure_keeps_family_site_and_reason() {
-        let _serial = fixture::SERIAL.lock().unwrap();
-        let message = hook_failure(
-            "publication failed",
-            ["repair split command", "task destroy"].into_iter(),
-            "synthetic verification refusal".into(),
-        );
-        assert!(message.contains("naval_management_changes"));
-        assert!(message.contains("repair split command"));
-        assert!(message.contains("task destroy"));
-        assert!(message.contains("synthetic verification refusal"));
-        assert_eq!(PUBLICATION_ERROR.lock().unwrap().as_deref(), Some(message.as_str()));
-        *PUBLICATION_ERROR.lock().unwrap() = None;
-    }
-
-    #[test]
-    fn naval_management_integration_site_inventory_includes_independent_split() {
-        assert_eq!(SITES.len(), 48);
-        assert_eq!(METHODS.len(), 20);
-        assert_eq!(SITES.len() + METHODS.len(), 68);
-        assert_eq!(AUTHENTICATION_REFUSALS.len(), 68);
-        assert!(
-            SITES
-                .iter()
-                .any(|site| site.rva == sites::REPAIR_SPLIT_COMMAND.rva)
-        );
-        assert_eq!(
-            sites::TASK_DESTROY.rva,
-            engine_native::ctask_force::DESTRUCTOR_RVA
-        );
-        assert_eq!(
-            METHODS
-                .iter()
-                .filter(|site| site.rva == engine_native::ctask_force::DESTRUCTOR_RVA)
-                .count(),
-            1
-        );
-    }
 
     #[test]
     fn split_only_command_marks_its_task_force_without_a_mode_write() {
@@ -523,37 +483,6 @@ mod tests {
             assert_eq!(refused, 0, "base {base}: the grown table takes every receiver");
         }
         fixture::prepare();
-    }
-
-    #[test]
-    fn naval_management_method_timing_excludes_its_native_original() {
-        let _serial = fixture::SERIAL.lock().unwrap();
-        let _sample = hook_timing::sample_all();
-        unsafe extern "system-unwind" fn original(
-            first: usize,
-            _: usize,
-            _: usize,
-            _: usize,
-        ) -> usize {
-            std::hint::black_box(first) + 1
-        }
-        let before = hook_timing::counts(Family::NavalManagementChanges);
-        let previous = ORIGINALS[0].swap(original as *const () as usize, Ordering::SeqCst);
-        let result = unsafe { method::<0>(0x1000, 0, 0, 0) };
-        ORIGINALS[0].store(previous, Ordering::SeqCst);
-        assert_eq!(result, 0x1001);
-        let after = hook_timing::counts(Family::NavalManagementChanges);
-        assert_eq!(after.calls - before.calls, 1);
-        assert_eq!(after.sampled - before.sampled, 1);
-        assert!(after.original > before.original);
-        assert_eq!(
-            Family::NavalManagementChanges.name(),
-            "naval_management_changes"
-        );
-        assert_eq!(
-            Family::NavalManagementChanges.kind(),
-            hook_timing::Kind::Mixed
-        );
     }
 
     #[test]

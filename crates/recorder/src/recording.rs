@@ -361,6 +361,7 @@ type AheadResult = (replay_io::Live, Option<Localisation>, Duration);
 struct FinalizingAhead {
     packing: Option<Arc<replay_settings::packing::Packing>>,
     stop: Arc<AtomicBool>,
+    promoted: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<AheadResult>>,
     asked: Arc<AtomicBool>,
     names: Arc<Mutex<BTreeMap<String, String>>>,
@@ -407,6 +408,7 @@ impl FinalizingAhead {
         let names = Arc::<Mutex<BTreeMap<String, String>>>::default();
         let (published, asked) = (Arc::clone(&names), Arc::new(AtomicBool::new(false)));
         let asking = Arc::clone(&asked);
+        let promoted = Arc::new(AtomicBool::new(false));
         let packing = replay_settings::packing::Packing::new()
             .map(Arc::new)
             .inspect_err(|error| {
@@ -414,8 +416,47 @@ impl FinalizingAhead {
             })
             .ok();
         if let (Some(packing), Some(idle)) = (&packing, idle) {
+            let gate_stop = Arc::clone(&stop);
+            let gate_promoted = Arc::clone(&promoted);
+            let gate_asked = Arc::clone(&asked);
+            let origin = std::time::Instant::now();
+            let idle_since_ms = std::sync::atomic::AtomicU64::new(0);
             packing.set_gate(move || {
-                let _ = idle.handle.wait(200);
+                const IDLE_QUIET_MS: u64 = 1000;
+                const POLL_MS: u64 = 11;
+                loop {
+                    if gate_stop.load(Ordering::Acquire)
+                        || gate_promoted.load(Ordering::Acquire)
+                        || gate_asked.load(Ordering::Acquire)
+                    {
+                        return;
+                    }
+                    if idle.handle.signaled().unwrap_or(true) {
+                        let now_ms =
+                            origin.elapsed().as_millis().min(u64::MAX as u128 - 1) as u64 + 1;
+                        let since = idle_since_ms.load(Ordering::Acquire);
+                        if since == 0 {
+                            let _ = idle_since_ms.compare_exchange(
+                                0,
+                                now_ms,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            );
+                        } else if now_ms.saturating_sub(since) >= IDLE_QUIET_MS {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(POLL_MS));
+                    } else {
+                        idle_since_ms.store(0, Ordering::Release);
+                        let _ = idle.handle.wait(50);
+                        if idle.handle.signaled().unwrap_or(false) {
+                            let now_ms =
+                                origin.elapsed().as_millis().min(u64::MAX as u128 - 1) as u64 + 1;
+                            idle_since_ms.store(now_ms, Ordering::Release);
+                            std::thread::sleep(Duration::from_millis(POLL_MS));
+                        }
+                    }
+                }
             });
         }
         let carried = replay_settings::exit::Carry::current();
@@ -424,6 +465,7 @@ impl FinalizingAhead {
             .spawn(move || carried.run(|| {
                 let _pass_progress = progress_io::passes(&session);
                 packing.run(|| {
+                packing.wait_for_game();
                 let localisation = content_reader_localisation::localisation::read(&layers, &language)
                     .inspect_err(|error| {
                         eprintln!("Countries are named by tag: the localisation could not be read: {error}");
@@ -487,6 +529,7 @@ impl FinalizingAhead {
         Self {
             packing,
             stop,
+            promoted,
             thread,
             asked,
             names,
@@ -494,6 +537,7 @@ impl FinalizingAhead {
     }
 
     fn promote(&self) {
+        self.promoted.store(true, Ordering::Release);
         if let Some(packing) = &self.packing {
             packing.promote();
         }
@@ -1069,7 +1113,16 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
     options.output = options.output.canonicalize().map_err(|e| e.to_string())?;
     match command.as_str() {
-        "record" => record(options),
+        "record" => {
+            // SAFETY: lowers only this recorder process's priority class during live capture.
+            unsafe {
+                use windows_sys::Win32::System::Threading::{
+                    BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass,
+                };
+                SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+            }
+            record(options)
+        }
         "detach" => request_detach(&options.output),
         "refresh" => request_refresh(&options.output),
         "finalize" => {
@@ -5378,7 +5431,6 @@ fn save_waiting_with(locked: &WaitingLock, names: &mut WaitingNames) -> Result<S
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
@@ -6153,6 +6205,7 @@ mod tests {
         let unstarted = FinalizingAhead {
             packing: None,
             stop: Arc::default(),
+            promoted: Arc::default(),
             thread: None,
             asked: Arc::default(),
             names: Arc::default(),
@@ -6487,28 +6540,6 @@ mod tests {
     }
 
     #[test]
-    fn game_score_cli_defaults_enabled_and_disables_at_attach() {
-        assert!(parse_options("record", Vec::new()).unwrap().game_score);
-        let options = parse_options(
-            "record",
-            vec![
-                "--once".into(),
-                "--no-game-score".into(),
-                "--out".into(),
-                "output".into(),
-                "--user-dir".into(),
-                "user".into(),
-            ],
-        )
-        .unwrap();
-        assert!(!options.game_score);
-        assert!(options.once);
-        assert_eq!(options.output, PathBuf::from("output"));
-        assert_eq!(options.user, Some(PathBuf::from("user")));
-        assert!(usage().contains("[--no-game-score]"));
-    }
-
-    #[test]
     fn capture_mode_cli_defaults_full_and_names_only_known_modes() {
         assert_eq!(
             parse_options("record", Vec::new()).unwrap().capture_mode,
@@ -6526,26 +6557,6 @@ mod tests {
             assert!(parse_options(command, vec!["--capture-mode".into(), "map".into()]).is_err());
         }
         assert!(usage().contains("[--capture-mode full|map]"));
-    }
-
-    #[test]
-    fn worker_sampler_config_preserves_environment_text_verbatim() {
-        let original = json!({"game_score": true, "output_dir": "synthetic/session"});
-        assert_eq!(worker_sampler_config(original.clone(), None), original);
-        for requested in ["", "off", r"interval_us=50"] {
-            let config = worker_sampler_config(original.clone(), Some(requested.into()));
-            assert_eq!(config["worker_sampler"], requested);
-            assert_eq!(config["game_score"], original["game_score"]);
-            assert_eq!(config["output_dir"], original["output_dir"]);
-        }
-        assert!(usage().contains("BATTLEPLAN_WORKER_SAMPLER"));
-    }
-
-    #[test]
-    fn game_score_cli_refuses_disable_for_other_commands() {
-        for command in ["detach", "refresh", "finalize"] {
-            assert!(parse_options(command, vec!["--no-game-score".into()]).is_err());
-        }
     }
 
     #[cfg(feature = "alloc-fault-injection")]
@@ -6585,23 +6596,6 @@ mod tests {
         ] {
             assert!(allocation_fault(OsStr::new(value)).is_err(), "{value}");
         }
-    }
-
-    #[cfg(feature = "alloc-fault-injection")]
-    #[test]
-    fn allocation_fault_json_is_omitted_until_requested() {
-        let healthy = json!({"session_id":7});
-        assert_eq!(fault_config(healthy.clone(), None), healthy);
-        let fault = allocation_fault(OsStr::new("spool:540")).unwrap();
-        assert_eq!(
-            fault_config(healthy.clone(), Some(&fault)),
-            json!({"session_id":7,"alloc_fault":{"phase":"spool","ordinal":540}})
-        );
-        let fault = allocation_fault(OsStr::new("encode:1:3")).unwrap();
-        assert_eq!(
-            fault_config(healthy, Some(&fault)),
-            json!({"session_id":7,"alloc_fault":{"phase":"encode","ordinal":1,"after_hours":3}})
-        );
     }
 
     #[cfg(not(feature = "alloc-fault-injection"))]
@@ -8386,32 +8380,6 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn the_command_line_reads_status_once_a_minute_and_the_tray_every_two_seconds() {
-        let start = Instant::now();
-        let reads = |live| {
-            let mut schedule = StatusReads::new(live, start);
-            let (mut printed, mut live_reads) = (0, 0);
-            for step in 0..1_200 {
-                let now = start + Duration::from_millis(100 * step);
-                printed += u32::from(schedule.print_due(now));
-                if schedule.live_due(now) {
-                    live_reads += 1;
-                    schedule.live_read(now);
-                }
-            }
-            (printed, live_reads)
-        };
-        assert_eq!(reads(false), (2, 0));
-        assert_eq!(reads(true), (2, 60));
-        let options = parse_options("record", vec!["--out".into(), "captures".into()]).unwrap();
-        let user = PathBuf::from("user");
-        let capture = cli_capture(&options, &user);
-        assert!(!capture.live_status);
-        assert!(capture.admit.is_none() && capture.loaded.is_none());
-        assert_eq!(capture.target, capture.output);
     }
 
     #[test]

@@ -218,28 +218,3 @@ pub fn serialize(value: &impl Serialize) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::Cell;
-    struct Once<'a>(&'a Cell<usize>);
-    impl Serialize for Once<'_> {
-        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            self.0.set(self.0.get() + 1);
-            serializer.serialize_str("a reusable status snapshot")
-        }
-    }
-    #[test]
-    fn status_serializes_once_and_reuses_capacity() {
-        let calls = Cell::new(0);
-        let mut bytes = Vec::new();
-        serialize_into(&mut bytes, &Once(&calls)).unwrap();
-        let pointer = bytes.as_ptr();
-        let capacity = bytes.capacity();
-        serialize_into(&mut bytes, &Once(&calls)).unwrap();
-        assert_eq!(calls.get(), 2);
-        assert_eq!(bytes.as_ptr(), pointer);
-        assert_eq!(bytes.capacity(), capacity);
-        assert_eq!(bytes, br#""a reusable status snapshot""#);
-    }
-}

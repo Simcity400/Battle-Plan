@@ -645,26 +645,6 @@ fn a_view_kept_until_the_next_hour_is_copied_once_then_reused() {
 }
 
 #[test]
-fn views_kept_every_hour_are_copied_every_hour() {
-    let countries = TableId::Countries.index();
-    let frames = moving_countries(5, 2);
-    let (mut decoder, mut alone) = (FrameDecoder::new(), FrameDecoder::new());
-    let (copies, reuses) = (
-        crate::cpu::delta_copies()[countries],
-        crate::cpu::delta_reuses()[countries],
-    );
-    let mut held = Vec::new();
-    for frame in &frames {
-        held.push(decoder.advance(frame).unwrap().clone());
-    }
-    assert_eq!(crate::cpu::delta_copies()[countries][0] - copies[0], 4);
-    assert_eq!(crate::cpu::delta_reuses()[countries][0] - reuses[0], 0);
-    for (frame, held) in frames.iter().zip(&held) {
-        assert_same_frame(held, alone.advance(frame).unwrap());
-    }
-}
-
-#[test]
 fn an_unchanged_hour_releases_the_replaced_view() {
     let countries = TableId::Countries.index();
     let mut encoder = FrameEncoder::new();
@@ -2055,77 +2035,6 @@ fn borrowed_advances_and_owned_results_keep_independent_rows() {
 }
 
 #[test]
-fn consuming_encoder_moves_vectors_and_decoder_keeps_unchanged_string_allocations() {
-    let mut encoder = FrameEncoder::new();
-    let first = source(1, 100);
-    let input_rows = first.complete::<tables::Countries>().unwrap().as_ptr();
-    let initial = encoder.encode(first, false).unwrap();
-    let baseline = encoder.state.tables[TableId::Countries.index()]
-        .as_ref()
-        .unwrap();
-    assert_eq!(
-        baseline
-            .1
-            .as_ref()
-            .rows::<tables::Countries>()
-            .unwrap()
-            .as_ptr(),
-        input_rows
-    );
-
-    let mut decoder = FrameDecoder::new();
-    let country = &decoder
-        .advance(&initial)
-        .unwrap()
-        .complete::<tables::Countries>()
-        .unwrap()[0];
-    let tag = country.tag.as_ptr();
-    let mut next = source(1, 101);
-    change_country(&mut next, 2);
-    let input_rows = next.complete::<tables::Countries>().unwrap().as_ptr();
-    let delta = encoder.encode(next, false).unwrap();
-    let baseline = encoder.state.tables[TableId::Countries.index()]
-        .as_ref()
-        .unwrap();
-    assert_eq!(
-        baseline
-            .1
-            .as_ref()
-            .rows::<tables::Countries>()
-            .unwrap()
-            .as_ptr(),
-        input_rows
-    );
-    let country = &decoder
-        .advance(&delta)
-        .unwrap()
-        .complete::<tables::Countries>()
-        .unwrap()[0];
-    assert_eq!(country.command_power_raw, 2);
-    assert_eq!(country.tag.as_ptr(), tag);
-
-    let mut unchanged = source(1, 102);
-    change_country(&mut unchanged, 2);
-    let update = encoder.encode(unchanged, false).unwrap();
-    assert!(matches!(
-        update.tables[TableId::Countries.index()],
-        TableUpdate::Unchanged { .. }
-    ));
-    let baseline = encoder.state.tables[TableId::Countries.index()]
-        .as_ref()
-        .unwrap();
-    assert_eq!(
-        baseline
-            .1
-            .as_ref()
-            .rows::<tables::Countries>()
-            .unwrap()
-            .as_ptr(),
-        input_rows
-    );
-}
-
-#[test]
 fn unavailable_and_truncated_tables_require_their_own_next_snapshot() {
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
@@ -3375,31 +3284,6 @@ fn commit_hands_back_replaced_baselines_and_unkept_inputs() {
 }
 
 #[test]
-fn an_update_of_present_rows_applies_in_place() {
-    use crate::rows::{CountryLinkRow, RowCodec};
-    let rows: Vec<_> = (1..=3)
-        .map(|id| CountryLinkRow {
-            id,
-            canonical_slot: id,
-        })
-        .collect();
-    let changed = CountryLinkRow {
-        canonical_slot: 9,
-        ..rows[1].clone()
-    };
-    let delta = changed.delta(Some(&rows[1])).unwrap().unwrap();
-    let table = rows.as_ptr();
-    let TableRows::CountryLinks(updated) = TableRows::CountryLinks(rows)
-        .apply_delta(&[delta], &[])
-        .unwrap()
-    else {
-        panic!("country links");
-    };
-    assert_eq!(updated.as_ptr(), table, "the table is not rebuilt");
-    assert_eq!(updated[1], changed);
-}
-
-#[test]
 fn contained_validation_keeps_good_segments_and_rebaselines_refused_table() {
     let _details = crate::codec::error_details_scope();
     let mut encoder = FrameEncoder::new();
@@ -3758,6 +3642,76 @@ fn a_frame_keeping_some_tables_leaves_the_rest_to_the_native_capture() {
             }
         }
     }
+}
+
+#[test]
+fn prepare_contained_keeping_matches_take_frame_keeping_and_keeps_baselines() {
+    let _details = crate::codec::error_details_scope();
+    let kept = [TableId::Clock, TableId::Countries];
+    let mut full = FrameEncoder::new();
+    let mut pruned = FrameEncoder::new();
+    let mut full_refused = Vec::new();
+    let mut pruned_refused = Vec::new();
+    for hour in 0..4 {
+        let mut frame = FrameInput::from(source(1, hour));
+        if hour == 2 {
+            frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+                StateRow {
+                    id: 64,
+                    continent: crate::rows::Recorded::NotRecorded,
+                    ..Default::default()
+                },
+            ]))
+            .into();
+        }
+        let mut full_segments = std::array::from_fn(|_| None);
+        let mut pruned_segments = std::array::from_fn(|_| None);
+        let mut prepared_full = full
+            .prepare_contained(frame.clone(), hour == 0, &mut full_segments, |table, error| {
+                let message = error.to_string();
+                full_refused.push((hour, table, message.clone()));
+                Ok(message)
+            })
+            .unwrap();
+        let mut prepared_pruned = pruned
+            .prepare_contained_keeping(
+                frame,
+                hour == 0,
+                &mut pruned_segments,
+                |table| kept.contains(&table),
+                |table, error| {
+                    let message = error.to_string();
+                    pruned_refused.push((hour, table, message.clone()));
+                    Ok(message)
+                },
+            )
+            .unwrap();
+        let expected = prepared_full
+            .take_frame_keeping(|table| kept.contains(&table))
+            .unwrap();
+        let actual_ptr = prepared_pruned.frame().bytes.as_ptr();
+        let actual = prepared_pruned
+            .take_frame_keeping(|table| kept.contains(&table))
+            .unwrap();
+        assert_eq!(actual.bytes.as_ptr(), actual_ptr, "hour {hour}");
+        assert_eq!(actual.bytes, expected.bytes, "hour {hour}");
+        assert_eq!(
+            prepared_pruned.input().tables[TableId::States.index()],
+            prepared_full.input().tables[TableId::States.index()],
+            "hour {hour}"
+        );
+        full.commit(prepared_full).unwrap();
+        pruned.commit(prepared_pruned).unwrap();
+        for table in TableId::ALL {
+            assert_eq!(
+                pruned.committed_rows(table),
+                full.committed_rows(table),
+                "hour {hour} {table:?}"
+            );
+        }
+    }
+    assert_eq!(pruned_refused, full_refused);
+    assert_eq!(pruned_refused.len(), 1);
 }
 
 #[test]

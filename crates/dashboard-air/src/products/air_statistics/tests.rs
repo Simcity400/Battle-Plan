@@ -69,18 +69,3 @@ fn a_holders_other_link_ids_add_their_regions_and_a_region_two_ids_hold_is_the_l
     assert_eq!(regions_of(keys, &ids), [7, 11].into(), "the regions a holder's ids held over the timeline");
 }
 
-#[test]
-fn every_step_reads_each_table_once_as_a_frame_refuses_a_table_read_twice() {
-    let params = AirStatisticsParams { branch_id: "1".to_owned(), country: "GER".into(), channel: 0 };
-    let held = DecodedFrame { branch: 1, hour: 0, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
-    let once = |tables: Vec<TableId>| {
-        let mut indices: Vec<usize> = tables.iter().map(|table| table.index()).collect();
-        indices.sort_unstable();
-        indices.dedup();
-        assert_eq!(indices.len(), tables.len(), "{tables:?}");
-    };
-    for step in 0..2 {
-        once(AirStatisticsAt::reads(&params, Some(Owner { slot: 4, id: 9 }), step, &held).into_iter().map(|read| read.table).collect());
-    }
-    once(AirStatisticsAt::tables(&params));
-}

@@ -439,10 +439,9 @@ pub struct Captured {
     terminal_failure: Option<&'static str>,
 }
 impl Captured {
-    #[cfg(test)]
-    fn vacant() -> Self {
+    pub fn vacant() -> Self {
         Self {
-            parts: owned_vec(collect_vec((0..PARTS).map(|_| Part::vacant()))),
+            parts: Vec::new(),
             trains: Trains::vacant(),
             selection: SliceSelection::new(),
             terminal_failure: None,

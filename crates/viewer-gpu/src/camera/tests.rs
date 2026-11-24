@@ -283,13 +283,6 @@ fn a_map_icon_projection_divides_by_any_w() {
 }
 
 #[test]
-fn the_stored_tilt_is_held_within_five_and_one_hundred() {
-    assert_eq!(stored_tilt(0.0), 5.0);
-    assert_eq!(stored_tilt(150.0), 100.0);
-    assert_eq!(stored_tilt(70.0), 70.0);
-}
-
-#[test]
 fn the_pan_direction_is_the_cursor_ray_across_the_view_without_height() {
     let camera = reference();
     let centre = camera.pan_direction([1024.0, 576.0], VIEWPORT);

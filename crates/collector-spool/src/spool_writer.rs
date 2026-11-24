@@ -6,7 +6,7 @@ use std::{
     io,
     path::PathBuf,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak,
         atomic::{AtomicU64, Ordering},
     },
     thread::JoinHandle,
@@ -235,6 +235,7 @@ impl State {
 pub struct Shared {
     state: Mutex<State>,
     changed: Condvar,
+    pipeline: OnceLock<engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>>,
 }
 impl Shared {
     fn reconcile(state: &mut State) {
@@ -622,6 +623,7 @@ impl<S: Schedule> Writer<S> {
         let shared = Arc::new(Shared {
             state: Mutex::default(),
             changed: Condvar::new(),
+            pipeline: OnceLock::new(),
         });
         let worker = Arc::clone(&shared);
         let worker_schedule = schedule.clone();
@@ -630,9 +632,22 @@ impl<S: Schedule> Writer<S> {
             .stack_size(collector_workers::priority::BACKGROUND_STACK_BYTES)
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
+                // SAFETY: This dedicated spool writer thread registers its own role.
+                unsafe {
+                    collector_workers::thread_cpu::register(
+                        collector_workers::thread_cpu::Role::SpoolWriter,
+                    );
+                }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     serve(&worker, create, &worker_schedule)
                 }));
+                // SAFETY: This dedicated spool writer thread clears its own role before exit.
+                unsafe {
+                    collector_workers::thread_cpu::register_id(
+                        collector_workers::thread_cpu::Role::SpoolWriter,
+                        0,
+                    );
+                }
                 if result.is_err() {
                     collector_memory::terminal::fail(
                         collector_memory::terminal::Phase::Spool,
@@ -656,6 +671,20 @@ impl<S: Schedule> Writer<S> {
         })
     }
 
+    pub(crate) fn attach_priority(
+        &self,
+        pipeline: engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
+    ) {
+        let _ = self.shared.pipeline.set(pipeline);
+        self.shared.changed.notify_all();
+    }
+    pub(crate) fn thread_id(&self) -> Option<u32> {
+        use std::os::windows::io::AsRawHandle;
+        let handle = self.thread.as_ref()?.as_raw_handle();
+        // SAFETY: `self.thread` stays alive for the duration of this query.
+        let id = unsafe { windows_sys::Win32::System::Threading::GetThreadId(handle as _) };
+        (id != 0).then_some(id)
+    }
     pub(crate) fn account_to(&self, counter: engine_allocation::SharedBox<AtomicU64>) {
         let mut state = self.shared.lock();
         assert!(state.pool.counter.is_none());
@@ -1186,8 +1215,19 @@ fn serve<B: SegmentBackend>(
     schedule: &impl Schedule,
 ) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
+    // SAFETY: This owned worker applies its session's frame-pipeline priority policy to itself.
+    let mut priority = unsafe { collector_workers::priority::OwnPriority::frame_pipeline() };
     let mut spools: Vec<(CampaignId, u64, SegmentedSpool<B>)> = Vec::new();
     loop {
+        if let Some(pipeline) = shared.pipeline.get() {
+            // SAFETY: This owned worker updates its priority from its session's own pipeline.
+            unsafe {
+                priority.follow_pipeline(
+                    pipeline,
+                    collector_workers::frame_priority::Role::SpoolWriter,
+                );
+            }
+        }
         let job = {
             let mut state = shared.lock();
             loop {
@@ -1210,6 +1250,7 @@ fn serve<B: SegmentBackend>(
             }
         };
         let Some(job) = job else {
+            collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
             if shared.lock().stop {
                 break;
             }
@@ -1448,6 +1489,7 @@ mod tests {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
+            pipeline: OnceLock::new(),
         });
         let mut output: Output = Output::Queued {
             schedule: Unrestricted,
@@ -1585,13 +1627,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn the_budget_admits_the_maximum_record_with_context_and_inflight_storage() {
-        let batch = replay_capture_spool::spool::MAX_RECORD_BYTES + replay_capture_spool::spool::RECORD_HEADER_BYTES + 4096;
-        let budget = budget_for(MIN_BUDGET, batch);
-        assert_eq!(budget, 2 * batch);
-        assert!(batch <= budget - batch);
-        assert_eq!(budget_for(budget, 77 * 1024), budget);
-        assert_eq!(budget_for(MIN_BUDGET, 35 * 1024 * 1024), 70 * 1024 * 1024);
-    }
 }

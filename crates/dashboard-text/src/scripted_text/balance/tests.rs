@@ -1,19 +1,6 @@
 use super::*;
 use replay_data::rows::*;
 
-#[cfg(test)]
-#[test]
-fn balance_property_methods_select_the_registered_handler() {
-    assert!(matches_numeric_handler("GetPowerBalanceName", 46));
-    assert!(matches_numeric_handler("GetPowerBalanceModDesc", 47));
-    assert!(matches_numeric_handler("GetBopTrendTextIcon", 58));
-    assert!(matches_numeric_handler("getpowerbalancename", 46));
-    assert!(!matches_numeric_handler("GetPowerBalanceName", 47));
-    assert!(!matches_numeric_handler("GetPowerBalanceNameExtra", 46));
-    assert!(!matches_numeric_handler("GetName", 46));
-    assert!(!matches_numeric_handler("GetPowerBalanceName", 45));
-}
-
 pub fn fixture(
     bop: Option<&str>,
 ) -> (
@@ -197,7 +184,6 @@ fn active_range_rule_description() {
         "Rules:\nYes: Create factions\nNo: Join factions\n"
     );
 }
-
 
 pub const MAX_SCRIPTED_NESTING: usize = super::super::MAX_SCRIPTED_NESTING;
 

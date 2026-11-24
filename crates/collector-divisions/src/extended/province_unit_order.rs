@@ -6,11 +6,13 @@ use collector_primitives::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_vec},
 };
+#[cfg(test)]
 use collector_projection::table_conversion::table;
 use engine_allocation::{advisory, copy_vec, owned_vec, reserve};
 use engine_native_memory::{Memory, walk::Outcome};
 use engine_native::{carmy, cprovince::{self, KnownUnit, UnitOrderRow}};
 use replay_data::{rows::ProvinceUnitOrderRow, rows::TableId, rows::tables};
+#[cfg(test)]
 use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProvinceUnitOrder];
@@ -552,10 +554,37 @@ impl Captured {
         }
     }
 
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
         [table::<tables::ProvinceUnitOrder, _>(
             self.outcomes()[0],
             &self.rows.rows,
+            |r| ProvinceUnitOrderRow {
+                province: r.province,
+                mixed: owned_vec(copy_vec(
+                    &self.arena.first[r.mixed[0]..r.mixed[0] + r.mixed[1]],
+                )),
+                naval: owned_vec(copy_vec(
+                    &self.arena.first[r.naval[0]..r.naval[0] + r.naval[1]],
+                )),
+            },
+        )]
+    }
+
+    pub fn table_inputs(
+        &self,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> [replay_frame::frame::TableInput; N] {
+        [collector_projection::projection::project_table::<tables::ProvinceUnitOrder, _>(
+            projection,
+            self.outcomes()[0],
+            &self.rows.rows,
+            |r| u128::from(r.province),
+            |r, prev| {
+                r.province == prev.province
+                    && prev.mixed.as_slice() == &self.arena.first[r.mixed[0]..r.mixed[0] + r.mixed[1]]
+                    && prev.naval.as_slice() == &self.arena.first[r.naval[0]..r.naval[0] + r.naval[1]]
+            },
             |r| ProvinceUnitOrderRow {
                 province: r.province,
                 mixed: owned_vec(copy_vec(
@@ -938,115 +967,6 @@ pub mod owned_tests {
             assert_eq!(reads(&world), [true; 3], "{job_failed}");
             assert_eq!(after[0], (1, vec![handle(1), handle(0)]));
         }
-    }
-
-    #[test]
-    #[ignore = "release benchmark: ProvinceUnitOrder full walk against the carry"]
-    fn province_unit_carry_scale_bench() {
-        if cfg!(debug_assertions) {
-            panic!("run the carry benchmark in release");
-        }
-        const PROVINCES: usize = 13_000;
-        const RECORD: usize = 0x400;
-        let units_per = |id: usize| {
-            if id.is_multiple_of(6) {
-                1 + (id / 6) % 3
-            } else {
-                0
-            }
-        };
-        let units: usize = (1..=PROVINCES).map(units_per).sum();
-        let records = 0x10_0000;
-        let unit_area = records + (PROVINCES + 1) * RECORD;
-        let mut heap = vec![0_u8; unit_area + units * 0x100];
-        let base = heap.as_ptr() as usize;
-        let put = |heap: &mut Vec<u8>, at: usize, value: &[u8]| {
-            heap[at..at + value.len()].copy_from_slice(value)
-        };
-        let state = 0x100;
-        let slots = 0x1000;
-        let root = state + engine_native::cgame_state::PROVINCES;
-        put(&mut heap, root, &((base + slots) as u64).to_le_bytes());
-        put(&mut heap, root + 8, &((PROVINCES + 1) as u32).to_le_bytes());
-        put(
-            &mut heap,
-            root + 12,
-            &((PROVINCES + 1) as u32).to_le_bytes(),
-        );
-        let mut seeds = Vec::new();
-        for id in 1..=PROVINCES {
-            let record = records + id * RECORD;
-            put(
-                &mut heap,
-                slots + 8 * id,
-                &((base + record) as u64).to_le_bytes(),
-            );
-            put(
-                &mut heap,
-                record,
-                &((base + cprovince::VTABLE_RVA.0) as u64).to_le_bytes(),
-            );
-            put(
-                &mut heap,
-                record + cprovince::ID,
-                &(id as u32).to_le_bytes(),
-            );
-            let count = units_per(id);
-            let lane = record + 0x200;
-            let header = record + cprovince::OCCUPANTS;
-            put(&mut heap, header, &((base + lane) as u64).to_le_bytes());
-            put(&mut heap, header + 8, &(count as u32).to_le_bytes());
-            put(&mut heap, header + 12, &(count as u32).to_le_bytes());
-            for at in 0..count {
-                let unit = base + unit_area + seeds.len() * 0x100;
-                put(&mut heap, lane + 8 * at, &(unit as u64).to_le_bytes());
-                let handle = ((seeds.len() as u64 + 1) << 32) | 4713;
-                seeds.push(engine_native::carmy::DivisionSeed {
-                    pointer: unit,
-                    division: handle,
-                    primary_vtable: Some((base + carmy::VTABLE_RVA.0) as u64),
-                    secondary_vtable: Some((base + carmy::SECONDARY_VTABLE_RVA.0) as u64),
-                    handle: Some(handle),
-                    class: Some(0),
-                    location: Some(base + record),
-                    ..Default::default()
-                });
-            }
-        }
-        let census = UnitInputs::fixture(seeds.clone(), Outcome::Rows { len: seeds.len() });
-        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
-        let domain = Box::leak(Box::new(province_unit_changes::Domain::enabled(
-            PROVINCES + 1,
-        )));
-        let mut store = ProvinceUnitStore::new(domain);
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        let mut time = |store: Option<&mut ProvinceUnitStore>, marked: usize| {
-            for id in (1..=PROVINCES)
-                .step_by(PROVINCES / marked.max(1))
-                .take(marked)
-            {
-                drop(domain.notify(0, Some(id)));
-            }
-            captured.reset();
-            let begin = std::time::Instant::now();
-            captured.capture_with_census(&memory, base, base + state, Some(&census), store);
-            let elapsed = begin.elapsed().as_secs_f64() * 1e3;
-            assert_eq!(captured.outcomes(), [Outcome::Rows { len: PROVINCES }]);
-            elapsed
-        };
-        let median = |mut samples: Vec<f64>| {
-            samples.sort_by(f64::total_cmp);
-            samples[samples.len() / 2]
-        };
-        let full = median((0..41).map(|_| time(None, 0)).collect());
-        time(Some(&mut store), 0);
-        let quiet = median((0..41).map(|_| time(Some(&mut store), 0)).collect());
-        let marked = median((0..41).map(|_| time(Some(&mut store), 150)).collect());
-        assert!(store.holds());
-        println!(
-            "PROVINCE_UNIT_CARRY provinces={PROVINCES} divisions={units} full_ms={full:.3} quiet_ms={quiet:.3} marked150_ms={marked:.3}"
-        );
-        drop(heap);
     }
 
     #[test]

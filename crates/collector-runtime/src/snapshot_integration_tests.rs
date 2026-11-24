@@ -36,7 +36,6 @@ pub(crate) fn allocation_failure_exercise() {
 #[test]
 fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
     use collector_characters::extended::characters::characters_test_kit as kit;
-    use engine_native::ccharacter;
     use engine_native_memory::walk;
     use engine_native_politics::character_portrait_entry;
     struct Source<'a> {

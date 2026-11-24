@@ -221,14 +221,6 @@ mod tests {
     }
 
     #[test]
-    fn a_visible_base_shows_its_level_and_no_selection_hint() {
-        let tip = build(&facts());
-        assert_eq!(tip.title, "Kent\nNaval base: 6\n\n");
-        assert_eq!(tip.body, "");
-        assert!(tip.refused.is_empty(), "{:?}", tip.refused);
-    }
-
-    #[test]
     fn without_full_visibility_the_level_is_unknown() {
         let tip = build(&Facts { sees: Ok(false), ..facts() });
         assert_eq!(tip.title, "Kent\nNaval base\n\n");

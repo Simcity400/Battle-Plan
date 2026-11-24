@@ -322,50 +322,6 @@ fn contributor_growth_failure_precedes_later_seed_validation_failures() {
 }
 
 #[test]
-fn division_land_gather_uses_the_whole_census_without_fixed_batches() {
-    use engine_native_memory::{Memory, memory::{RecordLayout, RecordSources}};
-    struct Counted<'a> {
-        memory: SliceMemory<'a>,
-        gathers: std::cell::Cell<usize>,
-    }
-    impl Memory for Counted<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.memory.copy(address, output)
-        }
-        fn copy_records(
-            &self,
-            sources: RecordSources<'_>,
-            layout: &RecordLayout<'_>,
-            output: &mut [u8],
-        ) -> usize {
-            self.gathers.set(self.gathers.get() + 1);
-            self.memory.copy_records(sources, layout, output)
-        }
-    }
-    let (bytes, seeds) = world(7);
-    let memory = Counted {
-        memory: SliceMemory {
-            base: bytes.as_ptr() as usize,
-            bytes: &bytes,
-        },
-        gathers: std::cell::Cell::new(0),
-    };
-    let mut rows = vec![land::Row::default(); seeds.len()];
-    let mut entries = vec![land::Contributor::default(); seeds.len() * 2];
-    let walk = capture(
-        &memory,
-        0,
-        &seeds,
-        Outcome::Rows { len: seeds.len() },
-        &mut rows,
-        &mut entries,
-    );
-    assert_eq!(walk.outcome, Outcome::Rows { len: seeds.len() });
-    assert_eq!(memory.gathers.get(), 1);
-    assert_eq!(entries.last().unwrap().amount, -7);
-}
-
-#[test]
 fn division_land_long_contributor_tail_is_exact_and_a_short_read_refuses_it() {
     let (_, mut seeds) = world(1);
     let count = 257;

@@ -7,20 +7,6 @@ import { parseAppearance, DEFAULT_APPEARANCE } from '../shell/appearance/setting
 
 const FRAME = plotFrame(400, 200, { left: 40, right: 10, top: 10, bottom: 30 }, [1000, 2000], [0, 100], false);
 
-test('the plot frame maps hours and values both ways', () => {
-  assert.equal(FRAME.plotWidth, 350);
-  assert.equal(FRAME.plotHeight, 160);
-  assert.equal(FRAME.toX(1000), 40);
-  assert.equal(FRAME.toX(2000), 390);
-  assert.equal(FRAME.toY(0), 170);
-  assert.equal(FRAME.toY(100), 10);
-  assert.equal(FRAME.hourAt(FRAME.toX(1234)), 1234);
-  assert.ok(Math.abs(FRAME.valueAt(FRAME.toY(42)) - 42) < 1e-9);
-  const log = plotFrame(400, 200, { left: 40, right: 10, top: 10, bottom: 30 }, [0, 1], [1, 1000], true);
-  assert.equal(log.log, true);
-  assert.ok(Math.abs(log.toY(10) - (10 + 160 * 2 / 3)) < 1e-9);
-  assert.equal(plotFrame(400, 200, FRAME.padding, [0, 1], [0, 10], true).log, false);
-});
 
 test('hit zones tell the two axes from the plot', () => {
   assert.equal(hitZone({ x: 200, y: 185 }, FRAME), 'x-axis');

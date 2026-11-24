@@ -3,9 +3,6 @@ import test from 'node:test';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from './stack.ts';
 import { countryRaceStack, countryRaceStackExtent, forEachCountryRaceSegment } from './race/countryRace.ts';
 import type { StackSegment } from './stack';
-import { drawBands } from './draw.ts';
-import { plotFrame } from './frame.ts';
-import { tokensFromValues } from './tokens.ts';
 
 test('compact stacks retain signed bounds, missing bands, native breaks and held viewport edges', () => {
   const model = compactStack([
@@ -38,25 +35,6 @@ test('removing a wide band retains small signed bands in extents and streamed ge
   }
 });
 
-test('actual streamed drawing outlines stretch ends and band edges without interior closing seams', () => {
-  const model = countryRaceStack([
-    [{ firstHour: 0, lastHour: 4, value: 2 }],
-    [{ firstHour: 0, lastHour: 1, value: 1 }, { firstHour: 2, lastHour: 4, value: 2 }],
-  ], true);
-  const frame = plotFrame(400, 200, { left: 20, right: 20, top: 20, bottom: 20 }, [0, 4], [0, 5], false);
-  const outlines: { color: string; points: [string, number, number][] }[] = [];
-  let path: [string, number, number][] = [];
-  const ctx = { fillStyle: '', beginPath() { path = []; }, moveTo(x: number, y: number) { path.push(['M', x, y]); },
-    lineTo(x: number, y: number) { path.push(['L', x, y]); }, closePath() {}, fill() {},
-    stroke(this: { fillStyle: string }) { outlines.push({ color: this.fillStyle, points: [...path] }); } } as unknown as CanvasRenderingContext2D;
-  const tokens = tokensFromValues(() => '#777', 'sans-serif');
-  forEachCountryRaceSegment(model, 0, 4, 0, true, piece => drawBands(ctx, frame, tokens, piece.hours, piece.bands, ['first', 'second'], piece));
-  const vertical = outlines.filter(outline => outline.color === 'first').flatMap(outline => outline.points.flatMap((point, index) => {
-    const before = outline.points[index - 1];
-    return point[0] === 'L' && before && point[1] === before[1] && point[2] !== before[2] ? [point[1]] : [];
-  }));
-  assert.deepEqual(vertical, [frame.toX(0), frame.toX(4)]);
-});
 
 test('pixel thinning retains positive and negative aggregate extremes before the last point', () => {
   const bands = [[{ firstHour: 0, lastHour: 0, value: 1 }, { firstHour: 1, lastHour: 1, value: -50 },

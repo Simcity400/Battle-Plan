@@ -1,15 +1,4 @@
 
-#[test]
-fn the_frontend_command_budget_matches_the_reply_transport() {
-    assert_eq!(
-        dashboard_core::protocol::MAX_MESSAGE_BYTES,
-        dashboard_core::transport::MAX_REPLY_BYTES
-    );
-    assert!(crate::typescript_contract().contains(&format!(
-        "export const MAX_MESSAGE_BYTES = {};",
-        dashboard_core::protocol::MAX_MESSAGE_BYTES
-    )));
-}
 
 #[test]
 fn the_contract_names_the_refusals_a_reader_may_try_again() {

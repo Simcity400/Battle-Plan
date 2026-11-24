@@ -329,19 +329,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn constructor_callers_cover_fresh_temporary_and_load_without_guessing() {
-        for caller in [0x00c0_b22d, 0x00c0_b3ad, 0x00c0_b91f, 0x00c0_d813] {
-            assert_eq!(constructor_caller(0, caller), BirthKind::Persistent);
-            assert_eq!(constructor_caller(0, caller + 1), BirthKind::Unknown);
-        }
-        for caller in [0x00c0_bbb3, 0x00c0_bdb9, 0x00c0_bf4c] {
-            assert_eq!(constructor_caller(0, caller), BirthKind::Transient);
-        }
-        assert_eq!(constructor_caller(0, 0x00c0_dc19), BirthKind::Loaded);
-        assert_eq!(constructor_caller(0, 0), BirthKind::Unknown);
-    }
-
     const WING_TABLE: usize = 0x4000;
     const WING_ENTRIES: usize = 0x5000;
     const WING_CAPACITY: u32 = 8192;

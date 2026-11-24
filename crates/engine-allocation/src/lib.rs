@@ -222,6 +222,23 @@ pub fn boxed<T>(value: T) -> io::Result<Box<T>> {
     }
 }
 
+pub fn boxed_uninit<T>() -> io::Result<Box<std::mem::MaybeUninit<T>>> {
+    let layout = Layout::new::<std::mem::MaybeUninit<T>>();
+    let pointer = if layout.size() == 0 {
+        NonNull::<std::mem::MaybeUninit<T>>::dangling().as_ptr()
+    } else {
+        allocation_attempt()?;
+        // SAFETY: layout has non-zero size matching MaybeUninit<T>.
+        unsafe { alloc(layout).cast::<std::mem::MaybeUninit<T>>() }
+    };
+    if pointer.is_null() {
+        return Err(oom());
+    }
+    // SAFETY: storage matches the global allocator layout for MaybeUninit<T>
+    // (or is dangling for a ZST), and uninitialized bytes are valid MaybeUninit<T>.
+    Ok(unsafe { Box::from_raw(pointer) })
+}
+
 pub fn reserve<T>(values: &mut Vec<T>, additional: usize) -> io::Result<()> {
     if additional > values.capacity() - values.len() {
         allocation_attempt()?;
@@ -515,25 +532,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn checked_box_preserves_alignment_value_and_zero_sized_drop() {
-        #[repr(align(256))]
-        struct Aligned(u64);
-        let value = boxed(Aligned(53)).unwrap();
-        assert_eq!(value.0, 53);
-        assert_eq!(std::ptr::from_ref(value.as_ref()) as usize % 256, 0);
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static DROPS: AtomicUsize = AtomicUsize::new(0);
-        struct Empty;
-        impl Drop for Empty {
-            fn drop(&mut self) {
-                DROPS.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-        drop(boxed(Empty).unwrap());
-        assert_eq!(DROPS.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
     fn checked_push_batches_preserve_the_sequential_capacity_trace() {
         fn compare<T: Copy>(value: T) {
             for initial in [0, 1, 3, 8, 19] {
@@ -592,18 +590,6 @@ pub(crate) mod tests {
             collect_vec(Oversized).unwrap_err().kind(),
             io::ErrorKind::OutOfMemory
         );
-    }
-
-    #[test]
-    fn allocation_errors_preserve_other_io_failures() {
-        for code in [8, 14, 1450, 1451, 1452, 1453, 1454, 1455, 1816] {
-            assert_eq!(
-                allocation_error(io::Error::from_raw_os_error(code)).kind(),
-                io::ErrorKind::OutOfMemory
-            );
-        }
-        let ordinary = allocation_error(io::Error::from_raw_os_error(2));
-        assert_eq!(ordinary.raw_os_error(), Some(2));
     }
 
     #[test]

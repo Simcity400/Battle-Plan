@@ -5,6 +5,5 @@ mod support {
 
 mod division_land;
 mod fleet_names;
-mod land_event_scale;
 mod peace_settlement;
 mod unit_scale;

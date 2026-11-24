@@ -19,9 +19,10 @@ unsafe fn content(
     [a, b, c, d]: [usize; 4],
     original: collector_certificates::content_changes::Original,
 ) -> usize {
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let forwarded = unsafe { forward::content_invalidation() };
     super::boundary(true);
     let result = unsafe { original(a, b, c, d) };
@@ -52,9 +53,10 @@ unsafe fn country(
     [a, b, c, d]: [usize; 4],
     original: collector_observers::country_input_changes::DesignSourceOriginal,
 ) -> usize {
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let forwarded = unsafe { forward::country_invalidation(a) };
     let result = unsafe { original(a, b, c, d) };
     if let Some(forwarded) = forwarded {
@@ -234,15 +236,15 @@ pub(super) fn reset_provider(memory: &impl Memory, base: usize, pointer: usize) 
 }
 
 struct Scope {
+    flight: collector_primitives::asymmetric::FlightGuard<'static>,
     complete: bool,
 }
 impl Drop for Scope {
     fn drop(&mut self) {
-        REVISION.fetch_add(1, Ordering::AcqRel);
+        self.flight.mark_dirty();
         if !self.complete {
             unobserved!();
         }
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 unsafe extern "system-unwind" fn callback<const SITE: usize>(
@@ -272,9 +274,10 @@ unsafe fn around<const SITE: usize>(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let source = (SITE <= 1 || SITE == 3)
@@ -300,15 +303,35 @@ unsafe fn around<const SITE: usize>(
             observe(&memory, base, sources::Key::Provider(a), false);
         } else if SITE == 2 && SOURCE_BASELINE.load(Ordering::Acquire) {
             if let Some(roster) = Array::read(&memory, a + IDEA_SOURCES, 8) {
-                for ordinal in 0..roster.count {
-                    if let Some(pointer) = roster
-                        .element(ordinal, 8)
-                        .and_then(|at| engine_native_memory::read::<u64>(&memory, at))
-                    {
-                        observe(&memory, base, sources::Key::Direct(pointer as usize), false);
+                const SOURCE_BATCH: usize = 64;
+                let mut bytes = [0_u8; SOURCE_BATCH * 8];
+                let mut first = 0_u32;
+                while first < roster.count {
+                    let count = ((roster.count - first) as usize).min(SOURCE_BATCH);
+                    let batch_ok = roster
+                        .slice(first, count as u32, 8)
+                        .ok()
+                        .is_some_and(|span| {
+                            engine_native_memory::read_slice(&memory, span.data, &mut bytes[..count * 8])
+                        });
+                    if batch_ok {
+                        for chunk in bytes[..count * 8].chunks_exact(8) {
+                            let pointer = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
+                            observe(&memory, base, sources::Key::Direct(pointer), false);
+                        }
                     } else {
-                        unobserved!();
+                        for ordinal in first..first + count as u32 {
+                            if let Some(pointer) = roster
+                                .element(ordinal, 8)
+                                .and_then(|at| engine_native_memory::read::<u64>(&memory, at))
+                            {
+                                observe(&memory, base, sources::Key::Direct(pointer as usize), false);
+                            } else {
+                                unobserved!();
+                            }
+                        }
                     }
+                    first += count as u32;
                 }
             } else {
                 unobserved!();

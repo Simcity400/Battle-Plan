@@ -24,7 +24,9 @@ pub use carrier_capture::{
     CarrierPoolFuel, CarrierRegistration, ContainerFuel, CountryOccurrence,
 };
 pub use reuse::{HeldBase, RegistrationReuse, WalkedBase};
-pub use state_summary::{state_country_order, state_country_order_demand};
+pub use state_summary::{
+    state_country_order, state_country_order_demand, verify_country_occurrences,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub fn state_pool_inputs<M: Memory>(

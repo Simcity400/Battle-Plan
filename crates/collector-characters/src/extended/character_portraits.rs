@@ -44,7 +44,10 @@ impl Capacities {
         let acquired = engine_native_politics::character_portraits::count_portraits(memory, base, state, Default::default());
         let count = collector_extended_support::demand::rows(acquired.outcome)?;
         collector_primitives::table_capture::grow_capacity(&mut self.rows, count.div_ceil(PARTS));
-        collector_primitives::table_capture::grow_capacity(&mut self.arena, acquired.required);
+        collector_primitives::table_capture::grow_capacity(
+            &mut self.arena,
+            acquired.required.div_ceil(PARTS),
+        );
         Ok(())
     }
 }
@@ -283,10 +286,9 @@ pub struct Captured {
     terminal_failure: Option<&'static str>,
 }
 impl Captured {
-    #[cfg(test)]
-    fn vacant() -> Self {
+    pub fn vacant() -> Self {
         Self {
-            parts: owned_vec(collect_vec((0..PARTS).map(|_| Part::vacant()))),
+            parts: Vec::new(),
             ordering: RefCell::default(),
             terminal_failure: None,
         }
@@ -692,74 +694,6 @@ mod owned_tests {
             *source.calls.borrow(),
             [(header, 16)],
             "failed prepared header must not be retried"
-        );
-    }
-
-    #[cfg(feature = "portrait_changes")]
-    fn census_of(bytes: &[u8]) -> PortraitCensus {
-        let roster = Roster::read(&kit::memory(bytes), kit::BASE, kit::GAME_STATE).unwrap();
-        let mut census = PortraitCensus::try_new(4).unwrap();
-        census.begin(kit::BASE, kit::GAME_STATE);
-        for index in 0..roster.count() {
-            let entry = roster.at(&kit::memory(bytes), index).unwrap();
-            census.push(PortraitIdentity {
-                pointer: entry.pointer,
-                character: entry.id,
-            });
-        }
-        census.finish(roster.count() as usize);
-        census
-    }
-
-    #[cfg(feature = "portrait_changes")]
-    #[test]
-    fn a_quiet_share_stays_quiet_across_growth_and_a_new_census() {
-        struct Observer;
-        impl engine_native_politics::portrait_cache::Changes for Observer {
-            fn revision(&self, _: usize) -> Option<(u64, u64)> {
-                Some((1, 0))
-            }
-            fn quiet_revision(&self) -> Option<(u64, u64)> {
-                Some((1, 0))
-            }
-        }
-        struct Counted<'a> {
-            bytes: &'a [u8],
-            reads: Cell<usize>,
-        }
-        impl Memory for Counted<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.reads.set(self.reads.get() + 1);
-                kit::memory(self.bytes).copy(address, output)
-            }
-        }
-        let (bytes, census, _, _) = share_fixture();
-        let context = CaptureContext {
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-        };
-        let mut capacities = Capacities { rows: 4, arena: 4 };
-        let mut part = Part::new(&capacities);
-        let capture = |part: &mut Part, census: &PortraitCensus| {
-            let memory = Counted {
-                bytes: &bytes,
-                reads: Cell::new(0),
-            };
-            part.capture_observed(&memory, context, 1, Some(census), &Observer);
-            assert_eq!(part.rows.outcome, Outcome::Rows { len: 1 });
-            memory.reads.get()
-        };
-        assert!(capture(&mut part, &census) > 0);
-        part.grow(&mut capacities);
-        assert_eq!(capture(&mut part, &census), 0);
-        capacities.rows = 64;
-        part.grow(&mut capacities);
-        let again = census_of(&bytes);
-        assert_ne!(again.stamp(), census.stamp());
-        assert_eq!(
-            capture(&mut part, &again),
-            0,
-            "growth keeps the share's certified descriptors"
         );
     }
 

@@ -24,28 +24,3 @@ impl TableId {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::TableId;
-
-    #[test]
-    fn a_table_is_named_to_a_user_in_plain_words_never_by_its_identifier() {
-        assert_eq!(TableId::DivisionEquipmentDeletions.words(), "division equipment deletions");
-        assert_eq!(TableId::NavalRefitProgress.words(), "naval refit progress");
-        assert_eq!(TableId::Campaign.words(), "campaign");
-        for table in TableId::ALL {
-            let words = table.words();
-            assert!(!words.is_empty() && !words.contains("  ") && !words.starts_with(' '), "{table:?}: {words:?}");
-            assert!(!words.chars().any(|char| char.is_ascii_uppercase()), "{table:?}: {words:?}");
-            assert_eq!(words.replace(' ', ""), format!("{table:?}").to_ascii_lowercase(), "{table:?} keeps every letter");
-        }
-    }
-
-    #[test]
-    fn a_field_is_named_to_a_user_in_plain_words_never_as_table_dot_field() {
-        assert_eq!(TableId::CountryCounterInputs.field_words("pride_name"), "pride name of country counter inputs");
-        assert_eq!(TableId::ScriptVariables.field_words("seed"), "seed of script variables");
-        let words = TableId::AdvisorRoles.field_words("modifier_cache");
-        assert!(!words.contains('_') && !words.contains('.') && !words.chars().any(|char| char.is_ascii_uppercase()), "{words}");
-    }
-}

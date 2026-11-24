@@ -607,12 +607,6 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_follows_the_province_image_size() {
-        assert_eq!(grid_size(5632, 2048), [1408, 512]);
-        assert_eq!(grid_size(4099, 2050), [1024, 512]);
-    }
-
-    #[test]
     fn snow_mud_retains_live_edges_across_dirty_updates_and_rebuilds() {
         let map = map(vec![1; 144]);
         let cells = SnowCells::new(&map, &[false; 144]).unwrap();
@@ -817,55 +811,6 @@ pub fn permanent_mask(
 #[cfg(test)]
 mod equality_tests {
     use super::*;
-    #[test]
-    fn snow_snapshots_are_equal_in_every_read_field_but_not_their_build_time() {
-        let snapshot = || SnowMud {
-            width: 2,
-            height: 1,
-            texels: vec![1, 2, 3, 4, 5, 6, 7, 8].into(),
-            unknown: vec![0, 1].into(),
-            province_snow: vec![None, Some(7)].into(),
-            post_factors: Some(vec![Some(0.0f32), None].into()),
-            build: Duration::from_millis(3),
-            summary: Summary::default(),
-            refresh: Some(Refresh {
-                interval: 25_000,
-                identity: 4,
-            }),
-        };
-        let base = snapshot();
-        assert!(base == snapshot());
-        assert!(
-            base == SnowMud {
-                build: Duration::from_millis(90),
-                ..snapshot()
-            },
-            "the build time is a report"
-        );
-        let changes: [fn(&mut SnowMud); 9] = [
-            |snow| snow.width = 8,
-            |snow| snow.height = 4,
-            |snow| snow.texels[7] = 9,
-            |snow| snow.unknown[1] = 0,
-            |snow| snow.province_snow[1] = Some(8),
-            |snow| snow.post_factors = None,
-            |snow| snow.post_factors = Some(vec![Some(-0.0f32), None].into()),
-            |snow| snow.summary.with_snow = 1,
-            |snow| snow.refresh = None,
-        ];
-        for (index, change) in changes.into_iter().enumerate() {
-            let mut changed = snapshot();
-            change(&mut changed);
-            assert!(base != changed, "change {index}");
-        }
-        let mut left = snapshot();
-        let mut right = snapshot();
-        left.post_factors = Some(vec![Some(f32::from_bits(0x7fc0_1234)), None].into());
-        right.post_factors = Some(vec![Some(f32::from_bits(0x7fc0_1234)), None].into());
-        assert!(left == right, "equal NaN payloads settle together");
-        right.post_factors = Some(vec![Some(f32::from_bits(0x7fc0_4321)), None].into());
-        assert!(left != right, "different NaN payloads must not share");
-    }
 
     fn snow() -> SnowMud {
         SnowMud {

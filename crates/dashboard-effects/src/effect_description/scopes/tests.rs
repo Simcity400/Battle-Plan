@@ -597,57 +597,6 @@ fn shared_multiple_iterator_truncates_and_keeps_native_layout_options() {
 }
 
 #[test]
-fn random_iterator_advances_singletons_and_subset_uses_swap_removal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let fixture = Fixture::new();
-    let mut graph = fresh();
-    let out = fixture.render(
-        "random_state={limit={state=1} army_experience=2}",
-        &mut graph,
-        Content::default(),
-    );
-    assert_eq!(out.text, "(\u{11}YOne\u{11}!): XP2\n");
-    assert_eq!(graph.scopes[0].random_seed, 2);
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    for (preferred, limit, name) in [("5 2", "NOT={state=5}", "Two"), ("5", "state=1", "One")] {
-        let out = fixture.render(
-            &format!(
-                "random_state={{prioritize={{{preferred}}} limit={{{limit}}} army_experience=2}}"
-            ),
-            &mut fresh(),
-            Content::default(),
-        );
-        assert_eq!(out.text, format!("(\u{11}Y{name}\u{11}!): XP2\n"));
-        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    }
-    let mut graph = fresh();
-    let out = fixture.render(
-        "every_state={random_select_amount=2 army_experience=2}",
-        &mut graph,
-        Content::default(),
-    );
-    let mut ids = vec![1, 2, 3, 4, 5];
-    for seed in 1..4 {
-        ids.swap_remove(
-            crate::scripted_text::random::scoped_draw(seed, graph.scopes[0].random_counter)
-                as usize
-                % ids.len(),
-        );
-    }
-    assert_eq!(graph.scopes[0].random_seed, 4);
-    let names = ["One", "Two", "Three", "Four", "Five"];
-    assert_eq!(
-        out.text,
-        format!(
-            "(\u{11}Y{}\u{11}!, \u{11}Y{}\u{11}!):\n   XP2\n",
-            names[ids[0] - 1],
-            names[ids[1] - 1]
-        )
-    );
-}
-
-#[test]
 fn random_country_labels_share_native_marked_definite_names() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");

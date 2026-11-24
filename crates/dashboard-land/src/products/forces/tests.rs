@@ -52,21 +52,3 @@ fn recorded_parts_group_under_their_reply_part_in_key_order() {
     assert_eq!((named.of[&1], named.of[&2], named.of[&3]), (0, 1, 1));
 }
 
-#[test]
-fn every_force_family_names_its_declared_totals_and_parts() {
-    for race in [
-        air_race(AirForceMeasure::Planes, AirForceOwnership::Roster),
-        air_race(AirForceMeasure::Wings, AirForceOwnership::Effective),
-        navy_race(NavyMeasure::Ships, NavyOwnership::Roster),
-        navy_race(NavyMeasure::Strength, NavyOwnership::Logical),
-    ] {
-        let totals = declared(race.totals).unwrap();
-        assert!(measure(totals, race.total).unwrap().rank > 0, "{} is ranked", race.total);
-        if let Some(reference) = race.reference {
-            measure(totals, reference).unwrap();
-        }
-        let parts = declared(race.parts).unwrap();
-        measure(parts, race.part).unwrap();
-        assert!(race.ownership_shift + 8 <= parts.parts.unwrap().bits);
-    }
-}

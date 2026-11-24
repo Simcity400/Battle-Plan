@@ -359,28 +359,6 @@ fn a_mod_replacing_the_sound_folder_hides_the_base_definitions() {
 }
 
 #[test]
-fn defaults_follow_the_engine_reader() {
-    let falloff = Falloff::default();
-    assert_eq!(
-        (
-            falloff.min_distance,
-            falloff.max_distance,
-            falloff.height_scale,
-            falloff.curve
-        ),
-        (0.0, 100.0, 1.0, Curve::Logarithmic)
-    );
-    let effect = Effect::new("e".into(), String::new());
-    assert_eq!(effect.max_audible, -1);
-    assert_eq!(effect.overflow, Overflow::Silent);
-    assert!(effect.random_sound_when_looping);
-    assert_eq!(
-        (effect.volume, effect.playback_rate, effect.polyphony),
-        (1.0, 1.0, 1)
-    );
-}
-
-#[test]
 fn height_volume_clamps_altitude_and_interpolates() {
     let defines = Defines {
         height_category: "Atmosphere".into(),

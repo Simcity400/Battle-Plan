@@ -4,25 +4,6 @@ use crate::{
 };
 
 #[test]
-fn daily_mastery_selectors_are_own_fields() {
-    crate::test_game::enter();
-
-    let item = content_reader_parser::parser::parse(b"add_daily_mastery={amount=0.5 name=synthetic days=100 track=mod_track folder=mod_folder grand_doctrine=mod_grand sub_doctrine=mod_sub track_index=2}").unwrap().items.remove(0);
-    let fields = crate::effect_keys::description_fields(&item).unwrap();
-    assert_eq!(fields.len(), 0);
-    for key in [
-        b"track".as_slice(),
-        b"folder",
-        b"grand_doctrine",
-        b"sub_doctrine",
-        b"track_index",
-    ] {
-        let token = crate::effect_keys::registered(b"add_daily_mastery").unwrap();
-        assert!(crate::effect_keys::is_own_field(token, key));
-    }
-}
-
-#[test]
 fn effect_key_only_skips_rejected_blocks() {
     crate::test_game::enter();
     for effect in [

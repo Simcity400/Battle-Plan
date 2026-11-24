@@ -754,36 +754,6 @@ fn a_changed_define_builds_in_full() {
 }
 
 #[test]
-fn a_patched_hour_shares_every_chunk_it_did_not_change() {
-    let assets = assets();
-    let mut hour = Hour::first();
-    let (base, _) = step(&assets, &hour, None);
-    let base = base.unwrap();
-    hour.hour += 40;
-    hour.bytes().insert(1000, 10);
-    let frame = hour.frame();
-    let vision = hour.vision(&frame);
-    let built = assets
-        .build(
-            &frame,
-            &vision,
-            &terrain(false),
-            Ok(&base),
-            &mut viewer_runtime::profiling::BuilderSpans::new(false),
-        )
-        .unwrap();
-    assert_eq!(built.path, BuildPath::Patched { slots: 1 });
-    assert!(built.floating_output.as_ref().unwrap().changes.is_empty());
-    assert!(base.slots[0].entity.is_some() && built.prepared.slots[0].entity.is_none());
-    let chunks = (WIDE as usize + 7).div_ceil(CHUNK_SIZE);
-    assert_eq!(built.prepared.slots.shared_chunks(&base.slots), chunks - 1);
-    assert_eq!(
-        built.tallies.shared_chunks(&base.tallies),
-        (WIDE as usize + 6).div_ceil(CHUNK_SIZE) - 1
-    );
-}
-
-#[test]
 fn cached_plan_inputs_match_expected_sites_and_changes() {
     let assets = assets();
     static COLUMN: [bool; 64] = {

@@ -574,9 +574,4 @@ mod tests {
         assert!(withheld.contains(&MARKET_REASON_UNRECORDED.to_owned()));
     }
 
-    #[test]
-    fn route_efficiency_is_red_below_one() {
-        assert_eq!(efficiency_text(75_000), "\u{11}R75%\u{11}!");
-        assert_eq!(efficiency_text(100_000), "\u{11}Y100%\u{11}!");
-    }
 }

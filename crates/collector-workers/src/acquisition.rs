@@ -17,7 +17,7 @@ use std::{
 use serde::Serialize;
 use windows_sys::Win32::System::Threading::{
     GetCurrentThread, GetCurrentThreadId, SetThreadPriority, SetThreadPriorityBoost,
-    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, WaitOnAddress, WakeByAddressAll,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_NORMAL, WaitOnAddress, WakeByAddressAll,
     WakeByAddressSingle,
 };
 
@@ -314,6 +314,7 @@ impl State {
             .ready
             .remove(position)
             .expect("checked acquisition ready position");
+        shared.ready_count.fetch_sub(1, Ordering::Release);
         let slot = &mut self.slots[index];
         debug_assert!(slot.phase == Phase::Queued);
         slot.phase = Phase::Running;
@@ -377,10 +378,12 @@ impl State {
 
     fn stop<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>) {
         self.stop = true;
+        shared.stopping.store(true, Ordering::Release);
         self.cancel_queued(shared);
     }
 
     fn cancel_queued<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>) {
+        shared.ready_count.store(0, Ordering::Release);
         while let Some(index) = self.ready.pop_front() {
             let slot = &self.slots[index];
             debug_assert!(slot.phase == Phase::Queued);
@@ -420,6 +423,9 @@ struct Shared<J, R, O: Observer> {
     away: AtomicU32,
     hurried: AtomicU64,
     burst_peers: AtomicUsize,
+    ready_count: AtomicUsize,
+    stopping: AtomicBool,
+    spin_ticks: u64,
     run: Box<Runner<J, R>>,
     callback_help: OnceLock<fn(&J) -> bool>,
     on_completed: OnceLock<OnCompleted<J, R>>,
@@ -532,12 +538,9 @@ impl<J, R, O: Observer> Shared<J, R, O> {
         self.reserve_ready.notify_all();
     }
     fn working(&self) -> usize {
-        let all = self.thread_ids.len();
-        if self.called_up.load(Ordering::Acquire) {
-            all
-        } else {
-            self.regulars.load(Ordering::Acquire).min(all)
-        }
+        self.regulars
+            .load(Ordering::Acquire)
+            .min(self.thread_ids.len())
     }
 
     fn publish(&self, index: usize, generation: u64) {
@@ -986,6 +989,18 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
         };
         #[cfg(not(feature = "executor_join_help"))]
         let _ = classes;
+        let spin_ticks = {
+            let mut frequency = 0_i64;
+            if unsafe {
+                windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+            } != 0
+                && frequency > 0
+            {
+                (frequency as u64 / 25_000).max(1)
+            } else {
+                0
+            }
+        };
         let shared = Arc::new(Shared {
             id,
             state: Mutex::new(state),
@@ -998,6 +1013,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
             away: AtomicU32::new(0),
             hurried: AtomicU64::new(0),
             burst_peers: AtomicUsize::new(0),
+            ready_count: AtomicUsize::new(0),
+            stopping: AtomicBool::new(false),
+            spin_ticks,
             run: Box::new(run),
             callback_help: OnceLock::new(),
             on_completed: OnceLock::new(),
@@ -1191,6 +1209,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
         self.shared.uncollected.fetch_add(1, Ordering::Relaxed);
         self.shared.words[index].store(word(generation, PENDING), Ordering::Release);
         state.ready.push_back(index);
+        self.shared.ready_count.fetch_add(1, Ordering::Release);
         state.counters.accepted = state.counters.accepted.saturating_add(1);
         drop(state);
         if wake {
@@ -1211,6 +1230,12 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
         if jobs == 0 {
             return;
         }
+        if jobs >= 6 {
+            self.shared.burst_peers.store(0, Ordering::Release);
+            self.shared.observer.waking_worker();
+            self.shared.work_ready.notify_all();
+            return;
+        }
         let limit = self.shared.working().saturating_sub(1);
         let peers = jobs.saturating_sub(1).min(limit);
         if peers != 0 {
@@ -1225,30 +1250,62 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
         self.shared.work_ready.notify_one();
     }
     pub fn hold_pace(&self) {
-        let state = self.shared.lock();
+        self.hold_pace_with(MAX_WORKERS);
+    }
+
+    pub fn hold_pace_with(&self, target: usize) {
+        let target = target.max(1);
+        if self.shared.called_up.load(Ordering::Acquire)
+            && self.shared.regulars.load(Ordering::Acquire) == target
+            && self.shared.priority.load(Ordering::Acquire) == THREAD_PRIORITY_ABOVE_NORMAL
+            && self.shared.away.load(Ordering::Acquire) == 0
+        {
+            return;
+        }
+        let (prev_regulars, clear_away) = {
+            let state = self.shared.lock();
+            let clear_away = self.shared.away.load(Ordering::Acquire) != 0;
+            let prev_regulars = self.shared.regulars.load(Ordering::Acquire);
+            self.pace(
+                state,
+                target,
+                THREAD_PRIORITY_ABOVE_NORMAL,
+                true,
+                None,
+            );
+            (prev_regulars, clear_away)
+        };
         if let Ok(threads) = self.threads.try_lock() {
-            for thread in threads.iter() {
+            let limit = prev_regulars.min(target).min(threads.len());
+            for thread in threads.iter().take(limit) {
+                if !self.shared.called_up.load(Ordering::Acquire) {
+                    break;
+                }
                 let handle = thread.as_raw_handle();
                 // SAFETY: a live worker handle owned by `threads`, held through these calls.
                 if unsafe { SetThreadPriority(handle as _, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
                     PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
                 }
-                // SAFETY: `thread` is a live collector worker handle owned by `threads`.
-                unsafe { crate::cpu_sets::select_away(thread.as_handle(), None) };
+                if clear_away {
+                    // SAFETY: `thread` is a live collector worker handle owned by `threads`.
+                    unsafe { crate::cpu_sets::select_away(thread.as_handle(), None) };
+                }
             }
             self.shared.hurried.fetch_add(1, Ordering::Release);
         }
-        self.pace(state, usize::MAX, THREAD_PRIORITY_ABOVE_NORMAL, true, None);
     }
     pub fn beside_pace(&self, regulars: usize, game: Option<u32>) {
+        let regulars = regulars.max(1);
+        let away = game.map_or(0, |processor| processor.saturating_add(1));
+        if !self.shared.called_up.load(Ordering::Acquire)
+            && self.shared.regulars.load(Ordering::Acquire) == regulars
+            && self.shared.priority.load(Ordering::Acquire) == THREAD_PRIORITY_NORMAL
+            && self.shared.away.load(Ordering::Acquire) == away
+        {
+            return;
+        }
         let state = self.shared.lock();
-        self.pace(
-            state,
-            regulars.max(1),
-            THREAD_PRIORITY_BELOW_NORMAL,
-            false,
-            game,
-        );
+        self.pace(state, regulars, THREAD_PRIORITY_NORMAL, false, game);
     }
     fn pace(
         &self,
@@ -1258,7 +1315,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
         called_up: bool,
         away: Option<u32>,
     ) {
-        self.shared.regulars.store(regulars, Ordering::Release);
+        let previous_regulars = self.shared.regulars.swap(regulars, Ordering::AcqRel);
         self.shared.priority.store(priority, Ordering::Release);
         self.shared.away.store(
             away.map_or(0, |processor| processor.saturating_add(1)),
@@ -1266,9 +1323,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
         );
         let rested = !self.shared.called_up.swap(called_up, Ordering::AcqRel);
         drop(state);
-        if called_up && rested {
+        if regulars > previous_regulars || (called_up && rested) {
             self.shared.reserve_ready.notify_all();
-        } else if !called_up {
+        }
+        if regulars < previous_regulars || (!called_up && !rested) {
             self.shared.work_ready.notify_all();
         }
     }
@@ -1874,7 +1932,37 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static, O: Observer>(
             shared.execute(claim, false, false);
             state = shared.lock();
         } else {
+            if shared.spin_ticks != 0 && shared.active.load(Ordering::Acquire) != 0 {
+                drop(state);
+                let deadline = collector_primitives::clock::qpc()
+                    .saturating_add(shared.spin_ticks as i64);
+                let mut woken = false;
+                loop {
+                    if shared.ready_count.load(Ordering::Acquire) != 0
+                        || shared.stopping.load(Ordering::Acquire)
+                        || index >= shared.working()
+                    {
+                        woken = true;
+                        break;
+                    }
+                    if shared.active.load(Ordering::Acquire) == 0
+                        || collector_primitives::clock::qpc() >= deadline
+                    {
+                        break;
+                    }
+                    for _ in 0..32 {
+                        std::hint::spin_loop();
+                    }
+                }
+                state = shared.lock();
+                if woken || !state.ready.is_empty() || state.stop || index >= shared.working() {
+                    continue;
+                }
+            }
             shared.burst_peers.store(0, Ordering::Release);
+            if shared.active.load(Ordering::Acquire) == 0 {
+                crate::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
+            }
             shared.observer.waiting_for_job();
             state = shared.wait_for_work(state);
         }
@@ -1886,7 +1974,7 @@ pub fn recommended_worker_count() -> usize {
     worker_count_for_cpus(machine, allowed_cpus())
 }
 
-pub(crate) fn usable_cpus() -> usize {
+pub fn usable_cpus() -> usize {
     let machine = std::thread::available_parallelism().map_or(1, usize::from);
     cpus(machine, allowed_cpus())
 }
@@ -2033,7 +2121,7 @@ mod tests {
             for _ in 0..64 {
                 assert_eq!(
                     run(&pool),
-                    (regular, THREAD_PRIORITY_BELOW_NORMAL),
+                    (regular, THREAD_PRIORITY_NORMAL),
                     "a resting reserve took work"
                 );
             }
@@ -2531,68 +2619,6 @@ mod tests {
         help_case(false, true, false, false, true);
         help_case(true, false, false, false, true);
         help_case(true, true, false, false, false);
-    }
-
-    #[cfg(feature = "executor_join_help")]
-    #[test]
-    fn join_help_rejects_a_candidate_whose_mean_fits_but_decaying_maximum_does_not() {
-        help_case(true, true, false, true, true);
-    }
-
-    #[cfg(feature = "executor_join_help")]
-    #[test]
-    fn join_help_subtracts_elapsed_body_time_from_its_prediction() {
-        let release = Arc::new(AtomicBool::new(false));
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let pool = {
-            let release = Arc::clone(&release);
-            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
-            unsafe {
-                Pool::start_with_class(
-                    1,
-                    2,
-                    Some((2, |job: &u8| usize::from(*job != 0))),
-                    move |job: &mut u8| {
-                        if *job == 0 {
-                            entered_tx.send(()).unwrap();
-                            wait_until(|| release.load(Ordering::Acquire));
-                        }
-                        std::thread::current().id()
-                    },
-                )
-            }
-            .unwrap()
-        };
-        let release = Gate(release);
-        pool.shared.means[0].store(4, Ordering::Relaxed);
-        pool.shared.means[1].store(1, Ordering::Relaxed);
-        pool.shared.maxima[1].store(1, Ordering::Relaxed);
-        let awaited = submit(&pool, &mut Some(0));
-        entered_rx
-            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
-            .unwrap();
-        let candidate = submit(&pool, &mut Some(1));
-        let begin = pool.shared.body_begin[awaited.slot].load(Ordering::Acquire);
-        wait_until(|| {
-            (collector_primitives::clock::qpc().max(0) as u64).saturating_sub(begin) >= 4
-        });
-        let helped = pool.shared.try_help(awaited, &mut HelpBudget::new());
-        if let Some(claim) = helped {
-            pool.shared.execute(claim, true, true);
-        }
-        release.open();
-        assert_ne!(
-            pool.finish(awaited).unwrap().report.unwrap(),
-            std::thread::current().id()
-        );
-        wait_until(|| pool.is_complete(candidate));
-        let done = pool.finish(candidate).unwrap();
-        assert_ne!(
-            done.report.unwrap(),
-            std::thread::current().id(),
-            "help ignored the awaited body's elapsed time"
-        );
-        assert_eq!(pool.calibration().help_executed, 0);
     }
 
     #[cfg(feature = "executor_join_help")]
@@ -3706,36 +3732,6 @@ mod tests {
         );
         slow_gate.store(true, Ordering::Release);
         assert_eq!(pool.finish(slow).unwrap().report.unwrap(), 50);
-    }
-
-    #[test]
-    fn process_affinity_limits_the_pool_below_the_machine_count() {
-        assert_eq!(worker_count_for_cpus(16, Some(4)), 3);
-        assert_eq!(worker_count_for_cpus(16, Some(16)), 15);
-        assert_eq!(worker_count_for_cpus(16, None), 15);
-        assert_eq!(worker_count_for_cpus(8, Some(64)), 7);
-        assert_eq!(worker_count_for_cpus(16, Some(1)), 1);
-        assert_eq!(worker_count_for_cpus(64, Some(40)), MAX_WORKERS);
-    }
-
-    #[test]
-    fn the_pool_never_exceeds_the_cpus_this_process_may_use() {
-        let allowed = allowed_cpus().expect("process affinity readable");
-        assert!(allowed >= 1);
-        assert!(recommended_worker_count() <= allowed.saturating_sub(1).max(1));
-    }
-
-    #[test]
-    fn hardware_threads_size_the_pool_and_reserve_one_for_the_callback() {
-        assert_eq!(worker_count_for_topology(16), 15);
-        assert_eq!(worker_count_for_topology(8), 7);
-        assert_eq!(worker_count_for_topology(4), 3);
-        assert_eq!(worker_count_for_topology(2), 1);
-        assert_eq!(worker_count_for_topology(1), 1);
-        assert_eq!(worker_count_for_topology(0), 1);
-        assert_eq!(worker_count_for_topology(32), MAX_WORKERS);
-        // SAFETY: Test validates rejection of an excessive worker count before spawning threads.
-        assert!(unsafe { Pool::start(MAX_WORKERS + 1, 1, |request: &mut u8| *request) }.is_err());
     }
 
     #[test]

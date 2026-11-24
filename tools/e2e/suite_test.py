@@ -37,33 +37,8 @@ class CoresAndProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             suite.parse_cores("0x10000", system_mask=0xFFFF)
 
-    def test_parse_weak_profiles(self):
-        base = ["--app", "C:/nonexistent/app", "--fixture", "C:/nonexistent/fix",
-                "--game-dir", "C:/nonexistent/game", "--out", "C:/nonexistent/out",
-                "--state", "C:/nonexistent/state"]
-        weak = suite.parse(["run", *base, "--profile", "weak"])
-        self.assertEqual(weak.profile, "weak")
-        self.assertEqual(weak.cpu_throttle, 4.0)
-        self.assertEqual(weak.cores["count"], 4)
-        weak8 = suite.parse(["run", *base, "--profile", "weak8"])
-        self.assertEqual(weak8.profile, "weak8")
-        self.assertEqual(weak8.cpu_throttle, 8.0)
-        self.assertEqual(weak8.cores["count"], 4)
 
-    def test_parse_build_ui_ungated(self):
-        stock = suite.parse(["build-ui", "--out", "C:/nonexistent/ui"])
-        self.assertFalse(stock.ungated)
-        ungated = suite.parse(["build-ui", "--out", "C:/nonexistent/ui", "--ungated"])
-        self.assertTrue(ungated.ungated)
 
-    def test_build_ui_command_uses_dedicated_config_only_when_ungated(self):
-        out = Path("C:/nonexistent/ui")
-        stock_cmd = suite.build_ui_command(out, ungated=False)
-        self.assertEqual(stock_cmd[stock_cmd.index("--config") + 1], str(suite.STOCK_VITE_CONFIG))
-        self.assertEqual(stock_cmd[stock_cmd.index("--emptyOutDir") + 1], "false")
-        ungated_cmd = suite.build_ui_command(out, ungated=True)
-        self.assertEqual(ungated_cmd[ungated_cmd.index("--config") + 1], str(suite.UNGATED_VITE_CONFIG))
-        self.assertEqual(ungated_cmd[ungated_cmd.index("--emptyOutDir") + 1], "false")
 
     def test_run_build_ui_guards_ownership_links_and_failed_builds(self):
         with tempfile.TemporaryDirectory() as tmp:

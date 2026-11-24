@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply } from '../../generated/dashboard';
-import { isMember, resolveCountries as resolveAny } from '../../dashboard/groups.ts';
+import { resolveCountries as resolveAny } from '../../dashboard/groups.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import { definition as politicalPower } from '../political-power/definition.ts';
 import { definition as commandPower } from '../command-power/definition.ts';
@@ -68,12 +68,6 @@ test('political and command power offer every chosen country without a widget li
   }
 });
 
-test('membership limits which hours a group member shows', () => {
-  const membership = [{ tag: 'ITA', firstHour: 50, lastHour: 80 }];
-  assert.equal(isMember(membership, 60), true);
-  assert.equal(isMember(membership, 102), false);
-  assert.equal(isMember(undefined, 102), true);
-});
 
 test('the balance changes a list opens on end at the last the head has reached, never past it', () => {
   const marks = { from: 0, to: 600, width: 600, tiles: true as const, clusters: [

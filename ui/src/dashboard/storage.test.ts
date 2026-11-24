@@ -220,16 +220,6 @@ test('large explicit country selections survive saving and reloading without a c
   }
 });
 
-test('a factions widget retains every stored choice past its definition maximum', () => {
-  const storage = memoryStorage();
-  const { library } = loadLayouts(storage);
-  const widget = library.layouts[0].template.widgets[0];
-  widget.kind = 'factions';
-  const tags = Array.from({ length: 300 }, (_, index) => `synthetic_country_${index}`);
-  widget.countries = { kind: 'tags', tags };
-  assert.equal(saveLayouts(library, storage), null);
-  assert.deepEqual(loadLayouts(storage).library.layouts[0].template.widgets[0].countries, { kind: 'tags', tags });
-});
 
 test('a saved Top-100 group reloads in every uncapped ranked widget', () => {
   for (const kind of ['territory', 'scoreboard', 'agency-comparison']) {

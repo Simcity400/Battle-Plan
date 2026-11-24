@@ -8,7 +8,7 @@ use engine_naval_history::csunk_ship_info;
 use replay_data::rows::{DivisionHistoryRow, RowCodec, SharedDivisionHistoryRow, SunkShipEntry};
 use std::{collections::BTreeMap, sync::Arc};
 pub type HistorySnapshot = Snapshot<SharedDivisionHistoryRow>;
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct Held {
     division: u64,
     army: usize,
@@ -27,7 +27,11 @@ pub struct Store {
     held: Vec<Held>,
     baseline: Option<u64>,
     next: Vec<Held>,
-    order: Vec<(u64, usize)>,
+    sorted: Vec<(u64, usize)>,
+    sorted_ready: bool,
+    held_sorted: bool,
+    unique: bool,
+    shift: isize,
     seen: Vec<bool>,
     rows: Rows<SharedDivisionHistoryRow>,
     bindings: BTreeMap<u64, BTreeMap<(usize, u128), ()>>,
@@ -43,6 +47,16 @@ pub(super) struct Certificates {
     history: ((u64, u64), usize),
     store: usize,
     medals: Option<((u64, u64), usize)>,
+    latest_provinces: Option<(usize, Result<u32, &'static str>)>,
+}
+impl Certificates {
+    pub(super) fn set_latest_provinces(
+        &mut self,
+        address: usize,
+        count: Result<u32, &'static str>,
+    ) {
+        self.latest_provinces = Some((address, count));
+    }
 }
 enum Edit {
     Remove(std::ops::Range<u128>),
@@ -91,10 +105,19 @@ fn quiet(held: &Held, seed: &DivisionSeed, taken: &crate::observations::Taken) -
                 .medals
                 .is_some_and(|medals| taken.quiet(held.store, medals.0)))
 }
-fn latest_unchanged(memory: &impl Memory, held: &Held) -> bool {
+fn latest_unchanged(
+    memory: &impl Memory,
+    held: &Held,
+    prepared: Option<Certificates>,
+) -> bool {
     !held.available
         || held.latest.is_none_or(|(address, provinces)| {
-            unit_history::province_count(memory, address) == Ok(provinces)
+            let current = prepared
+                .and_then(|p| p.latest_provinces)
+                .filter(|&(checked, _)| checked == address)
+                .map(|(_, count)| count)
+                .unwrap_or_else(|| unit_history::province_count(memory, address));
+            current == Ok(provinces)
         })
 }
 fn key(division: u64, list: u8, ordinal: u32) -> u128 {
@@ -115,7 +138,7 @@ impl Store {
         self.defer_edits = false;
         changes::demand(count);
         self.next.clear();
-        self.order.clear();
+        self.shift = 0;
         self.edits.clear();
         self.seen.clear();
         allocation::reserve(&mut self.seen, self.held.len())
@@ -155,22 +178,46 @@ impl Store {
             .get(index)
             .filter(|held| held.division == seed.division)
         {
+            order.set_shift(self.baseline, 0);
             return Some(held);
         }
         if self.held.is_empty() {
             return None;
         }
-        let at = order
-            .position(
-                self.baseline,
-                self.held.iter().map(|held| held.division),
-                seed.division,
-            )
-            .unwrap_or_else(|| {
-                self.held
-                    .iter()
-                    .position(|held| held.division == seed.division)
-            });
+        if self.unique
+            && let Some(guess) = order.guess(self.baseline, index)
+            && let Some(held) = self
+                .held
+                .get(guess)
+                .filter(|held| held.division == seed.division)
+        {
+            return Some(held);
+        }
+        let at = if self.held_sorted {
+            self.held
+                .binary_search_by_key(&seed.division, |held| held.division)
+                .ok()
+        } else if self.sorted_ready {
+            self.sorted
+                .binary_search_by_key(&seed.division, |entry| entry.0)
+                .ok()
+                .map(|at| self.sorted[at].1)
+        } else {
+            order
+                .position(
+                    self.baseline,
+                    self.held.iter().map(|held| held.division),
+                    seed.division,
+                )
+                .unwrap_or_else(|| {
+                    self.held
+                        .iter()
+                        .position(|held| held.division == seed.division)
+                })
+        };
+        if let Some(at) = at {
+            order.set_shift(self.baseline, at as isize - index as isize);
+        }
         at.and_then(|at| self.held.get(at))
             .filter(|held| held.division == seed.division)
     }
@@ -180,22 +227,30 @@ impl Store {
         seed: &DivisionSeed,
         taken: &crate::observations::Taken,
         order: &mut crate::division_experience::Order,
-    ) -> Option<Certificates> {
+    ) -> Option<(Certificates, Option<usize>)> {
         let held = self
             .prefetch_held(index, seed, order)
             .filter(|held| held.army == seed.pointer && quiet(held, seed, taken))?;
-        Some(Certificates {
-            history: (held.history?, held.history_slot),
-            store: held.store,
-            medals: held.medals.map(|medals| (medals, held.medals_slot)),
-        })
+        let latest = held
+            .available
+            .then_some(held.latest.map(|(address, _)| address))
+            .flatten();
+        Some((
+            Certificates {
+                history: (held.history?, held.history_slot),
+                store: held.store,
+                medals: held.medals.map(|medals| (medals, held.medals_slot)),
+                latest_provinces: None,
+            },
+            latest,
+        ))
     }
     pub(super) fn prefetch_certificates(
         &self,
         index: usize,
         seed: &DivisionSeed,
         order: &mut crate::division_experience::Order,
-    ) -> Option<Certificates> {
+    ) -> Option<(Certificates, Option<usize>)> {
         let held = self
             .prefetch_held(index, seed, order)
             .filter(|held| held.army == seed.pointer);
@@ -212,11 +267,19 @@ impl Store {
         } else {
             None
         };
-        Some(Certificates {
-            history,
-            store,
-            medals,
-        })
+        let latest = held
+            .filter(|held| held.available)
+            .and_then(|held| held.latest)
+            .map(|(address, _)| address);
+        Some((
+            Certificates {
+                history,
+                store,
+                medals,
+                latest_provinces: None,
+            },
+            latest,
+        ))
     }
     pub fn forget(&mut self) {
         self.pending.clear();
@@ -224,7 +287,11 @@ impl Store {
         self.held.clear();
         self.baseline = None;
         self.next.clear();
-        self.order.clear();
+        self.sorted.clear();
+        self.sorted_ready = false;
+        self.held_sorted = false;
+        self.unique = false;
+        self.shift = 0;
         self.rows.clear();
         self.bindings.clear();
         self.binding_count = 0;
@@ -232,7 +299,7 @@ impl Store {
     }
     pub fn allocated_bytes(&self) -> usize {
         (self.held.capacity() + self.next.capacity()) * std::mem::size_of::<Held>()
-            + self.order.capacity() * std::mem::size_of::<(u64, usize)>()
+            + self.sorted.capacity() * std::mem::size_of::<(u64, usize)>()
             + self.ship_text.capacity()
             + self.pending.capacity() * std::mem::size_of::<Edit>()
             + self
@@ -265,39 +332,49 @@ impl Store {
         taken: Option<&crate::observations::Taken>,
     ) -> Result<(), &'static str> {
         let index = self.next.len();
-        let held_at = if self
-            .held
-            .get(index)
-            .is_some_and(|held| held.division == seed.division)
-        {
-            Some(index)
+        let guess = index.checked_add_signed(self.shift);
+        let held_at = if guess.is_some_and(|at| {
+            self.held
+                .get(at)
+                .is_some_and(|held| held.division == seed.division)
+        }) {
+            guess
+        } else if self.held.is_empty() {
+            None
+        } else if self.held_sorted {
+            self.held
+                .binary_search_by_key(&seed.division, |held| held.division)
+                .ok()
         } else {
-            if self.order.is_empty() && !self.held.is_empty() {
-                allocation::reserve(&mut self.order, self.held.len())
+            if !self.sorted_ready {
+                self.sorted.clear();
+                allocation::reserve(&mut self.sorted, self.held.len())
                     .map_err(|_| "division history index allocation failed")?;
-                self.order.extend(
+                self.sorted.extend(
                     self.held
                         .iter()
                         .enumerate()
                         .map(|(at, held)| (held.division, at)),
                 );
-                self.order.sort_unstable();
+                self.sorted.sort_unstable();
+                self.unique = self.sorted.windows(2).all(|pair| pair[0].0 != pair[1].0);
+                self.sorted_ready = true;
             }
-            self.order
+            self.sorted
                 .binary_search_by_key(&seed.division, |entry| entry.0)
                 .ok()
-                .map(|at| self.order[at].1)
+                .map(|at| self.sorted[at].1)
         };
         if let Some(at) = held_at {
+            self.shift = at as isize - index as isize;
             if self.seen[at] {
                 return Err("division history duplicate census identity");
             }
             self.seen[at] = true;
         }
         let mut held = held_at
-            .map(|at| &self.held[at])
-            .filter(|held| held.army == seed.pointer)
-            .cloned();
+            .map(|at| self.held[at])
+            .filter(|held| held.army == seed.pointer);
         let identity = unit_history::validate_seed(base, seed);
         let history_address = seed
             .pointer
@@ -307,9 +384,6 @@ impl Store {
             .as_ref()
             .zip(taken)
             .is_some_and(|(held, taken)| quiet(held, seed, taken));
-        if quiet {
-            crate::observations::quiet(4);
-        }
         let history = match (quiet, prepared) {
             (true, _) => held.as_ref().and_then(|held| held.history),
             (false, Some(p)) => Some(p.history.0),
@@ -329,7 +403,7 @@ impl Store {
                 held.medals_slot = p.medals.map_or(usize::MAX, |(_, slot)| slot);
             }
         }
-        if let Some(held) = held.as_ref().filter(|held| {
+        if let Some(held) = held.filter(|held| {
             held.history == history
                 && held.medals == medals
                 && (!held.available
@@ -343,9 +417,9 @@ impl Store {
                     })
                 })
                 && (identity.is_ok() || !held.available)
-                && latest_unchanged(memory, held)
+                && latest_unchanged(memory, held, prepared)
         }) {
-            self.next.push(held.clone());
+            self.next.push(held);
             changes::carried();
             return Ok(());
         }
@@ -563,6 +637,30 @@ impl Store {
         std::mem::swap(&mut self.held, &mut self.next);
         self.baseline = crate::division_experience::next_baseline();
         self.next.clear();
+        self.sorted.clear();
+        self.held_sorted = self
+            .held
+            .windows(2)
+            .all(|pair| pair[0].division < pair[1].division);
+        if self.held_sorted {
+            self.sorted_ready = true;
+            self.unique = true;
+        } else if allocation::advisory(|| allocation::reserve(&mut self.sorted, self.held.len()))
+            .is_ok()
+        {
+            self.sorted.extend(
+                self.held
+                    .iter()
+                    .enumerate()
+                    .map(|(at, held)| (held.division, at)),
+            );
+            self.sorted.sort_unstable();
+            self.unique = self.sorted.windows(2).all(|pair| pair[0].0 != pair[1].0);
+            self.sorted_ready = true;
+        } else {
+            self.sorted_ready = false;
+            self.unique = false;
+        }
         changes::entry_demand(self.binding_count);
         self.rows.finish()
     }
@@ -771,7 +869,8 @@ mod tests {
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
-                    .flatten();
+                    .flatten()
+                    .map(|(certs, _)| certs);
                 store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let first = store.finish().unwrap();
@@ -787,14 +886,16 @@ mod tests {
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
-                    .flatten();
+                    .flatten()
+                    .map(|(certs, _)| certs);
                 store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let quiet = store.finish().unwrap();
             assert!(Arc::ptr_eq(&first, &quiet));
             assert_eq!(world.reads.get(), 2);
-            assert!(
-                store.order.is_empty(),
+            assert_eq!(
+                order.rebuilds(),
+                0,
                 "stable unsorted census needs no locator rebuild"
             );
             assert_eq!(
@@ -815,7 +916,8 @@ mod tests {
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
-                    .flatten();
+                    .flatten()
+                    .map(|(certs, _)| certs);
                 store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let changed = store.finish().unwrap();
@@ -847,7 +949,8 @@ mod tests {
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
-                    .flatten();
+                    .flatten()
+                    .map(|(certs, _)| certs);
                 store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let appended = store.finish().unwrap();
@@ -868,7 +971,8 @@ mod tests {
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
-                    .flatten();
+                    .flatten()
+                    .map(|(certs, _)| certs);
                 store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let refused = store.finish().unwrap();
@@ -884,7 +988,8 @@ mod tests {
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
-                    .flatten();
+                    .flatten()
+                    .map(|(certs, _)| certs);
                 store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             assert!(Arc::ptr_eq(&refused, &store.finish().unwrap()));
@@ -975,7 +1080,8 @@ mod tests {
                 }
                 let prepared = owned
                     .then(|| store.prefetch_certificates(0, &division, &mut order))
-                    .flatten();
+                    .flatten()
+                    .map(|(certs, _)| certs);
                 store
                     .observe_prepared(world, 0, &division, prepared, None)
                     .unwrap();

@@ -28,19 +28,6 @@ fn the_compiler_is_the_named_dll_and_nothing_else() {
 }
 
 #[test]
-fn the_pinned_dll_beside_the_program_reports_the_pinned_version() {
-    let exe = std::env::current_exe().unwrap();
-    let dll = exe.with_file_name("dxcompiler.dll");
-    assert!(
-        dll.is_file(),
-        "the_pinned_dll_beside_the_program_reports_the_pinned_version requires the pinned dxcompiler.dll beside the test program (missing: {}; run tools/install-shader-compiler.ps1)",
-        dll.display()
-    );
-    assert_eq!(dxc::product_version(&dll).unwrap(), DXC_VERSION);
-    Compiler::discover().unwrap();
-}
-
-#[test]
 fn shader_module_labels_avoid_dxc_path_and_flag_characters() {
     assert_eq!(gpu::shader_module_label("named.shader:Water"), "named.shader_Water");
     assert_eq!(

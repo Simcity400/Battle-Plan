@@ -6,7 +6,7 @@ use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
     codec::{invalid_static as invalid, put_bytes, put_string},
     format::FormatVersion,
-    rows::{ChangedRows, TableId, TableRows, TableSchema},
+    rows::{ChangedRows, Field, RowCodec, RowsPairVisit, RowsVisit, TableId, TableRows, TableSchema},
 };
 use engine_allocation as allocation;
 use std::{
@@ -46,16 +46,78 @@ fn row_encoding(error: io::Error) -> io::Error {
     }
 }
 
+fn validate_recorded(rows: &TableRows) -> io::Result<()> {
+    struct Check;
+    impl RowsVisit for Check {
+        type Output = io::Result<()>;
+
+        fn rows<R: RowCodec>(self, rows: &[R]) -> io::Result<()> {
+            u32::try_from(rows.len()).map_err(|_| invalid("too many rows"))?;
+            for row in rows {
+                if row.not_recorded_fields() != 0 {
+                    row.visit_wire(&mut |_, field| {
+                        if matches!(field, Field::NotRecorded) {
+                            return Err(invalid("missing or not recorded row field"));
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
+            Ok(())
+        }
+    }
+    rows.visit(Check)
+}
+
+fn validate_replacements(
+    rows: &TableRows,
+    previous: &TableRows,
+    indices: &[usize],
+) -> io::Result<()> {
+    struct Check<'a>(&'a [usize]);
+    impl RowsPairVisit for Check<'_> {
+        type Output = io::Result<()>;
+
+        fn rows<R: RowCodec>(self, rows: &[R], previous: &[R]) -> io::Result<()> {
+            let indices = self.0;
+            if rows.len() != indices.len()
+                || indices.windows(2).any(|pair| pair[0] >= pair[1])
+                || rows
+                    .iter()
+                    .zip(indices)
+                    .any(|(row, &index)| previous.get(index).is_none_or(|old| row.key() != old.key()))
+            {
+                return Err(invalid(
+                    "replacement rows must name unique ascending baseline positions with unchanged keys",
+                ));
+            }
+            u32::try_from(rows.len()).map_err(|_| invalid("too many replacement rows"))?;
+            Ok(())
+        }
+    }
+    rows.visit_pair(previous, Check(indices))
+        .map_err(|_| invalid("replacement rows have different types"))?
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaselineRetention {
+    Drop,
+    Meta,
+    Full,
+}
+
 pub(super) enum BaselineRows {
     Owned(TableRows),
     Shared(Arc<TableRows>),
+    Meta { len: Option<usize>, shared: bool },
 }
 
-impl AsRef<TableRows> for BaselineRows {
-    fn as_ref(&self) -> &TableRows {
+impl BaselineRows {
+    fn rows(&self) -> Option<&TableRows> {
         match self {
-            Self::Owned(rows) => rows,
-            Self::Shared(rows) => rows,
+            Self::Owned(rows) => Some(rows),
+            Self::Shared(rows) => Some(rows),
+            Self::Meta { .. } => None,
         }
     }
 }
@@ -216,7 +278,9 @@ impl FrameEncoder {
         crate::cadence::is_staggered(table)
             && !self.needs_keyframe(branch, hour, force)
             && self.state.last_hour.is_some_and(|previous| hour > previous)
-            && self.state.tables[table.index()].is_some()
+            && self.state.tables[table.index()]
+                .as_ref()
+                .is_some_and(|(_, rows)| rows.rows().is_some())
     }
 
     pub fn keyframe_carry(
@@ -265,14 +329,49 @@ impl FrameEncoder {
                 row_updates: matches!(values, BaselineRows::Owned(_))
                     && table != TableId::Countries
                     && !crate::cadence::is_staggered(table),
+                untracked: false,
             },
             values,
         ))
     }
 
+    pub fn untracked_slice_token(
+        &self,
+        table: TableId,
+        branch: BranchId,
+        hour: Hour,
+        force: bool,
+    ) -> Option<BaselineToken> {
+        if table == TableId::Clock
+            || force
+            || self.state.branch != Some(branch)
+            || self
+                .state
+                .last_hour
+                .and_then(|previous| previous.checked_add(1))
+                != Some(hour)
+        {
+            return None;
+        }
+        Some(BaselineToken {
+            encoder: self.identity,
+            revision: self.revision,
+            table,
+            branch,
+            hour,
+            baseline: hour - 1,
+            row_updates: false,
+            untracked: true,
+        })
+    }
+
     pub fn committed_rows(&self, table: TableId) -> Option<&TableRows> {
         let (_, rows) = self.state.tables[table.index()].as_ref()?;
-        Some(rows.as_ref())
+        rows.rows()
+    }
+
+    pub fn committed_hour(&self, table: TableId) -> Option<Hour> {
+        self.state.tables[table.index()].as_ref().map(|(hour, _)| *hour)
     }
 
     pub fn last_committed(&self) -> Option<(BranchId, Hour)> {
@@ -281,7 +380,7 @@ impl FrameEncoder {
 
     pub fn committed<T: TableSchema>(&self) -> Option<(Hour, &[T::Row])> {
         let (hour, values) = self.state.tables[T::ID.index()].as_ref()?;
-        Some((*hour, values.as_ref().rows::<T>()?))
+        Some((*hour, values.rows()?.rows::<T>()?))
     }
 
     pub fn observed_baseline<T: TableSchema>(
@@ -309,7 +408,7 @@ impl FrameEncoder {
     ) -> Option<(BaselineToken, &[T::Row])> {
         let (mut token, values) = self.token(T::ID, branch, hour, force)?;
         token.row_updates = matches!(values, BaselineRows::Owned(_)) && T::ID != TableId::Countries;
-        Some((token, values.as_ref().rows::<T>()?))
+        Some((token, values.rows()?.rows::<T>()?))
     }
 
     pub fn comparison_baseline<T: TableSchema>(
@@ -319,7 +418,18 @@ impl FrameEncoder {
         force: bool,
     ) -> Option<(BaselineToken, &[T::Row])> {
         let (token, values) = self.token(T::ID, branch, hour, force)?;
-        Some((token, values.as_ref().rows::<T>()?))
+        Some((token, values.rows()?.rows::<T>()?))
+    }
+
+    pub fn republish_token(
+        &self,
+        table: TableId,
+        branch: BranchId,
+        hour: Hour,
+        force: bool,
+    ) -> Option<(BaselineToken, Hour)> {
+        let (token, _) = self.token(table, branch, hour, force)?;
+        Some((token, token.baseline))
     }
 
     pub fn slice_baseline(
@@ -331,14 +441,28 @@ impl FrameEncoder {
     ) -> Option<(BaselineToken, &Arc<TableRows>)> {
         match self.token(table, branch, hour, force)? {
             (token, BaselineRows::Shared(rows)) => Some((token, rows)),
-            (_, BaselineRows::Owned(_)) => None,
+            (_, BaselineRows::Owned(_) | BaselineRows::Meta { .. }) => None,
+        }
+    }
+
+    pub fn slice_meta(
+        &self,
+        table: TableId,
+        branch: BranchId,
+        hour: Hour,
+        force: bool,
+    ) -> Option<(BaselineToken, Option<usize>)> {
+        match self.token(table, branch, hour, force)? {
+            (token, BaselineRows::Shared(rows)) => Some((token, Some(rows.len()))),
+            (token, BaselineRows::Meta { len, shared: true }) => Some((token, *len)),
+            (_, BaselineRows::Owned(_) | BaselineRows::Meta { shared: false, .. }) => None,
         }
     }
 
     pub fn shared_baseline(&self, table: TableId) -> Option<&Arc<TableRows>> {
         match self.state.tables[table.index()].as_ref()? {
             (_, BaselineRows::Shared(rows)) => Some(rows),
-            (_, BaselineRows::Owned(_)) => None,
+            (_, BaselineRows::Owned(_) | BaselineRows::Meta { .. }) => None,
         }
     }
 
@@ -372,6 +496,7 @@ impl FrameEncoder {
         let Some((baseline, previous)) = self.state.tables[table.index()]
             .as_ref()
             .filter(|_| !keyframe)
+            .and_then(|(baseline, rows)| Some((baseline, rows.rows()?)))
         else {
             output.push(0);
             put_count(output, values.len())?;
@@ -383,7 +508,7 @@ impl FrameEncoder {
         output.extend_from_slice(&baseline.to_le_bytes());
         let mut rows = ChangedRows::default();
         let written = values
-            .encode_changes_recorded(previous.as_ref(), output, deleted, &mut rows)
+            .encode_changes_recorded(previous, output, deleted, &mut rows)
             .map_err(row_encoding)?;
         if !rows.lost {
             *changed = Some(rows);
@@ -406,6 +531,7 @@ impl FrameEncoder {
         keyframe: bool,
     ) -> io::Result<()> {
         if keyframe
+            || token.untracked
             || token.encoder != self.identity
             || token.revision != self.revision
             || table == TableId::Clock
@@ -507,12 +633,34 @@ impl FrameEncoder {
 
     pub fn prepare_contained(
         &mut self,
+        source: FrameInput,
+        force_keyframe: bool,
+        segments: &mut [Option<TableSegment>; TABLE_COUNT],
+        refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
+    ) -> io::Result<PreparedFrame> {
+        self.prepare_contained_keeping(source, force_keyframe, segments, |_| true, refuse)
+    }
+
+    pub fn prepare_contained_keeping(
+        &mut self,
         mut source: FrameInput,
         force_keyframe: bool,
         segments: &mut [Option<TableSegment>; TABLE_COUNT],
-        mut refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
+        kept: impl Fn(TableId) -> bool,
+        refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
     ) -> io::Result<PreparedFrame> {
         source.round_to_display();
+        self.prepare_rounded_contained_keeping(source, force_keyframe, segments, kept, refuse)
+    }
+
+    pub fn prepare_rounded_contained_keeping(
+        &mut self,
+        mut source: FrameInput,
+        force_keyframe: bool,
+        segments: &mut [Option<TableSegment>; TABLE_COUNT],
+        kept: impl Fn(TableId) -> bool,
+        mut refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
+    ) -> io::Result<PreparedFrame> {
         let new_branch = self.state.branch != Some(source.branch);
         if !new_branch && self.state.last_hour.is_some_and(|hour| hour >= source.hour) {
             return Err(invalid("frame hour did not advance on its branch"));
@@ -549,15 +697,52 @@ impl FrameEncoder {
             }
             let mut changed = None;
             let table_start = output.len();
+            let keep = kept(table);
             unchanged[table.index()] = match segments[table.index()].take() {
                 Some(segment) => {
                     if segment.context != context || segment.table != table {
                         return Err(invalid("table segment was encoded for another frame"));
                     }
-                    allocation::reserve(&mut output, segment.bytes.len())?;
-                    output.extend_from_slice(&segment.bytes);
+                    if keep {
+                        allocation::reserve(&mut output, segment.bytes.len())?;
+                        output.extend_from_slice(&segment.bytes);
+                    } else {
+                        allocation::reserve(&mut output, 1)?;
+                        output.push(5);
+                    }
                     changed = segment.changed;
                     segment.unchanged
+                }
+                None if !keep => {
+                    let result = self.validate_unencoded_table(
+                        &context,
+                        table,
+                        &source.tables[table.index()],
+                    );
+                    let is_unchanged = match result {
+                        Err(error)
+                            if table != TableId::Clock
+                                && error
+                                    .get_ref()
+                                    .is_some_and(|inner| inner.is::<RowValidationError>()) =>
+                        {
+                            let error =
+                                crate::codec::error_context(error, format_args!("{table:?}"));
+                            let reason = refuse(table, error)?;
+                            source.tables[table.index()] = TableView::Unavailable { reason }.into();
+                            self.validate_unencoded_table(
+                                &context,
+                                table,
+                                &source.tables[table.index()],
+                            )?
+                        }
+                        result => result.map_err(|error| {
+                            crate::codec::error_context(error, format_args!("{table:?}"))
+                        })?,
+                    };
+                    allocation::reserve(&mut output, 1)?;
+                    output.push(5);
+                    is_unchanged
                 }
                 None => {
                     allocation::reserve(&mut output, 9)?;
@@ -622,6 +807,149 @@ impl FrameEncoder {
             encoder: self.identity,
             previous_revision: self.revision,
             keyframe,
+        })
+    }
+
+    fn validate_unencoded_table(
+        &self,
+        context: &FrameContext,
+        table: TableId,
+        view: &TableInput,
+    ) -> io::Result<bool> {
+        let FrameContext {
+            branch,
+            hour,
+            force,
+            keyframe,
+            new_branch,
+            ..
+        } = *context;
+        Ok(match view {
+            TableInput::SharedComplete(values) => {
+                if !keyframe
+                    && !new_branch
+                    && let Some((_, BaselineRows::Shared(previous))) =
+                        self.state.tables[table.index()].as_ref()
+                    && Arc::ptr_eq(values, previous)
+                {
+                    validate_singleton(table, values, hour).map_err(row_validation)?;
+                    true
+                } else {
+                    validate_complete(table, values, hour).map_err(row_validation)?;
+                    validate_recorded(values).map_err(row_encoding)?;
+                    false
+                }
+            }
+            TableInput::ComparedEqual(token) => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                true
+            }
+            TableInput::ComparedChanges {
+                token,
+                indices,
+                rows,
+            } => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                let Some((_, BaselineRows::Owned(previous))) =
+                    self.state.tables[table.index()].as_ref()
+                else {
+                    return Err(invalid("row replacements require an owned baseline"));
+                };
+                if !token.allows_row_updates() {
+                    return Err(invalid("table does not allow row replacements"));
+                }
+                validate_rows(table, rows).map_err(row_validation)?;
+                validate_replacements(rows, previous, indices)?;
+                validate_recorded(rows).map_err(row_encoding)?;
+                indices.is_empty()
+            }
+            TableInput::SliceUpdate { token, update } if token.untracked => {
+                if token.encoder != self.identity
+                    || token.revision != self.revision
+                    || table == TableId::Clock
+                    || token.table != table
+                    || token.branch != branch
+                    || token.hour != hour
+                    || force
+                    || self.state.branch != Some(branch)
+                    || self
+                        .state
+                        .last_hour
+                        .and_then(|previous| previous.checked_add(1))
+                        != Some(hour)
+                {
+                    return Err(invalid(
+                        "untracked slice update does not name the current encoder state",
+                    ));
+                }
+                if !update.fits_untracked(table) {
+                    return Err(invalid("untracked slice update is invalid"));
+                }
+                validate_rows(table, update.rows()).map_err(row_validation)?;
+                validate_recorded(update.rows()).map_err(row_encoding)?;
+                update.owners.is_empty() && update.rows.is_empty()
+            }
+            TableInput::SliceUpdate { token, update } => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                match self.state.tables[table.index()].as_ref() {
+                    Some((_, BaselineRows::Shared(previous))) => {
+                        if !update.fits(previous) {
+                            return Err(invalid("slice update does not fit its baseline"));
+                        }
+                    }
+                    Some((_, BaselineRows::Meta { shared: true, .. })) => {
+                        if !update.fits_meta(table) {
+                            return Err(invalid("slice update does not fit its baseline"));
+                        }
+                    }
+                    _ => return Err(invalid("a slice update requires a shared baseline")),
+                }
+                validate_rows(table, update.rows()).map_err(row_validation)?;
+                validate_recorded(update.rows()).map_err(row_encoding)?;
+                update.owners.is_empty() && update.keys.is_empty() && update.ranges.is_empty()
+            }
+            TableInput::UniformOptionalI32 {
+                token,
+                column,
+                update,
+                ..
+            } => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                let Some((_, BaselineRows::Shared(previous))) =
+                    self.state.tables[table.index()].as_ref()
+                else {
+                    return Err(invalid("a uniform update requires a shared baseline"));
+                };
+                if !previous.supports_optional_i32_fill(*column) || !update.fits(previous) {
+                    return Err(invalid("uniform update does not fit its baseline"));
+                }
+                validate_rows(table, update.rows()).map_err(row_validation)?;
+                validate_recorded(update.rows()).map_err(row_encoding)?;
+                false
+            }
+            TableInput::Sampled(TableView::Complete(values)) => {
+                validate_complete(table, values, hour).map_err(row_validation)?;
+                validate_recorded(values).map_err(row_encoding)?;
+                false
+            }
+            TableInput::Sampled(TableView::Truncated { rows, missing }) => {
+                validate_rows(table, rows).map_err(row_validation)?;
+                if *missing == 0 {
+                    return Err(invalid("truncated table has no missing rows"));
+                }
+                if !keyframe {
+                    validate_recorded(rows).map_err(row_encoding)?;
+                }
+                false
+            }
+            TableInput::Sampled(TableView::NotRecorded { .. }) => false,
+            TableInput::Sampled(TableView::Unavailable { reason }) => {
+                if reason.is_empty() {
+                    return Err(invalid("unavailable table needs a reason"));
+                }
+                reason == crate::cadence::SKIPPED_REASON
+                    && self.can_carry(table, branch, hour, force)
+            }
         })
     }
 
@@ -724,6 +1052,27 @@ impl FrameEncoder {
                     true
                 }
             }
+            TableInput::UniformOptionalI32 {
+                token,
+                column,
+                value,
+                update,
+            } => {
+                self.validate_comparison(*token, table, branch, hour, keyframe)?;
+                let Some((_, BaselineRows::Shared(previous))) =
+                    self.state.tables[table.index()].as_ref()
+                else {
+                    return Err(invalid("a uniform update requires a shared baseline"));
+                };
+                if !previous.supports_optional_i32_fill(*column) || !update.fits(previous) {
+                    return Err(invalid("uniform update does not fit its baseline"));
+                }
+                validate_rows(table, update.rows()).map_err(row_validation)?;
+                let mut merged = update.merged(previous)?;
+                merged.fill_optional_i32(*column, *value)?;
+                let mut ignored = None;
+                self.encode_complete(table, &merged, hour, keyframe, output, deleted, &mut ignored)?
+            }
             TableInput::Sampled(TableView::Complete(values)) => {
                 self.encode_complete(table, values, hour, keyframe, output, deleted, changed)?
             }
@@ -795,6 +1144,28 @@ impl FrameEncoder {
     }
 
     pub fn commit_retiring(&mut self, prepared: PreparedFrame) -> io::Result<Retired> {
+        self.commit_retiring_keeping(prepared, |_| true)
+    }
+
+    pub fn commit_retiring_keeping(
+        &mut self,
+        prepared: PreparedFrame,
+        keep_baseline: impl Fn(TableId) -> bool,
+    ) -> io::Result<Retired> {
+        self.commit_retiring_mode(prepared, |table| {
+            if keep_baseline(table) {
+                BaselineRetention::Full
+            } else {
+                BaselineRetention::Drop
+            }
+        })
+    }
+
+    pub fn commit_retiring_mode(
+        &mut self,
+        prepared: PreparedFrame,
+        keep_baseline: impl Fn(TableId) -> BaselineRetention,
+    ) -> io::Result<Retired> {
         if prepared.encoder != self.identity || prepared.previous_revision != self.revision {
             return Err(invalid(
                 "prepared frame no longer names the encoder baseline",
@@ -810,14 +1181,24 @@ impl FrameEncoder {
         let mut retired = allocation::vec(2 * TABLE_COUNT)?;
         let mut tables = source.tables.map(Some);
         for (table, view) in TableId::ALL.into_iter().zip(tables.iter_mut()) {
-            if !matches!(view, Some(TableInput::SliceUpdate { .. })) {
+            if !matches!(
+                view,
+                Some(TableInput::SliceUpdate { .. } | TableInput::UniformOptionalI32 { .. })
+            ) {
                 continue;
             }
-            if unchanged[table.index()] {
+            if keep_baseline(table) != BaselineRetention::Full || unchanged[table.index()] {
                 continue;
             }
-            let Some(TableInput::SliceUpdate { update, .. }) = view.take() else {
-                unreachable!("matched above");
+            let (update, fill) = match view.take() {
+                Some(TableInput::SliceUpdate { update, .. }) => (update, None),
+                Some(TableInput::UniformOptionalI32 {
+                    column,
+                    value,
+                    update,
+                    ..
+                }) => (update, Some((column, value))),
+                _ => unreachable!("matched above"),
             };
             let Some((hour, BaselineRows::Shared(rows))) =
                 self.state.tables[table.index()].as_mut()
@@ -827,8 +1208,12 @@ impl FrameEncoder {
             if Arc::get_mut(rows).is_none() {
                 *rows = Arc::new(rows.try_clone()?);
             }
+            let baseline = Arc::get_mut(rows).expect("unique slice baseline");
             let update = Arc::try_unwrap(update).unwrap_or_else(|shared| (*shared).clone());
-            let replaced = update.apply(Arc::get_mut(rows).expect("unique slice baseline"))?;
+            let replaced = update.apply(baseline)?;
+            if let Some((column, value)) = fill {
+                baseline.fill_optional_i32(column, value)?;
+            }
             *hour = source.hour;
             retired.push(Retiring::Rows(replaced));
         }
@@ -837,53 +1222,127 @@ impl FrameEncoder {
             let Some(view) = view else {
                 continue;
             };
-            if !table
+            let retention = if table
                 .last_change()
                 .present(FormatVersion::CURRENT.version())
             {
-                if let Some((_, rows)) = self.state.tables[index].take() {
-                    retired.push(Retiring::Baseline(rows));
-                }
-                retired.push(Retiring::Input(view));
-                continue;
-            }
-            if unchanged[index] {
-                let baseline = self.state.tables[index]
-                    .as_mut()
-                    .expect("unchanged table has a validated baseline");
-                baseline.0 = source.hour;
-                match view {
-                    TableInput::SharedComplete(rows) => retired.push(Retiring::Baseline(
-                        std::mem::replace(&mut baseline.1, BaselineRows::Shared(rows)),
-                    )),
-                    view => retired.push(Retiring::Input(view)),
-                }
-            } else if let TableInput::ComparedChanges { indices, rows, .. } = view {
-                let (hour, BaselineRows::Owned(previous)) = self.state.tables[index]
-                    .as_mut()
-                    .expect("validated replacement baseline")
-                else {
-                    unreachable!("validated owned replacement baseline")
-                };
-                retired.push(Retiring::Rows(
-                    previous.install_replacements(rows, &indices),
-                ));
-                *hour = source.hour;
+                keep_baseline(table)
             } else {
-                let next = match view {
-                    TableInput::Sampled(TableView::Complete(rows)) => {
-                        Some((source.hour, BaselineRows::Owned(rows)))
+                BaselineRetention::Drop
+            };
+            match retention {
+                BaselineRetention::Drop => {
+                    if let Some((_, rows)) = self.state.tables[index].take() {
+                        retired.push(Retiring::Baseline(rows));
                     }
-                    TableInput::SharedComplete(rows) => {
-                        Some((source.hour, BaselineRows::Shared(rows)))
-                    }
-                    view => {
+                    retired.push(Retiring::Input(view));
+                }
+                BaselineRetention::Meta => {
+                    if unchanged[index] {
+                        let baseline = self.state.tables[index]
+                            .as_mut()
+                            .expect("unchanged table has a validated baseline");
+                        baseline.0 = source.hour;
+                        let meta = match &baseline.1 {
+                            BaselineRows::Owned(rows) => Some(BaselineRows::Meta {
+                                len: Some(rows.len()),
+                                shared: false,
+                            }),
+                            BaselineRows::Shared(rows) => Some(BaselineRows::Meta {
+                                len: Some(rows.len()),
+                                shared: true,
+                            }),
+                            BaselineRows::Meta { .. } => None,
+                        };
+                        if let Some(meta) = meta {
+                            retired.push(Retiring::Baseline(std::mem::replace(
+                                &mut baseline.1,
+                                meta,
+                            )));
+                        }
                         retired.push(Retiring::Input(view));
-                        None
+                    } else if matches!(view, TableInput::SliceUpdate { .. }) {
+                        if let Some((_, old)) = std::mem::replace(
+                            &mut self.state.tables[index],
+                            Some((
+                                source.hour,
+                                BaselineRows::Meta {
+                                    len: None,
+                                    shared: true,
+                                },
+                            )),
+                        ) {
+                            retired.push(Retiring::Baseline(old));
+                        }
+                        retired.push(Retiring::Input(view));
+                    } else {
+                        let next = match &view {
+                            TableInput::Sampled(TableView::Complete(rows)) => Some((
+                                source.hour,
+                                BaselineRows::Meta {
+                                    len: Some(rows.len()),
+                                    shared: false,
+                                },
+                            )),
+                            TableInput::SharedComplete(rows) => Some((
+                                source.hour,
+                                BaselineRows::Meta {
+                                    len: Some(rows.len()),
+                                    shared: true,
+                                },
+                            )),
+                            _ => None,
+                        };
+                        if let Some((_, rows)) =
+                            std::mem::replace(&mut self.state.tables[index], next)
+                        {
+                            retired.push(Retiring::Baseline(rows));
+                        }
+                        retired.push(Retiring::Input(view));
                     }
-                };
-                if let Some((_, rows)) = std::mem::replace(&mut self.state.tables[index], next) {
-                    retired.push(Retiring::Baseline(rows));
+                }
+                BaselineRetention::Full => {
+                    if unchanged[index] {
+                        let baseline = self.state.tables[index]
+                            .as_mut()
+                            .expect("unchanged table has a validated baseline");
+                        baseline.0 = source.hour;
+                        match view {
+                            TableInput::SharedComplete(rows) => retired.push(Retiring::Baseline(
+                                std::mem::replace(&mut baseline.1, BaselineRows::Shared(rows)),
+                            )),
+                            view => retired.push(Retiring::Input(view)),
+                        }
+                    } else if let TableInput::ComparedChanges { indices, rows, .. } = view {
+                        let (hour, BaselineRows::Owned(previous)) = self.state.tables[index]
+                            .as_mut()
+                            .expect("validated replacement baseline")
+                        else {
+                            unreachable!("validated owned replacement baseline")
+                        };
+                        retired.push(Retiring::Rows(
+                            previous.install_replacements(rows, &indices),
+                        ));
+                        *hour = source.hour;
+                    } else {
+                        let next = match view {
+                            TableInput::Sampled(TableView::Complete(rows)) => {
+                                Some((source.hour, BaselineRows::Owned(rows)))
+                            }
+                            TableInput::SharedComplete(rows) => {
+                                Some((source.hour, BaselineRows::Shared(rows)))
+                            }
+                            view => {
+                                retired.push(Retiring::Input(view));
+                                None
+                            }
+                        };
+                        if let Some((_, rows)) =
+                            std::mem::replace(&mut self.state.tables[index], next)
+                        {
+                            retired.push(Retiring::Baseline(rows));
+                        }
+                    }
                 }
             }
         }

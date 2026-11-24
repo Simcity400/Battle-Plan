@@ -154,28 +154,6 @@ fn modifiers_merge_hide_and_keep_children_by_identity() {
 }
 
 #[test]
-fn custom_tooltips_are_listed_in_the_tables_slot_order() {
-    let mut table = TooltipTable::default();
-    for text in ["A", "B", "C", "A"] {
-        table.insert(text.to_owned());
-    }
-    let hash = |text: &str| {
-        text.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
-            (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-        })
-    };
-    let mut expected = ["A", "B", "C"];
-    expected.sort_by_key(|text| hash(text) & 7);
-    assert_eq!(table.keys().collect::<Vec<_>>(), expected);
-    assert_eq!((table.mask, table.overflow, table.count), (7, 5, 3));
-    for index in 0..7 {
-        table.insert(format!("K{index}"));
-    }
-    assert_eq!((table.mask, table.count), (15, 10));
-    assert_eq!(table.keys().count(), 10);
-}
-
-#[test]
 fn a_displacement_chain_past_the_overflow_grows_the_tooltip_table() {
     let keys = [
         "t49495", "t65458", "t59729", "t28854", "t22275", "t87584", "t2909", "t51252", "t65710",

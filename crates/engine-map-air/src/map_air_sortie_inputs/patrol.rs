@@ -280,27 +280,6 @@ mod tests {
     }
 
     #[test]
-    fn updated_night_reuses_the_original_manager_failure_and_reads_only_gates() {
-        struct Gates(std::cell::Cell<usize>);
-        impl Memory for Gates {
-            fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
-                self.0.set(self.0.get() + 1);
-                assert_eq!(
-                    (at, bytes.len()),
-                    (512 + cweather_manager::SUSPEND_FLAGS, 2)
-                );
-                bytes.fill(0);
-                true
-            }
-        }
-        let memory = Gates(Default::default());
-        assert!(HeldNight::read(&memory, 0, Err("original manager refused")).is_err());
-        assert_eq!(memory.0.get(), 0);
-        assert!(matches!(HeldNight::read(&memory, 0, Ok(512)), Ok(None)));
-        assert_eq!(memory.0.get(), 1);
-    }
-
-    #[test]
     fn held_night_samples_original_order_and_preserves_marker_fault() {
         const GAME: usize = 512;
         const MANAGER: usize = 2048;

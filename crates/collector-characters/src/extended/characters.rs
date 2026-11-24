@@ -12,14 +12,13 @@ mod leaders;
 #[cfg(test)]
 mod leaders_tests;
 mod quiet;
-#[cfg(test)]
-mod quiet_bench;
 
 use collector_memory::read_accounting;
 use collector_primitives::{
     clock::qpc,
     table_capture::{Arena, CaptureRows},
 };
+use collector_projection::projection::{Projection, project_table};
 use collector_projection::table_conversion::{table, unavailable};
 use engine_land_inputs::active_ability_record;
 use engine_native_memory::{
@@ -51,7 +50,7 @@ use engine_native_parts::{
 use engine_native_politics::{ccountry_leader, character_leader_node};
 use replay_data::{
     BranchId, rows::ActiveAbilityRow, rows::AdvisorRoleRow, rows::CharacterRow,
-    rows::CountryLeaderRoleRow, rows::TableId, rows::TableRows, rows::TableSchema,
+    rows::CountryLeaderRoleRow, rows::RowCodec, rows::TableId, rows::TableRows, rows::TableSchema,
     rows::UnitLeaderRow, rows::UnitLeaderTraitRow, rows::tables,
 };
 use replay_frame::{frame::TableInput, frame::TableView};
@@ -409,20 +408,32 @@ impl Captured {
         ]
     }
 
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
-        self.convert_tables(
-            |view| view,
+        [
             self.characters_table(),
             self.leaders_table(),
             self.advisors_table(),
+            self.units_table(),
             self.traits_table(),
             self.training_table(),
-        )
+        ]
     }
 
-    pub fn table_inputs(&self, reuse: Option<&mut CharacterConversion<'_>>) -> [TableInput; N] {
+    pub fn table_inputs(
+        &self,
+        reuse: Option<&mut CharacterConversion<'_>>,
+        projection: Option<&mut Projection<'_>>,
+    ) -> [TableInput; N] {
         let Some(reuse) = reuse else {
-            return self.tables().map(TableInput::Sampled);
+            return [
+                self.characters_table().into(),
+                self.leaders_table().into(),
+                self.advisors_table().into(),
+                self.units_input(projection),
+                self.traits_table().into(),
+                self.training_table().into(),
+            ];
         };
         let characters = shadow_input(
             SHADOW_TABLES[0],
@@ -457,14 +468,14 @@ impl Captured {
             || self.traits_table(),
         );
         let training = self.training_input(&mut reuse.shadow.training);
-        self.convert_tables(
-            TableInput::Sampled,
+        [
             characters,
             leaders,
             advisors,
+            self.units_input(projection),
             traits,
             training,
-        )
+        ]
     }
 
     fn characters_table(&self) -> TableView {
@@ -660,34 +671,93 @@ impl Captured {
         table::<tables::UnitLeaderTraitExperience, _>(outcome, &output, Clone::clone)
     }
 
-    fn convert_tables<T>(
-        &self,
-        wrap: impl Fn(TableView) -> T,
-        characters: T,
-        leaders: T,
-        advisors: T,
-        traits: T,
-        training: T,
-    ) -> [T; N] {
-        [
-            characters,
-            leaders,
-            advisors,
-            wrap(view::<tables::UnitLeaders, _>(
-                &self.units,
-                |row, bytes| {
-                    valid(bytes, row.text_a_start, row.text_a_len)
-                        && valid(bytes, row.text_b_start, row.text_b_len)
-                        && row.codename.is_none_or(|name| {
-                            valid(bytes, name.custom.0, name.custom.1)
-                                && valid(bytes, name.group.0, name.group.1)
-                        })
-                },
-                leader_row,
-            )),
-            traits,
-            training,
-        ]
+    #[cfg(test)]
+    fn units_table(&self) -> TableView {
+        view::<tables::UnitLeaders, _>(&self.units, leader_ranges_valid, leader_row)
+    }
+
+    fn units_input(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
+        let len = match self.units.rows.outcome {
+            Outcome::Rows { len } | Outcome::Truncated { len, .. } => len,
+            Outcome::Unavailable { reason } => return unavailable(reason).into(),
+        };
+        let Some(rows) = self.units.rows.rows.get(..len) else {
+            return unavailable("character row count exceeds allocated buffer").into();
+        };
+        let Some(bytes) = self.units.bytes.first.get(..self.units.bytes.len) else {
+            return unavailable("character byte count exceeds allocated arena").into();
+        };
+        if rows.iter().any(|row| !leader_ranges_valid(row, bytes)) {
+            return unavailable("character string lies outside the captured byte arena").into();
+        }
+        project_table::<tables::UnitLeaders, _>(
+            projection,
+            self.units.rows.outcome,
+            rows,
+            |row| {
+                RowCodec::key(&UnitLeaderRow {
+                    reference_type: row.native.reference_type,
+                    id: row.native.id,
+                    character_type: row.native.character_type,
+                    character_id: row.native.character_id,
+                    owner: row.native.owner,
+                    ..Default::default()
+                })
+            },
+            |row, previous| leader_equal(row, bytes, previous),
+            |row| leader_row(row, bytes),
+        )
+    }
+}
+
+fn leader_ranges_valid(row: &LeaderRow, bytes: &[u8]) -> bool {
+    valid(bytes, row.text_a_start, row.text_a_len)
+        && valid(bytes, row.text_b_start, row.text_b_len)
+        && row.codename.is_none_or(|name| {
+            valid(bytes, name.custom.0, name.custom.1) && valid(bytes, name.group.0, name.group.1)
+        })
+}
+
+fn leader_equal(row: &LeaderRow, bytes: &[u8], previous: &UnitLeaderRow) -> bool {
+    let native = row.native;
+    if previous.reference_type != native.reference_type
+        || previous.id != native.id
+        || previous.character_type != native.character_type
+        || previous.character_id != native.character_id
+        || previous.category != native.category
+        || previous.experience != native.experience
+        || previous.kind != native.kind
+        || previous.skill_status != native.skill_status
+        || previous.skill_valid != native.skill_valid
+        || previous.skill_level != native.skill_level
+        || previous.skill_required_experience != native.skill_required_experience
+        || previous.skill_category != native.skill_category
+        || previous.components != native.components
+        || previous.owner != native.owner
+        || previous.captured != native.captured
+        || previous.visibility_choice != native.visibility_choice
+        || previous.template_visibility != native.template_visibility
+        || previous.exile_country != replay_data::rows::Recorded::Value(native.exile_country)
+        || previous.formation_reference
+            != replay_data::rows::Recorded::Value(row.formation_reference)
+        || previous.inherited_text_a.as_slice()
+            != &bytes[row.text_a_start..row.text_a_start + row.text_a_len]
+        || previous.inherited_text_b.as_slice()
+            != &bytes[row.text_b_start..row.text_b_start + row.text_b_len]
+    {
+        return false;
+    }
+    match (row.codename, &previous.codename) {
+        (Some(name), replay_data::rows::Recorded::Value(Some(prev))) => {
+            prev.kind == name.kind
+                && prev.order == name.order
+                && prev.ordered == name.ordered
+                && prev.programmatic == name.programmatic
+                && prev.custom.as_slice() == &bytes[name.custom.0..name.custom.0 + name.custom.1]
+                && prev.group.as_slice() == &bytes[name.group.0..name.group.0 + name.group.1]
+        }
+        (None, replay_data::rows::Recorded::Value(None)) => true,
+        _ => false,
     }
 }
 
@@ -1405,12 +1475,12 @@ fn walk_family_carrying<M: Memory>(
     family.results()
 }
 
-fn walk_census<M: Memory>(
+fn walk_census<M: Memory, E: census::CensusEntry>(
     memory: &M,
     base: usize,
     mut family: Family<'_>,
     owned_traits: Option<&TraitCapture>,
-    visited: impl IntoIterator<Item = census::Occurrence>,
+    visited: impl IntoIterator<Item = E>,
     historical: usize,
     carried: Carried<'_>,
 ) -> [ReadResult; N] {
@@ -1424,8 +1494,8 @@ fn walk_census<M: Memory>(
         if !family.alive() {
             break;
         }
-        let identity = occurrence.identity(historical);
-        match ccharacter::View::acquired(memory, base, identity, occurrence.fields(required)) {
+        let identity = E::identity(&occurrence, historical);
+        match ccharacter::View::acquired(memory, base, identity, E::fields(&occurrence, required)) {
             Ok(view) => family.visit(
                 memory,
                 base,

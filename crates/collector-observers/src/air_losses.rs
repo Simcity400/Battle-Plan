@@ -360,13 +360,15 @@ unsafe extern "system" fn post(context: *mut CallContext) {
             }
             let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
-            if engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-                .and_then(|a| engine_native_memory::read::<u64>(&memory, a))
-                != Some(observation.game as u64)
-            {
-                return Err("air loss game root changed during native call");
-            }
-            let change = native::after(&memory, base, observation.game, &observation.snapshot)?;
+            let singleton = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+                .ok_or("air loss game root changed during native call")?;
+            let change = native::after_checked(
+                &memory,
+                base,
+                singleton,
+                observation.game,
+                &observation.snapshot,
+            )?;
             let amount =
                 validate_delta(&change, observation.snapshot.family_base, observation.count)?;
             Ok((amount != 0).then_some(Entry {

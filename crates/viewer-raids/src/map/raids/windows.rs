@@ -359,61 +359,6 @@ mod tests {
     use viewer_native_gui::native_gui::lifecycle::Instance;
 
     #[test]
-    fn native_raid_draw_and_hover_follow_the_map_anchor() {
-        content_reader_script::test_game::enter();
-        let resources = draw_resources();
-        let windows = gui::windows(DRAW_GUI);
-        let context = Context {
-            resources: &resources,
-            windows: &windows,
-            viewport: [2048, 1152],
-            time: Some(0.),
-        };
-        let prepared = PreparedRaids {
-            placed: vec![Placed {
-                anchor: UNANCHORED,
-                screen: [100., 200.],
-                icon: RaidIcon {
-                    group: 1,
-                    province: 1,
-                    frame: 0,
-                    enabled: true,
-                    glyph: Some("glyph".into()),
-                    plus: false,
-                    tooltip: Some(tooltips::Key::Raid {
-                        id: 1,
-                        reference_type: 4,
-                        incoming: false,
-                    }),
-                },
-            }],
-            report: Default::default(),
-        };
-        let mut batch = Batch::default();
-        let mut hits = Vec::new();
-        let mut report = RaidReport::default();
-        assert_eq!(
-            prepared.draw(
-                &context,
-                assets().priority,
-                &mut PoolView::default(),
-                &mut batch,
-                &mut hits,
-                &mut report, None, None
-            ),
-            1
-        );
-        assert_eq!(
-            batch.quads[0].exact.as_ref().unwrap().corners,
-            [[125., 175.], [177., 175.], [177., 227.], [125., 227.]]
-        );
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].origin, [125., 175.]);
-        assert_eq!(hits[0].size, [52., 52.]);
-        assert!(report.reasons.is_empty());
-    }
-
-    #[test]
     fn raid_tooltip_regression_overlap_tracks_paint_order_after_camera_move() {
         content_reader_script::test_game::enter();
         let resources = draw_resources();

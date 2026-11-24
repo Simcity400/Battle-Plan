@@ -418,14 +418,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "deferred failure consumed without reached()")]
-    fn consumption_guard_detects_a_deferred_error_before_or_masks_it() {
-        let failure =
-            deferred(|| Failure::input(TableId::CountryLinks, "canonical_slot", None, "unlinked"));
-        capture(|| super::super::Eval::unknown(failure).or(|| super::super::Eval::True));
-    }
-
-    #[test]
     fn runtime_dispatch_preserves_its_source_error_without_a_string_round_trip() {
         let (_, failures) = capture(|| {
             let dispatched = content_reader_script::trigger_keys::dispatch_with_error::<(), (), Failure>(

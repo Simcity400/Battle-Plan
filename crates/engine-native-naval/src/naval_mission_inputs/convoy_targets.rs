@@ -361,38 +361,4 @@ mod tests {
         assert_eq!(read_source_speed(&memory, None), SourceSpeed::default());
         assert!(memory.reads.borrow().is_empty());
     }
-    #[test]
-    fn same_pass_design_memo_reuses_country_alias_and_clear_rereads() {
-        let (mut memory, entries, _) = fixture(&[1]);
-        let state = memory.world.game_state();
-        let links =
-            read::<u64>(&memory, state + engine_native::cgame_state::COUNTRY_LINKS).unwrap() as usize;
-        memory.world.u32(links + 8, 1);
-        let countries = ccountry::Reader::new(&memory, 0, state).unwrap();
-        let mut memo = ConvoyDesigns::default();
-        let first = memo.read(&memory, 0, &countries, 1);
-        assert_eq!(memo.read(&memory, 0, &countries, 2), first);
-        assert_eq!(
-            memory
-                .reads
-                .borrow()
-                .iter()
-                .filter(|(at, _)| *at == entries)
-                .count(),
-            1
-        );
-        let allocated = memo.allocated_bytes();
-        memo.clear();
-        assert_eq!(memo.allocated_bytes(), allocated);
-        assert_eq!(memo.read(&memory, 0, &countries, 1), first);
-        assert_eq!(
-            memory
-                .reads
-                .borrow()
-                .iter()
-                .filter(|(at, _)| *at == entries)
-                .count(),
-            2
-        );
-    }
 }

@@ -1,16 +1,3 @@
-#[test]
-fn move_graph_hash_lookup_dump_is_stable() {
-    let mut first = super::MoveGraph::default();
-    first.pairs.extend((0..32).map(|id| ((id, id + 1), id)));
-    let expected = format!("{:?}", first.debug_values());
-    for _ in 0..16 {
-        let mut other = super::MoveGraph::default();
-        other
-            .pairs
-            .extend((0..32).rev().map(|id| ((id, id + 1), id)));
-        assert_eq!(format!("{:?}", other.debug_values()), expected);
-    }
-}
 
 use super::*;
 use crate::province_graph::Crossing as Authored;

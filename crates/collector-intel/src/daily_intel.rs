@@ -22,6 +22,9 @@ impl Buffer {
 struct Slot {
     buffer: Option<Box<Buffer>>,
     missed: bool,
+    rows_cap: usize,
+    scratch_cap: usize,
+    released: bool,
 }
 
 struct Inner {
@@ -34,22 +37,64 @@ pub struct Home(SharedBox<Inner>);
 
 impl Home {
     pub fn try_new(rows: usize, scratch: usize) -> std::io::Result<Self> {
-        let rows = CaptureRows::new(rows);
+        let rows_buf = CaptureRows::new(rows);
         if crate::allocation::failed() {
             return Err(oom());
         }
         let buffer = engine_allocation::boxed(Buffer {
-            rows,
+            rows: rows_buf,
             scratch: filled(scratch, 0)?,
             reserved_required: 0,
         })?;
         Ok(Self(engine_allocation::shared(Inner {
             bytes: AtomicUsize::new(buffer.allocated_bytes()),
             slot: Mutex::new(Slot {
+                rows_cap: rows,
+                scratch_cap: scratch,
+                released: false,
                 buffer: Some(buffer),
                 missed: false,
             }),
         })?))
+    }
+
+    pub fn grow(&self, capacity: &mut usize) {
+        let mut buffer = {
+            let mut guard = self.slot();
+            let slot = &mut *guard;
+            if slot.released {
+                slot.rows_cap = slot.rows_cap.max(*capacity);
+                if let Some(buffer) = slot.buffer.as_mut() {
+                    grow_capacity(capacity, buffer.reserved_required);
+                    slot.rows_cap = slot.rows_cap.max(*capacity);
+                    buffer.reserved_required = 0;
+                }
+                return;
+            }
+            match slot.buffer.take() {
+                Some(buffer)
+                    if buffer.rows.rows.len() < *capacity
+                        || buffer.reserved_required > *capacity =>
+                {
+                    buffer
+                }
+                idle => {
+                    slot.buffer = idle;
+                    return;
+                }
+            }
+        };
+        grow_capacity(capacity, buffer.reserved_required);
+        buffer.rows.grow(capacity);
+        buffer.rows.reset();
+        buffer.reserved_required = 0;
+        let bytes = buffer.allocated_bytes();
+        self.0.bytes.store(bytes, Ordering::Relaxed);
+        let mut slot = self.slot();
+        slot.rows_cap = slot.rows_cap.max(buffer.rows.rows.capacity());
+        slot.scratch_cap = slot.scratch_cap.max(buffer.scratch.capacity());
+        slot.released = false;
+        slot.buffer = Some(buffer);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -59,6 +104,31 @@ impl Home {
 
     pub fn allocated_bytes(&self) -> usize {
         self.0.bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn release_idle(&self) {
+        let mut guard = self.slot();
+        let Slot {
+            buffer,
+            rows_cap,
+            scratch_cap,
+            released,
+            ..
+        } = &mut *guard;
+        let Some(buffer) = buffer.as_mut() else {
+            return;
+        };
+        if *released && buffer.allocated_bytes() == 0 {
+            return;
+        }
+        *rows_cap = (*rows_cap).max(buffer.rows.rows.capacity());
+        *scratch_cap = (*scratch_cap).max(buffer.scratch.capacity());
+        buffer.rows.release();
+        buffer.scratch = Vec::new();
+        *released = true;
+        self.0
+            .bytes
+            .store(buffer.allocated_bytes(), Ordering::Relaxed);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -104,12 +174,29 @@ impl Loan {
             if !due && !slot.missed {
                 return Walk::Skip;
             }
-            let Some(buffer) = slot.buffer.take() else {
+            let Some(mut buffer) = slot.buffer.take() else {
                 slot.missed = true;
                 return Walk::Busy;
             };
             slot.missed = false;
+            let rehydrate = if slot.released {
+                slot.released = false;
+                Some((slot.rows_cap, slot.scratch_cap))
+            } else {
+                None
+            };
             drop(slot);
+            if let Some((mut rows_cap, scratch_cap)) = rehydrate {
+                buffer.rows.grow(&mut rows_cap);
+                if buffer.scratch.len() < scratch_cap {
+                    let _ = engine_allocation::advisory(|| {
+                        engine_allocation::resize(&mut buffer.scratch, scratch_cap, 0)
+                    });
+                }
+                home.0
+                    .bytes
+                    .store(buffer.allocated_bytes(), Ordering::Relaxed);
+            }
             self.buffer = Some(buffer);
         }
         Walk::Ready(self.buffer.as_deref_mut().expect("borrowed above"))
@@ -125,32 +212,21 @@ impl Loan {
         let Some(home) = &self.home else {
             return;
         };
-        let mut buffer = match self.buffer.take() {
-            Some(buffer) => buffer,
-            None => {
-                let mut slot = home.slot();
-                match slot.buffer.take() {
-                    Some(buffer)
-                        if buffer.rows.rows.len() < *capacity
-                            || buffer.reserved_required > *capacity =>
-                    {
-                        buffer
-                    }
-                    idle => {
-                        slot.buffer = idle;
-                        return;
-                    }
-                }
-            }
+        let Some(mut buffer) = self.buffer.take() else {
+            home.grow(capacity);
+            return;
         };
         grow_capacity(capacity, buffer.reserved_required);
         buffer.rows.grow(capacity);
         buffer.rows.reset();
         buffer.reserved_required = 0;
-        home.0
-            .bytes
-            .store(buffer.allocated_bytes(), Ordering::Relaxed);
-        home.slot().buffer = Some(buffer);
+        let bytes = buffer.allocated_bytes();
+        home.0.bytes.store(bytes, Ordering::Relaxed);
+        let mut slot = home.slot();
+        slot.rows_cap = slot.rows_cap.max(buffer.rows.rows.capacity());
+        slot.scratch_cap = slot.scratch_cap.max(buffer.scratch.capacity());
+        slot.released = false;
+        slot.buffer = Some(buffer);
     }
 
     pub fn release(&mut self) {

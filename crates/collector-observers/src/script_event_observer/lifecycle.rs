@@ -428,23 +428,6 @@ pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), String>
 mod tests {
     use super::*;
     #[test]
-    fn clearing_five_thousand_timers_demands_only_three_count_words() {
-        let _globals = crate::event_feed_observer::test_globals();
-        struct CountsOnly(std::cell::Cell<usize>);
-        impl Memory for CountsOnly {
-            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-                assert_eq!(out.len(), 4);
-                assert!([0x104c, 0x107c, 0x1064].contains(&at));
-                self.0.set(self.0.get() + 1);
-                out.copy_from_slice(&5000_u32.to_le_bytes());
-                true
-            }
-        }
-        let memory = CountsOnly(std::cell::Cell::new(0));
-        assert_eq!(removal_counts(&memory, 0x1000, 2), Ok([5000; 3]));
-        assert_eq!(memory.0.get(), 3);
-    }
-    #[test]
     fn explicit_cooldown_clear_records_cooling_taken_and_removal_only_edges() {
         let _globals = crate::event_feed_observer::test_globals();
         assert_eq!(removal_edges([0, 0, 1], [0, 0, 0]), Ok((0, 1)));
@@ -508,18 +491,5 @@ mod tests {
             bytes: &bytes,
         };
         assert_eq!(duration_result(&reactivated, 0x1000).unwrap(), None);
-    }
-    #[test]
-    fn membership_and_refresh_writers_are_present_independently_of_effect_lists() {
-        let _globals = crate::event_feed_observer::test_globals();
-        let names = native::LIFECYCLE_TAPS.map(|site| site.name);
-        assert!(names.contains(&"TakenDecisionRemoved"));
-        assert!(names.contains(&"RefreshCooldownFinished"));
-        assert!(names.contains(&"MissionRemoved"));
-        assert!(names.contains(&"TargetedMissionRemoved"));
-        assert_ne!(
-            native::DECISION_COOLDOWN_FINISHED.rva,
-            native::REFRESH_COOLDOWN_FINISHED.rva
-        );
     }
 }

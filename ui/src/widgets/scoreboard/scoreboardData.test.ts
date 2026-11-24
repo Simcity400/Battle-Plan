@@ -12,7 +12,7 @@ import { tableDefaults, tableSettingsOf } from '../../families/table/settings.ts
 import type { ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
 import { gatedHour } from '../../test-support/gated.ts';
 import { DEFAULT_SORT, OPTIONS, TABLE_BASE, definition } from './definition.ts';
-import { isPartial, rankedTags, rankingColumn, rankingDescending, scoreboardParams, scoreboardSort, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
+import { isPartial, rankedTags, scoreboardParams, scoreboardSort, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
 import { scoreboardColumnsSpec, scoreboardDeclaration, scoreboardProjection } from './scoreboardProjection.ts';
 
 const family = (kind: string, measure: string) => ({ kind, measure });
@@ -40,19 +40,6 @@ test('the scoreboard follows playback over the registry defaults with the top te
   assert.deepEqual(tableSortOf(tableSortToken({ column: 'politicalPower', direction: 'ascending' }), DEFAULT_SORT), { column: 'politicalPower', direction: 'ascending' });
 });
 
-// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
-test.skip('a top ranks by the sorted measure, else the measure chosen, never by an unavailable column', () => {
-  assert.equal(rankingColumn(registry, { column: 'stability', direction: 'ascending' }, '', 'factories'), stability);
-  assert.equal(rankingColumn(registry, { column: 'country', direction: 'ascending' }, 'politicalPower', 'factories'), power);
-  assert.equal(rankingColumn(registry, { column: 'casualties', direction: 'descending' }, 'casualties', 'factories'), factories);
-  assert.deepEqual(scoreboardParams('1', gatedHour(50), [power, casualties], [], 10, factories),
-    { branchId: '1', hour: 50, columns: ['politicalPower', 'casualties'], countries: [], top: { count: 10, sort: 'factories', descending: true } });
-  assert.equal(rankingDescending({ column: 'factories', direction: 'ascending' }, factories), false);
-  assert.equal(rankingDescending({ column: 'country', direction: 'ascending' }, factories), true);
-  assert.deepEqual(scoreboardParams('1', gatedHour(50), [power], ['GER'], null, factories), { branchId: '1', hour: 50, columns: ['politicalPower'], countries: ['GER'] });
-  assert.equal(scoreboardParams('1', gatedHour(50), [power], [], null, factories), null);
-  assert.equal(scoreboardParams('1', gatedHour(50), [], ['GER'], null, factories), null);
-});
 
 test('a reply’s cells are exact amounts, a missing value keeps its reason, and slot/tag keys stay distinct', () => {
   const wide = (1n << 80n) + 1n;

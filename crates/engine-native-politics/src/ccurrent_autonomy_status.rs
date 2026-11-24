@@ -1,12 +1,36 @@
 use engine_native_parts::ccurrent_autonomy_status_layout::{VTABLE_RVA, SUBJECT_COUNTRY, STATE};
 
-use engine_native_memory::{Memory, read_slice, walk::Outcome};
-use engine_native::crelation::subject::{
-    self as csubject_relation,
-    Name,
-    NameWalk,
-    Reader,
+use engine_native_memory::{
+    Memory,
+    memory::{RecordField, RecordLayout, RecordSources, packed_fields},
+    read_slice, walk::Outcome,
 };
+use engine_native::{
+    ccountry,
+    crelation::subject::{
+        self as csubject_relation,
+        Name,
+        NameWalk,
+        Reader,
+    },
+};
+use engine_native_parts::cdiplomacy_status_layout as cdiplomacy_status;
+
+const COUNTRY_BATCH: usize = 64;
+const DIPLO_PTR_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ccountry::DIPLOMACY_STATUS,
+    destination_offset: 0,
+    len: 8,
+}];
+const DIPLO_PTR_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&DIPLO_PTR_FIELDS, 8).expect("valid diplomacy pointer layout");
+const DIPLO_AUTONOMY_FIELDS: [RecordField; 3] = packed_fields([
+    (0, 8),
+    (cdiplomacy_status::COUNTRY, 8),
+    (cdiplomacy_status::CURRENT_AUTONOMY_STATUS, 8),
+]);
+const DIPLO_AUTONOMY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&DIPLO_AUTONOMY_FIELDS, 24).expect("valid diplomacy autonomy layout");
 
 pub const SCORE: usize = 0x08;
 pub const PREVIOUS_STATE: usize = 0x30;
@@ -62,73 +86,156 @@ pub fn walk_buffer(
         let (mut len, mut bytes_len, mut required_bytes) = (0, 0_usize, 0_usize);
         let mut unread_rows = 0_u32;
         let mut found_country = false;
-        for slot in 1..reader.countries.count() {
-            let Some(country) = reader.countries.at(slot)? else {
-                continue;
+        let diplo_vtable = engine_sites::at(base, cdiplomacy_status::VTABLE_RVA)
+            .ok_or("module address overflow")? as u64;
+        let max_diplo_end = cdiplomacy_status::COUNTRY
+            .max(cdiplomacy_status::CURRENT_AUTONOMY_STATUS)
+            + 8;
+        let mut batch_countries = [engine_native_memory::country_identity::Country {
+            id: 0,
+            canonical_slot: 0,
+            pointer: 0,
+        }; COUNTRY_BATCH];
+        let mut country_ptrs = [0_usize; COUNTRY_BATCH];
+        let mut diplo_ptr_bytes = [0_u8; COUNTRY_BATCH * 8];
+        let mut diplo_ptrs = [0_usize; COUNTRY_BATCH];
+        let mut diplo_records = [0_u8; COUNTRY_BATCH * 24];
+        let mut slot = 1_u32;
+        while slot < reader.countries.count() {
+            let mut n = 0_usize;
+            let mut all_safe = true;
+            while slot < reader.countries.count() && n < COUNTRY_BATCH {
+                let cur = slot;
+                slot += 1;
+                let Some(country) = reader.countries.at(cur)? else {
+                    continue;
+                };
+                found_country = true;
+                batch_countries[n] = country;
+                country_ptrs[n] = country.pointer;
+                all_safe &= country
+                    .pointer
+                    .checked_add(ccountry::DIPLOMACY_STATUS + 8)
+                    .is_some();
+                n += 1;
+            }
+            if n == 0 {
+                break;
+            }
+            let ptrs_copied = if all_safe {
+                memory.copy_records(
+                    RecordSources::Pointers(&country_ptrs[..n]),
+                    &DIPLO_PTR_LAYOUT,
+                    &mut diplo_ptr_bytes[..n * 8],
+                )
+            } else {
+                0
             };
-            found_country = true;
-            let diplomacy = reader.diplomacy(country)?;
-            let pointer = reader.pointer(diplomacy, engine_native_parts::cdiplomacy_status_layout::CURRENT_AUTONOMY_STATUS)?;
-            if pointer == 0 {
-                continue;
+            let mut diplo_safe = ptrs_copied == n;
+            if diplo_safe {
+                for i in 0..n {
+                    let diplo = usize::try_from(u64::from_le_bytes(
+                        diplo_ptr_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
+                    ))
+                    .ok()
+                    .filter(|&p| p != 0);
+                    match diplo {
+                        Some(p) if p.checked_add(max_diplo_end).is_some() => {
+                            diplo_ptrs[i] = p;
+                        }
+                        _ => {
+                            diplo_safe = false;
+                            break;
+                        }
+                    }
+                }
             }
-            reader.vtable(pointer, VTABLE_RVA, "current autonomy vtable mismatch")?;
-            if reader.pointer(pointer, SUBJECT_COUNTRY)? != country.pointer {
-                return Err("current autonomy subject country mismatch");
-            }
-            let states = [
-                reader.pointer(pointer, STATE)?,
-                reader.pointer(pointer, PREVIOUS_STATE)?,
-                reader.pointer(pointer, NEXT_STATE)?,
-            ];
-            let mut sources = [None; 3];
-            let mut row_bytes = 0_usize;
-            for (index, definition) in states.into_iter().enumerate() {
-                if index != 0 && definition == 0 {
+            let diplos_copied = if diplo_safe {
+                memory.copy_records(
+                    RecordSources::Pointers(&diplo_ptrs[..n]),
+                    &DIPLO_AUTONOMY_LAYOUT,
+                    &mut diplo_records[..n * 24],
+                ) / DIPLO_AUTONOMY_FIELDS.len()
+            } else {
+                0
+            };
+            for i in 0..n {
+                let country = batch_countries[i];
+                let pointer = if i < diplos_copied {
+                    let rec = &diplo_records[i * 24..(i + 1) * 24];
+                    if u64::from_le_bytes(rec[..8].try_into().unwrap()) != diplo_vtable {
+                        return Err("diplomacy vtable mismatch");
+                    }
+                    if u64::from_le_bytes(rec[8..16].try_into().unwrap()) != country.pointer as u64 {
+                        return Err("diplomacy country mismatch");
+                    }
+                    usize::try_from(u64::from_le_bytes(rec[16..24].try_into().unwrap()))
+                        .map_err(|_| "subject pointer overflow")?
+                } else {
+                    let diplomacy = reader.diplomacy(country)?;
+                    reader.pointer(diplomacy, cdiplomacy_status::CURRENT_AUTONOMY_STATUS)?
+                };
+                if pointer == 0 {
                     continue;
                 }
-                let source = csubject_relation::definition_name(memory, definition)?;
-                row_bytes = row_bytes
-                    .checked_add(source.1)
-                    .ok_or("current autonomy name byte count overflow")?;
-                sources[index] = Some(source);
-            }
-            required_bytes = required_bytes
-                .checked_add(row_bytes)
-                .ok_or("current autonomy name byte count overflow")?;
-            let mut row = Row {
-                subject: country.id,
-                score: reader.field(pointer, SCORE)?,
-                lower_score: reader.field(pointer, LOWER_SCORE)?,
-                upper_score: reader.field(pointer, UPPER_SCORE)?,
-                last_modified_bits: reader.field(pointer, LAST_MODIFIED_HOUR)?,
-                ..Row::default()
-            };
-            names.ensure(required_bytes)?;
-            if len == output.len() || row_bytes > names.len() - bytes_len {
-                unread_rows = unread_rows
-                    .checked_add(1)
-                    .ok_or("current autonomy row count overflow")?;
-                continue;
-            }
-            let mut fields = [None; 3];
-            for (index, source) in sources.into_iter().enumerate() {
-                if let Some((source, name_len)) = source {
-                    if !read_slice(memory, source, &mut names[bytes_len..bytes_len + name_len]) {
-                        return Err("current autonomy name bytes unreadable");
-                    }
-                    fields[index] = Some(Name {
-                        start: bytes_len,
-                        len: name_len,
-                    });
-                    bytes_len += name_len;
+                reader.vtable(pointer, VTABLE_RVA, "current autonomy vtable mismatch")?;
+                if reader.pointer(pointer, SUBJECT_COUNTRY)? != country.pointer {
+                    return Err("current autonomy subject country mismatch");
                 }
+                let states = [
+                    reader.pointer(pointer, STATE)?,
+                    reader.pointer(pointer, PREVIOUS_STATE)?,
+                    reader.pointer(pointer, NEXT_STATE)?,
+                ];
+                let mut sources = [None; 3];
+                let mut row_bytes = 0_usize;
+                for (index, definition) in states.into_iter().enumerate() {
+                    if index != 0 && definition == 0 {
+                        continue;
+                    }
+                    let source = csubject_relation::definition_name(memory, definition)?;
+                    row_bytes = row_bytes
+                        .checked_add(source.1)
+                        .ok_or("current autonomy name byte count overflow")?;
+                    sources[index] = Some(source);
+                }
+                required_bytes = required_bytes
+                    .checked_add(row_bytes)
+                    .ok_or("current autonomy name byte count overflow")?;
+                let mut row = Row {
+                    subject: country.id,
+                    score: reader.field(pointer, SCORE)?,
+                    lower_score: reader.field(pointer, LOWER_SCORE)?,
+                    upper_score: reader.field(pointer, UPPER_SCORE)?,
+                    last_modified_bits: reader.field(pointer, LAST_MODIFIED_HOUR)?,
+                    ..Row::default()
+                };
+                names.ensure(required_bytes)?;
+                if len == output.len() || row_bytes > names.len() - bytes_len {
+                    unread_rows = unread_rows
+                        .checked_add(1)
+                        .ok_or("current autonomy row count overflow")?;
+                    continue;
+                }
+                let mut fields = [None; 3];
+                for (index, source) in sources.into_iter().enumerate() {
+                    if let Some((source, name_len)) = source {
+                        if !read_slice(memory, source, &mut names[bytes_len..bytes_len + name_len]) {
+                            return Err("current autonomy name bytes unreadable");
+                        }
+                        fields[index] = Some(Name {
+                            start: bytes_len,
+                            len: name_len,
+                        });
+                        bytes_len += name_len;
+                    }
+                }
+                row.state = fields[0].ok_or("current autonomy state definition is null")?;
+                row.previous = fields[1];
+                row.next = fields[2];
+                output[len] = row;
+                len += 1;
             }
-            row.state = fields[0].ok_or("current autonomy state definition is null")?;
-            row.previous = fields[1];
-            row.next = fields[2];
-            output[len] = row;
-            len += 1;
         }
         if !found_country {
             return Err("country table has no readable countries");

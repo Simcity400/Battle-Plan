@@ -22,6 +22,8 @@ pub enum Role {
     FrameBuilder,
     FramePriority,
     Capture,
+    SpoolWriter,
+    JournalWriter,
     #[cfg(feature = "worker_sampler")]
     Sampler,
 }
@@ -151,6 +153,8 @@ pub(crate) fn registered_creation(role: &str, id: u32) -> Option<u64> {
         "frame_builder" => Role::FrameBuilder,
         "frame_priority" => Role::FramePriority,
         "capture" => Role::Capture,
+        "spool_writer" => Role::SpoolWriter,
+        "journal_writer" => Role::JournalWriter,
         "sampler" => Role::Sampler,
         _ => return None,
     } as usize;
@@ -162,7 +166,7 @@ pub(crate) fn registered_creation(role: &str, id: u32) -> Option<u64> {
     (created != 0 && registered.load(Ordering::Acquire) == id).then_some(created)
 }
 
-const BASE_NAMED: usize = 8;
+const BASE_NAMED: usize = 10;
 #[cfg(not(feature = "worker_sampler"))]
 const NAMED: usize = BASE_NAMED;
 #[cfg(feature = "worker_sampler")]
@@ -354,6 +358,14 @@ macro_rules! named_threads {
             (
                 "capture",
                 REGISTERED[Role::Capture as usize].load(Ordering::Acquire),
+            ),
+            (
+                "spool_writer",
+                REGISTERED[Role::SpoolWriter as usize].load(Ordering::Acquire),
+            ),
+            (
+                "journal_writer",
+                REGISTERED[Role::JournalWriter as usize].load(Ordering::Acquire),
             ),
             #[cfg(feature = "worker_sampler")]
             (

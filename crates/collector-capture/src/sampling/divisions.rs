@@ -36,7 +36,11 @@ impl DivisionsJob {
     }
     pub fn clear(&mut self) {
         self.census.clear();
-        self.details.clear();
+        if !self.context.details_active {
+            self.details.release_daily();
+        } else {
+            self.details.clear();
+        }
         self.overflowed = false;
         self.acquisition_ticks = [0; 6];
         self.inputs_captured = false;
@@ -54,7 +58,9 @@ impl DivisionsJob {
 
     fn grow_hints(&mut self) {
         self.census.grow();
-        self.details.grow(self.census.source_requirement());
+        if self.context.details_active {
+            self.details.grow(self.census.source_requirement());
+        }
         self.update_capacity_charge();
     }
     pub(super) fn update_capacity_charge(&mut self) {

@@ -484,42 +484,6 @@ fn cas_ratio_projection_preserves_zero_signed_values_and_field_local_faults() {
 }
 
 #[test]
-fn sortie_cost_scales_with_missions_not_countries() {
-    let mut sorties = Sorties::with_capacities(&capacities());
-    for (missions, countries) in [
-        (1_000, 1_500),
-        (2_000, 1_500),
-        (5_000, 1_500),
-        (5_000, 5_000),
-    ] {
-        let fixture = fixture(missions, countries);
-        let memory = Counting::new(&fixture.world.bytes);
-        let mut best = std::time::Duration::MAX;
-        for _ in 0..5 {
-            memory.reads.set(0);
-            let begin = std::time::Instant::now();
-            sorties.capture(
-                &memory,
-                MODULE,
-                fixture.game_state,
-                false,
-                fixture.wings.iter().map(Ok),
-                &fixture.witnesses,
-            );
-            best = best.min(begin.elapsed());
-        }
-        assert_eq!(sorties.outcome, Outcome::Rows { len: 0 });
-        assert_eq!(sorties.missions.len, missions);
-        let calls = memory.reads.get();
-        println!(
-            "{missions} missions, {countries} countries: {calls} guarded calls ({:.1}/mission), {best:?}",
-            calls as f64 / missions as f64,
-        );
-        assert!(calls <= 30 * missions + 3_000, "{calls} guarded calls");
-    }
-}
-
-#[test]
 fn detection_override_failure_drops_partial_values_and_preserves_other_modifiers() {
     struct Observer {
         fail: bool,

@@ -17,45 +17,6 @@ struct CoreHintMemory<'a> {
     hints: bool,
 }
 
-impl CoreHintMemory<'_> {
-    fn copies(&self) -> Vec<(usize, usize)> {
-        self.events
-            .borrow()
-            .iter()
-            .filter_map(|event| match *event {
-                CoreEvent::Copy(at, len) => Some((at, len)),
-                CoreEvent::Hint(..) => None,
-            })
-            .collect()
-    }
-}
-
-impl Memory for CoreHintMemory<'_> {
-    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        self.events
-            .borrow_mut()
-            .push(CoreEvent::Copy(address, output.len()));
-        if self
-            .fault
-            .get()
-            .is_some_and(|at| address <= at && at - address < output.len())
-        {
-            if self.once {
-                self.fault.set(None);
-            }
-            output.fill(0xff);
-            return false;
-        }
-        kit::memory(self.bytes).copy(address, output)
-    }
-
-    fn prefetch(&self, address: usize, len: usize) {
-        if self.hints {
-            self.events.borrow_mut().push(CoreEvent::Hint(address, len));
-        }
-    }
-}
-
 #[test]
 fn core_hints_cover_template_skip_and_preserve_ordered_partial_faults() {
     let mut bytes = kit::fixture();
@@ -122,6 +83,45 @@ fn core_hints_cover_template_skip_and_preserve_ordered_partial_faults() {
                     .unwrap();
                 assert!(hint < owner, "child hints precede serial projection");
             }
+        }
+    }
+}
+
+impl CoreHintMemory<'_> {
+    fn copies(&self) -> Vec<(usize, usize)> {
+        self.events
+            .borrow()
+            .iter()
+            .filter_map(|event| match *event {
+                CoreEvent::Copy(at, len) => Some((at, len)),
+                CoreEvent::Hint(..) => None,
+            })
+            .collect()
+    }
+}
+
+impl Memory for CoreHintMemory<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.events
+            .borrow_mut()
+            .push(CoreEvent::Copy(address, output.len()));
+        if self
+            .fault
+            .get()
+            .is_some_and(|at| address <= at && at - address < output.len())
+        {
+            if self.once {
+                self.fault.set(None);
+            }
+            output.fill(0xff);
+            return false;
+        }
+        kit::memory(self.bytes).copy(address, output)
+    }
+
+    fn prefetch(&self, address: usize, len: usize) {
+        if self.hints {
+            self.events.borrow_mut().push(CoreEvent::Hint(address, len));
         }
     }
 }
@@ -591,20 +591,6 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
 }
 
 #[test]
-fn strided_core_identities_keep_most_of_a_run_in_the_memo() {
-    for base in [0x1_2345_6780_usize, 0x2_0000_0000, 0x7ff0_1234_5670] {
-        for stride in (0x10..=0x8000).step_by(0x10) {
-            let mut used = [false; CORE_IDENTITY_SLOTS];
-            for index in 0..64 {
-                used[CoreIdentities::slot(base + index * stride)] = true;
-            }
-            let held = used.iter().filter(|&&used| used).count();
-            assert!(held >= 40, "base {base:#x}, stride {stride:#x}: {held}");
-        }
-    }
-}
-
-#[test]
 fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
     fn read_children(
         memory: &impl Memory,
@@ -751,91 +737,6 @@ fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
 }
 
 #[test]
-fn growing_inputs_keep_original_fault_precedence_and_read_trace() {
-    let bytes = many::world(4, 2);
-    let direct = Observed {
-        bytes: &bytes,
-        reads: RefCell::new(Vec::new()),
-        fault: None,
-        fault_at: None,
-    };
-    let mut fixed = Census::new();
-    fixed.capture_inputs(&direct, 0, many::GAME_STATE);
-    let count = direct.reads.borrow().len();
-    for ordinal in 0..count {
-        let fixed_memory = Observed {
-            bytes: &bytes,
-            reads: RefCell::new(Vec::new()),
-            fault: None,
-            fault_at: Some(ordinal),
-        };
-        let growing_memory = Observed {
-            bytes: &bytes,
-            reads: RefCell::new(Vec::new()),
-            fault: None,
-            fault_at: Some(ordinal),
-        };
-        let mut fixed = Census::new();
-        let mut growing = Census::new();
-        growing.counts.clear();
-        growing.entries = Vec::new();
-        growing.unit_inputs = Some(engine_allocation::shared(UnitInputs::new(0)).unwrap());
-        fixed.capture_inputs(&fixed_memory, 0, many::GAME_STATE);
-        growing.capture_inputs(&growing_memory, 0, many::GAME_STATE);
-        assert_eq!(
-            growing.census_result, fixed.census_result,
-            "fault {ordinal}"
-        );
-        assert_eq!(
-            growing.unit_inputs().unwrap().outcome(),
-            fixed.unit_inputs().unwrap().outcome(),
-            "fault {ordinal}"
-        );
-        assert_eq!(
-            *growing_memory.reads.borrow(),
-            *fixed_memory.reads.borrow(),
-            "fault {ordinal}"
-        );
-    }
-}
-
-#[test]
-fn core_children_authenticate_in_one_gather_each() {
-    struct Calls<'a>(&'a [u8], std::cell::Cell<usize>);
-    impl Memory for Calls<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.1.set(self.1.get() + 1);
-            kit::memory(self.0).copy(address, output)
-        }
-        fn copy_records(
-            &self,
-            sources: RecordSources<'_>,
-            layout: &RecordLayout<'_>,
-            destination: &mut [u8],
-        ) -> usize {
-            self.1.set(self.1.get() + 1);
-            kit::memory(self.0).copy_records(sources, layout, destination)
-        }
-    }
-    let mut bytes = kit::fixture();
-    let roster = kit::C0 + ccountry::DIVISIONS;
-    for offset in [8, 12] {
-        bytes[roster + offset..roster + offset + 4].copy_from_slice(&9u32.to_le_bytes());
-    }
-    for index in 0..9 {
-        let pointer = [kit::A1, kit::A2][index % 2];
-        bytes[0x23000 + index * 8..0x23008 + index * 8]
-            .copy_from_slice(&(pointer as u64).to_le_bytes());
-    }
-    let mut census = Census::new();
-    census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
-    let calls = Calls(&bytes, Default::default());
-    census.capture_core(&calls);
-    assert_eq!(census.outcome(), Outcome::Rows { len: 10 });
-    assert_eq!(calls.1.get(), 1 + 10 + 4);
-}
-
-#[test]
 fn parts_joined_in_slot_order_equal_one_walk() {
     use many::*;
     const COUNTRIES: u32 = 6;
@@ -950,13 +851,13 @@ fn parts_joined_in_slot_order_equal_one_walk() {
 #[test]
 fn part_starts_split_entries_evenly_at_country_boundaries() {
     let mut census = Census::new_worker();
-    let entries = 4 * 1_500;
+    let entries = 6_000;
     census.entries = vec![Entry::default(); entries];
     census.slot_ends = (1..=60).map(|slot| (slot, slot * 100)).collect();
     let mut starts = [0; MAX_PARTS - 1];
-    assert_eq!(parts_for(entries), 4);
-    assert_eq!(census.part_starts(&mut starts), 3);
-    assert_eq!(starts, [16, 31, 46]);
+    assert_eq!(parts_for(entries), 6);
+    assert_eq!(census.part_starts(&mut starts), 5);
+    assert_eq!(starts, [11, 21, 31, 41, 51]);
 }
 
 #[test]

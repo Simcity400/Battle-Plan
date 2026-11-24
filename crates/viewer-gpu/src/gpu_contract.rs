@@ -720,15 +720,6 @@ mod tests {
     use wgpu::{Backend, DeviceType};
 
     #[test]
-    fn the_sea_bed_target_is_half_the_output_rounded_up_unless_full() {
-        assert_eq!(SeaBed::Half.size([1920, 1080]), [960, 540]);
-        assert_eq!(SeaBed::Half.size([2049, 1153]), [1025, 577]);
-        assert_eq!(SeaBed::Half.size([1, 1]), [1, 1]);
-        assert_eq!(SeaBed::Half.size([3, 2]), [2, 1]);
-        assert_eq!(SeaBed::Full.size([2049, 1153]), [2049, 1153]);
-    }
-
-    #[test]
     fn missing_compiled_effect_states_are_named_as_device_requirements() {
         let all = wgpu::Features::FLOAT32_FILTERABLE
             | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER

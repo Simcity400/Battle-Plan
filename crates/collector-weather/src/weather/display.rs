@@ -85,7 +85,6 @@ impl DisplayCapture {
             Ok(header)
         });
     }
-    #[cfg(test)]
     pub(super) fn equal(&self, previous: Option<&rows::WeatherDisplay>) -> bool {
         match (self.header, previous) {
             (Err(_), None) => true,

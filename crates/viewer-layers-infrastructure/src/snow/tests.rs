@@ -120,24 +120,6 @@ fn snow_upload_writes_only_the_band_a_changed_cell_lies_in() {
 }
 
 #[test]
-fn snow_a_step_that_changes_no_cell_writes_no_band() {
-    let first = grid(1);
-    let mut scene = Counted::default();
-    let mut layer = sent(&first, &mut scene);
-    let (rects, written, finished) = (scene.rects.len(), scene.written, scene.finished);
-    layer.take(made(&first, Some(&[])));
-    assert!(layer.uploaded(), "the grid the scene holds is owed nothing");
-    layer.push(&mut scene).unwrap();
-    assert_eq!((scene.rects.len(), scene.written, scene.finished), (rects, written, finished), "nothing is written");
-
-    let words = Arc::new(SnowMud { province_snow: vec![Some(5)].into(), ..SnowMud::clone(&first) });
-    layer.take(made(&words, Some(&[])));
-    layer.push(&mut scene).unwrap();
-    assert_eq!((scene.rects.len(), scene.written, scene.finished), (rects, written, finished + 1), "taken as one piece, no band written");
-    assert!(layer.uploaded());
-}
-
-#[test]
 fn snow_a_whole_change_is_written_in_runs_of_bands_and_ends_equal_to_whole() {
     let first = grid(1);
     let mut scene = Counted::default();

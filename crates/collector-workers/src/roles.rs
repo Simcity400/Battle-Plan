@@ -227,65 +227,67 @@ impl Role {
             | Self::PresentationSettle
             | Self::PresentationStatus
             | Self::Presentation => 0,
-            Self::ObserverBoundary
-            | Self::Countries
-            | Self::Orders
-            | Self::OrderRoots
-            | Self::OrdersPart
-            | Self::OrdersStitch
-            | Self::ChildFronts
-            | Self::AirWing
-            | Self::Naval
-            | Self::AirMissions
-            | Self::Late
-            | Self::Characters
-            | Self::Divisions
+            Self::PresentationSpeedTerms
             | Self::DivisionInputs
             | Self::DivisionInputParts
-            | Self::ShipModels
+            | Self::Divisions
+            | Self::OrderRoots
+            | Self::Orders
+            | Self::OrdersPart
+            | Self::OrdersStitch
+            | Self::GatedProjects
             | Self::AirBases
-            | Self::Radar
+            | Self::ShipModels
+            | Self::ShipModelDetails
+            | Self::OrdinaryNavies
+            | Self::ScoresRails
+            | Self::Templates
+            | Self::IntelResidual
+            | Self::AirWing
+            | Self::Countries
+            | Self::OrdinaryCombat
+            | Self::OrdinaryTaskForces
+            | Self::Governance
+            | Self::OrdinaryMap
+            | Self::AirMissions
+            | Self::Characters => 1,
+            Self::ObserverBoundary
+            | Self::ChildFronts
+            | Self::Naval
+            | Self::Late
             | Self::Intel
-            | Self::Players
             | Self::MapCombats
+            | Self::World
+            | Self::Economy
+            | Self::FinalInputs
+            | Self::PresentationMovement
+            | Self::Radar
+            | Self::Players
             | Self::AirStats
             | Self::Supremacy
             | Self::Sunk
-            | Self::World
-            | Self::Economy
-            | Self::PresentationSpeedTerms
-            | Self::FinalInputs
-            | Self::ScoresRails
             | Self::AirSupply
-            | Self::IntelResidual
             | Self::ScriptVariables
-            | Self::Templates
             | Self::Slow
             | Self::Stability
             | Self::WarOverview
             | Self::IndustrialOrganisations
             | Self::ProductionDaily
-            | Self::ProductionModifierParts => 1,
-            Self::Governance
+            | Self::ProductionModifierParts
             | Self::Gated
-            | Self::GatedProjects
             | Self::Projects
             | Self::CharacterInputs
             | Self::AdvisorRoles
-            | Self::PresentationMovement
             | Self::Ordinary
-            | Self::OrdinaryNavies
-            | Self::OrdinaryCombat
             | Self::OrdinaryNaval
             | Self::Provinces
             | Self::Research
-            | Self::ShipModelDetails
-            | Self::DivisionModelInputs => 2,
+            | Self::DivisionModelInputs
+            | Self::Session
+            | Self::Relations => 2,
             Self::States
             | Self::Capitulation
             | Self::Wars
-            | Self::OrdinaryTaskForces
-            | Self::OrdinaryMap
             | Self::ProvinceUnitOrder
             | Self::CharacterPortraits
             | Self::CountryLeaderRoles
@@ -294,7 +296,6 @@ impl Role {
             | Self::ArmyIcons
             | Self::Fronts
             | Self::Weather => 3,
-            Self::Session | Self::Relations => 2,
             Self::Factions
             | Self::Lexical
             | Self::RaidLaunch
@@ -390,4 +391,4 @@ pub const ROLES: [Role; ROLE_COUNT] = [
     Role::AirSupply,
     Role::ScriptVariables,
 ];
-pub const MAX_JOBS: usize = 226;
+pub const MAX_JOBS: usize = 228;

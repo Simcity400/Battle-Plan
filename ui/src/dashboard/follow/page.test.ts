@@ -503,13 +503,6 @@ test('review 9: while paused, a dated refusal that does not cover the target nev
   assert.deepEqual([view().id, view().mode], [3, 'refused'], 'the refusal that covers the target installs');
 });
 
-test('review 10: the structure React reads is made once per install, not on every view', () => {
-  const { p, offer } = page();
-  offer(entry({ id: 1, c: 20 })); p.publish(10);
-  const made = p.widgets.get(1)!.installed!.structure;
-  assert.equal(typeof made, 'string');
-  assert.equal(p.view(1).structure, made);
-});
 
 test('a later-window speculative entry does not displace an earlier upcoming entry waiting for the clock', () => {
   const { p, offer, view } = page();

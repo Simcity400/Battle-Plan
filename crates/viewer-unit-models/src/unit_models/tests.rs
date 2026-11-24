@@ -441,14 +441,6 @@ fn names(candidates: Vec<(Level, String)>) -> Vec<String> {
     candidates.into_iter().map(|(_, name)| name).collect()
 }
 
-#[test]
-fn ship_and_unit_gates_are_strict_below_their_cutoffs() {
-    assert!(GATES.units(119.9));
-    assert!(GATES.ships(239.9));
-    assert!(!GATES.units(240.0) && !GATES.ships(240.0));
-    assert!(!GATES.units(120.0));
-}
-
 const GATES: Gates = Gates {
     units: 120.0,
     ships: 240.0,

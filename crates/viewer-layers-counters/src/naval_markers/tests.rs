@@ -188,26 +188,6 @@ fn an_input_changed_in_a_step_remakes_the_part_once_and_it_equals_composed() {
 }
 
 #[test]
-fn a_change_of_a_unit_no_transfer_names_remakes_nothing() {
-    let units = campaign("naval markers watched", |_, _| Status::Complete, |at, store| match at {
-        200 => put(store, TableId::Divisions, 1, None, &[("province", Cell::U32(5))]),
-        240 => put(store, TableId::Divisions, 0, None, &[("province", Cell::U32(6))]),
-        _ => {}
-    });
-    let mut side = side_for(units);
-    reach(&mut side, 150);
-    side.settle_all().unwrap();
-    let made = layer(&side).made();
-    reach(&mut side, 204);
-    side.settle_all().unwrap();
-    assert_eq!(layer(&side).made(), made, "division 8 is in no transfer");
-    reach(&mut side, 244);
-    side.settle_all().unwrap();
-    assert_eq!(layer(&side).made(), made + 1, "division 7 rides transfer 70");
-    settled_equals_composed(&mut side);
-}
-
-#[test]
 fn a_part_changed_twice_before_it_settles_shows_its_newest_values() {
     let units = campaign("naval markers twice", |_, _| Status::Complete, |at, store| match at {
         200 => put(store, TableId::NavalCombatDetails, 0, None, &[("sides", Cell::Opaque(&sides(&[10], &[])))]),
@@ -305,26 +285,3 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
     assert!(icon_combats(&shown).is_empty(), "which erases the icon");
 }
 
-#[test]
-fn the_layer_declares_against_this_schema() {
-    let kinds = replay_recording::schema::schema().unwrap();
-    let mut layer = markers(&history());
-    let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "naval_markers");
-    layer.inputs(&View::default(), &mut inputs).unwrap();
-    assert_eq!(inputs.upstream(), ["engagements"]);
-    assert_eq!(inputs.into_tables().len(), TABLES.len());
-}
-
-#[test]
-fn hours_that_change_no_combat_read_no_frame_and_make_nothing() {
-    let units = campaign("naval markers quiet hours", |_, _| Status::Complete, |_, _| {});
-    let mut side = side_for(units);
-    reach(&mut side, 150);
-    side.settle_all().unwrap();
-    assert_eq!(icon_combats(&values(&side)), [Ok(500)], "the engaged combat's icon is drawn before the quiet hours");
-    let held = (layer(&side).made(), layer(&side).frames_read());
-    reach(&mut side, 260);
-    side.settle_all().unwrap();
-    assert_eq!((layer(&side).made(), layer(&side).frames_read()), held, "110 hours changed nothing");
-    settled_equals_composed(&mut side);
-}

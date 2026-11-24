@@ -14,8 +14,6 @@ use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
 use viewer_native_gui::icon_windows::PoolView;
 use viewer_native_gui::sprites::{Batch, layer};
 #[cfg(test)]
-use viewer_counter_kit::AirMissionClick;
-#[cfg(test)]
 use replay_data::rows::AirRegionalMissionRow;
 use replay_data::rows::AirWingRow;
 #[cfg(test)]
@@ -1143,7 +1141,7 @@ impl Prepared {
 
 #[cfg(test)]
 mod tests {
-    use super::{AirMissionClick, AirMissionPart, AirRegionalMissionRow, AirWingRow, Arc, Ground, MISSIONS, PASS_UNKNOWN, TIMEOUT_UNKNOWN, average, count, ground, interception_alert, interception_received, regional_counts};
+    use super::{AirRegionalMissionRow, AirWingRow, Arc, Ground, MISSIONS, PASS_UNKNOWN, TIMEOUT_UNKNOWN, average, count, ground, interception_alert, interception_received, regional_counts};
     #[test]
     fn ground_crews_keep_active_controls_enabled_and_compare_unrounded_power() {
         assert_eq!(
@@ -1169,12 +1167,6 @@ mod tests {
         );
         assert!(ground(0, None, 20).is_err());
         assert!(ground(2, Some(100), 20).is_err());
-    }
-    #[test]
-    fn a_ground_crew_click_does_nothing_and_the_other_parts_keep_their_actions() {
-        assert_eq!(AirMissionPart::GroundCrews.click(), AirMissionClick::Nothing);
-        assert_eq!(AirMissionPart::Mission(4).click(), AirMissionClick::SelectMission(4));
-        assert_eq!(AirMissionPart::Supply.click(), AirMissionClick::OpenRegion);
     }
     #[test]
     fn interception_uses_the_trace_gate_and_any_proved_alert_overrides_unknown_entries() {

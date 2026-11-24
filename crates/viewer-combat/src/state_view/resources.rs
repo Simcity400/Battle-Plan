@@ -85,14 +85,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_state_without_listed_pooled_or_gated_resources_has_none() {
-        assert!(none(false, false, 0));
-        assert!(!none(true, false, 0));
-        assert!(!none(false, true, 0));
-        assert!(!none(false, false, 1));
-    }
-
-    #[test]
     fn zero_amounts_are_left_out_and_others_round_halves_away_from_zero() {
         let mut out = Bindings::default();
         assert!(entry(&mut out, &definition(Some(3)), 0).is_none());

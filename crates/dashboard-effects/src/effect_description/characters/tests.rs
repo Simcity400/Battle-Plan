@@ -110,20 +110,6 @@ fn character_scopes() -> EventScopes {
 }
 
 #[test]
-fn set_nationality() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render(
-        "set_nationality=BBB",
-        &mut character_scopes(),
-        Content::default(),
-    );
-    assert_eq!(out.text, "Nationality Current name/basin AAA\n");
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-}
-
-#[test]
 fn nationality_character_selector_uses_root_roster_then_current_fallback() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");

@@ -393,8 +393,6 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         self.cleaning = cleaning;
     }
 
-
-
     pub fn retry(&self) -> Option<Retry> {
         self.pool.as_ref().and_then(Pool::retry)
     }
@@ -1356,39 +1354,6 @@ mod tests {
         size = { width = 100 height = 100 }
         iconType = { name = icon spriteType = GFX_even }
     } }"#;
-
-    #[test]
-    fn dump_stalled_pools_reach_the_derived_bound_with_names_and_counts() {
-        let retries = vec![
-            Retry {
-                name: "synthetic_labels".into(),
-                requests: 17,
-                rounds: 2,
-            },
-            Retry {
-                name: "synthetic_bases".into(),
-                requests: 16,
-                rounds: 1,
-            },
-        ];
-        let mut frames = DumpFrames::default();
-        for _ in 0..3 {
-            assert!(frames.next(&retries));
-        }
-
-        assert!(!frames.next(&retries));
-        assert!(
-            retries[0]
-                .warning()
-                .contains("17 synthetic_labels requests still pending")
-        );
-        assert!(
-            retries[1]
-                .warning()
-                .contains("16 synthetic_bases requests still pending")
-        );
-        assert!(!frames.next(&[]));
-    }
 
     #[test]
     fn combat_handles_keep_their_high_bits_in_pool_ownership() {

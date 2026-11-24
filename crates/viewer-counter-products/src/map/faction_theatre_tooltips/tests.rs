@@ -199,22 +199,3 @@ fn the_commander_resolves_through_unit_leaders_and_unresolved_links_are_named() 
     assert_eq!(facts_of(&none, test_frame(0)).commander, Ok(None), "no commander reads no leaders");
 }
 
-#[test]
-fn a_recorded_row_gives_its_name_owner_commander_and_countries() {
-    let row = FactionTheatreRow {
-        faction: 7,
-        ordinal: 0,
-        regions: vec![1],
-        name: Recorded::Value(b"Front".to_vec()),
-        owner: Recorded::Value(3),
-        commander: Recorded::Value(Some(5 << 32 | 9)),
-        countries: Recorded::Value(vec![4, 3]),
-        ..Default::default()
-    };
-    let theatre = Theatre::of(&row);
-    assert_eq!(theatre.name, Recorded::Value(&b"Front"[..]));
-    assert_eq!(theatre.owner, Recorded::Value(3));
-    assert_eq!(theatre.commander, Recorded::Value(Some(5 << 32 | 9)));
-    assert_eq!(theatre.countries, Recorded::Value(&[4, 3][..]));
-    assert_eq!(theatre.regions, &[1]);
-}

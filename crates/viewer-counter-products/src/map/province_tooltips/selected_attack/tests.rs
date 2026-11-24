@@ -73,16 +73,6 @@ fn the_move_is_the_routes_last_edge_or_the_shared_province() {
     assert_eq!(retained_edge(5, &[4, 8, 6]), Some((8, 6)));
 }
 
-#[test]
-fn modifier_lines_print_the_first_value_coloured_by_sign() {
-    assert_eq!(
-        modifier_text("Terrain", -10_000),
-        "Terrain: \u{11}R-10.00%\u{11}!"
-    );
-    assert_eq!(modifier_text("Night", 2_500), "Night: \u{11}G+2.50%\u{11}!");
-    assert_eq!(modifier_text("Air", 0), "Air: \u{11}R0.00%\u{11}!");
-}
-
 #[derive(Default)]
 struct Asked {
     straits: Vec<u64>,

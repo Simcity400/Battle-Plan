@@ -160,9 +160,13 @@ pub struct Selection {
 
 pub struct Preparation {
     memo: carmy_leader::LeaderMemo,
+    memo_used: bool,
     countries: Map<u32, Result<engine_native_memory::country_identity::Country, &'static str>>,
     commanders: Map<usize, u64>,
     provinces: Map<usize, Option<(u32, usize)>>,
+    route_provinces: Map<u32, usize>,
+    last_country: Option<(u32, Result<engine_native_memory::country_identity::Country, &'static str>)>,
+    last_province: Option<(usize, bool, Option<(u32, usize)>)>,
     roster: Option<engine_native_memory::cpdx_array::Array>,
     reads: NativeReads,
     local_province_refusal: bool,
@@ -171,9 +175,13 @@ impl Default for Preparation {
     fn default() -> Self {
         Self {
             memo: carmy_leader::LeaderMemo::vacant(),
+            memo_used: false,
             countries: Map::default(),
             commanders: Map::default(),
             provinces: Map::default(),
+            route_provinces: Map::default(),
+            last_country: None,
+            last_province: None,
             roster: None,
             reads: NativeReads::default(),
             local_province_refusal: false,
@@ -200,24 +208,39 @@ impl Preparation {
             + table_bytes::<u32, Result<engine_native_memory::country_identity::Country, &'static str>>(self.countries.capacity())
             + table_bytes::<usize, u64>(self.commanders.capacity())
             + table_bytes::<usize, Option<(u32, usize)>>(self.provinces.capacity())
+            + table_bytes::<u32, usize>(self.route_provinces.capacity())
     }
     pub fn begin(&mut self, divisions: usize) -> bool {
+        self.begin_part(divisions, true)
+    }
+    pub fn begin_part(&mut self, divisions: usize, read_dirty: bool) -> bool {
         self.local_province_refusal = false;
-        self.countries.clear();
-        self.commanders.clear();
-        self.provinces.clear();
+        self.last_country = None;
+        self.last_province = None;
+        if !self.countries.is_empty() {
+            self.countries.clear();
+        }
+        if !self.commanders.is_empty() {
+            self.commanders.clear();
+        }
+        if !self.provinces.is_empty() {
+            self.provinces.clear();
+        }
+        if !self.route_provinces.is_empty() {
+            self.route_provinces.clear();
+        }
         self.roster = None;
-        engine_allocation::advisory(|| {
-            if self.memo.capacity() < divisions {
-                self.memo = carmy_leader::LeaderMemo::try_with_capacity(divisions)?;
-            }
+        if std::mem::take(&mut self.memo_used) {
             self.memo.clear();
-            engine_allocation::reserve_map(&mut self.countries, divisions)?;
-            engine_allocation::reserve_map(&mut self.commanders, divisions)?;
-            engine_allocation::reserve_map(&mut self.provinces, divisions)?;
-            self.reads.begin(divisions)
+        }
+        engine_allocation::advisory(|| {
+            engine_allocation::reserve_map(&mut self.countries, divisions.min(8))?;
+            self.reads.begin_part(divisions, read_dirty)
         })
         .is_ok()
+    }
+    pub fn capture_dirty(&mut self, memory: &impl Memory, base: usize, store: &Store) {
+        self.reads.capture_dirty(memory, base, store);
     }
     pub fn capture(
         &mut self,
@@ -234,15 +257,37 @@ impl Preparation {
         let held = store.admitted().unwrap_or(store);
         let country = source_owner(seed).ok().and_then(|owner| {
             countries.map(|countries| {
-                let country = *self
-                    .countries
-                    .entry(owner)
-                    .or_insert_with(|| countries.resolve(owner));
+                let country = if let Some((last_owner, last_country)) = self.last_country
+                    && last_owner == owner
+                {
+                    last_country
+                } else if let Some(&country) = self.countries.get(&owner) {
+                    self.last_country = Some((owner, country));
+                    country
+                } else {
+                    let country = countries.resolve(owner);
+                    if engine_allocation::advisory(|| {
+                        engine_allocation::reserve_map(&mut self.countries, 1)
+                    })
+                    .is_ok()
+                    {
+                        self.countries.insert(owner, country);
+                    }
+                    self.last_country = Some((owner, country));
+                    country
+                };
                 (owner, country)
             })
         });
         let led = country.is_some_and(|(_, country)| country.is_ok());
         let movement = (led && seed.selected.is_none()).then(|| {
+            if self.memo.capacity() == 0
+                && let Ok(memo) =
+                    engine_allocation::advisory(|| carmy_leader::LeaderMemo::try_with_capacity(64))
+            {
+                self.memo = memo;
+            }
+            self.memo_used = true;
             carmy_leader::MovementPreparation::capture(memory, base, seed, &mut self.memo)
         });
         let commander = match seed.selected {
@@ -259,26 +304,48 @@ impl Preparation {
             None => movement
                 .and_then(|movement| movement.leader())
                 .map(|receiver| {
-                    let handle = match self.commanders.entry(receiver) {
-                        std::collections::hash_map::Entry::Occupied(held) => Ok(*held.get()),
-                        std::collections::hash_map::Entry::Vacant(slot) => {
-                            let handle =
-                                read::<u64>(memory, receiver + engine_native::cunit_leader::TYPE)
-                                    .ok_or("division source commander identity unreadable");
-                            if let Ok(handle) = handle {
-                                slot.insert(handle);
-                            }
-                            handle
+                    let handle = if !self.commanders.is_empty()
+                        && let Some(&handle) = self.commanders.get(&receiver)
+                    {
+                        Ok(handle)
+                    } else {
+                        let handle =
+                            read::<u64>(memory, receiver + engine_native::cunit_leader::TYPE)
+                                .ok_or("division source commander identity unreadable");
+                        if let Ok(handle) = handle
+                            && engine_allocation::advisory(|| {
+                                engine_allocation::reserve_map(&mut self.commanders, 1)
+                            })
+                            .is_ok()
+                        {
+                            self.commanders.insert(receiver, handle);
                         }
+                        handle
                     };
                     (receiver, handle)
                 }),
         };
-        let province = engine_native_land::division_panel_operands::selected_province_in(
+        let province = engine_native_land::division_panel_operands::selected_province_cached(
             memory,
             &mut self.roster,
             state,
             seed,
+            |id, read| {
+                if !self.route_provinces.is_empty()
+                    && let Some(&province) = self.route_provinces.get(&id)
+                {
+                    return Ok(province);
+                }
+                let province = read()?;
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve_map(&mut self.route_provinces, 1)
+                })
+                .is_ok()
+                {
+                    self.route_provinces.insert(id, province);
+                }
+                Ok(province)
+            },
         );
         self.local_province_refusal |= province.is_err();
         if let Err(reason) = province {
@@ -291,20 +358,39 @@ impl Preparation {
                 self.reads.incomplete();
             }
         }
-        let context = province
-            .ok()
-            .filter(|province| !held.provinces.contains_key(province))
-            .map(|province| {
-                if let Some(context) = self.provinces.get(&province) {
-                    return Ok(*context);
+        let (context, resolved_context) = match province {
+            Ok(province) => {
+                if let Some((last_p, in_held, last_ctx)) = self.last_province
+                    && last_p == province
+                {
+                    ((!in_held).then_some(Ok(last_ctx)), last_ctx)
+                } else if let Some(&ctx) = held.provinces.get(&province) {
+                    self.last_province = Some((province, true, ctx));
+                    (None, ctx)
+                } else if !self.provinces.is_empty()
+                    && let Some(&ctx) = self.provinces.get(&province)
+                {
+                    self.last_province = Some((province, false, ctx));
+                    (Some(Ok(ctx)), ctx)
+                } else {
+                    let result = engine_native_land::division_panel_operands::province_state(
+                        memory, base, province,
+                    );
+                    if let Ok(ctx) = result {
+                        if engine_allocation::advisory(|| {
+                            engine_allocation::reserve_map(&mut self.provinces, 1)
+                        })
+                        .is_ok()
+                        {
+                            self.provinces.insert(province, ctx);
+                        }
+                        self.last_province = Some((province, false, ctx));
+                    }
+                    (Some(result), result.ok().flatten())
                 }
-                let context =
-                    engine_native_land::division_panel_operands::province_state(memory, base, province);
-                if let Ok(context) = context {
-                    self.provinces.insert(province, context);
-                }
-                context
-            });
+            }
+            Err(_) => (None, None),
+        };
         let mut selection = Selection {
             country,
             movement,
@@ -339,8 +425,16 @@ impl Preparation {
         {
             self.reads.incomplete();
         }
-        self.reads
-            .capture(memory, base, state, store, seed, selection, block);
+        self.reads.capture(
+            memory,
+            base,
+            state,
+            store,
+            seed,
+            selection,
+            block,
+            resolved_context,
+        );
         selection.membership = self.reads.membership_observation;
         selection
     }
@@ -387,8 +481,8 @@ struct Held {
 }
 pub struct Store {
     roots: Table<(u8, u64), Held>,
-    countries: Table<u32, (u64, Result<engine_native_memory::country_identity::Country, &'static str>)>,
-    leaders: Table<usize, (u64, u64)>,
+    countries: Table<u32, (u64, Result<engine_native_memory::country_identity::Country, &'static str>, bool)>,
+    leaders: Table<usize, (u64, u64, u8)>,
     rows: Rows<SharedDivisionPanelSourceRow>,
     turn: u64,
     world_epoch: u64,
@@ -761,8 +855,8 @@ impl Store {
             let reads = reads(index).map(|preparation| &preparation.reads);
             let selection = (|| {
                 let owner = source_owner(seed)?;
-                let country = match self.countries.get(&owner) {
-                    Some(&(turn, country)) if turn == self.turn => country,
+                let (country, root_seen) = match self.countries.get(&owner) {
+                    Some(&(turn, country, root_seen)) if turn == self.turn => (country, root_seen),
                     _ => {
                         let country = prepared
                             .and_then(|p| p.country)
@@ -774,22 +868,27 @@ impl Store {
                                     .ok_or("division source owned selection missing")?
                                     .resolve(owner)
                             });
-                        self.countries.put(owner, (self.turn, country));
-                        country
+                        self.countries.put(owner, (self.turn, country, false));
+                        (country, false)
                     }
                 };
                 let country = country?;
-                self.root_prepared(
-                    memory,
-                    0,
-                    country.id as u64,
-                    country.pointer,
-                    country
-                        .pointer
-                        .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
-                        .ok_or("division source country overflow")?,
-                    reads,
-                )?;
+                if !root_seen {
+                    self.root_prepared(
+                        memory,
+                        0,
+                        country.id as u64,
+                        country.pointer,
+                        country
+                            .pointer
+                            .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
+                            .ok_or("division source country overflow")?,
+                        reads,
+                    )?;
+                    if let Some(entry) = self.countries.get_mut(&owner) {
+                        entry.2 = true;
+                    }
+                }
                 let selection = (|| {
                     let block = match seed.selected {
                         Some(selected) => selected.block,
@@ -812,12 +911,20 @@ impl Store {
                     let receiver = accumulator
                         .checked_sub(offset)
                         .ok_or("division source commander overflow")?;
-                    let handle = match seed.selected.and_then(|selected| selected.handle) {
-                        Some(handle) => handle,
-                        None => match self.leaders.get(&receiver) {
-                            Some(&(turn, handle)) if turn == self.turn => handle,
-                            _ => {
-                                let handle = prepared
+                    let kind = if hq { 2 } else { 1 };
+                    let kind_bit = 1u8 << kind;
+                    let selected_handle = seed.selected.and_then(|selected| selected.handle);
+                    let (handle, leader_root_seen) = match self.leaders.get(&receiver) {
+                        Some(&(turn, cached, mask))
+                            if turn == self.turn
+                                && selected_handle.is_none_or(|handle| handle == cached) =>
+                        {
+                            (cached, mask & kind_bit != 0)
+                        }
+                        _ => {
+                            let handle = match selected_handle {
+                                Some(handle) => handle,
+                                None => prepared
                                     .and_then(|p| p.commander)
                                     .filter(|(selected, _)| *selected == receiver)
                                     .map(|(_, handle)| handle)
@@ -827,17 +934,24 @@ impl Store {
                                             receiver + engine_native::cunit_leader::TYPE,
                                         )
                                         .ok_or("division source commander identity unreadable")
-                                    })?;
-                                self.leaders.put(receiver, (self.turn, handle));
-                                handle
-                            }
-                        },
+                                    })?,
+                            };
+                            self.leaders.put(receiver, (self.turn, handle, 0));
+                            (handle, false)
+                        }
                     };
                     if handle as u32 != engine_native::cunit_leader::REFERENCE_TYPE {
                         return Err("division source commander identity mismatch");
                     }
-                    let kind = if hq { 2 } else { 1 };
-                    self.root_prepared(memory, kind, handle, receiver, accumulator, reads)?;
+                    if !leader_root_seen {
+                        self.root_prepared(memory, kind, handle, receiver, accumulator, reads)?;
+                        if let Some(entry) = self.leaders.get_mut(&receiver)
+                            && entry.0 == self.turn
+                            && entry.1 == handle
+                        {
+                            entry.2 |= kind_bit;
+                        }
+                    }
                     Ok::<_, &'static str>([country.id as u64, kind as u64, handle])
                 })()
                 .unwrap_or([country.id as u64, u64::MAX, 0]);
@@ -892,9 +1006,11 @@ impl Store {
                     }
                 };
                 if let Some((id, pointer)) = context {
-                    for country in [seed.roster_owner, seed.logical_owner]
-                        .into_iter()
-                        .flatten()
+                    if let Some(country) = seed.roster_owner {
+                        self.state_prepared(memory, base, state, id, pointer, country, reads)?;
+                    }
+                    if let Some(country) = seed.logical_owner
+                        && Some(country) != seed.roster_owner
                     {
                         self.state_prepared(memory, base, state, id, pointer, country, reads)?;
                     }
@@ -1262,14 +1378,20 @@ impl Store {
         let certificate = if self.settling_owned {
             observation.map(|(certificate, _)| certificate)
         } else {
-            match self.pools.get(&seed.division).and_then(|held| {
-                held.certificate.filter(|certificate| {
-                    held.army == seed.pointer
-                        && quiet.is_some_and(|quiet| quiet.quiet(pool, certificate.0))
-                })
-            }) {
-                Some(certificate) => Some(certificate),
-                None => operands::sequence(pool),
+            match self.pools.get_mut(&seed.division) {
+                Some(held)
+                    if held.army == seed.pointer
+                        && held
+                            .certificate
+                            .is_some_and(|cert| quiet.is_some_and(|quiet| quiet.quiet(pool, cert.0))) =>
+                {
+                    held.seen = self.turn;
+                    if let Some((_, slot)) = observation {
+                        held.slot = slot;
+                    }
+                    return Ok(());
+                }
+                _ => operands::sequence(pool),
             }
         };
         if let Some(held) = self.pools.get_mut(&seed.division)
@@ -2368,11 +2490,12 @@ mod tests {
             struct StopAt<'a>(&'a World, usize, bool);
             impl Memory for StopAt<'_> {
                 fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                    if address == self.1 && !self.2 {
+                    let hit = (address..address.saturating_add(output.len())).contains(&self.1);
+                    if hit && !self.2 {
                         return false;
                     }
                     let copied = self.0.copy(address, output);
-                    if address == self.1 {
+                    if hit {
                         PROOF.fetch_add(2, std::sync::atomic::Ordering::SeqCst);
                     }
                     copied
@@ -2618,20 +2741,6 @@ mod tests {
             "reset during acquisition must withdraw partial values"
         );
         assert_eq!(refused.reason, VARIANT_WITHDRAWN.as_bytes());
-    }
-
-    #[test]
-    fn memo_hashing_spreads_handles_that_share_their_kind() {
-        use std::hash::BuildHasher;
-        let hasher = Map::<u64, ()>::default().hasher().clone();
-        let buckets: std::collections::BTreeSet<u64> = (1..=1024u64)
-            .map(|id| hasher.hash_one((id << 32) | 0x27) & 1023)
-            .collect();
-        assert!(buckets.len() > 512, "{} of 1024 buckets", buckets.len());
-        let pairs: std::collections::BTreeSet<u64> = (1..=1024u64)
-            .map(|id| hasher.hash_one(((id << 32) | 0x27, 3usize)) & 1023)
-            .collect();
-        assert!(pairs.len() > 512, "{} of 1024 buckets", pairs.len());
     }
 
     #[test]

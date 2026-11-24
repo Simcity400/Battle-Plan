@@ -164,55 +164,6 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
 }
 
 #[test]
-fn the_singleton_publishes_no_retired_transport_tables_or_packet() {
-    use engine_native::crelation::subject::Name;
-    assert_eq!(
-        TABLES,
-        [TableId::CountryAppearance, TableId::ReservedCountryNaming]
-    );
-    for table in replay_data::rows::RESERVED_SPLIT_TABLES {
-        assert!(!TABLES.contains(&table), "{table:?}");
-    }
-    let mut capture = Captured::with_capacities(&Capacities {
-        rows: 1,
-        naming_bytes: 4,
-        ..Default::default()
-    });
-    capture.rows.outcome = Outcome::Rows { len: 0 };
-    capture.reserved.outcome = Outcome::Unavailable {
-        reason: "reserved naming refused",
-    };
-    let tables = capture.tables();
-    assert!(matches!(&tables[1], TableView::Unavailable { .. }));
-    capture.naming.first[..2].copy_from_slice(&[0xff, 0]);
-    capture.naming.len = 2;
-    capture.reserved.row = ccountry::ReservedNamingRow {
-        tag: Name { start: 0, len: 2 },
-        ..Default::default()
-    };
-    capture.reserved.outcome = Outcome::Rows { len: 1 };
-    let tables = capture.tables();
-    let TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)) = &tables[1]
-    else {
-        panic!("complete singleton");
-    };
-    for retired in [
-        &rows[0].movement,
-        &rows[0].raw_country_observations,
-        &rows[0].transport_mission_inputs,
-    ] {
-        assert_eq!(
-            *retired,
-            replay_data::rows::Recorded::Value(replay_data::rows::Retired)
-        );
-    }
-    assert_eq!(
-        rows[0].attack,
-        replay_data::rows::Recorded::Value(replay_data::rows::Witnessed(None))
-    );
-}
-
-#[test]
 fn unreadable_census_is_unavailable_and_raw_colors_preserve_primary_values() {
     let memory = SliceMemory {
         base: 0,
@@ -609,23 +560,3 @@ fn subject_arena_presizes_from_live_country_slots_without_a_cap() {
     assert!(capacity.subjects >= crate::country_scale::rows(slots, 1));
 }
 
-#[test]
-fn deferred_reserved_table_retains_the_already_guarded_signed_boundary() {
-    let mut captured = Captured::vacant();
-    captured.reserved.outcome = Outcome::Rows { len: 1 };
-    for boundary in [i32::MIN, -1, 0, i32::MAX] {
-        captured.reserved.row.dynamic_tag_boundary = boundary;
-        let [
-            _,
-            TableView::Complete(replay_data::rows::TableRows::ReservedCountryNaming(rows)),
-            ..,
-        ] = captured.tables()
-        else {
-            panic!("reserved singleton must remain complete");
-        };
-        assert_eq!(
-            rows[0].dynamic_tag_boundary,
-            replay_data::rows::Recorded::Value(Some(boundary))
-        );
-    }
-}

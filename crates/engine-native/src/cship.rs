@@ -12,7 +12,10 @@ use engine_sites::Rva;
 
 mod air_capacity;
 mod naming;
-pub use naming::{NamingOperands, naming};
+pub use naming::{
+    EquipmentMemo, NamingOperands, ShipNamesAndCrew, capture_names_and_crew,
+    decode_batched_names_and_crew, naming,
+};
 mod gathered;
 mod hull_variant;
 mod naval_power;
@@ -614,6 +617,33 @@ pub(crate) const ROW_STRIDE: usize = 64;
 pub(crate) const ROW_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
     engine_native_memory::memory::RecordLayout::new(&ROW_FIELDS, ROW_STRIDE).expect("valid ship row layout");
 
+pub(crate) const ROW_EXTENDED_FIELDS: [engine_native_memory::memory::RecordField; 9] = {
+    use engine_native_memory::memory::RecordField;
+    [
+        ROW_FIELDS[0],
+        ROW_FIELDS[1],
+        ROW_FIELDS[2],
+        ROW_FIELDS[3],
+        ROW_FIELDS[4],
+        ROW_FIELDS[5],
+        ROW_FIELDS[6],
+        RecordField {
+            source_offset: ACQUIRED_MANPOWER,
+            destination_offset: 64,
+            len: 8,
+        },
+        RecordField {
+            source_offset: NAME_MEMBER,
+            destination_offset: 72,
+            len: 8,
+        },
+    ]
+};
+pub(crate) const ROW_EXTENDED_STRIDE: usize = 80;
+pub(crate) const ROW_EXTENDED_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&ROW_EXTENDED_FIELDS, ROW_EXTENDED_STRIDE)
+        .expect("valid extended ship row layout");
+
 pub(crate) fn decode_row(
     record: &[u8],
     expected_vtable: u64,
@@ -766,6 +796,26 @@ pub struct OrganisationMemo {
 const RECENT: usize = 8;
 
 impl OrganisationMemo {
+    pub fn reset_hour(&mut self) {
+        self.last = None;
+        self.owner = None;
+        self.country = None;
+        self.pride = Recent::default();
+        self.support = None;
+        self.influences = Recent::default();
+        self.terrain = Recent::default();
+        self.location = None;
+        self.ocean = None;
+        self.terrain_class = Recent::default();
+        self.fleet = None;
+        self.leader_class = Recent::default();
+        self.doctrine_keys = crate::cship::modifier_sources::DoctrineKeys::default();
+        self.weather = None;
+        self.definitions.clear();
+        self.own = None;
+        self.modifier_guards = [None; 1 << ORGANISATION_KEYS.len()];
+    }
+
     pub fn organisation_operands(&self, ship: usize) -> Option<OrganisationOperands> {
         self.own
             .filter(|&(pointer, _)| pointer == ship)
@@ -840,6 +890,27 @@ impl OrganisationMemo {
         })
     }
 
+    pub fn hold_owner(&mut self, owner: (usize, u32, usize)) {
+        self.owner = Some(owner);
+    }
+
+    pub fn hold_support(&mut self, task: usize, support: [i64; 4]) {
+        self.support = Some((task, support));
+    }
+
+    pub fn read_pride(
+        &mut self,
+        memory: &impl Memory,
+        country: usize,
+    ) -> Option<[u8; 8]> {
+        if let Some(pride) = self.pride.get(&country) {
+            return Some(pride);
+        }
+        let pride = crate::cnaval_combatant::field::<[u8; 8]>(memory, country, 0x250).ok()?;
+        self.pride.insert(country, pride);
+        Some(pride)
+    }
+
     pub fn country(&self) -> Option<usize> {
         self.owner.map(|(_, _, country)| country)
     }
@@ -912,6 +983,18 @@ pub struct TaskTerms {
 }
 
 impl TaskTerms {
+    pub fn owner(&self) -> (usize, u32, usize) {
+        self.owner
+    }
+
+    pub fn pride(&self) -> [u8; 8] {
+        self.pride
+    }
+
+    pub fn support(&self) -> [i64; 4] {
+        self.support
+    }
+
     pub fn leader(&self) -> Option<usize> {
         self.fleet.1
     }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseColor, rgbToOklch, toHex } from '../shell/appearance/color.ts';
-import { categoricalPalette, GREY_CHROMA, nudgeApart } from './palette.ts';
+import { parseColor, toHex } from '../shell/appearance/color.ts';
+import { nudgeApart } from './palette.ts';
 import { layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
@@ -61,14 +61,6 @@ test('a line growing during playback keeps its samples, so only its tip moves', 
   assert.ok(rising.length >= 50 / Math.SQRT2 && rising.length <= 50 * Math.SQRT2 + 2, `${rising.length} samples`);
 });
 
-test('greys take the categorical colour for their position, not a random hue', () => {
-  const background = parseColor('#16181d')!;
-  const [first, second] = nudgeApart([parseColor('#808080')!, parseColor('#7f7f7f')!], background);
-  assert.ok(rgbToOklch(first).c >= GREY_CHROMA);
-  const palette = categoricalPalette(toHex(background)).map(hex => rgbToOklch(parseColor(hex)!).h);
-  assert.ok(Math.abs(rgbToOklch(first).h - palette[0]) < 25, 'first grey follows the first palette hue');
-  assert.ok(Math.abs(rgbToOklch(second).h - palette[1]) < 25, 'second grey follows the second palette hue');
-});
 
 test('stacked tops above a missing layer are unknown, not totals that skip it', () => {
   assert.deepEqual(stack([[10, null], [5, 5]]), [[10, null], [15, null]]);

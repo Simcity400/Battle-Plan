@@ -78,6 +78,15 @@ impl OwnedDetails {
         self.outcomes = [EMPTY; 5];
     }
 
+    pub(crate) fn release_daily(&mut self) {
+        self.equipment = Vec::new();
+        self.groups = Vec::new();
+        self.requests = Vec::new();
+        self.deliveries = Vec::new();
+        self.produced = Vec::new();
+        self.clear();
+    }
+
     pub(crate) fn mark_skipped(&mut self) {
         self.outcomes = [Outcome::Unavailable {
             reason: replay_data::cadence::SKIPPED_REASON,

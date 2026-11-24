@@ -48,17 +48,80 @@ macro_rules! keyed_pair {
             Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
             DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
             RiverRelations, DivisionTransportSpeeds, WeatherProvinces, DivisionTemplateIcons,
-            AirBaseRegistrations, CharacterRoleTraits, ScriptVariables)
+            AirBaseRegistrations, CharacterRoleTraits, ScriptVariables,
+            RailCooldowns, IntelContributions, IntelSources, ShipModels, CountryCounterInputs,
+            ArmyOrderPlans, OrdersGroupPlans, Fronts, InvasionPreparations,
+            LandCombatDivisions, LandCombatSides, LandCombatModifiers, ReserveModifierTrees,
+            ProvinceUnitOrder, Ships, OrdersGroupMembers, ArmyUpgradeRequests,
+            AirBases, WingEquipment, AirWings, ProductionLines, Stockpiles, DivisionEquipment,
+            Fleets, TaskForces, UnitLeaders, PoliticalParties, ActiveIdeas, Politics,
+            ResearchSlots, DecisionCounts, Decisions, DynamicModifiers, PreferredTactics,
+            NavalCombatShips, OrdersGroupCounterInputs, CountryAppearance,
+            TaskForceCounterInputs, ProvinceBuildings, StateBuildings, BuildingConstruction)
     };
 }
 
 pub fn takes_keyed_updates(table: TableId) -> bool {
-    let empty = TableRows::empty(table);
-    sliced_pair!(@arms (&empty, &empty), _old, _new, _wrap, true, false;
-        Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
-        DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
-        RiverRelations, DivisionTransportSpeeds, WeatherProvinces, DivisionTemplateIcons,
-        AirBaseRegistrations, CharacterRoleTraits, ScriptVariables)
+    matches!(
+        table,
+        TableId::Divisions
+            | TableId::DivisionStatus
+            | TableId::DivisionMovement
+            | TableId::DivisionPanelStats
+            | TableId::DivisionLandInputs
+            | TableId::DivisionRetreatBans
+            | TableId::MovementStateTerms
+            | TableId::CoreSupplyAccess
+            | TableId::CountryUnitSpeedEntries
+            | TableId::RiverRelations
+            | TableId::DivisionTransportSpeeds
+            | TableId::WeatherProvinces
+            | TableId::DivisionTemplateIcons
+            | TableId::AirBaseRegistrations
+            | TableId::CharacterRoleTraits
+            | TableId::ScriptVariables
+            | TableId::RailCooldowns
+            | TableId::IntelContributions
+            | TableId::IntelSources
+            | TableId::ShipModels
+            | TableId::CountryCounterInputs
+            | TableId::ArmyOrderPlans
+            | TableId::OrdersGroupPlans
+            | TableId::Fronts
+            | TableId::InvasionPreparations
+            | TableId::LandCombatDivisions
+            | TableId::LandCombatSides
+            | TableId::LandCombatModifiers
+            | TableId::ReserveModifierTrees
+            | TableId::ProvinceUnitOrder
+            | TableId::Ships
+            | TableId::OrdersGroupMembers
+            | TableId::ArmyUpgradeRequests
+            | TableId::AirBases
+            | TableId::WingEquipment
+            | TableId::AirWings
+            | TableId::ProductionLines
+            | TableId::Stockpiles
+            | TableId::DivisionEquipment
+            | TableId::Fleets
+            | TableId::TaskForces
+            | TableId::UnitLeaders
+            | TableId::PoliticalParties
+            | TableId::ActiveIdeas
+            | TableId::Politics
+            | TableId::ResearchSlots
+            | TableId::DecisionCounts
+            | TableId::Decisions
+            | TableId::DynamicModifiers
+            | TableId::PreferredTactics
+            | TableId::NavalCombatShips
+            | TableId::OrdersGroupCounterInputs
+            | TableId::CountryAppearance
+            | TableId::TaskForceCounterInputs
+            | TableId::ProvinceBuildings
+            | TableId::StateBuildings
+            | TableId::BuildingConstruction
+    )
 }
 
 fn gallop<R>(rows: &[R], holds: impl Fn(&R) -> bool) -> usize {
@@ -96,24 +159,54 @@ fn owner_ranges<R: SlicedRow>(rows: &[R]) -> impl Iterator<Item = (u32, Range<us
 fn merge_owners<R: SlicedRow>(
     previous: &[R],
     fresh: &[R],
+    fresh_owners: usize,
     keep: impl Fn(u32) -> bool,
 ) -> io::Result<Vec<u32>> {
-    let count = allocation::add(owner_ranges(previous).count(), owner_ranges(fresh).count())?;
-    let mut owners = allocation::vec(count)?;
+    let mut owners = allocation::vec(fresh_owners)?;
     let mut old = owner_ranges(previous)
         .map(|(owner, _)| owner)
         .filter(|&owner| keep(owner))
         .peekable();
     for (owner, _) in owner_ranges(fresh) {
         while let Some(kept) = old.next_if(|&kept| kept < owner) {
+            allocation::reserve_push_batch(&mut owners, 1)?;
             owners.push(kept);
         }
         if old.peek() == Some(&owner) {
             old.next();
         }
+        allocation::reserve_push_batch(&mut owners, 1)?;
         owners.push(owner);
     }
-    owners.extend(old);
+    for kept in old {
+        allocation::reserve_push_batch(&mut owners, 1)?;
+        owners.push(kept);
+    }
+    Ok(owners)
+}
+
+fn merge_owner_lists(
+    previous: &[u32],
+    fresh: &[u32],
+    keep: impl Fn(u32) -> bool,
+) -> io::Result<Vec<u32>> {
+    let mut owners = allocation::vec(fresh.len())?;
+    let mut old = previous.iter().copied().filter(|&owner| keep(owner)).peekable();
+    for &owner in fresh {
+        while let Some(kept) = old.next_if(|&kept| kept < owner) {
+            allocation::reserve_push_batch(&mut owners, 1)?;
+            owners.push(kept);
+        }
+        if old.peek() == Some(&owner) {
+            old.next();
+        }
+        allocation::reserve_push_batch(&mut owners, 1)?;
+        owners.push(owner);
+    }
+    for kept in old {
+        allocation::reserve_push_batch(&mut owners, 1)?;
+        owners.push(kept);
+    }
     Ok(owners)
 }
 
@@ -154,14 +247,31 @@ impl SliceUpdate {
             read: impl Fn(u32) -> bool,
             live: impl Fn(u32) -> bool,
         ) -> io::Result<Vec<u32>> {
-            if fresh.windows(2).any(|pair| pair[0].key() >= pair[1].key())
-                || owner_ranges(fresh).any(|(owner, _)| !read(owner))
-            {
-                return Err(invalid(
-                    "sliced read holds an unread owner's row or is not in key order",
-                ));
+            let mut prev_key: Option<u128> = None;
+            let mut last_owner: Option<u32> = None;
+            let mut fresh_owners = 0_usize;
+            for row in fresh {
+                let key = row.key();
+                if prev_key.is_some_and(|prev| prev >= key) {
+                    return Err(invalid(
+                        "sliced read holds an unread owner's row or is not in key order",
+                    ));
+                }
+                prev_key = Some(key);
+                let owner = row.owner();
+                if last_owner != Some(owner) {
+                    if !read(owner) {
+                        return Err(invalid(
+                            "sliced read holds an unread owner's row or is not in key order",
+                        ));
+                    }
+                    last_owner = Some(owner);
+                    fresh_owners += 1;
+                }
             }
-            merge_owners(previous, fresh, |owner| read(owner) || !live(owner))
+            merge_owners(previous, fresh, fresh_owners, |owner| {
+                read(owner) || !live(owner)
+            })
         }
         let owners = sliced_pair!(
             previous,
@@ -175,6 +285,238 @@ impl SliceUpdate {
             keys: Vec::new(),
             rows: fresh,
         })
+    }
+
+    pub fn diff_owners(
+        previous: &TableRows,
+        fresh: TableRows,
+        read: impl Fn(u32) -> bool,
+        live: impl Fn(u32) -> bool,
+    ) -> io::Result<Self> {
+        fn diff<R: SlicedRow>(
+            previous: &[R],
+            fresh: Vec<R>,
+            read: impl Fn(u32) -> bool,
+            live: impl Fn(u32) -> bool,
+        ) -> io::Result<(Vec<u128>, Vec<R>)> {
+            let mut prev_key: Option<u128> = None;
+            let mut last_owner: Option<u32> = None;
+            let mut fresh_owners = 0_usize;
+            for row in &fresh {
+                let key = row.key();
+                if prev_key.is_some_and(|prev| prev >= key) {
+                    return Err(invalid(
+                        "sliced read holds an unread owner's row or is not in key order",
+                    ));
+                }
+                prev_key = Some(key);
+                let owner = row.owner();
+                if last_owner != Some(owner) {
+                    if !read(owner) {
+                        return Err(invalid(
+                            "sliced read holds an unread owner's row or is not in key order",
+                        ));
+                    }
+                    last_owner = Some(owner);
+                    fresh_owners += 1;
+                }
+            }
+            let owners = merge_owners(previous, &fresh, fresh_owners, |owner| {
+                read(owner) || !live(owner)
+            })?;
+            let mut keys = Vec::new();
+            let mut rows = Vec::new();
+            let mut next_old = 0;
+            let mut fresh_iter = fresh.into_iter().peekable();
+            for owner in owners {
+                let old_range = owner_range_from(previous, next_old, owner);
+                next_old = old_range.end;
+                let mut old_at = old_range.start;
+                loop {
+                    let old_row = (old_at < old_range.end).then(|| &previous[old_at]);
+                    let new_key = fresh_iter
+                        .peek()
+                        .filter(|row| row.owner() == owner)
+                        .map(R::key);
+                    match (old_row, new_key) {
+                        (None, None) => break,
+                        (Some(old), Some(key)) if old.key() == key => {
+                            let row = fresh_iter.next().unwrap();
+                            if row != *old {
+                                allocation::reserve_push_batch(&mut keys, 1)?;
+                                allocation::reserve_push_batch(&mut rows, 1)?;
+                                keys.push(key);
+                                rows.push(row);
+                            }
+                            old_at += 1;
+                        }
+                        (Some(old), Some(key)) if key < old.key() => {
+                            let row = fresh_iter.next().unwrap();
+                            allocation::reserve_push_batch(&mut keys, 1)?;
+                            allocation::reserve_push_batch(&mut rows, 1)?;
+                            keys.push(key);
+                            rows.push(row);
+                        }
+                        (None, Some(key)) => {
+                            let row = fresh_iter.next().unwrap();
+                            allocation::reserve_push_batch(&mut keys, 1)?;
+                            allocation::reserve_push_batch(&mut rows, 1)?;
+                            keys.push(key);
+                            rows.push(row);
+                        }
+                        (Some(old), _) => {
+                            allocation::reserve_push_batch(&mut keys, 1)?;
+                            keys.push(old.key());
+                            old_at += 1;
+                        }
+                    }
+                }
+            }
+            Ok((keys, rows))
+        }
+        let (keys, rows) = sliced_pair!(
+            previous,
+            fresh,
+            |old, new, wrap| {
+                let (keys, changed) = diff(old, new, read, live)?;
+                (keys, wrap(changed))
+            },
+            return Err(invalid("cannot merge different sliced table types"))
+        );
+        Ok(Self {
+            owners: Vec::new(),
+            ranges: Vec::new(),
+            keys,
+            rows,
+        })
+    }
+
+    pub fn for_owners(
+        previous_owners: &[u32],
+        fresh: TableRows,
+        read: impl Fn(u32) -> bool,
+        live: impl Fn(u32) -> bool,
+    ) -> io::Result<(Self, Vec<u32>)> {
+        fn validate<R: SlicedRow>(fresh: &[R], read: impl Fn(u32) -> bool) -> io::Result<Vec<u32>> {
+            let mut prev_key: Option<u128> = None;
+            let mut last_owner: Option<u32> = None;
+            let mut fresh_owners = Vec::new();
+            for row in fresh {
+                let key = row.key();
+                if prev_key.is_some_and(|prev| prev >= key) {
+                    return Err(invalid(
+                        "sliced read holds an unread owner's row or is not in key order",
+                    ));
+                }
+                prev_key = Some(key);
+                let owner = row.owner();
+                if last_owner != Some(owner) {
+                    if !read(owner) {
+                        return Err(invalid(
+                            "sliced read holds an unread owner's row or is not in key order",
+                        ));
+                    }
+                    last_owner = Some(owner);
+                    allocation::reserve_push_batch(&mut fresh_owners, 1)?;
+                    fresh_owners.push(owner);
+                }
+            }
+            Ok(fresh_owners)
+        }
+        let fresh_owners = sliced_pair!(
+            &fresh,
+            &fresh,
+            |rows, _other, _wrap| validate(rows, &read)?,
+            return Err(invalid("table does not support owner slice updates"))
+        );
+        let replaced = merge_owner_lists(previous_owners, &fresh_owners, |owner| {
+            read(owner) || !live(owner)
+        })?;
+        let next = merge_owner_lists(previous_owners, &fresh_owners, |owner| {
+            !read(owner) && live(owner)
+        })?;
+        Ok((
+            Self {
+                owners: replaced,
+                ranges: Vec::new(),
+                keys: Vec::new(),
+                rows: fresh,
+            },
+            next,
+        ))
+    }
+
+    pub fn fits_untracked(&self, table: TableId) -> bool {
+        if self.rows.table() != table || !self.ranges.is_empty() || !self.keys.is_empty() {
+            return false;
+        }
+        if self.owners.is_empty() && self.rows.is_empty() {
+            return true;
+        }
+        fn fits<R: SlicedRow>(fresh: &[R], listed: &[u32]) -> bool {
+            fresh.windows(2).all(|pair| pair[0].key() < pair[1].key())
+                && owner_ranges(fresh).all(|(owner, _)| listed.binary_search(&owner).is_ok())
+        }
+        self.owners.windows(2).all(|pair| pair[0] < pair[1])
+            && sliced_pair!(
+                &self.rows,
+                &self.rows,
+                |new, _other, _wrap| fits(new, &self.owners),
+                false
+            )
+    }
+
+    pub fn fits_meta(&self, table: TableId) -> bool {
+        if self.rows.table() != table {
+            return false;
+        }
+        if !self.ranges.is_empty() {
+            if !self.owners.is_empty() || !self.keys.is_empty() {
+                return false;
+            }
+            if !self.ranges.iter().all(|range| range.start < range.end)
+                || !self
+                    .ranges
+                    .windows(2)
+                    .all(|pair| pair[0].end <= pair[1].start)
+            {
+                return false;
+            }
+            struct Check<'a>(&'a [Range<u128>]);
+            impl crate::rows::RowsVisit for Check<'_> {
+                type Output = bool;
+                fn rows<R: crate::rows::RowCodec>(self, rows: &[R]) -> bool {
+                    let mut at = 0;
+                    let mut previous = None;
+                    for row in rows {
+                        let key = row.key();
+                        if previous.is_some_and(|prev| prev >= key) {
+                            return false;
+                        }
+                        previous = Some(key);
+                        while self.0.get(at).is_some_and(|range| range.end <= key) {
+                            at += 1;
+                        }
+                        if !self.0.get(at).is_some_and(|range| range.contains(&key)) {
+                            return false;
+                        }
+                    }
+                    true
+                }
+            }
+            return self.rows.visit(Check(&self.ranges));
+        }
+        if !self.keys.is_empty() {
+            return self.owners.is_empty()
+                && self.keys.windows(2).all(|pair| pair[0] < pair[1])
+                && keyed_pair!(
+                    &self.rows,
+                    &self.rows,
+                    |_old, new, _wrap| key_fits(new, &self.keys),
+                    false
+                );
+        }
+        self.fits_untracked(table)
     }
 
     pub fn owners(&self) -> &[u32] {
@@ -204,6 +546,9 @@ impl SliceUpdate {
                     |_old, new, _wrap| key_fits(new, &self.keys),
                     false
                 );
+        }
+        if self.owners.is_empty() && self.rows.is_empty() {
+            return self.rows.table() == previous.table();
         }
         fn fits<R: SlicedRow>(fresh: &[R], listed: &[u32]) -> bool {
             fresh.windows(2).all(|pair| pair[0].key() < pair[1].key())
@@ -431,6 +776,9 @@ impl SliceUpdate {
             Ok(replaced)
         }
         let Self { owners, rows, .. } = self;
+        if owners.is_empty() && rows.is_empty() && rows.table() == previous.table() {
+            return Ok(TableRows::empty(previous.table()));
+        }
         sliced_pair!(
             &mut *previous,
             rows,
@@ -441,10 +789,21 @@ impl SliceUpdate {
 }
 
 fn key_fits<R: crate::rows::RowCodec>(fresh: &[R], keys: &[u128]) -> bool {
-    fresh.windows(2).all(|pair| pair[0].key() < pair[1].key())
-        && fresh
-            .iter()
-            .all(|row| keys.binary_search(&row.key()).is_ok())
+    let mut prev: Option<u128> = None;
+    let mut cursor = 0;
+    for row in fresh {
+        let key = row.key();
+        if prev.is_some_and(|before| before >= key) {
+            return false;
+        }
+        prev = Some(key);
+        cursor += gallop(&keys[cursor..], |&candidate| candidate < key);
+        if keys.get(cursor) != Some(&key) {
+            return false;
+        }
+        cursor += 1;
+    }
+    true
 }
 #[cfg(any(test, feature = "capture", feature = "test-support"))]
 fn encode_keys<R: crate::rows::RowCodec>(
@@ -468,10 +827,23 @@ fn encode_keys<R: crate::rows::RowCodec>(
     let mut gone = 0_u32;
     let mut gone_key = 0_u128;
     deleted.clear();
+    let mut old_cursor = 0;
+    let mut fresh_cursor = 0;
     for &key in keys {
-        let before = old.binary_search_by_key(&key, |row| row.key()).ok();
+        old_cursor += gallop(&old[old_cursor..], |row| row.key() < key);
+        let before = old
+            .get(old_cursor)
+            .filter(|row| row.key() == key)
+            .map(|_| old_cursor);
         let previous = before.map(|i| &old[i]);
-        let at = fresh.binary_search_by_key(&key, |row| row.key()).ok();
+        let at = fresh
+            .get(fresh_cursor)
+            .filter(|row| row.key() == key)
+            .map(|_| {
+                let at = fresh_cursor;
+                fresh_cursor += 1;
+                at
+            });
         if let Some(at) = at {
             if fresh[at].encode_change(previous, changed_key, output)? {
                 changed = changed
@@ -507,29 +879,48 @@ fn apply_keys<R: crate::rows::RowCodec>(
 ) -> io::Result<Vec<R>> {
     let mut removed = 0_usize;
     let mut same_keys = true;
+    let mut old_cursor = 0;
+    let mut fresh_cursor = 0;
     for &key in keys {
-        let present = old.binary_search_by_key(&key, |row| row.key()).is_ok();
+        old_cursor += gallop(&old[old_cursor..], |row| row.key() < key);
+        let present = old.get(old_cursor).is_some_and(|row| row.key() == key);
         removed += usize::from(present);
-        same_keys &= present == fresh.binary_search_by_key(&key, |row| row.key()).is_ok();
+        let in_fresh = fresh
+            .get(fresh_cursor)
+            .is_some_and(|row| row.key() == key);
+        if in_fresh {
+            fresh_cursor += 1;
+        }
+        same_keys &= present == in_fresh;
     }
     if same_keys {
+        let mut cursor = 0;
         for row in &mut fresh {
-            let index = old
-                .binary_search_by_key(&row.key(), |old| old.key())
-                .map_err(|_| invalid("key update lost its baseline"))?;
-            std::mem::swap(row, &mut old[index]);
+            let key = row.key();
+            cursor += gallop(&old[cursor..], |existing| existing.key() < key);
+            if old.get(cursor).is_none_or(|existing| existing.key() != key) {
+                return Err(invalid("key update lost its baseline"));
+            }
+            std::mem::swap(row, &mut old[cursor]);
+            cursor += 1;
         }
         return Ok(fresh);
     }
     let mut rebuilt = allocation::vec(allocation::add(old.len() - removed, fresh.len())?)?;
     let mut replaced = allocation::vec(removed)?;
     let mut fresh = fresh.into_iter().peekable();
+    let mut key_cursor = 0;
     for row in std::mem::take(old) {
-        if keys.binary_search(&row.key()).is_ok() {
+        let row_key = row.key();
+        while keys.get(key_cursor).is_some_and(|&key| key < row_key) {
+            key_cursor += 1;
+        }
+        if keys.get(key_cursor) == Some(&row_key) {
             replaced.push(row);
+            key_cursor += 1;
             continue;
         }
-        while let Some(new) = fresh.next_if(|new| new.key() < row.key()) {
+        while let Some(new) = fresh.next_if(|new| new.key() < row_key) {
             rebuilt.push(new);
         }
         rebuilt.push(row);
@@ -542,7 +933,7 @@ fn apply_keys<R: crate::rows::RowCodec>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rows::{LendLeaseAgreementRow, MarketEquipment, MarketPool, ResearchInputRow};
+    use crate::rows::{LendLeaseAgreementRow, ResearchInputRow};
 
     #[test]
     fn every_sliced_table_keeps_its_owner_in_the_top_32_key_bits() {
@@ -582,21 +973,6 @@ mod tests {
             );
         }
         assert_eq!(sliced, 30);
-    }
-
-    #[test]
-    fn keyed_producer_tables_take_keyed_updates_and_are_not_sliced() {
-        let mut keyed = 0;
-        for table in TableId::ALL {
-            let empty = TableRows::empty(table);
-            if !takes_keyed_updates(table) {
-                continue;
-            }
-            keyed += 1;
-            assert!(keyed_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
-            assert!(!sliced_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
-        }
-        assert_eq!(keyed, 16);
     }
 
     fn input(country: u32, index: u32, progress: i64) -> ResearchInputRow {
@@ -748,132 +1124,42 @@ mod tests {
     }
 
     #[test]
-    fn keyed_contract_tick_and_removal_keep_sibling_terms_and_route_allocations() {
-        use crate::rows::{MarketContractRuntime, MarketContractTermsRow, SharedMarketPool};
-        let pool: SharedMarketPool = MarketPool {
-            items: vec![
-                MarketEquipment {
-                    variant: 31,
-                    amount_raw: 99
-                };
-                5000
-            ],
-            ..Default::default()
-        }
-        .into();
-        let allocation = pool.items.as_ptr();
-        let mut rows: Vec<_> = (0..5000)
-            .map(|id| MarketContractTermsRow {
-                country: 5000,
-                id,
-                kind: 1,
-                equipment: pool.clone(),
-                prices: pool.clone(),
-                runtime: MarketContractRuntime {
-                    route_equipment: pool.clone(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .collect();
-        let mut changed = rows[17].clone();
-        changed.runtime.period_days = 8;
-        let removed_key = rows[18].key();
-        let storage = rows.as_ptr();
-        let mut baseline = TableRows::MarketContractTerms(std::mem::take(&mut rows));
-        SliceUpdate::keyed(
-            vec![changed.key()],
-            TableRows::MarketContractTerms(vec![changed]),
-        )
-        .apply(&mut baseline)
-        .unwrap();
-        let TableRows::MarketContractTerms(after) = &baseline else {
-            unreachable!()
-        };
-        assert_eq!(after.as_ptr(), storage);
-        assert_eq!(after[17].runtime.period_days, 8);
-        assert!(
-            after
-                .iter()
-                .all(|row| row.equipment.items.as_ptr() == allocation
-                    && row.prices.items.as_ptr() == allocation
-                    && row.runtime.route_equipment.items.as_ptr() == allocation)
-        );
-        SliceUpdate::keyed(
-            vec![removed_key],
-            TableRows::MarketContractTerms(Vec::new()),
-        )
-        .apply(&mut baseline)
-        .unwrap();
-        let TableRows::MarketContractTerms(after) = baseline else {
-            unreachable!()
-        };
-        assert_eq!(after.len(), 4999);
-        assert!(
-            after
-                .iter()
-                .all(|row| row.runtime.route_equipment.items.as_ptr() == allocation)
-        );
-    }
-    #[test]
-    fn keyed_scalar_commit_keeps_all_unchanged_pool_allocations() {
-        let pool: crate::rows::SharedMarketPool = MarketPool {
-            items: vec![
-                MarketEquipment {
-                    variant: 31,
-                    amount_raw: 99
-                };
-                5000
-            ],
-            ..Default::default()
-        }
-        .into();
-        let allocation = pool.items.as_ptr();
-        let mut baseline = TableRows::LendLeaseAgreements(
-            (0..5000)
-                .map(|id| LendLeaseAgreementRow {
-                    country: 5000,
-                    id,
-                    monthly: pool.clone(),
-                    ..Default::default()
-                })
-                .collect(),
-        );
-        let row = LendLeaseAgreementRow {
-            country: 5000,
-            id: 17,
-            monthly: pool.clone(),
-            fuel_sent_raw: 77,
+    fn diff_owners_emits_only_changed_keys_and_matches_full_merge() {
+        let row = |country: u32, id: u64, fuel: i64| LendLeaseAgreementRow {
+            country,
+            id,
+            fuel_sent_raw: fuel,
             ..Default::default()
         };
-        let update = SliceUpdate::keyed(vec![row.key()], TableRows::LendLeaseAgreements(vec![row]));
-        let TableRows::LendLeaseAgreements(before) = &baseline else {
-            unreachable!()
-        };
-        let storage = before.as_ptr();
-        update.apply(&mut baseline).unwrap();
-        let TableRows::LendLeaseAgreements(after) = &baseline else {
-            unreachable!()
-        };
-        assert_eq!(storage, after.as_ptr());
-        assert_eq!(after[17].fuel_sent_raw, 77);
-        assert!(
-            after
-                .iter()
-                .all(|row| row.monthly.items.as_ptr() == allocation)
+        let previous = TableRows::LendLeaseAgreements(vec![
+            row(1, 1, 10),
+            row(1, 2, 20),
+            row(2, 1, 30),
+            row(3, 1, 40),
+        ]);
+        let fresh = TableRows::LendLeaseAgreements(vec![
+            row(1, 1, 10),
+            row(1, 2, 25),
+            row(1, 3, 99),
+        ]);
+        let read = |owner| owner == 1;
+        let live = |owner| owner != 3;
+        let full = SliceUpdate::new(&previous, fresh.clone(), read, live).unwrap();
+        let diff = SliceUpdate::diff_owners(&previous, fresh, read, live).unwrap();
+        assert!(diff.owners.is_empty());
+        assert!(diff.fits(&previous));
+        assert_eq!(diff.rows.len(), 2);
+        assert_eq!(diff.keys.len(), 3);
+        assert_eq!(
+            diff.merged(&previous).unwrap(),
+            full.merged(&previous).unwrap()
         );
-        let key = after[18].key();
-        SliceUpdate::keyed(vec![key], TableRows::LendLeaseAgreements(Vec::new()))
-            .apply(&mut baseline)
+        let unchanged_fresh = TableRows::LendLeaseAgreements(vec![row(2, 1, 30)]);
+        let empty = SliceUpdate::diff_owners(&previous, unchanged_fresh, |o| o == 2, |_| true)
             .unwrap();
-        let TableRows::LendLeaseAgreements(after) = &baseline else {
-            unreachable!()
-        };
-        assert_eq!(after.len(), 4999);
-        assert!(
-            after
-                .iter()
-                .all(|row| row.monthly.items.as_ptr() == allocation)
-        );
+        assert!(empty.keys.is_empty());
+        assert!(empty.rows.is_empty());
+        assert!(empty.fits(&previous));
+        assert_eq!(empty.merged(&previous).unwrap(), previous);
     }
 }

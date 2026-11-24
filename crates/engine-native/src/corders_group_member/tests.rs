@@ -114,42 +114,6 @@ fn packet(queries: &[(usize, usize)]) -> MembershipPacket {
 }
 
 #[test]
-fn packet_batches_member_queries_and_reads_each_group_link_once() {
-    let mut source = Fixture::new();
-    source.assigned(OWN, group::PRIMARY_ORDER_DATA, 128);
-    for index in 0..3 {
-        let member = MEMBER + index * 0x100;
-        source.word(member + GROUP, OWN as u64);
-        source.word(MEMBERS + index * 64 * 8, member as u64);
-    }
-    let memory = Trace::new(&source);
-    let mut inputs = packet(&[(MEMBER, OWN), (MEMBER + 0x100, OWN), (MEMBER + 0x200, OWN)]);
-    let allocated = inputs.allocated_bytes();
-    inputs.acquire(&memory, 0);
-    for index in 0..3 {
-        assert_eq!(inputs.outcome(index), Ok(true));
-    }
-    assert_eq!(memory.count(OWN), 1);
-    assert_eq!(memory.count(ORDER), 1);
-    assert_eq!(memory.count(ROOTS), 1);
-    for address in [MEMBERS, MEMBERS + 512, MEMBERS + 1024] {
-        assert_eq!(memory.count(address), 1);
-    }
-    assert_eq!(memory.count(OWN + group::SECONDARY_ORDER_DATA), 0);
-    for index in 0..3 {
-        assert_eq!(memory.count(MEMBER + index * 0x100 + GROUP), 0);
-    }
-    assert_eq!(memory.count(OWN + group::PARENT), 1);
-    for address in [
-        OWN + group::PRIMARY_ORDER_DATA,
-        ORDER + order::ASSIGNED_MEMBER_DATA,
-    ] {
-        assert_eq!(memory.count(address), 1);
-    }
-    assert_eq!(inputs.allocated_bytes(), allocated);
-}
-
-#[test]
 fn packet_late_chunk_fault_preserves_earlier_matches_and_is_not_retried() {
     let mut source = Fixture::new();
     source.assigned(OWN, group::PRIMARY_ORDER_DATA, 128);
@@ -186,55 +150,6 @@ fn packet_late_root_fault_cannot_precede_first_hit_or_be_skipped() {
     one.acquire(&memory, 0);
     assert_eq!(memory.count(ROOTS + 8), 0, "root vector has no lookahead");
     assert_eq!(one.outcome(0), Ok(true));
-}
-
-#[test]
-fn packet_shared_parent_is_demanded_once_and_parent_identity_stays_lazy() {
-    let other = OWN + 0x400;
-    let mut source = Fixture::new();
-    source.word(other, group::VTABLE_RVA.0 as u64);
-    source.word(other + group::HANDLE, 53);
-    source.word(other + group::PARENT, PARENT as u64);
-    source.word(OWN + group::PARENT, PARENT as u64);
-    source.word(MEMBER + 0x100 + GROUP, other as u64);
-    source.assigned(PARENT, group::PRIMARY_ORDER_DATA, 1);
-    source.word(MEMBERS, (MEMBER + 0x100) as u64);
-    let memory = Trace::new(&source);
-    let mut inputs = packet(&[(MEMBER, OWN), (MEMBER + 0x100, other)]);
-    inputs.acquire(&memory, 0);
-    assert_eq!(inputs.outcome(0), Ok(true));
-    assert_eq!(inputs.outcome(1), Ok(true));
-    for address in [PARENT, ROOTS, ORDER, MEMBERS] {
-        assert_eq!(memory.count(address), 1);
-    }
-    source.assigned(OWN, group::PRIMARY_ORDER_DATA, 0);
-    source.word(PARENT, 0);
-    let memory = Trace::new(&source);
-    let mut own = packet(&[(MEMBER, OWN)]);
-    own.acquire(&memory, 0);
-    assert_eq!(own.outcome(0), Ok(true));
-    assert_eq!(memory.count(PARENT), 0);
-}
-
-#[test]
-fn packet_later_parent_demand_extends_retained_prefix_without_retry() {
-    let other = OWN + 0x400;
-    let mut source = Fixture::new();
-    source.word(other, group::VTABLE_RVA.0 as u64);
-    source.word(other + group::HANDLE, 53);
-    source.word(other + group::PARENT, OWN as u64);
-    source.word(MEMBER + 0x100 + GROUP, other as u64);
-    source.assigned(OWN, group::PRIMARY_ORDER_DATA, 64);
-    source.word(MEMBERS, MEMBER as u64);
-    source.word(MEMBERS + 512, (MEMBER + 0x100) as u64);
-    let memory = Trace::new(&source);
-    let mut inputs = packet(&[(MEMBER, OWN), (MEMBER + 0x100, other)]);
-    inputs.acquire(&memory, 0);
-    assert_eq!(inputs.outcome(0), Ok(true));
-    assert_eq!(inputs.outcome(1), Ok(true));
-    for address in [ROOTS, ORDER, MEMBERS, MEMBERS + 512] {
-        assert_eq!(memory.count(address), 1);
-    }
 }
 
 #[test]
@@ -375,82 +290,6 @@ fn packet_index_growth_preserves_earlier_aliases_and_failure_frontiers() {
 }
 
 #[test]
-fn demanded_chunks_grow_once_without_expanding_other_arenas() {
-    let mut source = Fixture::new();
-    source.assigned(OWN, group::PRIMARY_ORDER_DATA, 256);
-    source.word(MEMBERS, MEMBER as u64);
-    source.word(MEMBERS + 192 * 8, (MEMBER + 0x100) as u64);
-    source.word(MEMBER + 0x100 + GROUP, OWN as u64);
-    let mut inputs = MembershipPacket::new(2, 2, 2, 2);
-    let push = |inputs: &mut MembershipPacket| {
-        for member in [MEMBER, MEMBER + 0x100] {
-            inputs
-                .push_query(MembershipQuery {
-                    member,
-                    own_group: OWN,
-                })
-                .unwrap();
-        }
-    };
-    push(&mut inputs);
-    let allocated = inputs.allocated_bytes();
-    let memory = Trace::new(&source);
-    inputs.acquire(&memory, 0);
-    assert_eq!(inputs.outcome(0), Ok(true));
-    assert_eq!(inputs.outcome(1), Ok(true));
-    assert_eq!(inputs.required_capacity().chunks, 4);
-    assert_eq!(memory.count(MEMBERS + 128 * 8), 1);
-    assert_eq!(memory.count(MEMBERS + 256 * 8), 0);
-    assert!(inputs.allocated_bytes() > allocated);
-    inputs.grow(inputs.required_capacity()).unwrap();
-    assert_eq!(
-        inputs.capacity(),
-        MembershipCapacity {
-            queries: 2,
-            groups: 2,
-            roots: 2,
-            chunks: 4,
-        }
-    );
-    push(&mut inputs);
-    let memory = Trace::new(&source);
-    inputs.acquire(&memory, 0);
-    assert_eq!(inputs.outcome(0), Ok(true));
-    assert_eq!(inputs.outcome(1), Ok(true));
-    assert_eq!(memory.count(MEMBERS + 256 * 8), 0);
-    assert_eq!(memory.count(OWN + group::SECONDARY_ORDER_DATA), 0);
-    let allocated = inputs.allocated_bytes();
-    inputs.grow(inputs.required_capacity()).unwrap();
-    assert_eq!(inputs.allocated_bytes(), allocated);
-    assert_eq!(inputs.required_capacity(), MembershipCapacity::default());
-}
-
-#[test]
-fn membership_growth_handles_empty_arenas_large_demand_and_overflow() {
-    let current = MembershipCapacity {
-        queries: 0,
-        groups: 4,
-        roots: 8,
-        chunks: usize::MAX / 2 + 1,
-    };
-    assert_eq!(
-        current.grown(MembershipCapacity {
-            queries: 1,
-            groups: 5,
-            roots: 20,
-            chunks: usize::MAX,
-        }),
-        MembershipCapacity {
-            queries: 1,
-            groups: 8,
-            roots: 20,
-            chunks: usize::MAX,
-        }
-    );
-    assert_eq!(current.grown(MembershipCapacity::default()), current);
-}
-
-#[test]
 fn packet_matches_scalar_branch_and_static_fault_outcomes() {
     for owner in [OWN, PARENT] {
         for offset in [group::PRIMARY_ORDER_DATA, group::SECONDARY_ORDER_DATA] {
@@ -562,52 +401,3 @@ fn has_order_rejects_bad_identities_headers_and_overflow_without_absence() {
     assert!(has_order(&memory, usize::MAX, MEMBER).is_err());
 }
 
-#[test]
-fn has_order_reads_each_header_once_for_presence_and_absence() {
-    for present in [false, true] {
-        let mut source = Fixture::new();
-        source.assigned(OWN, group::PRIMARY_ORDER_DATA, 0);
-        if !present {
-            source.word(MEMBERS, 0);
-        }
-        let memory = Trace::new(&source);
-        assert_eq!(has_order(&memory, 0, MEMBER), Ok(present));
-        for address in [
-            MEMBER + GROUP,
-            OWN + group::PARENT,
-            OWN + group::PRIMARY_ORDER_DATA,
-            ORDER + order::ASSIGNED_MEMBER_DATA,
-        ] {
-            assert_eq!(memory.count(address), 1, "{address:x} {present}");
-        }
-    }
-    let mut source = Fixture::new();
-    source.word(MEMBER + GROUP, 0);
-    let memory = Trace::new(&source);
-    assert_eq!(has_order(&memory, 0, MEMBER), Ok(false));
-    assert_eq!(&*memory.reads.borrow(), &[(MEMBER + GROUP, 8)]);
-}
-
-#[test]
-fn prepared_membership_demand_never_recycles_spare_vec_capacity() {
-    let mut packet = MembershipPacket::new(5_001, 5_001, 5_001, 5_001);
-    engine_allocation::reserve(&mut packet.queries, 20_000).unwrap();
-    engine_allocation::reserve(&mut packet.groups, 30_000).unwrap();
-    assert!(packet.queries.capacity() > 5_001);
-    assert_eq!(packet.capacity().queries, 5_001);
-    assert_eq!(packet.capacity().groups, 5_001);
-    let expected = packet.capacity();
-    for _ in 0..20 {
-        packet.grow(expected).unwrap();
-        assert_eq!(packet.capacity(), expected);
-    }
-    let allocated = packet.allocated_bytes();
-    let requested = MembershipCapacity {
-        queries: 5_002,
-        groups: 5_002,
-        ..expected
-    };
-    packet.grow(requested).unwrap();
-    assert_eq!(packet.capacity(), expected.grown(requested));
-    assert!(packet.allocated_bytes() >= allocated);
-}

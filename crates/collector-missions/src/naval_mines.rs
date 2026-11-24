@@ -1,7 +1,7 @@
 use engine_native_memory::{Memory, cpdx_array::Array};
 use engine_native_naval::naval_mine_inputs as native;
 use replay_data::rows::NavalRegionalMineRow;
-use std::{collections::HashMap, sync::Mutex};
+use std::sync::{Mutex, MutexGuard};
 
 type Token = (u64, u64);
 #[derive(Default)]
@@ -12,6 +12,7 @@ struct Part {
     failure: Option<&'static str>,
 }
 struct Held {
+    navy: usize,
     quiet: Option<Token>,
     lifecycle: Option<Token>,
     header: Result<Array, &'static str>,
@@ -20,6 +21,7 @@ struct Held {
 impl Default for Held {
     fn default() -> Self {
         Self {
+            navy: 0,
             quiet: None,
             lifecycle: None,
             header: Err("regional mine header not acquired"),
@@ -28,6 +30,19 @@ impl Default for Held {
     }
 }
 impl Held {
+    fn reset_for(&mut self, navy: usize) {
+        if self.navy != navy {
+            self.navy = navy;
+            self.quiet = None;
+            self.lifecycle = None;
+            self.header = Err("regional mine header not acquired");
+            for part in &mut self.parts {
+                part.certificate = None;
+                part.len = 0;
+                part.failure = None;
+            }
+        }
+    }
     fn refresh(
         &mut self,
         quiet: Token,
@@ -98,77 +113,66 @@ impl Held {
 
 #[derive(Default)]
 struct Cache {
-    entries: HashMap<usize, Held>,
+    entries: Vec<Held>,
     lifetime: Option<u64>,
     row_bytes: usize,
     charge: collector_primitives::raw_memory::Charge,
 }
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 
-#[derive(Default)]
-pub struct Captured;
-impl Captured {
-    pub fn prepare(&mut self, lifetime: Option<u64>, demand: usize) -> Result<(), &'static str> {
-        let mut guard = CACHE.lock().unwrap_or_else(|p| p.into_inner());
-        let cache = guard.get_or_insert_with(Cache::default);
-        if cache.lifetime != lifetime {
-            cache.entries.clear();
-            cache.row_bytes = 0;
-            cache.lifetime = lifetime;
-        }
-        lifetime.ok_or("regional mine world lifetime unavailable")?;
-        crate::naval_map_changes::mine_quiet()
-            .ok_or("regional mine writer certificate unavailable")?;
-        cache
-            .entries
-            .try_reserve(demand.saturating_sub(cache.entries.len()))
-            .map_err(|_| "regional mine cache allocation failed")?;
-        Ok(())
-    }
+pub struct Session<'a> {
+    guard: MutexGuard<'a, Option<Cache>>,
+    quiet: Token,
+    dirty: bool,
+}
+
+impl Session<'_> {
     pub fn country(
         &mut self,
         memory: &impl Memory,
+        slot: usize,
         navy: usize,
         country: u32,
         mut emit: impl FnMut(NavalRegionalMineRow) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
-        let mut guard = CACHE.lock().unwrap_or_else(|p| p.into_inner());
-        let cache = guard.as_mut().ok_or("regional mine cache not prepared")?;
-        cache
-            .lifetime
-            .ok_or("regional mine world lifetime unavailable")?;
-        let quiet = crate::naval_map_changes::mine_quiet()
-            .ok_or("regional mine writer certificate unavailable")?;
-        let lifecycle = crate::naval_map_changes::mine_lifetime(navy)
-            .ok_or("regional mine lifetime certificate unavailable")?;
-        let held = cache.entries.entry(navy).or_default();
-        let previous = held.allocated_bytes();
-        let result = held.refresh(
-            quiet,
-            lifecycle,
-            |part| crate::naval_map_changes::mine_slice(navy, part),
-            || native::header(memory, navy),
-            |source, part, rows| native::capture_slice(memory, source, part, rows),
-            || crate::naval_map_changes::mine_quiet() == Some(quiet),
-        );
-        cache.row_bytes = cache
-            .row_bytes
-            .saturating_sub(previous)
-            .saturating_add(held.allocated_bytes());
-        cache
-            .charge
-            .set(collector_primitives::raw_memory::Capacity {
-                index_map_entries_lower_bound: (cache.entries.capacity()
-                    * size_of::<(usize, Held)>())
-                    as u64,
-                auxiliary_vectors: cache.row_bytes as u64,
-                ..Default::default()
-            });
-        result?;
-        let held = cache
-            .entries
-            .get(&navy)
-            .ok_or("regional mine cached receiver absent")?;
+        let cache = self
+            .guard
+            .as_mut()
+            .ok_or("regional mine cache not prepared")?;
+        if slot >= cache.entries.len() {
+            let additional = slot + 1 - cache.entries.len();
+            cache
+                .entries
+                .try_reserve(additional)
+                .map_err(|_| "regional mine cache allocation failed")?;
+            cache.entries.resize_with(slot + 1, Held::default);
+            self.dirty = true;
+        }
+        let held = &mut cache.entries[slot];
+        held.reset_for(navy);
+        if held.quiet == Some(self.quiet) {
+            held.result()?;
+        } else {
+            let lifecycle = crate::naval_map_changes::mine_lifetime(navy)
+                .ok_or("regional mine lifetime certificate unavailable")?;
+            let previous = held.allocated_bytes();
+            let quiet = self.quiet;
+            let result = held.refresh(
+                quiet,
+                lifecycle,
+                |part| crate::naval_map_changes::mine_slice(navy, part),
+                || native::header(memory, navy),
+                |source, part, rows| native::capture_slice(memory, source, part, rows),
+                || crate::naval_map_changes::mine_quiet() == Some(quiet),
+            );
+            cache.row_bytes = cache
+                .row_bytes
+                .saturating_sub(previous)
+                .saturating_add(held.allocated_bytes());
+            self.dirty = true;
+            result?;
+        }
+        let held = &cache.entries[slot];
         emit(NavalRegionalMineRow {
             country,
             kind: 0,
@@ -185,10 +189,58 @@ impl Captured {
                 })?;
             }
         }
-        if crate::naval_map_changes::mine_quiet() != Some(quiet) {
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<(), &'static str> {
+        if self.dirty
+            && let Some(cache) = self.guard.as_mut()
+        {
+            cache.charge.set(collector_primitives::raw_memory::Capacity {
+                index_vectors: (cache.entries.capacity() * size_of::<Held>()) as u64,
+                auxiliary_vectors: cache.row_bytes as u64,
+                ..Default::default()
+            });
+        }
+        if crate::naval_map_changes::mine_quiet() != Some(self.quiet) {
             return Err("regional mines changed during publication");
         }
         Ok(())
+    }
+}
+#[derive(Default)]
+pub struct Captured;
+impl Captured {
+    pub fn begin(
+        &mut self,
+        lifetime: Option<u64>,
+        demand: usize,
+    ) -> Result<Session<'static>, &'static str> {
+        let mut guard = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+        let cache = guard.get_or_insert_with(Cache::default);
+        let mut dirty = false;
+        if cache.lifetime != lifetime {
+            cache.entries.clear();
+            cache.row_bytes = 0;
+            cache.lifetime = lifetime;
+            dirty = true;
+        }
+        lifetime.ok_or("regional mine world lifetime unavailable")?;
+        let quiet = crate::naval_map_changes::mine_quiet()
+            .ok_or("regional mine writer certificate unavailable")?;
+        if cache.entries.len() < demand {
+            cache
+                .entries
+                .try_reserve(demand - cache.entries.len())
+                .map_err(|_| "regional mine cache allocation failed")?;
+            cache.entries.resize_with(demand, Held::default);
+            dirty = true;
+        }
+        Ok(Session {
+            guard,
+            quiet,
+            dirty,
+        })
     }
 }
 pub fn release() {

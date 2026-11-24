@@ -5,14 +5,21 @@ use replay_data::{
     rows::UnitSupplyOrigin,
 };
 
+static NEXT_SAMPLE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 #[derive(Default)]
 pub struct Sample {
+    id: u64,
     pub inputs: Option<Inputs>,
     pub failure: Option<Failure>,
     origins: Option<Vec<Origin>>,
     charge: collector_primitives::raw_memory::Charge,
 }
 impl Sample {
+    #[inline]
+    pub fn id(&self) -> u64 {
+        self.id
+    }
     pub fn owned(
         inputs: Option<Inputs>,
         failure: Option<Failure>,
@@ -27,7 +34,9 @@ impl Sample {
                 Ok(owned)
             })
             .transpose()?;
+        let id = NEXT_SAMPLE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut sample = Self {
+            id,
             inputs,
             failure,
             origins,
@@ -54,8 +63,68 @@ impl Sample {
     }
 }
 
-fn displayed(value: i64) -> i64 {
+pub fn displayed(value: i64) -> i64 {
     UnitSupplyInputs::STEP.round(value)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct DisplayedInputs {
+    asked: i64,
+    received: i64,
+    from_state: i64,
+    air_drops: i64,
+    disruption: i64,
+    division_demand: (i32, i64),
+    airplane_demand: (i32, i64),
+    ship_demand: (i32, i64),
+}
+
+pub fn record_displayed(
+    current: Option<Inputs>,
+    record: &mut collector_projection::projection::Record<'_>,
+) {
+    match current {
+        Some(current) => {
+            let words = [
+                1_i64,
+                displayed(current.asked),
+                displayed(current.received),
+                displayed(current.from_state),
+                displayed(current.air_drops),
+                displayed(current.disruption),
+                i64::from(current.division_demand.count),
+                displayed(current.division_demand.value),
+                i64::from(current.airplane_demand.count),
+                displayed(current.airplane_demand.value),
+                i64::from(current.ship_demand.count),
+                displayed(current.ship_demand.value),
+            ];
+            record.words(Some(words.as_slice()));
+        }
+        None => record.word(0),
+    }
+}
+
+pub fn displayed_inputs(current: Option<Inputs>) -> Option<DisplayedInputs> {
+    current.map(|current| DisplayedInputs {
+        asked: displayed(current.asked),
+        received: displayed(current.received),
+        from_state: displayed(current.from_state),
+        air_drops: displayed(current.air_drops),
+        disruption: displayed(current.disruption),
+        division_demand: (
+            current.division_demand.count,
+            displayed(current.division_demand.value),
+        ),
+        airplane_demand: (
+            current.airplane_demand.count,
+            displayed(current.airplane_demand.value),
+        ),
+        ship_demand: (
+            current.ship_demand.count,
+            displayed(current.ship_demand.value),
+        ),
+    })
 }
 
 fn demand(value: Demand) -> UnitSupplyDemand {

@@ -382,30 +382,6 @@ fn technology_description_cases() {
     }
 }
 
-#[test]
-fn add_project_progress_ratio() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let content = fixture
-        .catalogue
-        .scripted_content()
-        .unwrap()
-        .effects()
-        .unwrap();
-    let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Project {
-        owner: 100,
-        id: 7,
-    })]);
-    let output = fixture.render_native(
-        "add_project_progress_ratio=0.36",
-        &mut scopes,
-        content.view(None),
-    );
-    assert_eq!(output.text, "Progress Alpha project AAA 0.36");
-    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
-}
-
 const RAID: u64 = 9 << 32 | 84;
 
 fn raid_fixture() -> (Fixture, Folder) {

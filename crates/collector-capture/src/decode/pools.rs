@@ -6,7 +6,8 @@ use super::{
 };
 use std::sync::Mutex;
 
-pub(super) const JOB_POOL_STEADY: usize = 3;
+pub(super) const JOB_POOL_STEADY: usize = 1;
+const JOB_POOL_MAX: usize = 8;
 
 fn keep() -> usize {
     let shared = crate::sampling::SHARED.load(std::sync::atomic::Ordering::Acquire);
@@ -21,11 +22,14 @@ fn keep() -> usize {
             .live()
             .saturating_sub(crate::frame_pool::STEADY)
     };
-    JOB_POOL_STEADY + backlog
+    (JOB_POOL_STEADY + backlog).min(JOB_POOL_MAX)
 }
 
 fn retain<J>(pool: &mut Vec<J>, job: J) {
-    let keep = keep();
+    retain_at(pool, job, keep());
+}
+
+fn retain_at<J>(pool: &mut Vec<J>, job: J, keep: usize) {
     if pool.len() < keep && engine_allocation::reserve(pool, 1).is_ok() {
         pool.push(job);
     }
@@ -87,7 +91,7 @@ pub(super) fn release_relations_job(mut job: RelationsJob) {
     }
     job.clear();
     if let Ok(mut pool) = RELATIONS_JOB_POOL.lock() {
-        retain(&mut pool, job);
+        retain_at(&mut pool, job, 1);
     }
 }
 
@@ -122,13 +126,16 @@ pub(super) fn release_characters_job(mut job: CharactersJob) {
     if collector_memory::terminal::failed() {
         return;
     }
-    if collector_memory::terminal::failed() {
-        return;
-    }
+    let quiet = job.trim_quiet_logs();
     job.clear();
     if let Ok(mut pool) = CHARACTERS_JOB_POOL.lock() {
         let part = job.part;
-        retain(&mut pool[part], job);
+        if quiet {
+            for idle in &mut pool[part] {
+                idle.trim_quiet_logs();
+            }
+        }
+        retain_at(&mut pool[part], job, 2);
     }
 }
 
@@ -163,9 +170,11 @@ pub(super) fn release_projects_job(mut job: ProjectsJob) {
     if collector_memory::terminal::failed() {
         return;
     }
+    job.log.trim_if_quiet();
+    job.log.drop_index();
     job.clear();
     if let Ok(mut pool) = PROJECTS_JOB_POOL.lock() {
-        retain(&mut pool, job);
+        retain_at(&mut pool, job, 1);
     }
 }
 
@@ -195,9 +204,6 @@ pub(super) fn release_lexical_job(mut job: LexicalJob) {
     }
     job.note_growth();
     job.clear();
-    if let Ok(mut pool) = LEXICAL_JOB_POOL.lock() {
-        retain(&mut pool, job);
-    }
 }
 
 pub(crate) fn acquire_divisions_job() -> DivisionsJob {
@@ -226,7 +232,7 @@ pub(super) fn release_divisions_job(mut job: DivisionsJob) {
     }
     job.clear();
     if let Ok(mut pool) = DIVISIONS_JOB_POOL.lock() {
-        retain(&mut pool, job);
+        retain_at(&mut pool, job, keep().min(2));
     }
 }
 
@@ -273,7 +279,7 @@ pub(super) fn release_air_wing_job(mut job: AirWingJob) {
     }
     job.clear();
     if let Ok(mut pool) = AIR_WING_JOB_POOL.lock() {
-        retain(&mut pool, job);
+        retain_at(&mut pool, job, 1);
     }
 }
 
@@ -302,9 +308,11 @@ pub(super) fn release_air_stats_job(mut job: AirStatsJob) {
     if collector_memory::terminal::failed() {
         return;
     }
+    job.log.trim_if_quiet();
+    job.log.drop_index();
     job.clear();
     if let Ok(mut pool) = AIR_STATS_JOB_POOL.lock() {
-        retain(&mut pool, job);
+        retain_at(&mut pool, job, 1);
     }
 }
 
@@ -339,9 +347,11 @@ pub(super) fn release_naval_job(mut job: NavalJob) {
     if collector_memory::terminal::failed() {
         return;
     }
+    job.log.trim_if_quiet();
+    job.log.drop_index();
     job.clear();
     if let Ok(mut pool) = NAVAL_JOB_POOL.lock() {
-        retain(&mut pool, job);
+        retain_at(&mut pool, job, 1);
     }
 }
 
@@ -375,6 +385,7 @@ pub(super) fn release_players_job(mut job: PlayersJob) {
     if collector_memory::terminal::failed() {
         return;
     }
+    job.log.drop_index();
     job.clear();
     if let Ok(mut pool) = PLAYERS_JOB_POOL.lock() {
         retain(&mut pool, job);
@@ -411,6 +422,7 @@ pub(super) fn release_session_job(mut job: SessionJob) {
     if collector_memory::terminal::failed() {
         return;
     }
+    job.log.drop_index();
     job.clear();
     if let Ok(mut pool) = SESSION_JOB_POOL.lock() {
         retain(&mut pool, job);
@@ -438,24 +450,7 @@ pub(super) fn release_production_rest_job(mut job: ProductionRestJob) {
         return;
     }
     collector_raw::raw::note_growth("ProductionRest", &job.log);
-    if job.grow_for_next() {
-        job.grow();
-        if collector_memory::terminal::failed() {
-            return;
-        }
-    }
-    job.log.prepare_read_plan();
-    if collector_memory::terminal::failed() {
-        return;
-    }
-    job.presize_countries();
-    if collector_memory::terminal::failed() {
-        return;
-    }
     job.clear();
-    if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.lock() {
-        retain(&mut pool, job);
-    }
 }
 
 pub(crate) fn acquire_construction_rest_job() -> ConstructionRestJob {
@@ -479,20 +474,7 @@ pub(super) fn release_construction_rest_job(mut job: ConstructionRestJob) {
         return;
     }
     collector_raw::raw::note_growth("ConstructionRest", &job.log);
-    if job.grow_for_next() {
-        job.grow();
-        if collector_memory::terminal::failed() {
-            return;
-        }
-    }
-    job.presize_countries();
-    if collector_memory::terminal::failed() {
-        return;
-    }
     job.clear();
-    if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.lock() {
-        retain(&mut pool, job);
-    }
 }
 
 pub(crate) fn acquire_economy_rest_job() -> EconomyRestJob {
@@ -516,19 +498,7 @@ pub(super) fn release_economy_rest_job(mut job: EconomyRestJob) {
         return;
     }
     collector_raw::raw::note_growth("EconomyRest", &job.log);
-    if job.grow_for_next() {
-        job.grow();
-        if collector_memory::terminal::failed() {
-            return;
-        }
-    }
-    if collector_memory::terminal::failed() {
-        return;
-    }
     job.clear();
-    if let Ok(mut pool) = ECONOMY_REST_JOB_POOL.lock() {
-        retain(&mut pool, job);
-    }
 }
 
 pub(crate) fn acquire_air_bases_job() -> AirBasesJob {
@@ -562,9 +532,11 @@ pub(super) fn release_air_bases_job(mut job: AirBasesJob) {
     if collector_memory::terminal::failed() {
         return;
     }
+    job.log.trim_if_quiet();
+    job.log.drop_index();
     job.clear();
     if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock() {
-        retain(&mut pool, job);
+        retain_at(&mut pool, job, keep().max(2));
     }
 }
 
@@ -589,19 +561,7 @@ pub(super) fn release_supremacy_job(mut job: SupremacyJob) {
         return;
     }
     collector_raw::raw::note_growth("Supremacy", &job.log);
-    if job.grow_for_next() {
-        job.grow();
-        if collector_memory::terminal::failed() {
-            return;
-        }
-    }
-    if collector_memory::terminal::failed() {
-        return;
-    }
     job.clear();
-    if let Ok(mut pool) = SUPREMACY_JOB_POOL.lock() {
-        retain(&mut pool, job);
-    }
 }
 
 pub(crate) fn acquire_sunk_job() -> SunkJob {
@@ -625,19 +585,7 @@ pub(super) fn release_sunk_job(mut job: SunkJob) {
         return;
     }
     collector_raw::raw::note_growth("Sunk", &job.log);
-    if job.grow_for_next() {
-        job.grow();
-        if collector_memory::terminal::failed() {
-            return;
-        }
-    }
-    if collector_memory::terminal::failed() {
-        return;
-    }
     job.clear();
-    if let Ok(mut pool) = SUNK_JOB_POOL.lock() {
-        retain(&mut pool, job);
-    }
 }
 
 pub(crate) fn acquire_radar_job() -> RadarJob {
@@ -661,19 +609,7 @@ pub(super) fn release_radar_job(mut job: RadarJob) {
         return;
     }
     job.note_growth();
-    if job.grow_for_next() {
-        job.grow();
-        if collector_memory::terminal::failed() {
-            return;
-        }
-    }
-    if collector_memory::terminal::failed() {
-        return;
-    }
     job.clear();
-    if let Ok(mut pool) = RADAR_JOB_POOL.lock() {
-        retain(&mut pool, job);
-    }
 }
 
 pub(crate) fn acquire_intel_job() -> IntelJob {
@@ -697,19 +633,7 @@ pub(super) fn release_intel_job(mut job: IntelJob) {
         return;
     }
     job.note_growth();
-    if job.grow_for_next() {
-        job.grow();
-        if collector_memory::terminal::failed() {
-            return;
-        }
-    }
-    if collector_memory::terminal::failed() {
-        return;
-    }
     job.clear();
-    if let Ok(mut pool) = INTEL_JOB_POOL.lock() {
-        retain(&mut pool, job);
-    }
 }
 
 pub(crate) fn acquire_weather_job() -> WeatherJob {
@@ -753,6 +677,7 @@ pub(super) fn release_weather_job(mut job: WeatherJob) {
     if collector_memory::terminal::failed() {
         return;
     }
+    job.log.drop_index();
     job.clear();
     if let Ok(mut pool) = WEATHER_JOB_POOL.lock() {
         retain(&mut pool, job);
@@ -789,6 +714,7 @@ pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
     if collector_memory::terminal::failed() {
         return;
     }
+    job.log.drop_index();
     job.clear();
     if let Ok(mut pool) = CAPITULATION_JOB_POOL.lock() {
         retain(&mut pool, job);

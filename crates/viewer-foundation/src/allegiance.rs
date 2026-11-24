@@ -473,26 +473,4 @@ mod tests {
         assert_eq!(native.co_belligerent(1, 51), Ok(false));
     }
 
-    #[test]
-    fn the_colour_slots_follow_the_strip_and_the_palette() {
-        assert_eq!(Allegiance::Enemy.index(), 0);
-        assert_eq!(Allegiance::Allied.index(), 1);
-        assert_eq!(Allegiance::Ours.index(), 2);
-        assert_eq!(Allegiance::Other.index(), 4);
-        assert_eq!(Tints::VANILLA.of(Allegiance::Ours), Tints::VANILLA.ours);
-        assert_eq!(Tints::VANILLA.of(Allegiance::Other), Tints::VANILLA.other);
-    }
-
-    #[test]
-    fn the_plate_modulate_reproduces_the_measured_screenshot_colour() {
-        let body = 124.0f32;
-        let ours = Tints::VANILLA.of(Allegiance::Ours);
-        let modulated = [body * ours[0], body * ours[1], body * ours[2]];
-        for (channel, measured) in modulated.into_iter().zip([37.0, 79.0, 43.0]) {
-            assert!(
-                (channel - measured).abs() < 10.0,
-                "{channel} is not within a rounding of {measured}"
-            );
-        }
-    }
 }

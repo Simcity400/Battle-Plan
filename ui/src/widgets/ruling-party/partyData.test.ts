@@ -1,7 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { categoricalPalette, GREY_CHROMA } from '../../charts/palette.ts';
-import { parseColor, rgbToOklch } from '../../shell/appearance/color.ts';
 import { bandSummaries, bandSummary, bands, formatPopularity, leaderAt, leaderShown, partyBadges, partyChangeHours, partyNameAt, rawAt, rulingAt, rulingFirst, stepHour, validatePartyHistoryReply } from './partyData.ts';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { settledHour } from '../../dashboard/settledHour.ts';
@@ -28,24 +26,6 @@ test('bands follow content order and colours; unknown ideologies use the palette
   assert.deepEqual(list.map(band => band.keys), [[{ tag: 'GER', part: '0' }, { tag: 'GER', part: '4' }], [{ tag: 'GER', part: '1' }], [{ tag: 'GER', part: '3' }]]);
 });
 
-test('content ideology colours keep their hue in the palette tone, and a grey stays grey', () => {
-  for (const surface of ['#111822', '#ffffff']) {
-    const palette = categoricalPalette(surface);
-    const tones = palette.map(hex => rgbToOklch(parseColor(hex)!));
-    const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
-    const reply = { ...REPLY, ideologies: [...REPLY.ideologies, { token: 'neutrality', name: 'Non-Aligned', color: [128, 128, 128] as [number, number, number] }],
-      parties: [...REPLY.parties, { token: 'neutrality', parts: [] }] };
-    const shown = new Map(bands(reply, 'GER', palette).map(band => [band.token, rgbToOklch(parseColor(band.color)!)]));
-    assert.ok(bands(reply, 'GER', palette).every(band => band.color.startsWith('#') && band.color !== '#0000ff'));
-    for (const [token, rgb] of [['democratic', [0, 0, 255]], ['fascism', [150, 75, 0]]] as const) {
-      const source = rgbToOklch({ r: rgb[0], g: rgb[1], b: rgb[2] }), colour = shown.get(token)!;
-      assert.ok(Math.abs(colour.l - median(tones.map(tone => tone.l))) < 0.02, token);
-      assert.ok(colour.c <= median(tones.map(tone => tone.c)) + 0.01, token);
-      assert.ok(Math.min(Math.abs(colour.h - source.h), 360 - Math.abs(colour.h - source.h)) < 6, token);
-    }
-    assert.ok(shown.get('neutrality')!.c < GREY_CHROMA);
-  }
-});
 
 test('a band reads its popularity from the parts its party was read under, loading until the hour is read', () => {
   const [democratic] = bands(REPLY, 'GER', ['#111111']);

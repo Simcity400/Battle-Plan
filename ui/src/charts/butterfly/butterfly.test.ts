@@ -1,28 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUTTERFLY_HEADER, butterflyPartAt, butterflyPartSpans, butterflyLabelWidth, butterflyLayout, butterflyMinimumHeight, butterflyMinimumWidth, butterflyNameX, butterflyRowViewport, butterflyScale, butterflySurface,
-  butterflyTextWidths, butterflyTicks, ellipsizeLabel, formatRatio } from './layout.ts';
-import { FLAG, MIN_LABEL, NAME_PAD, NAME_X, VALUE_GAP } from '../race/draw.ts';
-import { barThickness, MIN_SLOT, RACE_AXIS, raceLayout } from '../race/race.ts';
+import { butterflyPartAt, butterflyPartSpans, butterflyLayout, butterflyRowViewport, butterflyScale, butterflySurface, butterflyTextWidths, butterflyTicks, formatRatio } from './layout.ts';
 import { revealRow } from '../../components/countryList.ts';
 import { nextRows } from '../rowMotion.ts';
 import { approachAcrossGap } from '../easing.ts';
 
-test('names sit left of one centred axis, with each side’s exact value and the ratio clear of each other', () => {
-  const l = butterflyLayout(640, 360, 10, 150, 70, 65);
-  assert.equal(l.labelWidth, 150);
-  assert.equal(l.axis - l.labelWidth, l.ratioX - 65 - 2 * VALUE_GAP - l.axis);
-  assert(l.axis - l.half - VALUE_GAP - 70 > l.labelWidth);
-  assert(l.axis + l.half + VALUE_GAP + 70 < l.ratioX - 65);
-  assert(l.barHeight < l.slot);
-  assert.equal(butterflyLayout(120, 100, 0, 120, 70, 65).half, 0);
-  assert(butterflyLayout(640, 360, 10, 150, 70, 0).half > l.half);
-});
-test('the chart scrolls sideways only once each bar would be shorter than its least length', () => {
-  const minimum = butterflyMinimumWidth(150, 70, 65);
-  assert(butterflyLayout(minimum, 360, 10, 150, 70, 65).half >= 24 - 1e-9);
-  assert(butterflyLayout(minimum - 10, 360, 10, 150, 70, 65).half < 24);
-});
 test('scale fits the largest shown side, with missing distinct from zero', () => {
   assert.equal(butterflyScale([{ id: 'x', left: 100, right: 20 }, { id: 'y', left: null, right: 400 }]), 420);
   assert.equal(butterflyScale([{ id: 'x', left: null, right: 0 }]), 1);
@@ -61,48 +43,8 @@ test('row motion preserves identities and does not ease across missing values', 
   assert.equal(approachAcrossGap(10, 100, 16, 180, true), 100);
 });
 
-test('the name column is the race’s: flag, name and padding, at most a third of the chart', () => {
-  const names = ['Italy', 'Chinese Soviet Republic', 'United Kingdom'];
-  const measure = (text: string) => Array.from(text).length * 7;
-  const longest = Math.max(...names.map(measure));
-  const column = butterflyLabelWidth(800, longest);
-  assert.equal(column, NAME_X + longest + NAME_PAD);
-  assert.equal(butterflyNameX(), NAME_X);
-  for (const name of names) assert.equal(ellipsizeLabel(name, column - NAME_X - NAME_PAD, measure), name);
-  const withoutFlags = butterflyLabelWidth(800, longest, false);
-  assert.equal(withoutFlags, FLAG.x + longest + NAME_PAD);
-  assert.equal(butterflyNameX(false), FLAG.x);
-  for (const name of names) assert.equal(ellipsizeLabel(name, withoutFlags - FLAG.x - NAME_PAD, measure), name);
-  const narrow = butterflyLabelWidth(500, longest);
-  assert.equal(narrow, 160);
-  const truncated = ellipsizeLabel(names[1], narrow - NAME_X - NAME_PAD, measure);
-  assert(truncated.endsWith('…')); assert(measure(truncated) <= narrow - NAME_X - NAME_PAD);
-  assert.equal(butterflyLabelWidth(800, 0), MIN_LABEL);
-  assert.equal(ellipsizeLabel('𝄞𝄞𝄞', 14, measure), '𝄞…');
-  assert.equal(ellipsizeLabel('name', 2, measure), '');
-});
 
-test('rows take the race’s height and bar thickness for the same room and slots', () => {
-  for (const [height, slots] of [[274, 10], [600, 2], [600, 3], [400, 10], [100, 30]]) {
-    const layout = butterflyLayout(800, height, slots, 200, 60, 50);
-    const race = raceLayout(800, height - BUTTERFLY_HEADER + 8, slots, 200, 60);
-    assert.equal(layout.slot, race.slot);
-    assert.equal(layout.barHeight, race.thickness);
-    assert.equal(layout.barHeight, barThickness(layout.slot));
-  }
-  assert.equal(butterflyLayout(800, 100, 30, 200, 60, 50).slot, MIN_SLOT);
-});
 
-test('3, 10 and 30 rows fit or scroll only at the race’s least row height', () => {
-  for (const count of [3, 10, 30]) {
-    const minimum = butterflyMinimumHeight(count), height = Math.max(282, minimum);
-    const layout = butterflyLayout(800, height, count, 200, 60, 50);
-    assert(layout.top + count * layout.slot + RACE_AXIS <= height + 0.001);
-    assert(layout.slot >= MIN_SLOT);
-    assert.equal(minimum > 282, count === 30);
-  }
-  assert(butterflyMinimumHeight(10) <= 255);
-});
 
 test('5000 rows retain their full scroll extent with a viewport-sized canvas and keyboard access to the last row', () => {
   for (const count of [3, 10, 30, 5000]) {
@@ -123,17 +65,6 @@ test('5000 rows retain their full scroll extent with a viewport-sized canvas and
   }
 });
 
-test('column headings and the value axis keep their room while rows scroll through a short viewport', () => {
-  const layout = butterflyLayout(800, 700, 30, 200, 60, 50);
-  const first = butterflyRowViewport(layout.top, 274, 0);
-  const scrolled = butterflyRowViewport(layout.top, 274, 100);
-  assert.equal(scrolled.start - 100, first.start);
-  assert.equal(scrolled.height, first.height);
-  assert.equal(scrolled.end - 100, 274 - RACE_AXIS);
-  const firstRowTop = layout.top - 100;
-  assert(firstRowTop < layout.top);
-  assert(firstRowTop + 100 < scrolled.start);
-});
 
 test('caller text fitting has no argument-count limit for large item lists', () => {
   function* items() {

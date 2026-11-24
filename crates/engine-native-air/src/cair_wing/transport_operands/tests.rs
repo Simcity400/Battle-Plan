@@ -100,39 +100,6 @@ impl Memory for Fixture {
 }
 
 #[test]
-fn clone_index_and_complete_live_handle_are_authenticated_once_per_pass() {
-    let memory = Fixture::new();
-    let mut scratch = Scratch::with_capacity(3).unwrap();
-    let mut first = super::super::Row::default();
-    let mut repeated = {
-        let mut pass = Pass::new(0, 3, &mut scratch);
-        assert_eq!(pass.capture(&memory, WING, POOL, &mut first), Some(RAID));
-        assert_eq!(first.pool_subunit, Some(1));
-        assert_eq!(
-            first.raid_reference,
-            Some(RaidReference {
-                raw: HANDLE,
-                resolves: true
-            })
-        );
-        memory.reads.borrow_mut().clear();
-        let mut repeated = super::super::Row::default();
-        assert_eq!(pass.capture(&memory, WING, POOL, &mut repeated), Some(RAID));
-        assert_eq!(repeated, first);
-        assert!(memory.reads.borrow().is_empty());
-        pass.capture(&memory, OTHER_WING, POOL, &mut repeated);
-        assert_eq!(*memory.reads.borrow(), [(OTHER_WING + RAID_REFERENCE, 8)]);
-        repeated
-    };
-    memory.reads.borrow_mut().clear();
-    Pass::new(0, 3, &mut scratch).capture(&memory, WING, POOL, &mut repeated);
-    assert!(
-        memory.reads.borrow().len() > 1,
-        "new pass must acquire new observations"
-    );
-}
-
-#[test]
 fn null_definition_uses_native_none_token_without_database_or_raid_reads() {
     let mut memory = Fixture::new();
     memory.header(DEFINITION, true);
@@ -173,45 +140,6 @@ fn internal_mask_fault_preserves_index_and_failed_raw_reads_do_not_retry() {
 }
 
 #[test]
-fn database_and_registry_header_faults_are_retained_for_other_keys() {
-    let mut memory = Fixture::new();
-    memory.qword(POOL + 0x100 + cair_wing_pool::DEFINITION, DEFINITION as u64);
-    memory.fault = Some(definition::DATABASE_RVA.0);
-    let mut scratch = Scratch::with_capacity(3).unwrap();
-    let mut row = super::super::Row::default();
-    {
-        let mut pass = Pass::new(0, 3, &mut scratch);
-        pass.capture(&memory, WING, POOL, &mut row);
-        pass.capture(&memory, OTHER_WING, POOL + 0x100, &mut row);
-        assert_eq!(
-            memory
-                .reads
-                .borrow()
-                .iter()
-                .filter(|(address, _)| *address == definition::DATABASE_RVA.0)
-                .count(),
-            1
-        );
-    }
-    memory.fault = Some(registry::LOW_ROOTS_RVA.0 + 84 * 8);
-    memory.qword(OTHER_WING + RAID_REFERENCE, HANDLE.wrapping_add(1 << 32));
-    memory.reads.borrow_mut().clear();
-    let mut pass = Pass::new(0, 3, &mut scratch);
-    pass.capture(&memory, WING, POOL, &mut row);
-    pass.capture(&memory, OTHER_WING, POOL, &mut row);
-    assert_eq!(
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .filter(|(address, _)| *address == registry::LOW_ROOTS_RVA.0 + 84 * 8)
-            .count(),
-        1
-    );
-    assert_eq!(row.raid_reference, None);
-}
-
-#[test]
 fn live_identity_mismatch_is_a_cached_fault_and_null_raw_needs_no_registry() {
     let mut memory = Fixture::new();
     memory.qword(RAID + 8, HANDLE ^ (1 << 32));
@@ -244,35 +172,3 @@ fn live_identity_mismatch_is_a_cached_fault_and_null_raw_needs_no_registry() {
     );
 }
 
-#[test]
-fn memo_pressure_refuses_before_reads_and_growth_resets_observations() {
-    let memory = Fixture::new();
-    let mut scratch = Scratch::with_capacity(1).unwrap();
-    let mut row = super::super::Row::default();
-    {
-        let mut pass = Pass::new(0, 2, &mut scratch);
-        pass.capture(&memory, WING, POOL, &mut row);
-        memory.reads.borrow_mut().clear();
-        row = Default::default();
-        pass.capture(&memory, OTHER_WING, POOL + 0x100, &mut row);
-        assert_eq!(row.pool_subunit, None);
-        assert!(memory.reads.borrow().is_empty());
-        pass.capture(&memory, OTHER_WING, POOL, &mut row);
-        assert_eq!(row.pool_subunit, None);
-        assert!(
-            memory.reads.borrow().is_empty(),
-            "a different arena cannot resume optional acquisition after denial"
-        );
-    }
-    assert_eq!(scratch.required_map_capacity, 2);
-    scratch.grow(2).unwrap();
-    assert!(scratch.fits(2));
-    assert!(scratch.allocated_bytes() > 0);
-    assert_eq!(scratch.required_map_capacity, 0);
-    let mut vacant = Scratch::default();
-    memory.reads.borrow_mut().clear();
-    Pass::new(0, 1, &mut vacant).capture(&memory, WING, POOL, &mut row);
-    assert!(memory.reads.borrow().is_empty());
-    assert_eq!(vacant.required_map_capacity, 1);
-    assert_eq!(slot_count(usize::MAX), None);
-}

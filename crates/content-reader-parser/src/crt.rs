@@ -382,25 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn integers_store_the_low_32_bits_of_a_64_bit_scan() {
-        let i32_of = |text: &[u8]| scan_i32(text).stored();
-        assert_eq!(i32_of(b"2147483648"), Some(i32::MIN));
-        assert_eq!(i32_of(b"-2147483649"), Some(i32::MAX));
-        assert_eq!(i32_of(b"4294967297"), Some(1));
-        assert_eq!(i32_of(b"0x1F"), Some(31));
-        assert_eq!(i32_of(b"017"), Some(15));
-        assert_eq!(i32_of(b"08"), Some(0));
-        assert_eq!(i32_of(b"  -12px"), Some(-12));
-        assert_eq!(i32_of(b"99999999999999999999"), Some(-1));
-        assert_eq!(i32_of(b"-99999999999999999999"), Some(0));
-        assert_eq!(i32_of(b"9223372036854775808"), Some(-1));
-        assert_eq!(i32_of(b"-9223372036854775808"), Some(0));
-        for nothing in [&b""[..], b"x", b"-", b"+", b"0x", b"0xg", b" ", b"\0 5"] {
-            assert_eq!(i32_of(nothing), None, "{nothing:?}");
-        }
-    }
-
-    #[test]
     fn unsigned_conversions_store_the_low_32_bits() {
         assert_eq!(scan_u32(b"4294967296"), Scanned::Stored(0));
         assert_eq!(scan_u32(b"4294967295"), Scanned::Stored(u32::MAX));

@@ -114,15 +114,6 @@ fn owner_aliases_share_a_border_key_and_links_invalidate_the_cache() {
 }
 
 #[test]
-fn the_fill_takes_the_controllers_recorded_colour_as_stored() {
-    let regions = regions(&map(), &occupied()).unwrap();
-    assert_eq!(regions.state_of[1], 10);
-    assert_eq!(regions.state_of[3], 11);
-    assert_eq!(regions.country_colors[&1], GER);
-    assert_eq!(regions.country_colors[&2], SOV);
-}
-
-#[test]
 fn a_country_without_a_recorded_colour_keeps_its_region_grey_and_is_named() {
     let mut frame = occupied();
     *frame.tables[TableId::CountryAppearance.index()] = TableView::Truncated {

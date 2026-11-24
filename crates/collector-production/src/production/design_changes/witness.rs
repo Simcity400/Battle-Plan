@@ -1,14 +1,21 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 
+pub(super) const MAX_WITNESS_BYTES: usize = 512 * 1024;
+const MAX_COALESCED_SPAN: usize = 4096;
+
 pub(super) struct Witness {
     pub id: u64,
-    spans: Vec<(usize, u32, bool)>,
-    bytes: Vec<u8>,
+    spans: Box<[(usize, u32, bool)]>,
+    bytes: Box<[u8]>,
     longest: usize,
     pub team: (u64, bool),
+    stamp: u64,
 }
 impl Witness {
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.spans.len() * std::mem::size_of::<(usize, u32, bool)>() + self.bytes.len()
+    }
     pub(super) fn unchanged(&self, memory: &impl Memory, scratch: &mut Vec<u8>) -> bool {
         if scratch.len() < self.longest {
             let short = self.longest - scratch.len();
@@ -59,11 +66,37 @@ pub(super) fn take(watches: &[Watch], removed: &[usize]) -> Vec<Option<Witness>>
     }
     out
 }
+static WITNESS_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub(super) fn keep_all(kept: Vec<(usize, Witness)>) {
     let mut held = witnesses();
     let held = held.get_or_insert_with(HashMap::new);
+    let stamp = WITNESS_STAMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if engine_allocation::advisory(|| engine_allocation::reserve_map(held, kept.len())).is_ok() {
-        held.extend(kept);
+        for (pointer, mut witness) in kept {
+            witness.stamp = stamp;
+            held.insert(pointer, witness);
+        }
+    }
+    let mut total: usize = held.values().map(Witness::retained_bytes).sum();
+    if total > MAX_WITNESS_BYTES {
+        let mut order: Vec<(u64, usize, usize)> = Vec::new();
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut order, held.len())).is_ok()
+        {
+            for (&pointer, witness) in held.iter() {
+                order.push((witness.stamp, pointer, witness.retained_bytes()));
+            }
+            order.sort_unstable_by_key(|&(stamp, _, _)| stamp);
+            for (_, pointer, bytes) in order {
+                if total <= MAX_WITNESS_BYTES {
+                    break;
+                }
+                if held.remove(&pointer).is_some() {
+                    total = total.saturating_sub(bytes);
+                }
+            }
+            held.shrink_to_fit();
+        }
     }
 }
 pub(super) fn remove(pointer: usize) {
@@ -82,6 +115,7 @@ pub(super) struct Recording<'a, M> {
     refused: Cell<bool>,
 }
 impl<'a, M> Recording<'a, M> {
+    #[cfg(test)]
     pub(super) fn new(source: &'a M, (spans, bytes): (usize, usize)) -> Self {
         let (mut span_storage, mut byte_storage) = (Vec::new(), Vec::new());
         let refused = engine_allocation::reserve(&mut span_storage, spans).is_err()
@@ -93,15 +127,75 @@ impl<'a, M> Recording<'a, M> {
             refused: Cell::new(refused),
         }
     }
-    pub(super) fn witness(self, id: u64, team: (u64, bool)) -> Option<Witness> {
+    pub(super) fn with_scratch(
+        source: &'a M,
+        mut spans: Vec<(usize, u32, bool)>,
+        mut bytes: Vec<u8>,
+        (want_spans, want_bytes): (usize, usize),
+    ) -> Self {
+        spans.clear();
+        bytes.clear();
+        let refused = (spans.capacity() < want_spans
+            && engine_allocation::reserve(&mut spans, want_spans).is_err())
+            || (bytes.capacity() < want_bytes
+                && engine_allocation::reserve(&mut bytes, want_bytes).is_err());
+        Self {
+            source,
+            spans: RefCell::new(spans),
+            bytes: RefCell::new(bytes),
+            refused: Cell::new(refused),
+        }
+    }
+    pub(super) fn finish(
+        self,
+        id: u64,
+        team: (u64, bool),
+    ) -> (Option<Witness>, Vec<(usize, u32, bool)>, Vec<u8>) {
         let spans = self.spans.into_inner();
+        let bytes = self.bytes.into_inner();
+        if self.refused.get() {
+            return (None, spans, bytes);
+        }
         let longest = spans.iter().map(|&(_, len, _)| len as usize).max().unwrap_or(0);
-        (!self.refused.get()).then(|| Witness {
+        let witness = (|| {
+            let copied_spans = engine_allocation::advisory(|| {
+                let copy = engine_allocation::copy_vec(&spans)?;
+                engine_allocation::boxed_slice(copy)
+            })
+            .ok()?;
+            let copied_bytes = engine_allocation::advisory(|| {
+                let copy = engine_allocation::copy_vec(&bytes)?;
+                engine_allocation::boxed_slice(copy)
+            })
+            .ok()?;
+            Some(Witness {
+                id,
+                spans: copied_spans,
+                bytes: copied_bytes,
+                longest,
+                team,
+                stamp: 0,
+            })
+        })();
+        (witness, spans, bytes)
+    }
+    #[cfg(test)]
+    pub(super) fn witness(self, id: u64, team: (u64, bool)) -> Option<Witness> {
+        if self.refused.get() {
+            return None;
+        }
+        let spans = self.spans.into_inner();
+        let bytes = self.bytes.into_inner();
+        let longest = spans.iter().map(|&(_, len, _)| len as usize).max().unwrap_or(0);
+        let spans = engine_allocation::advisory(|| engine_allocation::boxed_slice(spans)).ok()?;
+        let bytes = engine_allocation::advisory(|| engine_allocation::boxed_slice(bytes)).ok()?;
+        Some(Witness {
             id,
             spans,
-            bytes: self.bytes.into_inner(),
+            bytes,
             longest,
             team,
+            stamp: 0,
         })
     }
 }
@@ -113,7 +207,12 @@ impl<M: Memory> Memory for Recording<'_, M> {
         }
         let (mut spans, mut bytes) = (self.spans.borrow_mut(), self.bytes.borrow_mut());
         let held = u32::try_from(output.len()).ok().and_then(|len| {
-            if spans.len() == spans.capacity() {
+            let merged = spans.last_mut().filter(|last| {
+                last.2 == ok
+                    && last.0.checked_add(last.1 as usize) == Some(address)
+                    && (last.1 as usize).saturating_add(output.len()) <= MAX_COALESCED_SPAN
+            });
+            if merged.is_none() && spans.len() == spans.capacity() {
                 let more = spans.capacity().max(64);
                 engine_allocation::reserve(&mut spans, more).ok()?;
             }
@@ -124,7 +223,15 @@ impl<M: Memory> Memory for Recording<'_, M> {
                 }
                 bytes.extend_from_slice(output);
             }
-            spans.push((address, len, ok));
+            if let Some(last) = spans.last_mut().filter(|last| {
+                last.2 == ok
+                    && last.0.checked_add(last.1 as usize) == Some(address)
+                    && (last.1 as usize).saturating_add(output.len()) <= MAX_COALESCED_SPAN
+            }) {
+                last.1 += len;
+            } else {
+                spans.push((address, len, ok));
+            }
             Some(())
         });
         if held.is_none() {

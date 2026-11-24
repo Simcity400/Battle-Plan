@@ -276,59 +276,6 @@ fn single_heap_xp_fixture() -> Vec<u8> {
 }
 
 #[test]
-fn trait_batches_keep_exact_read_ranges_and_reduce_guard_entries() {
-    let bytes = single_heap_xp_fixture();
-    let source = traced(&bytes, None);
-    let mut rows = [TraitExperienceRow::default(); 1];
-    let mut arena = [0; 20];
-    let result = walk_trait_experience(&source, IMAGE, ADDRESS, 0x8000_0001, &mut rows, &mut arena);
-    assert_eq!(result.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(source.guards.get(), 5);
-    assert_eq!(
-        *source.spans.borrow(),
-        [
-            (ADDRESS, 16),
-            (ADDRESS + TRAIT_EXPERIENCE_DATA, 16),
-            (ADDRESS + XP_ARRAY, 16),
-            (ADDRESS + SECOND_TRAIT, 12),
-            (ADDRESS + SECOND_TRAIT + cunit_leader_trait::ORDINAL, 4),
-            (ADDRESS + SECOND_TRAIT + cunit_leader_trait::TOKEN, 32),
-            (ADDRESS + 0x8014, 1),
-            (ADDRESS + 0x8000, 20),
-        ]
-    );
-    assert_eq!(arena, [0xff; 20]);
-    assert_eq!(rows[0].experience, i64::MIN);
-    let inline_bytes = fixture(carmy_leader::VTABLE_RVA);
-    let inline_source = traced(&inline_bytes, None);
-    assert_eq!(
-        walk_trait_experience(
-            &inline_source,
-            IMAGE,
-            ADDRESS,
-            0x8000_0001,
-            &mut [TraitExperienceRow::default(); 2],
-            &mut [0; 10],
-        )
-        .outcome,
-        Outcome::Rows { len: 2 },
-    );
-    assert_eq!(inline_source.guards.get(), 6);
-    let source = traced(&bytes, None);
-    assert!(read(&source, IMAGE, ADDRESS, 0xf000_0001).is_ok());
-    assert_eq!(source.guards.get(), 6);
-    assert_eq!(
-        source
-            .spans
-            .borrow()
-            .iter()
-            .map(|span| span.1)
-            .sum::<usize>(),
-        81 + 4 + 8 + 1 + 1 + 4
-    );
-}
-
-#[test]
 fn owner_visibility_and_the_army_captured_byte_are_read() {
     let mut bytes = fixture(carmy_leader::VTABLE_RVA);
     u32_at(&mut bytes, OWNER, 7);

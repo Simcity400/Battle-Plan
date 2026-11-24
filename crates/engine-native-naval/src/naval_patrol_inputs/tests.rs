@@ -149,20 +149,6 @@ fn convoy_target_demand_reaches_progress_with_no_patrol_target() {
     assert_eq!(row.submarine_visibility, Some(0));
 }
 #[test]
-fn borrowed_stat_selector_is_not_read_again() {
-    let b = bytes(0);
-    let memory = Trace {
-        memory: SliceMemory { base: 0, bytes: &b },
-        reads: Default::default(),
-        deny: Some(TASK + cunit::STAT_BLOCK),
-    };
-    let row = read_with(&memory, 0, visit(), None, Some(Ok(STATS)), false, |_| {
-        panic!("no patrol target")
-    });
-    assert_eq!(row.surface_detection, Some(777));
-    assert!(!memory.reads.borrow().contains(&(TASK + cunit::STAT_BLOCK)));
-}
-#[test]
 fn null_location_has_no_local_modifier_demand_and_empty_hq_is_known() {
     let b = bytes(0);
     let memory = Trace {

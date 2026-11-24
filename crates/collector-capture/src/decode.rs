@@ -422,6 +422,7 @@ pub unsafe fn prepare_payload_pools(game_score: bool) -> std::io::Result<Payload
         release_relations_job(RelationsJob::new());
         for part in 0..CHARACTER_PARTS {
             release_characters_job(CharactersJob::new_part(part));
+            release_characters_job(CharactersJob::new_part(part));
         }
         release_projects_job(ProjectsJob::new());
         release_lexical_job(LexicalJob::new());
@@ -655,11 +656,13 @@ fn decode_loop() {
                 ) };
                 collector_workers::tick_gate::wait();
                 process_owned_job(shared, job, &mut air_bases_memo);
+                collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
             }
             None => {
                 failure::stage("idle retirement", None);
                 collector_memory::terminal::attempted_hour(None);
                 reclaim_payloads();
+                collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
                 std::thread::park();
             }
         }
@@ -797,9 +800,9 @@ fn process_owned_job_with_stage(
     if let Some(payload) = job.capitulation_payload.take() {
         release_capitulation_job(payload);
     }
-    shared.measure_frame(job.index);
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+        shared.set_frame_bytes(job.index, frame.allocated_bytes() as u64);
         frame.pool_bytes = shared.pool_total();
     }
     failure::stage("publish ready", None);
@@ -1239,13 +1242,16 @@ fn process_job(
         });
         account_decode(shared, &RELATIONS, &decode_ticks);
     }
-    for (part, (refresh, payload)) in job
+    for (part, (refresh, slot)) in job
         .characters_refresh
         .iter()
         .zip(&mut job.characters_payload)
         .enumerate()
     {
-        let Some(payload) = payload.as_mut().filter(|_| *refresh) else {
+        if !*refresh {
+            continue;
+        }
+        let Some(mut payload) = slot.take() else {
             continue;
         };
         stage("characters", Some(part));
@@ -1253,7 +1259,7 @@ fn process_job(
         decode_contained(shared, index, Family::Characters(part), |frame| {
             frame.extended.characters_pilot().decode_characters_payload(
                 shared.base,
-                payload,
+                &mut payload,
                 &mut decode_ticks,
             );
         });
@@ -1261,8 +1267,9 @@ fn process_job(
         frame
             .extended
             .characters_pilot()
-            .remember_templates(payload);
+            .remember_templates(&mut payload);
         account_decode(shared, &CHARACTERS, &decode_ticks);
+        release_characters_job(payload);
     }
     if job.projects_refresh
         && let Some(payload) = job.projects_payload.as_ref()

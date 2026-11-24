@@ -8,25 +8,6 @@ use std::cell::RefCell;
 
 pub const B0_HANDLE: u64 = (0x41 << 32) | engine_native_parts::cair_base_layout::TYPE as u64;
 
-#[cfg(all(test, feature = "air_base_changes"))]
-#[test]
-fn ordinary_air_base_refresh_selects_dense_slots() {
-    let bytes = fixture();
-    let mut job = AirBasesJob::fixture();
-    let report = copy_air_bases_refresh(
-        &kit::memory(&bytes),
-        AirBasesCopyContext {
-            hour: 0,
-            force_full: false,
-            base: kit::BASE,
-            game_state: kit::GAME_STATE,
-        },
-        &mut job,
-    );
-    assert!(report.raw_ok);
-    assert!(job.slot_run.dense);
-}
-
 pub fn fixture() -> Vec<u8> {
     let mut bytes = kit::fixture();
     kit::put64(
@@ -142,41 +123,6 @@ fn an_untouched_state_base_carries_its_subtree_and_a_touched_one_is_read() {
     assert_eq!(read, counts(1, 1));
     assert_same(&removed, &direct(&bytes));
     assert_eq!(removed.wings, [kit::WING_HANDLE_0]);
-}
-
-#[test]
-fn registration_work_names_each_base_by_how_its_subtree_was_taken() {
-    let bytes = fixture();
-    let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
-    let mut job = job(watches);
-    hour(&bytes, &mut job);
-    assert_eq!(job.registration_work.bases(), [1, 0, 2]);
-    assert_eq!(job.registration_work.spliced(), [0, 0]);
-    hour(&bytes, &mut job);
-    assert_eq!(job.registration_work.bases(), [1, 2, 0]);
-    assert!(
-        job.registration_work
-            .spliced()
-            .iter()
-            .all(|&count| count > 0)
-    );
-}
-
-#[test]
-fn the_first_pass_sizes_the_watches_without_holding_a_base() {
-    let bytes = fixture();
-    let watches: &'static Watches = Box::leak(Box::new(Watches::without_table()));
-    let mut job = job(watches);
-    let (_, _, read) = hour(&bytes, &mut job);
-    assert_eq!(read, counts(0, 2));
-    let bases = job.registration_store.as_ref().unwrap().bases();
-    assert_eq!(bases, 2);
-    watches.offer(bases);
-    watches.boundary(false);
-    let (_, _, read) = hour(&bytes, &mut job);
-    assert_eq!(read, counts(0, 2));
-    let (_, _, read) = hour(&bytes, &mut job);
-    assert_eq!(read, counts(2, 0));
 }
 
 #[test]

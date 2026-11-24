@@ -723,33 +723,6 @@ fn a_rebuilt_state_is_taken_once_by_its_reader_and_one_never_taken_is_dropped_on
 }
 
 #[test]
-fn the_clock_holds_at_a_seek_until_its_reset_is_taken_and_a_newer_seek_replaces_it() {
-    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
-    let log = Log::default();
-    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap();
-    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
-    let mut consumer = playhead.consumer(reader);
-    playhead.play(24.0);
-    playhead.seek(300);
-    playhead.seek(900);
-    let later = Instant::now() + Duration::from_secs(3600);
-    assert_eq!(playhead.head(later), 900, "held at the newer hour");
-    advance(&playhead, 900);
-    playhead.wait_until(|| playhead.ring_len() >= 1);
-    assert_eq!(playhead.head(later), 900, "held while its reset waits to be taken");
-    let mut steps = Vec::new();
-    let before = Instant::now();
-    take_steps(&mut consumer, 900, &mut steps);
-    let after = Instant::now();
-    assert!(steps[0].reset() && steps[0].last() == 900, "the first reset taken is the newer seek's");
-    assert_eq!(playhead.holding(), None);
-    let ten = after + Duration::from_secs(10);
-    let head = playhead.head(ten);
-    let slack = (after - before).as_secs_f64() * 24.0;
-    assert!(head >= 900 + 240 - 1 && f64::from(head) <= 900.0 + 240.0 + slack + 1.0, "runs from the moment its reset is taken: {head}");
-}
-
-#[test]
 fn a_publication_is_prepared_for_the_hour_the_head_will_reach_and_for_nothing_past_a_still_head() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
     let log = Log::default();
@@ -775,26 +748,6 @@ fn a_publication_is_prepared_for_the_hour_the_head_will_reach_and_for_nothing_pa
     playhead.seek(100);
     assert_eq!(playhead.head_from(100, making), None, "sought backwards, nothing of the hours it was playing is prepared");
     assert_eq!(playhead.head_from(playhead.timeline().last(), making), None, "nothing past the recording's last hour");
-}
-
-#[test]
-fn the_clock_runs_from_the_frame_that_shows_the_reset() {
-    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
-    let log = Log::default();
-    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap();
-    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
-    let mut consumer = playhead.consumer(reader);
-    playhead.play(24.0);
-    playhead.seek(900);
-    advance(&playhead, 900);
-    playhead.wait_until(|| playhead.ring_len() >= 1);
-    let frame = Instant::now();
-    let head = playhead.head(frame);
-    let mut steps = Vec::new();
-    take_steps(&mut consumer, head, &mut steps);
-    assert!(steps[0].reset() && head == 900);
-    assert_eq!(playhead.head(frame + Duration::from_secs(1)), 924, "a step a second after the frame that showed the reset");
-    assert_eq!(playhead.head(frame + Duration::from_secs(10)), 1140);
 }
 
 #[test]

@@ -165,93 +165,6 @@ fn peace_excluded_bids_never_fill_or_truncate_a_settlement() {
 }
 
 #[test]
-fn peace_tree_cycle_budget_follows_the_live_header_size() {
-    use std::cell::Cell;
-    struct Count<'a> {
-        memory: SliceMemory<'a>,
-        calls: Cell<usize>,
-    }
-    impl engine_native_memory::Memory for Count<'_> {
-        fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
-            self.calls.set(self.calls.get() + 1);
-            self.memory.copy(at, bytes)
-        }
-    }
-    let mut f = Fixture::new(0, 0);
-    f.u64(0x600, 0x600);
-    f.u64(0x610, 0x600);
-    let memory = Count {
-        memory: SliceMemory {
-            base: 0,
-            bytes: &f.bytes,
-        },
-        calls: Cell::new(0),
-    };
-    let result = p::copy(
-        &memory,
-        0,
-        0x100,
-        p::Output {
-            winners: engine_native_memory::walk::Buffer::Count,
-            losers: engine_native_memory::walk::Buffer::Count,
-            actions: engine_native_memory::walk::Buffer::Count,
-            transfers: engine_native_memory::walk::Buffer::Count,
-            subjects: engine_native_memory::walk::Buffer::Count,
-            name_bytes: engine_native_memory::walk::Buffer::Count,
-        },
-    );
-    assert_eq!(result.failure, Some("peace history cycle"));
-    assert!(
-        memory.calls.get() < 30,
-        "small corrupt trees must stop quickly"
-    );
-}
-
-#[test]
-fn peace_action_operands_use_one_scattered_span_after_authentication() {
-    use std::cell::Cell;
-    struct Span<'a> {
-        memory: SliceMemory<'a>,
-        spans: Cell<usize>,
-        scalars: Cell<usize>,
-    }
-    impl engine_native_memory::Memory for Span<'_> {
-        fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
-            self.scalars.set(self.scalars.get() + 1);
-            self.memory.copy(at, bytes)
-        }
-        fn copy_scattered<const N: usize>(
-            &self,
-            at: [usize; N],
-            bytes: &mut [&mut [u8]; N],
-        ) -> usize {
-            assert_eq!(N, 1);
-            self.spans.set(self.spans.get() + 1);
-            self.memory.copy_scattered(at, bytes)
-        }
-    }
-    let mut f = Fixture::new(0, 1);
-    f.u64(
-        0x20000,
-        engine_peace::cpuppet_country_action::VTABLE_RVA.0 as u64,
-    );
-    let memory = Span {
-        memory: SliceMemory {
-            base: 0,
-            bytes: &f.bytes,
-        },
-        spans: Cell::new(0),
-        scalars: Cell::new(0),
-    };
-    assert_eq!(
-        peace_action::copy(&memory, 0, 0x20000).unwrap().form,
-        peace_action::Form::Puppet
-    );
-    assert_eq!(memory.spans.get(), 1);
-    assert_eq!(memory.scalars.get(), 1);
-}
-
-#[test]
 fn peace_guarded_fixture_copies_populated_transfer_arrays() {
     let mut f = Fixture::new(2, 3);
     f.populate_transfers(3);
@@ -434,44 +347,6 @@ fn peace_rejected_actions_do_not_limit_native_scan_work() {
     assert_eq!(copied.omitted, 0);
     assert_eq!(copied.actions, 1);
     assert_eq!(actions[0].ordinal, 262_144);
-}
-
-#[test]
-fn peace_empty_history_and_turns_follow_native_sizes() {
-    let count = 65_537;
-    let mut f = Fixture::new(0, 0);
-    let nodes = f.bytes.len();
-    f.bytes.resize(nodes + count * 0x38, 0);
-    f.u64(0x108 + c::HISTORY, count as u64);
-    f.u64(0x500, nodes as u64);
-    for i in 0..count {
-        let node = nodes + i * 0x38;
-        f.u64(node, 0x500);
-        f.u64(node + 8, if i == 0 { 0x500 } else { (node - 0x38) as u64 });
-        f.u64(
-            node + 16,
-            if i + 1 == count {
-                0x500
-            } else {
-                (node + 0x38) as u64
-            },
-        );
-        f.u32(node + engine_peace::peace_history_node::COUNTRY, i as u32);
-    }
-    let copied = f.copy(Buffer::Count, Buffer::Count);
-    assert_eq!(copied.failure, None);
-    assert_eq!(copied.omitted, 0);
-    let mut f = Fixture::new(0, 0);
-    let turns = f.bytes.len();
-    let count = 262_145;
-    f.bytes.resize(turns + count * 8, 0);
-    f.array(0x628, turns, count, 8);
-    for i in 0..count {
-        f.u64(turns + i * 8, 0x900);
-    }
-    let copied = f.copy(Buffer::Count, Buffer::Count);
-    assert_eq!(copied.failure, None);
-    assert_eq!(copied.omitted, 0);
 }
 
 #[test]

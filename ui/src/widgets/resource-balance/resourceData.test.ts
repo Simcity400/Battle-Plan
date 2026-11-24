@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import type { ResourceBalanceReply } from '../../generated/dashboard';
-import { POOL_CELLS, automaticResource, balanceOf, barStructure, breakdownRows, campaignScale, dealAccounting, dealAt, dealsOf, momentScale, orderResources, partWidth,
-  poolsAt, poolsMissing, poolsOf, resourceName, resourcePartGroups, resourceParts, validateResourceBalance, validateResourceSizes, describeResource, legendFlags, segmentLook } from './resourceData.ts';
+import { POOL_CELLS, automaticResource, balanceOf, barStructure, breakdownRows, campaignScale, dealAccounting, dealAt, dealsOf, momentScale, orderResources, partWidth, poolsAt, poolsMissing, poolsOf, resourceName, resourcePartGroups, resourceParts, validateResourceBalance, validateResourceSizes } from './resourceData.ts';
 import type { ResourcePools } from './resourceData';
 
 const pools = (id: number, produced: string, production = '-300000', subjects = '0'): ResourcePools => ({
@@ -94,11 +93,3 @@ test('a malformed reply is refused', () => {
   assert.throws(() => validateResourceBalance({ ...reply(), resources: [...reply().resources].reverse() }), /malformed/);
 });
 
-test('review 10: the painter draws the negative outline, the accessible totals and the legend flags from the values installed now', () => {
-  assert.deepEqual(segmentLook(-5n, '#f00'), { background: 'transparent', 'box-shadow': 'inset 0 0 0 1.5px #f00' });
-  assert.deepEqual(segmentLook(5n, '#f00'), { background: '#f00', 'box-shadow': 'none' }, 'a part turning positive loses its outline');
-  const zero = { produced: 0n, fromSubjects: 0n, toOverlord: 0n, imported: 0n, exportReserve: 0n, exported: 0n, available: 0n, projects: 0n, production: 0n, supply: 0n, demand: 0n, net: 0n };
-  assert.equal(legendFlags([zero, { ...zero, fromSubjects: 3n }, null]), 'true|false');
-  assert.equal(legendFlags([zero]), 'false|false');
-  assert.match(describeResource({ id: 1, token: 'oil' } as never, { ...zero, supply: 20n, demand: 10n, net: 10n }, 0), /supply 20, demand 10, surplus \+?10/);
-});

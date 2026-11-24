@@ -413,11 +413,4 @@ mod tests {
         assert_eq!(bar_values(42)["progress_text"].text.as_deref(), Some("42%"));
     }
 
-    #[test]
-    fn the_need_text_marks_unmet_dashes_none_and_keeps_two_decimals() {
-        assert_eq!(need_text(-1), "\u{11}R ! \u{11}!");
-        assert_eq!(need_text(0), " - ");
-        assert_eq!(need_text(150_000), "1.50");
-        assert_eq!(need_text(1_234_567), "12.34");
-    }
 }

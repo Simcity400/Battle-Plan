@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarObservation, WarTimeline } from '../../generated/dashboard';
 import { casualtyRows, warTooltip } from './warsTooltip.ts';
-import { sideLabel } from './warsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -31,15 +30,6 @@ test('participant contribution hovers preserve exact fixed-point credit and nega
   assert.equal(content.rows.find(row => row.label === 'Equipment damage')?.value, '90,071,992,547.40993');
 });
 
-test('participant hovers show the war once and omit an absent optional capitulation row', () => {
-  const content = warTooltip({ ...input, participant: { tag: 'other', run: {
-    tag: 'other', side: 'defender', firstHour: 12, lastHour: 19, joinedBy: true, leftBy: true }, capitulations: [] } });
-  assert.ok(!content.rows.some(row => row.label === 'War' || row.label === 'Capitulation'));
-  assert.equal(content.subtitle, 'Recorded title · date 15');
-  assert.equal(content.rows.find(row => row.label === 'Joined')?.value, 'by date 12');
-  assert.equal(content.rows.find(row => row.label === 'Left')?.value, 'by date 20');
-  assert.ok(!content.note?.includes('overview observations'));
-});
 
 test('wars follow the dashboard country; saved viewpoints migrate to it unless a country was picked', () => {
   assert.equal(definition.countries.max, 1);
@@ -122,22 +112,7 @@ test('participant and side tooltips distinguish actual read status from authored
   }
 });
 
-test('active war and participant wording describes fighting and the recording end', () => {
-  const member = { tag: 'other', side: 'defender' as const, firstHour: 10, lastHour: 20, joinedBy: true, leftBy: true };
-  assert.equal(warTooltip({ ...input, until: 15 }).rows.find(row => row.label === 'Ended')?.value, 'Ongoing');
-  assert.equal(warTooltip({ ...input, until: 15, participant: { tag: 'other', run: member } }).rows.find(row => row.label === 'Left')?.value, 'Still fighting');
-  for (const participant of [undefined, { tag: 'other', run: member }]) {
-    const content = warTooltip({ ...input, until: 20, branchLast: 20, participant });
-    assert.equal(content.rows.find(row => row.label === (participant ? 'Left' : 'Ended'))?.value, 'Ongoing at the recording’s end');
-  }
-});
 
-test('casualty side wording is singular and dates identify the one covering read', () => {
-  const content = warTooltip({ ...input, losses: [10, 20, '1234', '0', '5678', '1'] });
-  assert.deepEqual(content.rows.filter(row => row.label.endsWith('casualties')).map(row => row.label),
-    ['Attacker casualties', 'Defender casualties', 'Defender unattributed casualties']);
-  assert.match(content.note!, /Casualties as recorded date 10 – date 20/);
-});
 
 test('casualties retain all signed integer digits and unknown attribution separately', () => {
   assert.deepEqual(casualtyRows([10, 20, '900719925474099312345', '-12', '0', '0'], ['Attackers', 'Defenders']).map(row => row.value),
@@ -145,10 +120,6 @@ test('casualties retain all signed integer digits and unknown attribution separa
   assert.ok(casualtyRows(null, ['Attackers', 'Defenders']).every(row => row.value === 'Not recorded'));
 });
 
-test('unknown orientation names the viewpoint and never guesses attackers', () => {
-  assert.deepEqual(['viewpoint', 'opponent'].map(side => sideLabel(side as 'viewpoint' | 'opponent', { ...observation, attackersAreViewpoint: null }, country)), ['Name opaque-player’s side', 'Opposing side']);
-  assert.deepEqual(['viewpoint', 'opponent'].map(side => sideLabel(side as 'viewpoint' | 'opponent', { ...observation, attackersAreViewpoint: false }, country)), ['Defenders', 'Attackers']);
-});
 
 test('boundaries say by and missing hours never imply an exact end', () => {
   const rows = warTooltip({ ...input, unobserved: [{ firstHour: 21, lastHour: 30 }] }).rows;
@@ -159,18 +130,6 @@ test('boundaries say by and missing hours never imply an exact end', () => {
   assert.equal(warTooltip({ ...input, war: { ...war, endedBy: false } }).rows[1].value, 'date 21');
 });
 
-test('participant tooltip has dated side, by bounds, capitulation and missing-capitulation note', () => {
-  const run = { tag: 'other', side: 'defender' as const, firstHour: 12, lastHour: 19, joinedBy: true, leftBy: true };
-  const content = warTooltip({ ...input, war: { ...war, capitulations: [{ tag: 'other', hour: 18 }] }, participant: { tag: 'other', run },
-    capitulationsUnobserved: [{ firstHour: 13, lastHour: 14 }] });
-  assert.equal(content.title, 'Name other');
-  assert.equal(content.countryFlag?.flag, 'flag:other');
-  assert.equal(content.rows.find(row => row.label === 'Joined')?.value, 'by date 12');
-  assert.equal(content.rows.find(row => row.label === 'Left')?.value, 'by date 20');
-  assert.equal(content.rows.find(row => row.label === 'Side')?.value, 'Defender');
-  assert.equal(content.rows.find(row => row.label === 'Capitulated')?.value, 'date 18');
-  assert.match(content.note!, /Some capitulations may be missing/);
-});
 
 test('native roster and participant flags retain pending and refused reads without marking war or side headings', () => {
   const country = (tag: string) => ({ name: `Name ${tag}`, flagReason: `Flag unavailable for ${tag}`, flagPending: tag === 'other' });

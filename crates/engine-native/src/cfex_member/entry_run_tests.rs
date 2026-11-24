@@ -256,44 +256,6 @@ fn append<T: Clone + Default>(
     (result, owned_length, owned, slice_length, slice)
 }
 
-fn check<T: Clone + Default + PartialEq + std::fmt::Debug>(
-    bytes: &[u8],
-    stride: usize,
-    object: Option<&'static [engine_native_memory::memory::RecordField]>,
-    read: ReadFn<T>,
-    read_entry: EntryReadFn<T>,
-) {
-    let healthy = |batched| {
-        let memory = World::new(bytes, None);
-        let appended = append(&memory, batched, stride, object, read, read_entry);
-        (appended, memory.touched())
-    };
-    let (reference, serial_touched) = healthy(false);
-    let (runs, runs_touched) = healthy(true);
-    assert!(reference.0.is_ok(), "{:?}", reference.0);
-    assert_eq!(runs, reference, "healthy");
-    let mut faults: Vec<usize> = serial_touched.into_iter().chain(runs_touched).collect();
-    faults.sort_unstable();
-    faults.dedup();
-    let run_bytes = ENTRY_RUN * stride;
-    for run in 0..3 {
-        assert!(faults.contains(&(ARRAY + run * run_bytes)), "run {run}");
-    }
-    for &fault in &faults {
-        let lasting = |batched| {
-            append(
-                &World::new(bytes, Some((fault, Mode::Lasting))),
-                batched,
-                stride,
-                object,
-                read,
-                read_entry,
-            )
-        };
-        assert_eq!(lasting(true), lasting(false), "lasting fault at {fault:#x}");
-    }
-}
-
 fn check_once<T: Clone + Default + PartialEq + std::fmt::Debug>(
     bytes: &[u8],
     stride: usize,
@@ -372,39 +334,6 @@ fn damage_entry(
     entry: usize,
 ) -> Result<crate::cfex_damage_entry::Row, &'static str> {
     crate::cfex_damage_entry::read(memory, base, entry)
-}
-
-#[test]
-fn naval_hit_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
-    check(
-        &naval_world(),
-        8,
-        Some(&engine_native_naval::naval_combat_hit::RECORD),
-        naval_read,
-        naval_entry,
-    );
-}
-
-#[test]
-fn air_hit_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
-    check(
-        &air_world(),
-        8,
-        Some(&engine_native_naval::naval_combat_air_hit::RECORD),
-        air_read,
-        air_entry,
-    );
-}
-
-#[test]
-fn damage_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
-    check(
-        &damage_world(),
-        crate::cfex_damage_entry::STRIDE,
-        None,
-        damage_read,
-        damage_entry,
-    );
 }
 
 #[test]

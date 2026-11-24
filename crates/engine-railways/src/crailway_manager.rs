@@ -674,6 +674,40 @@ pub fn walk_with_selection_carried(
     outcomes
 }
 
+pub fn read_header(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<RailHeader, &'static str> {
+    let manager = game_state
+        .checked_add(cgame_state::RAIL_MANAGER)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .filter(|&p| p != 0)
+        .ok_or("rail manager unreadable or null")?;
+    let manager_vtable =
+        engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
+    if read::<u64>(memory, manager) != Some(manager_vtable as u64) {
+        return Err("rail manager vtable mismatch");
+    }
+    let rail = manager
+        .checked_add(PROVINCE_INFO_TABLE)
+        .and_then(|p| Array::read(memory, p, PROVINCE_INFO_STRIDE))
+        .ok_or("rail province array unreadable or invalid")?;
+    let provinces = game_state
+        .checked_add(cgame_state::PROVINCES)
+        .and_then(|p| Array::read(memory, p, 8))
+        .ok_or("rail source province array unreadable or invalid")?;
+    if provinces.count < 2 || rail.count != provinces.count {
+        return Err("rail table extent differs from province table");
+    }
+    Ok(RailHeader {
+        manager,
+        rail,
+        provinces,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk_inner(
     memory: &impl Memory,
@@ -690,28 +724,11 @@ fn walk_inner(
     let mut building_progress = Progress::default();
     let mut building_required = 0;
     let result = (|| {
-        let manager = game_state
-            .checked_add(cgame_state::RAIL_MANAGER)
-            .and_then(|p| read::<u64>(memory, p))
-            .and_then(|p| usize::try_from(p).ok())
-            .filter(|&p| p != 0)
-            .ok_or("rail manager unreadable or null")?;
-        let manager_vtable = engine_sites::at(base, VTABLE_RVA)
-            .ok_or("module address overflow")?;
-        if read::<u64>(memory, manager) != Some(manager_vtable as u64) {
-            return Err("rail manager vtable mismatch");
-        }
-        let rail = manager
-            .checked_add(PROVINCE_INFO_TABLE)
-            .and_then(|p| Array::read(memory, p, PROVINCE_INFO_STRIDE))
-            .ok_or("rail province array unreadable or invalid")?;
-        let provinces = game_state
-            .checked_add(cgame_state::PROVINCES)
-            .and_then(|p| Array::read(memory, p, 8))
-            .ok_or("rail source province array unreadable or invalid")?;
-        if provinces.count < 2 || rail.count != provinces.count {
-            return Err("rail table extent differs from province table");
-        }
+        let RailHeader {
+            manager,
+            rail,
+            provinces,
+        } = read_header(memory, base, game_state)?;
         province_output.ensure(rail.count as usize)?;
         if let Some(output) = building_output.as_mut() {
             output.ensure(rail.count as usize)?;
@@ -800,26 +817,50 @@ fn walk_inner(
                 &DEFINITION_ID_LAYOUT,
                 &mut definition_ids[..live * 4],
             );
-            let info_copied = memory.copy_records(
+            let mut combined = [0_u8; PROVINCE_BATCH * COMBINED_INFO_BYTES];
+            let combined_copied = memory.copy_records(
                 RecordSources::Pointers(&infos[..live]),
-                &INFO_LAYOUT,
-                &mut identity[..live * INFO_BYTES],
+                &COMBINED_INFO_LAYOUT,
+                &mut combined[..live * COMBINED_INFO_BYTES],
             );
-            let counts_copied = memory.copy_records(
-                RecordSources::Pointers(&infos[..live]),
-                &PAIR_COUNT_LAYOUT,
-                &mut pair_counts[..live * 4],
-            );
-            let pairs_copied = memory.copy_records(
-                RecordSources::Pointers(&infos[..live]),
-                &PAIRS_LAYOUT,
-                &mut pairs_headers[..live * 16],
-            );
-            let cooldown_copied = memory.copy_records(
-                RecordSources::Pointers(&infos[..live]),
-                &COOLDOWN_LAYOUT,
-                &mut cooldowns[..live * 4],
-            );
+            let (info_copied, counts_copied, pairs_copied, cooldown_copied) =
+                if combined_copied == live * COMBINED_INFO_FIELDS.len() {
+                    for entry in 0..live {
+                        let rec = &combined[entry * COMBINED_INFO_BYTES..(entry + 1) * COMBINED_INFO_BYTES];
+                        identity[entry * INFO_BYTES..(entry + 1) * INFO_BYTES]
+                            .copy_from_slice(&rec[..INFO_BYTES]);
+                        pairs_headers[entry * 16..entry * 16 + 12]
+                            .copy_from_slice(&rec[INFO_BYTES..INFO_BYTES + 12]);
+                        pair_counts[entry * 4..entry * 4 + 4]
+                            .copy_from_slice(&rec[INFO_BYTES + 12..INFO_BYTES + 16]);
+                        cooldowns[entry * 4..entry * 4 + 4]
+                            .copy_from_slice(&rec[INFO_BYTES + 16..INFO_BYTES + 20]);
+                    }
+                    (live, live, live, live)
+                } else {
+                    (
+                        memory.copy_records(
+                            RecordSources::Pointers(&infos[..live]),
+                            &INFO_LAYOUT,
+                            &mut identity[..live * INFO_BYTES],
+                        ),
+                        memory.copy_records(
+                            RecordSources::Pointers(&infos[..live]),
+                            &PAIR_COUNT_LAYOUT,
+                            &mut pair_counts[..live * 4],
+                        ),
+                        memory.copy_records(
+                            RecordSources::Pointers(&infos[..live]),
+                            &PAIRS_LAYOUT,
+                            &mut pairs_headers[..live * 16],
+                        ),
+                        memory.copy_records(
+                            RecordSources::Pointers(&infos[..live]),
+                            &COOLDOWN_LAYOUT,
+                            &mut cooldowns[..live * 4],
+                        ),
+                    )
+                };
             for entry in 0..live {
                 pairs_headers[entry * 16 + 12..entry * 16 + 16]
                     .copy_from_slice(&pair_counts[entry * 4..entry * 4 + 4]);
@@ -1165,6 +1206,31 @@ const PAIR_COUNT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PAIR_COUNT_FIELD, 4).expect("valid record layout");
 const COOLDOWN_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&COOLDOWN_FIELD, 4).expect("valid record layout");
+const COMBINED_INFO_BYTES: usize = INFO_BYTES + 20;
+const COMBINED_INFO_FIELDS: [RecordField; 4] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: INFO_BYTES,
+    },
+    RecordField {
+        source_offset: info::NEIGHBOR_PAIRS,
+        destination_offset: INFO_BYTES,
+        len: 12,
+    },
+    RecordField {
+        source_offset: info::NEIGHBOR_PAIR_COUNT,
+        destination_offset: INFO_BYTES + 12,
+        len: 4,
+    },
+    RecordField {
+        source_offset: info::COOLDOWN_TICKS,
+        destination_offset: INFO_BYTES + 16,
+        len: 4,
+    },
+];
+const COMBINED_INFO_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&COMBINED_INFO_FIELDS, COMBINED_INFO_BYTES).expect("valid record layout");
 const DEFINITION_ID_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DEFINITION_ID_FIELD, 4).expect("valid record layout");
 

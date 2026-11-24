@@ -1,17 +1,20 @@
-use super::super::witness::{Recording, Witness};
+use super::super::witness::{MAX_WITNESS_BYTES, Recording, Witness};
 use super::*;
 
 const MIN_BURST: usize = 64;
 const PARTS_PER_LANE: usize = 4;
 
+pub(in super::super) struct WalkSummary {
+    pub details: bool,
+    pub stats_len: usize,
+    pub modules: Vec<engine_equipment::equipment_module_container::Row>,
+    pub first_upgrade: Option<engine_equipment::cequipment_upgrades_instance::Row>,
+}
+
 pub(in super::super) enum Read {
     Pending(Option<Witness>),
     Unchanged(Witness),
-    Walked(
-        Box<super::super::RawWalk>,
-        Box<super::Decoded>,
-        Option<Witness>,
-    ),
+    Walked(WalkSummary, Box<super::Decoded>, Option<Witness>),
     Refused,
 }
 
@@ -20,6 +23,7 @@ pub struct Part {
     hour: i32,
     marked: Vec<(usize, u64, Read)>,
     removed: Vec<usize>,
+    witness_budget: usize,
     ns: u64,
 }
 impl Part {
@@ -35,7 +39,11 @@ impl Part {
         // capture gate.
         let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let mut scratch = Vec::new();
+        let mut walk = super::super::RawWalk::vacant();
         let mut largest = (0, 0);
+        let mut rec_spans = Vec::new();
+        let mut rec_bytes = Vec::new();
+        let mut recorded_bytes = 0usize;
         for (pointer, id, read) in &mut self.marked {
             let Read::Pending(witness) = std::mem::replace(read, Read::Refused) else {
                 continue;
@@ -51,24 +59,56 @@ impl Part {
                 && witness.unchanged(&guard, &mut scratch)
                 && !guard.consumed.get()
             {
+                recorded_bytes = recorded_bytes.saturating_add(witness.retained_bytes());
                 *read = Read::Unchanged(witness);
                 continue;
             }
             guard.consumed.set(false);
             *read = engine_allocation::advisory(|| {
-                let recording = Recording::new(&guard, size);
-                let mut walk = Box::new(super::super::RawWalk::vacant());
-                super::super::walk_snapshot(&recording, base, hour, *pointer, &mut walk).ok()?;
-                let recorded = recording.witness(*id, (0, false));
-                if let Some(recorded) = &recorded {
-                    let size = recorded.size();
-                    largest = (largest.0.max(size.0), largest.1.max(size.1));
-                }
+                walk.reset();
+                let recorded = if recorded_bytes < self.witness_budget {
+                    let recording = Recording::with_scratch(
+                        &guard,
+                        std::mem::take(&mut rec_spans),
+                        std::mem::take(&mut rec_bytes),
+                        size,
+                    );
+                    let walked =
+                        super::super::walk_snapshot(&recording, base, hour, *pointer, &mut walk)
+                            .is_ok();
+                    let (recorded, spans_back, bytes_back) = recording.finish(*id, (0, false));
+                    rec_spans = spans_back;
+                    rec_bytes = bytes_back;
+                    if !walked {
+                        return None;
+                    }
+                    if let Some(recorded) = &recorded {
+                        let size = recorded.size();
+                        largest = (largest.0.max(size.0), largest.1.max(size.1));
+                        recorded_bytes = recorded_bytes.saturating_add(recorded.retained_bytes());
+                    }
+                    recorded
+                } else {
+                    super::super::walk_snapshot(&guard, base, hour, *pointer, &mut walk).ok()?;
+                    None
+                };
                 if guard.consumed.get() || !walk.complete() {
                     return None;
                 }
                 let decoded = Box::new(super::super::decode_walk(&mut walk).ok()?);
-                Some(Read::Walked(walk, decoded, recorded))
+                let modules = engine_allocation::copy_vec(
+                    &walk.modules.rows[..walk.modules.outcome.len()],
+                )
+                .ok()?;
+                let summary = WalkSummary {
+                    details: walk.details,
+                    stats_len: walk.stats.outcome.len(),
+                    modules,
+                    first_upgrade: walk.upgrades.rows[..walk.upgrades.outcome.len()]
+                        .first()
+                        .copied(),
+                };
+                Some(Read::Walked(summary, decoded, recorded))
             })
             .unwrap_or(Read::Refused);
         }
@@ -98,10 +138,12 @@ pub(in super::super) fn read_marked(
     let mut parts = match speculation {
         Some(speculation) if speculation.lanes >= 2 && marked.len() >= MIN_BURST => {
             let per_part = marked.len().div_ceil(speculation.lanes * PARTS_PER_LANE);
-            let mut parts = engine_allocation::vec(marked.len().div_ceil(per_part))
+            let part_count = marked.len().div_ceil(per_part);
+            let witness_budget = MAX_WITNESS_BYTES.div_ceil(part_count.max(1));
+            let mut parts = engine_allocation::vec(part_count)
                 .map_err(|_| "variant boundary read allocation failed")?;
             let mut marked = marked.into_iter();
-            for _ in 0..marked.len().div_ceil(per_part) {
+            for _ in 0..part_count {
                 parts.push(Part {
                     base,
                     hour,
@@ -109,6 +151,7 @@ pub(in super::super) fn read_marked(
                         .map_err(|_| "variant boundary read allocation failed")?,
                     removed: engine_allocation::copy_vec(&removed)
                         .map_err(|_| "variant boundary read allocation failed")?,
+                    witness_budget,
                     ns: 0,
                 });
             }
@@ -123,6 +166,7 @@ pub(in super::super) fn read_marked(
                 hour,
                 marked,
                 removed,
+                witness_budget: MAX_WITNESS_BYTES,
                 ns: 0,
             };
             part.capture();

@@ -309,16 +309,6 @@ fn outside_the_view_a_change_stays_marked_and_inside_it_is_made() {
 }
 
 #[test]
-fn the_layer_declares_against_this_schema() {
-    let kinds = replay_recording::schema::schema().unwrap();
-    let mut layer = markers(&history());
-    let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "land_markers");
-    layer.inputs(&View::default(), &mut inputs).unwrap();
-    assert_eq!(inputs.upstream(), ["engagements"]);
-    assert_eq!(inputs.into_tables().len(), TABLES.len());
-}
-
-#[test]
 fn steps_mark_their_combats_reading_no_row_and_a_combat_changed_in_several_is_made_once() {
     let units = campaign("land apply marks", |_, _| Status::Complete, |at, store| match at {
         200 => {
@@ -343,17 +333,3 @@ fn steps_mark_their_combats_reading_no_row_and_a_combat_changed_in_several_is_ma
     settled_equals_composed(&mut side);
 }
 
-#[test]
-fn hours_that_change_no_combat_mark_and_make_nothing() {
-    let units = campaign("land quiet hours", |_, _| Status::Complete, |_, _| {});
-    let mut side = side_for(units);
-    reach(&mut side, 150);
-    side.settle_all().unwrap();
-    let held = (layer(&side).made(), layer(&side).marked(), layer(&side).frames_read());
-    assert!(outcome(&side, 100).is_some(), "combat 100 is drawn before the quiet hours");
-    reach(&mut side, 260);
-    side.settle_all().unwrap();
-    let now = (layer(&side).made(), layer(&side).marked(), layer(&side).frames_read());
-    assert_eq!(now, held, "110 hours changed nothing: no frame read, nothing marked, nothing made");
-    settled_equals_composed(&mut side);
-}

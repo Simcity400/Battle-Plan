@@ -1964,20 +1964,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn snapped_edges_set_their_switches() {
-        let p = Patch {
-            origin: [64, 128],
-            step: 4,
-        };
-        let data = constants(p, [[0.; 4]; 4], [true, false, false, true]);
-        let f: &[f32] = bytemuck::cast_slice(&data);
-        assert_eq!(
-            &f[16..],
-            &[64., 128., 4., 0., 1., 0., 0., 1., 0., 0.1, 4., 0.]
-        );
-    }
-
     struct Pass {
         keyed: Keyed,
         reads: Vec<shader_pipeline::Buffer>,

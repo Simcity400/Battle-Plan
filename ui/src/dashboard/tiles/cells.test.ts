@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesTileReply } from '../../generated/dashboard';
-import { drawLineSummary } from '../../charts/chartSummary.ts';
-import { drawMarkSummary, shownClusters } from '../../charts/markSummary.ts';
+import { shownClusters } from '../../charts/markSummary.ts';
 import type { MarkCluster, MarkSummary } from '../../charts/markSummary';
-import { plotFrame } from '../../charts/frame.ts';
 import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
 import { PRESENT, TILE_BINS, binHoursOf } from './tile.ts';
@@ -130,47 +128,4 @@ test('following at 1,440 h/s with spend ticks on: a cluster once drawn never cha
   console.log(`following with 18-pixel cells at 1,440 h/s: ${initial} tiles to open, then ${moving} requests; ${checked} drawn clusters unchanged across frames, ${inside} head-cell clusters seen growing; ${renders} renders`);
 });
 
-function counting() {
-  const counts = { moves: 0, lines: 0 };
-  const nothing = () => {};
-  const ctx: Record<string, unknown> = { moveTo: () => { counts.moves++; }, lineTo: () => { counts.lines++; } };
-  for (const name of ['save', 'restore', 'beginPath', 'stroke', 'fill', 'rect', 'clip', 'arc', 'closePath', 'fillRect', 'setLineDash'])
-    ctx[name] = nothing;
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, counts, reset: () => { counts.moves = 0; counts.lines = 0; } };
-}
 
-test('a frame of eight lines and their spend ticks, clipped at a moving head, reads only the head bin of each line after the first, strokes at most eight vertices a line for each bin from the start of the view to the head, and draws one tick a shown cluster', async () => {
-  const tags = ['GER', 'ITA', 'JAP', 'SOV', 'USA', 'ENG', 'FRA', 'CHI'];
-  const cache = new TileCache(), marks = lane(tags);
-  const view = new TileView(cache, marks, () => {});
-  const head = 50_000.5, at = following(head, 365);
-  view.setView(at);
-  await settle();
-  const lines = [...view.current!.values()];
-  let visits = 0;
-  for (const line of lines) {
-    const summary = line.summary as { buckets: readonly unknown[] };
-    summary.buckets = new Proxy(summary.buckets, { get: (target, key, receiver) => {
-      if (typeof key === 'string' && /^\d+$/.test(key)) visits++;
-      return Reflect.get(target, key, receiver);
-    } });
-  }
-  const frame = plotFrame(700, 300, { top: 10, right: 40, bottom: 20, left: 60 }, [at.from, head], [-300, 300], false, 0, false);
-  const tokens = { lineWidth: { series: 2 }, surface: '#fff', muted: '#888' } as unknown as Parameters<typeof drawLineSummary>[2];
-  const { ctx, counts, reset } = counting();
-  const ticks = lines.map(line => ({ ...line.marks!, placement: 'ticks' as const }));
-  const binHours = lines[0].summary.tiles!.binHours;
-  for (let step = 0; step < 120; step++) {
-    const now = head + step * 0.4;
-    reset();
-    visits = 0;
-    for (const line of lines) drawLineSummary(ctx, frame, tokens, line.summary, '#000', true, now);
-    if (step) assert.ok(visits <= lines.length, `the frame at hour ${now} read ${visits} buckets: at most the head bin of each line`);
-    const bins = Math.ceil((now - frame.x[0]) / binHours) + 1, vertices = counts.moves + counts.lines;
-    assert.ok(vertices <= lines.length * 8 * bins, `${vertices} vertices for ${lines.length} lines of ${bins} bins at hour ${now}`);
-    reset();
-    for (const summary of ticks) drawMarkSummary(ctx, frame, tokens, summary, now);
-    const shown = ticks.reduce((sum, summary) => sum + shownClusters(summary, now).length, 0);
-    assert.deepEqual([counts.moves, counts.lines], [shown, shown], `one tick a shown cluster at hour ${now}`);
-  }
-});

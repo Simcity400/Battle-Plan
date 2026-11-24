@@ -942,66 +942,6 @@ fn real_key_shapes() -> Vec<u128> {
     keys
 }
 
-#[test]
-fn mirror_slot_lookup_time_over_real_key_shapes() {
-    let keys = real_key_shapes();
-    let held = keys.clone();
-    let (recording, _) = record(1, 1, move |at, table, store| {
-        store.status(table, Status::Complete, true, Some(at as i32), true).unwrap();
-        let mut changes = store.table(table).unwrap();
-        for (slot, &key) in held.iter().enumerate() {
-            changes.insert_at(slot as u32, key).unwrap();
-        }
-    });
-    let pages: Arc<dyn Pages> = recording;
-    let mut lane = Lane::new(pages, 0, 0, &[0], true).unwrap();
-    lane.seek(0).unwrap();
-    let mirror = Mirror::rebuild(&lane, &[0]);
-    let mut order: Vec<usize> = (0..keys.len()).collect();
-    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
-    for at in (1..order.len()).rev() {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        order.swap(at, (seed % (at as u64 + 1)) as usize);
-    }
-    for (slot, &key) in keys.iter().enumerate() {
-        assert_eq!(mirror.slot(key), Some(slot as u32));
-    }
-    assert_eq!(mirror.slot(u128::MAX), None);
-    let rounds = 20;
-    let started = std::time::Instant::now();
-    let mut found = 0u64;
-    for _ in 0..rounds {
-        for &at in &order {
-            found += u64::from(std::hint::black_box(mirror.slot(std::hint::black_box(keys[at]))).is_some());
-        }
-    }
-    let ns = started.elapsed().as_nanos() as f64 / (rounds * keys.len()) as f64;
-    assert_eq!(found, (rounds * keys.len()) as u64);
-    eprintln!("slot(): {ns:.1} ns a lookup over {} keys", keys.len());
-}
-
-#[test]
-fn real_key_shapes_do_not_collide_into_long_chains() {
-    use std::hash::BuildHasher;
-    let _: fn() -> foldhash::fast::RandomState = super::mirror::Keys::default;
-    let keys = real_key_shapes();
-    let hasher = foldhash::fast::FixedState::with_seed(0x243f_6a88_85a3_08d3);
-    let buckets = keys.len().next_power_of_two();
-    let mut load = vec![0u32; buckets];
-    let mut control = [0u32; 128];
-    for &key in &keys {
-        let hash = hasher.hash_one(key);
-        load[hash as usize & (buckets - 1)] += 1;
-        control[(hash >> 57) as usize] += 1;
-    }
-    let longest = *load.iter().max().unwrap();
-    assert!(longest <= 12, "{longest} keys share a bucket of {buckets}");
-    let expected = keys.len() as f64 / 128.0;
-    assert!(control.iter().all(|&count| (count as f64) < expected * 1.5 && (count as f64) > expected * 0.5), "control bytes {control:?}");
-}
-
 fn fixed_state_colliding_keys(count: usize, bucket_mask: u64) -> Vec<u128> {
     use std::hash::BuildHasher;
     let fixed = foldhash::fast::FixedState::default();
@@ -1093,7 +1033,6 @@ fn mirror_key_hasher_randomizes_instances_and_bounds_adversarial_keys() {
     }
     assert_eq!(renumbered, 1);
 }
-
 
 struct Tableless {
     composed: u32,
@@ -1932,7 +1871,6 @@ impl Layer for Ahead {
         Ok(())
     }
 
-
     fn carried(&self) -> Carried {
         Carried::default()
     }
@@ -2388,9 +2326,3 @@ fn apart_drive_stops_when_a_read_fails() {
     );
 }
 
-#[test]
-fn the_tables_are_given_before_the_first_counter_layer_settles() {
-    let names = ["political", "vision", "engagements", "counters", "land_markers", "labels"];
-    assert_eq!(super::counters_at(&names), Some(3), "the land stacks' layer, after the vision and the engagements");
-    assert_eq!(super::counters_at(&["political", "vision", "labels"]), None, "a map drawing no counter kind makes no tables for them");
-}

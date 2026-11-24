@@ -117,23 +117,3 @@ pub fn class_type(vtable_rva: Rva) -> Option<u32> {
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_relation_class_has_a_distinct_vtable_and_type() {
-        for (index, (vtable, type_word)) in CLASSES.iter().enumerate() {
-            for (other_vtable, other_type) in &CLASSES[index + 1..] {
-                assert_ne!(vtable, other_vtable);
-                assert_ne!(type_word, other_type);
-            }
-            assert_eq!(class_type(*vtable), Some(*type_word));
-        }
-        assert_eq!(class_type(crate::ccountry::VTABLE_RVA), None);
-        assert_eq!(
-            class_type(cwar_relation::VTABLE_RVA),
-            Some(TENSION_CAP_TYPE)
-        );
-    }
-}

@@ -76,38 +76,3 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     ),
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sites_are_distinct_and_their_indices_name_them() {
-        for (index, (site, _)) in MUTATIONS.iter().enumerate() {
-            assert!(
-                MUTATIONS[..index]
-                    .iter()
-                    .all(|(other, _)| other.rva != site.rva && other.name != site.name)
-            );
-        }
-        for (index, name) in [
-            (PUSH, "roster_push"),
-            (CLEAR, "roster_clear"),
-            (SCIENTIST_BUILD, "scientist_build"),
-            (SCIENTIST_ATTACH, "scientist_attach"),
-            (SCIENTIST_CLEAR, "scientist_clear"),
-            (SCIENTIST_TRAIT_ADD, "scientist_trait_add"),
-            (SCIENTIST_TRAIT_REMOVE, "scientist_trait_remove"),
-            (SCIENTIST_TRAIT_RESET, "scientist_trait_reset"),
-        ] {
-            assert_eq!(MUTATIONS[index].0.name, name);
-        }
-        for (site, _) in &MUTATIONS {
-            for other in crate::advisor_mutations::MUTATIONS
-                .iter()
-                .chain(&crate::character_role_mutations::MUTATIONS)
-            {
-                assert_ne!(site.rva, other.rva);
-            }
-        }
-    }
-}

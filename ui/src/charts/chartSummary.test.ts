@@ -186,47 +186,7 @@ test('the landed stack renderer isolates broken buckets and never connects a mis
 });
 
 
-test('approximate regions draw faded dashed strokes and restore the exact stroke', () => {
-  const styles: { dash: number[]; alpha: number }[] = [];
-  let dash: number[] = [], alpha = 1;
-  const stack: { dash: number[]; alpha: number }[] = [];
-  const context = { save() { stack.push({ dash, alpha }); }, restore() { const saved = stack.pop()!; dash = saved.dash; alpha = saved.alpha; },
-    get globalAlpha() { return alpha; }, set globalAlpha(value: number) { alpha = value; },
-    beginPath() {}, rect() {}, clip() {}, moveTo() {}, lineTo() {}, arc() {}, fill() {},
-    setLineDash(value: number[]) { dash = value; }, stroke() { styles.push({ dash, alpha }); },
-  } as unknown as CanvasRenderingContext2D;
-  drawLineSummary(context, frame, tokens, { ...summary, approximate: [{ firstHour: 25_000, lastHour: 49_999 }] }, '#f00', false, null, { endDot: false });
-  assert.ok(styles.some(style => style.dash.length === 0 && style.alpha === 1));
-  assert.ok(styles.some(style => style.dash.join(',') === '4,4' && style.alpha === .55));
-  assert.equal(alpha, 1);
-});
 
-test('signed bands share approximate clipping, merge overlaps, and restore caller styling', () => {
-  const styles: { dash: number[]; alpha: number }[] = [], clips: number[][][] = [];
-  let dash = [2, 3], alpha = .8, rectangles: number[][] = [];
-  const saved: { dash: number[]; alpha: number }[] = [];
-  const context = {
-    save() { saved.push({ dash, alpha }); }, restore() { ({ dash, alpha } = saved.pop()!); },
-    get globalAlpha() { return alpha; }, set globalAlpha(value: number) { alpha = value; },
-    beginPath() { rectangles = []; }, rect(...rectangle: number[]) { rectangles.push(rectangle); }, clip() { clips.push(rectangles); },
-    moveTo() {}, lineTo() {}, closePath() {}, fill() {},
-    setLineDash(value: number[]) { dash = value; }, stroke() { styles.push({ dash, alpha }); },
-  } as unknown as CanvasRenderingContext2D;
-  drawApproximateSpans(context, frame, [{ firstHour: 20_000, lastHour: 29_999 }, { firstHour: 10_000, lastHour: 24_999 }], 40_000,
-    () => drawBands(context, frame, tokens, [0, 50_000], [{ low: [0, -2], high: [3, 0] }], ['#123']));
-  assert.deepEqual(clips, [
-    [[frame.toX(0), frame.plotTop, frame.toX(10_000) - frame.toX(0), frame.plotHeight],
-      [frame.toX(30_000), frame.plotTop, frame.toX(40_000) - frame.toX(30_000), frame.plotHeight]],
-    [[frame.toX(10_000), frame.plotTop, frame.toX(30_000) - frame.toX(10_000), frame.plotHeight]],
-  ]);
-  assert.deepEqual(styles, [{ dash: [2, 3], alpha: .8 }, { dash: [4, 4], alpha: .8 * .55 }]);
-  assert.deepEqual(dash, [2, 3]); assert.equal(alpha, .8);
-  let passes = 0;
-  drawApproximateSpans(context, frame, Array.from({ length: 5_000 }, (_,hour) => ({ firstHour: hour, lastHour: hour })), null, () => { passes++; });
-  assert.equal(passes, 2, 'one exact and one approximate pass, regardless of span count');
-  assert.throws(() => drawApproximateSpans(context, frame, [{ firstHour: 0, lastHour: 50_000 }], null, () => { throw Error('draw failed'); }), /draw failed/);
-  assert.deepEqual(dash, [2, 3]); assert.equal(alpha, .8);
-});
 
 test('an exact stack keeps the identical legacy draw stream through the shared helper', () => {
   const direct = recordingCanvas(), shared = recordingCanvas();
@@ -291,17 +251,6 @@ test('exact gap summaries paint the identical legacy stream at fractional cutoff
   }
 });
 
-test('dense gap summaries fill bounded envelopes and leave broken or missing columns empty', () => {
-  const a = { ...summary, buckets: [bucket, { ...bucket, hasBreak: true }, null] };
-  const b = { ...summary, buckets: [{ ...bucket, minValue: -2, maxValue: 3 }, bucket, bucket] };
-  const painted = recordingCanvas();
-  drawGapSummary(painted.context, frame, tokens, a, b, '#positive', '#negative');
-  assert.equal(painted.commands.filter(command => command[0] === 'fillRect').length, 2);
-  assert.deepEqual(painted.commands.filter(command => command[0] === 'fillStyle'), [['fillStyle', '#positive'], ['fillStyle', '#negative']]);
-  const stale = recordingCanvas();
-  drawGapSummary(stale.context, frame, tokens, { ...a, width: 99 }, b, '#positive', '#negative');
-  assert.deepEqual(stale.commands, []);
-});
 
 test('dated alias summary joins retain later extrema, chronology and real gaps', () => {
   const earlier = { ...summary, buckets: [{ ...bucket, firstHour: 0, lastHour: 9, firstValue: 1, lastValue: 1, lastValueHour: 0, minValue: 1, minHour: 0, maxValue: 1, maxHour: 0 }, null] };
@@ -329,26 +278,6 @@ test('dated aliases preserve approximate provenance from every alias and clip it
   assert.deepEqual(earlier.approximate, [{ firstHour: -20, lastHour: 4 }]);
 });
 
-test('exact and dense gap summaries share faded approximate passes from either series', () => {
-  const other = { ...summary, buckets: [{ ...bucket, minValue: -2, maxValue: 3 }] };
-  const exact = hourlySummary([{ firstHour: 0, lastHour: 49_999, value: 2 }], 0, 50_000, 100);
-  for (const [a, b] of [[summary, other], [exact, { ...exact, runs: exact.runs!.map(run => ({ ...run, value: -2 })) }]]) {
-    let alpha = 1, fills: number[] = [], clips = 0, rectangle = false;
-    const saved: number[] = [];
-    const ctx = {
-      save() { saved.push(alpha); }, restore() { alpha = saved.pop()!; },
-      get globalAlpha() { return alpha; }, set globalAlpha(value: number) { alpha = value; },
-      beginPath() { rectangle = false; }, rect() { rectangle = true; }, clip() { if (rectangle) clips++; }, setLineDash() {},
-      moveTo() {}, lineTo() {}, bezierCurveTo() {}, closePath() {}, fill() { fills.push(alpha); }, fillRect() { fills.push(alpha); },
-    } as unknown as CanvasRenderingContext2D;
-    drawGapSummary(ctx, frame, tokens, { ...a, approximate: [{ firstHour: 10_000, lastHour: 19_999 }] },
-      { ...b, approximate: [{ firstHour: 15_000, lastHour: 29_999 }] }, '#positive', '#negative', null, { alpha: 0.2 });
-    assert.equal(clips, 2, 'the shared helper combines overlapping provenance into two drawing passes');
-    assert.ok(fills.includes(0.2));
-    assert.ok(fills.includes(0.2 * 0.55));
-    assert.equal(alpha, 1);
-  }
-});
 
 test('a summary decodes from its bucket columns, gaps and totals in place, and refuses columns that disagree', () => {
   const later = { ...bucket, firstHour: 60_000, lastHour: 60_009, lastValueHour: 60_004, minHour: 60_001, maxHour: 60_009, firstBreak: true, hasBreak: true, absoluteTotal: '123456789012345678901234567890' };

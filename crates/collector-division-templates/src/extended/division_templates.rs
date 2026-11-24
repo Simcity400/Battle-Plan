@@ -137,6 +137,19 @@ struct CountryRow {
     garrisons: Option<std::sync::Arc<Vec<GarrisonTemplateSelection>>>,
     garrison_failure: Option<&'static str>,
 }
+#[derive(Clone)]
+struct CleanState {
+    tokens: ((u64, u64), (u64, u64)),
+    base: usize,
+    state: usize,
+    digest: native::RosterDigest,
+    witness: Witness,
+    generation: u64,
+    model_failures: ModelFailures,
+    required: [usize; 8],
+    snapshots: [std::sync::Arc<replay_data::rows::TableRows>; N],
+}
+
 #[derive(Default)]
 pub struct Stores {
     held: held::Store,
@@ -144,6 +157,7 @@ pub struct Stores {
     countries: countries::Store,
     snapshot: Option<std::sync::Arc<replay_data::rows::TableRows>>,
     generation: u64,
+    clean: Option<CleanState>,
 }
 
 #[derive(Default)]
@@ -195,6 +209,11 @@ pub struct Captured {
     speed_keys: Vec<u32>,
     speed_spans: Vec<(u64, Option<(usize, usize)>)>,
     clean: Option<[u64; 5]>,
+    clean_tokens: Option<((u64, u64), (u64, u64))>,
+    clean_digest: Option<native::RosterDigest>,
+    clean_context: Option<(usize, usize)>,
+    prev_clean: Option<CleanState>,
+    fast_clean: Option<CleanState>,
     generation: u64,
     witness: Option<Witness>,
     occurrences: [u64; 2],
@@ -208,6 +227,11 @@ pub struct Captured {
 impl Captured {
     pub fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.clean = None;
+        self.clean_tokens = None;
+        self.clean_digest = None;
+        self.clean_context = None;
+        self.prev_clean = None;
+        self.fast_clean = None;
         self.witness = None;
         self.pending_owned = false;
         self.rows
@@ -275,6 +299,11 @@ impl Captured {
             speed_keys: Vec::new(),
             speed_spans: Vec::new(),
             clean: None,
+            clean_tokens: None,
+            clean_digest: None,
+            clean_context: None,
+            prev_clean: None,
+            fast_clean: None,
             generation: 0,
             witness: None,
             occurrences: [0; 2],
@@ -289,6 +318,11 @@ impl Captured {
     pub fn reset(&mut self) {
         self.discard_owned();
         self.clean = None;
+        self.clean_tokens = None;
+        self.clean_digest = None;
+        self.clean_context = None;
+        self.prev_clean = None;
+        self.fast_clean = None;
         self.witness = None;
         self.preacquired = None;
         self.rows.reset();
@@ -315,6 +349,8 @@ impl Captured {
             self.core.forget();
             self.country_cache.forget();
             self.country_snapshot = None;
+            self.prev_clean = None;
+            self.fast_clean = None;
             self.pending_owned = false;
         }
     }
@@ -535,6 +571,7 @@ impl Captured {
         self.country_cache = stores.countries;
         self.country_snapshot = stores.snapshot;
         self.generation = stores.generation;
+        let prev_clean = if force { None } else { stores.clean };
         if force {
             self.held.forget();
             self.core.forget();
@@ -542,6 +579,52 @@ impl Captured {
             self.country_snapshot = None;
         }
         let tokens = (changes.quiet(), changes.core_dependencies());
+        if !force
+            && !changes.fresh_only()
+            && let Some(clean) = prev_clean.as_ref()
+            && tokens == (Some(clean.tokens.0), Some(clean.tokens.1))
+            && base == clean.base
+            && state == clean.state
+        {
+            let _reads = collector_memory::read_accounting::table(TABLES[1]);
+            let start = qpc();
+            if native::clean_roster_digest(memory, base, state) == Ok(clean.digest)
+                && (changes.quiet(), changes.core_dependencies()) == tokens
+            {
+                let elapsed = qpc().saturating_sub(start).max(0) as u64;
+                let icon_count = clean.digest.icon_count;
+                let country_count = clean.digest.country_count;
+                self.sample_hour = Some(hour);
+                self.rows.outcome = Outcome::Rows { len: icon_count };
+                self.icon_rows.outcome = Outcome::Rows { len: icon_count };
+                self.country_rows.outcome = Outcome::Rows { len: country_count };
+                self.model_failures = clean.model_failures;
+                self.occurrences = [icon_count as u64, 0];
+                self.bytes.required = clean.required[0];
+                self.icon_bytes.required = clean.required[1];
+                self.name_bytes.required = clean.required[2];
+                self.counts.required = clean.required[3];
+                self.variants.required = clean.required[4];
+                self.database.required = clean.required[5];
+                self.globals.required = clean.required[6];
+                self.locals.required = clean.required[7];
+                self.witness = Some(clean.witness);
+                self.generation = clean.generation;
+                self.fast_clean = prev_clean;
+                self.pending_owned = true;
+                crate::template_changes::record_countries(country_count);
+                crate::template_changes::record(
+                    &crate::template_changes::Counts {
+                        carried: icon_count as u64,
+                        read: 0,
+                        rereads: 0,
+                    },
+                    Some(icon_count),
+                );
+                return [0, elapsed, 0];
+            }
+        }
+        self.prev_clean = prev_clean;
         self.country_cache.begin();
         self.held.begin();
         self.core.begin();
@@ -659,36 +742,46 @@ impl Captured {
             .outcomes()
             .iter()
             .all(|outcome| matches!(outcome, Outcome::Rows { .. }));
-        let clean = !force
+        let stable = !force
             && complete
             && rereads == 0
             && speed_refusals == 0
             && self.model_failures.rows == country_refusals
-            && !self.country_cache.changed
-            && !self.held.reordered()
             && matches!(tokens, (Some(_), Some(_)))
             && (changes.quiet(), changes.core_dependencies()) == tokens;
+        let roster = stable.then(|| {
+            icon_rows.iter().fold(native::FNV_OFFSET, |hash, row| {
+                native::hash_template(
+                    hash,
+                    row.template,
+                    row.pointer,
+                    row.owner,
+                    row.settings.roster_ordinal,
+                )
+            })
+        });
+        if let Some(roster) = roster
+            && !changes.fresh_only()
+            && let (Some(q0), Some(q1)) = tokens
+            && let Some(countries) = self.country_cache.digest()
+        {
+            self.clean_tokens = Some((q0, q1));
+            self.clean_digest = Some(native::RosterDigest {
+                roster,
+                countries,
+                icon_count: self.icon_rows.outcome.len(),
+                country_count: self.country_rows.outcome.len(),
+            });
+            self.clean_context = Some((base, state));
+        }
+        let clean = stable && !self.country_cache.changed && !self.held.reordered();
         self.clean = clean.then(|| {
-            let roster = icon_rows
-                .iter()
-                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, row| {
-                    [
-                        row.template,
-                        row.pointer as u64,
-                        u64::from(row.owner),
-                        u64::from(row.settings.roster_ordinal),
-                    ]
-                    .into_iter()
-                    .fold(hash, |hash, word| {
-                        (hash ^ word).wrapping_mul(0x0100_0000_01b3)
-                    })
-                });
             [
                 base as u64,
                 state as u64,
                 self.icon_rows.outcome.len() as u64,
                 self.country_rows.outcome.len() as u64,
-                roster,
+                roster.unwrap(),
             ]
         });
         [
@@ -763,6 +856,25 @@ impl Captured {
         if !self.pending_owned {
             return;
         }
+        if let Some(fast) = self.fast_clean.clone() {
+            self.pending_owned = false;
+            if let Some(home) = &self.home {
+                let bytes = self.held.allocated_bytes()
+                    + self.core.allocated_bytes()
+                    + self.country_cache.allocated_bytes();
+                let mut shelf = home.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                shelf.bytes = shelf.bytes.max(bytes);
+                shelf.stores = Some(Stores {
+                    held: std::mem::take(&mut self.held),
+                    core: std::mem::take(&mut self.core),
+                    countries: std::mem::take(&mut self.country_cache),
+                    snapshot: self.country_snapshot.clone(),
+                    generation: self.generation,
+                    clean: Some(fast),
+                });
+            }
+            return;
+        }
         let rows = self
             .icon_rows
             .rows
@@ -824,6 +936,75 @@ impl Captured {
         self.witness = clean.map(|[base, state, icons, countries, roster]| {
             Witness::new([self.generation, base, state, icons, countries, roster])
         });
+        let next_clean = if !failed
+            && let (Some(clean_tokens), Some(digest), Some((base, state))) = (
+                self.clean_tokens.take(),
+                self.clean_digest.take(),
+                self.clean_context.take(),
+            ) {
+            let witness = self.witness.unwrap_or_else(|| {
+                Witness::new([
+                    self.generation,
+                    base as u64,
+                    state as u64,
+                    digest.icon_count as u64,
+                    digest.country_count as u64,
+                    digest.roster,
+                ])
+            });
+            let snapshots = match self
+                .prev_clean
+                .take()
+                .filter(|prev| prev.generation == self.generation && prev.digest == digest)
+            {
+                Some(prev) => Some(prev.snapshots),
+                None => engine_allocation::advisory(|| {
+                    let dictionary = match self.templates(None) {
+                        TableInput::Sampled(TableView::Complete(rows)) => {
+                            Some(std::sync::Arc::new(rows))
+                        }
+                        _ => None,
+                    };
+                    let icons = dictionary.as_ref().and_then(|dict| {
+                        let names = dict.rows::<tables::DivisionTemplates>();
+                        match self.icons(None, names) {
+                            TableInput::Sampled(TableView::Complete(rows)) => {
+                                Some(std::sync::Arc::new(rows))
+                            }
+                            _ => None,
+                        }
+                    });
+                    let country = self.country_snapshot.clone();
+                    dictionary
+                        .zip(icons)
+                        .zip(country)
+                        .map(|((d, i), c)| [d, i, c])
+                }),
+            };
+            snapshots.map(|snapshots| CleanState {
+                tokens: clean_tokens,
+                base,
+                state,
+                digest,
+                witness,
+                generation: self.generation,
+                model_failures: self.model_failures,
+                required: [
+                    self.bytes.required,
+                    self.icon_bytes.required,
+                    self.name_bytes.required,
+                    self.counts.required,
+                    self.variants.required,
+                    self.database.required,
+                    self.globals.required,
+                    self.locals.required,
+                ],
+                snapshots,
+            })
+        } else {
+            self.prev_clean = None;
+            None
+        };
         if !failed && let Some(home) = &self.home {
             let bytes = self.held.allocated_bytes()
                 + self.core.allocated_bytes()
@@ -836,6 +1017,7 @@ impl Captured {
                 countries: std::mem::take(&mut self.country_cache),
                 snapshot: self.country_snapshot.clone(),
                 generation: self.generation,
+                clean: next_clean,
             });
         }
     }
@@ -970,6 +1152,7 @@ impl Captured {
         let [dictionary, icons, _] = self.table_inputs();
         [dictionary, icons].map(|input| match input {
             TableInput::Sampled(view) => view,
+            TableInput::SharedComplete(rows) => TableView::Complete(rows.try_clone().unwrap()),
             _ => unreachable!("template conversion returns sampled views"),
         })
     }
@@ -987,13 +1170,17 @@ impl Captured {
         let dictionary = held_input::<tables::DivisionTemplates>(
             projection.as_deref_mut(),
             witness,
-            |projection| self.templates(projection),
+            |projection| match &self.fast_clean {
+                Some(fast) => TableInput::SharedComplete(std::sync::Arc::clone(&fast.snapshots[0])),
+                None => self.templates(projection),
+            },
         );
         let complete;
         let names = match &dictionary {
             TableInput::Sampled(TableView::Complete(rows)) => {
                 rows.rows::<tables::DivisionTemplates>()
             }
+            TableInput::SharedComplete(rows) => rows.rows::<tables::DivisionTemplates>(),
             TableInput::ComparedEqual(_) => previous,
             TableInput::ComparedChanges { .. } => {
                 complete = self.templates(None);
@@ -1009,10 +1196,15 @@ impl Captured {
         let icons = held_input::<tables::DivisionTemplateIcons>(
             projection.as_deref_mut(),
             witness,
-            |projection| self.icons(projection, names),
+            |projection| match &self.fast_clean {
+                Some(fast) => TableInput::SharedComplete(std::sync::Arc::clone(&fast.snapshots[1])),
+                None => self.icons(projection, names),
+            },
         );
         let country = held_input::<tables::CountryTemplateState>(projection, witness, |_| {
-            if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
+            if let Some(fast) = &self.fast_clean {
+                TableInput::SharedComplete(std::sync::Arc::clone(&fast.snapshots[2]))
+            } else if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
                 self.country_snapshot
                     .as_ref()
                     .map(|rows| TableInput::SharedComplete(std::sync::Arc::clone(rows)))
@@ -1025,6 +1217,12 @@ impl Captured {
     }
 
     pub fn country_state(&self) -> TableView {
+        if let Some(fast) = &self.fast_clean {
+            return match fast.snapshots[2].try_clone() {
+                Ok(rows) => TableView::Complete(rows),
+                Err(_) => unavailable("country template snapshot clone failed"),
+            };
+        }
         table::<tables::CountryTemplateState, _>(
             self.country_rows.outcome,
             &self.country_rows.rows,

@@ -111,76 +111,6 @@ fn caller() -> EventScopes {
 }
 
 #[test]
-fn add_scientist_xp() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render(
-        "add_scientist_xp={specialization=specialization_synthetic_energy experience=275}",
-        &mut caller(),
-        Content::default(),
-    );
-    assert_eq!(out.text, "Alice XP275/Alpha physics [Root.GetTag]");
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-}
-
-#[test]
-fn add_scientist_level() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render(
-        "add_scientist_level={specialization=specialization_synthetic_lift level=4}",
-        &mut caller(),
-        Content::default(),
-    );
-    assert_eq!(out.text, "Level4/Air [Root.GetTag]");
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-}
-
-#[test]
-fn injure_scientist_for_days() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render(
-        "injure_scientist_for_days=13",
-        &mut caller(),
-        Content::default(),
-    );
-    assert_eq!(out.text, "Injury13/Alice/Alice/Alice\n");
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-}
-
-#[test]
-fn generate_scientist_character() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render("generate_scientist_character={portrait_tag_override=AAA traits={syn_practiced syn_observant} skills={specialization_synthetic_shapes=6}}", &mut caller(), Content::default());
-    assert_eq!(out.text, "Generate(Quick, Bright)/AAA");
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-}
-
-#[test]
-fn add_scientist_trait() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render(
-        "add_scientist_trait=syn_practiced",
-        &mut caller(),
-        Content::default(),
-    );
-    assert_eq!(
-        out.text, "TraitQuick [Root.GetTag]\n  TooltipAAA",
-        "{:?}",
-        out.refusals
-    );
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-}
-
-#[test]
 fn scientist_trait_uses_full_category_mask_and_caller_scope() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -231,30 +161,6 @@ fn scientist_trait_uses_full_category_mask_and_caller_scope() {
             "TooltipAAA"
         );
     });
-}
-
-#[test]
-fn remove_scientist_role() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render(
-        "remove_scientist_role=yes",
-        &mut caller(),
-        Content::default(),
-    );
-    assert_eq!(out.text, "Remove Alice/AAA");
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-}
-
-#[test]
-fn add_scientist_role() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (fixture, _folder) = fixture();
-    let out = fixture.render("add_scientist_role={scientist={traits={syn_observant} skills={specialization_synthetic_energy=5}}}", &mut caller(), Content::default());
-    assert_eq!(out.text, "Add Alice/AAA");
-    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]

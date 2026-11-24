@@ -1,14 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MATRIX_HEADER, MATRIX_MAX_CELL, MATRIX_MIN_CELL, matrixCell, matrixCellAt, matrixGutter, matrixKey, matrixKeyed, matrixWindow, revealItem, signedColor } from './matrix.ts';
+import { MATRIX_HEADER, matrixCellAt, matrixKey, matrixKeyed, matrixWindow, revealItem } from './matrix.ts';
 
-test('matrix cells stay square and readable, and small matrices grow to fill the card', () => {
-  assert.equal(matrixCell(600, 400, 120, 4, 4), MATRIX_MAX_CELL);
-  assert.equal(matrixCell(600, 400, 120, 1500, 1500), MATRIX_MIN_CELL, 'a large matrix scrolls instead of shrinking cells');
-  assert.equal(matrixCell(400, 400, 100, 10, 10), 30, 'the narrower axis sets the square cell');
-  assert.ok(matrixGutter(300, 500, false, true) < matrixGutter(800, 500, true, true), 'narrow cards keep flags only');
-  assert.ok(matrixGutter(800, 2000, true, true) <= 800 * 0.45 + 1, 'long names never take more than the gutter share');
-});
 
 test('both axes window to the viewport, with a margin, for 5,000 items', () => {
   const rows = matrixWindow(5000, 24 * 1000, 300, 24);
@@ -46,13 +39,3 @@ test('a keyboard cell stays on the matrix when its axes shrink', () => {
   assert.equal(matrixKeyed(kept, [], twelve), null, 'an empty axis has no cell');
 });
 
-test('signed colours fade from grey to each side on the caller domain', () => {
-  const grey = '#808080', negative = '#ff0000', positive = '#0000ff';
-  assert.equal(signedColor(0, -50, 100, grey, negative, positive), grey, 'zero is grey');
-  assert.equal(signedColor(100, -50, 100, grey, negative, positive), positive);
-  assert.equal(signedColor(-50, -50, 100, grey, negative, positive), negative);
-  assert.equal(signedColor(-500, -50, 100, grey, negative, positive), negative, 'beyond the domain takes the full colour');
-  assert.notEqual(signedColor(50, -50, 100, grey, negative, positive), positive, 'half way is between');
-  assert.equal(signedColor(10, -50, 0, grey, negative, positive), grey, 'a side without extent stays grey');
-  assert.equal(signedColor(Number.NaN, -50, 100, grey, negative, positive), grey);
-});

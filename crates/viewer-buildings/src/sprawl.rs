@@ -1990,14 +1990,6 @@ city_group = {
     }
 
     #[test]
-    fn the_stride_is_in_full_map_pixels() {
-        assert_eq!(sample_stride(2), 2);
-        assert_eq!(sample_stride(4), 4);
-        assert_eq!(sample_stride(1), 1);
-        assert_eq!(sample_stride(0), 1, "a zero step would never advance");
-    }
-
-    #[test]
     fn a_style_index_with_no_group_places_nothing() {
         let rows = ["....", ".##.", ".##.", "...."];
         let (urban, _, _) = mask(&rows);

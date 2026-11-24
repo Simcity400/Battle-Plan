@@ -77,7 +77,10 @@ impl Packing {
                 BUDGET.with_borrow_mut(|slot| *slot = Some(started.clone()));
                 refresh();
             })
-            .exit_handler(|_| job_priority::foreground_thread())
+            .exit_handler(|_| {
+                job_priority::confine_background_core(false);
+                job_priority::foreground_thread();
+            })
             .build()
             .map_err(io::Error::other)?;
         pool.broadcast(|_| ());
@@ -106,6 +109,7 @@ impl Packing {
         impl Drop for Restore {
             fn drop(&mut self) {
                 BUDGET.with_borrow_mut(|slot| *slot = self.0.take());
+                job_priority::confine_background_core(self.2);
                 let _ = job_priority::worker(self.2);
                 self.1.clone().enter();
             }
@@ -361,6 +365,7 @@ pub(super) fn refresh() {
             }
             let background = budget.background.load(Ordering::Acquire)
                 && !budget.catch_up.load(Ordering::Acquire);
+            job_priority::confine_background_core(background);
             if let Err(error) = job_priority::worker(background)
                 && !budget.priority_failed.swap(true, Ordering::AcqRel)
             {
@@ -401,7 +406,7 @@ pub fn workers() -> usize {
     if let Some(workers) = BUDGET.with_borrow(|budget| {
         budget.as_ref().map(|budget| {
             if budget.background.load(Ordering::Acquire) {
-                4.min(budget.foreground)
+                1
             } else {
                 budget.foreground
             }

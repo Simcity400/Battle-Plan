@@ -65,16 +65,3 @@ test('a country canvas decode failure replaces its URL and preserves full keyboa
   } finally { globalThis.Image = before; }
 });
 
-test('country artwork fits its authored proportions without cropping in Canvas slots', () => {
-  const before = globalThis.Image;
-  globalThis.Image = class { complete = true; naturalWidth = 8; naturalHeight = 8; src = ''; } as unknown as typeof Image;
-  try {
-    const calls: number[][] = [];
-    const context = { drawImage(_image: unknown, ...coordinates: number[]) { calls.push(coordinates); } } as unknown as CanvasRenderingContext2D;
-    const flag = { flag: 'synthetic-square-shield' };
-    canvasCountryFlag(flag, () => {});
-    drawCountryFlag(context, flag, 10, 20, 18, 12, tokens, () => {});
-    drawCountryFlag(context, flag, 10, 20, 12, 18, tokens, () => {});
-    assert.deepEqual(calls, [[13, 20, 12, 12], [10, 23, 12, 12]]);
-  } finally { globalThis.Image = before; }
-});

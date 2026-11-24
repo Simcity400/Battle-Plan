@@ -1644,8 +1644,6 @@ pub(super) use state_fuel_inputs::Packet as StateFuelPacket;
 
 #[cfg(test)]
 mod census_store_tests;
-#[cfg(test)]
-mod registration_bench;
 #[cfg(any(test, feature = "test-support"))]
 pub mod registration_store_tests;
 

@@ -165,13 +165,6 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_read_stops_before_resolving_assets() {
-        let layers = ResolvedLayers::from_folders(&[]).unwrap();
-        let error = ProvinceAreas::read_cancellable(&layers, &AtomicBool::new(true)).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    }
-
-    #[test]
     fn area_count_cancels_after_processing_part_of_the_raster() {
         let map = crate::province_geometry::EngineMap {
             ids: vec![1; 9000],

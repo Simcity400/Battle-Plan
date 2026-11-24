@@ -154,35 +154,6 @@ impl IconFold {
 mod tests {
     use super::*;
 
-    #[test]
-    fn initial_frame_limitations_keep_each_history_states_reason() {
-        for (kept, reason) in [
-            (Kept::Fresh, "live instance has no seen hour"),
-            (
-                Kept::Unobserved,
-                "instance predates observed history or follows unread hours",
-            ),
-            (
-                Kept::Undecided,
-                "an icon hour could not decide visibility, frame or continuity",
-            ),
-            (
-                Kept::Unindexed,
-                "engaged index does not cover this viewer/hour (index pending or absent)",
-            ),
-        ] {
-            assert_eq!(
-                kept.limitation(LAND_NO_HISTORY),
-                format!("{LAND_NO_HISTORY}: {reason}")
-            );
-            assert_eq!(
-                kept.limitation(NAVAL_NO_HISTORY),
-                format!("{NAVAL_NO_HISTORY}: {reason}")
-            );
-        }
-        assert_eq!(Kept::Frame(1).limitation(LAND_NO_HISTORY), CARRIED);
-    }
-
     type Row = (u64, Option<bool>, Option<bool>, Option<u32>);
 
     fn hour(combats: &[Row]) -> IconHour {

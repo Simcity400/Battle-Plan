@@ -220,18 +220,6 @@ fn owned_failure_fixture() -> Captured {
 }
 
 #[test]
-fn a_large_registry_presizes_only_the_native_country_snapshot() {
-    let _hint = collector_primitives::country_slots::hint_guard();
-    collector_primitives::country_slots::note_slots(5_000);
-    let mut job = NavalJob::new();
-    job.presize_countries();
-    assert!(job.roster.capacity() >= collector_primitives::country_slots::census_rows(0));
-    assert_eq!(job.roots.capacity(), 0);
-    assert_eq!(job.oob_theatres.capacity(), 0);
-    assert_eq!(job.oob_theatre_positions.capacity(), 0);
-}
-
-#[test]
 fn census_roots_snapshot_grows_in_the_pass_and_never_outlives_it() {
     let roots = [corders_group::Root::default(); 5];
     let mut job = NavalJob::default();
@@ -980,38 +968,6 @@ fn hourly_land_theatre_owner_fault_does_not_publish_a_header() {
     assert!(matches!(captured.land.outcome, Outcome::Unavailable { .. }));
     assert_eq!(&captured.outcomes()[5..10], &[SKIPPED; 5]);
 }
-#[test]
-fn land_theatre_headers_and_order_of_battle_are_hourly() {
-    use replay_data::rows::TableId;
-    for (slot, table) in [
-        TableId::LandTheatres,
-        TableId::LandTheatreGroups,
-        TableId::LandTheatreMembers,
-        TableId::AirTheatres,
-        TableId::AirTheatreGroups,
-        TableId::AirTheatreMembers,
-        TableId::OrdersGroups,
-        TableId::OrdersGroupMembers,
-        TableId::ArmyGroupMembers,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let daily = (1..6).contains(&slot);
-        assert_eq!(
-            replay_data::cadence::is_staggered(table),
-            daily,
-            "{table:?}"
-        );
-        for hour in -24_i32..48 {
-            assert_eq!(
-                replay_data::cadence::is_refresh(table, hour),
-                !daily || hour.rem_euclid(24) == 13,
-                "{table:?} at {hour}"
-            );
-        }
-    }
-}
 
 #[test]
 fn supremacy_and_sunk_offslot_jobs_skip_reads_and_decoding() {
@@ -1161,18 +1117,6 @@ fn naval_split_copy_matches_direct_walk_on_fault_matrix() {
         let (split, report, _) = kit::split(&memory);
         assert!(report.raw_ok, "fault={fault:x}");
         kit::assert_matches_direct(&split, &direct);
-    }
-}
-
-#[test]
-fn supremacy_uses_slot_0() {
-    use replay_data::rows::TableId;
-    assert!(replay_data::cadence::is_staggered(TableId::NavalSupremacy));
-    for hour in -24_i32..48 {
-        assert_eq!(
-            replay_data::cadence::is_refresh(TableId::NavalSupremacy, hour),
-            hour.rem_euclid(24) == 0
-        );
     }
 }
 

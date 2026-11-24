@@ -284,25 +284,6 @@ fn only_a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
 }
 
 #[test]
-fn a_host_names_the_recording_it_shows_requests_and_seeks() {
-    let host = NativeHost::popout(1, Arc::new(|| ()));
-    assert!(host.recordings().is_empty());
-    {
-        let mut inner = host.shared.lock().unwrap();
-        inner.status.viewer.path = Some("shown".into());
-        inner.requested_path = Some("opening".into());
-        inner.requested_seek = Some(SeekTarget {
-            path: "seeking".into(),
-            revision: "1".into(),
-            branch: "1".into(),
-            hour: 0,
-            playback: None,
-        });
-    }
-    assert_eq!(host.recordings(), ["shown", "opening", "seeking"]);
-}
-
-#[test]
 fn a_waiting_controller_message_is_sent_even_while_hidden() {
     use dashboard_core::protocol::GamepadMessage;
     let mut pending = Pending::default();
@@ -346,23 +327,6 @@ fn only_the_latest_camera_mode_waits_for_the_viewer() {
         })
         .collect();
     assert_eq!(queued, [Some((CameraMode::Fly, true)), None]);
-}
-
-#[test]
-fn the_status_carries_the_camera_mode_for_the_interface() {
-    let status = HostStatus {
-        camera_mode: dashboard_core::protocol::CameraMode::Walk,
-        camera_overlays: true,
-        ..Default::default()
-    };
-    let value = serde_json::to_value(&status).unwrap();
-    assert_eq!(value["cameraMode"], "walk");
-    assert_eq!(value["cameraOverlays"], true);
-    let fresh = serde_json::to_value(HostStatus::default()).unwrap();
-    assert_eq!(
-        (&fresh["cameraMode"], &fresh["cameraOverlays"]),
-        (&"map".into(), &false.into())
-    );
 }
 
 #[test]

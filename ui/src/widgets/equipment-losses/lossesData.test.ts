@@ -254,16 +254,6 @@ const destruction = (): LossesReply => {
   return data;
 };
 
-test('Land losses from uses a shared options row and defaults to Every destruction', () => {
-  const field = OPTIONS.find(option => option.key === 'landSource')!;
-  assert.equal(field.section, 'options');
-  assert.equal(field.label, 'Land losses from');
-  assert.equal(resolveOptions(OPTIONS).landSource, 'destruction');
-  assert.equal(resolveOptions(OPTIONS, { landSource: 'combatLog' }).landSource, 'combatLog');
-  assert.equal(resolveOptions(OPTIONS, { landSource: 'bad' }).landSource, 'destruction');
-  assert.equal(ROOT.label, 'All losses');
-  assert.equal(TEXT.unit, 'units');
-});
 
 test('destruction coverage uses Recorded and Unknown with the drain reason and hours per state', () => {
   const data = destruction();

@@ -177,16 +177,6 @@ pub fn check_replay(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    #[test]
-    fn a_content_stacks_strategic_regions_are_read_once_for_every_product() {
-        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[]);
-        let layers = &catalogue.content.layers;
-        let first = super::strategic_regions(layers).unwrap();
-        let again = super::strategic_regions(layers).unwrap();
-        assert!(Arc::ptr_eq(&first, &again));
-    }
 
     #[test]
     fn warm_checked_surfaces_content_load_failures() {

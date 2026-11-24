@@ -107,7 +107,7 @@ pub unsafe fn install_offered() {
     };
     if swap.retired.is_some()
         || native_retention_required()
-        || ACTIVE.load(Ordering::SeqCst) != 0
+        || active() != 0
         || CURSOR.load(Ordering::SeqCst) != CONSUMED.load(Ordering::Relaxed)
     {
         return;
@@ -147,9 +147,9 @@ static OBSERVATION: Log = Log::new(0);
 static SPILL: Spill<Entry> = Spill::new();
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
-static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
+pub(super) static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    OBSERVATION.active()
 }
 static ORIGINAL: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 static BASE: AtomicUsize = AtomicUsize::new(0);

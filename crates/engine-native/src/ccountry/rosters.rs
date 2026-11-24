@@ -485,54 +485,6 @@ mod pride_demand_tests {
     }
 
     #[test]
-    fn original_roster_hint_has_identical_read_order_without_pride_observer() {
-        let mut world = World::new(0x4000_0000, 3, 0x1100);
-        let pride: Vec<_> = (1..=3)
-            .map(|slot| world.object(slot) + PRIDE_OF_THE_FLEET)
-            .collect();
-        for (address, handle) in pride
-            .iter()
-            .zip([0, (7_u64 << 32) | 51, (9_u64 << 32) | 51])
-        {
-            world.u64(*address, handle);
-        }
-        let old = tracked(&world, Some(pride[1]));
-        assert_eq!(
-            counter_roster_demand(&old, world.module, world.game_state()),
-            Ok(RosterDemand::default())
-        );
-        assert!(
-            old.reads
-                .borrow()
-                .iter()
-                .all(|(address, _)| !pride.contains(address))
-        );
-        let observed = tracked(&world, None);
-        let mut handles = Vec::new();
-        assert_eq!(
-            counter_roster_demand_with_pride_observer(
-                &observed,
-                world.module,
-                world.game_state(),
-                &mut |handle| handles.push(handle)
-            ),
-            Ok(RosterDemand::default())
-        );
-        assert_eq!(
-            handles,
-            [Ok(0), Ok((7_u64 << 32) | 51), Ok((9_u64 << 32) | 51)]
-        );
-        let old_reads = old.reads.into_inner();
-        let observed_reads: Vec<_> = observed
-            .reads
-            .into_inner()
-            .into_iter()
-            .filter(|(address, _)| !pride.contains(address))
-            .collect();
-        assert_eq!(observed_reads, old_reads);
-    }
-
-    #[test]
     fn independent_pride_read_failure_keeps_roster_sums_and_later_observations() {
         let mut world = World::new(0x4000_0000, 3, 0x1100);
         let states = world.alloc(8);

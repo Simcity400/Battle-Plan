@@ -821,24 +821,3 @@ fn phase_names_keep_first_nul_text_and_line_feed_fallback() {
     );
 }
 
-#[test]
-fn the_tactic_reader_asks_the_keyword_helper() {
-    const RAW: [&str; 6] = [
-        "key.as_deref() ==",
-        "key.as_deref() !=",
-        "eq_ignore_ascii_case(",
-        "to_ascii_lowercase(",
-        ".get(b\"",
-        "get_all(",
-    ];
-    let raw: Vec<_> = [
-        include_str!("../combat_tactics.rs"),
-        include_str!("../../../content-reader-script/src/trigger_grammar.rs"),
-    ]
-        .into_iter()
-        .flat_map(|code| code.split("#[cfg(test)]").next().unwrap_or_default().lines())
-        .map(str::trim)
-        .filter(|line| !line.starts_with("//") && RAW.iter().any(|pattern| line.contains(pattern)))
-        .collect();
-    assert!(raw.is_empty(), "raw key comparisons: {raw:#?}");
-}

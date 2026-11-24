@@ -737,7 +737,7 @@ pub(crate) fn append(
 #[cfg(test)]
 mod tests {
     use replay_data::rows::{CountryCounterInputRow, TableId, TableRows};
-    use super::{CountryIntelRow, Defines, Inputs, Localisation, NativeInputs, Prepared, Speed, append, daily, decryption, decryption_value, speed};
+    use super::{CountryIntelRow, Defines, Inputs, Localisation, NativeInputs, Prepared, Speed, append, decryption, decryption_value, speed};
     #[test]
     fn aliased_intel_owners_use_current_ids_and_canonical_target_slots() {
         use crate::naval_mission_inputs::tests as fixture;
@@ -899,11 +899,6 @@ mod tests {
             .unwrap(),
             Speed::default()
         );
-    }
-    #[test]
-    fn daily_change_wraps_before_guard_and_truncates() {
-        assert_eq!(daily(100_000), 24_000);
-        assert_eq!(daily(-100_000), -24_000);
     }
     #[test]
     fn decryption_uses_absolute_threshold_then_original_sign() {

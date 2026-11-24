@@ -9,11 +9,23 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, GetThreadId, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
-    THREAD_PRIORITY_BELOW_NORMAL, WaitOnAddress, WakeByAddressAll,
+    GetCurrentThread, GetThreadId, SetThreadPriority, SetThreadPriorityBoost,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_NORMAL, WaitOnAddress, WakeByAddressAll,
 };
 
-pub(crate) const BESIDE_READERS: usize = 3;
+pub(crate) fn beside_readers() -> usize {
+    collector_workers::acquisition::usable_cpus()
+        .saturating_mul(5)
+        .div_ceil(8)
+        .clamp(3, collector_workers::acquisition::MAX_WORKERS)
+}
+
+pub(crate) fn hurried_readers() -> usize {
+    collector_workers::acquisition::usable_cpus()
+        .saturating_mul(5)
+        .div_ceil(8)
+        .clamp(4, collector_workers::acquisition::MAX_WORKERS)
+}
 
 const IDLE: u32 = 0;
 const REQUESTED: u32 = 1;
@@ -31,6 +43,7 @@ static WORK_FULL: AtomicBool = AtomicBool::new(false);
 static THREAD: AtomicIsize = AtomicIsize::new(0);
 static GAME: AtomicU32 = AtomicU32::new(0);
 static HURRIED: AtomicBool = AtomicBool::new(false);
+static HURRY_GEN: AtomicU64 = AtomicU64::new(0);
 static CONFINED: AtomicBool = AtomicBool::new(false);
 static FAILED: AtomicBool = AtomicBool::new(false);
 static BESIDE_CAPTURES: AtomicU64 = AtomicU64::new(0);
@@ -294,6 +307,7 @@ fn hurry() {
     unsafe { sampling::hurry() };
     let thread = THREAD.load(Ordering::SeqCst);
     if thread != 0 {
+        HURRY_GEN.fetch_add(1, Ordering::Release);
         // SAFETY: `Thread::stop` joins, closing the handle, only once no waiter is counted.
         let thread = unsafe { BorrowedHandle::borrow_raw(thread as _) };
         unsafe { SetThreadPriority(thread.as_raw_handle(), THREAD_PRIORITY_ABOVE_NORMAL) };
@@ -392,14 +406,31 @@ impl Drop for Gate {
     }
 }
 
-fn beside(away: &mut collector_workers::cpu_sets::AwayFromGame, game: Option<u32>) -> bool {
+fn beside(
+    priority: &mut i32,
+    seen_hurry: &mut u64,
+    away: &mut collector_workers::cpu_sets::AwayFromGame,
+    game: Option<u32>,
+) -> bool {
+    let hurry_gen = HURRY_GEN.load(Ordering::Acquire);
+    if hurry_gen != *seen_hurry {
+        *seen_hurry = hurry_gen;
+        *priority = i32::MIN;
+        *away = collector_workers::cpu_sets::AwayFromGame::default();
+    }
     let own = unsafe { GetCurrentThread() };
-    unsafe { SetThreadPriority(own, THREAD_PRIORITY_BELOW_NORMAL) };
+    if *priority != THREAD_PRIORITY_NORMAL {
+        unsafe { SetThreadPriority(own, THREAD_PRIORITY_NORMAL) };
+        *priority = THREAD_PRIORITY_NORMAL;
+    }
     // SAFETY: Called on the collector-owned beside capture thread applying session affinity policy.
     unsafe { away.follow(game) };
     CONFINED.store(away.confined(), Ordering::SeqCst);
     if HURRIED.load(Ordering::SeqCst) {
-        unsafe { SetThreadPriority(own, THREAD_PRIORITY_ABOVE_NORMAL) };
+        if *priority != THREAD_PRIORITY_ABOVE_NORMAL {
+            unsafe { SetThreadPriority(own, THREAD_PRIORITY_ABOVE_NORMAL) };
+            *priority = THREAD_PRIORITY_ABOVE_NORMAL;
+        }
         CONFINED.store(false, Ordering::SeqCst);
         // SAFETY: Called on the collector-owned beside capture thread clearing affinity on hurry.
         unsafe { away.follow(None) };
@@ -410,6 +441,9 @@ fn beside(away: &mut collector_workers::cpu_sets::AwayFromGame, game: Option<u32
 fn run() {
     // SAFETY: This dedicated thread is the collector-owned capture thread that reads under the gate.
     unsafe { capture_gate::reader() };
+    unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) };
+    let mut priority = i32::MIN;
+    let mut seen_hurry = 0;
     let mut away = collector_workers::cpu_sets::AwayFromGame::default();
     let idle = IDLE;
     loop {
@@ -417,7 +451,7 @@ fn run() {
             STOP => return,
             REQUESTED => {
                 WORK.store(IDLE, Ordering::Release);
-                serve(|full| capture_beside(&mut away, full));
+                serve(|full| capture_beside(&mut priority, &mut seen_hurry, &mut away, full));
             }
             _ => {
                 unsafe {
@@ -451,10 +485,15 @@ fn serve(capture: impl FnOnce(bool)) {
     }
 }
 
-fn capture_beside(away: &mut collector_workers::cpu_sets::AwayFromGame, full: bool) {
+fn capture_beside(
+    priority: &mut i32,
+    seen_hurry: &mut u64,
+    away: &mut collector_workers::cpu_sets::AwayFromGame,
+    full: bool,
+) {
     let game = GAME.load(Ordering::Relaxed).checked_sub(1);
     let started = Instant::now();
-    if beside(away, game) {
+    if beside(priority, seen_hurry, away, game) {
         CONFINED_CAPTURES.fetch_add(1, Ordering::Relaxed);
     }
     let _images = collector_characters::portrait_changes::PreImagesCapture::begin();
@@ -463,9 +502,11 @@ fn capture_beside(away: &mut collector_workers::cpu_sets::AwayFromGame, full: bo
     // writers proceed, and the portrait reader validates the live bytes it reads against the
     // pre-images `_images` keeps for this read.
     let admitted = unsafe { read(Placement::Beside(game), full) };
-    CONFINED.store(false, Ordering::SeqCst);
-    // SAFETY: Called on the collector-owned beside capture thread clearing affinity after capture.
-    unsafe { away.follow(None) };
+    if HURRIED.load(Ordering::SeqCst) {
+        CONFINED.store(false, Ordering::SeqCst);
+        // SAFETY: Called on the collector-owned beside capture thread clearing affinity after capture.
+        unsafe { away.follow(None) };
+    }
     if !admitted {
         unread(full);
         return;

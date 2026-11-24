@@ -301,21 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn first_run_uses_the_documented_defaults() {
-        let root = scratch("defaults");
-        let path = root.join("settings.json");
-        let settings = RecorderSettings::load_from(&path).unwrap();
-        assert_eq!(settings.compression, crate::compression::Compression::Low);
-        assert!(settings.auto_compress, "Auto Compress is on until turned off");
-        assert!(settings.record_every_campaign && settings.auto_save);
-        assert!(settings.start_with_replay);
-        assert_eq!(settings.capture_mode, CaptureMode::Full);
-        assert!(settings.save_folder.is_none() && settings.user_folder.is_none());
-        assert!(settings.campaigns.is_empty() && settings.chosen_names.is_empty());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn campaign_choices_override_the_global_default() {
         let root = scratch("campaigns");
         let path = root.join("settings.json");

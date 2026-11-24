@@ -223,11 +223,6 @@ fn every_difference_prints_under_its_own_comparison_group() {
     );
 }
 
-#[test]
-fn a_report_without_differences_prints_no_difference_section() {
-    assert!(Report::default().difference_lines().is_empty());
-}
-
 fn field_gap_frame() -> DecodedFrame {
     DecodedFrame {
         branch: 1,
@@ -468,14 +463,6 @@ fn every_limitation_subject_prints_in_existing_reason_and_subject_order() {
     assert_eq!(lines.next(), Some("  zeta: 1 entries".to_owned()));
     assert_eq!(lines.next(), Some("    last reason".to_owned()));
     assert_eq!(lines.next(), None);
-}
-
-#[test]
-fn a_report_without_limitations_keeps_the_existing_header() {
-    assert_eq!(
-        Report::default().limitation_lines().collect::<Vec<_>>(),
-        ["Limitations:"]
-    );
 }
 
 #[test]

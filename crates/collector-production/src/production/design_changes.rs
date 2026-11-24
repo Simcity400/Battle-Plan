@@ -91,16 +91,16 @@ pub(super) fn refuse_census() {
 }
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-static REVISION: AtomicU64 = AtomicU64::new(1);
+static DESIGN_GATE: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(1);
 static SEED_REVISION: AtomicU64 = AtomicU64::new(0);
 static SEED_EPOCH: AtomicU64 = AtomicU64::new(0);
 static SAVED_POPULATION: AtomicUsize = AtomicUsize::new(0);
 pub(super) fn begin_read() {
-    SEED_REVISION.store(REVISION.load(Ordering::Acquire), Ordering::Release);
+    SEED_REVISION.store(DESIGN_GATE.revision(), Ordering::Release);
     SEED_EPOCH.store(EPOCH.load(Ordering::Acquire), Ordering::Release);
 }
 
-static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static OWN_ENABLED: AtomicBool = AtomicBool::new(false);
 static WORLD_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -172,7 +172,7 @@ impl ProviderReset {
 }
 impl Drop for ProviderReset {
     fn drop(&mut self) {
-        REVISION.fetch_add(1, Ordering::AcqRel);
+        DESIGN_GATE.mark_dirty();
         if !self.complete {
             unobserved!();
         }
@@ -186,7 +186,7 @@ pub(super) unsafe fn provider_reset(
     base: usize,
     pointer: usize,
 ) -> ProviderReset {
-    REVISION.fetch_add(1, Ordering::AcqRel);
+    DESIGN_GATE.mark_dirty();
     source_hooks::reset_provider(memory, base, pointer);
     ProviderReset {
         invocation: unsafe { forward::invalidation(true, pointer) },
@@ -305,7 +305,7 @@ pub(super) fn stat_timing_quiet() -> Result<native::QuietToken, &'static str> {
         );
     };
     let epoch = EPOCH.load(Ordering::SeqCst);
-    let revision = REVISION.load(Ordering::SeqCst);
+    let revision = DESIGN_GATE.revision();
     if active() != 0 {
         return Err("variant stat writer active");
     }
@@ -456,7 +456,7 @@ pub(super) fn baseline_admitted() -> bool {
         && !needs_baseline()
         && !MISSED.load(Ordering::Acquire)
         && active() == 0
-        && SEED_REVISION.load(Ordering::Acquire) == REVISION.load(Ordering::Acquire)
+        && SEED_REVISION.load(Ordering::Acquire) == DESIGN_GATE.revision()
         && SEED_EPOCH.load(Ordering::Acquire) == EPOCH.load(Ordering::Acquire)
 }
 pub fn boundary(invalidate: bool) {
@@ -617,7 +617,7 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
     };
     let mut attempt = BaselineAttempt { accepted: false };
     if SEED_EPOCH.load(Ordering::Acquire) != epoch
-        || REVISION.load(Ordering::Acquire) != revision
+        || DESIGN_GATE.revision() != revision
         || active() != 0
     {
         unobserved!();
@@ -717,7 +717,7 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
         STAGING_REVISION.fetch_add(1, Ordering::Relaxed);
         if active() != 0
             || epoch != EPOCH.load(Ordering::Acquire)
-            || REVISION.load(Ordering::Acquire) != revision
+            || DESIGN_GATE.revision() != revision
         {
             unobserved!();
             return;
@@ -738,7 +738,7 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
         CENSUS_BASELINE.store(CENSUS_REVISION.load(Ordering::Acquire), Ordering::Release);
         diagnostics::clear();
     }
-    if REVISION.load(Ordering::Acquire) != revision
+    if DESIGN_GATE.revision() != revision
         || active() != 0
         || EPOCH.load(Ordering::Acquire) != epoch
     {
@@ -897,7 +897,7 @@ pub fn pending() -> bool {
         })
 }
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst)
+    DESIGN_GATE.active()
         + super::design_template_changes::active()
         + collector_observers::world_input_changes::design_forwarder_active()
 }
@@ -914,6 +914,7 @@ thread_local! {
 }
 
 struct CallbackScope {
+    flight: collector_primitives::asymmetric::FlightGuard<'static>,
     claims: Option<writers::Flight>,
     previous_target: usize,
     creation: Option<(bool, usize)>,
@@ -921,7 +922,7 @@ struct CallbackScope {
 }
 impl Drop for CallbackScope {
     fn drop(&mut self) {
-        REVISION.fetch_add(1, Ordering::AcqRel);
+        self.flight.mark_dirty();
         if !self.completed {
             unobserved!();
         }
@@ -931,7 +932,6 @@ impl Drop for CallbackScope {
         }
         TARGET.set(self.previous_target);
         drop(self.claims.take());
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -1206,8 +1206,7 @@ unsafe fn around_with_identities<const SITE: usize>(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
+    let flight = DESIGN_GATE.enter(true);
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let pointer = target(&memory, base, MUTATIONS[SITE].receiver, first, second);
@@ -1263,6 +1262,7 @@ unsafe fn around_with_identities<const SITE: usize>(
     };
     let previous_created = if create_scope { CREATED.replace(0) } else { 0 };
     let mut scope = CallbackScope {
+        flight,
         claims,
         previous_target: previous,
         creation: create_scope.then_some((previous_creating, previous_created)),
@@ -1696,7 +1696,7 @@ fn drain_speculating(
     let start = std::time::Instant::now();
     output.clear();
     snapshots.clear();
-    let revision = REVISION.load(Ordering::Acquire);
+    let revision = DESIGN_GATE.revision();
     let epoch = EPOCH.load(Ordering::Acquire);
     let dependencies = CENSUS_REVISION.load(Ordering::Acquire);
     let Some(store) = STORE.get() else {
@@ -1873,7 +1873,7 @@ fn drain_speculating(
         drain_profile_mut().stages_ns[2] = elapsed_ns(stage);
         drain_profile_mut().reads_ns = elapsed_ns(tail);
         if active() != 0
-            || revision != REVISION.load(Ordering::Acquire)
+            || revision != DESIGN_GATE.revision()
             || epoch != EPOCH.load(Ordering::Acquire)
             || dependencies != CENSUS_REVISION.load(Ordering::Acquire)
             || MISSED.load(Ordering::Acquire)
@@ -2261,6 +2261,20 @@ impl Captured {
             reason: "variant changes not acquired",
         };
     }
+    pub(super) fn release_transient(&mut self) {
+        self.rows = Vec::new();
+        self.snapshots = snapshots::Shared::default();
+        self.heap_bytes = 0;
+        self.dictionary = None;
+        self.context = None;
+        self.templates = None;
+        self.fog = super::design_fog::Observation::default();
+        self.liveness = liveness::Observation::default();
+        self.context_acquired = false;
+        self.outcome = Outcome::Unavailable {
+            reason: "variant changes not acquired",
+        };
+    }
     pub(super) fn dictionary(&self) -> &super::bonus_snapshots::Snapshot {
         if matches!(self.outcome, Outcome::Rows { .. }) {
             &self.dictionary
@@ -2622,7 +2636,8 @@ fn decode_events(
                 output,
             )?,
             Kind::Source | Kind::Provider(_) => {
-                let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end)?;
+                let memory =
+                    crate::raw::Recorded::build_range(&batch.log, event.start..event.end)?;
                 sources::decode(event, &memory, base, output)?;
             }
             Kind::Design if event.removed => {
@@ -2926,8 +2941,42 @@ fn complete_decoded(
     walk: &RawWalk,
     decoded: snapshots::Decoded,
 ) -> Result<snapshots::Decoded, &'static str> {
+    complete_decoded_parts(
+        memory,
+        base,
+        fresh,
+        walk.details,
+        walk.stats.outcome.len(),
+        &walk.modules.rows[..walk.modules.outcome.len()],
+        walk.upgrades.rows[..walk.upgrades.outcome.len()].first(),
+        decoded,
+    )
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "summary fields mirror RawWalk without retaining its scratch arenas"
+)]
+fn complete_decoded_parts(
+    memory: &impl Memory,
+    base: usize,
+    fresh: bool,
+    details: bool,
+    stats_len: usize,
+    modules: &[engine_equipment::equipment_module_container::Row],
+    first_upgrade: Option<&engine_equipment::cequipment_upgrades_instance::Row>,
+    decoded: snapshots::Decoded,
+) -> Result<snapshots::Decoded, &'static str> {
     let begin = std::time::Instant::now();
-    let result = observe_walk(memory, base, fresh, walk, &decoded.definition);
+    let result = observe_walk_parts(
+        memory,
+        base,
+        fresh,
+        details,
+        stats_len,
+        modules,
+        first_upgrade,
+        &decoded.definition,
+    );
     drain_profile_mut().complete_ns[1] += elapsed_ns(begin);
     result.map(|()| decoded)
 }
@@ -2942,15 +2991,22 @@ fn decode_snapshot(
     walk_snapshot(memory, base, hour, pointer, &mut walk)?;
     complete_snapshot(memory, base, fresh, &mut walk)
 }
-fn observe_walk(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "summary fields mirror RawWalk without retaining its scratch arenas"
+)]
+fn observe_walk_parts(
     memory: &impl Memory,
     base: usize,
     fresh: bool,
-    walk: &RawWalk,
+    details: bool,
+    stats_len: usize,
+    modules: &[engine_equipment::equipment_module_container::Row],
+    first_upgrade: Option<&engine_equipment::cequipment_upgrades_instance::Row>,
     definition: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
 ) -> Result<(), &'static str> {
-    if walk.details {
-        for _ in 0..walk.stats.outcome.len() {
+    if details {
+        for _ in 0..stats_len {
             collector_observers::world_input_changes::record_daily(
                 collector_observers::world_input_changes::Domain::DesignIndustrialOrganisation,
                 false,
@@ -2970,13 +3026,7 @@ fn observe_walk(
         sources::track(definition)?;
     }
     liveness::sample(definition)?;
-    super::design_context::event(
-        memory,
-        base,
-        definition,
-        &walk.modules.rows[..walk.modules.outcome.len()],
-        walk.upgrades.rows[..walk.upgrades.outcome.len()].first(),
-    )
+    super::design_context::event(memory, base, definition, modules, first_upgrade)
 }
 
 #[cfg(test)]

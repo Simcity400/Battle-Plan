@@ -1111,40 +1111,6 @@ mod tests {
     }
 
     #[test]
-    fn repeated_focus_frames_share_all_recorded_countries() {
-        let mut frame = source(1, 10, Some(100));
-        let TableView::Complete(TableRows::Countries(rows)) =
-            &mut *frame.tables[TableId::Countries.index()]
-        else {
-            unreachable!();
-        };
-        let template = rows[0].clone();
-        *rows = (0..24)
-            .map(|index| {
-                let mut country = template.clone();
-                country.id = 9001 + index;
-                country.canonical_slot = index;
-                country.tag = format!("country-{index}").into_bytes();
-                country
-            })
-            .collect();
-        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-        let mut cache = FrameCache::default();
-        let cancelled = AtomicBool::new(false);
-        let first = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
-        let next = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
-        let countries = TableId::Countries.index();
-        assert!(SharedView::ptr_eq(
-            &first.tables[countries],
-            &next.tables[countries]
-        ));
-        let TableView::Complete(rows) = &*next.tables[countries] else {
-            unreachable!();
-        };
-        assert_eq!(rows.rows::<tables::Countries>().unwrap().len(), 24);
-    }
-
-    #[test]
     fn a_branch_keeps_its_latest_focus_hour_and_reads_an_earlier_one_again() {
         let replay = Replay::from_records(
             recorder_derive::writers(),

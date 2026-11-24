@@ -14,4 +14,4 @@ The visit table has an intrusive depth-first stack. When growth rehashes the occ
 
 The owner approved relaxed read-ahead on 2026-10-12. A real speculative copy may consume a one-shot guard fault before the serial reader would encounter it. It may recover the affected row through scalar reads but must not withhold an additional row. Persistent faults still report the serial failure. When two parts reach the same one-shot fault, whichever reads it first consumes it. Fixtures compare the retained data and failure precedence across ordinary and partitioned walks, exercise both graph kinds, and contrast advisory hints with actual source reads.
 
-[Order census and plans](../../crates/engine-native/src/corder_instance.rs) · [Plan gathering fixture](../../crates/engine-native/src/corder_instance/plan_batch_tests.rs) · [Serial and stitched parity fixtures](../../crates/engine-native/src/corder_instance/tests.rs)
+[Order census and plans](../../crates/engine-native/src/corder_instance.rs) · [Serial and stitched parity fixtures](../../crates/engine-native/src/corder_instance/tests.rs)

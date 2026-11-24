@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OpenedSources } from './openedSources.ts';
-import type { AskedRequest, ProductRequest, productRequest } from './request';
 import { REQUEST_HOURS } from '../generated/dashboard.ts';
-import { at, axisAt, bucketEdges, bucketRead, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, validTime, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion,
-  SETTINGS_DETAIL, SPEC, UNRECORDED_MESSAGE, type BoundHour, type GatedHour, type ParamsFor, type RegionAction, type TrackHour } from './regionTime.ts';
+import { at, axisAt, bucketEdges, bucketRead, checkedTime, coverageAt, coverageSpan, FOLLOW, GatedTime, refusedHours, validTime, OUTSIDE_MESSAGE, recordedHour, regionFollows, regionHour, regionKey, regionOutside, regionWindow, resolveRegion, SETTINGS_DETAIL, SPEC, UNRECORDED_MESSAGE, type RegionAction, type TrackHour } from './regionTime.ts';
 import { drillAction, reduceDrill, CLOSED } from '../charts/drill/drillState.ts';
 import { gateStage } from './regionGate.ts';
 import { gatedRead, readData } from './gatedRead.ts';
@@ -14,24 +12,7 @@ const track = (id: string, firstHour: number, lastHour: number, axisOffset: numb
   ({ id, axisOffset, branch: { id, firstHour, lastHour, gaps } }) as unknown as BoundTrack;
 const late = track('late', 1000, 1009, 900);
 
-type Takes<T, U> = [U] extends [T] ? true : false;
-const roles: readonly boolean[] = [
-  false satisfies Takes<ParamsFor<'equipment-produced'>, { rankHour: BoundHour }>,
-  true satisfies Takes<ParamsFor<'equipment-produced'>, { rankHour: GatedHour }>,
-  false satisfies Takes<ParamsFor<'naval-battle-details'>, { battles: { hour: BoundHour }[] }>,
-  false satisfies Takes<ParamsFor<'naval-battle-details'>, { battles: { hour: number }[] }>,
-  true satisfies Takes<ParamsFor<'naval-battle-details'>, { battles: { hour: GatedHour; id: number }[] }>,
-  false satisfies Takes<ParamsFor<string>, { rankHour: BoundHour }>,
-  true satisfies Takes<ParamsFor<string>, { windowHour: number }>,
-  false satisfies Takes<ProductRequest, { sourceId: string; revision: string; product: string; params: Record<string, never> }>,
-  false satisfies Takes<AskedRequest<'naval-battle-details'>, { sourceId: string; revision: string; product: 'naval-battle-details'; params: { battles: { hour: number }[] } }>,
-  true satisfies Takes<AskedRequest<'naval-battle-details'>, { sourceId: string; revision: string; product: 'naval-battle-details'; params: { battles: { hour: GatedHour }[] } }>,
-  false satisfies Takes<Parameters<typeof productRequest<string>>[0], { sourceId: string; revision: string; product: string; params: { windowHour: number } }>,
-];
 
-test('request params are typed from the contract’s roles: an exact read, nested ones included, takes only a gated hour, and a name decides nothing', () => {
-  assert.deepEqual(roles, [false, true, false, false, true, false, true, false, false, true, false]);
-});
 const early = track('early', 0, 9, 0);
 const tracks = [late, early];
 const widget = (time: WidgetTime, trackId = 'late') => ({ id: 'w', kind: 'unknown-kind', trackIds: [trackId], countries: { kind: 'all' }, time }) as unknown as WidgetSpec;

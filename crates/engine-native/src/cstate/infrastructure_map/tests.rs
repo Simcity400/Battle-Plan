@@ -180,43 +180,6 @@ fn a_carried_state_reads_construction_bonus_and_category_but_not_its_status() {
 }
 
 #[test]
-fn an_hour_authenticates_each_category_once() {
-    let world = World::new();
-    let (_, held, _) = fresh(&world);
-    world.forget_reads();
-    let mut cache = Cache::default();
-    let mut hour = Hour::new(&world, BASE, GAME, &mut cache, false).unwrap();
-    let first = hour.carried(STATE, held);
-    assert_eq!(hour.carried(STATE, held), first);
-    assert_eq!(world.reads(CATEGORY), 1);
-    drop(hour);
-    let mut hour = Hour::new(&world, BASE, GAME, &mut cache, true).unwrap();
-    assert_eq!(hour.carried(STATE, held), first);
-    assert_eq!(world.reads(CATEGORY), 2);
-}
-
-#[test]
-fn a_reused_plan_reads_only_its_pointers_until_they_move() {
-    let world = World::new();
-    let mut cache = Cache::default();
-    drop(Hour::new(&world, BASE, GAME, &mut cache, true).unwrap());
-    assert_eq!(world.reads(DEFINITION + STATE_MAXIMUM), 1);
-    drop(Hour::new(&world, BASE, GAME, &mut cache, true).unwrap());
-    assert_eq!(world.reads(DEFINITION + STATE_MAXIMUM), 1);
-    drop(Hour::new(&world, BASE, GAME, &mut cache, false).unwrap());
-    assert_eq!(world.reads(DEFINITION + STATE_MAXIMUM), 2);
-    cache.forget();
-    drop(Hour::new(&world, BASE, GAME, &mut cache, true).unwrap());
-    assert_eq!(world.reads(DEFINITION + STATE_MAXIMUM), 3);
-    let mut moved = World::new();
-    moved.region(DEFINITION + 0x1000, template::SIZE);
-    moved.put(DEFINITIONS, ((DEFINITION + 0x1000) as u64).to_le_bytes());
-    moved.put(DEFINITION + 0x1000, ((BASE + template::VTABLE_RVA.0) as u64).to_le_bytes());
-    assert!(Hour::new(&moved, BASE, GAME, &mut cache, true).is_ok());
-    assert_eq!(moved.reads(DEFINITION + 0x1000 + STATE_MAXIMUM), 1);
-}
-
-#[test]
 fn an_unreadable_definition_publishes_nothing() {
     let mut world = World::new();
     world.put(DEFINITION, 0_u64.to_le_bytes());

@@ -9,7 +9,10 @@ fn inputs(
     branch: BranchId,
 ) -> [TableInput; N] {
     let cached = std::array::from_fn(|index| cached.map(|rows| &rows[index]));
-    current.table_inputs(Some(&mut CharacterConversion::new(branch, shadow, cached)))
+    current.table_inputs(
+        Some(&mut CharacterConversion::new(branch, shadow, cached)),
+        None,
+    )
 }
 
 fn shared(input: &[TableInput; N]) -> [Arc<TableRows>; 4] {
@@ -28,7 +31,8 @@ fn assert_canonical(current: &Captured, input: &[TableInput; N]) {
             }
             TableInput::ComparedEqual(_)
             | TableInput::ComparedChanges { .. }
-            | TableInput::SliceUpdate { .. } => {
+            | TableInput::SliceUpdate { .. }
+            | TableInput::UniformOptionalI32 { .. } => {
                 panic!("character reuse cannot bypass validation")
             }
         }
