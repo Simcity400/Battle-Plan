@@ -385,7 +385,6 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
           ? look.identities.map(run => ({ ...run, name: `${run.name} · Launched` }))
           : look.identities,
         missingSpans: reply.missing,
-        rank,
         endLabel: isTail || primaryValue === null || !options.endLabels
           ? null
           : {
@@ -412,7 +411,6 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
           headHour: hour,
           identities: look.identities.map(run => ({ ...run, name: `${run.name} · Succeeded` })),
           missingSpans: reply.missing,
-          rank,
           endLabel: null,
         });
       }

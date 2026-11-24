@@ -243,7 +243,6 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
       headValue,
       headHour: hour,
       icon,
-      rank: 0,
       endLabel: headRaw === null
         ? null
         : {
