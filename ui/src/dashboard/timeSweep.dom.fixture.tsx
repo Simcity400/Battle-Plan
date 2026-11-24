@@ -124,12 +124,13 @@ const turn = async () => {
   await new Promise<void>(resolve => setTimeout(resolve, 0));
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 };
+const lanePending = () => !!document.querySelector('.fh-body-wrap:has(> [data-family-pending]) > .fh-overlay [data-state="loading"]');
 const settle = async () => {
   let last = '', same = 0;
   for (let round = 0; round < 400 && same < 12; round++) {
     await turn();
     const now = document.body.innerHTML.length + ':' + requests.length;
-    same = now === last ? same + 1 : 0;
+    same = !lanePending() && now === last ? same + 1 : 0;
     last = now;
   }
 };

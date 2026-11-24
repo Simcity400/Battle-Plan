@@ -1019,6 +1019,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const loadingLabel = `Loading ${subject}…`;
   const hasStaticBundle = staticBundle !== null;
+  const allowEmpty = following
+    ? compiledFollow.allowEmptyFollow
+    : (plan?.allowEmptyFollow === true && !plan.refused && !plan.unavailable);
 
   const bodyStatus = useMemo<FamilyBodyStatus>(() => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };
@@ -1108,7 +1111,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (!currentTiled || !Object.keys(currentTiled.series).length) return { kind: 'loading', label: loadingLabel };
       return view.kind === 'none' || view.kind === 'outside' ? { kind: 'ready' } : unitState();
     }
-    if (view.kind === 'none') return pinHour === null ? { kind: 'outside' } : { kind: 'loading', label: loadingLabel };
+    if (view.kind === 'none') return allowEmpty ? { kind: 'ready' } : pinHour === null ? { kind: 'outside' } : { kind: 'loading', label: loadingLabel };
     return unitState();
   }, [
     track,
@@ -1152,6 +1155,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     tileUnrecorded,
     retryTiles,
     hasStaticBundle,
+    allowEmpty,
     view,
     retryUnits,
   ]);
@@ -1167,7 +1171,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [track?.branch.firstHour, track?.branch.lastHour],
   );
 
-  const pin = following ? null : (staticBundle?.hour ?? pinHour ?? (pixelBinnedKey ? window?.lastHour ?? null : null));
+  const pin = following ? null : (staticBundle?.hour ?? pinHour ?? (pixelBinnedKey || allowEmpty ? window?.lastHour ?? null : null));
 
   return {
     track,
@@ -1179,7 +1183,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     displayedExtra,
     plan: displayedPlan,
     subscriptions: compiledFollow.subscriptions,
-    allowEmptyFollow: compiledFollow.allowEmptyFollow,
+    allowEmptyFollow: allowEmpty,
     followRefused: compiledFollow.refused,
     staticBundle,
     staticProof,
