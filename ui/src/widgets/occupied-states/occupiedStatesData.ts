@@ -3,6 +3,7 @@ import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { artworkUrlValue } from '../../dashboard/payload.ts';
 import { amountCell, strengthBar } from '../../families/table/settings.ts';
+import type { Value } from '../../families/value.ts';
 import type { OccupiedState as RepliedState, OccupiedStatesReply as Replied } from '../../generated/dashboard';
 
 export type OccupiedState = Omit<RepliedState, 'garrisonStrengthRaw' | 'garrisonRed'>;
@@ -33,7 +34,7 @@ export function validateOccupiedStates(data: unknown): OccupiedStatesReply {
   return data as unknown as OccupiedStatesReply;
 }
 
-export interface OccupiedRow { key: string; state: number; value: OccupiedState }
+export interface OccupiedRow { key: string; state: number; value: OccupiedState; occupiedName?: Value<string> }
 export type CountryRole = 'occupier' | 'occupied';
 export const stateName = (row: OccupiedRow) => row.value.name ?? `State ${row.state}`;
 

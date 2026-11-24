@@ -267,7 +267,7 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
   subject: 'event choices',
   emptyCampaign: 'Load a campaign to see event choices.',
   icon: 'ballot',
-  countries: { mode: 'filter', labels: true },
+  countries: { mode: 'filter' },
   aux: {
     product: 'event-feed-span',
     params: track => kindsRequest(track).params as Record<string, unknown>,

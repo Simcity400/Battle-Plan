@@ -200,10 +200,7 @@ export const nuclearArsenalRaceDeclaration: BarsWidgetDeclaration<NuclearArsenal
   icon: 'target',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
-    allTagsForLabels: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },
   sources: nuclearArsenalRaceSources,

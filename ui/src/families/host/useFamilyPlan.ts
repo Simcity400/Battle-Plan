@@ -23,7 +23,7 @@ import { TileView, tileCache, type TiledLine, type TileViewport } from '../../da
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { countRead, measuredWidget } from '../../dashboard/widgetPerf.ts';
 import { useRegion, useRegionCoverage, watchBoundary } from '../../dashboard/widgetTime';
-import type { CountryFlagChoice, HourSpan } from '../../generated/dashboard';
+import type { HourSpan } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
 import type { FamilyStaticProof } from './adapter.ts';
 import { sharedDomArtCache } from '../art/domCache.ts';
@@ -46,15 +46,12 @@ import { overlapsHourRanges } from '../holders.ts';
 import { identityBrokerFor } from '../identity/broker.ts';
 import { createBrokerIdentityProvider, parseEntityKey } from '../identity/provider.ts';
 import {
-  countryTagKey,
-  flagChoiceKey,
   useIdentities,
   useIdentityScope,
   useSlotIndex,
   type IdentityAsk,
   type IdentitySnapshot,
 } from '../identity/react.ts';
-import type { CountryLooksMap } from '../looks.ts';
 import type {
   ArtProvider,
   AuxProductSpec,
@@ -81,7 +78,6 @@ import {
   type TargetView,
 } from '../readUnits.ts';
 import {
-  buildCountryLooksFromIdentity,
   effectiveCountryUnobserved,
   extractFactionData,
   freezeGate,
@@ -98,7 +94,6 @@ import {
 import type { FamilyRowWindow } from './adapter.ts';
 
 const NO_TAGS: readonly string[] = [];
-const NO_LOOKS: CountryLooksMap = {};
 const EVERY_COUNTRY: DeclaredCountryFilter = { passing: null, unrecorded: [], bounds: [] };
 const filterCache = new WeakMap<object, Map<string, DeclaredCountryFilter>>();
 
@@ -167,7 +162,7 @@ export interface UseFamilyPlanInput<TAux, TExtra> {
   readonly countries: CountryPolicy;
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
-  readonly captureExtra?: (ctx: FamilyPlanContext<TAux>, countryLooks: CountryLooksMap | undefined) => TExtra;
+  readonly captureExtra?: (ctx: FamilyPlanContext<TAux>) => TExtra;
   readonly widget: WidgetSpec;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
@@ -186,7 +181,6 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly ctx: FamilyPlanContext<TAux> | null;
   readonly displayedCtx: FamilyPlanContext<TAux> | null;
   readonly displayedExtra: TExtra | undefined;
-  readonly displayedCountryLooks: CountryLooksMap | undefined;
   readonly plan: SourcePlan | null;
   readonly subscriptions: readonly CompiledFollowSubscription[];
   readonly allowEmptyFollow: boolean;
@@ -339,7 +333,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const needsGroups = isFilter
     || (isMulti && (policy.requireGroupsWhen ? policy.requireGroupsWhen(widget, options) : widget.countries.kind === 'group'));
-  const fetchGroups = isFilter || (isMulti && (needsGroups || policy.allTagsForLabels || policy.factions || policy.everyOnTop));
+  const fetchGroups = isFilter || (isMulti && (needsGroups || policy.factions || policy.everyOnTop));
   const groups = useCountryGroups(runtime, track, active && fetchGroups);
 
   const allTagsText = useMemo(
@@ -446,21 +440,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [isMulti, policy, groups.data],
   );
 
-  const wantsColours = (isFilter || isMulti) && policy.colours === true;
-  const wantsLabels = (isFilter || isMulti) && (policy.labels === true || wantsColours);
-  const labelTags = useMemo(() => {
-    if (!wantsLabels) return NO_TAGS;
-    if (isFilter) return allTags;
-    if (isMulti && (policy.allTagsForLabels || (policy.everyOnTop && effectiveMulti?.top != null))) return allTags;
-    if (holders) {
-      const set = new Set<string>();
-      for (const runs of Object.values(holders)) for (const run of runs) set.add(run.tag);
-      for (const tag of effectiveMulti?.tags ?? []) if (!isSlotKey(tag)) set.add(tag);
-      return [...set].sort();
-    }
-    return effectiveMulti?.tags ?? allTags;
-  }, [wantsLabels, isFilter, isMulti, policy, allTags, effectiveMulti?.top, effectiveMulti?.tags, holders]);
-
   const [laneDemands, setLaneDemands] = useState<readonly IdentityAsk[]>([]);
   const laneDemandsSigRef = useRef('');
   const onIdentityDemands = useCallback((demands: readonly (readonly [EntityKind, string, number])[]) => {
@@ -470,59 +449,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     setLaneDemands(demands.map(([k, key, h]) => ({ key: parseEntityKey(k, key), hour: h })));
   }, []);
 
-  const wantsIdentity = wantsLabels || laneDemands.length > 0;
-  const labelAskHour = pinHour ?? moment;
-  const labelAsks = useMemo<readonly IdentityAsk[]>(() => {
-    const asks: IdentityAsk[] = [];
-    if (wantsLabels && track) {
-      const at = Math.max(firstHour, Math.min(lastHour, Math.floor(labelAskHour)));
-      for (const tag of labelTags) asks.push({ key: countryTagKey(tag), hour: at });
-    }
-    for (const demand of laneDemands) asks.push(demand);
-    return asks;
-  }, [wantsLabels, track, labelTags, firstHour, lastHour, labelAskHour, laneDemands]);
-  const identityState = useIdentities(runtime.client, track?.source, wantsIdentity ? identityScope : null, labelAsks, {
+  const wantsIdentity = laneDemands.length > 0;
+  const identityState = useIdentities(runtime.client, track?.source, wantsIdentity ? identityScope : null, laneDemands, {
     active: active && wantsIdentity,
     needFlags: true,
     flagSize: 'panel',
     branchBounds,
   });
-  const countryRevision = identityState.index?.countryRevision() ?? -1;
-  useEffect(() => {
-    if (!active || !wantsLabels || !identityScope || !track || !identityState.index?.hasFacts()) return;
-    const seen = new Set<string>();
-    const choices: CountryFlagChoice[] = [];
-    const limit = Math.floor(lastHour);
-    for (const tag of labelTags) {
-      const key = countryTagKey(tag);
-      let cursor = Math.floor(firstHour);
-      while (cursor <= limit) {
-        const res = identityState.index.resolve(key, cursor);
-        if (res.kind === 'known' && res.flagChoice.kind === 'known') {
-          const id = flagChoiceKey(res.flagChoice.value);
-          if (!seen.has(id)) {
-            seen.add(id);
-            choices.push(res.flagChoice.value);
-          }
-        }
-        cursor = (res.kind === 'known' || res.kind === 'absent') && Number.isFinite(res.nextBoundary) && res.nextBoundary > cursor
-          ? res.nextBoundary
-          : limit + 1;
-      }
-    }
-    if (choices.length) identityBrokerFor(runtime.client).requestFlagChoices(identityScope, 'panel', choices, track.source);
-  }, [active, wantsLabels, identityScope, runtime.client, track, identityState.index, countryRevision, labelTags, firstHour, lastHour]);
-
-  const builtLooks = useMemo(
-    () => (wantsLabels ? buildCountryLooksFromIdentity(identityState.index, labelTags, firstHour, lastHour, identityState.flagFor, wantsColours) : NO_LOOKS),
-    [wantsLabels, identityState.index, identityState.version, identityState.flagFor, labelTags, firstHour, lastHour, wantsColours],
-  );
-  const labelsText = wantsLabels ? JSON.stringify(builtLooks) : '{}';
-  const labels = useMemo<CountryLooksMap>(
-    () => (wantsLabels ? JSON.parse(labelsText) as CountryLooksMap : NO_LOOKS),
-    [wantsLabels, labelsText],
-  );
-
   const [providerOwner] = useState(() => ({}));
   const broker = identityBrokerFor(runtime.client);
   const identityProvider = useMemo<IdentityProvider | undefined>(() => {
@@ -561,7 +494,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     membershipRuns,
     unobserved,
     filter,
-    labels,
     factions: factionData.runs,
     factionUnobserved: factionData.unobserved,
     factionIncomplete: factionData.incomplete,
@@ -569,7 +501,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     reason: filterMatch?.reason ?? effectiveMulti?.reason ?? selectionUnobservedReason(widget.countries, filterUnobserved ?? effectiveMulti?.unobserved) ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
-  }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
     () => JSON.stringify([
@@ -1100,23 +1032,21 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return { ...ctx, staticSpan: [lo, hi] as const };
   }, [ctx, askedSpan]);
 
-  const currentCountryLooks = wantsColours ? labels : undefined;
   const currentExtra = useMemo<TExtra | undefined>(
-    () => (ctxWithStaticSpan && captureExtra ? captureExtra(ctxWithStaticSpan, currentCountryLooks) : undefined),
-    [ctxWithStaticSpan, captureExtra, currentCountryLooks],
+    () => (ctxWithStaticSpan && captureExtra ? captureExtra(ctxWithStaticSpan) : undefined),
+    [ctxWithStaticSpan, captureExtra],
   );
 
   interface FrozenView {
     readonly ctx: FamilyPlanContext<TAux> | null;
     readonly gate: FrozenGate;
     readonly plan: SourcePlan | null;
-    readonly countryLooks: CountryLooksMap | undefined;
     readonly extra: TExtra | undefined;
   }
 
   const currentFrozen = useMemo<FrozenView>(
-    () => ({ ctx: ctxWithStaticSpan, gate: frozenGate, plan, countryLooks: currentCountryLooks, extra: currentExtra }),
-    [ctxWithStaticSpan, frozenGate, plan, currentCountryLooks, currentExtra],
+    () => ({ ctx: ctxWithStaticSpan, gate: frozenGate, plan, extra: currentExtra }),
+    [ctxWithStaticSpan, frozenGate, plan, currentExtra],
   );
 
   const viewBundle = view.bundle;
@@ -1139,7 +1069,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const displayedGate = displayed.gate;
   const displayedPlan = displayed.plan ?? plan;
   const displayedExtra = displayed.extra;
-  const displayedCountryLooks = displayed.countryLooks;
 
   const exactReadView = useMemo(() => {
     if (!displayedCtx || !displayedPlan || !perfLog) return undefined;
@@ -1330,7 +1259,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     ctx: ctxWithStaticSpan,
     displayedCtx,
     displayedExtra,
-    displayedCountryLooks,
     plan: displayedPlan,
     subscriptions: compiledFollow.subscriptions,
     allowEmptyFollow: compiledFollow.allowEmptyFollow,

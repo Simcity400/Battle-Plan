@@ -488,7 +488,7 @@ export const occupationReserveBreakdownDeclaration: TimeChartWidgetDeclaration<O
   subject: 'occupation manpower',
   emptyCampaign: 'Load a campaign to see occupation manpower.',
   icon: 'flag',
-  countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
+  countries: { mode: 'multi', allowSlots: true },
   aux: {
     product: 'country-identities',
     params: track => ({ branchId: track.branch.id }),

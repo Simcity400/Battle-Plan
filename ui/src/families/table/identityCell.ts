@@ -65,6 +65,45 @@ export function resolveIdentity(readView: BoundedReadView, kind: EntityKind, key
   };
 }
 
+export function identitySignature(who: ResolvedIdentity): string {
+  const reason = who.value.kind === 'notRecorded' ? who.value.reason : '';
+  return `${who.value.kind}\u0000${who.name}\u0000${reason}\u0000${who.icon ?? ''}\u0000${who.iconPending ? 1 : 0}\u0000${who.iconArt ?? ''}\u0000${who.color ?? ''}`;
+}
+
+export type IdentityRead = readonly [tag: string, atHour: number, signature: string];
+
+export interface IdentityAsker {
+  readonly ask: (tag: string, atHour: number) => ResolvedIdentity;
+  readonly reads: IdentityRead[];
+}
+
+export function identityAsker(readView: BoundedReadView, boundary: IdentityBoundary): IdentityAsker {
+  const reads: IdentityRead[] = [];
+  const held = new Map<string, ResolvedIdentity>();
+  return {
+    reads,
+    ask(tag, atHour) {
+      const at = Math.min(atHour, readView.hour);
+      const id = `${tag}\u0000${at}`;
+      let who = held.get(id);
+      if (!who) {
+        who = resolveIdentity(readView, 'country', tag, { atHour: at, boundary });
+        held.set(id, who);
+        reads.push([tag, at, identitySignature(who)]);
+      }
+      return who;
+    },
+  };
+}
+
+export function identityMoved(reads: readonly IdentityRead[], readView: BoundedReadView): boolean {
+  for (let i = 0; i < reads.length; i++) {
+    const [tag, atHour, signature] = reads[i]!;
+    if (identitySignature(resolveIdentity(readView, 'country', tag, { atHour })) !== signature) return true;
+  }
+  return false;
+}
+
 export function identityCell(readView: BoundedReadView, kind: EntityKind, key: string | null, options: IdentityOptions = {}): TableCell {
   if (key === null) return { value: notRecorded('Not recorded'), iconSlot: true };
   const who = resolveIdentity(readView, kind, key, options);

@@ -624,7 +624,7 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
   subject: 'event feed',
   emptyCampaign: 'Load a campaign to see key moments.',
   icon: 'clock',
-  countries: { mode: 'filter', labels: true },
+  countries: { mode: 'filter' },
   aux: {
     product: 'event-feed-span',
     params: track => kindsRequest(track).params as Record<string, unknown>,

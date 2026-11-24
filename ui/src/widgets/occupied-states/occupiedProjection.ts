@@ -1,7 +1,6 @@
 import { formatAmount, formatFixed, formatSigned } from '../../charts/valueAxis.ts';
 import { liveKey } from '../../charts/live.ts';
 import type { DeclaredCountryFilter, HourRanges, TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
   type DeclarativeColumnSpec,
@@ -11,6 +10,7 @@ import {
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
+import { newIdentityBoundary, resolveIdentity } from '../../families/table/identityCell.ts';
 import { strengthBar, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, partialValue, valueFromLive, zeroValue, type Value } from '../../families/value.ts';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
@@ -32,7 +32,6 @@ export type OccupiedFilter = DeclaredCountryFilter;
 export interface OccupiedProjectionOptions {
   readonly filter: OccupiedFilter;
   readonly role: CountryRole;
-  readonly labels: CountryLooksMap;
   readonly lawAs: string;
   readonly filterAll: boolean;
 }
@@ -65,12 +64,6 @@ function strengthFraction(raw: number | bigint): number {
   return Math.max(0, Math.min(1, rounded / 100000));
 }
 
-function countryLabel(tag: string | null, labels: CountryLooksMap, hour: number): Value<string> {
-  if (tag === null) return notRecorded('Unknown country');
-  const look = lookAt(labels[tag], hour);
-  return look && look.name ? knownValue(look.name) : notRecorded(look?.status ?? 'Country name unavailable');
-}
-
 export const OCCUPIED_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(col => ({
   ...col,
   priority: PRIORITIES[col.key] ?? 9,
@@ -98,7 +91,7 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
   declareTableProjection<OccupiedStatesReply, OccupiedRow, OccupiedProjectionOptions>({
     kind: 'occupied-states',
     validate: validateOccupiedStates,
-    nextChange: (readView, options) => Math.min(filterNext(options.filter, readView.hour), nextLookChange(options.labels, readView.hour)),
+    nextChange: (readView, options) => filterNext(options.filter, readView.hour),
     columns: (reply, options): readonly DeclarativeColumnSpec<OccupiedRow, OccupiedProjectionOptions>[] => {
       const laws = lawsOf(reply);
       const redBelow = reply.garrisonRedRaw === null ? undefined : BigInt(reply.garrisonRedRaw);
@@ -146,7 +139,7 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
         },
       ];
     },
-    rows: (reply, _live, hour, options) => {
+    rows: (reply, _live, hour, options, readView) => {
       const passing = options.filter.passing;
       const unrecorded = options.filter.unrecorded.find(([first, last]) => first <= hour && hour <= last)?.[2] ?? null;
       const view = occupiedRows(reply, passing ? tag => within(passing[tag], hour) : null, options.role, unrecorded);
@@ -159,16 +152,22 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
       if (!options.filterAll && reply.states.some(state => state[options.role] === null)) {
         notes.push('Some states couldn’t be matched to these countries.');
       }
+      const boundary = newIdentityBoundary();
+      const rows = view.rows.map(row => ({
+        ...row,
+        occupiedName: row.value.occupied === null ? notRecorded('Unknown country') : resolveIdentity(readView, 'country', row.value.occupied, { boundary }).value,
+      }));
       return {
-        rows: view.rows,
+        rows,
         ...(empty !== null ? { empty, emptyKind: view.membership || view.selectionUnknown || !reply.complete ? 'unavailable' : 'empty' } : {}),
         notes,
         warnings: reply.warnings,
+        nextChangeAt: boundary.next,
       };
     },
     rowKey: row => row.key,
     rowName: row => row.value.name ?? `State ${row.state}`,
-    tooltipExtra: (row, reply, live, hour, options): TooltipExtraRow[] => {
+    tooltipExtra: (row, reply, live): TooltipExtraRow[] => {
       const v = row.value;
       const liveText = (column: string, fmt: (s: string) => string): Value<string> => {
         const val = valueFromLive(live, liveKey(row.key, column));
@@ -206,7 +205,7 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
         { label: 'Required manpower', value: reqManpower },
         { label: 'Assigned manpower', value: assignedManpower, ...(assignedFormat ? { format: assignedFormat } : {}) },
         { label: 'Garrison strength', value: strength },
-        { label: 'Occupied country', value: countryLabel(v.occupied, options.labels, hour) },
+        { label: 'Occupied country', value: row.occupiedName ?? notRecorded('Unknown country') },
       ];
       if (v.garrisonAlert) extra.push({ label: 'Garrison status', value: knownValue('Garrison requirement not met.'), tone: 'negative' });
       return extra;
@@ -222,7 +221,7 @@ export const occupiedStatesDeclaration: TableWidgetDeclaration<OccupiedProjectio
   emptyCampaign: 'Load a campaign to see occupied states.',
   className: 'occupied-states',
   frameClassName: 'occupied-table-surface',
-  countries: { mode: 'filter', labels: true, colours: true },
+  countries: { mode: 'filter' },
   sources: ctx => ({
     owner: `occupied-states:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
     entries: [{
@@ -247,7 +246,6 @@ export const occupiedStatesDeclaration: TableWidgetDeclaration<OccupiedProjectio
   projectionOptions: ctx => ({
     filter: ctx.countries.filter,
     role: ctx.options.countryRole === 'occupied' ? 'occupied' : 'occupier',
-    labels: ctx.countries.labels,
     lawAs: ctx.settings.columns.law?.as ?? 'text',
     filterAll: ctx.countries.all,
   }),

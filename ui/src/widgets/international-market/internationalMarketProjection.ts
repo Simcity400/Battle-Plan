@@ -247,7 +247,7 @@ function marketDeclaration(view: MarketTab): TableWidgetDeclaration<Internationa
     subject: 'international market',
     emptyCampaign: 'Load a campaign to see the market.',
     icon: 'globe',
-    countries: { mode: 'filter', labels: true, colours: true },
+    countries: { mode: 'filter' },
     sources: ctx => marketSources(ctx, view),
     projection: internationalMarketProjection,
     columns: marketColumns(view),

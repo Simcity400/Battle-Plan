@@ -157,13 +157,6 @@ const widget: WidgetSpec = {
   layout: { x: 0, y: 0, w: 12, h: 12 },
 } as unknown as WidgetSpec;
 
-const LOOKS = {
-  GER: [{ from: 0, name: 'Germany' }],
-  FRA: [{ from: 0, name: 'France' }],
-  ITA: [{ from: 0, name: 'Italy' }],
-  ENG: [{ from: 0, name: 'United Kingdom' }],
-};
-
 const SPECS = scoreboardColumnsSpec(SCOREBOARD_FIXTURE_COLUMNS, null);
 const SETTINGS = {
   ...tableSettingsOf(undefined, SPECS, { density: 'comfortable', sort: { column: 'factories', direction: 'descending' } }),
@@ -176,7 +169,6 @@ const OPTIONS = {
   candidates: ['GER', 'FRA', 'ITA', 'ENG'],
   top: null,
   rankMarkers: false,
-  looks: LOOKS,
 };
 
 const SUBSCRIPTIONS = [

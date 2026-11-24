@@ -15,7 +15,7 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       assert.ok(mounted.pipeId > 0);
 
       const f1 = await act<{ pinnedBefore: string | null; cleared: boolean }>('testF1PinClearsOnCampaignSwitch()');
-      assert.equal(f1.pinnedBefore, 'Germany', 'F1: tooltip was pinned before campaign switch');
+      assert.equal(f1.pinnedBefore, 'GER', 'F1: tooltip was pinned before campaign switch');
       assert.equal(f1.cleared, true, 'F1: switching campaign clears pinned tooltip even when host stays mounted');
 
       const box = await act<{ left: number; top: number }>('bodyBox()');

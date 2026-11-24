@@ -181,7 +181,7 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
   subject: 'command power',
   emptyCampaign: 'Load a campaign to see command power.',
   icon: 'chart-line',
-  countries: { mode: 'multi', labels: true, colours: true, allowSlots: true },
+  countries: { mode: 'multi', allowSlots: true },
   sources(ctx: FamilyPlanContext): SourcePlan {
     const tags = ctx.countries.tags;
     const within = withinMapOf(ctx.countries.membership);

@@ -363,7 +363,7 @@ export function drawFamilyTable(
   } else if (picture && picture.maxima && picture.maximaRows === rows && picture.maximaHour === hour && picture.maximaCols === maximaCols) {
     maxima = picture.maxima;
   } else {
-    maxima = computeColumnMaxima(rows, layout.columns, hour);
+    maxima = computeColumnMaxima(rows, layout.columns);
     if (picture) {
       picture.maximaRows = rows;
       picture.maximaHour = hour;
@@ -480,7 +480,7 @@ export function drawFamilyTable(
 
   const computeLook = (item: Extract<FlatTableRow, { kind: 'data' }>, column: FamilyColumnLayout) => {
     const cell = item.row.cells[column.key];
-    const paintModel = resolveCellPaintModel(cell, column, hour, maxima, theme);
+    const paintModel = resolveCellPaintModel(cell, column, maxima);
     const formatted = formatValueState(paintModel.value, paintModel.format, cell?.missingFigure ? { figure: cell.missingFigure } : undefined);
     const span = Math.max(1, barSpanOf(column) * dpr);
     const pixels = paintModel.bar.fraction === null ? -1 : Math.round(paintModel.bar.fraction * span);
@@ -495,7 +495,7 @@ export function drawFamilyTable(
     const unitArt = cell?.unitIcon ? `${cell.unitIcon}\u0005${artStateOf(cell.unitIcon)}` : (cell?.unitIconPending ? 'p' : '');
     const splitSig = cell?.splitBar ? cell.splitBar.map(s => `${s.fraction}:${s.fill}:${s.hatched ? 1 : 0}`).join(',') : '';
     const extraSig = `${cell?.blank ? 'blank' : ''}${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? JSON.stringify(cell.stockpile) : ''}\u0004${cell ? cellListSignature(cell) : ''}\u0004${cell?.statusKind ?? ''}\u0004${cell?.actionLabel ?? ''}\u0004${cell?.inlinePrefix ?? ''}\u0004${cell?.inlineSubtext ?? ''}\u0004${cell?.unitSuffix ?? ''}\u0004${unitArt}\u0004${cell?.boundedDate ?? ''}\u0004${cell?.missingFigure ?? ''}\u0004${splitSig}\u0004${item.showDate === false ? 0 : 1}`;
-    const key = `${formatted.kind}\u0002${textVal}\u0002${paintModel.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${paintModel.countryColor ?? ''}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}\u0002${extraSig}`;
+    const key = `${formatted.kind}\u0002${textVal}\u0002${pixels}\u0002${fill}\u0002${paintModel.countryColor ?? ''}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}\u0002${extraSig}`;
     return { paintModel, formatted, fraction, fill, key };
   };
 

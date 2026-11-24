@@ -1,4 +1,3 @@
-import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import {
   drawActionButton,
@@ -516,18 +515,6 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       drawArtSlot(ctx, left, Math.round(middle - geom.height / 2), geom.width, geom.height, state, theme, { radius: 3 });
       left += geom.width + 8;
     }
-  }
-
-  if (paintModel.missingName) {
-    const font = fontOf(theme, 13, LABEL_WEIGHT);
-    ctx.save();
-    ctx.font = font;
-    ctx.fillStyle = theme.muted;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(fit('Name not recorded', font, Math.max(0, right - left)), left, middle);
-    ctx.restore();
-    return;
   }
 
   if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {

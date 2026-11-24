@@ -25,7 +25,6 @@ import type {
   SourcePlan,
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
-import type { CountryLooksMap } from '../looks.ts';
 import type { PagedRowsSnapshot } from '../table/rowSource.ts';
 import {
   familyBinding,
@@ -193,7 +192,6 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly offset: number;
   readonly pin: number | null;
   readonly bounds?: readonly [number, number] | null;
-  readonly countryLooks?: CountryLooksMap;
   readonly identitySnapshot?: IdentitySnapshot | null;
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
@@ -256,7 +254,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   offset,
   pin,
   bounds = null,
-  countryLooks,
   identitySnapshot = null,
   onIdentityDemands,
   onArtDemands,
@@ -365,7 +362,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const metaRef = useRef(meta);
   metaRef.current = meta;
 
-  const { theme, reducedMotion } = useFamilyTheme(undefined, countryLooks);
+  const { theme, reducedMotion } = useFamilyTheme();
   const { announce, hasFrame, liveRegionRef } = useFamilyAnnouncer(adapter.family);
   const announceRef = useRef(announce);
   announceRef.current = announce;

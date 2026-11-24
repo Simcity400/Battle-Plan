@@ -81,7 +81,7 @@ test('table family plays live with zero React commits, zero layout reads on inst
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px, y: pyRow1 });
       assert.equal(await act<boolean>('waitInspected("ITA")'), true, 'pointer hovers row 1 (ITA) while keyboard stays on FRA');
       const pinned = await act<{ title: string | null; subtitle: string | null; installReads: number }>('pinFocusedRow()');
-      assert.equal(pinned.title, 'France', 'P pins keyboard-focused FRA (France), not pointer-hovered ITA (Italy)');
+      assert.equal(pinned.title, 'FRA', 'P pins keyboard-focused FRA, not pointer-hovered ITA');
       assert.ok((pinned.subtitle ?? '').startsWith('Pinned at '), `pinned tooltip carries pinned subtitle: ${pinned.subtitle}`);
       assert.equal(pinned.installReads, 0, 'zero layout/style reads during install even with active focus and hover tooltips');
 

@@ -12,7 +12,7 @@ import {
   deriveTableTooltip,
   keepsProductOrder,
   nextTableChange,
-  resolveCellAtHour,
+  resolveCell,
   resolveTableRows,
   resolveTableRowsIncremental,
   tableRank,
@@ -124,7 +124,7 @@ function textSamples(columns: readonly { readonly key: string; readonly numeric?
       if (item.kind !== 'data') continue;
       const cell = item.row.cells[column.key];
       if (!cell) continue;
-      const val = cell.looks ? item.name : cell.value.kind === 'known' ? String(cell.value.value) : '';
+      const val = cell.value.kind === 'known' ? String(cell.value.value) : '';
       if (val) list.push(val);
     }
     samples[column.key] = list;
@@ -202,8 +202,8 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const maxima = inc && prev && prev.maximaCols === maximaCols && model.changedKeys
     ? (model.changedKeys.size === 0
       ? prev.maxima
-      : updateColumnMaximaIncremental(prev.maxima, prev.flatRows, prev.rowIndex, flatRows, rowIndex, columns.columns, model.changedKeys, prev.model.hour, model.hour))
-    : computeColumnMaxima(flatRows, columns.columns, model.hour);
+      : updateColumnMaximaIncremental(prev.maxima, prev.flatRows, prev.rowIndex, flatRows, rowIndex, columns.columns, model.changedKeys))
+    : computeColumnMaxima(flatRows, columns.columns);
   const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
   const forward = prev !== null && step.speed > 0 && model.hour > prev.model.hour && prev.sortSig === sortSig;
   const markers = rankMarkersOn && forward
@@ -393,7 +393,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   tooltip(frame, key, focus) {
     const rowKey = focus ? key : inspectedRow(key);
     if (!rowKey) return null;
-    const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns, frame.model.hour);
+    const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns);
     return content ? { hour: frame.model.hour, rowKey, content } : null;
   },
   structure({ model, layout, binding }) {
@@ -443,9 +443,9 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   mirror({ model, layout, binding }) {
     const shape = layout.shape;
     const visibleSpecs = shape.columns.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-    return deriveTableMirror(shape.flatRows, visibleSpecs, model.hour, shape.rankShown, layout.rowWindow, binding.focusedKey ?? null, layout.focusedIndex);
+    return deriveTableMirror(shape.flatRows, visibleSpecs, shape.rankShown, layout.rowWindow, binding.focusedKey ?? null, layout.focusedIndex);
   },
-  audit({ model, layout, theme }) {
+  audit({ model, layout }) {
     const shape = layout.shape;
     return deriveTableAudit({
       model,
@@ -454,28 +454,26 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       rankShown: shape.rankShown,
       maxima: shape.maxima,
       window: layout.rowWindow,
-      countryColors: theme,
       rowAuditCache: shape.rowAuditCache,
     });
   },
   visibleArt(frame) {
-    const { layout, binding, model } = frame;
+    const { layout, binding } = frame;
     const shape = layout.shape;
     if (shape.panes) {
       return collectArtUrls(shape.panes.flatMap(pane => {
         const [first, last] = visiblePaneRange(pane.geom, pane.rows.length, binding.scrollTop, layout.height);
-        return visibleCellArtItems(pane.rows, shape.columns.columns, model.hour, first, last);
+        return visibleCellArtItems(pane.rows, shape.columns.columns, first, last);
       }));
     }
     const [first, last] = visibleRange(layout, liveGlide(frame).glide.size > 0);
-    return collectArtUrls(visibleCellArtItems(shape.flatRows, shape.columns.columns, model.hour, first, last));
+    return collectArtUrls(visibleCellArtItems(shape.flatRows, shape.columns.columns, first, last));
   },
 };
 
 function visibleCellArtItems(
   rows: readonly FlatTableRow[],
   columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'skillIcon'>[],
-  hour: number,
   first: number,
   last: number,
 ): ArtUrlInput[] {
@@ -502,7 +500,7 @@ function visibleCellArtItems(
       if (cell.icon) items.push(cell.icon);
       if (cell.unitIcon) items.push(cell.unitIcon);
       if (cell.iconSlot && showsIcon(col.display)) {
-        const resolved = resolveCellAtHour(cell, hour);
+        const resolved = resolveCell(cell);
         if (resolved.icon) items.push(resolved.icon);
       }
     }

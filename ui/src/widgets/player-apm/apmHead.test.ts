@@ -5,7 +5,8 @@ import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';
-import { deriveTableTooltip, resolveCellAtHour, resolveTableRows } from '../../families/table/model.ts';
+import { datedIdentity } from '../../families/identity/dated.fixture.ts';
+import { deriveTableTooltip, resolveCell, resolveTableRows } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import type { ApmReply } from '../../generated/dashboard';
 import { apmFromSort, apmHeadRows, apmHeadStructure, apmLiveValues, apmSortValue, clockHead } from './apmHead.ts';
@@ -129,28 +130,25 @@ test('apm-table resolves country at row observation hour including hour 0, gives
       },
     ],
   };
-  const labels = {
-    GER: [{ from: 0, name: 'Weimar', flag: 'old.png' }, { from: 50, name: 'Reich', flag: 'new.png' }],
-    CUSTOM_MOD_TAG_12345: [{ from: 0, name: 'Custom Realm', flag: 'mod.png' }],
-  };
+  const identity = datedIdentity({
+    GER: [{ from: 0, name: 'Weimar' }, { from: 50, name: 'Reich' }],
+    CUSTOM_MOD_TAG_12345: [{ from: 0, name: 'Custom Realm' }],
+  });
   const opts = {
     players: true,
     showPaused: true,
    
     rankMarkers: false,
-    labels,
     unobserved: [[10, 20]] as readonly (readonly [number, number])[],
     branchFirst: 0,
     windowHours: 168,
     staticSpan: [300, 400] as readonly [number, number],
   };
-  const model = apmTableProjection.project(createBoundedReadView({ hour: 400, panels: new Map([['main', reply]]) }), opts);
+  const model = apmTableProjection.project(createBoundedReadView({ hour: 400, panels: new Map([['main', reply]]), identity }), opts);
   assert.equal(model.empty, undefined, 'early unobserved gap [10,20] does not suppress range [300,400]');
   const row = model.rows.find(r => r.key === 'p1')!;
   assert.deepEqual(row.cells.name!.value, { kind: 'known', value: 'Alice' }, 'M2: uses window dated name Alice, never branch-end RenamedLater');
-  const resolvedCountry = resolveCellAtHour(row.cells.country!, 400);
-  assert.deepEqual(resolvedCountry.value, { kind: 'known', value: 'Weimar' }, 'country cell resolves at observation hour 0, not window end 400');
-  assert.equal(resolvedCountry.icon, 'old.png', 'flag resolves at observation hour 0');
+  assert.deepEqual(resolveCell(row.cells.country!).value, { kind: 'known', value: 'Weimar' }, 'country cell resolves at observation hour 0, not window end 400');
 
   assert.equal(row.cells.apm!.value.kind, 'notApplicable', 'zero unpaused minutes makes rate notApplicable');
   assert.equal(row.cells.paused!.value.kind, 'notRecorded', 'unknown paused orders never inherits rate notApplicable');
@@ -161,23 +159,23 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   assert.deepEqual(missingRow.cells.name!.value, { kind: 'notRecorded', reason: 'Player name is not valid UTF-8.' }, 'S12: missing player name stays notRecorded with reason, never internal id');
   assert.equal(missingRow.name, 'Name not recorded');
   assert.equal(missingRow.tooltipTitle, 'Name not recorded');
-  assert.deepEqual(resolveCellAtHour(missingRow.cells.country!, 400).value, { kind: 'known', value: 'Custom Realm' }, 'M3: long UTF-8 tag resolves its country look');
+  assert.deepEqual(resolveCell(missingRow.cells.country!).value, { kind: 'known', value: 'Custom Realm' }, 'M3: long UTF-8 tag resolves its country look');
 
   const followed = headAnswer([
     { key: 0n, id: 'p1', values: [null, null, 12n, null, bits(0), 1n, 1n, 'GER', 0n, 'Alice', null] },
     { key: 1n, id: 'user:deadbeef', values: [bits(4.5), bits(4.5), 45n, 0n, bits(10), 1n, 0n, 'CUSTOM_MOD_TAG_12345', 0n, null, 'Player name is not valid UTF-8.'] },
   ]);
-  const followedModel = apmTableProjection.project(createBoundedReadView({ hour: 400, answers: new Map([['main', followed]]) }), opts);
+  const followedModel = apmTableProjection.project(createBoundedReadView({ hour: 400, answers: new Map([['main', followed]]), identity }), opts);
   assert.deepEqual(followedModel.rows.find(r => r.key === 'p1')!.cells.name!.value, { kind: 'known', value: 'Alice' });
   assert.deepEqual(followedModel.rows.find(r => r.key === 'user:deadbeef')!.cells.name!.value, { kind: 'notRecorded', reason: 'Player name is not valid UTF-8.' });
 
   const cols = apmTableColumns(true, true);
-  const tip = deriveTableTooltip(resolveTableRows(model, tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'apm', direction: 'descending' } })), 'p1', cols, 400)!;
+  const tip = deriveTableTooltip(resolveTableRows(model, tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'apm', direction: 'descending' } })), 'p1', cols)!;
   assert.equal(tip.rows.find(r => r.label === 'Country')?.valueState?.text, 'Weimar');
 
   const followOpts = { ...opts, staticSpan: null };
   assert.equal(apmTableProjection.nextChange?.(emptyReadView(5), followOpts), 10, 'trailing window enters gap at 10');
-  assert.equal(apmTableProjection.nextChange?.(emptyReadView(15), followOpts), 50, 'a country name that changes at 50 bounds the model first');
+  assert.equal(apmTableProjection.nextChange?.(emptyReadView(15), followOpts), 188, 'a rename at 50 never bounds the model: a country cell reads its name at the observation hour');
   assert.equal(apmTableProjection.nextChange?.(emptyReadView(55), followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 180, panels: new Map([['main', reply]]) }), followOpts).emptyKind, 'unavailable', 'trailing [13,180] overlaps [10,20]');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 188, panels: new Map([['main', reply]]) }), followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');

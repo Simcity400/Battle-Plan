@@ -106,19 +106,19 @@ test('missing garrison and unresolved manpower report notRecorded with source re
   };
   const model = occupiedStatesProjection.project(
     createBoundedReadView({ hour: 50, panels: new Map([['main', rep]]), live: new Map([['main', live]]) }),
-    { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'Germany' }], POL: [{ from: 0, name: 'Poland' }] }, lawAs: 'dot', filterAll: true },
+    { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', lawAs: 'dot', filterAll: true },
   );
   const s1 = model.rows.find(r => r.key === '1')!;
   assert.deepEqual(s1.cells.garrison!.value, { kind: 'notRecorded', reason: 'No state garrisons row at this hour' });
   const settings = tableSettingsOf(undefined, COLUMNS, TABLE_BASE);
   const flat = resolveTableRows(model, settings);
-  const tip1 = deriveTableTooltip(flat, '1', model.columns, 50)!;
+  const tip1 = deriveTableTooltip(flat, '1', model.columns)!;
   assert.equal(tip1.rows.find(r => r.label === 'Required manpower')?.valueState?.kind, 'missing');
   assert.equal(tip1.rows.find(r => r.label === 'Required manpower')?.detail, 'No state garrisons row at this hour');
   assert.equal(tip1.rows.find(r => r.label === 'Assigned manpower')?.valueState?.kind, 'missing');
   assert.equal(tip1.rows.find(r => r.label === 'Assigned manpower')?.detail, 'No state garrisons row at this hour');
 
-  const tip2 = deriveTableTooltip(flat, '2', model.columns, 50)!;
+  const tip2 = deriveTableTooltip(flat, '2', model.columns)!;
   assert.equal(tip2.rows.find(r => r.label === 'Required manpower')?.valueState?.text, '9,007,199,254,740,993');
   assert.equal(tip2.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '9,007,199,254,740,993');
 });

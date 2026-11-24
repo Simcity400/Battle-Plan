@@ -390,7 +390,7 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
   subject: 'decisions',
   emptyCampaign: 'Load a campaign to see decisions.',
   icon: 'ballot',
-  countries: { mode: 'filter', labels: true },
+  countries: { mode: 'filter' },
   aux: {
     product: 'event-feed-span',
     params: track => kindsRequest(track).params as Record<string, unknown>,

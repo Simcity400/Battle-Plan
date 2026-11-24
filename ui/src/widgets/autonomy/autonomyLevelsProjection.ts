@@ -157,7 +157,7 @@ export const autonomyLevelsDeclaration: MeterWidgetDeclaration<AutonomyLevelsOpt
   subject: 'autonomy',
   emptyCampaign: 'Load a campaign to see its subjects’ autonomy.',
   icon: 'link',
-  countries: { mode: 'filter', labels: true, colours: true },
+  countries: { mode: 'filter' },
   sources: (ctx: FamilyPlanContext) => ({
     owner: `autonomy-levels:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
     entries: [{

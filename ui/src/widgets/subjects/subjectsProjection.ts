@@ -149,7 +149,7 @@ export const subjectsDeclaration: TimelineWidgetDeclaration<SubjectsOptions> = {
   subject: 'subjects',
   emptyCampaign: 'Load a campaign to see its overlords and subjects.',
   icon: 'hierarchy',
-  countries: { mode: 'multi', labels: true, allTagsForLabels: true },
+  countries: { mode: 'multi' },
   jumpToDate: true,
   keyByBranch: true,
   sources: ctx => {

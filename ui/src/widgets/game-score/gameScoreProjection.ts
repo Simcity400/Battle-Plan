@@ -11,7 +11,6 @@ import {
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
 import { inHourRanges, nextFactionsChange } from '../../families/holders.ts';
-import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
   type DeclarativeColumnSpec,
@@ -42,7 +41,6 @@ export interface GameScoreProjectionOptions {
   readonly factionUnobserved?: HourRanges;
   readonly factionIncomplete?: HourRanges;
   readonly rankMarkers: boolean;
-  readonly labels: CountryLooksMap;
 }
 
 interface ResolvedFaction extends TableGroupSpec {
@@ -106,7 +104,6 @@ function nextGameScoreChange(hour: number, options: GameScoreProjectionOptions):
     nextRangesChange(options.unobserved, hour),
     nextMembershipChange(options.membership, hour),
     nextFactionsChange(options.factionRuns, hour, options.factionUnobserved, options.factionIncomplete),
-    nextLookChange(options.labels, hour),
   );
 }
 
@@ -194,7 +191,7 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
       return { rows: filtered, warnings: reply.warnings };
     },
     rowKey: row => row.tag,
-    rowName: (row, hour, options) => lookAt(options.labels[row.tag], hour)?.name ?? row.tag,
+    rowName: (row, hour, _options, who) => who(row.tag, hour).name,
     group: (row, hour, options) => {
       if (!options.factions) return undefined;
       const f = factionAt(options.factionRuns, row.tag, hour, options.factionUnobserved, options.factionIncomplete);
@@ -224,11 +221,8 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
   icon: 'grid',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     factions: true,
     allowSlots: true,
-    allTagsForLabels: true,
     requireGroupsWhen: (widget, options) => options.factions === true || (widget.countries.kind === 'group' && widget.countries.group.type !== 'top'),
   },
   sources: ctx => {
@@ -268,7 +262,6 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
     factionUnobserved: ctx.countries.factionUnobserved,
     factionIncomplete: ctx.countries.factionIncomplete,
     rankMarkers: ctx.options.rankMarkers === true,
-    labels: ctx.countries.labels,
   }),
   jumpToDate: true,
   keyByBranch: true,

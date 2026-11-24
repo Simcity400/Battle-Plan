@@ -15,12 +15,11 @@ import {
   type HourRanges,
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
-import { lookAt, nextLookChange, type CountryLooksMap } from '../../families/looks.ts';
+import { identityAsker, identityMoved, newIdentityBoundary, type IdentityAsker, type IdentityRead, type ResolvedIdentity } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import {
-  knownValue,
   notRecorded,
   partialValue,
   valueFromNamedAnswer,
@@ -54,7 +53,6 @@ export interface ScoreboardProjectionOptions {
   readonly unobserved?: HourRanges;
   readonly top: number | null;
   readonly rankMarkers: boolean;
-  readonly looks: CountryLooksMap;
 }
 
 const columnFormat = (column: ScoreboardColumn): ValueFormat =>
@@ -95,11 +93,15 @@ export function scoreboardColumnsSpec(shown: readonly ScoreboardColumn[], top: n
   ];
 }
 
-function countryNameValue(tag: string, looks: CountryLooksMap, hour: number) {
-  const runs = looks[tag];
-  const look = lookAt(runs, hour);
-  if (look && look.name && look.name.trim()) return { value: knownValue(look.name), name: look.name, runs };
-  return { value: notRecorded(look?.status ?? 'Country name unavailable'), name: tag, runs };
+function countryCell(identity: ResolvedIdentity, tag: string): TableCell {
+  return {
+    value: identity.value,
+    iconSlot: true,
+    country: tag,
+    ...(identity.icon ? { icon: identity.icon } : {}),
+    ...(identity.iconPending ? { iconPending: true } : {}),
+    ...(identity.color ? { countryColor: identity.color } : {}),
+  };
 }
 
 interface ScoreboardIncCache {
@@ -110,6 +112,7 @@ interface ScoreboardIncCache {
   readonly partials: readonly (FollowedAnswer | undefined)[];
   readonly entries: readonly { readonly key: string; readonly displayTag: string; readonly wireName: string }[];
   readonly wireToIndices: ReadonlyMap<string, readonly number[]>;
+  readonly identity: readonly (readonly IdentityRead[])[];
   readonly model: TableModel;
 }
 
@@ -120,18 +123,18 @@ function buildScoreboardRow(
   readView: BoundedReadView,
   hour: number,
   options: ScoreboardProjectionOptions,
+  ask: IdentityAsker['ask'],
 ): TableRow {
   const { key, displayTag, wireName } = entry;
-  const identity = countryNameValue(displayTag, options.looks, hour);
-  const cells: Record<string, TableCell> = {
-    country: { value: identity.value, iconSlot: true, country: displayTag, ...(identity.runs ? { looks: identity.runs } : {}) },
-  };
+  const identity = ask(displayTag, hour);
+  const colour = identity.color ? { countryColor: identity.color } : {};
+  const cells: Record<string, TableCell> = { country: countryCell(identity, displayTag) };
   let hasPartial = false;
   for (let i = 0; i < options.shown.length; i++) {
     const column = options.shown[i]!;
     const format = columnFormat(column);
     if (!column.available || !column.family) {
-      cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: displayTag };
+      cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: displayTag, ...colour };
       continue;
     }
     const answer = readView.answer(column.key);
@@ -147,7 +150,7 @@ function buildScoreboardRow(
       value = partialValue(base.value, 'Some inputs were not recorded at this hour');
       hasPartial = true;
     }
-    cells[column.key] = { value, format, country: displayTag };
+    cells[column.key] = { value, format, country: displayTag, ...colour };
   }
   return {
     key,
@@ -169,7 +172,7 @@ function sameRow(before: TableRow, after: TableRow): boolean {
   for (const key in after.cells) {
     const a = before.cells[key];
     const b = after.cells[key]!;
-    if (!a || a.country !== b.country || a.looks !== b.looks || !sameValue(a.value, b.value)) return false;
+    if (!a || a.country !== b.country || a.icon !== b.icon || a.iconPending !== b.iconPending || a.countryColor !== b.countryColor || !sameValue(a.value, b.value)) return false;
   }
   return true;
 }
@@ -211,12 +214,13 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       if (options.top == null && options.unobserved?.some(([first, last]) => first <= reply.hour && reply.hour <= last)) {
         return { columns, rows: [], hour: reply.hour, rowTimeBoundaries: false, empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers, warnings: reply.warnings };
       }
+      const boundary = newIdentityBoundary();
+      const { ask } = identityAsker(readView, boundary);
       const rows: TableRow[] = reply.rows.map(row => {
         const key = countryKey(row.country);
-        const identity = countryNameValue(row.tag, options.looks, reply.hour);
-        const cells: Record<string, TableCell> = {
-          country: { value: identity.value, iconSlot: true, country: row.tag, ...(identity.runs ? { looks: identity.runs } : {}) },
-        };
+        const identity = ask(row.tag, reply.hour);
+        const colour = identity.color ? { countryColor: identity.color } : {};
+        const cells: Record<string, TableCell> = { country: countryCell(identity, row.tag) };
         let hasPartial = false;
         options.shown.forEach((column, at) => {
           const rawCell = row.cells[at]!;
@@ -229,7 +233,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
               { partial: rawCell.partial ? 'Some inputs were not recorded at this hour' : null },
             );
           if (value.kind === 'partial') hasPartial = true;
-          cells[column.key] = { value, format, country: row.tag };
+          cells[column.key] = { value, format, country: row.tag, ...colour };
         });
         return {
           key,
@@ -246,6 +250,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         rank: true,
         rankMarkers: options.rankMarkers,
         warnings: reply.warnings,
+        ...(boundary.next < Infinity ? { nextChangeAt: boundary.next } : {}),
         ...(!rows.length ? { empty: 'No countries available for this selection.', emptyKind: 'unavailable' } : {}),
       };
     }
@@ -290,6 +295,9 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         collectDiff(prevInc.answers[i], nextAnswers[i]);
         if (canPatch) collectDiff(prevInc.partials[i], nextPartials[i]);
       }
+      for (let i = 0; i < prevInc.identity.length && canPatch; i++) {
+        if (identityMoved(prevInc.identity[i]!, readView)) touchedIndices.add(i);
+      }
       if (canPatch) {
         if (touchedIndices.size === 0) {
           const nextModel: TableModel = { ...prevInc.model, hour, changedKeys: new Set(), changedRows: new Map() };
@@ -303,27 +311,35 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
           return nextModel;
         }
         {
+          const boundary = newIdentityBoundary();
           const nextRows = prevInc.model.rows.slice();
+          const nextIdentity = prevInc.identity.slice();
           const changedKeys = new Set<string>();
           const changedRows = new Map<string, TableRow>();
           for (const idx of touchedIndices) {
-            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options);
+            const asker = identityAsker(readView, boundary);
+            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options, asker.ask);
             nextRows[idx] = built;
+            nextIdentity[idx] = asker.reads;
             changedKeys.add(built.key);
             changedRows.set(built.key, built);
           }
+          const nextChangeAt = Math.min(prevInc.model.nextChangeAt ?? Infinity, boundary.next);
           const nextModel: TableModel = {
             ...prevInc.model,
             hour,
             rows: nextRows,
             changedKeys,
             changedRows,
+            ...(nextChangeAt < Infinity ? { nextChangeAt } : {}),
           };
           scoreboardIncCache.set(options, {
             ...prevInc,
+            validUntil: Math.min(prevInc.validUntil, boundary.next),
             rankAnswer,
             answers: nextAnswers,
             partials: nextPartials,
+            identity: nextIdentity,
             model: nextModel,
           });
           return nextModel;
@@ -362,8 +378,12 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
     }
 
     const held = prevInc ? new Map(prevInc.model.rows.map(row => [row.key, row])) : null;
+    const boundary = newIdentityBoundary();
+    const identity: (readonly IdentityRead[])[] = [];
     const rows: TableRow[] = activeEntries.map(entry => {
-      const built = buildScoreboardRow(entry, readView, hour, options);
+      const asker = identityAsker(readView, boundary);
+      const built = buildScoreboardRow(entry, readView, hour, options, asker.ask);
+      identity.push(asker.reads);
       const before = held?.get(built.key);
       return before && sameRow(before, built) ? before : built;
     });
@@ -372,6 +392,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       rows,
       hour,
       rowTimeBoundaries: false,
+      ...(boundary.next < Infinity ? { nextChangeAt: boundary.next } : {}),
       rank: true,
       rankMarkers: options.rankMarkers,
       ...(!rows.length ? { empty: 'No countries available for this selection.', emptyKind: 'unavailable' } : {}),
@@ -385,7 +406,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         else list.push(i);
       }
       const validUntil = Math.min(
-        nextLookChange(options.looks, hour),
+        boundary.next,
         nextHoldersChange(options.holders, hour),
         nextRangesChange(options.unobserved, hour),
         nextMembershipChange(options.membership, hour),
@@ -398,6 +419,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         partials: options.shown.map(col => (col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined)),
         entries: activeEntries,
         wireToIndices,
+        identity,
         model,
       });
     }
@@ -559,8 +581,6 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
   className: 'scoreboard',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
@@ -607,7 +627,6 @@ export const scoreboardDeclaration: TableWidgetDeclaration<ScoreboardProjectionO
       unobserved: top == null ? ctx.countries.unobserved : [],
       top,
       rankMarkers: ctx.options.rankMarkers === true,
-      looks: ctx.countries.labels,
     };
   },
   unavailable: ctx => {

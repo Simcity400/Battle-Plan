@@ -50,11 +50,8 @@ export const worldTensionRaceDeclaration: BarsWidgetDeclaration<WorldTensionRace
   icon: 'alert',
   countries: {
     mode: 'multi',
-    labels: true,
-    colours: true,
     allowSlots: true,
     everyOnTop: true,
-    allTagsForLabels: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },
   sources: worldTensionRaceSources,

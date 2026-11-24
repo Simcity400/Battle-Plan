@@ -9,13 +9,11 @@ import type { FamilyTableBinding } from '../../families/table/laneView.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import { LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 
-test('astra 7: a table breaks at its filter bounds and at the hours its country names and flags change', async () => {
+test('astra 7: a table breaks at its filter bounds', async () => {
   const { occupiedStatesProjection } = await import('../../widgets/occupied-states/occupiedProjection.ts');
   const next = (options: unknown) => occupiedStatesProjection.nextChange!(emptyReadView(100), options as never);
-  const filtered = { filter: { passing: null, unrecorded: [], bounds: [0, 109, 300] }, role: 'occupier', labels: {}, lawAs: 'dot', filterAll: true };
+  const filtered = { filter: { passing: null, unrecorded: [], bounds: [0, 109, 300] }, role: 'occupier', lawAs: 'dot', filterAll: true };
   assert.equal(next(filtered), 109, 'the filter changes at 109, never sampled a day later');
-  const named = { filter: { passing: null, unrecorded: [], bounds: [] }, role: 'occupier', labels: { GER: [{ from: 0, name: 'German Reich' }, { from: 130, name: 'Germany' }] }, lawAs: 'dot', filterAll: true };
-  assert.equal(next(named), 130, 'the name changes at 130');
 });
 
 test('lazy projection arriving after first next wakes the lane and reports its true boundary', async () => {

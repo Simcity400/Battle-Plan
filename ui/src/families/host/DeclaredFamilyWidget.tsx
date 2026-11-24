@@ -150,7 +150,7 @@ export default function DeclaredFamilyWidget<
     setOption,
   });
 
-  const { theme } = useFamilyTheme(undefined, plan.displayedCountryLooks);
+  const { theme } = useFamilyTheme();
 
   const { resolutions: shownArtResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
 
@@ -334,7 +334,6 @@ export default function DeclaredFamilyWidget<
       offset={plan.offset}
       pin={plan.pin}
       bounds={plan.bounds}
-      countryLooks={plan.displayedCountryLooks}
       identitySnapshot={plan.identitySnapshot}
       onIdentityDemands={plan.onIdentityDemands}
       onArtDemands={handleArtDemands}
