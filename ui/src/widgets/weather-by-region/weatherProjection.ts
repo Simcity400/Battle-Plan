@@ -1,7 +1,7 @@
 import { CHART_MEASURE_COLOURS, colour, readableColour } from '../../charts/palette.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
-import type { HeatLook, HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
+import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
 import type {
   HeatLaneCell,
   HeatLaneReadout,
@@ -205,8 +205,8 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
   const refused = readView.refused('weather');
   if (refused) return emptyModel(hour, { refused });
   const reply = readView.panel<RegionalWeatherReply>('weather');
-  if (!reply || !options.surface) return emptyModel(hour, {});
-  const through = Math.min(hour, reply.lastHour);
+  if (!reply || !options.surface || reply.lastHour > hour) return emptyModel(hour, {});
+  const through = reply.lastHour;
   const colours = palette(reply, options.surface);
   const modifier = options.show === 'modifiers' ? options.modifier ?? reply.modifiers[0]?.id ?? null : null;
   const names = new Map(reply.regions.map(region => [region.id, region.name]));
@@ -284,10 +284,10 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
     };
   },
   projection: weatherProjection,
-  projectionOptions: (ctx, look?: HeatLook) => ({
+  projectionOptions: (ctx, extra) => ({
     show: weatherShow(ctx.options),
     modifier: weatherShow(ctx.options) === 'modifiers' && ctx.options.modifier ? contentKey(String(ctx.options.modifier)) : null,
-    surface: look?.surface ?? '',
+    surface: extra.surface,
   }),
   jumpToDate: true,
 };

@@ -2,6 +2,8 @@ import { DEFAULT_VIEW, type FamilyViewEntry, type FamilyViewModule } from '../fa
 import { bindFamilyManifest } from '../families/registry.ts';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration.ts';
 import type { TableProjection } from '../families/table/model.ts';
+import type { AnyHeatLanesWidgetDeclaration } from '../families/heat/lanesDeclaration.ts';
+import type { HeatLanesProjection } from '../families/heat/lanesModel.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../families/time-chart/declaration.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from './game-score/definition.ts';
 
@@ -26,6 +28,18 @@ function timeChartSpec<TModule>(
   return () => load().then(mod => {
     const { projection, declaration } = pick(mod);
     return { family: 'time-chart', kind, view, projection, declaration };
+  });
+}
+
+function heatLanesSpec<TModule>(
+  kind: string,
+  view: string,
+  load: () => Promise<TModule>,
+  pick: (mod: TModule) => { readonly projection: HeatLanesProjection<any>; readonly declaration: AnyHeatLanesWidgetDeclaration },
+): () => Promise<FamilyViewModule> {
+  return () => load().then(mod => {
+    const { projection, declaration } = pick(mod);
+    return { family: 'heat-lanes', kind, view, projection, declaration };
   });
 }
 
@@ -111,6 +125,28 @@ export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [
       DEFAULT_VIEW,
       () => import('./political-power/politicalPowerProjection.ts'),
       mod => ({ projection: mod.politicalPowerProjection, declaration: mod.politicalPowerDeclaration }),
+    ),
+  },
+  {
+    kind: 'weather-by-region',
+    view: DEFAULT_VIEW,
+    family: 'heat-lanes',
+    loadSpec: heatLanesSpec(
+      'weather-by-region',
+      DEFAULT_VIEW,
+      () => import('./weather-by-region/weatherProjection.ts'),
+      mod => ({ projection: mod.weatherProjection, declaration: mod.weatherDeclaration }),
+    ),
+  },
+  {
+    kind: 'air-superiority-timeline',
+    view: DEFAULT_VIEW,
+    family: 'heat-lanes',
+    loadSpec: heatLanesSpec(
+      'air-superiority-timeline',
+      DEFAULT_VIEW,
+      () => import('./air-superiority-timeline/airTimelineProjection.ts'),
+      mod => ({ projection: mod.airTimelineProjection, declaration: mod.airTimelineDeclaration }),
     ),
   },
 ];

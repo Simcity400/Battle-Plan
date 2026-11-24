@@ -24,7 +24,6 @@ import { readViewFromHeatScene, samePictures, snapshotPictures, stringifyTooltip
 export interface FamilyHeatMatrixBinding<TOptions = unknown> {
   readonly family: 'heat-matrix';
   readonly kind: string;
-  readonly view?: string;
   readonly options: TOptions;
   readonly sources: Readonly<Record<string, number>>;
   readonly staticPanels?: Readonly<Record<string, unknown>>;
@@ -116,7 +115,7 @@ export function familyHeatMatrixLaneView(
     next(scene: Scene, hour: number): number {
       const bound = scene.model;
       if (!isFamilyHeatMatrixBinding(bound)) return Infinity;
-      const projection = ensureHeatMatrixProjection(bound.kind, bound.view, () => wake(scene.widget));
+      const projection = ensureHeatMatrixProjection(bound.kind, undefined, () => wake(scene.widget));
       if (typeof projection === 'string') return Infinity;
       let soonest = nextLookChange(bound.theme?.countryLooks, hour);
       if (projection.nextChange) {
@@ -137,7 +136,7 @@ export function familyHeatMatrixLaneView(
       const bound = input.model;
       const surface = input.binding.surfaces[0];
       if (!isFamilyHeatMatrixBinding(bound) || !surface) return { surfaces: [], fields: {}, motion: false };
-      const projection = ensureHeatMatrixProjection(bound.kind, bound.view, () => wake(input.widget));
+      const projection = ensureHeatMatrixProjection(bound.kind, undefined, () => wake(input.widget));
       if (projection === 'loading') return { surfaces: [], fields: {}, motion: false };
       if (projection === 'unknown') {
         return { surfaces: [], fields: {}, motion: false, mode: 'refused', reason: `Unknown matrix declaration: ${bound.kind}` };

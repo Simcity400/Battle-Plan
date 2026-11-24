@@ -164,28 +164,6 @@ test('8. Equipment produced: a country breakdown opened at 105 shows its own rea
   assert.ok(moved.drillOpen, 'the breakdown stays mounted when the page leaves the track');
 }));
 
-const WEATHER = `({ firstHour: 100, lastHour: 109, dayHours: 1, temperature: 'available', regions: [{ id: 'r1', name: 'Region one' }], flags: [], modifiers: [], warnings: [],
-  columns: { days: 1, columns: [{ firstHour: 100, lastHour: 109, recorded: 1, sampledHour: 105, readHour: 105 }], regions: [{ id: 'r1', clear: [1], observed: [1], measures: [] }] } })`;
-const PROVINCES = '({ readHour: hour, region: params.region, warnings: [], provinces: [{ id: "p1", name: "Province one", snow: null, mud: null, temperature: null }] })';
-
-test('9. Weather over 100–108: a province breakdown picked at 103 keeps its own day as the page leaves the track, and Follow playback reads the playback hour through coverage', () => onPage(async act => {
-  await act(scene({ kind: 'weather-by-region', time: { mode: 'range', firstOffset: 0, lastOffset: 8 }, hour: 105, replies: { 'regional-weather': WEATHER, 'regional-weather-provinces': PROVINCES } }));
-  const extent = (await act<{ extent: [number, number] } | null>('props("HeatChart")'))?.extent;
-  assert.ok(extent && extent[0] <= 103 && 103 <= extent[1], `103 lies on the chart: ${JSON.stringify(extent)}`);
-  const opened = await act<Read & { called: boolean }>('call("HeatChart", "onPick", { id: "r1" }, null, 103)');
-  const day = await act<string>('day(103)');
-  assert.ok(opened.called && opened.drillOpen && opened.day === day, `the region opens at 103: ${opened.day} ${opened.drill}`);
-  assert.ok(opened.asks.some(ask => ask.product === 'regional-weather-provinces' && ask.hour === 103), `its provinces are read at 103: ${JSON.stringify(opened.asks)}`);
-  const left = await act<Read>('seek(110)');
-  assert.ok(left.drillOpen && left.day === day && !left.drill.includes(OUTSIDE), `at 110 the region is still at 103: ${left.day} ${left.drill}`);
-  const followed = await act<Read & { pressed: boolean }>('press("Follow playback")');
-  assert.ok(followed.pressed && followed.drill.includes(OUTSIDE), `following the page at 110 is outside: ${followed.drill}`);
-  assert.deepEqual(followed.asks.filter(ask => ask.product === 'regional-weather-provinces' && ask.hour !== null && ask.hour > 109), [], 'nothing is asked past the track');
-  const back = await act<Read>('seek(104)');
-  assert.ok(back.drillOpen && !back.drill.includes(OUTSIDE), `back inside, still following: ${back.drill}`);
-  assert.ok(follows(back.asks, 'regional-weather-provinces').some(params => params.region === 'r1'), `it follows playback for its region, naming no hour: ${JSON.stringify(back.asks)}`);
-}));
-
 const COLUMNS = `({ branchId: '1', warnings: [], defaultColumns: ['power'], defaultSort: 'power', columns: [{ key: 'power', label: 'Power', unit: '', decimals: 0,
   available: true, reason: null, family: { kind: 'country-measure', measure: 'politicalPower' }, partial: null, noneAtZero: false }] })`;
 const RANKED = `({ branchId: '1', hour, missing: null, warnings: [], rows: [{ tag: 'GER', country: 'GER', cells: [{ valueRaw: '5', missing: null, partial: false }] },

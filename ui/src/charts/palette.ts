@@ -26,6 +26,9 @@ export const CHART_MEASURE_COLOURS = {
   other: '#3e3e3e',
   short: '#e5484d',
   shortInk: '#ff6b6f',
+  temperatureCold: '#4f8fcf',
+  temperatureWarm: '#e3843b',
+  weatherModifier: '#9085e9',
 } as const;
 
 const GOLDEN_ANGLE = 137.50776405003785;

@@ -28,6 +28,8 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'occupied-states': { load: () => import('./occupied-states') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'scoreboard': { load: () => import('./scoreboard') },
+  'air-superiority-timeline': { load: () => import('./air-superiority-timeline'), slots: ['render', 'countryChip'] },
+  'weather-by-region': { load: () => import('./weather-by-region') },
 };
 
 const familyByKind = new Map<string, FamilyViewEntry[]>();
