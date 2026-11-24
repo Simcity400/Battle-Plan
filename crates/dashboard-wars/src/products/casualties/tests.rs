@@ -106,9 +106,76 @@ fn a_window_reply_carries_the_windows_its_index_names() {
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "casualties".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let load = LoadContext { content: None };
     let cancelled = AtomicBool::new(false);
-    let breakdown = |window| CasualtyBreakdown::load(&source, &CasualtyBreakdownParams { branch_id: "1".into(), country: "GER".into(), window }, &load, &cancelled).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let breakdown = |window| window_reply(&source, &query, 1, &"AAA".into(), window, &load, &cancelled).unwrap();
     let manifest = breakdown(None).windows;
     assert!(!manifest.is_empty());
     let shown = breakdown(Some(0));
     assert_eq!((shown.windows, shown.window), (manifest, Some(0)));
+    let asked = CasualtyBreakdown::load(&source, &CasualtyBreakdownParams { branch_id: "1".into(), country: "AAA".into(), hour: 1_050 }, &load, &cancelled).unwrap();
+    assert_eq!(asked.hour, 1_050);
+    assert!(asked.through >= asked.hour);
+}
+
+fn run(first: i32, last: i32, value: i64, war: Option<&str>, hourly: bool) -> CasualtyBreakdownRun {
+    CasualtyBreakdownRun {
+        first_hour: first,
+        last_hour: last,
+        read_hour: first,
+        hourly,
+        grouping_hour: first,
+        grouping_hourly: hourly,
+        enemy_hour: if hourly { first } else { first - 1 },
+        enemy_hourly: hourly,
+        value: value.to_string(),
+        war_id: war.map(Into::into),
+        reason: war.is_none().then(|| NO_WAR.to_owned()),
+        incomplete: false,
+    }
+}
+
+fn named(text: &str, first: i32, last: i32, known: bool) -> CasualtyWarNameRun {
+    CasualtyWarNameRun { first_hour: first, last_hour: last, name: CasualtyWarName { text: text.into(), known, reason: (!known).then(|| "Its name was not localised".into()), key: (!known).then(|| text.into()) } }
+}
+
+#[test]
+fn the_breakdown_at_an_hour_is_the_holder_then_by_war_and_enemy_and_stands_to_the_next_change() {
+    use dashboard_base::products::breakdown::BreakdownState;
+    let series = |id: &str, identity: &str, enemy: &str, runs: Vec<CasualtyBreakdownRun>| CasualtyBreakdownSeries { id: id.into(), country_identity: identity.into(), enemy_tag: enemy.into(), enemy_identity: "9:99".into(), runs };
+    let window = CasualtyWindow {
+        windows: Vec::new(),
+        window: Some(0),
+        observed: vec![HourSpan { first_hour: 0, last_hour: 49 }, HourSpan { first_hour: 60, last_hour: 99 }],
+        countries: vec![
+            CasualtyBreakdownCountryRun { first_hour: 0, last_hour: 49, identity: "1:11".into(), incomplete: false },
+            CasualtyBreakdownCountryRun { first_hour: 60, last_hour: 99, identity: "2:22".into(), incomplete: false },
+        ],
+        series: vec![
+            series("a", "1:11", "BBB", vec![run(5, 19, 40, Some("w1"), true), run(20, 49, 70, Some("w1"), false)]),
+            series("b", "1:11", "CCC", vec![run(10, 49, 15, None, true)]),
+            series("c", "2:22", "BBB", vec![run(60, 99, 500, Some("w1"), true)]),
+        ],
+        wars: vec![CasualtyBreakdownWar { id: "w1".into(), first_hour: 0, last_hour: 99, started_by: true, ended_by: false, names: vec![named("First war", 0, 29, true), named("war_key", 30, 99, false)] }],
+        warnings: Vec::new(),
+    };
+    let held = index(window, 0, 99);
+    let at = held.at(12);
+    let parts = &at.breakdown.parts;
+    assert_eq!(parts.iter().map(|part| part.name.as_str()).collect::<Vec<_>>(), ["First war", "War not recorded"]);
+    assert_eq!(parts[0].children[0].key, "BBB");
+    assert_eq!(parts[1].name_missing.as_deref(), Some(NO_WAR), "a lifetime with no recorded war says why");
+    assert_eq!(at.through, 19, "the next change to anything shown, a new run at 20");
+    let later = held.at(35);
+    assert_eq!(later.breakdown.total.raw.as_deref(), Some("85"));
+    let war = &later.breakdown.parts[0];
+    assert_eq!((war.name.as_str(), war.name_missing.is_some()), ("First war", false), "an ended relation keeps the war's name at its own grouping hour");
+    assert_eq!(war.children[0].last, Some(19), "an ended relation is dated at its read, not the displayed hour");
+    assert_eq!(held.at(55).breakdown.total.state, BreakdownState::NotRecorded, "an hour not observed is not a zero");
+    let changed = held.at(70);
+    assert_eq!(changed.breakdown.total.raw.as_deref(), Some("500"), "after the holder changes, only its own losses");
+    let war = &changed.breakdown.parts[0];
+    assert_eq!((war.name.as_str(), war.name_missing.is_some()), ("war_key", true), "a war name not localised is its key with the reason");
+    for hour in [12, 35, 55, 70] {
+        assert_eq!(held.at(hour), held.at(hour), "a lookup");
+    }
 }

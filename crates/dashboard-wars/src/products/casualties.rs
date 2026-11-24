@@ -1,7 +1,7 @@
 
 use dashboard_base::products::Country;
 use dashboard_world::products::{army_windows::windows, holder_tags::{HolderTags, Identity}};
-use dashboard_base::products::{LoadContext, Product};
+use dashboard_base::products::{LoadContext, Product, breakdown::{self, Amount, Breakdown, Leaf, Node, Unrecorded}};
 use super::wars::{self, WarRelationMembership, WarsReply};
 use dashboard_base::{Source, span::HourSpan};
 use dashboard_query::{Query, read};
@@ -126,7 +126,6 @@ fn push_run<T>(runs: &mut Vec<T>, run: T, joins: impl Fn(&mut T, &T) -> bool) {
     runs.push(run);
 }
 
-dashboard_base::reply_warnings!(CasualtyBreakdownReply);
 
 struct Window {
     first: i32,
@@ -273,17 +272,6 @@ fn branch(text: &str) -> Result<u64, &'static str> {
 }
 
 
-pub struct CasualtyBreakdown;
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CasualtyBreakdownParams {
-    pub branch_id: String,
-    pub country: Country,
-    pub window: Option<usize>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
@@ -354,24 +342,6 @@ pub struct CasualtyBreakdownWar {
     pub started_by: bool,
     pub ended_by: bool,
     pub names: Vec<CasualtyWarNameRun>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct CasualtyBreakdownReply {
-    pub branch_id: String,
-    pub tag: String,
-    pub available: bool,
-    pub windows: Vec<HourSpan>,
-    pub window: Option<usize>,
-    pub observed: Vec<HourSpan>,
-    #[doc = " The identities holding the tag within the observed hours."]
-    pub countries: Vec<CasualtyBreakdownCountryRun>,
-    pub series: Vec<CasualtyBreakdownSeries>,
-    pub wars: Vec<CasualtyBreakdownWar>,
-    pub has_gap: bool,
-    pub warnings: Vec<String>,
 }
 
 pub fn fold_breakdown(
@@ -504,26 +474,222 @@ fn shown_wars(view: &WarsReply, series: &[CasualtyBreakdownSeries], last: i32) -
         .collect()
 }
 
+pub struct CasualtyWindow {
+    pub windows: Vec<HourSpan>,
+    pub window: Option<usize>,
+    pub observed: Vec<HourSpan>,
+    pub countries: Vec<CasualtyBreakdownCountryRun>,
+    pub series: Vec<CasualtyBreakdownSeries>,
+    pub wars: Vec<CasualtyBreakdownWar>,
+    pub warnings: Vec<String>,
+}
+
+pub(crate) fn window_reply(source: &Source, query: &Query<'_>, branch_id: u64, country: &Country, window: Option<usize>, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<CasualtyWindow> {
+    let windows = manifest(query)?;
+    let mut reply = CasualtyWindow { windows: windows.clone(), window, observed: Vec::new(), countries: Vec::new(), series: Vec::new(), wars: Vec::new(), warnings: Vec::new() };
+    let Some(index) = window else {
+        reply.observed = branch_observed(query)?;
+        return Ok(reply);
+    };
+    let window = self::window(query, &windows, index)?;
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let tags = HolderTags::new(query);
+    let mut per_stretch = Vec::with_capacity(window.stretches.len());
+    let mut all_keys: HashSet<u128> = HashSet::new();
+    for &(run, s_first, s_last) in &window.stretches {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let lifetimes = stretch_lifetimes(source, run, s_last)?;
+        let holding: Vec<Identity> = tags.holding(country, s_first, s_last).into_iter().map(|run| run.0).collect();
+        let asked: Vec<(u128, i64, i64)> = lifetimes
+            .iter()
+            .filter(|&&(key, ..)| {
+                let lifetime = Lifetime::of(key);
+                holding.contains(&lifetime.a) || holding.contains(&lifetime.b)
+            })
+            .copied()
+            .collect();
+        all_keys.extend(asked.iter().map(|life| life.0));
+        per_stretch.push((run, s_first, s_last, holding, asked));
+    }
+    let (groupings, view) = if all_keys.is_empty() {
+        (HashMap::new(), None)
+    } else {
+        let view = wars::viewpoint_wars(source, branch_id, country, context, cancelled)?;
+        (lifetime_groupings(view.wars.iter().map(|war| (war.id.as_str(), war.relations.as_slice())), &all_keys), Some(view))
+    };
+    let mut observed_runs: Vec<(i32, i32)> = Vec::new();
+    let mut merged: BTreeMap<String, CasualtyBreakdownSeries> = BTreeMap::new();
+    for (run, s_first, s_last, holding, asked) in per_stretch {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let ended = crate::products::casualties::cached_casualty_ends(source, run)?;
+        let reads = stretch_reads(query, run, s_first, s_last, &asked, &holding, &ended)?;
+        observed_runs.extend_from_slice(&reads.observed);
+        let (part_countries, part_series) = fold_breakdown(country, &asked, &reads, &tags, s_first, s_last, &groupings);
+        reply.countries.extend(part_countries);
+        for series in part_series {
+            merged
+                .entry(series.id.clone())
+                .and_modify(|held| held.runs.extend(series.runs.iter().cloned()))
+                .or_insert(series);
+        }
+    }
+    reply.series = merged.into_values().collect();
+    if let Some(view) = view {
+        reply.wars = shown_wars(&view, &reply.series, window.last);
+        reply.warnings.extend(view.warnings.iter().cloned());
+    }
+    reply.observed = spans(&observed_runs);
+    Ok(reply)
+}
+
+const OTHER_WAR: &str = "~war";
+const NOT_OBSERVED: &str = "Losses were not recorded at this hour";
+const READ_IN_PART: &str = "Some losses were read in part at this hour";
+
+pub struct CasualtyBreakdown;
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CasualtyBreakdownParams {
+    pub branch_id: String,
+    pub country: Country,
+    pub hour: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CasualtyBreakdownReply {
+    #[doc = " The first hour of the recorded window holding `hour`: losses are counted from it."]
+    pub from: i32,
+    pub hour: i32,
+    #[doc = " Everything in the reply stands unchanged from `hour` through this hour."]
+    pub through: i32,
+    #[doc = " Losses the country held at `hour` had taken, by war (`~war…` where the war is not recorded)"]
+    #[doc = " and enemy (keyed by its tag). An enemy part is dated (`last`) at the read naming it once its"]
+    #[doc = " relation ended; a live one names the enemy at `hour`."]
+    pub breakdown: Breakdown,
+    pub warnings: Vec<String>,
+}
+
+dashboard_base::reply_warnings!(CasualtyBreakdownReply);
+
+pub(crate) struct CasualtyIndex {
+    from: i32,
+    to: i32,
+    observed: Vec<(i32, i32)>,
+    countries: Vec<CasualtyBreakdownCountryRun>,
+    series: Vec<(u32, CasualtyBreakdownSeries)>,
+    wars: HashMap<String, (u32, Vec<CasualtyWarNameRun>)>,
+    changes: Vec<i32>,
+    warnings: Vec<String>,
+}
+
+fn covering<T>(runs: &[T], hour: i32, span: impl Fn(&T) -> (i32, i32)) -> Option<&T> {
+    let at = runs.partition_point(|run| span(run).0 <= hour);
+    at.checked_sub(1).map(|at| &runs[at]).filter(|run| span(run).1 >= hour)
+}
+
+pub(crate) fn index(window: CasualtyWindow, from: i32, to: i32) -> CasualtyIndex {
+    let mut changes = Vec::new();
+    let mut edge = |first: i32, last: i32| {
+        changes.push(first);
+        changes.push(last.saturating_add(1));
+    };
+    let observed: Vec<(i32, i32)> = window.observed.iter().map(|span| (span.first_hour, span.last_hour)).collect();
+    for &(first, last) in &observed {
+        edge(first, last);
+    }
+    let mut countries = window.countries;
+    countries.sort_by_key(|run| run.first_hour);
+    for run in &countries {
+        edge(run.first_hour, run.last_hour);
+    }
+    let mut series = window.series;
+    for item in &mut series {
+        item.runs.sort_by_key(|run| run.first_hour);
+        for run in &item.runs {
+            edge(run.first_hour, run.last_hour);
+        }
+    }
+    series.sort_by(|a, b| (a.runs.first().map(|run| run.first_hour), &a.enemy_tag).cmp(&(b.runs.first().map(|run| run.first_hour), &b.enemy_tag)));
+    let mut enemies: HashMap<String, u32> = HashMap::new();
+    let series = series
+        .into_iter()
+        .map(|item| {
+            let next = enemies.len() as u32;
+            (*enemies.entry(item.enemy_tag.clone()).or_insert(next), item)
+        })
+        .collect();
+    let mut by_start = window.wars;
+    by_start.sort_by(|a, b| (a.first_hour, &a.id).cmp(&(b.first_hour, &b.id)));
+    let wars = by_start
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, war)| {
+            for run in &war.names {
+                edge(run.first_hour, run.last_hour);
+            }
+            let mut names = war.names;
+            names.sort_by_key(|run| run.first_hour);
+            (war.id, (ordinal as u32, names))
+        })
+        .collect();
+    changes.sort_unstable();
+    changes.dedup();
+    CasualtyIndex { from, to, observed, countries, series, wars, changes, warnings: window.warnings }
+}
+
+impl CasualtyIndex {
+    fn war(&self, run: &CasualtyBreakdownRun, hour: i32) -> Node {
+        let Some(id) = &run.war_id else {
+            let reason = run.reason.clone().unwrap_or_else(|| NO_WAR.to_owned());
+            let several = reason == SEVERAL_WARS;
+            return Node::new(format!("{OTHER_WAR}:{}", if several { "several" } else { "none" }), if several { "Several wars" } else { "War not recorded" }, u32::MAX).other().name_missing(Some(reason));
+        };
+        let at = if run.grouping_hourly { hour } else { run.grouping_hour };
+        let (ordinal, names) = self.wars.get(id).map_or((u32::MAX, &[][..]), |(ordinal, names)| (*ordinal, names.as_slice()));
+        match covering(names, at, |run| (run.first_hour, run.last_hour)).map(|run| &run.name) {
+            Some(name) if name.known => Node::new(id.clone(), name.text.clone(), ordinal),
+            Some(name) => Node::new(id.clone(), name.key.clone().unwrap_or_else(|| name.text.clone()), ordinal).name_missing(Some(name.reason.clone().unwrap_or_else(|| "The war's name was not recorded".into()))),
+            None => Node::new(id.clone(), id.clone(), ordinal).name_missing(Some("The war's name was not recorded at this hour".into())),
+        }
+    }
+
+    pub(crate) fn at(&self, hour: i32) -> CasualtyBreakdownReply {
+        let next = self.changes[self.changes.partition_point(|&at| at <= hour)..].first().copied();
+        let through = next.map_or(self.to, |next| next - 1).min(self.to).max(hour);
+        let mut leaves = Vec::new();
+        let observed = covering(&self.observed, hour, |&(first, last)| (first, last)).is_some();
+        if !observed {
+            leaves.push(Leaf { path: Vec::new(), amount: Amount::NotRecorded(NOT_OBSERVED.into()), count: None, last: None });
+        } else if let Some(country) = covering(&self.countries, hour, |run| (run.first_hour, run.last_hour)) {
+            for (ordinal, series) in &self.series {
+                if series.country_identity != country.identity {
+                    continue;
+                }
+                let Some(run) = covering(&series.runs, hour, |run| (run.first_hour, run.last_hour)) else { continue };
+                let Ok(value) = run.value.parse::<i128>() else { continue };
+                let amount = if run.incomplete || country.incomplete { Amount::Partial(value, READ_IN_PART.into()) } else { Amount::Known(value) };
+                let enemy = Node::new(series.enemy_tag.clone(), series.enemy_tag.clone(), *ordinal);
+                leaves.push(Leaf { path: vec![self.war(run, hour), enemy], amount, count: None, last: (!run.enemy_hourly).then_some(run.enemy_hour) });
+            }
+        }
+        CasualtyBreakdownReply { from: self.from, hour, through, breakdown: breakdown::breakdown(0, &leaves, &Unrecorded::default()), warnings: self.warnings.clone() }
+    }
+}
+
 impl Product for CasualtyBreakdown {
     const KEY: &'static str = "casualty-breakdown";
     const CONTENT_DEPENDENT: bool = true;
     type Params = CasualtyBreakdownParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: End];
     type Reply = CasualtyBreakdownReply;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![
-            CasualtyBreakdownParams::decl(),
-            CasualtyBreakdownRun::decl(),
-            CasualtyBreakdownSeries::decl(),
-            CasualtyBreakdownCountryRun::decl(),
-            CasualtyWarName::decl(),
-            CasualtyWarNameRun::decl(),
-            CasualtyBreakdownWar::decl(),
-            HourSpan::decl(),
-            CasualtyBreakdownReply::decl(),
-        ]
+        vec![CasualtyBreakdownParams::decl(), CasualtyBreakdownReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -535,75 +701,18 @@ impl Product for CasualtyBreakdown {
         let branch_id = branch(&params.branch_id).map_err(invalid)?;
         let query = dashboard_base::queries::query(source, branch_id)?;
         let windows = manifest(&query)?;
-        let mut reply = CasualtyBreakdownReply {
-            branch_id: params.branch_id.clone(),
-            tag: query.holders.nearest_name(&params.country, query.timeline.last),
-            available: true,
-            windows: windows.clone(),
-            window: params.window,
-            observed: Vec::new(),
-            countries: Vec::new(),
-            series: Vec::new(),
-            wars: Vec::new(),
-            has_gap: false,
-            warnings: Vec::new(),
+        let Some(at) = windows.iter().position(|span| span.first_hour <= params.hour && params.hour <= span.last_hour) else {
+            let next = windows.iter().map(|span| span.first_hour).filter(|&first| first > params.hour).min();
+            let gap = CasualtyWindow { windows: Vec::new(), window: None, observed: Vec::new(), countries: Vec::new(), series: Vec::new(), wars: Vec::new(), warnings: Vec::new() };
+            let to = next.map_or(query.timeline.last.max(params.hour), |next| next - 1);
+            return Ok(index(gap, params.hour, to).at(params.hour));
         };
-        let Some(index) = params.window else {
-            reply.observed = branch_observed(&query)?;
-            return Ok(reply);
-        };
-        let window = window(&query, &windows, index)?;
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let tags = HolderTags::new(&query);
-        let mut per_stretch = Vec::with_capacity(window.stretches.len());
-        let mut all_keys: HashSet<u128> = HashSet::new();
-        for &(run, s_first, s_last) in &window.stretches {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let lifetimes = stretch_lifetimes(source, run, s_last)?;
-            let holding: Vec<Identity> = tags.holding(&params.country, s_first, s_last).into_iter().map(|run| run.0).collect();
-            let asked: Vec<(u128, i64, i64)> = lifetimes
-                .iter()
-                .filter(|&&(key, ..)| {
-                    let lifetime = Lifetime::of(key);
-                    holding.contains(&lifetime.a) || holding.contains(&lifetime.b)
-                })
-                .copied()
-                .collect();
-            all_keys.extend(asked.iter().map(|life| life.0));
-            per_stretch.push((run, s_first, s_last, holding, asked));
-        }
-        let (groupings, view) = if all_keys.is_empty() {
-            (HashMap::new(), None)
-        } else {
-            let view = wars::viewpoint_wars(source, branch_id, &params.country, context, cancelled)?;
-            (lifetime_groupings(view.wars.iter().map(|war| (war.id.as_str(), war.relations.as_slice())), &all_keys), Some(view))
-        };
-        let mut observed_runs: Vec<(i32, i32)> = Vec::new();
-        let mut countries: Vec<CasualtyBreakdownCountryRun> = Vec::new();
-        let mut merged: BTreeMap<String, CasualtyBreakdownSeries> = BTreeMap::new();
-        for (run, s_first, s_last, holding, asked) in per_stretch {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let ended = crate::products::casualties::cached_casualty_ends(source, run)?;
-            let reads = stretch_reads(&query, run, s_first, s_last, &asked, &holding, &ended)?;
-            observed_runs.extend_from_slice(&reads.observed);
-            let (part_countries, part_series) = fold_breakdown(&params.country, &asked, &reads, &tags, s_first, s_last, &groupings);
-            countries.extend(part_countries);
-            for series in part_series {
-                merged
-                    .entry(series.id.clone())
-                    .and_modify(|held| held.runs.extend(series.runs.iter().cloned()))
-                    .or_insert(series);
-            }
-        }
-        let series: Vec<CasualtyBreakdownSeries> = merged.into_values().collect();
-        if let Some(view) = view {
-            reply.wars = shown_wars(&view, &series, window.last);
-            reply.warnings.extend(view.warnings.iter().cloned());
-        }
-        reply.countries = countries;
-        reply.series = series;
-        reply.has_gap = observed_runs != [(window.first, window.last)];
-        reply.observed = spans(&observed_runs);
+        let (first, last) = (windows[at].first_hour, windows[at].last_hour);
+        let key = (params.branch_id.clone(), params.country.clone(), at, query.timeline.first, query.timeline.last);
+        let held = breakdown::held(source, context, key, || {
+            window_reply(source, &query, branch_id, &params.country, Some(at), context, cancelled).map(|window| index(window, first, last))
+        })?;
+        let reply = held.at(params.hour);
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }

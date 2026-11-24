@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
-import type { Breakdown, BreakdownPart as WirePart, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
+import type { Breakdown, BreakdownPart as WirePart, CasualtyBreakdownReply, ConstructionBreakdownReply, PowerSpendingBreakdownReply, TerritoryBreakdownReply } from '../../generated/dashboard';
 import { constructionProjection } from '../../widgets/construction-spending/constructionProjection.ts';
 import { ppSpendingBreakdown, ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { territoryBreakdownProjection } from '../../widgets/territory-breakdown/territoryBreakdownProjection.ts';
+import { casualtiesBreakdownProjection } from '../../widgets/casualties-breakdown/casualtiesBreakdownProjection.ts';
 import type { IdentityProvider } from '../plan.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { resolvePlaybackProvenInterval } from '../broker.ts';
@@ -400,4 +401,31 @@ test('a name the recording does not hold is the key with its reason, never passe
   assert.equal(read.parts[0]!.name, 'group_a_cat');
   assert.equal(read.parts[0]!.nameMissing, 'The recorded localisation holds no name for group_a_cat');
   assert.ok(JSON.stringify(buildBreakdownTooltip(read, breakdownLevel(read), 'group_a_cat', THEME)).includes('The recorded localisation holds no name'));
+});
+
+test('casualties name each enemy at the hour its relation was last read, and a live one at the displayed hour', () => {
+  const asked: [string, number][] = [];
+  const identity: IdentityProvider = {
+    resolve(kind, key, atHour) {
+      asked.push([key, atHour]);
+      return {
+        kind, key, atHour,
+        holder: { status: 'ready', value: key },
+        tag: { status: 'ready', value: key },
+        name: { status: 'ready', value: `${key} at ${atHour - START}` },
+        colour: { status: 'ready', value: '#4f86f7' },
+        flagChoice: { status: 'absent', reason: 'Flag not recorded' },
+        validInterval: [0, Infinity],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+  const casualties: CasualtyBreakdownReply = { from: START, hour: START + 40, through: START + 49, warnings: [], breakdown: {
+    decimals: 0, unrecordedHours: 0, total: { raw: '85', state: 'known', reason: null },
+    parts: [wire('w1', 0, '85', { name: 'First war', share: 1, parentShare: 1, children: [wire('BBB', 0, '70', { last: START + 19 }), wire('CCC', 1, '15')] })],
+  } };
+  const read = casualtiesBreakdownProjection.project(createBoundedReadView({ hour: START + 40, panels: new Map([['main', casualties]]), identity }), {});
+  assert.deepEqual(read.parts[0]!.children!.map(child => child.name), ['BBB at 19', 'CCC at 40']);
+  assert.equal(read.periodLabel, 'Taken since 1 Jan 1936');
+  assert.equal(read.parts[0]!.children![0]!.key, `w1${PATH}BBB`);
 });

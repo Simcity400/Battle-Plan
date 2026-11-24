@@ -6,7 +6,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'army-size', view: 'breakdown', label: 'Army breakdown', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'autonomy', view: 'lines', label: 'Lines', load: () => import('./autonomy') },
   { kind: 'bombing-damage-breakdown', slots: ['render', 'countryChip'], load: () => import('./bombing-damage-breakdown') },
-  { kind: 'casualties-breakdown', load: () => import('./casualties-breakdown') },
   { kind: 'civil-wars', load: () => import('./civil-wars') },
   { kind: 'construction-log', load: () => import('./construction-log') },
   { kind: 'division-log', load: () => import('./division-log') },
