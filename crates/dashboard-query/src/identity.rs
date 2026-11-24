@@ -199,12 +199,15 @@ impl Holders {
         self.tag_at(country, hour).map(str::to_owned)
     }
 
-    pub fn unnamed(&self, country: &Country) -> &'static str {
-        if self.named(country) { NOT_HELD_AT_HOUR } else { NOT_IN_HISTORY }
+    pub fn unnamed(&self, country: &Country, hour: i32) -> String {
+        if let Some((_, _, reason)) = self.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last) {
+            return format!("Who holds {} is not known: {reason}", country.key());
+        }
+        if country.runs(self).first().is_some_and(|run| run.first <= hour) { NOT_HELD_AT_HOUR } else { NOT_IN_HISTORY }.to_owned()
     }
 
     pub fn say(&self, country: &Country, hour: i32, message: impl FnOnce(&str) -> String) -> String {
-        self.label(country, hour).map_or_else(|| self.unnamed(country).to_owned(), |name| message(&name))
+        self.label(country, hour).map_or_else(|| self.unnamed(country, hour), |name| message(&name))
     }
 
     pub fn nearest_name(&self, country: &Country, hour: i32) -> String {

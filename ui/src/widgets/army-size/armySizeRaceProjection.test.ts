@@ -31,12 +31,12 @@ const BASE_OPTS: ArmySizeRaceOptions = {
   measure: 'battalions',
   countFor: 'owner',
   split: true,
-  candidates: [],
   holders: null,
   membership: null,
   unobserved: [],
   top: 10,
   all: false,
+  group: false,
 };
 
 test('army-size race and mix split battalion unit groups from army-at and withhold unreconciled parts', () => {
@@ -106,7 +106,6 @@ test('army-size race under default Top handles unpopulated panel and preserves e
     measure: 'manpower',
     split: false,
     top: null,
-    candidates: ['GER', 'SOV'],
   });
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.value?.value.kind]), [['GER', 'known'], ['SOV', 'notRecorded']]);

@@ -294,7 +294,7 @@ export const activeResearchDeclaration: MeterWidgetDeclaration<ActiveResearchPro
   countries: { mode: 'single', choose: 'Choose a country to see its research.' },
   aux: {
     product: 'research',
-    params: (track, _options, country) => (country ? { branchId: track.branch.id, country: countryFromKey(country) } : null),
+    params: (track, _options, _country, subject) => (subject ? { branchId: track.branch.id, country: countryFromKey(subject) } : null),
     validate: validateResearchReply,
   },
   sources: ctx => {

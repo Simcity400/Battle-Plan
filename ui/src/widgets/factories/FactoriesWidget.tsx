@@ -5,8 +5,9 @@ import { formatRaw } from '../../charts/race/measureRaceData.ts';
 import type { RaceView } from '../../charts/race/options';
 import { dayLabel } from '../../charts/draw';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { WidgetProps } from '../../dashboard/definitions';
-import { contentSet, resolveOptions } from '../../dashboard/options';
+import type { FamilyViewProps } from '../../dashboard/definitions';
+import { contentSet } from '../../dashboard/options';
+import { viewOptionsAsStored } from '../manifest.ts';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
@@ -16,7 +17,6 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import { parseChartInspect } from '../../families/time-chart/hitTest.ts';
 import type { InstalledAction } from '../../families/plan.ts';
 import type { FactoryPartsReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition';
 import { COUNT_MODES, countMode, factoryMeasure, factoryParts, partRows, validateFactoryGroups, validateFactoryParts } from './factoriesData.ts';
 import type { FactoriesRowMeta } from './factoriesProjection.ts';
 
@@ -24,7 +24,7 @@ const NO_WARNINGS: string[] = [];
 const format = (raw: string, decimals: number) => formatRaw(raw, decimals);
 const formatValue = (value: number) => Math.round(value).toLocaleString('en-US');
 
-function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'> & {
+function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
   tag: string; hour: GatedHour; types: readonly string[]; mode: ReturnType<typeof countMode>;
 }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -45,12 +45,12 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
   );
 }
 
-export default function FactoriesWidget(props: WidgetProps) {
-  const { widget, runtime, active, onDiagnostics, countrySlot, manifestDeclaration } = props;
-  const options = resolveOptions(OPTIONS, widget.options);
+export default function FactoriesWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, onDiagnostics, countrySlot, manifestDeclaration, options } = props;
   const view = (['race', 'lines', 'mix'].includes(String(props.view)) ? props.view : 'race') as RaceView;
   const mode = countMode(options.count);
   const types = useMemo(() => contentSet(options.types), [options.types]);
+  const chartWidget = useMemo(() => ({ ...widget, options: viewOptionsAsStored(widget.kind, props.view ?? view, options) }), [widget, props.view, view, options]);
   const isLines = manifestDeclaration?.family === 'time-chart';
   const familyDeclaration = manifestDeclaration && (isLines || options.show !== 'breakdown') ? manifestDeclaration : undefined;
   const isFamily = familyDeclaration !== undefined;
@@ -123,7 +123,7 @@ export default function FactoriesWidget(props: WidgetProps) {
   const label = `Factories, ${COUNT_MODES.find(item => item.value === mode)!.label.toLowerCase()}`;
   return (
     <MeasureRace
-      widget={widget}
+      widget={chartWidget}
       runtime={runtime}
       active={active}
       countrySlot={countrySlot}

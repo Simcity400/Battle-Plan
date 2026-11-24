@@ -293,9 +293,17 @@ impl<'a> Plain<'a> {
         }
     }
 
-    fn slid(&self) -> f32 {
+    fn slide(&self) -> Slide {
+        Slide {
+            vertical: !self.horizontal,
+            travel: self.travel(),
+            thumb: truncate_f32(self.slid()),
+        }
+    }
+
+    fn travel(&self) -> i32 {
         let [r, l, s] = self.extents;
-        let travel = if !self.horizontal {
+        if !self.horizontal {
             self.left_at[1]
                 .wrapping_sub(self.right_at[1])
                 .wrapping_sub(r[1])
@@ -305,7 +313,11 @@ impl<'a> Plain<'a> {
                 .wrapping_sub(s[0])
                 .wrapping_sub(self.left_at[0])
                 .wrapping_sub(l[0])
-        };
+        }
+    }
+
+    fn slid(&self) -> f32 {
+        let travel = self.travel();
         let low = self.range.min as f32 / 100_000.0;
         let high = self.range.max as f32 / 100_000.0;
         float(travel) * ((self.value - low) / (high - low))
@@ -424,11 +436,21 @@ impl<'a> Plain<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ListControl {
+    Step(i32),
+    Track,
+    Thumb(Slide),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListBoxRows {
     pub places: Vec<Option<[i32; 2]>>,
     pub scrollbar: Vec<Part>,
     pub range: i32,
+    pub rect: [i32; 4],
+    pub page: i32,
+    pub controls: Vec<(ListControl, Region)>,
     clipped: bool,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -482,8 +504,10 @@ pub fn list_box_rows_as(
     let mut places = Vec::with_capacity(rows.len());
     let mut shown = false;
     let mut range = 0;
+    let page;
     if smooth {
         let horizontal = list.horizontal != 0;
+        page = if horizontal { list.size[0] } else { list.size[1] };
         let cur = current.unwrap_or(bar.as_ref().map_or(0.0, |bar| bar.value));
         let mut run = 0i32;
         for row in rows {
@@ -523,6 +547,7 @@ pub fn list_box_rows_as(
             None => 0,
             Some(last) => truncate_f32(float(list.size[1]) / float(last[1])),
         };
+        page = fit.max(1);
         let over = (rows.len() as i32).wrapping_sub(fit).max(0);
         let first = match current {
             Some(current) if bar.is_some() && over >= 1 => truncate_f32(current).clamp(0, over),
@@ -551,15 +576,37 @@ pub fn list_box_rows_as(
         }
     }
     let mut scrollbar = Vec::new();
+    let mut controls = Vec::new();
     if let (true, Some(bar)) = (shown, &bar) {
         let node = bar.node(at);
         let first = walk.parts.len();
+        let first_region = walk.regions.len();
         let outer = walk.opacity;
         walk.opacity = 1.0;
         let drawn = walk.plain_parts(bar, element, node, None, true);
         walk.opacity = outer;
         drawn.map_err(|refusal| vec![refusal])?;
         scrollbar = walk.parts.split_off(first);
+        let [_, _, track, slider, ..] = bar.parts();
+        let slide = bar.slide();
+        controls = walk
+            .regions
+            .split_off(first_region)
+            .into_iter()
+            .filter_map(|region| {
+                let control = match region.scroll {
+                    Some((_, step)) => ListControl::Step(step),
+                    None if slider.is_some_and(|slider| slider.path == region.path) => {
+                        ListControl::Thumb(slide)
+                    }
+                    None if track.is_some_and(|track| track.path == region.path) => {
+                        ListControl::Track
+                    }
+                    None => return None,
+                };
+                Some((control, region))
+            })
+            .collect();
     }
     let refused = walk.refused.take();
     walk.refusals.extend(refused);
@@ -570,6 +617,9 @@ pub fn list_box_rows_as(
         places,
         scrollbar,
         range,
+        rect: [at[0], at[1], list.size[0], list.size[1]],
+        page,
+        controls,
         clipped: !smooth,
         diagnostics: walk.diagnostics,
     })

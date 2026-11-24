@@ -4,7 +4,7 @@ import FollowControl from '../../charts/drill/FollowControl';
 import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import GateState from '../../dashboard/GateState';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import {
   claimGameWindowSlot,
   gameWindow,
@@ -21,7 +21,6 @@ import type { BoundTrack } from '../../dashboard/model';
 import { TimeRegion, useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { pageClock } from '../../dashboard/widgetClock.ts';
 import { DetailWindowHost } from '../host/DetailWindowHost';
-import type { AnyTableWidgetDeclaration } from './declaration.ts';
 import type { InstalledAction } from '../contract.ts';
 import { FamilyWidget } from '../host/registry';
 import { gameWindowSelectionAt, openGameWindow, type OpenedGameWindow } from './gameWindowOpen.ts';
@@ -36,12 +35,11 @@ export interface GameWindowRow<S extends GameWindowSelection> {
   readonly label: string;
 }
 
-export interface GameWindowTableProps<S extends GameWindowSelection> extends WidgetProps {
-  readonly declaration: AnyTableWidgetDeclaration;
+export type GameWindowTableProps<S extends GameWindowSelection> = FamilyViewProps & {
   readonly window: GameWindowRow<S>;
-}
+};
 
-export default function GameWindowTable<S extends GameWindowSelection>({ declaration, window: row, ...props }: GameWindowTableProps<S>) {
+export default function GameWindowTable<S extends GameWindowSelection>({ window: row, ...props }: GameWindowTableProps<S>) {
   const { widget, runtime, active } = props;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const lookup = useCallback(() => gameWindow(row.kind), [row.kind]);
@@ -101,7 +99,7 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
     <FamilyWidget
       {...props}
       family="table"
-      declaration={declaration}
+      declaration={props.manifestDeclaration}
       selectedKey={opened?.key ?? null}
       onActivate={Window ? activate : undefined}
       extraWarnings={open ? lines : NO_LINES}

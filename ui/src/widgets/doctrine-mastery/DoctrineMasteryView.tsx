@@ -2,25 +2,24 @@ import { useCallback, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { openedOn } from '../../dashboard/gameWindows';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { productRequest } from '../../dashboard/request.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
+import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/contract.ts';
-import DeclaredFamilyWidget from '../../families/host/DeclaredFamilyWidget.tsx';
-import { meterHostAdapter } from '../../families/meter/hostAdapter.ts';
 import type { DoctrineRewardsReply } from '../../generated/dashboard';
 import {
   masteryText,
   rewardName,
   validateDoctrineRewards,
 } from './doctrineMasteryData.ts';
-import { doctrineMasteryDeclaration, type DoctrineTrackMeta } from './doctrineMasteryProjection.ts';
+import type { DoctrineTrackMeta } from './doctrineMasteryProjection.ts';
 import '../../components/Dossier.css';
 
-export default function DoctrineMasteryView(props: WidgetProps) {
+export default function DoctrineMasteryView(props: FamilyViewProps) {
   const { widget, runtime, active } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -65,14 +64,13 @@ export default function DoctrineMasteryView(props: WidgetProps) {
     : [];
 
   return <div ref={hostRef} className="fh-detail-anchor">
-    <DeclaredFamilyWidget
+    {props.manifestDeclaration ? <FamilyWidget
       {...props}
-      adapter={meterHostAdapter}
-      declaration={doctrineMasteryDeclaration}
+      family={props.manifestDeclaration.family} declaration={props.manifestDeclaration}
       selectedKey={shown?.key ?? null}
       onActivate={onActivate}
       extraWarnings={rewards.data?.warnings}
-    />
+    /> : null}
     <DetailWindowHost
       open={Boolean(shown)}
       subject={shown ? `${tag}:${shown.key}` : null}

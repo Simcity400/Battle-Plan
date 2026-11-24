@@ -148,12 +148,12 @@ impl AtHour for TradeFlow {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        vec![TableId::TradeFlows, TableId::ResourceExchanges, TableId::ResourceDefinitions, TableId::LexicalTokens]
+        vec![TableId::TradeFlows, TableId::ResourceDefinitions, TableId::LexicalTokens]
     }
 
     fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         match step {
-            0 => [TableId::TradeFlows, TableId::ResourceExchanges, TableId::ResourceDefinitions].into_iter().map(Read::all).collect(),
+            0 => [TableId::TradeFlows, TableId::ResourceDefinitions].into_iter().map(Read::all).collect(),
             1 => {
                 let tokens = held.complete::<tables::ResourceDefinitions>().map(|rows| rows.iter().map(|row| u128::from(row.token)).collect::<Vec<_>>()).unwrap_or_default();
                 vec![Read::these(TableId::LexicalTokens, tokens)]
@@ -177,10 +177,8 @@ impl AtHour for TradeFlow {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut warnings = Vec::new();
-        for table in [TableId::TradeFlows, TableId::ResourceExchanges] {
-            if let Some(reason) = dashboard_text::scope::unread(table, &frame.tables[table.index()]) {
-                return Ok(CountryFlowReply::not_recorded(reason, RESOURCE_DECIMALS, warnings));
-            }
+        if let Some(reason) = dashboard_text::scope::unread(TableId::TradeFlows, &frame.tables[TableId::TradeFlows.index()]) {
+            return Ok(CountryFlowReply::not_recorded(reason, RESOURCE_DECIMALS, warnings));
         }
         let rows = match frame.complete::<tables::TradeFlows>() {
             Ok(rows) => rows,

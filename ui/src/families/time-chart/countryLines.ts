@@ -1,17 +1,17 @@
 import { CHART_MEASURE_COLOURS, SECONDARY_DASH } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
-import type { AuxProductSpec, BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../contract.ts';
+import { FutureDataError, type AuxProductSpec, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
 import { formatScalar, formatShare } from '../valueFormat.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { formatChartAxisValue } from './layout.ts';
 import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
+import { seriesLookAt } from './model.ts';
 import {
-  assignCountrySeriesColours,
   branchGapsOf,
-  countrySeriesIdentity,
+  countrySeriesLooks,
   auditReading,
   exactHoverByCountry,
   headReading,
@@ -78,6 +78,15 @@ export interface CountryLinesSpec<TAux = unknown> {
 }
 
 const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
+
+function hoverHourOf(readView: BoundedReadView, name: string): number | null {
+  try {
+    return readView.hover(name)?.hour ?? null;
+  } catch (error) {
+    if (error instanceof FutureDataError) return null;
+    throw error;
+  }
+}
 const COLOURED = 8;
 
 function topOf(countries: FamilyPlanContext['countries']): number | null {
@@ -114,9 +123,17 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
       const present = tags.filter(tag => memberAt(options.membership, tag, hour));
       const presentSet = new Set(present);
       const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
-      const colours = assignCountrySeriesColours(ordered, options.holders, readView, hour, options.surface, undefined, tag => rowOf.get(tag) ?? 0);
+      const looks = countrySeriesLooks(ordered, readView, {
+        holders: options.holders,
+        from: options.extent[0],
+        surface: options.surface,
+        withFlag: true,
+        recordedOrdinal: tag => rowOf.get(tag) ?? 0,
+        tailColor: TAIL_COLOUR,
+      });
       const exactByCountry = exactHoverByCountry(readView, 'hover', options.decimals);
       const secondLines = options.second ? readView.series('second') : undefined;
+      const detailHour = spec.hover ? hoverHourOf(readView, 'detail') : null;
       const lines: CountryLine[] = [];
       const readings: [string, HeadReading | null][] = [];
       const format = (value: number) => formatCountryValue(value, spec.format, options.digits);
@@ -127,9 +144,10 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
         if (reading !== undefined) readings.push([tag, reading]);
         const headValue = headValueOf(reading);
         const exact = exactByCountry?.get(tag) ?? null;
-        const { name, flag } = countrySeriesIdentity(tag, options.holders, readView, hour, true);
-        const color = isTail ? TAIL_COLOUR : (colours.get(tag) ?? TAIL_COLOUR);
-        lines.push({ tag, name, color });
+        const look = looks.get(tag)!;
+        const { name, flag, color, identities } = look;
+        const atDetail = detailHour === null ? look : seriesLookAt(look, detailHour);
+        lines.push({ tag, name: atDetail.name, color: atDetail.color });
         const main: TimeChartSeriesModel = {
           id: tag,
           key: tag,
@@ -142,6 +160,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
           headHour: hour,
           exact: exact && memberAt(options.membership, tag, exact.hour) ? exact : null,
           flag,
+          identities,
           missingSpans: missingSpansOf(bounded),
           rank,
           endLabel: isTail || headValue === null || !options.endLabels
@@ -157,6 +176,7 @@ export function createCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TA
           key: `${tag}${SECOND_SUFFIX}`,
           name: `${name} · ${options.second.legend[1]}`,
           color,
+          identities: identities.map(run => ({ ...run, name: `${run.name} · ${options.second!.legend[1]}` })),
           role: isTail ? 'tail' : 'secondary',
           step: spec.step === true,
           dash: SECONDARY_DASH,
