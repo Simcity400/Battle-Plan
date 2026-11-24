@@ -6,7 +6,8 @@ import { registerTableProjection } from '../../families/table/registry.ts';
 import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
-import { artState, urlArtHandle, type ArtState } from '../../families/table/identityCell.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artState, type ArtState } from '../../families/table/identityCell.ts';
 import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY } from './definition.ts';
 import { validateDivisionEquipment } from './divisionEquipmentData.ts';
 
