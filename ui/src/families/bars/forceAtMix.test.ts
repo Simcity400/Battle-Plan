@@ -33,8 +33,8 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
       { key: 'convoys', name: 'Convoys', unresolved: false },
     ],
     rows: [
-      { country: 'ENG', tag: 'ENG', total: 100, missing: null, values: [25, 75], partsMissing: null },
-      { country: 'GER', tag: 'GER', total: 50, missing: null, values: [30, null], partsMissing: null },
+      { country: 'ENG', slot: null, tag: 'ENG', total: 100, missing: null, values: [25, 75], partsMissing: null },
+      { country: 'GER', slot: null, tag: 'GER', total: 50, missing: null, values: [30, null], partsMissing: null },
     ],
     missing: null,
     warnings: [],
@@ -47,7 +47,7 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
       GER: { name: 'German Reich', color: '#6b7280' },
     }),
   });
-  const model = projectForceAtMix(view, reply, { top: 10, all: false }, {
+  const model = projectForceAtMix(view, reply, { top: 10, all: false, group: false }, {
     decimals: 0,
     valueFormat: { decimals: 0 },
     valueLabel: 'Ships and convoys lost',

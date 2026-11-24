@@ -943,6 +943,45 @@ describe('experience and fuel', () => {
     assert.ok(layout.yDomain[1] > 32 && layout.yDomain[1] < 50, `axis in points: ${layout.yDomain[1]}`);
   });
 
+  it('converts binary Q15 experience by exact integer arithmetic for head, hover tooltip, and audit without float drift', () => {
+    const line = makeTiledLine('GER', [makeBucket(base, base + 95, 0)]);
+    const hoverAt = base + 50;
+    const armyAnswer = parseFollowed(message(hour, [{
+      id: 1,
+      answer: { keys: [1n], names: ['GER'], columns: 1, values: [327_680_000_000_327n], states: [0] },
+    }])).answers[0]!.answer;
+    const navyPanel = { decimals: 0, states: [{ country: 'GER', hour, run: { valueRaw: '3453419' }, missing: null }] };
+    const airPanel = { decimals: 0, states: [{ country: 'GER', hour, run: { valueRaw: '327' }, missing: null }] };
+    const model = experienceProjection.project(createBoundedReadView({
+      hour,
+      answers: new Map([['army', armyAnswer]]),
+      panels: new Map([['navy', navyPanel], ['air', airPanel]]),
+      series: new Map([
+        ['army', new Map([['GER', boundTiledSeries(line, displayedHour(hour), {})]])],
+        ['navy', new Map([['GER', boundTiledSeries(line, displayedHour(hour), {})]])],
+        ['air', new Map([['GER', boundTiledSeries(line, displayedHour(hour), {})]])],
+      ]),
+      hovers: new Map([
+        ['armyHover', { hour: hoverAt, data: { decimals: 0, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '327680000000327' }, missing: null }] } }],
+        ['navyHover', { hour: hoverAt, data: { decimals: 0, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '3453199' }, missing: null }] } }],
+        ['airHover', { hour: hoverAt, data: { decimals: 0, states: [{ country: 'GER', hour: hoverAt, run: { valueRaw: '328' }, missing: null }] } }],
+      ]),
+    }), { tag: 'GER', extent: [base, base + 95], gaps: [] });
+
+    assert.equal(model.series[0]!.endLabel?.value, '10,000,000,000', 'Q15 327,680,000,000,327 truncates to 10,000,000,000, not float 10,000,000,000.01');
+    assert.equal(model.series[1]!.endLabel?.value, '105.38', 'Q15 3,453,419 truncates toward zero to 105.38');
+    assert.equal(model.series[2]!.endLabel?.value, '<0.01', 'Q15 327 (0.009979...) truncates below 0.01 and shows <0.01');
+    assert.deepEqual(model.auditRows?.map(r => `${r.row}=${r.value}`), [
+      'army=10,000,000,000',
+      'navy=105.38',
+      'air=<0.01',
+    ]);
+    const tip = deriveTimeChartTooltip(model, layoutTimeChart(model, 600, 260, FONT, measure), `plot:${hoverAt}`);
+    assert.equal(tip?.payload?.items?.find(i => i.label === 'Army')?.value, '10,000,000,000');
+    assert.equal(tip?.payload?.items?.find(i => i.label === 'Navy')?.value, '105.38');
+    assert.equal(tip?.payload?.items?.find(i => i.label === 'Air')?.value, '0.01');
+  });
+
   it('draws fuel against a dashed stepped capacity, and its hover card is the recorded day', () => {
     const fuelLine = makeTiledLine('GER', [makeBucket(base, base + 95, raw(598_000))]);
     const capLine = makeTiledLine('GER', [makeBucket(base, base + 95, raw(665_000))]);

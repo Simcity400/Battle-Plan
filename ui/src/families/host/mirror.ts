@@ -28,6 +28,16 @@ function restoreFocus(row: HTMLTableRowElement | null, key: string | null, optio
   return true;
 }
 
+export function mirrorToSync(
+  next: MirrorModel | undefined,
+  last: MirrorModel | null,
+  selected: string | null,
+  lastSelected: string | null,
+): MirrorModel | null | undefined {
+  if (!next) return last === null ? undefined : null;
+  return next !== last || selected !== lastSelected ? next : undefined;
+}
+
 export function syncTableMirror(
   tbody: HTMLTableSectionElement | null,
   mirror: MirrorModel | null,
@@ -37,7 +47,12 @@ export function syncTableMirror(
   if (!mirror) {
     if (options.lastMirrorKeyRef.current !== '') {
       options.lastMirrorKeyRef.current = '';
-      tbody.replaceChildren();
+      options.restoringFocusRef.current = true;
+      try {
+        tbody.replaceChildren();
+      } finally {
+        options.restoringFocusRef.current = false;
+      }
     }
     return false;
   }
