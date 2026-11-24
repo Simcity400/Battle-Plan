@@ -151,9 +151,9 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
     use dashboard_world::products::{country_flags, identities, subjects};
     use dashboard_land::products::{army, army_losses, divisions, doctrine_mastery, doctrines, forces, leaders, training_queue};
     use dashboard_naval::products::naval;
-    use dashboard_wars::products::{casualties, diplomacy, faction_state, occupation, peace, scoreboard, territory_transfers, volunteers, wargoals, wars};
+    use dashboard_wars::products::{casualties, casualty_matrix, diplomacy, faction_state, occupation, peace, scoreboard, territory_transfers, volunteers, wargoals, wars};
     use dashboard_politics::products::{feed, national_focus, stability, technology_artwork};
-    use dashboard_economy::products::{convoys, economy, trade_flows};
+    use dashboard_economy::products::{convoys, economy, trade_flow};
     use dashboard_production::products::{construction, equipment_losses, equipment_produced, production, production_spending};
     use dashboard_air::products::aircraft_catalogue;
     use dashboard_players::products::{campaign_clock, player_apm};
@@ -243,7 +243,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             content_reader_key_names::unit_leader::sub_units(&content.catalogue()?.content.layers).map_err(|why| why.to_string())?;
             Ok("Ship classes and roles resolve recorded class tokens through the sub-unit database; totals and classes require the recorded navy tables.".into())
         }
-        volunteers::VolunteersExpeditionaries::KEY => Ok("No content dependency: links are the recorded military aid table and the identity table.".into()),
+        <volunteers::VolunteerFlow as at_hour::AtHour>::KEY => Ok("No content dependency: links are the recorded military aid table and the identity table.".into()),
         production_spending::ProductionSpending::KEY => {
             let units = dashboard_base::catalogue::equipment_units(content.catalogue()?)?;
             Ok(format!("Equipment types resolve each design's recorded archetype through the equipment database ({} types); design names localise the recorded naming operands; amounts and repair rates are the recorded production tables.", units.equipment.len()))
@@ -385,7 +385,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         <stability::CountryStabilityBreakdown as at_hour::AtHour>::KEY | <stability::StabilityPartNames as at_hour::AtHour>::KEY => {
             Ok("No offline check: idea, advisor, leader, ideology and modifier names are read at the reply from the recorded lines and parts dictionary, in the country's look at the hour.".into())
         }
-        casualties::CasualtyBreakdown::KEY => Ok("No content dependency: pairs and losses are the recorded casualty lifetimes and totals, named by the identity table.".into()),
+        casualties::CasualtyBreakdown::KEY | <casualty_matrix::CasualtyMatrix as at_hour::AtHour>::KEY => Ok("No content dependency: pairs and losses are the recorded casualty lifetimes and totals, named by the identity table.".into()),
         peace::PeaceDeals::KEY | territory_transfers::TerritoryTransfers::KEY => {
             let catalogue = content.catalogue()?;
             if catalogue.localised("PEACE_TAKE_STATES_DEMAND", dashboard_base::catalogue::View::Scripted).is_none() {
@@ -409,7 +409,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             }
             Ok("Sea region names read the recorded stack's strategic regions; resource names use the shared resource naming.".into())
         }
-        trade_flows::TradeFlows::KEY => {
+        <trade_flow::TradeFlow as at_hour::AtHour>::KEY => {
             findings.push(Finding::new(Kind::Offline, key, "seller and buyer flows and their quantities need the recorded TradeFlows rows; unavailable offline"));
             Ok("Resource names and icons are read through the shared resource naming of the recorded content stack.".into())
         }

@@ -3,14 +3,12 @@ import type { FrameEngine } from '../engine/frame';
 import type { WidgetProps, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { PlaybackController } from './playback';
-import type { LossesReply, TradeFlowsReply } from '../generated/dashboard';
-import TradeFlowsWidget from '../widgets/trade-flows/TradeFlowsWidget';
+import type { LossesReply } from '../generated/dashboard';
 import EquipmentLossesWidget from '../widgets/equipment-losses/EquipmentLossesWidget';
 import { registerWidgets } from './definitions';
-import { definition as tradeFlows } from '../widgets/trade-flows/definition';
 import { definition as equipmentLosses } from '../widgets/equipment-losses/definition';
 
-registerWidgets([tradeFlows, equipmentLosses]);
+registerWidgets([equipmentLosses]);
 
 const engine = { every: () => ({ wake() {}, stop() {} }) } as unknown as FrameEngine;
 const clock = new PlaybackController(engine);
@@ -24,15 +22,7 @@ const losses: LossesReply = {
   causes: [{ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod_loss_combat', template: 'Mod combat', text: 'Mod combat' }, group: null, loss: true,
     unknown: null, unknownSpans: [], leaves: [{ design: 0, key: '0', points: [{ hour: 100, totalRaw: '200000' }, { hour: 105, totalRaw: '350001' }], exact: [], lowerBoundFrom: null }] }],
 };
-const trade: TradeFlowsReply = {
-  branchId: '1', decimals: 5, resources: [{ id: 1, token: 'steel', ordinal: 1, name: 'Steel', icon: null }], countries: ['GER', 'ITA'],
-  countryIdentities: ['GER', 'ITA'].map((tag, slot) => ({ tag, runs: [{ firstHour: 100, lastHour: 109, slot, countryId: slot + 1 }] })),
-  firstHour: 100, lastHour: 109, known: [{ firstHour: 100, lastHour: 109 }], partial: [],
-  flows: [{ seller: 0, buyer: 1, resource: 1, sellerIdentity: '[0,1]', buyerIdentity: '[1,2]', sellerTags: [0], buyerTags: [1], firstHours: [100], lastHours: [109],
-    deliveredRaw: ['1000000'], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] }],
-  warnings: [],
-};
-Object.assign(globalThis, { __fixture: { losses, trade, groups: { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
+Object.assign(globalThis, { __fixture: { losses, groups: { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
   unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 1, firstHour: 100, lastHour: 109 }] }] } } });
 
 const waiting = new Promise<never>(() => {});
@@ -55,7 +45,7 @@ const props = (widget: WidgetSpec) => ({ widget, runtime, active: true, headerSl
 
 const settle = async () => { for (let turn = 0; turn < 3; turn++) await new Promise<void>(resolve => setTimeout(resolve, 0)); };
 const text = (id: string) => document.getElementById(id)?.textContent ?? '';
-const widgets = { trade: TradeFlowsWidget, losses: EquipmentLossesWidget };
+const widgets = { losses: EquipmentLossesWidget };
 
 Object.assign(window, { outsideWidgets: {
   async mount(id: keyof typeof widgets, hour: number) {
@@ -63,7 +53,7 @@ Object.assign(window, { outsideWidgets: {
     const Widget = widgets[id];
     const host = document.body.appendChild(document.createElement('div'));
     host.id = id;
-    createRoot(host).render(<Widget {...props(spec(id, id === 'trade' ? 'trade-flows' : 'equipment-losses'))} />);
+    createRoot(host).render(<Widget {...props(spec(id, 'equipment-losses'))} />);
     await settle();
     return text(id);
   },
