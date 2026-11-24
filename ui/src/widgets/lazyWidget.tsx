@@ -10,10 +10,12 @@ import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
 type Slot = 'render' | 'countryChip';
 const nothing = () => null;
-const declaredRenderers = new WeakMap<object, ComponentType<WidgetProps>>();
+const declaredRenderers = new WeakMap<object, Map<string, ComponentType<WidgetProps>>>();
 
 function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: string): ComponentType<WidgetProps> {
-  let held = declaredRenderers.get(declaration);
+  let byView = declaredRenderers.get(declaration);
+  if (!byView) declaredRenderers.set(declaration, byView = new Map());
+  let held = byView.get(view);
   if (!held) {
     const spec: FamilyViewModule = {
       family: declaration.family,
@@ -26,7 +28,7 @@ function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: stri
       const Host = familyHost(spec.family);
       return Host ? <Host spec={spec} {...props} /> : <WidgetState kind="unavailable" message={`Family host unavailable: ${spec.family}`} />;
     };
-    declaredRenderers.set(declaration, held);
+    byView.set(view, held);
   }
   return held;
 }
