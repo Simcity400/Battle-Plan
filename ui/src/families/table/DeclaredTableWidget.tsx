@@ -37,13 +37,13 @@ function resolveTableSettings<TProjectionOptions, TAux>(
   if (sp.kind === 'table') return tableSettingsOf(options[sp.key ?? TABLE_SETTINGS_KEY], columns, sp.base);
   if (sp.kind === 'options') {
     const sort = tableSortOf(options.tableSort as string | undefined, sp.defaultSort);
-    const overflow = narrowTableOf(options as never) === 'scroll' ? 'scroll' as const : 'tooltip' as const;
-    const density = options.density === 'compact' ? 'compact' as const : 'comfortable' as const;
-    return tableSettingsOf(undefined, columns, { density, overflow, sort });
+    const overflow = narrowTableOf(options as never) === 'tooltip' ? 'tooltip' as const : 'scroll' as const;
+    const density = options.density === 'compact' ? 'compact' as const : options.density === 'comfortable' ? 'comfortable' as const : 'normal' as const;
+    return tableSettingsOf(undefined, columns, { density, bars: 'all', overflow, sort });
   }
   return ctx
     ? sp.resolve(ctx, columns)
-    : tableSettingsOf(undefined, columns, { density: 'comfortable', overflow: 'tooltip', sort: { column: columns[0]?.key ?? '', direction: 'descending' } });
+    : tableSettingsOf(undefined, columns, { density: 'normal', bars: 'all', overflow: 'scroll', sort: { column: columns[0]?.key ?? '', direction: 'descending' } });
 }
 
 export default function DeclaredTableWidget<TProjectionOptions, TAux>({

@@ -27,12 +27,22 @@
 .setting-label.setting-label { flex-direction: row; align-items: center; align-self: center; justify-content: flex-start; gap: 4px; min-width: 0; }
 .setting-row-stacked > .setting-label.setting-label { align-self: flex-start; }
 .setting-label-info { width: 12px; height: 12px; flex: none; color: var(--quiet); }
-.table-settings-field { display: flex; flex-direction: column; gap: 6px; }
-.table-settings-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; }
-.table-settings-column { display: flex; align-items: center; gap: 4px; min-height: 24px; }
-.table-settings-column > label { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
-.table-settings-column-move { display: inline-flex; gap: 2px; }
-.table-settings-column-move button { width: 20px; height: 20px; padding: 0; border: 1px solid var(--line-soft); border-radius: var(--r-sm); background: transparent; color: var(--muted); }
-.table-settings-column-move button:disabled { opacity: .35; }
-.table-settings-radio { display: grid; gap: 4px; }
-.table-settings-radio label { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+.table-settings-field { display: flex; flex-direction: column; gap: 8px; }
+.table-settings-actions-row { display: flex; align-items: center; gap: 12px; min-height: 22px; }
+.table-settings-columns-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
+.table-settings-link { border: 0; background: none; padding: 0; color: var(--muted); font-size: 0.75rem; font-weight: 500; cursor: pointer; }
+.table-settings-link:hover, .table-settings-link:focus-visible { color: var(--text); text-decoration: underline; }
+.table-settings-columns { display: flex; flex-direction: column; gap: 2px; }
+.table-settings-column { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 4px; border-radius: 6px; transition: background 0.1s ease; }
+.table-settings-column:hover { background: var(--hover); }
+.table-settings-column.is-hidden .table-settings-col-name { color: var(--muted); opacity: 0.65; }
+.table-settings-column.is-drop-target { box-shadow: inset 0 2px 0 var(--accent); }
+.table-settings-grip { width: 14px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); opacity: 0.55; cursor: grab; font-size: 0.75rem; }
+.table-settings-grip.is-static { cursor: default; font-weight: 600; }
+.table-settings-col-name { flex: 1; min-width: 0; font-size: 0.8125rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.table-settings-names-toggle { flex: none; height: 20px; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 0.6875rem; font-weight: 500; cursor: pointer; }
+.table-settings-names-toggle.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.table-settings-eye { flex: none; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
+.table-settings-eye:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.table-settings-eye.is-hidden { opacity: 0.45; }
+.table-settings-eye:disabled { opacity: 0.25; cursor: default; }

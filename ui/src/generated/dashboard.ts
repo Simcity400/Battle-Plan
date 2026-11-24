@@ -5811,7 +5811,7 @@ token: string, archetype: string | null, name: string | null,
 /**
  * False where it has no definition at the hour.
  */
-known: boolean, design: string | null,
+known: boolean, design: string | null, origin: string | null,
 /**
  * It has a stock row (its `stock` cell); a design not held holds none.
  */

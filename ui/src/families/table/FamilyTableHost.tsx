@@ -131,7 +131,10 @@ interface TableMetaState {
   empty: string | null;
   emptyDetail: string | null;
   emptyKind: 'empty' | 'unavailable';
+  titleSummary: string | null;
   summaryPill: string | null;
+  hideHeader: boolean;
+  rowHeightMode: 'standard' | 'media';
   notes: readonly string[];
   warnings: readonly string[];
   hasTree: boolean;
@@ -147,6 +150,7 @@ interface WidthsState {
   hidden: readonly string[];
   totalWidth: number;
   scrollable: boolean;
+  pinnedCount: number;
   moreWidth: number;
   signature: string;
 }
@@ -200,7 +204,7 @@ export default function FamilyTableHost<TOptions>({
   const viewportRef = useRef({ width: 0, height: 0, scrollLeft: 0, scrollTop: 0 });
   const [viewportWidth, setViewportWidth] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
-  const [resizing, setResizing] = useState<{ key: string; width: number } | null>(null);
+  const [resizing, setResizing] = useState<{ key: string; width: number; guideX?: number | null } | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
@@ -242,7 +246,10 @@ export default function FamilyTableHost<TOptions>({
     empty: null,
     emptyDetail: null,
     emptyKind: 'empty',
+    titleSummary: null,
     summaryPill: null,
+    hideHeader: false,
+    rowHeightMode: 'standard',
     notes: [],
     warnings: [],
     hasTree: false,
@@ -264,6 +271,7 @@ export default function FamilyTableHost<TOptions>({
     hidden: [],
     totalWidth: 0,
     scrollable: false,
+    pinnedCount: 1,
     moreWidth: 0,
     signature: '',
   });
@@ -585,14 +593,16 @@ export default function FamilyTableHost<TOptions>({
           rawMeta?.empty ?? null,
           rawMeta?.emptyDetail ?? null,
           rawMeta?.emptyKind ?? 'empty',
-          rawMeta?.summaryPill ?? null,
+          rawMeta?.titleSummary ?? rawMeta?.summaryPill ?? null,
+          rawMeta?.hideHeader ?? false,
+          rawMeta?.rowHeightMode ?? 'standard',
           rawMeta?.notes ?? [],
           rawMeta?.warnings ?? [],
           rawMeta?.hasTree ?? false,
           rawMeta?.unsorted ?? false,
           rawMeta?.rankShown ?? false,
           rawMeta?.rankWidth ?? 0,
-          rawMeta?.columns?.map(c => [c.key, c.label, c.priority, c.as, c.offered, c.text ?? false, c.hideable ?? true, c.sortable ?? true, c.numeric ?? false, c.hint ?? '']) ?? [],
+          rawMeta?.columns?.map(c => [c.key, c.label, c.unit ?? '', c.priority, c.as, c.offered, c.text ?? false, c.hideable ?? true, c.sortable ?? true, c.numeric ?? false, c.hint ?? '', c.notRecordedReason ?? '', c.cellKind ?? '', c.pinned ?? false]) ?? [],
         ]);
         if (nextMetaSig !== metaSigRef.current) {
           metaSigRef.current = nextMetaSig;
@@ -603,7 +613,10 @@ export default function FamilyTableHost<TOptions>({
             empty: rawMeta?.empty ?? null,
             emptyDetail: rawMeta?.emptyDetail ?? null,
             emptyKind: rawMeta?.emptyKind ?? 'empty',
+            titleSummary: rawMeta?.titleSummary ?? null,
             summaryPill: rawMeta?.summaryPill ?? null,
+            hideHeader: rawMeta?.hideHeader ?? false,
+            rowHeightMode: rawMeta?.rowHeightMode ?? 'standard',
             notes: rawMeta?.notes ?? [],
             warnings: rawMeta?.warnings ?? [],
             hasTree: rawMeta?.hasTree ?? false,
@@ -694,13 +707,13 @@ export default function FamilyTableHost<TOptions>({
         }
       }
 
-      const tableInfo = shown.fields.table as { count: number; focusedIndex: number; inspectedPresent: boolean } | undefined;
+      const tableInfo = shown.fields.table as { count: number; totalHeight?: number; focusedIndex: number; inspectedPresent: boolean } | undefined;
       if (tableInfo) {
         if (lastExtentRef.current.count !== tableInfo.count) {
           lastExtentRef.current.count = tableInfo.count;
           accessibleRef.current?.setAttribute('aria-rowcount', String(tableInfo.count + 1));
         }
-        const extHeight = Math.max(viewportRef.current.height, latestRef.current.rowHeight * tableInfo.count);
+        const extHeight = Math.max(viewportRef.current.height, tableInfo.totalHeight ?? (latestRef.current.rowHeight * tableInfo.count));
         if (lastExtentRef.current.height !== extHeight) {
           lastExtentRef.current.height = extHeight;
           mounted.extent.style.height = `${extHeight}px`;
@@ -935,12 +948,14 @@ export default function FamilyTableHost<TOptions>({
       if (visibleCols.length === widthsState.visible.length) {
         const rank = meta.rankShown ? (meta.rankWidth || 36) : 0;
         const totalWidth = rank + widthsState.moreWidth + visibleCols.reduce((sum, col) => sum + col.width, 0);
+        const pinnedCount = widthsState.pinnedCount || 1;
         return {
           columns: visibleCols,
           hidden: [...widthsState.hidden],
           totalWidth,
           scrollable: widthsState.scrollable,
-          pinnedWidth: rank + (visibleCols[0]?.width ?? 0),
+          pinnedWidth: rank + visibleCols.slice(0, pinnedCount).reduce((sum, col) => sum + col.width, 0),
+          pinnedCount,
           moreWidth: widthsState.moreWidth,
         };
       }
@@ -958,10 +973,13 @@ export default function FamilyTableHost<TOptions>({
     const spec = specMap.get(col.key);
     return {
       ...col,
+      unit: spec?.unit,
       text: spec?.text,
       hideable: spec?.hideable,
       sortable: spec?.sortable,
       hint: spec?.hint,
+      notRecordedReason: spec?.notRecordedReason,
+      headerGroup: spec?.headerGroup,
       displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
     };
   }), [layout.columns, specMap]);
@@ -970,8 +988,9 @@ export default function FamilyTableHost<TOptions>({
 
   if (blockedState) return <>{blockedState}</>;
 
-  const summaryPillNode = headerSlot && meta.mode === 'picture' && !meta.empty && meta.summaryPill
-    ? createPortal(<span className="pill">{meta.summaryPill}</span>, headerSlot)
+  const titleSummaryText = meta.titleSummary ?? meta.summaryPill;
+  const summaryNode = headerSlot && meta.mode === 'picture' && !meta.empty && titleSummaryText
+    ? createPortal(<span className="tf-title-summary">{titleSummaryText}</span>, headerSlot)
     : null;
 
   const bodyStateNode = renderFamilyBodyState({
@@ -990,11 +1009,12 @@ export default function FamilyTableHost<TOptions>({
   });
 
   const hiddenCols = settings.overflow === 'tooltip' ? (widthsState.hidden.length ? widthsState.hidden : layout.hidden) : [];
+  const canScrollRight = layout.scrollable && scrollLeft < Math.max(0, layout.totalWidth - (viewportWidth || 320)) - 1;
 
   return <div ref={frameRef} className={`tf-frame${className ? ` ${className}` : ''}`} data-density={settings.density} data-overflow={settings.overflow}>
-    {summaryPillNode}
+    {summaryNode}
     {meta.notes.length > 0 && !bodyStateNode && <WidgetCaption>{meta.notes.join(' ')}</WidgetCaption>}
-    <div className="tf-head-clip" style={bodyStateNode ? { display: 'none' } : undefined}>
+    {!meta.hideHeader && <div className="tf-head-clip" style={bodyStateNode ? { display: 'none' } : undefined}>
       <FamilyTableHeader
         columns={headerColumns}
         allColumns={activeColumns}
@@ -1003,17 +1023,20 @@ export default function FamilyTableHost<TOptions>({
         unsorted={meta.unsorted}
         editableColumns={editableColumns}
         rankWidth={meta.rankShown ? meta.rankWidth : 0}
+        pinnedCount={layout.pinnedCount}
         pinned={layout.scrollable}
         scrollLeft={settings.overflow === 'scroll' ? scrollLeft : 0}
+        canScrollRight={canScrollRight}
         onChange={changeSettings}
-        onResizing={(key, nextWidth) => setResizing({ key, width: nextWidth })}
+        onResizing={(key, nextWidth, guideX) => setResizing(guideX === null ? null : { key, width: nextWidth, guideX })}
         onResize={(key, nextWidth) => {
           setResizing(null);
           changeSettings(draft => { if (draft.columns[key]) draft.columns[key]!.width = nextWidth; });
         }}
       />
-    </div>
+    </div>}
     <div className="tf-body-wrap">
+      {resizing?.guideX != null && <div className="tf-resize-guide" style={{ left: resizing.guideX }} aria-hidden="true" />}
       <div
         ref={bodyRef}
         className="tf-body"

@@ -14,7 +14,7 @@ export function validateStockpileAt(data: unknown): StockpileAtReply {
     && reply.types.every(type => typeof type?.key === 'string' && DOMAINS.includes(type.domain) && text(type.name) && text(type.needNote))
     && Array.isArray(reply.variants) && reply.variants.every(variant => RAW.test(variant?.id) && typeof variant.token === 'string'
       && (variant.archetype === null || reply.types.some(type => type.key === variant.archetype)) && typeof variant.known === 'boolean'
-      && text(variant.name) && text(variant.design) && typeof variant.held === 'boolean' && Array.isArray(variant.lines)
+      && text(variant.name) && text(variant.design) && (variant.origin === undefined || text(variant.origin)) && typeof variant.held === 'boolean' && Array.isArray(variant.lines)
       && variant.lines.every(line => RAW.test(line)) && text(variant.outputMissing))
     && new Set(reply.variants.map(variant => variant.id)).size === reply.variants.length
     && Array.isArray(reply.logistics) && reply.logistics.every(item => typeof item?.key === 'string'

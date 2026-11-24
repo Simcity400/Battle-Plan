@@ -89,13 +89,14 @@ function nextGameScoreChange(hour: number, options: GameScoreProjectionOptions):
   );
 }
 
-export function gameScoreColumns(hints?: GameScoreReply['hints'], cellBars = false): TableColumnSpec[] {
-  const numDisplay = cellBars ? 'faint' : 'plain';
+export function gameScoreColumns(hints?: GameScoreReply['hints'], _cellBars = true): TableColumnSpec[] {
   return [
     {
       key: 'country',
       label: SCORE_LABELS.country,
       as: 'flagName',
+      showNamesDefault: true,
+      pinned: true,
       offered: OFFERED.country,
       priority: 0,
       text: true,
@@ -106,8 +107,9 @@ export function gameScoreColumns(hints?: GameScoreReply['hints'], cellBars = fal
     ...SCORE_PARTS.map((part, index): TableColumnSpec => ({
       key: part,
       label: SCORE_LABELS[part],
-      as: numDisplay,
-      tone: 'blue',
+      as: 'faint',
+      barEligible: true,
+      tone: 'country',
       offered: OFFERED.number,
       priority: index + 1,
       numeric: true,
@@ -205,6 +207,7 @@ export const gameScoreDeclaration: TableWidgetDeclaration<GameScoreProjectionOpt
   countries: {
     mode: 'multi',
     labels: true,
+    colours: true,
     factions: true,
     allowSlots: true,
     allTagsForLabels: true,

@@ -4,3 +4,7 @@ import '../../widgets/scoreboard/scoreboardProjection.ts';
 import '../../widgets/game-score/gameScoreProjection.ts';
 import '../../widgets/player-apm/apmProjection.ts';
 import '../../widgets/division-template/divisionTemplateProjection.ts';
+import '../../widgets/equipment-stockpile/stockpileProjection.ts';
+import '../../widgets/generals/generalsProjection.ts';
+import '../../widgets/production-lines/productionLinesProjection.ts';
+import '../../widgets/international-market/internationalMarketProjection.ts';

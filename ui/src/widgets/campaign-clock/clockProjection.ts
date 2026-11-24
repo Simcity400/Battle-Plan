@@ -1,24 +1,26 @@
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { CampaignClockReply } from '../../generated/dashboard';
+import type { ClockSummaryData } from '../../draw/kit.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { OFFERED, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, valueFromNullable, wireFloat, wireWhole, type Value } from '../../families/value.ts';
+import { formatDate, formatValueState } from '../../families/valueFormat.ts';
 import { CLOCK_NOTE, OVERLAP_REASON, OVERLAP_WARNING, UNCLASSIFIED, clockWarnings, validateClock } from './clockData.ts';
 
 interface ClockRow { readonly id: string; readonly label: string; readonly value: Value; readonly note: string }
 interface ParsedClock { readonly refusal?: string; readonly recorded: Value<number>; readonly playing: Value<number>; readonly paused: Value<number>; readonly complete: boolean; readonly warnings: readonly string[] }
+export interface CampaignClockProjectionOptions { readonly firstHour?: number }
 
 const CLOCK = { recorded: 0, playing: 1, paused: 2, complete: 3 } as const;
-const EMPTY_OPTIONS: Record<string, never> = {};
 
-export const CLOCK_COLUMNS: readonly DeclarativeColumnSpec<ClockRow, Record<string, never>>[] = [
+export const CLOCK_COLUMNS: readonly DeclarativeColumnSpec<ClockRow, CampaignClockProjectionOptions>[] = [
   { key: 'clock', label: 'Clock', as: 'plain', offered: OFFERED.text, priority: 0, text: true, sortable: false, hideable: false, widest: ['Total recorded time'], path: 'label' },
   { key: 'time', label: 'Real time (h:mm:ss)', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'clockSeconds', sortable: false, hideable: false, widest: ['99:59:59', 'Gaps excluded'], value: row => row.value },
 ];
 
-export const CLOCK_TABLE_BASE: TableBase = { density: 'comfortable', overflow: 'tooltip', sort: { column: 'clock', direction: 'ascending' } };
+export const CLOCK_TABLE_BASE: TableBase = { density: 'normal', bars: 'off', overflow: 'scroll', showRank: false, sort: { column: 'clock', direction: 'ascending' } };
 
 const refusedClock = (reason: string, warnings: readonly string[] = []): ParsedClock => {
   const missing = notRecorded(reason);
@@ -51,14 +53,47 @@ function parseReply(raw: unknown): ParsedClock {
   };
 }
 
-export const campaignClockProjection: TableProjection<Record<string, never>> = registerTableProjection(
-  declareTableProjection<ParsedClock, ClockRow, Record<string, never>>({
+function secondsOf(val: Value<number>): number | null {
+  return val.kind === 'known' || val.kind === 'zero' ? Number(val.value) : null;
+}
+
+function clockText(val: Value<number>): string {
+  const fmt = formatValueState(val, 'clockSeconds');
+  return fmt.kind === 'known' || fmt.kind === 'zero' || fmt.kind === 'partial' ? fmt.text : 'Not recorded';
+}
+
+function buildClockSummary(parsed: ParsedClock, hour: number, firstHour?: number): ClockSummaryData {
+  const playSec = secondsOf(parsed.playing);
+  const pauseSec = secondsOf(parsed.paused);
+  const totalSplit = playSec !== null && pauseSec !== null ? playSec + pauseSec : 0;
+  const playingFraction = totalSplit > 0 ? playSec! / totalSplit : null;
+  const pausedFraction = totalSplit > 0 ? pauseSec! / totalSplit : null;
+  const spanText = firstHour !== undefined && Number.isFinite(firstHour) && Number.isFinite(hour)
+    ? `${formatDate(firstHour)} \u2013 ${formatDate(hour)}`
+    : null;
+  return {
+    totalText: clockText(parsed.recorded),
+    playingText: clockText(parsed.playing),
+    pausedText: clockText(parsed.paused),
+    playingFraction,
+    pausedFraction,
+    playingPct: playingFraction !== null ? `${Math.round(playingFraction * 100)}%` : null,
+    pausedPct: pausedFraction !== null ? `${Math.round(pausedFraction * 100)}%` : null,
+    complete: parsed.complete,
+    coverageLabel: parsed.complete ? 'Complete' : 'Gaps excluded',
+    spanText,
+  };
+}
+
+export const campaignClockProjection: TableProjection<CampaignClockProjectionOptions> = registerTableProjection(
+  declareTableProjection<ParsedClock, ClockRow, CampaignClockProjectionOptions>({
     kind: 'campaign-clock',
     validate: parseReply,
     fromAnswer: parseAnswer,
     unsorted: true,
+    hideHeader: true,
     columns: CLOCK_COLUMNS,
-    rows: parsed => {
+    rows: (parsed, _live, hour, options) => {
       if (parsed.refusal) return { rows: [], empty: parsed.refusal, emptyKind: 'unavailable', warnings: parsed.warnings };
       const note = parsed.warnings.length ? `${CLOCK_NOTE} ${parsed.warnings.join(' ')}` : CLOCK_NOTE;
       return {
@@ -68,6 +103,7 @@ export const campaignClockProjection: TableProjection<Record<string, never>> = r
           { id: 'paused', label: 'Paused time', value: parsed.paused, note },
           { id: 'coverage', label: 'Coverage', value: knownValue(parsed.complete ? 'Complete' : 'Gaps excluded'), note },
         ],
+        clockSummary: buildClockSummary(parsed, hour, options?.firstHour),
         warnings: parsed.warnings,
       };
     },
@@ -77,7 +113,7 @@ export const campaignClockProjection: TableProjection<Record<string, never>> = r
   }),
 );
 
-export const campaignClockDeclaration: TableWidgetDeclaration<Record<string, never>> = {
+export const campaignClockDeclaration: TableWidgetDeclaration<CampaignClockProjectionOptions> = {
   family: 'table',
   kind: 'campaign-clock',
   label: 'Recorded campaign clock times',
@@ -106,5 +142,5 @@ export const campaignClockDeclaration: TableWidgetDeclaration<Record<string, nev
   projection: campaignClockProjection,
   columns: CLOCK_COLUMNS,
   settings: { kind: 'fixed', base: CLOCK_TABLE_BASE },
-  projectionOptions: () => EMPTY_OPTIONS,
+  projectionOptions: ctx => ({ firstHour: ctx.branch.firstHour }),
 };

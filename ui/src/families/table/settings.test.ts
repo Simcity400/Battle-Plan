@@ -19,34 +19,42 @@ const NUMBERS = ['plain', 'faint', 'track', 'meterAfter', 'meterBefore', 'underl
 const COUNTRY = ['flagName', 'name', 'flag'] as const;
 const FIXED: readonly TableColumnDefaults[] = [
   { key: 'state', label: 'State', as: 'plain', offered: ['plain'] },
-  { key: 'owner', label: 'Owner', as: 'flagName', offered: COUNTRY },
-  { key: 'occupier', label: 'Occupier', as: 'flagName', offered: COUNTRY },
-  { key: 'resistance', label: 'Resistance', as: 'meterAfter', tone: 'red', offered: NUMBERS },
-  { key: 'compliance', label: 'Compliance', as: 'meterAfter', tone: 'blue', offered: NUMBERS },
-  { key: 'law', label: 'Law', as: 'dot', offered: ['dot', 'outline', 'filled', 'text', 'icon'] },
+  { key: 'owner', label: 'Owner', as: 'flagName', offered: COUNTRY, showNamesDefault: true },
+  { key: 'occupier', label: 'Occupier', as: 'flag', offered: COUNTRY, showNamesDefault: false },
+  { key: 'resistance', label: 'Resistance', as: 'track', tone: 'red', offered: NUMBERS },
+  { key: 'compliance', label: 'Compliance', as: 'track', tone: 'grey', offered: NUMBERS },
+  { key: 'law', label: 'Law', as: 'text', offered: ['dot', 'text', 'icon'] },
 ];
-const BASE: TableBase = { density: 'comfortable', overflow: 'tooltip', sort: { column: 'resistance', direction: 'descending' } };
+const BASE: TableBase = { density: 'normal', bars: 'all', overflow: 'scroll', showRank: false, sort: { column: 'resistance', direction: 'descending' } };
 const DEFAULTS = tableDefaults(FIXED, BASE);
 const of = (value: unknown) => tableSettingsOf(value, FIXED, BASE);
 
-test('table settings keep density, overflow, widths and sort per placement', () => {
+test('table settings keep density, bars, rank, overflow, widths and sort per placement', () => {
   const changed = updateTableSettings(DEFAULTS, next => {
     next.density = 'compact';
+    next.bars = 'sorted';
+    next.showRank = true;
     next.overflow = 'scroll';
     next.columns.owner!.show = false;
+    next.columns.occupier!.showNames = true;
     next.columns.state!.width = 240;
     next.sort = { column: 'compliance', direction: 'ascending' };
   });
   const restored = of(encodeTableSettings(changed));
   assert.equal(restored.density, 'compact');
+  assert.equal(restored.bars, 'sorted');
+  assert.equal(restored.showRank, true);
   assert.equal(restored.overflow, 'scroll');
   assert.equal(restored.columns.owner!.show, false);
+  assert.equal(restored.columns.occupier!.showNames, true);
+  assert.equal(restored.columns.occupier!.as, 'flagName');
   assert.equal(restored.columns.state!.width, 240);
   assert.deepEqual(restored.sort, { column: 'compliance', direction: 'ascending' });
 });
 
-test('malformed table settings use the family defaults', () => {
+test('malformed or v1 table settings use the family defaults', () => {
   assert.deepEqual(of('{"v":1,"overflow":"scroll","columns":{}}'), DEFAULTS);
+  assert.deepEqual(of('{"v":2,"density":"huge","overflow":"scroll","columns":{}}'), DEFAULTS);
 });
 
 test('partial column orders retain each default column exactly once', () => {
@@ -56,27 +64,27 @@ test('partial column orders retain each default column exactly once', () => {
 
 test('country and law displays survive a round trip, and a display a column does not offer falls back to its default', () => {
   assert.equal(DEFAULTS.columns.owner!.as, 'flagName');
+  assert.equal(DEFAULTS.columns.occupier!.as, 'flag');
   const changed = updateTableSettings(DEFAULTS, next => {
-    next.columns.owner!.as = 'flag';
-    next.columns.occupier!.as = 'name';
+    next.columns.owner!.showNames = false;
     next.columns.law!.as = 'icon';
   });
   const restored = of(encodeTableSettings(changed));
-  assert.deepEqual([restored.columns.owner!.as, restored.columns.occupier!.as, restored.columns.law!.as], ['flag', 'name', 'icon']);
+  assert.deepEqual([restored.columns.owner!.as, restored.columns.law!.as], ['flag', 'icon']);
   const foreign = updateTableSettings(DEFAULTS, next => {
     next.columns.owner!.as = 'plain';
     next.columns.law!.as = 'meterAfter';
   });
   const fallen = of(encodeTableSettings(foreign));
-  assert.deepEqual([fallen.columns.owner!.as, fallen.columns.law!.as], ['flagName', 'dot']);
+  assert.deepEqual([fallen.columns.owner!.as, fallen.columns.law!.as], ['flagName', 'text']);
 });
 
 test('a column set known only at run time takes each column’s defaults from its spec', () => {
   const measures = (...keys: string[]): TableColumnDefaults[] => [
-    { key: 'country', label: 'Country', as: 'flagName', offered: COUNTRY },
+    { key: 'country', label: 'Country', as: 'flagName', offered: COUNTRY, showNamesDefault: true },
     ...keys.map(key => ({ key, label: key, as: 'plain' as const, offered: NUMBERS })),
   ];
-  const base: TableBase = { density: 'comfortable', overflow: 'tooltip', sort: { column: 'country', direction: 'ascending' } };
+  const base: TableBase = { density: 'normal', bars: 'all', overflow: 'scroll', sort: { column: 'country', direction: 'ascending' } };
   const first = tableSettingsOf('', measures('factories', 'stability'), base);
   assert.deepEqual(first.order, ['country', 'factories', 'stability']);
   assert.deepEqual(first.columns.stability, { show: true, as: 'plain', width: null });
@@ -99,9 +107,9 @@ test('a column set known only at run time takes each column’s defaults from it
   assert.equal(tableSettingsOf(foreign, measures('factories'), base).columns.gone, undefined);
 });
 
-test('displays reserve their room, numbers align right unless bar leads, and rank markers hold until expiry', () => {
-  assert.deepEqual(['plain', 'faint', 'meterAfter', 'flagName', 'flag', 'name', 'dot'].map(display => displayExtra({ display: display as never })), [0, 4, 52, 26, 20, 0, 12]);
-  assert.deepEqual(['plain', 'meterAfter', 'track', 'meterBefore'].map(display => endAligned({ numeric: true, display: display as never })), [true, true, false, false]);
+test('displays reserve their room, numeric columns align right, and rank markers hold until expiry', () => {
+  assert.deepEqual(['plain', 'faint', 'meterAfter', 'flagName', 'flag', 'name', 'dot'].map(display => displayExtra({ display: display as never })), [0, 8, 64, 28, 20, 0, 12]);
+  assert.deepEqual(['plain', 'meterAfter', 'track', 'meterBefore'].map(display => endAligned({ numeric: true, display: display as never })), [true, true, true, true]);
   assert.equal(endAligned({ numeric: false, display: 'plain' }), false);
   assert.deepEqual(['4449999', '4450000', '12000000', '-1'].map(percentCell), ['44%', '45%', '100%', '0%']);
   assert.deepEqual([173_611n, 0n, -5n, 99_999n].map(amountCell), ['1.73', '-', '!', '0.99']);

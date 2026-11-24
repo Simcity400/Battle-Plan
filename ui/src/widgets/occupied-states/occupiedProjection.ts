@@ -75,6 +75,10 @@ function countryLabel(tag: string | null, labels: CountryLooksMap, hour: number)
 export const OCCUPIED_COLUMNS: readonly TableColumnSpec[] = COLUMNS.map(col => ({
   ...col,
   priority: PRIORITIES[col.key] ?? 9,
+  pinned: col.key === 'owner' || col.key === 'state',
+  cellKind: col.key === 'resistance' || col.key === 'compliance' ? 'track' : undefined,
+  trackTone: col.key === 'resistance' ? 'red' : col.key === 'compliance' ? 'grey' : undefined,
+  barEligible: col.key === 'garrison',
   numeric: col.key === 'resistance' || col.key === 'compliance' || col.key === 'garrison',
   text: col.key === 'state' || col.key === 'owner' || col.key === 'occupier' || col.key === 'law',
   format: col.key === 'resistance' || col.key === 'compliance' ? 'fixed5Percent' : col.key === 'garrison' ? 'fixed5Amount' : undefined,
@@ -99,14 +103,27 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
     columns: (reply, options): readonly DeclarativeColumnSpec<OccupiedRow, OccupiedProjectionOptions>[] => {
       const laws = lawsOf(reply);
       const redBelow = reply.garrisonRedRaw === null ? undefined : BigInt(reply.garrisonRedRaw);
+      const byKey = new Map(OCCUPIED_COLUMNS.map(col => [col.key, col]));
       return [
-        { ...OCCUPIED_COLUMNS[0]!, path: 'value.name', whenNull: { kind: 'notRecorded', reasonField: 'value.nameMissing', reason: 'Not recorded' } },
-        { ...OCCUPIED_COLUMNS[1]!, countryField: 'value.owner' },
-        { ...OCCUPIED_COLUMNS[2]!, countryField: 'value.occupier' },
-        { ...OCCUPIED_COLUMNS[3]!, liveField: 'resistance', maximum: PERCENT_SCALE, country: 'value.occupier' },
-        { ...OCCUPIED_COLUMNS[4]!, liveField: 'compliance', maximum: PERCENT_SCALE, country: 'value.occupier' },
+        { ...byKey.get('owner')!, countryField: 'value.owner' },
+        { ...byKey.get('state')!, path: 'value.name', whenNull: { kind: 'notRecorded', reasonField: 'value.nameMissing', reason: 'Not recorded' } },
+        { ...byKey.get('resistance')!, liveField: 'resistance', maximum: PERCENT_SCALE, country: 'value.occupier' },
+        { ...byKey.get('compliance')!, liveField: 'compliance', maximum: PERCENT_SCALE, country: 'value.occupier' },
         {
-          ...OCCUPIED_COLUMNS[5]!,
+          ...byKey.get('law')!,
+          iconSlot: options.lawAs === 'icon',
+          icon: row => (row.value.law !== null ? laws.get(row.value.law)?.icon ?? undefined : undefined),
+          status: () => (options.lawAs === 'dot' ? 'dot' : undefined),
+          value: row => {
+            if (row.value.law === null) return notRecorded(row.value.lawMissing ?? 'Not recorded');
+            const law = laws.get(row.value.law);
+            if (law?.name && law.name.trim()) return knownValue(law.name);
+            return notRecorded(law?.missing ?? row.value.lawMissing ?? 'Occupation law name unavailable');
+          },
+        },
+        { ...byKey.get('occupier')!, countryField: 'value.occupier' },
+        {
+          ...byKey.get('garrison')!,
           country: 'value.occupier',
           value: (row, live) => {
             if (row.value.garrisonRequiredSign === null) {
@@ -126,18 +143,6 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
               return { fraction: frac === 0 ? zeroValue(0) : knownValue(frac), alert: redBelow !== undefined && rawBig < redBelow };
             }
             return { fraction: notRecorded(strengthVal.kind === 'notRecorded' ? strengthVal.reason : reply.strengthMissing) };
-          },
-        },
-        {
-          ...OCCUPIED_COLUMNS[6]!,
-          iconSlot: options.lawAs === 'icon',
-          icon: row => (row.value.law !== null ? laws.get(row.value.law)?.icon ?? undefined : undefined),
-          status: () => STATUS_MAP[options.lawAs],
-          value: row => {
-            if (row.value.law === null) return notRecorded(row.value.lawMissing ?? 'Not recorded');
-            const law = laws.get(row.value.law);
-            if (law?.name && law.name.trim()) return knownValue(law.name);
-            return notRecorded(law?.missing ?? row.value.lawMissing ?? 'Occupation law name unavailable');
           },
         },
       ];
@@ -245,7 +250,7 @@ export const occupiedStatesDeclaration: TableWidgetDeclaration<OccupiedProjectio
     filter: ctx.countries.filter,
     role: ctx.options.countryRole === 'occupied' ? 'occupied' : 'occupier',
     labels: ctx.countries.labels,
-    lawAs: ctx.settings.columns.law?.as ?? 'dot',
+    lawAs: ctx.settings.columns.law?.as ?? 'text',
     filterAll: ctx.countries.all,
   }),
   jumpToDate: true,
