@@ -5,11 +5,11 @@ import { resolveWindow } from '../../dashboard/model.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
-import type { FeedKindCode } from '../../generated/dashboard';
+import type { EventFeedKindInfo } from '../../generated/dashboard';
 import EventDetailWindow, { type EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES } from './definition.ts';
 import EventFeedActivityStrip from './EventFeedActivityStrip.tsx';
-import { EVENT_FEED_NOISE_KINDS, feedKindLabel, kindsRequest, validateSpan } from './eventFeedData.ts';
+import { feedKindLabel, kindsRequest, validateKinds } from './eventFeedData.ts';
 
 const CATEGORY_LABEL = new Map<string, string>(CATEGORIES.map(cat => [cat.value, cat.label]));
 
@@ -18,7 +18,7 @@ function EventFeedView(props: FamilyViewProps) {
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
-  const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly FeedKindCode[] } | null>(null);
+  const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly EventFeedKindInfo[] } | null>(null);
   const shown = opened && opened.scope === scope ? opened.subject : null;
 
   useEffect(() => {
@@ -28,8 +28,7 @@ function EventFeedView(props: FamilyViewProps) {
     const request = kindsRequest(track);
     props.runtime.client.product(request, controller.signal).then(reply => {
       if (controller.signal.aborted) return;
-      const span = validateSpan(validateProductReply(reply, request).data);
-      setKinds({ scope, list: span.kinds });
+      setKinds({ scope, list: validateKinds(validateProductReply(reply, request).data) });
     }).catch(() => {});
     return () => controller.abort();
   }, [track, props.active, props.runtime.client, scope, kinds?.scope]);
@@ -51,7 +50,6 @@ function EventFeedView(props: FamilyViewProps) {
     const categorySet = new Set<string>(categories);
     if (recordingKinds && recordingKinds.length > 0) {
       return recordingKinds
-        .filter(item => !EVENT_FEED_NOISE_KINDS.has(item.kind))
         .map(item => ({
           value: `kind:${item.kind}`,
           label: feedKindLabel(item.kind),

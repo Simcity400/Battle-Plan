@@ -11,11 +11,11 @@ import {
 } from '../../families/table/logHelpers.ts';
 import type { TableColumnSpec } from '../../families/table/model.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import type { EventFeedKind } from '../../generated/dashboard';
+import type { ScriptEventKind } from '../../generated/dashboard';
 
-export const EVENT_KINDS: readonly { value: string; label: string; kind: EventFeedKind }[] = [
-  { value: 'countryEvents', label: 'Country events', kind: 'scriptEventFired' },
-  { value: 'newsEvents', label: 'News events', kind: 'newsEventFired' },
+export const EVENT_KINDS: readonly { value: string; label: string; event: ScriptEventKind }[] = [
+  { value: 'countryEvents', label: 'Country events', event: 'country' },
+  { value: 'newsEvents', label: 'News events', event: 'news' },
 ];
 export const AWAITING = { value: 'awaiting', label: 'Awaiting choice only', hint: 'Only events still awaiting a choice at the moment shown.' } as const;
 
