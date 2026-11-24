@@ -242,11 +242,6 @@ export function leftColumn(fitted: number, width: number): number {
 
 export interface BandEdge { x0: number; x1: number; half: number }
 
-export function bandOutlines(steps: readonly BandStep[], from: number, to: number, toX: (hour: number) => number, half: (value: number) => number,
-  left: number, right: number): BandEdge[][] {
-  return bandColumns(steps, from, to, toX, half, left, right).map(run => stretches(run, left, right, false)).map(groups => groups.flat());
-}
-
 export function laneBands(spans: readonly TimelineSpan[], playhead: number | null, toX: (hour: number) => number, half: (value: number) => number,
   left: number, right: number): LaneBands {
   const steps: (BandStep & { key: string })[] = [];
@@ -572,14 +567,3 @@ export function nextHolder(state: HolderState | undefined, current: TimelineSpan
   return { key, previous: state.current, current, t: 0 };
 }
 
-export function spansExtent(lanes: readonly TimelineLane[]): [number, number] | null {
-  let first = Infinity;
-  let last = -Infinity;
-  for (const lane of lanes) {
-    for (const span of lane.spans) {
-      first = Math.min(first, span.firstHour);
-      last = Math.max(last, span.lastHour + 1);
-    }
-  }
-  return first <= last ? [first, last] : null;
-}

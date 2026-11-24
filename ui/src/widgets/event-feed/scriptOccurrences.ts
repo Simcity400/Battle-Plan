@@ -1,5 +1,6 @@
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import { validateFeedRow } from './eventFeedData.ts';
 import type { EventFeedItem, EventFeedKind, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
 
@@ -45,6 +46,6 @@ export function breakAfter(breaks: readonly RecordingBreak[], from: number, to: 
 export const dayOf = (hour: number): string => { const date = gameDate(hour); return date ? formatDate(date) : formatDateTime(hour); };
 
 export const daysBetween = (from: number, to: number): number => Math.floor(to / 24) - Math.floor(from / 24);
-export const daysText = (days: number): string => `${days.toLocaleString()} ${days === 1 ? 'day' : 'days'}`;
+export const daysText = (days: number): string => `${formatScalar(days, 'integer')} ${days === 1 ? 'day' : 'days'}`;
 
 export const beforeBreak = (span: RecordingBreak, from: number): number => Math.max(from, span.firstHour - 1);
