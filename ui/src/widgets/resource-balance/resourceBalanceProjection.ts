@@ -19,7 +19,7 @@ const NO_ICON = 'The current installation has no icon for this resource';
 
 function media(readView: BoundedReadView, info: ResourceInfo): BarsRowMedia {
   if (info.icon === null) return { kind: 'art', art: unavailableArt(NO_ICON) };
-  return { kind: 'art', art: readView.art({ kind: 'url', url: info.icon }), iconUrl: info.icon };
+  return { kind: 'art', art: readView.art({ kind: 'url', url: info.icon }) };
 }
 
 function figure(raw: string | null, reason: string): Value<bigint> {

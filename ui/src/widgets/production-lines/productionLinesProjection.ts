@@ -4,7 +4,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
-import { artState } from '../../families/table/identityCell.ts';
+import { cellArt } from '../../families/table/identityCell.ts';
 import {
   type TableCell,
   type TableModel,
@@ -110,10 +110,10 @@ export const productionLinesProjection: TableProjection<ProductionLinesProjectio
       const name = variantName(variant, line.variant);
       const subtitle = variant?.typeName && variant.typeName !== name ? variant.typeName : undefined;
       const artUrl = iconImage(reply.icons, variant?.icon ?? null);
-      const art = artState(readView, urlArtHandle(artUrl));
+      const art = cellArt(readView, urlArtHandle(artUrl), 'The product drew no icon for this equipment');
       const org = organisationOf(reply.organisations, line.mio);
       const orgArtUrl = iconImage(reply.icons, org?.icon ?? null);
-      const orgArt = artState(readView, urlArtHandle(orgArtUrl));
+      const orgArt = cellArt(readView, urlArtHandle(orgArtUrl), 'The product drew no picture for this organisation');
 
       const active = readLiveNum(live, line.handle, 'active');
       const requested = readLiveNum(live, line.handle, 'requested');

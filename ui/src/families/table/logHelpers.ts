@@ -1,3 +1,5 @@
+import { flagChoiceArt } from '../art/provider.ts';
+import { unavailableArt } from '../art/types.ts';
 import type { DashboardSource } from '../../dashboard/client';
 import type { CountryRef, GroupSelection, MissingSpan } from '../../generated/dashboard';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
@@ -172,15 +174,15 @@ export function logCountryCell(
   const names: string[] = [];
   for (const entry of entries) {
     if (entry.tag === null) {
-      flags.push({ tag: '?', ...(entry.dimmed ? { dimmed: true } : {}) });
+      flags.push({ tag: '?', art: unavailableArt(entry.missingLabel ?? 'Country not recorded'), ...(entry.dimmed ? { dimmed: true } : {}) });
       names.push(entry.missingLabel ?? 'Country not recorded');
     } else {
       const hour = entry.atHour ?? atHour;
       const who = resolveIdentity(readView, 'country', entry.tag, { atHour: hour, boundary });
       flags.push({
         tag: entry.tag,
-        ...(who.icon ? { icon: who.icon } : {}),
-        ...(who.iconPending ? { pending: true } : {}),
+        art: who.art ?? flagChoiceArt(readView, undefined),
+        ...(who.artKey ? { artKey: who.artKey } : {}),
         ...(entry.dimmed ? { dimmed: true } : {}),
       });
       names.push(who.name || identityName(readView, 'country', entry.tag, hour));

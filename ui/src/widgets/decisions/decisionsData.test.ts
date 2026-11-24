@@ -160,7 +160,7 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
   const chargedRow = byKey.get(chargedOcc.id)!;
   assert.deepEqual(chargedRow.cells.cost?.value, { kind: 'known', value: '50' });
   assert.equal(chargedRow.cells.cost?.unitSuffix, 'PP');
-  assert.equal(chargedRow.cells.cost?.unitIcon, 'art://pp');
+  assert.equal(chargedRow.cells.cost?.unitArt?.status === 'ready' ? chargedRow.cells.cost.unitArt.url : null, 'art://pp');
   assert.ok(chargedRow.meta, 'decision row carries detail subject');
   const mixedRow = byKey.get(mixedUnknownOcc.id)!;
   assert.equal(mixedRow.cells.cost?.value.kind, 'notRecorded', 'unknown selection cost never collapses to No cost');

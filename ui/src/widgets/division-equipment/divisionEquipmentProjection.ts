@@ -6,8 +6,8 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { isAbsentValue, knownValue, notRecorded, partialValue, textValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { DivisionEquipmentReply, DivisionEquipmentView, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
-import { urlArtHandle } from '../../families/art/provider.ts';
-import { artState, type ArtState } from '../../families/table/identityCell.ts';
+import { productIconArt } from '../../families/art/provider.ts';
+import type { ArtResult } from '../../families/art/types.ts';
 import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY } from './definition.ts';
 import { validateDivisionEquipment } from './divisionEquipmentData.ts';
 
@@ -68,7 +68,7 @@ const asOf = (reply: DivisionEquipmentReply) => reply.poolHour === null ? undefi
 
 const [PICTURE, TYPE, HELD, NEEDED, MISSING, TYPE_FILL, DIVISIONS_SHORT] = TYPE_COLUMNS;
 
-type TypeRow = EquipmentType & { readonly picture: ArtState; readonly coverage: string | null };
+type TypeRow = EquipmentType & { readonly picture: ArtResult | undefined; readonly coverage: string | null };
 
 export function validateTypePictures(value: unknown): StockpileArtworkReply {
   const reply = value as StockpileArtworkReply;
@@ -91,8 +91,8 @@ function typePictures(reply: StockpileArtworkReply | undefined): ReadonlyMap<str
   return held;
 }
 
-function typePicture(type: EquipmentType, pictures: ReadonlyMap<string, string>, readView: BoundedReadView): ArtState {
-  return type.archetype === null ? {} : artState(readView, urlArtHandle(pictures.get(type.archetype.toLowerCase())));
+function typePicture(type: EquipmentType, pictures: ReadonlyMap<string, string>, readView: BoundedReadView): ArtResult | undefined {
+  return type.archetype === null ? undefined : productIconArt(readView, pictures.get(type.archetype.toLowerCase()), 'The product drew no picture for this equipment');
 }
 
 function typeName(row: EquipmentType): Value<string> {
@@ -100,7 +100,7 @@ function typeName(row: EquipmentType): Value<string> {
 }
 
 const TYPE_SPEC: readonly DeclarativeColumnSpec<TypeRow, Record<string, never>>[] = [
-  { ...PICTURE!, priority: 6, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.picture.icon, iconPending: row => row.picture.iconPending === true,
+  { ...PICTURE!, priority: 6, sortable: false, cellKind: 'kind', iconSlot: true, art: row => row.picture,
     extra: row => ({ artShape: 'equipment', ...(row.name ? { artName: row.name } : {}) }),
     value: typeName },
   { ...TYPE!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Infantry Equipment'], value: typeName },
@@ -151,18 +151,16 @@ export const equipmentTypeProjection: TableProjection<Record<string, never>> = r
     tooltipNote: (_row, reply) => asOf(reply),
   }), 'equipment');
 
-interface TemplateRow { readonly template: EquipmentTemplate; readonly icon: string | undefined; readonly pending: boolean; readonly coverage: string | null }
+interface TemplateRow { readonly template: EquipmentTemplate; readonly icon: ArtResult; readonly coverage: string | null }
 
-function templateIcon(template: EquipmentTemplate, readView: BoundedReadView): Pick<TemplateRow, 'icon' | 'pending'> {
-  if (template.icon === null) return { icon: undefined, pending: false };
-  const art = readView.art({ kind: 'url', url: template.icon });
-  return art.status === 'ready' ? { icon: art.url, pending: false } : { icon: undefined, pending: art.status === 'pending' };
+function templateIcon(template: EquipmentTemplate, readView: BoundedReadView): Pick<TemplateRow, 'icon'> {
+  return { icon: productIconArt(readView, template.icon, 'The product drew no counter for this template') };
 }
 
 const [KIND, TEMPLATE, DIVISIONS, MANPOWER, STRENGTH, FILL, TYPES_SHORT] = TEMPLATE_COLUMNS;
 
 const TEMPLATE_SPEC: readonly DeclarativeColumnSpec<TemplateRow, Record<string, never>>[] = [
-  { ...KIND!, priority: 6, sortable: false, cellKind: 'kind', iconSlot: true, icon: row => row.icon, iconPending: row => row.pending,
+  { ...KIND!, priority: 6, sortable: false, cellKind: 'kind', iconSlot: true, art: row => row.icon,
     extra: () => ({ artShape: 'counter' }), value: row => textValue(row.template.name, row.template.nameMissing ?? 'Template name unavailable') },
   { ...TEMPLATE!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Infantry Division 1941'],
     value: row => textValue(row.template.name, row.template.nameMissing ?? 'Template name unavailable') },

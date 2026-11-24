@@ -1,3 +1,4 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import { colour, readableColour } from '../../charts/palette.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import { bridgeGaps } from '../../charts/timeline/runState.ts';
@@ -147,7 +148,7 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
         key: source.id,
         kind: heading ? 'group' as const : 'item' as const,
         ...(heading ? { swatch: about.faction.color, ruleColor: about.faction.color } : { depth: 1, parentKey: headerKey }),
-        ...(!heading ? (look ? { flag: look.flag, flagTag: look.tag } : { flagTag: '?' }) : {}),
+        ...(!heading ? (look ? { flag: look.flag, flagTag: look.tag } : { flag: unavailableArt('The country is not recorded at this hour'), flagTag: '?' }) : {}),
         label: name,
         subtitle: source.label,
         spans,

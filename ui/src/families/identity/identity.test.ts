@@ -14,7 +14,7 @@ import type {
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle, createLaneArtProvider, flagArtHandle, laneArtDemand, mergeArtDemands, requestDemandedFlags } from '../art/provider.ts';
-import { toFlagSlotState } from '../art/adapters.ts';
+import { toArtSlotState } from '../art/adapters.ts';
 import { NO_ART, artHandleKey, productArt, refusedArt } from '../art/types.ts';
 import { RefusedError } from '../../dashboard/queryError.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
@@ -973,9 +973,9 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
   assert.equal(broker.flagFor(SCOPE, 'panel', FLAG_A)?.url, 'flag://GER_a');
   broker.dispose();
 
-  assert.deepEqual(toFlagSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
-  assert.deepEqual(toFlagSlotState(NO_ART), { kind: 'none' });
-  assert.deepEqual(toFlagSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', tag: 'GER' });
+  assert.deepEqual(toArtSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
+  assert.deepEqual(toArtSlotState(NO_ART), { kind: 'none' });
+  assert.deepEqual(toArtSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', reason: 'No flag file', label: 'GER' });
 });
 
 test('an entity failure belongs to its window and a retryable one is asked again after its backoff', async () => {

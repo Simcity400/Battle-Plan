@@ -1,7 +1,8 @@
 import { colour, readableColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { flagArtHandle } from '../../families/art/provider.ts';
-import type { ArtHandle, BoundedReadView } from '../../families/contract.ts';
+import { flagChoiceArt } from '../../families/art/provider.ts';
+import { unavailableArt } from '../../families/art/types.ts';
+import type { ArtHandle, ArtResult, BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
@@ -80,10 +81,9 @@ export function warSides(war: WarTimeline): WarSides {
   return { attackers, defenders, leads: [lead(attackers), lead(defenders)] };
 }
 
-function countryAt(readView: BoundedReadView, tag: string, hour: number): { readonly name: string; readonly flag: ArtHandle | null; readonly colour: string | null } {
+function countryAt(readView: BoundedReadView, tag: string, hour: number): { readonly name: string; readonly flag: ArtResult; readonly colour: string | null } {
   const who = readView.who('country', tag, Math.min(hour, readView.hour));
-  const flag = who.flagChoice?.status === 'ready' ? flagArtHandle(who.flagChoice.value, 'panel') : null;
-  if (flag) readView.art(flag);
+  const flag = flagChoiceArt(readView, who.flagChoice, 'panel');
   return {
     name: who.name.status === 'ready' ? who.name.value : tag,
     flag,
@@ -127,7 +127,7 @@ function sideLabel(readView: BoundedReadView, runs: readonly WarParticipantRun[]
   const others = [...new Set(runs.filter(run => run.tag !== lead && run.lastHour >= at).map(run => run.tag))];
   return {
     name: leadLook?.name ?? 'Country not recorded',
-    flag: leadLook?.flag ?? null,
+    flag: leadLook?.flag ?? unavailableArt('The side has no lead country recorded'),
     flagTag: lead ?? '?',
     strip: others.map(tag => ({ flag: countryAt(readView, tag, at).flag, tag })),
     ...(dim ? { dim: true } : {}),
@@ -159,12 +159,12 @@ function warLanes(readView: BoundedReadView, reply: WarTimelineReply, opt: WarsO
     const dates = `${war.startedBy ? 'By ' : ''}${formatDateOnly(war.firstHour)} – ${open ? 'ongoing' : formatDateOnly(war.lastHour)}`;
     const span: TimelineSpan = {
       id: 'war', firstHour: war.firstHour, lastHour, color: halves[0], halves, open, startBy: war.startedBy, endUnseen: war.endedBy && !open,
-      marks: war.capitulations.map(item => ({ hour: item.hour, art: SURRENDER_FLAG, label: `${name(item.tag)} capitulated` })),
+      marks: war.capitulations.map(item => ({ hour: item.hour, art: readView.art(SURRENDER_FLAG), label: `${name(item.tag)} capitulated` })),
     };
     lanes.push({
       key, kind: 'item', label: `${name(sides.leads[0] ?? '?')} – ${name(sides.leads[1] ?? '?')}`, subtitle: dates, height: WAR_LANE,
       sides: [sideLabel(readView, sides.attackers, sides.leads[0], at, ending.loser === 'attackers'), sideLabel(readView, sides.defenders, sides.leads[1], at, ending.loser === 'defenders')],
-      outcome: { mark: ending.mark, text: ending.text, detail: ending.detail, ...(ending.mark === 'flag' ? { flag: SURRENDER_FLAG } : {}) },
+      outcome: { mark: ending.mark, text: ending.text, detail: ending.detail, ...(ending.mark === 'flag' ? { flag: readView.art(SURRENDER_FLAG) } : {}) },
       expandable: true, defaultOpen: open, spans: [span],
       auditValue: `${war.id}|${dates}|${ending.text} ${ending.detail}`,
       meta: { warId: war.id } satisfies WarLaneMeta,
@@ -186,7 +186,7 @@ function warLanes(readView: BoundedReadView, reply: WarTimelineReply, opt: WarsO
           return {
             id: `${index}:${at}`, firstHour: run.firstHour, lastHour: held ? hour : run.lastHour, open: held, color: fill,
             startBy: run.joinedBy, endUnseen: run.leftBy && !held,
-            ...(last && fell !== undefined && fell <= hour ? { marks: [{ hour: fell, art: SURRENDER_FLAG, label: `${look.name} capitulated` }] } : {}),
+            ...(last && fell !== undefined && fell <= hour ? { marks: [{ hour: fell, art: readView.art(SURRENDER_FLAG), label: `${look.name} capitulated` }] } : {}),
           };
         }),
         auditValue: `${tag}|${runs.map(run => `${run.firstHour}-${run.lastHour >= reply.hour && open ? 'open' : run.lastHour}`).join(',')}`,

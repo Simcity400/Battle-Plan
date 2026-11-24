@@ -1,7 +1,8 @@
 import { fitLine } from '../../charts/labels.ts';
 import type { Canvas2D, MeasureText } from '../../charts/textWidth.ts';
 import { computeTimeAxisTicks, drawArtSlot, drawTimeAxis, resolveKitTokens, type TimeAxisTick } from '../../draw/kit.ts';
-import { toArtSlotState } from '../art/adapters.ts';
+import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { FamilyTooltipEntry } from '../host/tooltips.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
@@ -75,7 +76,7 @@ function monthBox(frame: RowsFrame, month: ChartRowMonth): readonly [number, num
   return width >= 4 ? [x0 + 0.5, width - 1] : [x0, Math.max(1, width)];
 }
 
-export function drawChartRows(ctx: Canvas2D, model: TimeChartModel, frame: RowsFrame, theme: FamilyTheme, inspect: { readonly row: number; readonly month: number } | null): void {
+export function drawChartRows(ctx: Canvas2D, model: TimeChartModel, frame: RowsFrame, theme: FamilyTheme, inspect: { readonly row: number; readonly month: number } | null, artCache?: LaneArtCache): void {
   const tokens = resolveKitTokens(theme);
   const negative = tokens.shortage;
   const nameFont = `500 ${theme.fontSize.body}px ${theme.font}`;
@@ -83,7 +84,7 @@ export function drawChartRows(ctx: Canvas2D, model: TimeChartModel, frame: RowsF
   for (const placed of frame.rows.rows) {
     const { row, top, height, zeroY, scale } = placed;
     const iconY = zeroY - ICON / 2;
-    if (row.icon) drawArtSlot(ctx, frame.rows.nameLeft, iconY, ICON, ICON, toArtSlotState(row.icon.art, row.icon.label), theme, { radius: 0 });
+    if (row.icon) drawArtSlot(ctx, frame.rows.nameLeft, iconY, ICON, ICON, toArtSlotState(resolveCachedArt(row.icon.art, artCache), row.icon.label), theme, { radius: 0 });
     ctx.save();
     ctx.font = nameFont;
     ctx.fillStyle = theme.text;

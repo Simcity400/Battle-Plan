@@ -2,7 +2,7 @@ import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { LegendStripEntry } from '../../draw/kit.ts';
 import type { HourSpan } from '../../generated/dashboard';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
-import type { ArtHandle, BoundedReadView, DisplayedHour, FamilyProjection } from '../contract.ts';
+import type { ArtResult, BoundedReadView, DisplayedHour, FamilyProjection } from '../contract.ts';
 
 export interface TimelineSpan {
   readonly id: string;
@@ -10,8 +10,7 @@ export interface TimelineSpan {
   readonly lastHour: number;
   readonly color: string;
   readonly label?: string;
-  readonly icon?: ArtHandle | null;
-  readonly iconMissing?: boolean;
+  readonly icon?: ArtResult;
   readonly heldBefore?: boolean;
   readonly startBy?: boolean;
   readonly endUnseen?: boolean;
@@ -23,15 +22,15 @@ export interface TimelineSpan {
 
 export interface TimelineMark {
   readonly hour: number;
-  readonly art: ArtHandle | null;
+  readonly art: ArtResult;
   readonly label: string;
 }
 
 export interface TimelineSideLabel {
   readonly name: string;
-  readonly flag: ArtHandle | null;
+  readonly flag: ArtResult;
   readonly flagTag: string;
-  readonly strip: readonly { readonly flag: ArtHandle | null; readonly tag: string }[];
+  readonly strip: readonly { readonly flag: ArtResult; readonly tag: string }[];
   readonly dim?: boolean;
 }
 
@@ -39,7 +38,7 @@ export interface TimelineOutcome {
   readonly mark: 'ongoing' | 'ended' | 'flag';
   readonly text: string;
   readonly detail?: string;
-  readonly flag?: ArtHandle | null;
+  readonly flag?: ArtResult;
 }
 
 export type TimelineLaneKind = 'item' | 'group' | 'heading';
@@ -51,9 +50,8 @@ export interface TimelineLane {
   readonly label: string;
   readonly subtitle?: string;
   readonly aside?: string;
-  readonly icon?: ArtHandle | null;
-  readonly iconMissing?: boolean;
-  readonly flag?: ArtHandle | null;
+  readonly icon?: ArtResult;
+  readonly flag?: ArtResult;
   readonly flagTag?: string;
   readonly swatch?: string;
   readonly expandable?: boolean;

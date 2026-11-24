@@ -3,7 +3,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { holdingLabel, holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryProof, lookOf, unobservedThrough, validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { urlArtHandle } from '../../families/art/provider.ts';
+import { artworkArt } from '../../families/art/provider.ts';
 import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -78,17 +78,16 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
       const latest = row.holdings.at(-1)!;
       const latestLook = lookOf(reply, latest);
       const name = holdingLabel(latestLook, latest);
-      const icon = urlArtHandle(latestLook.artwork.icon);
+      const icon = artworkArt(readView, latestLook.artwork);
       const spans = row.holdings.map(holding => {
         const look = lookOf(reply, holding);
-        const spanIcon = urlArtHandle(look.artwork.icon);
+        const spanIcon = artworkArt(readView, look.artwork);
         return {
           id: `${row.token}:${holding.firstHour}`,
           firstHour: holding.firstHour,
           color: fill,
           label: holdingLabel(look, holding),
           icon: spanIcon,
-          iconMissing: !spanIcon,
           ...holdingSpanFlags(holding, hour),
           meta: { holding },
         };
@@ -100,7 +99,6 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
         label: name,
         subtitle,
         icon,
-        iconMissing: !icon,
         spans,
         auditValue: `${name}|${subtitle}`,
       };

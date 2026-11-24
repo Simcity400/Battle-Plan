@@ -5,6 +5,7 @@ import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import type { FamilyPlanContext, FamilyViewportRequest, PointSourceRead } from '../../families/plan.ts';
 import { formatValueState } from '../../families/valueFormat.ts';
+import { PENDING_ART, readyArt } from '../../families/art/types.ts';
 import type { ResourceBalanceReply } from '../../generated/dashboard';
 import { FAMILY_VIEWS } from '../familyManifest.ts';
 import { validateResourceBalance } from './resourceReply.ts';
@@ -42,7 +43,7 @@ async function view() {
 
 const project = async (data: ResourceBalanceReply): Promise<BarsModel> => {
   const { projection } = await view();
-  const model = projection.project(createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', data]]) }), { country: 'ITA' });
+  const model = projection.project(createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', data]]), art: { demandOwner: 'view', resolve: handle => (handle.kind === 'url' ? readyArt(handle.url) : PENDING_ART) } }), { country: 'ITA' });
   assertBarsModelValid(model, 500);
   return model;
 };
@@ -70,7 +71,8 @@ test('the Bars view keeps the product order and prints the exact signed net, In 
 test('the resource icon comes from the reply; a missing name or icon is said, never guessed', async () => {
   const rows = (await project(reply())).rows as BarsDataRow[];
   assert.equal(rows[0]!.media?.kind, 'art');
-  assert.equal(rows[0]!.media?.iconUrl, ICON);
+  const icon = rows[0]!.media?.art;
+  assert.equal(icon?.status === 'ready' ? icon.url : null, ICON);
   assert.equal(rows[2]!.media?.art.status, 'unavailable');
   assert.equal(rows[1]!.labelMissing, true);
   assert.equal(rows[1]!.label, 'Resource name unavailable');

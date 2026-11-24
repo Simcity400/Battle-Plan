@@ -87,7 +87,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
       ctx.clearRect(0, 0, frame.surface.width, frame.surface.height);
       return false;
     }
-    drawTimeChart(ctx, frame.layout.model, shown, frame.theme, frame.inspect, frame.surface.dpr > 0 ? frame.surface.dpr : 1, frame.layout.legend);
+    drawTimeChart(ctx, frame.layout.model, shown, frame.theme, frame.inspect, frame.surface.dpr > 0 ? frame.surface.dpr : 1, frame.layout.legend, frame.art);
     return false;
   },
   hit(frame, point) {

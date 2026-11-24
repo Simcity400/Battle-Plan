@@ -81,7 +81,6 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
       now: frame.now,
       glideDuration: glide.duration,
       glide: glide.offsets,
-      icons: frame.art.map,
       artCache: frame.art,
       inspectedKey: inspected(frame.inspect)?.key ?? null,
       selectedKey: frame.binding.selectedKey,

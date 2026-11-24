@@ -5,7 +5,7 @@ import { knownValue, notRecorded, partialValue, valueFromLive, zeroValue, type V
 import type { TableCellExtra, TooltipExtraRow } from '../../families/table/model.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import { artState, type ArtState } from '../../families/table/identityCell.ts';
+import { cellArt, type CellArt } from '../../families/table/identityCell.ts';
 import type { NavalRefitsReply, NavalRepairsReply, RefitLine, RepairPort, YardShip } from '../../generated/dashboard';
 
 export const FIXED = 100000n;
@@ -42,12 +42,12 @@ export function validateRefits(value: unknown): NavalRefitsReply {
   return reply;
 }
 
-export function shipPicture(ship: YardShip, readView: BoundedReadView): ArtState {
-  return ship.classIcon ? artState(readView, { kind: 'sprite', key: ship.classIcon.key, frame: ship.classIcon.frame }) : {};
+export function shipPicture(ship: YardShip, readView: BoundedReadView): CellArt {
+  return cellArt(readView, ship.classIcon ? { kind: 'sprite', key: ship.classIcon.key, frame: ship.classIcon.frame } : null, 'The recording names no counter for this ship class');
 }
 
-export function shipPictureCell(ship: YardShip, picture: ArtState): TableCellExtra {
-  return { iconSlot: true, artShape: 'counter', ...(ship.class ? { artName: ship.class } : {}), ...(picture.icon ? { icon: picture.icon } : {}), ...(picture.iconPending ? { iconPending: true } : {}) };
+export function shipPictureCell(ship: YardShip, picture: CellArt): TableCellExtra {
+  return { iconSlot: true, artShape: 'counter', ...(ship.class ? { artName: ship.class } : {}), ...picture };
 }
 
 export type ShipNameSource = 'recorded' | 'rebuilt' | 'design';

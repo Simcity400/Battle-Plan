@@ -4,7 +4,7 @@ import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../famil
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { occurrenceSelection } from '../../families/table/logHelpers.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
-import { artState, resolveIdentity, type ResolvedIdentity } from '../../families/table/identityCell.ts';
+import { cellArt, resolveIdentity, type ResolvedIdentity } from '../../families/table/identityCell.ts';
 import {
   type TableCell,
   type TableModel,
@@ -24,6 +24,8 @@ import { contractRows, levelText, offerRows, PRICE_MISSING, quoteText, type Mark
 export interface InternationalMarketProjectionOptions {
   readonly view: MarketTab;
 }
+
+const withArt = (who: ResolvedIdentity) => ({ ...(who.art ? { art: who.art } : {}), ...(who.artKey ? { artKey: who.artKey } : {}) });
 
 
 export const internationalMarketProjection: TableProjection<InternationalMarketProjectionOptions> = {
@@ -77,12 +79,12 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       const rows: TableRow[] = offers.map(row => {
         const seller = countryAt(readView, row.seller, hour);
         const eqName = row.name ?? 'Equipment name unavailable';
-        const art = artState(readView, urlArtHandle(row.icon));
+        const art = cellArt(readView, urlArtHandle(row.icon), 'The product drew no icon for this equipment');
         return {
           key: row.key,
           name: eqName,
           cells: {
-            seller: { value: seller.value, iconSlot: true, icon: seller.icon, iconPending: seller.iconPending, country: row.seller ?? undefined, countryColor: seller.color },
+            seller: { value: seller.value, iconSlot: true, ...withArt(seller), country: row.seller ?? undefined, countryColor: seller.color },
             equipment: { value: knownValue(eqName), iconSlot: true, artShape: 'wide', artName: eqName, ...art },
             amount: { value: row.amount === 0n ? zeroValue(0n) : knownValue(row.amount) },
             level: { value: row.level === null ? notRecorded('Price level not recorded') : knownValue(levelText(row.level)) },
@@ -121,7 +123,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       const buyer = countryAt(readView, row.buyer, hour);
       const allEquipment = row.equipment.map(item => item.name ?? 'Equipment name unavailable').join(', ');
       const firstIcon = row.equipment[0]?.icon ?? null;
-      const art = artState(readView, urlArtHandle(firstIcon));
+      const art = cellArt(readView, urlArtHandle(firstIcon), 'The product drew no icon for this equipment');
 
       const priceOf = (variant: string) => row.prices.find(item => item.variant === variant)?.amount ?? null;
       const levelOf = (variant: string) => row.levels.find(item => item.variant === variant)?.level ?? null;
@@ -147,8 +149,8 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
           key: row.key,
           name: allEquipment || 'Equipment',
           cells: {
-            buyer: { value: buyer.value, iconSlot: true, icon: buyer.icon, iconPending: buyer.iconPending, country: row.buyer ?? undefined, countryColor: buyer.color },
-            seller: { value: seller.value, iconSlot: true, icon: seller.icon, iconPending: seller.iconPending, country: row.seller ?? undefined, countryColor: seller.color },
+            buyer: { value: buyer.value, iconSlot: true, ...withArt(buyer), country: row.buyer ?? undefined, countryColor: buyer.color },
+            seller: { value: seller.value, iconSlot: true, ...withArt(seller), country: row.seller ?? undefined, countryColor: seller.color },
             equipment: { value: knownValue(allEquipment || 'Equipment name unavailable'), iconSlot: true, artShape: 'wide', artName: allEquipment, ...art },
             amount: { value: single === null ? several : amt === null ? notRecorded('Amount not recorded') : amt === 0n ? zeroValue(0n) : knownValue(amt) },
             level: { value: single === null ? several : lvl === null ? notRecorded('Price level not recorded') : knownValue(levelText(lvl)) },
@@ -174,8 +176,8 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       );
 
       const cells: Record<string, TableCell> = {
-        seller: { value: seller.value, iconSlot: true, icon: seller.icon, iconPending: seller.iconPending, country: row.seller ?? undefined, countryColor: seller.color },
-        buyer: { value: buyer.value, iconSlot: true, icon: buyer.icon, iconPending: buyer.iconPending, country: row.buyer ?? undefined, countryColor: buyer.color },
+        seller: { value: seller.value, iconSlot: true, ...withArt(seller), country: row.seller ?? undefined, countryColor: seller.color },
+        buyer: { value: buyer.value, iconSlot: true, ...withArt(buyer), country: row.buyer ?? undefined, countryColor: buyer.color },
         equipment: { value: knownValue(allEquipment || 'Equipment name unavailable'), iconSlot: true, artShape: 'wide', artName: allEquipment, ...art },
         price: { value: single === null ? several : priceRaw === null ? notRecorded(PRICE_MISSING) : knownValue(priceRaw) },
         convoys: { value: assigned, format: 'integer', secondaryValue: needed },

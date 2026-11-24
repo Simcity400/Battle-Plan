@@ -61,9 +61,9 @@ test('a type’s picture is the one the stockpile artwork product answers for it
   );
   const [infantry, unclassified] = model.rows;
   const picture = infantry!.cells.picture!;
-  assert.ok(picture.icon === 'asset://infantry.png' || picture.iconPending === true, JSON.stringify(picture));
+  assert.ok(picture.art?.status === 'pending', JSON.stringify(picture));
   assert.equal(picture.artShape, 'equipment');
-  assert.deepEqual([unclassified!.cells.picture!.icon, unclassified!.cells.picture!.iconPending], [undefined, undefined]);
+  assert.equal(unclassified!.cells.picture!.art, undefined, 'an unclassified type has no picture to draw');
 });
 
 test('a figure summed over the compared divisions is partial, and unranked, while some of the row’s divisions are not; complete readings stay exact', () => {

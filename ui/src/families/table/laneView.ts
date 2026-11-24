@@ -12,7 +12,6 @@ import {
   deriveTableTooltip,
   keepsProductOrder,
   nextTableChange,
-  resolveCellAtHour,
   resolveTableRows,
   resolveTableRowsIncremental,
   tableRank,
@@ -24,7 +23,7 @@ import {
 } from './model.ts';
 import { createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
 import { combinedPaneGeometry, combinedPaneRows, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
-import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, showsIcon, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
+import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> extends LaneBinding<TOptions> {
   readonly family: 'table';
@@ -129,7 +128,7 @@ function textSamples(columns: readonly { readonly key: string; readonly numeric?
       if (item.kind !== 'data') continue;
       const cell = item.row.cells[column.key];
       if (!cell) continue;
-      const val = cell.looks ? item.name : cell.value.kind === 'known' ? String(cell.value.value) : '';
+      const val = cell.value.kind === 'known' ? String(cell.value.value) : '';
       if (val) list.push(val);
     }
     samples[column.key] = list;
@@ -207,8 +206,8 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const maxima = inc && prev && prev.maximaCols === maximaCols && model.changedKeys
     ? (model.changedKeys.size === 0
       ? prev.maxima
-      : updateColumnMaximaIncremental(prev.maxima, prev.flatRows, prev.rowIndex, flatRows, rowIndex, columns.columns, model.changedKeys, prev.model.hour, model.hour))
-    : computeColumnMaxima(flatRows, columns.columns, model.hour);
+      : updateColumnMaximaIncremental(prev.maxima, prev.flatRows, prev.rowIndex, flatRows, rowIndex, columns.columns, model.changedKeys))
+    : computeColumnMaxima(flatRows, columns.columns);
   const dataKeys = flatRows.filter(item => item.kind === 'data').map(item => item.key);
   const shape: TableShape = {
     model, options: binding.options, settings, expanded, width, theme,
@@ -386,7 +385,6 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       inspectedKey: inspectedRow(frame.inspect),
       selectedKey: binding.selectedKey ?? null,
       focusedKey: binding.focusedKey ?? null,
-      icons: frame.art.map,
       iconVersion: frame.art.version,
       artCache: frame.art,
       dpr: frame.surface.dpr > 0 ? frame.surface.dpr : 1,
@@ -461,7 +459,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   tooltip(frame, key, focus) {
     const rowKey = focus ? key : inspectedRow(key);
     if (!rowKey) return null;
-    const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns, frame.model.hour);
+    const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns);
     return content ? { rowKey, content } : null;
   },
   structure({ layout, binding }) {
@@ -472,7 +470,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   mirror({ model, layout, binding }) {
     const shape = layout.shape;
     const visibleSpecs = shape.columns.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-    return deriveTableMirror(shape.flatRows, visibleSpecs, model.hour, shape.rankShown, layout.rowWindow, binding.focusedKey ?? null, layout.focusedIndex);
+    return deriveTableMirror(shape.flatRows, visibleSpecs, shape.rankShown, layout.rowWindow, binding.focusedKey ?? null, layout.focusedIndex);
   },
   audit({ model, layout, theme }) {
     const shape = layout.shape;
@@ -488,23 +486,22 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     });
   },
   visibleArt(frame) {
-    const { layout, binding, model } = frame;
+    const { layout, binding } = frame;
     const shape = layout.shape;
     if (shape.panes) {
       return collectArtUrls(shape.panes.flatMap(pane => {
         const [first, last] = visiblePaneRange(pane.geom, pane.rows.length, binding.scrollTop, layout.height);
-        return visibleCellArtItems(pane.rows, shape.columns.columns, model.hour, first, last);
+        return visibleCellArtItems(pane.rows, shape.columns.columns, first, last);
       }));
     }
     const [first, last] = visibleRange(layout, liveGlide(frame).glide.offsets.size > 0);
-    return collectArtUrls(visibleCellArtItems(shape.flatRows, shape.columns.columns, model.hour, first, last));
+    return collectArtUrls(visibleCellArtItems(shape.flatRows, shape.columns.columns, first, last));
   },
 };
 
 function visibleCellArtItems(
   rows: readonly FlatTableRow[],
   columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'skillIcon'>[],
-  hour: number,
   first: number,
   last: number,
 ): ArtUrlInput[] {
@@ -522,18 +519,9 @@ function visibleCellArtItems(
       const col = columns[c]!;
       const cell = item.row.cells[col.key];
       if (!cell) continue;
-      if (cell.flags) {
-        for (const fl of cell.flags) if (fl.icon) items.push(fl.icon);
-      }
-      if (cell.icons) {
-        for (const ic of cell.icons) if (ic.url) items.push(ic.url);
-      }
-      if (cell.icon) items.push(cell.icon);
-      if (cell.unitIcon) items.push(cell.unitIcon);
-      if (cell.iconSlot && showsIcon(col.display)) {
-        const resolved = resolveCellAtHour(cell, hour);
-        if (resolved.icon) items.push(resolved.icon);
-      }
+      if (cell.flags) for (const fl of cell.flags) items.push(fl.art);
+      if (cell.icons) for (const ic of cell.icons) items.push(ic.art);
+      items.push(cell.art, cell.unitArt);
     }
   }
   return items;
