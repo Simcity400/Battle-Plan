@@ -21,7 +21,7 @@ import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import type { ArtHandle, DisplayedHour } from '../plan.ts';
 import { IdentityBroker, type IdentityTransport } from './broker.ts';
 import { createBrokerIdentityProvider, createSnapshotIdentityProvider, parseEntityKey } from './provider.ts';
-import { UNHELD_HEAD_HOUR, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
+import { UNHELD_HEAD_HOUR, countryPickerKeys, readIdentityAtHeadHour, subscribeIdentityAtHead, type HeldHeadHour } from './react.ts';
 import {
   IdentityIndex,
   countrySlotKey,
@@ -664,6 +664,36 @@ test('a lane flag at a size other than the default is demanded, drawn at that si
   laneArtDemand(handle, after, undefined, urls, asks);
   assert.equal(asks.size, 0, 'a drawn flag is not asked again');
   assert.deepEqual([...urls], ['flag://GER_a/small']);
+  broker.dispose();
+});
+
+test('the playback picker dates every shown row by the displayed hour and moves at the earliest boundary among them', async () => {
+  const facts = sampleFacts();
+  const transport: IdentityTransport = {
+    ...UNUSED_ENTITY_READS,
+    loadFacts: async () => facts,
+    loadIdentities: async () => sampleIdentities(),
+    loadGroups: async () => sampleGroups(),
+    loadStyles: () => deferred<CountryStyleReply>().promise,
+    loadFlags: async (_scope, size) => ({ size, flags: [], unavailable: [], warnings: [] }),
+  };
+  const broker = new IdentityBroker({ transport });
+  broker.setDemand({}, SCOPE, { asks: [{ key: countryTagKey('ALP'), hour: 0 }], needFlags: false, flagSize: 'panel' }, undefined, [0, 500]);
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  let clockHour = 25;
+  const clock = { getHour: () => clockHour };
+  const held: { current: HeldHeadHour } = { current: UNHELD_HEAD_HOUR };
+  const keys = countryPickerKeys(null, 'ALP', ['ALP', 'GER']);
+  const read = () => readIdentityAtHeadHour(broker, clock, SCOPE, true, keys, h => h, null, [0, 500], held);
+  assert.equal(read(), 25);
+  clockHour = 160;
+  const at = read();
+  assert.equal(at, 160, 'a shown row renamed at 150 moves the picker although the selection did not change');
+  assert.equal(broker.resolve(SCOPE, countryTagKey('GER'), at!).kind === 'known' && (broker.resolve(SCOPE, countryTagKey('GER'), at!) as { name: { value?: string } }).name.value, 'Later Empire');
+  clockHour = 20;
+  assert.equal(read(), 20, 'a seek back is read at the displayed hour, never a later one');
+  assert.deepEqual(countryPickerKeys(null, null, ['GER']).length, 1, 'an empty selection still dates the shown rows');
+  assert.deepEqual(countryPickerKeys(3, 'ALP', []), [countrySlotKey(3)], 'a selected slot stays first, so it is the header');
   broker.dispose();
 });
 

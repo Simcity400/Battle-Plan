@@ -6,7 +6,7 @@ import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
 import type { PlaybackController } from './playback';
-import { countrySlotKey, countryTagKey, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../families/identity/react.ts';
+import { countryPickerKeys, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../families/identity/react.ts';
 import { timelineGaps, timelineHourAt } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
 import { useMapMuted } from '../shell/muteSetting';
@@ -23,16 +23,17 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
     || hour + offset < first || hour + offset > last ? null : hour + offset, [first, last, offset]);
   const scope = useIdentityScope(picker.client, track?.source, track?.branch.id, !!track);
   const branchBounds = useMemo(() => (first !== undefined && last !== undefined ? [first, last] as const : undefined), [first, last]);
+  const [shownTags, setShownTags] = useState<readonly string[]>([]);
   const keys = useMemo(
-    () => (selectedSlot !== null ? [countrySlotKey(selectedSlot)] : picker.selectedTag ? [countryTagKey(picker.selectedTag)] : []),
-    [selectedSlot, picker.selectedTag],
+    () => countryPickerKeys(selectedSlot, picker.selectedTag, shownTags),
+    [selectedSlot, picker.selectedTag, shownTags],
   );
   const { hour, results } = useIdentityAtHead(picker.client, track?.source, scope, clock, keys, trackHour, {
     active: !!track,
     follow: true,
     branchBounds,
   });
-  const head = results[0] as CountryIdentityResult | undefined;
+  const head = selectedSlot !== null ? results[0] as CountryIdentityResult | undefined : undefined;
   const selectedTag = selectedSlot === null
     ? picker.selectedTag
     : head?.kind === 'known' && head.tag.kind === 'known'
@@ -40,8 +41,12 @@ export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }:
       : head?.kind === 'absent'
         ? null
         : picker.selectedTag;
-  const flagAt = useMemo(() => track && hour !== null ? { branchId: track.branch.id, hour } : null, [track?.branch.id, hour]);
-  return <CountryPicker {...picker} selectedTag={selectedTag} flagAt={flagAt} />;
+  const shownHour = hour ?? (track ? trackHour(clock.getHour()) : null);
+  const flagAt = useMemo(
+    () => track && shownHour !== null ? { branchId: track.branch.id, hour: Math.floor(shownHour) } : null,
+    [track?.branch.id, shownHour],
+  );
+  return <CountryPicker {...picker} selectedTag={selectedTag} flagAt={flagAt} onShownTags={setShownTags} />;
 }
 
 function MapMuteButton() {
