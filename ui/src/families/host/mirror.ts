@@ -9,6 +9,10 @@ export interface TableMirrorSyncOptions {
   readonly lastMirrorKeyRef: { current: string };
 }
 
+export function mirrorRowSelector(key: string): string {
+  return `tr[data-row-key="${CSS.escape(key)}"]`;
+}
+
 function restoreFocus(row: HTMLTableRowElement | null, key: string | null, options: TableMirrorSyncOptions): boolean {
   if (!row) return false;
   if (document.activeElement !== row) {
