@@ -292,6 +292,7 @@ export class UnitReads {
   private readonly flights = new Map<string, { readonly key: string; readonly handle: BrokerSlotHandle }>();
   private readonly restart = new Set<string>();
   private held: ReadonlyMap<string, UnitResult> = NO_RESULTS;
+  private synced: { readonly units: readonly ReadUnit[]; readonly active: boolean } = { units: [], active: false };
   private readonly load: (unit: ReadUnit, signal: AbortSignal, restart: boolean) => Promise<unknown>;
   private readonly changed: () => void;
   private readonly peek: ((unit: ReadUnit) => unknown) | undefined;
@@ -327,6 +328,7 @@ export class UnitReads {
   }
 
   sync(units: readonly ReadUnit[], active: boolean): void {
+    this.synced = { units, active };
     const wanted = new Set<string>();
     if (active) {
       for (const unit of units) {
@@ -358,6 +360,7 @@ export class UnitReads {
     }
     if (!next) return;
     this.held = next;
+    this.sync(this.synced.units, this.synced.active);
     this.changed();
   }
 

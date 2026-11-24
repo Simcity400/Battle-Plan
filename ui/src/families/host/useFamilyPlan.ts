@@ -829,7 +829,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       },
       playback: { branch, effectiveEndHour, gate: frozenGate, countriesKnown: countriesState.known },
     });
-  }, [branch, entries, following, trackOffset, content, displayHour, widget.time.mode, window, pinHour, frozenGate, countriesState.known, runtime.clock, effectiveEndHour, askedRevision]);
+  }, [owner, branch, entries, following, trackOffset, content, displayHour, widget.time.mode, window, pinHour, frozenGate, countriesState.known, runtime.clock, effectiveEndHour, askedRevision]);
 
   const perfWidget = measuredWidget();
   const readInputs = useRef({ client: runtime.client, source: track?.source, content, perfWidget });

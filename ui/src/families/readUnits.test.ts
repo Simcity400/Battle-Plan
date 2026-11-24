@@ -171,9 +171,14 @@ test('a failed read keeps a boundary watch, so a seek asks the new hour (R2-S8)'
   assert.equal(failed.kind, 'failed');
   assert.deepEqual(watchSpan(at50, reads.results, END), [50, 50]);
   assert.deepEqual(reaskedUnits(at50, reads.results, 80, END), ['head'], 'leaving the failed request’s hour re-asks the unit');
+  reads.retry();
+  assert.equal(calls.length, 2, 'retry asks the failed request again');
+  assert.equal(settleFollowing(at50, reads.results, 50).kind, 'hold');
+  calls[1]!.reject(new Error('lost again'));
+  await settled();
   const at80 = following(entries, { head: 80 }, 80);
   reads.sync(at80, true);
-  assert.equal(calls.length, 2, 'the new hour is asked');
+  assert.equal(calls.length, 3, 'the new hour is asked');
   assert.equal(settleFollowing(at80, reads.results, 80).kind, 'hold', 'the old failure does not stand for the new hour');
   reads.dispose();
 });
