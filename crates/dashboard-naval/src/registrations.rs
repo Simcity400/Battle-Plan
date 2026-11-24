@@ -1,5 +1,4 @@
 dashboard_base::register_products! {
-    MINEFIELDS_MINEFIELDHISTORY => crate::products::minefields::MinefieldHistory,
     NAVAL_SUPREMACY_NAVALSUPREMACY => crate::products::naval_supremacy::NavalSupremacy,
     NAVAL_BATTLES_NAVALBATTLESMANIFEST => crate::products::naval::battles::NavalBattlesManifest,
     NAVAL_BATTLES_NAVALBATTLES => crate::products::naval::battles::NavalBattles,
@@ -12,7 +11,6 @@ dashboard_base::register_products! {
 
 dashboard_base::register_hourly_products! {
     MINEFIELDS_MINEFIELDS => crate::products::minefields::Minefields,
-    MINEFIELDS_MINEFIELDREPORTS => crate::products::minefields::MinefieldReports,
     NAVAL_YARDS_NAVALREPAIRS => crate::products::naval_yards::NavalRepairs,
     NAVAL_YARDS_NAVALREFITS => crate::products::naval_yards::NavalRefits,
     NAVAL_MANAGEMENT_NAVALMANAGEMENT => crate::products::naval_management::NavalManagement,
