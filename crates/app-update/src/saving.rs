@@ -154,6 +154,8 @@ fn run(shown: &Arc<Mutex<Shown>>, title: &str) {
         };
         if ended {
             DestroyWindow(hwnd);
+        } else {
+            PostMessageW(hwnd, SAY, 0, 0);
         }
         let mut message: MSG = std::mem::zeroed();
         while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {

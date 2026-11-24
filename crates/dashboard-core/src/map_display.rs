@@ -377,6 +377,7 @@ impl CampaignMapSettings {
             audio.ambient,
             audio.units,
             audio.combat,
+            audio.interface,
             audio.voice,
             audio.music,
         ]
@@ -520,19 +521,37 @@ mod tests {
                 .is_err()
             );
         }
-        for voice in [100.5, -1.0, f32::NAN] {
-            assert!(
-                CampaignMapSettings {
-                    audio: MapAudioOverrides {
-                        voice: Some(voice),
+        let volumes: [(&str, fn(&mut MapAudioOverrides) -> &mut Option<f32>); 7] = [
+            ("master", |audio| &mut audio.master),
+            ("ambient", |audio| &mut audio.ambient),
+            ("units", |audio| &mut audio.units),
+            ("combat", |audio| &mut audio.combat),
+            ("interface", |audio| &mut audio.interface),
+            ("voice", |audio| &mut audio.voice),
+            ("music", |audio| &mut audio.music),
+        ];
+        for (name, field) in volumes {
+            for (volume, valid) in [
+                (0.0, true),
+                (100.0, true),
+                (100.5, false),
+                (5000.0, false),
+                (-1.0, false),
+                (f32::NAN, false),
+            ] {
+                let mut audio = MapAudioOverrides::default();
+                *field(&mut audio) = Some(volume);
+                assert_eq!(
+                    CampaignMapSettings {
+                        audio,
                         ..Default::default()
-                    },
-                    ..Default::default()
-                }
-                .validate()
-                .is_err(),
-                "{voice}"
-            );
+                    }
+                    .validate()
+                    .is_ok(),
+                    valid,
+                    "{name} {volume}"
+                );
+            }
         }
         let filter = |tags: &[&str]| CampaignMapSettings {
             counters: Some(CounterFilter::Countries {
