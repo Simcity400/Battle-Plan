@@ -46,6 +46,7 @@ RULE_HINTS = {
     "family-locale-string": "use formatScalar, formatCompactScalar, or formatValueState from ui/src/families/valueFormat.ts",
 }
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
+TS_FIXTURE = re.compile(r"\.fixture\.tsx?$")
 FAMILY_TS = re.compile(r"^ui/src/families/.+\.tsx?$")
 PROJECTION_TS = re.compile(r"^ui/src/widgets/.+Projection\.ts$")
 TS_TOKEN = re.compile(r"""//|/\*|'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""", re.DOTALL)
@@ -585,7 +586,7 @@ def rust_matches(name, revision):
 
 
 def is_family_or_projection(name):
-    if JS_TEST.search(name):
+    if JS_TEST.search(name) or TS_FIXTURE.search(name):
         return False
     return bool(FAMILY_TS.match(name) or PROJECTION_TS.match(name))
 
