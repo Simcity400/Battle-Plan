@@ -701,6 +701,7 @@ mod tests {
             spans: vec![(1, 10, 0, 71), (1, 20, 72, 200)],
             unknown: vec![],
             looks: HashMap::from([(10, red), (20, blue)]),
+            raw_looks: HashMap::new(),
             tags: HashMap::from([(1, Arc::from("GER"))]),
         });
         let indexed = IndexedRunLooks::new(run);
