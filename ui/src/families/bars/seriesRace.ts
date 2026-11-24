@@ -1,19 +1,20 @@
 import { rankProvenInterval, validateRankReply } from '../../charts/race/measureRaceData.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
-import type { GroupSelection, SeriesRankRow } from '../../generated/dashboard';
+import type { GroupSelection, SeriesRankReply, SeriesRankRow } from '../../generated/dashboard';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, valueFromRawBigInt, zeroValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel } from './model.ts';
+import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment } from './model.ts';
 
 const ALL_POPULATION_TOP = 10_000;
 
 interface SeriesRaceBase {
   readonly branchId: string;
   readonly family: { readonly kind: string; readonly measure: string };
+  readonly measures: readonly string[];
   readonly top: number | null;
   readonly countries: readonly string[];
   readonly group: GroupSelection | null;
@@ -28,6 +29,12 @@ export interface SeriesRaceBaseOptions {
 export interface SeriesRaceConfig {
   readonly kind: string;
   readonly family: { readonly kind: string; readonly measure: string };
+  readonly measures?: readonly string[];
+}
+
+export interface SeriesRaceParts {
+  readonly segments?: readonly BarsSegment[];
+  readonly items: readonly TooltipListItem[];
 }
 
 export interface SeriesRaceProjectConfig {
@@ -38,11 +45,12 @@ export interface SeriesRaceProjectConfig {
   readonly emptyMessage: string;
   readonly note?: string;
   readonly positiveOnly?: boolean;
+  readonly parts?: (reply: SeriesRankReply, row: SeriesRankRow) => SeriesRaceParts;
 }
 
 function seriesRaceParams(base: Readonly<Record<string, unknown>>, hour: GatedHour): Readonly<Record<string, unknown>> | null {
   const cfg = base as unknown as SeriesRaceBase;
-  const asked = { branchId: cfg.branchId, family: cfg.family, hour };
+  const asked = { branchId: cfg.branchId, family: cfg.family, hour, ...(cfg.measures.length ? { measures: cfg.measures } : {}) };
   if (cfg.top != null) return { ...asked, top: cfg.top };
   if (cfg.group) return { ...asked, group: cfg.group };
   return cfg.countries.length ? { ...asked, countries: cfg.countries.map(countryFromKey) } : null;
@@ -67,6 +75,7 @@ export function seriesRaceSources(ctx: FamilyPlanContext, config: SeriesRaceConf
   const base: SeriesRaceBase = {
     branchId: ctx.branch.id,
     family: config.family,
+    measures: config.measures ?? [],
     top,
     countries: top == null && !group ? ctx.countries.tags : [],
     group,
@@ -118,7 +127,7 @@ export function rankRowKey(row: SeriesRankRow): string {
   return countryKey(row.slot ?? row.country);
 }
 
-function makeRow(readView: BoundedReadView, rankRow: SeriesRankRow, decimals: number, config: SeriesRaceProjectConfig): BarsDataRow {
+function makeRow(readView: BoundedReadView, reply: SeriesRankReply, rankRow: SeriesRankRow, decimals: number, config: SeriesRaceProjectConfig): BarsDataRow {
   const key = rankRowKey(rankRow);
   const pres = countryRowPresentation(readView, key);
   const state = rankRow.readings[0]!;
@@ -132,6 +141,7 @@ function makeRow(readView: BoundedReadView, rankRow: SeriesRankRow, decimals: nu
     : formatted.kind === 'notApplicable'
       ? { label: config.valueLabel, value: '—' }
       : { label: config.valueLabel, value: formatted.exact ?? formatted.text };
+  const parts = numeric !== null && config.parts ? config.parts(reply, rankRow) : null;
   const identity = readView.who('country', key);
   const tag = identity.tag?.status === 'ready' ? identity.tag.value : typeof rankRow.country === 'string' ? rankRow.country : null;
   return {
@@ -144,10 +154,11 @@ function makeRow(readView: BoundedReadView, rankRow: SeriesRankRow, decimals: nu
     ...(pres.color ? { color: pres.color } : {}),
     value: { value, format: config.valueFormat, label: config.valueLabel },
     numeric,
+    ...(parts?.segments ? { segments: parts.segments } : {}),
     tooltip: {
       title: pres.labelMissing ? 'Name not recorded' : pres.label,
       hour: readView.hour,
-      items: [item],
+      items: [item, ...(parts?.items ?? [])],
       ...(config.note ? { note: config.note } : {}),
     },
     meta: { tag: tag ?? key, key },
@@ -173,7 +184,7 @@ export function projectSeriesRace(readView: BoundedReadView, options: SeriesRace
   const decimals = reply.measures[0]!.decimals;
   const rows: BarsDataRow[] = [];
   for (const rankRow of reply.rows) {
-    const row = makeRow(readView, rankRow, decimals, config);
+    const row = makeRow(readView, reply, rankRow, decimals, config);
     if (ranked && config.positiveOnly && row.numeric !== null && row.numeric !== undefined && row.numeric <= 0) continue;
     rows.push(row);
   }

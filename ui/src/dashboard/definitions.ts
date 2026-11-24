@@ -116,7 +116,7 @@ export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'a
 export interface WidgetSubjectMenuProps {
   readonly widget: WidgetSpec;
   readonly runtime: WidgetRuntime;
-  readonly onApply: (widget: WidgetSpec) => void;
+  readonly setOption: (key: string, value: OptionValue) => void;
 }
 
 export type FamilyViewProps = Omit<WidgetProps, 'widget' | 'options'> & {
@@ -129,11 +129,16 @@ export type FamilyViewCountryChipProps = Omit<WidgetCountryChipProps, 'widget'> 
   readonly options: ResolvedViewOptions;
 };
 
+export type FamilyViewSubjectMenuProps = Omit<WidgetSubjectMenuProps, 'widget'> & {
+  readonly widget: RenderedWidget;
+  readonly options: ResolvedViewOptions;
+};
+
 export interface FamilyViewRenderer {
   readonly render?: ComponentType<FamilyViewProps>;
   readonly declaration?: FamilyWidgetDeclaration;
   readonly countryChip?: ComponentType<FamilyViewCountryChipProps>;
-  readonly subjectMenu?: ComponentType<WidgetSubjectMenuProps>;
+  readonly subjectMenu?: ComponentType<FamilyViewSubjectMenuProps>;
   readonly useOptionChoices?: WidgetDefinition['useOptionChoices'];
   readonly usePresets?: WidgetDefinition['usePresets'];
 }

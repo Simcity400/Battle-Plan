@@ -32,8 +32,8 @@ const REPLY: NuclearArsenalReply = {
     { ordinal: 1, token: 'thermonuclear_bomb', name: 'Thermonuclear Bomb' },
   ],
   countries: [
-    { tag: 'USA', countryId: 1, total: 10, counts: [{ ordinal: 0, value: 6, ready: 2 }, { ordinal: 1, value: 4, ready: 0 }] },
-    { tag: 'SOV', countryId: 2, total: 3, counts: [{ ordinal: 0, value: 3, ready: 0 }] },
+    { tag: 'USA', countryId: 1, slot: null, total: 10, counts: [{ ordinal: 0, value: 6, ready: 2 }, { ordinal: 1, value: 4, ready: 0 }] },
+    { tag: 'SOV', countryId: 2, slot: null, total: 3, counts: [{ ordinal: 0, value: 3, ready: 0 }] },
   ],
   missing: null,
   warnings: [],
@@ -41,11 +41,8 @@ const REPLY: NuclearArsenalReply = {
 
 const BASE_OPTS: NuclearArsenalRaceOptions = {
   all: false,
-  chosenTags: [],
-  holders: null,
-  membership: null,
-  unobserved: [],
   top: 10,
+  group: false,
   split: true,
 };
 

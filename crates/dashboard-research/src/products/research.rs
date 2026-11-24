@@ -1,6 +1,7 @@
 
 pub mod breakdown;
 mod grants;
+pub mod history;
 mod modifiers;
 pub mod slots;
 #[cfg(test)]
@@ -476,22 +477,21 @@ impl Product for Research {
     }
 }
 
-fn present(source: &Source, context: &LoadContext, history: ResearchHistory, mut warnings: Vec<String>, cancelled: &AtomicBool) -> io::Result<ResearchReply> {
-    let art = match content(source, context) {
-        Ok(art) => art,
-        Err(error) => {
-            warnings.insert(0, format!("Research content unavailable: {error}"));
-            return Ok(ResearchReply { history, artwork: Vec::new(), folders: Vec::new(), technology_folders: Vec::new(), warnings, definitions: None });
-        }
-    };
-    let mut indices: BTreeMap<&str, BTreeSet<u32>> = BTreeMap::new();
-    for entry in history.slots.iter().flat_map(|slot| &slot.entries) {
-        indices.entry(entry.token.as_str()).or_default().insert(entry.database_index);
-    }
+pub(crate) const OBSERVATION_NOTE: &str = "Research dates are observation bounds: a country's research is read about once a day. Elapsed durations follow a technology through the slots it was assigned to; progress made before its first observed assignment and gaps in the recording leave a duration unknown.";
+
+pub(crate) struct Presentation {
+    pub artwork: Vec<Artwork>,
+    pub folders: Vec<ResearchFolder>,
+    pub technology_folders: Vec<ResearchTechnologyFolder>,
+    pub definitions: Vec<ResearchDefinitionText>,
+    pub warnings: Vec<String>,
+}
+
+pub(crate) fn presentation(art: &artwork::Context, indices: &BTreeMap<&str, BTreeSet<u32>>, cancelled: &AtomicBool) -> io::Result<Presentation> {
     let single = |recorded: &BTreeSet<u32>| (recorded.len() == 1).then(|| recorded.first().copied()).flatten();
     let mut definitions = Vec::new();
     let mut placed = BTreeSet::new();
-    for (token, recorded) in &indices {
+    for (token, recorded) in indices {
         if single(recorded).is_none() {
             for &index in recorded {
                 check_cancel(cancelled)?;
@@ -504,10 +504,26 @@ fn present(source: &Source, context: &LoadContext, history: ResearchHistory, mut
     let tokens: BTreeMap<&str, Option<u32>> = indices.iter().map(|(token, recorded)| (*token, single(recorded))).collect();
     let shown: BTreeMap<&str, Option<u32>> = tokens.iter().filter(|(_, at)| at.is_some()).map(|(&token, &at)| (token, at)).collect();
     let (folders, technology_folders, folder_warnings) = art.research_folders(&shown, &placed);
-    let (artwork, mut named) = art.recorded_text_catalogue(tokens, cancelled)?;
-    named.extend(folder_warnings);
+    let (artwork, mut warnings) = art.recorded_text_catalogue(tokens, cancelled)?;
+    warnings.extend(folder_warnings);
+    Ok(Presentation { artwork, folders, technology_folders, definitions, warnings })
+}
+
+fn present(source: &Source, context: &LoadContext, history: ResearchHistory, mut warnings: Vec<String>, cancelled: &AtomicBool) -> io::Result<ResearchReply> {
+    let art = match content(source, context) {
+        Ok(art) => art,
+        Err(error) => {
+            warnings.insert(0, format!("Research content unavailable: {error}"));
+            return Ok(ResearchReply { history, artwork: Vec::new(), folders: Vec::new(), technology_folders: Vec::new(), warnings, definitions: None });
+        }
+    };
+    let mut indices: BTreeMap<&str, BTreeSet<u32>> = BTreeMap::new();
+    for entry in history.slots.iter().flat_map(|slot| &slot.entries) {
+        indices.entry(entry.token.as_str()).or_default().insert(entry.database_index);
+    }
+    let Presentation { artwork, folders, technology_folders, definitions, warnings: mut named } = presentation(&art, &indices, cancelled)?;
     named.append(&mut warnings);
-    named.push("Research dates are observation bounds: a country's research is read about once a day. Elapsed durations follow a technology through the slots it was assigned to; progress made before its first observed assignment and gaps in the recording leave a duration unknown.".into());
+    named.push(OBSERVATION_NOTE.into());
     named.extend(art.refusal_lines());
     Ok(ResearchReply { history, artwork, folders, technology_folders, warnings: named, definitions: (!definitions.is_empty()).then_some(definitions) })
 }
@@ -596,10 +612,10 @@ pub(crate) fn slot_read(
     }
     let token = present.then(|| String::from_utf8_lossy(&input.token).into_owned());
     SlotRead {
-        progress: joined.filter(|_| present).map(|joined| ResearchProgress {
+        progress: present.then(|| ResearchProgress {
             first_hour: read,
             last_hour: read,
-            entry_first_observed_hour: Some(joined.first_observed),
+            entry_first_observed_hour: joined.map(|joined| joined.first_observed),
             base_days_raw: base_cost(input).map(|cost| cost.to_string()),
             progress_raw: input.progress_raw.to_string(),
         }),
