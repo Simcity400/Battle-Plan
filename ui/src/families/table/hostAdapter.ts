@@ -73,7 +73,6 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
     return next;
   },
   parseHit: parseTableHit,
-  inspectToken: key => `row:${key}`,
   getScrollExtent: fields => {
     const widths = fields.widths as TableWidthsField | undefined;
     const table = fields.table as TableInfoField | undefined;
@@ -104,24 +103,9 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   },
   buildBinding: ctx => (ctx.settings
     ? {
-        options: ctx.options,
         settings: ctx.settings,
-        sources: ctx.sources,
-        ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-        ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-        width: ctx.viewport.width,
-        height: ctx.viewport.height,
-        scrollLeft: ctx.viewport.scrollLeft,
-        scrollTop: ctx.viewport.scrollTop,
-        theme: ctx.theme,
-        ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
-        ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
-        selectedKey: ctx.selectedKey,
-        focusedKey: ctx.focusedKey,
         expanded: ctx.expanded,
         reducedMotion: ctx.reducedMotion,
-        pauseFlush: ctx.pauseFlush,
-        ...(ctx.audit ? { audit: true, auditId: ctx.auditId } : {}),
       }
     : null),
 };

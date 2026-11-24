@@ -5,11 +5,8 @@ import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartGap, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
@@ -207,7 +204,7 @@ function buildHoverDetail(
   return { hour: hover.hour, items, replacesSeries: true };
 }
 
-export const worldTensionProjection: TimeChartProjection<WorldTensionChartOptions> = registerTimeChart({
+export const worldTensionProjection: TimeChartProjection<WorldTensionChartOptions> = registerFamilyProjection({
   kind: 'world-tension',
   family: 'time-chart',
   variant: 'stacked-area',

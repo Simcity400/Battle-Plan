@@ -5,11 +5,8 @@ import { contentKey, contentSet } from '../../dashboard/options.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
-import {
-  registerTimeChart,
-  type TimeChartProjection,
-  type TimeChartWidgetDeclaration,
-} from '../../families/time-chart/declaration.ts';
+import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { ChartGap, TimeChartModel, TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf, missingSpansOf } from '../../families/time-chart/seriesHelpers.ts';
 import type { ApmReply, ApmSeries } from '../../generated/dashboard';
@@ -75,7 +72,7 @@ function extractHeadRows(readView: BoundedReadView): { readonly rows: readonly A
   return { rows: [], ready: false, refusal: null, warnings: [] };
 }
 
-export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = registerTimeChart({
+export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = registerFamilyProjection({
   kind: 'apm-graph',
   family: 'time-chart',
   variant: 'line',

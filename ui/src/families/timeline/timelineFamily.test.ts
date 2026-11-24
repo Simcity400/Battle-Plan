@@ -91,9 +91,9 @@ test('expanded state hides children of closed lanes, and hits encode lane, span 
   assert.equal(hit?.kind, 'span');
   const token = encodeTimelineHit(hit);
   assert.deepEqual(decodeTimelineHit(token), hit);
-  assert.deepEqual(timelineHostAdapter.parseHit(token), { key: 'm', subject: 'm', hour: hit!.hour, kind: 'span', toggle: false, inspectToken: token });
+  assert.deepEqual(timelineHostAdapter.parseHit!(token), { key: 'm', subject: 'm', hour: hit!.hour, kind: 'span', toggle: false, inspectToken: token });
   const toggle = hitTimeline(layout, resolution, 20, layout.lanes[0]!.y + 5, 0);
-  assert.equal(timelineHostAdapter.parseHit(encodeTimelineHit(toggle))?.toggle, true);
+  assert.equal(timelineHostAdapter.parseHit!(encodeTimelineHit(toggle))?.toggle, true);
 });
 
 test('the picture repaints at each new day so the playhead and open bars follow the clock between content changes', () => {
