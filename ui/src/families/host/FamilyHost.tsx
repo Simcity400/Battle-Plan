@@ -41,6 +41,7 @@ import {
   type ParsedFamilyHit,
 } from './adapter.ts';
 import { createPlanAuditVerifier, type FamilyAuditVerifier, type PlanAuditSnapshot } from './auditBinding.ts';
+import { boundDated } from './dated.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
 import {
   handleFamilyGridKeyDown,
@@ -562,16 +563,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (mounted.canvas.style.width !== widthPx) mounted.canvas.style.width = widthPx;
     if (mounted.canvas.style.height !== heightPx) mounted.canvas.style.height = heightPx;
     pipeline.present(pipe, curAdapter.family);
-    const noSources = Object.keys(sourceIdsRef.current).length === 0;
-    const dated = !noSources
-      ? undefined
-      : cur.staticSources
-        ? (cur.staticSources.provenInterval
-          ? { h: cur.staticSources.provenInterval[0], c: cur.staticSources.provenInterval[1] }
-          : { h: cur.staticSources.hour, c: cur.staticSources.hour })
-        : (cur.allowEmptyFollow || (cur.tiledSeries && Object.keys(cur.tiledSeries).length > 0)) && cur.bounds
-          ? { h: cur.bounds[0], c: cur.bounds[1] }
-          : undefined;
+    const dated = boundDated(
+      cur.staticSources,
+      Object.keys(sourceIdsRef.current).length > 0,
+      cur.allowEmptyFollow || (!!cur.tiledSeries && Object.keys(cur.tiledSeries).length > 0),
+      cur.bounds,
+    );
     pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }], ...(dated ? { dated } : {}) }, {}, binding);
   }, [pipeline, pipe, audit.capture, sourceIdsRef]);
 
