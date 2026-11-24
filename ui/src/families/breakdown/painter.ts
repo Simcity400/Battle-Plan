@@ -188,14 +188,10 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
         cursorX += 24;
       } else {
         ctx.save();
-        if (row.part.notRecorded) {
-          drawMissingMark(ctx, cursorX, cy, 10, theme);
-        } else {
-          ctx.fillStyle = row.swatchColor;
-          ctx.beginPath();
-          ctx.roundRect(cursorX, Math.round(cy - 5), 10, 10, 2);
-          ctx.fill();
-        }
+        ctx.fillStyle = row.swatchColor;
+        ctx.beginPath();
+        ctx.roundRect(cursorX, Math.round(cy - 5), 10, 10, 2);
+        ctx.fill();
         ctx.restore();
         cursorX += 18;
       }
@@ -203,7 +199,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       const textMaxW = Math.max(10, row.nameX + row.nameWidth - cursorX);
       ctx.save();
       ctx.font = `400 12px ${theme.font}`;
-      ctx.fillStyle = row.part.notRecorded ? theme.muted : theme.text;
+      ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(fitText(ctx, row.part.name, textMaxW), cursorX, cy);
@@ -279,8 +275,8 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       ctx.restore();
 
       ctx.save();
-      ctx.font = `400 11.5px ${theme.font}`;
-      ctx.fillStyle = row.part.notRecorded ? theme.muted : theme.muted;
+      ctx.font = `400 12px ${theme.font}`;
+      ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(fitText(ctx, row.part.name, row.nameWidth), row.nameX, cy);
@@ -304,13 +300,14 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
 
       if (!row.part.notRecorded) {
         ctx.save();
-        ctx.font = `400 11.5px ${theme.font}`;
-        ctx.fillStyle = theme.muted;
+        ctx.font = `400 12px ${theme.font}`;
+        ctx.fillStyle = theme.text;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
         ctx.fillText(fitText(ctx, row.part.text, row.valueWidth), row.valueX + row.valueWidth, cy);
         if (row.shareWidth > 0 && row.shareText) {
-          ctx.font = `400 10.5px ${theme.font}`;
+          ctx.font = `400 11px ${theme.font}`;
+          ctx.fillStyle = theme.muted;
           ctx.fillText(row.shareText, row.shareX + row.shareWidth, cy);
         }
         ctx.restore();

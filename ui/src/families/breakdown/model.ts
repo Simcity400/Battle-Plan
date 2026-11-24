@@ -2,10 +2,9 @@ import { colour } from '../../charts/palette.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
 import { mix, parseColor, toHex } from '../../shell/appearance/color.ts';
 import type { AuditRow } from '../../draw/notifications';
-import type { BoundedReadView, FamilyTheme } from '../contract.ts';
+import type { BoundedReadView, FamilyTheme, MirrorModel, MirrorRow } from '../contract.ts';
 import type { ArtResult } from '../plan.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
-import type { ListboxMirrorItem } from '../host/mirror.ts';
 import { buildTooltipContent, type FamilyTooltipPayload, type TooltipListItem } from '../host/tooltips.ts';
 
 export interface BreakdownPart {
@@ -319,9 +318,9 @@ export function deriveBreakdownNavAndMirror(
   level: ResolvedBreakdownLevel,
   expanded: Readonly<Record<string, boolean>>,
   view: string,
-): { readonly nav: readonly FamilyNavTuple[]; readonly mirror: readonly ListboxMirrorItem[] } {
+): { readonly nav: readonly FamilyNavTuple[]; readonly mirror: MirrorModel } {
   const nav: FamilyNavTuple[] = [];
-  const mirror: ListboxMirrorItem[] = [];
+  const rows: MirrorRow[] = [];
   const unit = level.total.unit;
   let index = 0;
   for (const part of level.parts) {
@@ -332,11 +331,7 @@ export function deriveBreakdownNavAndMirror(
       : `${part.exact ?? part.text}${unit ? ` ${unit}` : ''}${!level.total.atLeast && part.share != null ? `, ${formatShare(part.share)}` : ''}`;
     const meta: BreakdownActionMeta | null = hasChildren ? { act: ACT_BY_VIEW[view] ?? 'toggle', open: isOpen } : null;
     nav.push([part.key, part.name, index, hasChildren ? (isOpen ? 1 : 0) : -1, '', meta]);
-    mirror.push({
-      key: part.key,
-      spoken: `${part.name}, ${valueSpoken}`,
-      index,
-    });
+    rows.push({ key: part.key, name: part.name, rowIndex: index, level: 0, ...(hasChildren ? { group: true, open: isOpen } : {}), cells: [{ column: 'value', spoken: valueSpoken }] });
     index++;
     if (isOpen && part.children) {
       for (const child of part.children) {
@@ -344,16 +339,12 @@ export function deriveBreakdownNavAndMirror(
           ? `not recorded${child.missingReason ? `: ${child.missingReason}` : ''}`
           : `${child.exact ?? child.text}${unit ? ` ${unit}` : ''}${!level.total.atLeast && child.share != null ? `, ${formatShare(child.share)}` : ''}`;
         nav.push([child.key, child.name, index, -1, part.key, null]);
-        mirror.push({
-          key: child.key,
-          spoken: `${part.name}, ${child.name}, ${childSpoken}`,
-          index,
-        });
+        rows.push({ key: child.key, name: `${part.name}, ${child.name}`, rowIndex: index, level: 1, cells: [{ column: 'value', spoken: childSpoken }] });
         index++;
       }
     }
   }
-  return { nav, mirror };
+  return { nav, mirror: { first: 0, total: rows.length, rows } };
 }
 
 export function deriveBreakdownAudit(

@@ -6,6 +6,7 @@ import { breakdownParts, breakdownTotal, type BreakdownWords } from '../../famil
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { PowerSpendingBreakdownReply } from '../../generated/dashboard';
+import { OPTIONS } from './definition.ts';
 
 export interface PoliticalPowerSpendingOptions {
   readonly digits: number;
@@ -63,6 +64,7 @@ export const ppSpendingBreakdown: BreakdownWidgetSpec<PoliticalPowerSpendingOpti
   subject: 'political power spending',
   emptyCampaign: 'Load a campaign to see political power spending.',
   icon: 'sunburst',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its political power spending.' },
   projection: ppSpendingProjection,
   projectionOptions: ctx => ({ digits: powerDecimals(ctx.options) }),

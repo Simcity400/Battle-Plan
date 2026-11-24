@@ -310,7 +310,6 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
       maxValue = part.value;
     }
   }
-  const hasAnyExpandable = !narrow && level.parts.some(p => !p.notRecorded && p.children && p.children.length > 0);
   const inlineFont = `500 10.5px ${theme.font}`;
 
   const rows: PartsRowLayout[] = [];
@@ -323,9 +322,7 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
     const barFillWidth = !part.notRecorded && part.value !== null && maxValue > 0
       ? Math.max(part.value > 0 ? 2 : 0, (part.value / maxValue) * barCol)
       : 0;
-    const chevronRect: Rect | null = hasChildren && !narrow
-      ? { x: nameX, y: rowY, width: 14, height: PARTS_ROW_HEIGHT }
-      : null;
+    const chevronRect: Rect | null = null;
 
     const segments: PartsSegment[] = [];
     if (hasChildren && !isExpanded && barFillWidth > 0 && part.children) {
@@ -367,7 +364,7 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
       }
     }
 
-    const leadOffset = hasAnyExpandable ? 14 : 0;
+    const leadOffset = 0;
     rows.push({
       key: part.key,
       parentKey: null,
@@ -401,7 +398,7 @@ function layoutPartsView(input: BreakdownLayoutInput): PartsViewLayout {
         const chFillWidth = !ch.notRecorded && ch.value !== null && maxValue > 0
           ? Math.max(ch.value > 0 ? 2 : 0, (ch.value / maxValue) * barCol)
           : 0;
-        const chColor = ci % 2 === 0 ? color : tintColour(color, 0.16);
+        const chColor = color;
         rows.push({
           key: ch.key,
           parentKey: part.key,
@@ -623,7 +620,7 @@ function layoutRingView(input: BreakdownLayoutInput): RingViewLayout {
 
     const color = partColour(part, theme);
     const ink = inkOnColour(color);
-    const shareText = hatchedRing ? '' : formatShare(part.share ?? frac);
+    const shareText = hatchedRing ? '' : formatShare(part.share);
 
     let label: RingInnerSlice['label'] = null;
     if (!hatchedRing) {

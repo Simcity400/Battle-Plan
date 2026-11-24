@@ -18,7 +18,7 @@ fn the_whole_and_its_order_are_decided_here() {
     let leaves = [
         leaf(&[decisions.clone(), node("war", 0)], Amount::Known(640)),
         leaf(&[node("daily", 1)], Amount::Known(2071)),
-        leaf(&[decisions.clone(), node("economy", 1)], Amount::Known(352)),
+        leaf(&[decisions, node("economy", 1)], Amount::Known(352)),
         leaf(&[node("rest", 3).other()], Amount::Known(5000)),
         leaf(&[node("laws", 2)], Amount::Known(410)),
     ];
