@@ -125,7 +125,6 @@ export const PRODUCTION_LINES_COLUMNS: readonly TableColumnSpec[] = [
 export const PRODUCTION_LINES_BASE: TableBase = {
   density: 'normal',
   barsBehind: 'all',
-  overflow: 'scroll',
   showRank: false,
   sort: { column: 'factories', direction: 'descending' },
 };

@@ -236,8 +236,11 @@ export function layoutFamilyBars(
     nameWidth = narrow ? 88 : Math.min(168, Math.max(100, Math.round(w * 0.24)));
     valueLeftGutter = narrow ? 48 : 64;
     valueRightGutter = narrow ? 48 : 64;
+    showReadout = !narrow && model.rows.some(r => r.kind === 'data' && Boolean(r.readout));
+    readoutWidth = showReadout ? 64 : 0;
+    readoutX = w - BARS_PAD_X - readoutWidth;
     plotLeft = nameX + nameWidth + 10;
-    plotRight = Math.max(plotLeft + 60, w - BARS_PAD_X);
+    plotRight = Math.max(plotLeft + 60, (showReadout ? readoutX - 8 : w - BARS_PAD_X));
     centerX = Math.round((plotLeft + plotRight) / 2);
   } else {
     const hasReadoutColumn = model.rows.some(r => r.kind === 'data' && Boolean(r.readout));

@@ -1,6 +1,6 @@
 use replay_columnar::manifest::Status;
 use replay_data::rows::{RowCodec, TableId, TableRows, TableSchema};
-use replay_frame::frame::{DecodedFrame, TableView};
+use replay_frame::frame::{DecodedFrame, Keys, TableView};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CoverageScope {
@@ -77,8 +77,13 @@ fn refusal(table: TableId, view: &TableView) -> String {
     row_coverage(table, status, reason, false).into_missing().unwrap_or_default()
 }
 
+fn unread(table: TableId) -> String {
+    format!("{} not read for this row at this hour", table_title(table))
+}
+
 pub fn witnessed<T: TableSchema>(frame: &DecodedFrame, key: u128) -> Witness<'_, T::Row> {
-    let view: &TableView = &frame.tables[T::ID.index()];
+    let shared = &frame.tables[T::ID.index()];
+    let view: &TableView = shared;
     let (rows, complete) = match view {
         TableView::Complete(rows) => (rows, true),
         TableView::Truncated { rows, .. } => (rows, false),
@@ -90,14 +95,17 @@ pub fn witnessed<T: TableSchema>(frame: &DecodedFrame, key: u128) -> Witness<'_,
     };
     match rows.binary_search_by_key(&key, RowCodec::key) {
         Ok(at) => Witness::Row(&rows[at]),
+        Err(_) if !shared.keys().contains(key) => Witness::NotRecorded(unread(T::ID)),
         Err(_) if complete => Witness::Absent,
         Err(_) => Witness::NotRecorded(refusal(T::ID, view)),
     }
 }
 
-pub fn population<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], String> {
-    let view: &TableView = &frame.tables[T::ID.index()];
+pub fn population<'f, T: TableSchema>(frame: &'f DecodedFrame, asked: &Keys) -> Result<&'f [T::Row], String> {
+    let shared = &frame.tables[T::ID.index()];
+    let view: &TableView = shared;
     match view {
+        TableView::Complete(_) if shared.keys() != asked => Err(format!("{} read only for chosen rows at this hour", table_title(T::ID))),
         TableView::Complete(rows) => typed::<T>(rows),
         _ => Err(refusal(T::ID, view)),
     }
@@ -135,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn a_witnessed_key_keeps_its_row_from_a_truncated_table_and_a_population_needs_the_whole_table() {
+    fn a_witnessed_key_keeps_its_row_from_a_truncated_table_and_a_population_needs_the_whole_read() {
         use replay_data::rows::{CountryRow, tables::Countries};
         let row = |id: u32| CountryRow { id, tag: b"GER".to_vec(), ..CountryRow::default() };
         let mut frame = DecodedFrame {
@@ -149,10 +157,17 @@ mod tests {
         *frame.tables[table] = TableView::Truncated { rows: TableRows::Countries(vec![row(7)]), missing: 2 };
         assert_eq!(witnessed::<Countries>(&frame, key(7)).row().map(|row| row.id), Some(7), "a witnessed row is its own value");
         assert_eq!(witnessed::<Countries>(&frame, key(9)), Witness::NotRecorded("Countries read only in part at this hour (2 rows not read)".into()));
-        assert_eq!(population::<Countries>(&frame), Err("Countries read only in part at this hour (2 rows not read)".into()));
+        assert_eq!(population::<Countries>(&frame, &Keys::All), Err("Countries read only in part at this hour (2 rows not read)".into()));
         *frame.tables[table] = TableView::Complete(TableRows::Countries(vec![row(7)]));
         assert_eq!(witnessed::<Countries>(&frame, key(9)), Witness::Absent, "a complete table proves the key absent");
-        assert_eq!(population::<Countries>(&frame).map(<[_]>::len), Ok(1));
+        assert_eq!(population::<Countries>(&frame, &Keys::All).map(<[_]>::len), Ok(1));
+        let chosen = Keys::These(vec![key(7), key(8)]);
+        frame.tables[table] = frame.tables[table].clone().with_keys(Some(std::sync::Arc::new(chosen.clone())));
+        assert_eq!(witnessed::<Countries>(&frame, key(7)).row().map(|row| row.id), Some(7));
+        assert_eq!(witnessed::<Countries>(&frame, key(8)), Witness::Absent, "a complete read that chose the key proves it absent");
+        assert_eq!(witnessed::<Countries>(&frame, key(9)), Witness::NotRecorded("Countries not read for this row at this hour".into()), "a key the read did not choose was never looked for");
+        assert_eq!(population::<Countries>(&frame, &Keys::All), Err("Countries read only for chosen rows at this hour".into()), "chosen rows are not the whole table");
+        assert_eq!(population::<Countries>(&frame, &chosen).map(<[_]>::len), Ok(1), "the chosen rows are the population of what was chosen");
         *frame.tables[table] = TableView::Unavailable { reason: "reader fault".into() };
         assert_eq!(witnessed::<Countries>(&frame, key(7)), Witness::NotRecorded("Countries not available at this hour: reader fault".into()));
     }

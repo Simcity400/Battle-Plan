@@ -7,7 +7,7 @@ use super::{
 };
 use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget}};
 use engine_executable::modifier_keys as keys;
-use replay_recording::cells::TableReader;
+use dashboard_query::read::{row, touched};
 use replay_data::{fixed_point::fixed5_to_q15, fixed_point::q15_to_fixed5};
 use replay_data::{
     rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow, rows::ProductionModifierTree,
@@ -801,28 +801,7 @@ pub struct ProductionLineBreakdownReply {
 
 dashboard_base::reply_warnings!(ProductionLineBreakdownReply);
 
-fn row<T: replay_data::rows::TableSchema>(reader: &TableReader, key: u128, format: u16) -> Option<T::Row>
-where
-    T::Row: Clone,
-{
-    if !reader.available() {
-        return None;
-    }
-    let slot = reader.slot(key)?;
-    let rows = replay_frame::frame::cells_rows(T::ID, &reader.view(), &[(key, slot)], format).ok()?;
-    rows.rows::<T>()?.first().cloned()
-}
-
 type Inputs = (RawRun, ProductionLineModifiersRow, CountryProductionModifiersRow);
-
-fn touched(reader: &TableReader, key: u128) -> bool {
-    let changes = reader.changes();
-    if changes.anew || changes.status_changed || changes.deleted.iter().any(|&(_, deleted)| deleted == key) {
-        return true;
-    }
-    let Some(slot) = reader.slot(key) else { return false };
-    changes.inserted.contains(&slot) || changes.written.iter().any(|slots| slots.contains(&slot))
-}
 
 impl Product for ProductionLineBreakdown {
     const KEY: &'static str = "production-line-breakdown";

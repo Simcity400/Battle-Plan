@@ -19,6 +19,7 @@ import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { axisAt, coverageSpan, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
+import { keyId, keyedTileParams, keyedTileReply, type SeriesKey } from '../../dashboard/keyedSeriesData.ts';
 import type { TileReply } from '../../dashboard/tiles/tile.ts';
 import { TileView, tileCache, type TiledLine, type TileViewport } from '../../dashboard/tiles/view.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -631,7 +632,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (!entries.length) return '';
     return JSON.stringify(entries.map(e => {
       const r = e.read as Extract<typeof e.read, { shape: 'pixel-binned' }>;
-      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.within ? [...r.within.entries()] : null, r.marks === true, lastHour];
+      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.keys ?? null, r.within ? [...r.within.entries()] : null, r.marks === true, r.top ?? null, lastHour];
     }));
   }, [plan, lastHour]);
 
@@ -642,12 +643,15 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     readonly series: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
     readonly revision: number;
     readonly error: unknown;
+    readonly topRefused?: string | null;
   }>({ key: '', series: {}, revision: 0, error: null });
 
   const planForTilesRef = useRef(plan);
   planForTilesRef.current = plan;
   const gateSpanRef = useRef(gate.span);
   gateSpanRef.current = gate.span;
+  const gateRecordedRef = useRef(gate.recorded);
+  gateRecordedRef.current = gate.recorded;
 
   useEffect(() => {
     const currentPlan = planForTilesRef.current;
@@ -667,12 +671,14 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (disposed) return;
       const nextSeries: Record<string, ReadonlyMap<string, TiledLine>> = {};
       let firstError: unknown = null;
+      let topRefused: string | null = null;
       for (const [name, tv] of views) {
         if (tv.current) nextSeries[name] = tv.current;
         if (firstError === null && tv.error !== null) firstError = tv.error;
+        topRefused ??= tv.top?.refused ?? null;
       }
       rev++;
-      const snapshot = { key: pixelBinnedKey, series: nextSeries, revision: rev, error: firstError };
+      const snapshot = { key: pixelBinnedKey, series: nextSeries, revision: rev, error: firstError, topRefused };
       inFrame(() => {
         if (!disposed) setTiledState(snapshot);
       });
@@ -681,33 +687,62 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const prepared = preparing(runtime.client);
     for (const entry of entries) {
       const read = entry.read;
-      if (!read.tags.length) continue;
+      const keyed = read.keys && read.keys.length > 0 ? read.keys : null;
+      if (!keyed && !read.tags.length && !read.top) continue;
+      const byId = keyed ? new Map<string, SeriesKey>(keyed.map(key => [keyId(key), key])) : null;
+      const laneTags = keyed ? keyed.map(keyId) : read.tags;
       const tileRequest = (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): ProductRequest =>
         productRequest({
           sourceId: entry.source.id,
           revision: entry.source.revision,
           product: 'series-tiles',
-          params: {
-            branchId: entry.branch,
-            family: read.family,
-            binHours,
-            index,
-            countries: tags.map(countryFromKey),
-            ...(within
-              ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => gateSpanRef.current(span.firstHour, span.lastHour) ?? [])] as const) }
-              : {}),
-            ...(read.marks ? { withMarks: true } : {}),
-          },
+          params: keyed && byId
+            ? {
+                branchId: entry.branch,
+                family: read.family,
+                binHours,
+                index,
+                ...keyedTileParams(tags.map(id => byId.get(id)!), within, gateSpanRef.current),
+                ...(read.marks ? { withMarks: true } : {}),
+              }
+            : {
+                branchId: entry.branch,
+                family: read.family,
+                binHours,
+                index,
+                countries: tags.map(countryFromKey),
+                ...(within
+                  ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => gateSpanRef.current(span.firstHour, span.lastHour) ?? [])] as const) }
+                  : {}),
+                ...(read.marks ? { withMarks: true } : {}),
+              },
         });
       const ask = async (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
         const request = tileRequest(binHours, index, tags, within);
-        return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
+        const reply = validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
+        return keyed && byId ? keyedTileReply(reply as Parameters<typeof keyedTileReply>[0], tags.map(id => byId.get(id)!)) : reply;
       };
       const promote = prepared ? (...asked: Parameters<typeof tileRequest>) => prepareGate(runtime.client).promote(tileRequest(...asked)) : undefined;
-      const laneKey = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${JSON.stringify(read.family)}`;
+      const laneKey = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${JSON.stringify(read.family)}${keyed ? '|keyed' : ''}`;
+      const readTop = read.top;
+      const top = readTop
+        ? {
+            ask: async (binHours: number, index: number, hour: number) => {
+              const gated = gateRecordedRef.current(hour);
+              if (gated === null) throw new Error('The displayed hour is outside the recording.');
+              const request = productRequest({
+                sourceId: entry.source.id,
+                revision: entry.source.revision,
+                product: 'series-tiles',
+                params: { branchId: entry.branch, family: read.family, binHours, index, top: readTop.n, ...(readTop.least ? { least: true } : {}), hour: gated, ...(read.marks ? { withMarks: true } : {}) },
+              });
+              return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
+            },
+          }
+        : undefined;
       const tv = new TileView(
         tileCache(runtime.client),
-        { key: laneKey, tags: read.tags, within: read.within, lastHour, marks: read.marks === true, ask, prepared, promote },
+        { key: laneKey, tags: laneTags, within: read.within, lastHour, marks: read.marks === true, ask, prepared, promote, ...(top ? { top } : {}) },
         publish,
       );
       views.set(entry.name, tv);
@@ -778,6 +813,24 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [currentTiled, tileClockHour, runtime.clock, trackOffset],
   );
   const tileHour = following ? tileSeenHour : Math.floor(pinHour ?? window?.lastHour ?? effectiveEndHour);
+  useEffect(() => {
+    const tops = [...tileViewsRef.current.values()].filter(tv => tv.isTop);
+    if (!active || !tops.length) return;
+    const now = () => (following ? Math.floor(runtime.clock.getHour()) + trackOffset : tileHour);
+    for (const tv of tops) tv.setHour(now());
+    if (!following) return;
+    const proof = (): readonly [number, number] => {
+      let lo = -Infinity;
+      let hi = Infinity;
+      for (const tv of tops) {
+        const held = tv.top;
+        lo = Math.max(lo, held ? held.from : now());
+        hi = Math.min(hi, held ? held.until : now());
+      }
+      return [lo - trackOffset, hi + 1 - trackOffset];
+    };
+    return watchBoundary(runtime.clock, proof, () => { for (const tv of tops) tv.setHour(now()); });
+  }, [active, following, tileHour, pixelBinnedKey, currentTiled?.revision, runtime.clock, trackOffset]);
   const tileUnrecorded = useMemo(() => {
     if (!currentTiled) return null;
     const lines: UnrecordedLine[] = [];
@@ -1234,6 +1287,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (pixelBinnedKey) {
       if (currentTiled?.error) {
         return { kind: 'failed', failure: asFailure(currentTiled.error), origin: 'local', onRetry: retryTiles };
+      }
+      if (currentTiled?.topRefused) {
+        return { kind: 'not-recorded', reason: currentTiled.topRefused };
       }
       if (tileUnrecorded?.reason) {
         return { kind: 'not-recorded', reason: tileUnrecorded.reason };

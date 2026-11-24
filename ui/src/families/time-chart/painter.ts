@@ -6,7 +6,7 @@ import {
   drawDateTab,
   drawFlagSlot,
   drawGapBand,
-  drawLegendEntry,
+  drawLegendStrip,
   drawPlayheadLine,
   drawSeriesMissingStrip,
   resolveKitTokens,
@@ -246,16 +246,17 @@ export function drawTimeChart(
   const textSecondary = tokens.dark ? '#d4d4d4' : theme.muted;
 
   if (layout.legendTop !== null && model.legend && model.legend.length > 0) {
-    let lx = layout.left;
-    const ly = layout.legendTop + 7;
-    for (const item of model.legend) {
-      const drawn = drawLegendEntry(ctx, lx, ly, item.label, item.color ?? '', theme, {
+    drawLegendStrip(ctx, layout.left, layout.legendTop, layout.width - layout.left, 14, {
+      entries: model.legend.map(item => ({
+        label: item.label,
+        color: item.color,
         dash: item.dash,
         hatch: item.hatch,
         flag: item.flag ? toFlagSlotState(item.flag.art, item.flag.tag ?? item.flag.label) : undefined,
-      });
-      lx += drawn.width + 14;
-    }
+        muted: false,
+      })),
+      entryGap: 14,
+    }, theme);
   }
 
   for (const v of layout.yTicks) {
@@ -313,54 +314,99 @@ export function drawTimeChart(
     const { hours, bands, total } = model.stack;
     let count = 0;
     while (count < hours.length && hours[count]! <= model.hour) count++;
-    if (count > 0) {
-      const acc = new Float64Array(count);
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
-      ctx.clip();
-      for (const band of bands) {
-        const topVals = new Float64Array(count);
-        for (let i = 0; i < count; i++) {
-          topVals[i] = acc[i]! + (band.values[i] ?? 0);
+    if (count > 0 && bands.length > 0) {
+      const segments: [number, number][] = [];
+      let segStart = -1;
+      for (let i = 0; i < count; i++) {
+        const valid = bands.every(band => {
+          const v = band.values[i];
+          return v !== null && v !== undefined && Number.isFinite(v);
+        });
+        if (valid) {
+          if (segStart < 0) segStart = i;
+        } else if (segStart >= 0) {
+          segments.push([segStart, i - 1]);
+          segStart = -1;
         }
-        ctx.beginPath();
-        for (let i = 0; i < count; i++) {
-          const x = layout.toX(hours[i]!);
-          const y = layout.toY(topVals[i]!);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
-        for (let i = count - 1; i >= 0; i--) {
-          ctx.lineTo(layout.toX(hours[i]!), layout.toY(acc[i]!));
-        }
-        ctx.closePath();
-        ctx.fillStyle = band.color;
-        ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
-        ctx.fill();
-        ctx.globalAlpha = 0.9;
-        ctx.strokeStyle = theme.surface;
-        ctx.lineWidth = 0.8;
-        ctx.stroke();
-        acc.set(topVals);
       }
-      if (total) {
+      if (segStart >= 0) segments.push([segStart, count - 1]);
+
+      if (segments.length > 0) {
+        ctx.save();
         ctx.beginPath();
-        for (let i = 0; i < count; i++) {
-          const tv = total.values[i];
-          if (tv == null) continue;
-          const x = layout.toX(hours[i]!);
-          const y = layout.toY(tv);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
+        ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
+        ctx.clip();
+        for (const [start, end] of segments) {
+          const len = end - start + 1;
+          const acc = new Float64Array(len);
+          for (let bandIdx = 0; bandIdx < bands.length; bandIdx++) {
+            const band = bands[bandIdx]!;
+            const topVals = new Float64Array(len);
+            for (let k = 0; k < len; k++) {
+              topVals[k] = acc[k]! + (band.values[start + k] ?? 0);
+            }
+            ctx.beginPath();
+            if (len === 1) {
+              const x0 = layout.toX(hours[start]!);
+              const x1 = Math.min(layout.playheadX, x0 + 1);
+              const yTop = layout.toY(topVals[0]!);
+              const yBot = layout.toY(acc[0]!);
+              ctx.moveTo(x0, yTop);
+              ctx.lineTo(x1, yTop);
+              ctx.lineTo(x1, yBot);
+              ctx.lineTo(x0, yBot);
+            } else {
+              for (let k = 0; k < len; k++) {
+                const x = layout.toX(hours[start + k]!);
+                const y = layout.toY(topVals[k]!);
+                if (k === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+              }
+              for (let k = len - 1; k >= 0; k--) {
+                ctx.lineTo(layout.toX(hours[start + k]!), layout.toY(acc[k]!));
+              }
+            }
+            ctx.closePath();
+            ctx.fillStyle = band.color;
+            ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
+            ctx.fill();
+            if (bandIdx < bands.length - 1 && len > 1) {
+              ctx.beginPath();
+              for (let k = 0; k < len; k++) {
+                const x = layout.toX(hours[start + k]!);
+                const y = layout.toY(topVals[k]!);
+                if (k === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+              }
+              ctx.globalAlpha = 0.9;
+              ctx.strokeStyle = theme.surface;
+              ctx.lineWidth = 0.8;
+              ctx.stroke();
+            }
+            acc.set(topVals);
+          }
         }
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = total.color ?? theme.text;
-        ctx.lineWidth = 1.6;
-        ctx.lineJoin = 'round';
-        ctx.stroke();
+        if (total) {
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = total.color ?? theme.text;
+          ctx.lineWidth = 1.6;
+          ctx.lineJoin = 'round';
+          let open = false;
+          for (let i = 0; i < count; i++) {
+            const tv = total.values[i];
+            if (tv == null || !Number.isFinite(tv)) {
+              if (open) { ctx.stroke(); open = false; }
+              continue;
+            }
+            const x = layout.toX(hours[i]!);
+            const y = layout.toY(tv);
+            if (!open) { ctx.beginPath(); ctx.moveTo(x, y); open = true; }
+            else ctx.lineTo(x, y);
+          }
+          if (open) ctx.stroke();
+        }
+        ctx.restore();
       }
-      ctx.restore();
     }
     drawPlayheadLine(ctx, layout.playheadX, layout.top - 2, layout.baseY + layout.markerLaneHeight, theme);
   } else {

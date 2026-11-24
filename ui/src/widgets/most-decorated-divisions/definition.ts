@@ -11,7 +11,7 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'casualtiesTaken', label: 'Casualties taken', as: 'faint', tone: 'grey', offered: OFFERED.number },
 ];
 export const DEFAULT_SORT = { column: 'medals', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'tooltip', sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: DEFAULT_SORT };
 export const OPTIONS: readonly OptionField[] = tableFamilyOptions(COLUMNS, TABLE_BASE);
 export const definition = {
   kind: 'most-decorated-divisions', version: 1, title: 'Most decorated divisions', icon: 'star', category: 'Army',

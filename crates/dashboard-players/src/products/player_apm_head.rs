@@ -434,7 +434,7 @@ pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) ->
     let (immutable, filled) = tile::closure(first, last, timeline_last);
     let (bins, raw_values, hour_bytes) = tile::encode(&buckets, first, ask.bin_hours, 1.0);
     Ok(SeriesTileReply { branch_id: branch.to_string(), measure: family.value, decimals: 0, bin_hours: ask.bin_hours, index: ask.index, first_hour: first,
-        immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins) })
+        immutable, filled, raw_values, hour_bytes, lines, bins: tile::base64(&bins), ranking: None })
 }
 
 #[cfg(test)]

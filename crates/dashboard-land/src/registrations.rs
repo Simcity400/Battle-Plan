@@ -18,7 +18,6 @@ dashboard_base::register_products! {
 
 dashboard_base::register_hourly_products! {
     ARMY_TEMPLATEROSTER => crate::products::army::TemplateRoster,
-    EXPERIENCE_COUNTRYEXPERIENCE => crate::products::experience::CountryExperience,
     TRAINING_QUEUE_TRAININGQUEUE => crate::products::training_queue::TrainingQueue,
     DOCTRINE_MASTERY_DOCTRINEMASTERY => crate::products::doctrine_mastery::DoctrineMastery,
     DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => crate::products::doctrine_mastery::rewards::DoctrineRewards,

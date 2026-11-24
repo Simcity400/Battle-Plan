@@ -36,6 +36,7 @@ use viewer_native_gui::{
 mod tests;
 
 pub mod equipment_designer;
+pub mod industrial_organisation;
 
 pub const SETTLE_TICK: Tick = Tick {
     time: 10.0,
@@ -127,6 +128,8 @@ pub struct GameWindowRegion {
     pub close: bool,
     #[serde(default)]
     pub passthrough: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<String>,
     pub tooltip: Option<GameWindowTooltip>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha_mask: Option<RegionAlphaMask>,
@@ -863,6 +866,7 @@ pub struct ComposedPlan {
     pub title: Option<String>,
     pub read_hour: Option<i32>,
     pub art_label: Option<String>,
+    pub view_links: BTreeMap<String, String>,
 }
 
 pub fn container_holder(layout: &Layout, container_path: &str) -> Option<native_gui::Holder> {
@@ -1304,6 +1308,7 @@ pub fn regions_from_layout(
                 disabled: region.disabled,
                 close,
                 passthrough: through,
+                view: None,
                 tooltip,
                 alpha_mask,
             });
@@ -1753,27 +1758,6 @@ impl Service {
         drop(removed);
     }
 
-    pub fn render_window_from_layers(
-        &self,
-        key: WindowCacheKey,
-        layers: &ResolvedLayers,
-        extra_assets: &Assets,
-        params: RenderParams<'_>,
-        cancel: &AtomicBool,
-        configure: impl FnOnce(&Element, &Localisation, &mut Instance),
-    ) -> Result<GameWindowRender, GameWindowError> {
-        let extra = extra_assets.clone();
-        self.render_composed_from_layers(
-            key,
-            layers,
-            params,
-            cancel,
-            move |_| Ok(Prepared::uncached(extra, ())),
-            move |root, _, _, localisation, instance, _, _| configure(root, localisation, instance),
-            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
-        )
-    }
-
     pub fn render_composed_from_layers<S>(
         &self,
         key: WindowCacheKey,
@@ -2065,6 +2049,11 @@ impl Service {
                 .collect();
             let part_paths: Vec<&str> = layout.parts.iter().map(|part| part.path.as_str()).collect();
             let mut regions = paint_ordered_regions(&part_paths, main_regions, sub_region_groups);
+            for region in &mut regions {
+                if !region.passthrough && !region.close {
+                    region.view = plan.view_links.get(&region.path).cloned();
+                }
+            }
             for mut region in plan.extra_regions {
                 region.rect[0] -= output.origin[0];
                 region.rect[1] -= output.origin[1];
@@ -2197,6 +2186,22 @@ impl Service {
         let language = dashboard_base::content::recorded_language(source.replay_ref());
         match request.kind.as_str() {
             "equipmentDesigner" => equipment_designer::render(
+                self,
+                equipment_designer::RenderContext {
+                    source,
+                    content: &content,
+                    layers: &layers,
+                    resolve: &resolve,
+                    visual_revision: &visual_revision,
+                    language: &language,
+                    decode,
+                    admitted_gen,
+                    extra_warnings: visual_warnings,
+                },
+                request,
+                cancel,
+            ),
+            "industrialOrganisation" => industrial_organisation::render(
                 self,
                 equipment_designer::RenderContext {
                     source,

@@ -7,6 +7,7 @@ pub mod land_owners;
 pub mod subjects;
 pub mod autonomy_levels;
 pub mod territory;
+pub mod place_name_runs;
 pub mod place_names;
 pub mod sea_regions;
 pub mod scalars;

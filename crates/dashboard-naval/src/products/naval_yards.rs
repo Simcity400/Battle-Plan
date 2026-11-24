@@ -1,5 +1,6 @@
 
 use dashboard_base::products::{Country, validate_country};
+use dashboard_base::products::artwork::sprites::{SpriteFrame, unit_icon_key};
 use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Owner, Read}};
 use dashboard_world::products::place_names::{self, Places};
 use dashboard_base::{Source, catalogue::{self, Catalogue, Refusals, View}};
@@ -39,6 +40,9 @@ pub struct YardShip {
     pub name_rebuilt: Option<String>,
     pub design: Option<String>,
     pub class: Option<String>,
+    #[doc = " The class's unit sprite as the recorded content names it; none with `class_icon_missing` saying why."]
+    pub class_icon: Option<SpriteFrame>,
+    pub class_icon_missing: Option<String>,
     pub hull: Option<String>,
     pub maximum: Option<String>,
     pub task_force: Option<String>,
@@ -189,6 +193,14 @@ fn rebuilt_name(cat: &Catalogue, groups: impl FnOnce() -> Result<Arc<ShipNameGro
     groups()?.0.resolve_any(key, naming.order, naming.ordered != 0).map_err(|why| format!("Ship name group: {why}"))
 }
 
+pub(crate) fn unit_icon(cat: &Catalogue, unit: &str) -> Result<SpriteFrame, String> {
+    let key = unit_icon_key(unit);
+    match cat.sprites.find(&key)? {
+        Some(_) => Ok(SpriteFrame { key, frame: 0, recorded: None, text: None }),
+        None => Err(format!("Ship class sprite {key} is absent from the recorded content")),
+    }
+}
+
 fn policy_key(port: bool, value: i32) -> String {
     format!("NAVY_{}_POLICY_{value}", if port { "DOCKYARD_REPAIR" } else { "REPAIR" })
 }
@@ -221,19 +233,19 @@ impl<'f> Yard<'f> {
         name
     }
 
-    fn class(&mut self, ship: &ShipRow, model: Option<&ShipModelRow>) -> Option<String> {
+    fn class(&mut self, ship: &ShipRow, model: Option<&ShipModelRow>) -> (Option<String>, Result<SpriteFrame, String>) {
         let cat = self.cat;
         let units = match self.units.get_or_insert_with(|| sub_units(cat)) {
             Ok(units) => Arc::clone(units),
             Err(reason) => {
                 let reason = reason.clone();
-                self.notes.note(reason, ship.id.to_string());
-                return None;
+                self.notes.note(reason.clone(), ship.id.to_string());
+                return (None, Err(reason));
             }
         };
         let index = model.and_then(|model| model.subunit_index.require("subunit index of ship models").ok().copied().flatten());
         let frame = self.frame;
-        let named = (|| -> Result<String, String> {
+        let registered = (|| -> Result<String, String> {
             let index = match index {
                 Some(index) => u32::try_from(index).map_err(|_| "Ship class definition index is invalid")?,
                 None => {
@@ -247,13 +259,16 @@ impl<'f> Yard<'f> {
                     }
                 }
             };
-            let registered = units.name(index).ok_or("Ship class definition is absent from the recorded content")??.to_owned();
+            Ok(units.name(index).ok_or("Ship class definition is absent from the recorded content")??.to_owned())
+        })();
+        let named = registered.clone().and_then(|registered| {
             cat.localised(&registered, View::Plain)
                 .filter(|_| cat.has_presentation_key(&registered))
                 .ok_or_else(|| format!("Ship class {registered} is not localised"))
                 .and_then(|text| catalogue::plain_text(&text))
-        })();
-        named.map_err(|reason| self.notes.note(reason, ship.id.to_string())).ok()
+        });
+        let icon = registered.and_then(|registered| unit_icon(cat, &registered));
+        (named.map_err(|reason| self.notes.note(reason, ship.id.to_string())).ok(), icon)
     }
 
     fn rebuilt(&mut self, ship: &ShipRow, model: Option<&ShipModelRow>) -> Option<String> {
@@ -333,7 +348,10 @@ impl<'f> Yard<'f> {
             Some(row) if name.is_none() => self.rebuilt(row, model),
             _ => None,
         };
-        let class = row.and_then(|row| self.class(row, model));
+        let (class, class_icon) = match row {
+            Some(row) => self.class(row, model),
+            None => (None, Err("Queued ship is not recorded".to_owned())),
+        };
         let order = row.and_then(|row| frame.complete::<tables::NavalRepairTaskForces>().ok()?.iter().find(|order| order.task_force == row.task_force).cloned());
         let policy = order.and_then(|order| self.policy(false, order.repair_mode));
         if let Ok(column) = dashboard_declare::field(TableId::Ships, "strength") {
@@ -345,6 +363,8 @@ impl<'f> Yard<'f> {
             name_rebuilt,
             design: model.and_then(|model| self.design(model.variant)),
             class,
+            class_icon: class_icon.as_ref().ok().cloned(),
+            class_icon_missing: class_icon.err(),
             hull: row.map(|row| row.strength.to_string()),
             maximum: maximum.map(|value| value.to_string()),
             task_force,

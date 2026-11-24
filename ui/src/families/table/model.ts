@@ -203,6 +203,7 @@ export interface TableModel {
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
   readonly unsorted?: boolean;
+  readonly populationPartial?: string;
   readonly dateGrouped?: boolean;
   readonly gaps?: readonly MissingSpan[];
   readonly rank?: boolean;
@@ -484,6 +485,10 @@ export function annotateLogBoundaries(
   return out;
 }
 
+export function keepsProductOrder(model: Pick<TableModel, 'unsorted' | 'populationPartial'>): boolean {
+  return model.unsorted === true || model.populationPartial !== undefined;
+}
+
 export function resolveTableRows(
   model: TableModel,
   settings: TableSettings,
@@ -492,7 +497,7 @@ export function resolveTableRows(
   const hour = model.hour;
   const firstColumnKey = model.columns[0]?.key;
   const dateColumnKey = model.columns.find(col => col.cellKind === 'date')?.key;
-  const unsorted = model.unsorted === true;
+  const unsorted = keepsProductOrder(model);
   const sortColumn = settings.sort.column;
   const direction = settings.sort.direction;
   const isChronological = unsorted || (dateColumnKey !== undefined && sortColumn === dateColumnKey);
@@ -664,7 +669,7 @@ export function resolveTableRowsIncremental(
 
   const hour = model.hour;
   const firstColumnKey = model.columns[0]?.key;
-  const unsorted = model.unsorted === true;
+  const unsorted = keepsProductOrder(model);
   const sortColumn = settings.sort.column;
   const direction = settings.sort.direction;
 
@@ -915,6 +920,7 @@ export function barFractionOf(
   cell: TableCell,
   value: Value,
   top: number | undefined,
+  magnitude = false,
 ): { readonly fraction: number | null; readonly alert: boolean } {
   if (cell.bar === null) return { fraction: null, alert: false };
   if (cell.bar !== undefined) {
@@ -923,14 +929,15 @@ export function barFractionOf(
     return { fraction: Math.max(0, Math.min(1, raw)), alert: cell.bar.alert === true };
   }
   if (value.kind === 'zero') return { fraction: null, alert: false };
-  const num = valueNumber(value);
+  const read = valueNumber(value);
+  const num = read !== undefined && magnitude ? Math.abs(read) : read;
   if (num === undefined || top === undefined || top <= 0 || num <= 0) return { fraction: null, alert: false };
   return { fraction: Math.max(0, Math.min(1, num / top)), alert: false };
 }
 
 export function resolveCellPaintModel(
   cell: TableCell | undefined,
-  column: Pick<FamilyColumnLayout, 'key' | 'display' | 'tone' | 'numeric' | 'valueFormat'>,
+  column: Pick<FamilyColumnLayout, 'key' | 'display' | 'tone' | 'numeric' | 'valueFormat' | 'cellKind'>,
   hour: number,
   maxima: ReadonlyMap<string, number>,
   countryColors?: CountryColorSource,
@@ -939,7 +946,7 @@ export function resolveCellPaintModel(
     ? resolveCellAtHour(cell, hour)
     : { value: notRecorded('Not recorded'), icon: undefined, iconPending: undefined, missingName: false };
   const bar = cell
-    ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key))
+    ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key), column.cellKind === 'twoWay')
     : { fraction: null, alert: false };
   const tone = cell?.tone ?? column.tone ?? null;
   const country = cell?.country ?? null;
@@ -970,7 +977,6 @@ export interface TableAuditInput {
   readonly model: TableModel;
   readonly flatRows: readonly FlatTableRow[];
   readonly visibleColumns: readonly Pick<FamilyColumnLayout, 'key' | 'label' | 'display' | 'tone' | 'numeric' | 'valueFormat' | 'barEligible'>[];
-  readonly hiddenKeys?: ReadonlySet<string>;
   readonly rankShown?: boolean;
   readonly maxima?: ReadonlyMap<string, number>;
   readonly window?: { readonly first: number; readonly count: number };
@@ -978,17 +984,14 @@ export interface TableAuditInput {
   readonly rowAuditCache?: WeakMap<TableRow, { readonly sig: string; readonly rows: readonly AuditRow[] }>;
 }
 
-const EMPTY_HIDDEN: ReadonlySet<string> = new Set();
-
 export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
   const { model, flatRows, visibleColumns, window, countryColors, rowAuditCache } = input;
   const hour = model.hour;
-  const hiddenKeys = input.hiddenKeys ?? EMPTY_HIDDEN;
   const rankShown = input.rankShown === true;
   const maxima = input.maxima ?? computeColumnMaxima(flatRows, visibleColumns, hour);
   const hasData = flatRows.some(item => item.kind === 'data' || item.kind === 'gap' || item.kind === 'refused');
   const colsSig = rowAuditCache
-    ? `${visibleColumns.map(c => `${c.key}:${c.display}:${c.tone ?? ''}:${maxima.get(c.key) ?? ''}`).join('|')}|${[...hiddenKeys].join(',')}`
+    ? `${visibleColumns.map(c => `${c.key}:${c.display}:${c.tone ?? ''}:${maxima.get(c.key) ?? ''}`).join('|')}`
     : '';
   const out: AuditRow[] = [
     {
@@ -1092,7 +1095,7 @@ export function deriveTableAudit(input: TableAuditInput): AuditRow[] {
     rowOut.push({
       row: item.key,
       key: `${item.key}:_tooltip`,
-      value: canonicalAuditData(deriveRowTooltip(item, model.columns, hiddenKeys, hour)),
+      value: canonicalAuditData(deriveRowTooltip(item, model.columns, hour)),
     });
     if (rowAuditCache && model.rowTimeBoundaries === false) {
       rowAuditCache.set(item.row, { sig: rowSig, rows: rowOut });
@@ -1199,7 +1202,6 @@ const BOUNDED_HOVER_PREFIX: Readonly<Record<DateBoundKind, string>> = {
 export function deriveRowTooltip(
   found: Extract<FlatTableRow, { kind: 'data' }>,
   allColumns: readonly TableColumnSpec[],
-  hiddenKeys: ReadonlySet<string>,
   hour: number,
 ): TooltipContent {
   const { row } = found;
@@ -1211,7 +1213,7 @@ export function deriveRowTooltip(
   const title = row.tooltipTitle ?? (firstCol?.cellKind === 'date' ? found.name : (firstText ?? found.name));
   for (let i = 0; i < allColumns.length; i++) {
     const col = allColumns[i]!;
-    if (i === 0 && col.cellKind !== 'date' && !hiddenKeys.has(col.key) && !row.tooltipExtra && (firstText === undefined || firstText === title)) continue;
+    if (i === 0 && col.cellKind !== 'date' && !row.tooltipExtra && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell) continue;
     const resolved = resolveCellAtHour(cell, hour);
@@ -1250,7 +1252,6 @@ export function deriveTableTooltip(
   flatRows: readonly FlatTableRow[],
   itemKey: string,
   allColumns: readonly TableColumnSpec[],
-  hiddenKeys: ReadonlySet<string>,
   hour: number,
 ): TooltipContent | null {
   const found = flatRows.find(item => item.key === itemKey);
@@ -1272,7 +1273,7 @@ export function deriveTableTooltip(
     };
   }
   if (found.kind !== 'data') return null;
-  return deriveRowTooltip(found, allColumns, hiddenKeys, hour);
+  return deriveRowTooltip(found, allColumns, hour);
 }
 
 const pathPartsCache = new Map<string, readonly string[]>();
