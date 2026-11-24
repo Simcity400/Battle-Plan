@@ -18,24 +18,4 @@ export const flowHostAdapter: FamilyHostAdapter<FlowModel, unknown, FamilyFlowBi
   inspectToken: key => key,
   deriveAuditRows: model => deriveFlowAudit(model),
   auditOrdered: true,
-  buildBinding: ctx => {
-    if (!ctx.theme) return null;
-    return {
-      options: ctx.options,
-      sources: ctx.sources,
-      ...(ctx.staticPanels ? { staticPanels: ctx.staticPanels } : {}),
-      ...(ctx.staticAnswers ? { staticAnswers: ctx.staticAnswers } : {}),
-      ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
-      width: ctx.viewport.width,
-      height: ctx.viewport.height,
-      scrollTop: 0,
-      theme: ctx.theme,
-      ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
-      selectedKey: ctx.selectedKey,
-      focusedKey: ctx.focusedKey,
-      audit: ctx.audit,
-      ...(ctx.auditId !== undefined ? { auditId: ctx.auditId } : {}),
-      pauseFlush: ctx.pauseFlush,
-    };
-  },
 };

@@ -2408,5 +2408,5 @@ test('the table host adapter stores and resolves table settings through its decl
   assert.equal(tableRank(ranked, { ...round, showRank: false }).shown, false);
   assert.equal(rankOf({ ...round, showRank: false }), null, 'ranks hidden on the canvas are absent from the exact audit too');
   assert.notEqual(rankOf({ ...round, showRank: true }), null, 'and present when shown');
-  assert.deepEqual(tableHostAdapter.parseHit('toggle:GER'), { key: 'GER', toggle: true, inspectToken: 'row:GER' }, 'hovering a tree chevron inspects its row, so the row tooltip shows');
+  assert.deepEqual(tableHostAdapter.parseHit!('toggle:GER'), { key: 'GER', toggle: true, inspectToken: 'row:GER' }, 'hovering a tree chevron inspects its row, so the row tooltip shows');
 });
