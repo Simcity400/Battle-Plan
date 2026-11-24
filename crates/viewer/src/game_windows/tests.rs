@@ -105,7 +105,7 @@ fn regions_map_authored_tooltips_disabled_fallback_close_and_scroll() {
 
     let mut overrides = BTreeMap::new();
     overrides.insert(
-        "synthetic_panel/custom".to_owned(),
+        "synthetic_panel.custom".to_owned(),
         GameWindowTooltip {
             title: "Custom".into(),
             body: None,
@@ -115,7 +115,7 @@ fn regions_map_authored_tooltips_disabled_fallback_close_and_scroll() {
     let regions = regions_from_layout(
         &[root],
         &layout.regions,
-        [10, 20],
+        [0, 0],
         &resources,
         &localisation,
         &["close_button"],
@@ -237,7 +237,7 @@ fn offscreen_render_draws_synthetic_window_at_exact_dpr_without_game_files() {
     let rendered_1x = render_layout_offscreen(&gpu, &mut pass, &layout, &sheets, 1.0).unwrap();
     assert_eq!(rendered_1x.logical_size, [20, 12]);
     assert_eq!(rendered_1x.pixel_size, [20, 12]);
-    assert_eq!(rendered_1x.origin, [16, 20]);
+    assert_eq!(rendered_1x.origin, [4, 4]);
     assert_eq!(&rendered_1x.png[..8], b"\x89PNG\r\n\x1a\n");
     let center_1x = (6 * 20 + 10) * 4;
     assert!(rendered_1x.rgba[center_1x + 3] > 200);

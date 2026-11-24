@@ -647,7 +647,9 @@ pub fn regions_from_layout(
             ]
         });
         let close = close_paths.iter().any(|candidate| {
-            region.path == *candidate || region.path.ends_with(&format!("/{candidate}"))
+            region.path == *candidate
+                || region.path.ends_with(&format!(".{candidate}"))
+                || region.path.ends_with(&format!("/{candidate}"))
         });
         let scroll = region.scroll.map(|(vertical, wheel_factor)| {
             let target = region
