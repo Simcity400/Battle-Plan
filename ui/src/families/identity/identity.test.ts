@@ -171,6 +171,30 @@ test('name change at hour 150 gives old name at 149 and new name at 150 simultan
   assert.equal(index.nextBoundary([countryTagKey('GER')], 149), 150);
 });
 
+test('the index answers a slot’s holder runs and a key’s runs, and counts a revision only when identities change', () => {
+  const index = new IdentityIndex(SCOPE, [0, 500]);
+  const before = index.slotRevision();
+  assert.equal(index.hasRead('identities'), false);
+  index.setIdentities({ branchId: '1', known: [], unknown: [], warnings: [], countries: [
+    { tag: 'OLD', identities: [{ firstHour: 0, lastHour: 200, slot: 5, countryId: 90 }], unresolved: [] },
+    { tag: 'NEW', identities: [{ firstHour: 150, lastHour: 200, slot: 5, countryId: 40 }], unresolved: [{ firstHour: 201, lastHour: 220 }] },
+  ] } as unknown as CountryIdentitiesReply);
+  assert.equal(index.hasRead('identities'), true);
+  assert.notEqual(index.slotRevision(), before);
+  const runs = (list: readonly { tag: string; firstHour: number; lastHour: number; unresolved?: boolean }[]) =>
+    list.map(({ tag, firstHour, lastHour, unresolved }) => ({ tag, firstHour, lastHour, ...(unresolved ? { unresolved } : {}) }));
+  assert.deepEqual(runs(index.tagRuns(5)), [{ tag: 'OLD', firstHour: 0, lastHour: 149 }, { tag: 'NEW', firstHour: 150, lastHour: 200 }], 'the lowest country id holds the slot at every hour');
+  assert.deepEqual(runs(index.runsForKey(countryKey(5))), runs(index.tagRuns(5)));
+  assert.deepEqual(runs(index.runsForKey(countryKey('NEW'))), [{ tag: 'NEW', firstHour: 150, lastHour: 200 }, { tag: 'NEW', firstHour: 201, lastHour: 220, unresolved: true }], 'a tag’s runs keep its unresolved stretch apart');
+  const settled = index.slotRevision();
+  index.setReadFailure('facts', undefined);
+  assert.equal(index.slotRevision(), settled, 'a change elsewhere in the index is not a slot change');
+  const failure = { kind: 'transient', message: 'lost' } as never;
+  index.setReadFailure('identities', failure);
+  assert.equal(index.readFailure('identities'), failure);
+  assert.notEqual(index.slotRevision(), settled);
+});
+
 test('annexed country slot is absent after annexation with valid interval and reason', () => {
   const index = new IdentityIndex(SCOPE, [0, 500]);
   index.setFacts(sampleFacts(), true);
