@@ -12,6 +12,7 @@ export type {
   AuxProductSpec,
   BoundedReadView,
   BoundedSeries,
+  BranchToHourSourceRead,
   CountryPolicy,
   DisplayedHour,
   EntityKind,
