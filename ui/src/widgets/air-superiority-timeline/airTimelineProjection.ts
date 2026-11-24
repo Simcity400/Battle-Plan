@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, readableColour, authoredHex } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, readableColour, authoredHex, reservedGrey } from '../../charts/palette.ts';
 import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -12,7 +12,6 @@ import type {
   HeatLanesModel,
   HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
-import { regionLabel } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { regionIds } from '../../families/regionTokens.ts';
@@ -207,13 +206,14 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
   const viewpointSide = reply.viewpoint === null ? undefined : reply.sides[reply.viewpoint];
   const look: Look = {
     track,
-    contested: mix(options.surface, LANE_FILL, 0.3),
+    contested: reservedGrey(options.surface, reply.sides.flatMap(side => (side.color ? [readableColour(authoredHex(side.color), options.surface)] : []))),
     enemy: readableColour(CHART_MEASURE_COLOURS.short, options.surface),
     unknownSide: mix(options.surface, LANE_FILL, 0.45),
     viewpointColour: style?.color ? readableColour(authoredHex(style.color), options.surface) : sideColour(viewpointSide, options.surface, readableColour(CHART_MEASURE_COLOURS.bopRight, options.surface)),
   };
   const rows: HeatLaneRow[] = reply.rows.map(row => {
-    const { label, nameMissing } = regionLabel(readView, row.region, row.name);
+    const label = row.name ?? 'Region name not recorded';
+    const nameMissing = row.name === null ? row.nameMissing ?? 'Region name not recorded' : undefined;
     const readout = readoutOf(row.readout, reply, look, options.surface);
     return {
       id: String(row.region),
