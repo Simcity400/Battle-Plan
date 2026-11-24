@@ -7,9 +7,12 @@ use dashboard_base::{
         check_reply_budget, validate_country,
     },
 };
-use dashboard_query::identity::Holder;
-use replay_data::rows::{CountryCounterInputRow, PoliticsRow, Recorded, TableId, TableRows};
-use replay_frame::frame::{DecodedFrame, TableView};
+use dashboard_query::{
+    coverage::{Witness, population, witnessed},
+    identity::Holder,
+};
+use replay_data::rows::{CountryCounterInputRow, PoliticsRow, Recorded, TableId, tables};
+use replay_frame::frame::{DecodedFrame, Keys, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
@@ -48,10 +51,10 @@ pub struct ElectionEntry {
 #[serde(rename_all = "camelCase")]
 pub struct NextElectionsReply {
     pub branch_id: String,
-    #[doc = " False when the politics table was not recorded at this hour."]
+    #[doc = " False when the politics table was not recorded at this hour; `warnings` says why."]
     pub recorded: bool,
     pub rows: Vec<ElectionEntry>,
-    #[doc = " Countries whose election schedule was read but whose eligibility was not recorded."]
+    #[doc = " Asked or listed countries whose schedule or eligibility was not recorded at this hour: `rows` may miss them."]
     pub unknown: u32,
     pub warnings: Vec<String>,
 }
@@ -122,22 +125,6 @@ fn recorded<T: Copy>(value: &Recorded<T>) -> Option<T> {
     value.require("election operand").ok().copied()
 }
 
-fn politics_rows(frame: &DecodedFrame, allow_truncated: bool) -> Option<&[PoliticsRow]> {
-    match frame.tables[TableId::Politics.index()].held() {
-        TableView::Complete(TableRows::Politics(rows)) => Some(rows),
-        TableView::Truncated { rows: TableRows::Politics(rows), .. } if allow_truncated => Some(rows),
-        _ => None,
-    }
-}
-
-fn counter_rows(frame: &DecodedFrame, allow_truncated: bool) -> Option<&[CountryCounterInputRow]> {
-    match frame.tables[TableId::CountryCounterInputs.index()].held() {
-        TableView::Complete(TableRows::CountryCounterInputs(rows)) => Some(rows),
-        TableView::Truncated { rows: TableRows::CountryCounterInputs(rows), .. } if allow_truncated => Some(rows),
-        _ => None,
-    }
-}
-
 pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashboard_query::identity::Holders, hour: i32) -> io::Result<NextElectionsReply> {
     let mut reply = NextElectionsReply {
         branch_id: params.branch_id.clone(),
@@ -146,17 +133,35 @@ pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashbo
         unknown: 0,
         warnings: Vec::new(),
     };
-    let keyed = params.countries.is_some();
-    let Some(politics) = politics_rows(frame, keyed) else {
-        return Ok(reply);
+    let politics = match &params.countries {
+        Some(_) => {
+            let view: &TableView = &frame.tables[TableId::Politics.index()];
+            match (view, witnessed::<tables::Politics>(frame, 0)) {
+                (TableView::Unavailable { .. } | TableView::NotRecorded { .. }, Witness::NotRecorded(reason)) => Err(reason),
+                _ => Ok(None),
+            }
+        }
+        None => population::<tables::Politics>(frame, &Keys::All).map(Some),
+    };
+    let politics = match politics {
+        Ok(politics) => politics,
+        Err(reason) => {
+            reply.warnings.push(reason);
+            return Ok(reply);
+        }
     };
     reply.recorded = true;
-    let owned = counter_rows(frame, keyed);
+    let counters = population::<tables::CountryCounterInputs>(frame, &Keys::All).ok();
     let owned_of = |country_id: u32| -> Option<bool> {
-        owned.and_then(|rows| rows.binary_search_by_key(&country_id, |row| row.country).ok().map(|at| rows[at].owned_state_count > 0))
+        let row: Option<&CountryCounterInputRow> = match counters {
+            Some(rows) => rows.binary_search_by_key(&country_id, |row| row.country).ok().map(|at| &rows[at]),
+            None => witnessed::<tables::CountryCounterInputs>(frame, u128::from(country_id)).row(),
+        };
+        row.map(|row| row.owned_state_count > 0)
     };
     let mut unresolved = 0_u64;
-    let mut inspect = |slot: u32, tag: &str, row: &replay_data::rows::PoliticsRow| {
+    let mut unwitnessed = 0_u32;
+    let mut inspect = |slot: u32, tag: &str, row: &PoliticsRow| {
         let has = recorded(&row.has_elections);
         let exists = owned_of(row.country);
         let eligible = match (has, exists) {
@@ -175,8 +180,8 @@ pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashbo
             }
         }
     };
-    match &params.countries {
-        Some(asked) => {
+    match (&params.countries, politics) {
+        (Some(asked), _) => {
             let mut seen = BTreeSet::new();
             for country in asked {
                 let Some(Holder::Found { slot, id }) = holders.at(country, hour).map(|run| run.holder) else {
@@ -189,12 +194,14 @@ pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashbo
                     unresolved += 1;
                     continue;
                 };
-                if let Ok(at) = politics.binary_search_by_key(&id, |row| row.country) {
-                    inspect(slot, tag, &politics[at]);
+                match witnessed::<tables::Politics>(frame, u128::from(id)) {
+                    Witness::Row(row) => inspect(slot, tag, row),
+                    Witness::Absent => {}
+                    Witness::NotRecorded(_) => unwitnessed = unwitnessed.saturating_add(1),
                 }
             }
         }
-        None => {
+        (None, politics) => {
             let mut by_id: HashMap<u32, (u32, &str)> = HashMap::new();
             for (tag, runs) in &holders.tags {
                 let at = runs.partition_point(|run| run.last < hour);
@@ -204,7 +211,7 @@ pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashbo
                     by_id.entry(id).or_insert((slot, tag.as_str()));
                 }
             }
-            for row in politics {
+            for row in politics.into_iter().flatten() {
                 let Some(&(slot, tag)) = by_id.get(&row.country) else {
                     unresolved += 1;
                     continue;
@@ -213,6 +220,7 @@ pub fn read(frame: &DecodedFrame, params: &NextElectionsParams, holders: &dashbo
             }
         }
     }
+    reply.unknown = reply.unknown.saturating_add(unwitnessed);
     reply.rows.sort_by(|a, b| (a.next.is_none(), a.next, &a.tag, &a.key).cmp(&(b.next.is_none(), b.next, &b.tag, &b.key)));
     if unresolved != 0 {
         reply.warnings.push(format!("{unresolved} refused election schedules: the country has no identity"));

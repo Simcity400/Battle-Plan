@@ -77,6 +77,17 @@ export const BARS_VIEWS: readonly FamilyViewEntry[] = [
   },
   {
     kind: 'air-kills-losses',
+    view: 'breakdown',
+    label: 'Loss causes',
+    family: 'bars',
+    viewOption: 'view',
+    loadSpec: () => import('../air-kills-losses/airKillsLossesProjection.ts').then(mod => ({
+      family: 'bars', kind: 'air-kills-losses', view: 'breakdown',
+      projection: mod.airLossCausesProjection, declaration: mod.airLossCausesDeclaration,
+    })),
+  },
+  {
+    kind: 'air-kills-losses',
     view: 'paired',
     label: 'Paired bars',
     family: 'bars',

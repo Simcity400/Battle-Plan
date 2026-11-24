@@ -1,6 +1,7 @@
 
 type LedgerPoint = MilitaryAirPart['points'][number];
 import { countryFromKey, isSlotKey } from './countryKey.ts';
+import { airCauseName } from '../widgets/air-kills-losses/lossCauses.ts';
 import { clipToSpans, isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Run, Span } from '../charts/series';
 import { formatAmount, formatFixed, formatRate } from '../charts/valueAxis.ts';
@@ -308,7 +309,6 @@ export const BOMBING_SUNBURST_TEXT: SunburstText = { format: (_value, exact) => 
 export const AIR_LEDGER_NOTE = 'Loss totals include corrections.';
 export const LEDGER_GAP_NOTE = 'Some losses may be missing.';
 export const BOMBING_GAP_NOTE = 'Some damage may be missing.';
-export const airCauseName = (cause: number) => ({ 1: 'Aircraft combat', 2: 'Anti-air / raid effect', 3: 'Air accidents', 4: 'Airbase bombing', 5: 'Train anti-air', 6: 'Kamikaze anti-air' } as Record<number, string>)[cause] ?? 'Other';
 
 export function ledgerRuns(series: LedgerSeries, from: number, to: number, dealt: boolean, scale: number, membership: readonly Span[] | null = null): Run[] {
   const runs: Run[] = [];

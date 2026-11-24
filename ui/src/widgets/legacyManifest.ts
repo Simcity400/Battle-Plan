@@ -1,7 +1,6 @@
 import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
-  { kind: 'air-kills-losses', view: 'breakdown', label: 'Loss causes', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-kills-losses', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
   { kind: 'air-statistics', load: () => import('./air-statistics') },
   { kind: 'army-size', view: 'breakdown', label: 'Army breakdown', slots: ['render', 'countryChip'], load: () => import('./army-size') },
