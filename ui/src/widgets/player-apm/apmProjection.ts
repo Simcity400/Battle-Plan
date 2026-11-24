@@ -12,17 +12,16 @@ import {
   type TableProjection,
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { OFFERED } from '../../families/table/settings.ts';
+import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, wireFloat, wireWhole, type NullableMeaning, type Value } from '../../families/value.ts';
 import type { ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
 import { GAPS_NOTE, playerNames, validateApm, valueNote } from './apmData.ts';
 import { apmHeadQuery } from './apmHead.ts';
-import { DEFAULT_SORT, TABLE_APM_OPTIONS } from './definition.ts';
+import { TABLE_APM_OPTIONS, TABLE_BASE } from './definition.ts';
 
 export interface ApmTableProjectionOptions {
   readonly players: boolean;
   readonly showPaused: boolean;
-  readonly cellBars: boolean;
   readonly rankMarkers: boolean;
   readonly labels: CountryLooksMap;
   readonly unobserved?: HourRanges;
@@ -118,7 +117,7 @@ function formatPlayedHm(minutes: number): string {
   return `${h}:${String(m).padStart(2, '0')}`;
 }
 
-export function apmTableColumns(players: boolean, showPaused: boolean, _cellBars = true): TableColumnSpec[] {
+export function apmTableColumns(players: boolean, showPaused: boolean): TableColumnSpec[] {
   return [
     ...(players ? [{ key: 'country', label: 'Country', as: 'flag' as const, offered: OFFERED.country, showNamesDefault: false, pinned: true, priority: 0, text: true }] : []),
     {
@@ -151,7 +150,7 @@ export const apmTableProjection: TableProjection<ApmTableProjectionOptions> = re
     rank: true,
     rankMarkers: opt => opt.rankMarkers,
     columns: (_parsed, opt): readonly DeclarativeColumnSpec<DisplayApmRow, ApmTableProjectionOptions>[] => {
-      const specs = apmTableColumns(opt.players, opt.showPaused, opt.cellBars);
+      const specs = apmTableColumns(opt.players, opt.showPaused);
       const gapsPartial = (row: DisplayApmRow) => (row.summary.gaps ? GAPS_NOTE : null);
       return specs.map((spec): DeclarativeColumnSpec<DisplayApmRow, ApmTableProjectionOptions> => {
         if (spec.key === 'name') {
@@ -279,12 +278,11 @@ export const apmTableDeclaration: TableWidgetDeclaration<ApmTableProjectionOptio
     };
   },
   projection: apmTableProjection,
-  columns: ctx => apmTableColumns(ctx.options.group === 'player', ctx.options.showPausedActions === true, ctx.options.cellBars === true),
-  settings: { kind: 'options', defaultSort: DEFAULT_SORT },
+  columns: ctx => apmTableColumns(ctx.options.group === 'player', ctx.options.showPausedActions === true),
+  settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
   projectionOptions: ctx => ({
     players: ctx.options.group === 'player',
     showPaused: ctx.options.showPausedActions === true,
-    cellBars: ctx.options.cellBars === true,
     rankMarkers: ctx.options.rankMarkers === true,
     labels: ctx.countries.labels,
     unobserved: ctx.countries.unobserved,

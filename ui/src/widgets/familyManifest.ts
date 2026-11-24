@@ -2,6 +2,7 @@ import { DEFAULT_VIEW, type FamilyViewEntry, type FamilyViewModule } from '../fa
 import { bindFamilyManifest } from '../families/registry.ts';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration.ts';
 import type { TableProjection } from '../families/table/model.ts';
+import { TABLE_SETTINGS_KEY } from '../families/table/settings.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../families/time-chart/declaration.ts';
 import { OPTIONS as GAME_SCORE_OPTIONS } from './game-score/definition.ts';
 
@@ -29,7 +30,7 @@ function timeChartSpec<TModule>(
   });
 }
 
-const GAME_SCORE_TABLE_OPTION_KEYS = new Set(['view', 'factions', 'topMeasure', 'cellBars', 'rankMarkers', 'density', 'narrowTable', 'tableSort']);
+const GAME_SCORE_TABLE_OPTION_KEYS = new Set(['view', 'factions', 'topMeasure', 'rankMarkers', TABLE_SETTINGS_KEY]);
 const GAME_SCORE_TABLE_OPTIONS = GAME_SCORE_OPTIONS.filter(field => GAME_SCORE_TABLE_OPTION_KEYS.has(field.key));
 
 export const FAMILY_VIEWS: readonly FamilyViewEntry[] = [

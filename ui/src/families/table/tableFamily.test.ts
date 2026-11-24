@@ -283,11 +283,11 @@ test('apm-table projection matches followed wire answers and exact replies, incl
   const opts = {
     players: false,
     showPaused: true,
-    cellBars: true,
+   
     rankMarkers: false,
     labels: { GER: [{ from: 0, name: 'Germany' }], ITA: [{ from: 0, name: 'Italy' }] },
   };
-  const cols = apmTableColumns(false, true, true);
+  const cols = apmTableColumns(false, true);
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } });
   const apmLayouts = buildColumnLayouts(cols, settings);
   const fModel = apmTableProjection.project(createBoundedReadView({ hour: 100, answers: new Map([['main', wire]]) }), opts);
@@ -354,10 +354,10 @@ test('occupied-states, game-score (with faction groups), and division-template (
       { id: '2', tag: 'ENG', firstHour: 0, lastHour: 100, names: [{ firstHour: 0, lastHour: 100, name: 'Allies' }] },
     ],
     rankMarkers: false,
-    cellBars: true,
+   
     labels: { GER: [{ from: 0, name: 'Germany' }], ENG: [{ from: 0, name: 'United Kingdom' }] },
   });
-  const gsCols = gameScoreColumns(undefined, true);
+  const gsCols = gameScoreColumns(undefined);
   const gsFlat = resolveTableRows(gsModel, tableSettingsOf(undefined, gsCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }));
   assert.deepEqual(gsFlat.filter(r => r.kind === 'group-header').map(r => r.label), ['Allies', 'Axis']);
 
@@ -371,11 +371,11 @@ test('occupied-states, game-score (with faction groups), and division-template (
       { template: 'old', name: 'Old Cav', nameMissing: null, icon: null, iconMissing: null, rosterOrdinal: 2, obsolete: true, obsoleteHour: 10, fielded: 0, baseWidthRaw: '1200000', trainingDays: 60, priority: 0, priorityName: 'Reserve', priorityMissing: null, units: [], unitsMissing: null, locked: false, forceRecruiting: false, newEquipment: true, foreignEquipment: true, manpower: 4000, settingsMissing: null, designer: 'ordinary' },
     ],
   };
-  const dtCols = divisionTemplateColumns(true);
+  const dtCols = divisionTemplateColumns();
   const dtSettings = tableSettingsOf(undefined, dtCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'template', direction: 'ascending' } });
   const dtModel = divisionTemplateProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['main', dtReply]]), live: new Map([['main', repliedCells(dtReply).read()]]) }), {
     countryName: 'Germany',
-    cellBars: true,
+   
     canOpenDesigner: true,
   });
   assert.equal(resolveTableRows(dtModel, dtSettings, {}).length, 2, 'obsolete group collapsed by default');
@@ -1066,12 +1066,12 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
     hour: 10,
     panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
     live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
-  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} });
   const emptyGsB = gameScoreProjection.project(createBoundedReadView({
     hour: 250,
     panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
     live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
-  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  }), { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} });
   assert.equal(emptyGsA.empty, 'No country’s scores recorded at this time.', 'M5: dateless empty message');
   assert.equal(emptyGsA.empty, emptyGsB.empty, 'M5: empty message does not depend on advancing hour');
 
@@ -1152,7 +1152,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       model: {
         family: 'table',
         kind: 'game-score',
-        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} },
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
         sources: { main: 7 },
         width: 320,
@@ -1177,7 +1177,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       model: {
         family: 'table',
         kind: 'game-score',
-        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} },
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
         sources: {},
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
@@ -1216,7 +1216,7 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
       model: {
         family: 'table',
         kind: 'game-score',
-        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} },
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, labels: {} },
         settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
         sources: {},
         staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },

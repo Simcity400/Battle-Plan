@@ -1,7 +1,6 @@
 import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
-import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
@@ -12,7 +11,6 @@ import type { DeclaredTableContext, TableWidgetDeclaration } from './declaration
 import FamilyTableHost from './FamilyTableHost.tsx';
 import type { TableColumnSpec } from './model.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
-import { barsBehindOf, rowHeightOf } from '../settingsControls.ts';
 
 export interface DeclaredTableWidgetProps<TProjectionOptions, TAux> extends WidgetProps {
   readonly declaration: TableWidgetDeclaration<TProjectionOptions, TAux>;
@@ -36,13 +34,6 @@ function resolveTableSettings<TProjectionOptions, TAux>(
   const sp = declaration.settings;
   if (sp.kind === 'fixed') return tableSettingsOf(undefined, columns, sp.base);
   if (sp.kind === 'table') return tableSettingsOf(options[sp.key ?? TABLE_SETTINGS_KEY], columns, sp.base);
-  if (sp.kind === 'options') {
-    const sort = tableSortOf(options.tableSort as string | undefined, sp.defaultSort);
-    const overflow = narrowTableOf(options as never) === 'scroll' ? 'scroll' as const : 'tooltip' as const;
-    const density = rowHeightOf(options.rowHeight ?? options.density, 'normal');
-    const barsBehind = barsBehindOf(options.barsBehind, 'all');
-    return tableSettingsOf(undefined, columns, { density, barsBehind, overflow, sort });
-  }
   return ctx
     ? sp.resolve(ctx, columns)
     : tableSettingsOf(undefined, columns, { density: 'normal', barsBehind: 'all', overflow: 'scroll', sort: { column: columns[0]?.key ?? '', direction: 'descending' } });
@@ -110,12 +101,6 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     if (sp.kind === 'fixed') return;
     if (sp.kind === 'table') {
       setOption(sp.key ?? TABLE_SETTINGS_KEY, encodeTableSettings(next));
-      return;
-    }
-    if (sp.kind === 'options') {
-      if (next.sort.column !== liveSettings.sort.column || next.sort.direction !== liveSettings.sort.direction) {
-        setOption('tableSort', tableSortToken(next.sort));
-      }
       return;
     }
     sp.onChange(next, liveSettings, liveCtx, setOption);

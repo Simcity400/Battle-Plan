@@ -59,7 +59,7 @@ test('missing template name projects as notRecorded with nameMissing instead of 
   const rep = reply([entry('1', { name: null, nameMissing: 'Localisation missing for template 1' })]);
   const model = divisionTemplateProjection.project(
     createBoundedReadView({ hour: 50, panels: new Map([['main', rep]]) }),
-    { countryName: 'Germany', cellBars: false, canOpenDesigner: false },
+    { countryName: 'Germany', canOpenDesigner: false },
   );
   assert.deepEqual(model.rows[0]!.cells.template!.value, { kind: 'notRecorded', reason: 'Localisation missing for template 1' });
 });
@@ -78,7 +78,7 @@ test('unread template settings separate unknown obsolete status from current cou
   ]);
   const model = divisionTemplateProjection.project(
     createBoundedReadView({ hour: 50, panels: new Map([['main', rep]]) }),
-    { countryName: 'Germany', cellBars: false, canOpenDesigner: true },
+    { countryName: 'Germany', canOpenDesigner: true },
   );
   assert.deepEqual(model.rows.map(r => r.key), ['1', 'status-unknown']);
   assert.deepEqual(model.rows[0]!.cells.battalions!.value, { kind: 'notRecorded', reason: 'Unit type not localized' });

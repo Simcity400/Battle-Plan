@@ -10,11 +10,11 @@ import {
   type TooltipExtraRow,
 } from '../../families/table/model.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { OFFERED } from '../../families/table/settings.ts';
+import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, valueFromNullable, type Value } from '../../families/value.ts';
 import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
 import { gameWindow } from '../../dashboard/gameWindows.ts';
-import { DEFAULT_SORT, OPTIONS } from './definition.ts';
+import { OPTIONS, TABLE_BASE } from './definition.ts';
 import {
   battalionCount,
   priorityLabel,
@@ -49,7 +49,6 @@ function compositionValue(entry: TemplateEntry): Value<string> {
 
 export interface DivisionTemplateProjectionOptions {
   readonly countryName: string;
-  readonly cellBars: boolean;
   readonly canOpenDesigner: boolean;
 }
 
@@ -153,8 +152,8 @@ const TEMPLATE_COLUMNS: readonly DeclarativeColumnSpec<TemplateRow, DivisionTemp
   },
 ];
 
-export function divisionTemplateColumns(cellBars = false): TableColumnSpec[] {
-  return TEMPLATE_COLUMNS.map(col => (col.cellBarWhen ? { ...col, as: cellBars ? 'faint' : 'plain' } : col));
+export function divisionTemplateColumns(): TableColumnSpec[] {
+  return [...TEMPLATE_COLUMNS];
 }
 
 const yesNoValue = (value: boolean | null): Value<string> =>
@@ -277,11 +276,10 @@ export const divisionTemplateDeclaration: TableWidgetDeclaration<DivisionTemplat
     };
   },
   projection: divisionTemplateProjection,
-  columns: ctx => divisionTemplateColumns(ctx.options.cellBars === true),
-  settings: { kind: 'options', defaultSort: DEFAULT_SORT },
+  columns: () => divisionTemplateColumns(),
+  settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: TABLE_BASE },
   projectionOptions: ctx => ({
     countryName: ctx.countryName,
-    cellBars: ctx.options.cellBars === true,
     canOpenDesigner: Boolean(gameWindow('divisionDesigner')),
   }),
 };
