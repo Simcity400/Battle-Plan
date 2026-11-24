@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { eventsThrough, raidAt, raidChangeHours, raidPreparationAt, raidPreparationText, raidStatus, raidTally, recordedSpans, validateRaidLog } from './raids.ts';
+import { eventsThrough, raidAt, raidChangeHours, raidPreparationAt, raidPreparationText, raidStatus, raidTally, recordedSpans, unattributedAt, validateRaidLog } from './raids.ts';
 import { observedEnd, phaseRun, syntheticEpisode, syntheticRaidLog } from './raids.fixtures.ts';
 import { countryKey } from './countryKey.ts';
 
@@ -24,7 +24,7 @@ test('a tally counts each raider over time: launches as they happen, wins as the
   assert.deepEqual(raidTally(episodes, SPAN, [], [], null).series, [], 'no country chosen, none counted');
   assert.deepEqual([at(tally, 'ENG', 19), at(tally, 'ENG', 20), at(tally, 'ENG', 30), at(tally, 'ENG', 45)], [[0, 0], [1, 0], [1, 1], [2, 1]]);
   assert.deepEqual([at(tally, 'PRC', 26), at(tally, 'PRC', 58), at(tally, 'PRC', 60)], [[1, 0], [2, 0], [2, 1]]);
-  assert.equal(tally.unattributed, 1);
+  assert.deepEqual([unattributedAt(tally, 54), unattributedAt(tally, 55)], [0, 1], 'the unnamed raider is unattributed from its launch');
   assert.deepEqual(tally.hours, [20, 25, 30, 45, 54, 60]);
 });
 
@@ -59,7 +59,14 @@ test('a chosen slot keeps its raid when no tag names it, and a tag tally never b
   const slot = countryKey(3);
   assert.deepEqual(at(raidTally([untagged], SPAN, [], [slot], null), slot, 100), [1, 1], 'the selected slot counts first');
   const byTag = raidTally([untagged], SPAN, [], ['GER'], null);
-  assert.deepEqual([at(byTag, 'GER', 100), byTag.unattributed], [[0, 0], 1], 'no tag at the launch or the end is unattributed');
+  assert.deepEqual([at(byTag, 'GER', 100), unattributedAt(byTag, 100)], [[0, 0], 1], 'no tag at the launch or the end is unattributed');
+});
+
+test('a raid is unattributed only while no tag is known for an event it counts: an end tag read later attributes it from that hour', () => {
+  const late = syntheticEpisode('9', 10, null, null, 10, true, { ends: [observedEnd(10, null), { hour: 20, endedHour: 5, exact: true, source: 'nativeEndDate', raider: 'GER' }] });
+  const tally = raidTally([late], SPAN, [], ['GER'], null);
+  assert.deepEqual([unattributedAt(tally, 9), unattributedAt(tally, 10), unattributedAt(tally, 19), unattributedAt(tally, 20)], [0, 1, 1, 0]);
+  assert.deepEqual([at(tally, 'GER', 19), at(tally, 'GER', 20)], [[0, 0], [0, 1]]);
 });
 
 test('a success counts for the end tag known at each hour: a native end date read later moves it, from the hour it was read', () => {
@@ -68,11 +75,16 @@ test('a success counts for the end tag known at each hour: a native end date rea
   assert.deepEqual([at(tally, 'DDR', 15), at(tally, 'GER', 15), at(tally, 'DDR', 25), at(tally, 'GER', 25)], [[0, 1], [0, 0], [0, 0], [0, 1]]);
 });
 
-test('a raid at an hour shows only what was read by then: its type, place and end', () => {
-  const raid = syntheticEpisode('6', 10, 'ENG', null, 30, true, { raidTypeHour: 12, placeHour: 14, ends: [observedEnd(30, 'ENG'), { hour: 40, endedHour: 25, exact: true, source: 'nativeEndDate', raider: 'ENG' }] });
+test('a raid at an hour shows only what was read by then: its type, icon, place, state, membership and end', () => {
+  const raid = syntheticEpisode('6', 10, 'ENG', null, 30, true, { memberHour: 11, raidTypeHour: 12, iconHour: 13, placeHour: 14, stateHour: 15,
+    ends: [observedEnd(30, 'ENG'), { hour: 40, endedHour: 25, exact: true, source: 'nativeEndDate', raider: 'ENG' }] });
+  assert.equal(raidAt(CODES, raid, 10), null, 'not among the asked countries before a read names one');
   const at11 = raidAt(CODES, raid, 11)!;
   assert.deepEqual([at11.episode.raidType, at11.episode.icon, at11.episode.iconMissing, at11.episode.state], [null, null, "The raid's type is not recorded", null]);
-  assert.deepEqual([raidAt(CODES, raid, 12)!.episode.raidType, raidAt(CODES, raid, 13)!.episode.state, raidAt(CODES, raid, 14)!.episode.state], ['mod/sky_raid', null, 7]);
+  const at12 = raidAt(CODES, raid, 12)!.episode;
+  assert.deepEqual([at12.raidType, at12.icon, at12.iconMissing], ['mod/sky_raid', null, "The raid's target is not recorded in full"]);
+  assert.deepEqual([raidAt(CODES, raid, 13)!.episode.icon, raidAt(CODES, raid, 13)!.episode.province, raidAt(CODES, raid, 14)!.episode.state, raidAt(CODES, raid, 15)!.episode.state],
+    ['GFX_mod_raid_target', null, null, 7]);
   assert.deepEqual([raidAt(CODES, raid, 29)!.end, raidAt(CODES, raid, 35)!.since, raidAt(CODES, raid, 45)!.since], [null, 30, 25]);
 });
 

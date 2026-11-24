@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { battleChangeHours, battleChanges, battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleMeasure, battleState, battleStateRows, heldWindowsEnd, battleTooltip, battleValueText, battleWinner, isBattleRow,
+import { battleChangeHours, battleChanges, battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleLogRows, battleMeasure, battleState, battleStateRows, heldWindowsEnd, battleTooltip, battleValueText, battleWinner, isBattleRow, BATTLE_PARTIAL_REASON, battlePartial, battleValueRow, battleValueTitle, markPartial,
   battlePlaceRequests, heldAtHour, namedBattles, rowsById } from './battleRows.ts';
 import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import type { BattleLabels, BattleRow, BattleValue } from './battleRows';
@@ -58,6 +58,12 @@ test('battle rows retain bounds, missing starts, unknown results and explicit ze
   assert.deepEqual(battleMeasure(battle, 'Ships', 'Not read'), { label: 'Ships', value: 5, atLeast: false });
   assert.deepEqual(battleMeasure(battle, 'Sunk', 'Not read'), { label: 'Sunk', value: null, unknown: 'Losses not read; Not read' });
   assert.equal(battleValueText({ label: 'Ships', value: 0 }), '0');
+  const sunk = { label: 'Sunk', value: 3, atLeast: true };
+  assert.deepEqual(battleValueRow('Sunk', sunk, '3 so far', { indent: true }),
+    { indent: true, label: 'Sunk', valueState: { kind: 'partial', text: '3 so far', reason: BATTLE_PARTIAL_REASON } }, 'R2-K7: a partial battle figure keeps its mark and reason');
+  assert.deepEqual(battleValueRow('Ships', { label: 'Ships', value: 5 }, '5'), { label: 'Ships', value: '5' });
+  assert.equal(markPartial('4 h', battlePartial({ label: 'Length', value: 4, atLeast: true })), '4 h partial');
+  assert.equal(battleValueTitle(sunk, '3'), `3, partial: ${BATTLE_PARTIAL_REASON}`);
   for (const value of [0.123456789, 1e-30]) {
     assert.equal(battleValueText({ label: 'Caller measure', value }), String(value));
   }
@@ -78,10 +84,10 @@ test('battle rows retain bounds, missing starts, unknown results and explicit ze
 test('Live pins ongoing battles while stable IDs and by dates survive ordering changes', () => {
   const older = row('ongoing', null);
   const newer = row('ended', { hour: 40, bound: 'by' });
-  assert.deepEqual(battleStateRows([40], () => [newer, older], true).map(row => row.id), ['ongoing', 'ended']);
-  assert.deepEqual(battleStateRows([40], () => [older, newer], false).map(row => row.id), ['ended', 'ongoing']);
-  assert.equal(battleStateRows([40], () => [newer], true)[0].by, true);
-  assert.equal(battleStateRows([100], () => [{ ...older, place: { ...older.place, hour: 100 } }], true)[0].id, 'ongoing');
+  assert.deepEqual(battleLogRows([newer, older], true).map(row => row.id), ['ongoing', 'ended']);
+  assert.deepEqual(battleLogRows([older, newer], false).map(row => row.id), ['ended', 'ongoing']);
+  assert.equal(battleLogRows([newer], true)[0].by, true);
+  assert.equal(battleLogRows([{ ...older, place: { ...older.place, hour: 100 } }], true)[0].key, 'ongoing');
 });
 
 test('only supplied visible rows ask for looks, independently at each recorded country hour', () => {
@@ -97,7 +103,7 @@ test('unknown endings stay visible and Jump uses the start or supplying hour', (
   const battle = row('missing-end', { unknown: 'Ending not recorded' });
   assert.equal(isBattleRow(battle), true);
   assert.equal(battleDate(battle.end, labels.ongoing), 'Ending not recorded');
-  assert.equal(battleStateRows([30], () => [battle], true).length, 1);
+  assert.equal(battleLogRows([battle], true).length, 1);
   assert.equal(battleJumpHour(battle), 10);
   assert.equal(battleJumpHour(row()), 10);
   assert.equal(battleJumpHour({ ...battle, start: null }), 29);
@@ -172,7 +178,7 @@ test('a battle log over a block holds each battle\'s states, each shown from its
     Math.max(item.hour, item.revealedHour ?? item.hour) <= hour && (item.leftHour ?? Infinity) > hour).map(item => [item.item.id, item.item.end === null]);
   const rendered = battleStateRows(hours, rowsAt, true);
   for (let hour = 100; hour <= 120; hour++) {
-    assert.deepEqual(shownAt(rendered, hour), battleStateRows([hour], () => rowsAt(hour), true).map(item => [item.item.id, item.item.end === null]), `at ${hour}`);
+    assert.deepEqual(shownAt(rendered, hour), battleLogRows(rowsAt(hour), true).map(item => [item.item.id, item.item.end === null]), `at ${hour}`);
   }
   assert.equal(rendered.filter(item => item.item.id === 'y').length, 3, 'losses a row renders: a state per read');
   const painted = battleStateRows(hours, rowsAt, true, item => battleState(item, true));

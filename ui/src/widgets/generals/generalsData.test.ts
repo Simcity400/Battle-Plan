@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { careerLanes, leaderRows, topLeader, withheldLeaders } from './generalsData.ts';
+import { BATTLE_COUNTS_PARTIAL, careerLanes, careerTotals, leaderRows, leaderTooltip, topLeader, withheldLeaders } from './generalsData.ts';
 import type { CareerBattle, LeaderCareerReply, LeaderRole, LeaderRow, UnitLeadersReply } from '../../generated/dashboard';
 
 const role = (owner: string | null, kind = 1): LeaderRole => ({ owner, kind, category: 0, rank: 'Field Marshal', attributeNames: ['A', 'D', 'P', 'L'], maximumSkill: 9 });
@@ -29,6 +29,10 @@ test('counts read after the battle log went unrecorded are lower bounds', () => 
   const data = reply([row('1', 'GER', 5, [10, 6, 2])], 150);
   assert.equal(leaderRows(data, 149, null, 'all')[0].foughtPartial, false);
   assert.equal(leaderRows(data, 150, null, 'all')[0].foughtPartial, true);
+  const tip = leaderTooltip(leaderRows(data, 150, null, 'all')[0], { name: 'Germany' });
+  assert.deepEqual(tip.rows.find(r => r.label === 'Battles won / fought')?.valueState,
+    { kind: 'partial', text: '6 / 10', reason: BATTLE_COUNTS_PARTIAL }, 'R2-K7: a partial count keeps its mark and reason without lower-bound words');
+  assert.equal(leaderTooltip(leaderRows(data, 149, null, 'all')[0], { name: 'Germany' }).rows.find(r => r.label === 'Battles lost')?.value, '2');
 });
 
 test('withheld leaders are kept by kind and country', () => {
@@ -39,10 +43,21 @@ test('withheld leaders are kept by kind and country', () => {
 });
 
 
+const battle = (start: number, read: number, won: boolean | null, resultRead: number | null): CareerBattle =>
+  ({ start, read, unknown: false, kind: 1, won, resultHour: resultRead === null ? null : resultRead - 1, resultRead });
 const career = (battles: CareerBattle[]): LeaderCareerReply => ({
   reference: '1', name: 'Leader 1', portraitHour: 300, runs: [{ firstHour: 0, lastHour: 300, role: role('GER'), skill: 3, components: [1, 1, 1, 1] }],
   traitGains: [[0, 0, 0], [120, 1, 1]], traits: [{ token: 'a', name: 'A', icon: null, missing: null }, { token: 'b', name: 'B', icon: null, missing: null }],
   commands: [{ firstHour: 10, lastHour: 50, formation: '7', kind: 'army', name: null }], battles, observed: [[0, 300]], battlesPartialFrom: null, resultsMissing: '', missing: null, warnings: [],
+});
+
+test('a career counts each battle from its read and each result from its own read', () => {
+  const data = career([battle(10, 12, true, 20), battle(30, 30, false, 40), battle(50, 55, null, null)]);
+  assert.deepEqual([careerTotals(data, 11).fought, careerTotals(data, 12).fought], [0, 1]);
+  const at35 = careerTotals(data, 35);
+  assert.deepEqual([at35.fought, at35.won, at35.lost, at35.unresolved], [2, 1, 0, 1]);
+  const at60 = careerTotals(data, 60);
+  assert.deepEqual([at60.fought, at60.won, at60.lost, at60.unresolved], [3, 1, 1, 1]);
 });
 
 test('career lanes date traits held before the view at its first hour and name an unnamed formation by its handle', () => {

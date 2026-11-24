@@ -71,6 +71,17 @@ test('every widget module loads with its registered lazy body and the catalogue 
       assert.deepEqual([drawn?.family, drawn?.kind], [spec.declaration.family, spec.declaration.kind], named);
       assert.equal(drawn?.projection, spec.declaration.projection, named);
     }
+    const { LEGACY_WIDGETS: legacy } = await vite.ssrLoadModule('/ui/src/widgets/legacyManifest.ts');
+    const { OPTION_CHOICES: kindChoices } = await vite.ssrLoadModule('/ui/src/widgets/manifest.ts');
+    const choiceHooks = new Map<string, Set<unknown>>();
+    for (const entry of [...views as readonly FamilyViewEntry[], ...legacy as readonly { kind: string; view?: string }[]]) {
+      const hooks = choiceHooks.get(entry.kind) ?? new Set<unknown>();
+      const kindHook = Object.hasOwn(kindChoices, entry.kind) ? await kindChoices[entry.kind]() : undefined;
+      hooks.add(kindHook ?? (await load(entry.kind, entry.view)).useOptionChoices);
+      choiceHooks.set(entry.kind, hooks);
+    }
+    const lost = [...choiceHooks].filter(([, hooks]) => hooks.size > 1).map(([kind]) => kind);
+    assert.deepEqual(lost, [], 'every view of a kind loads the recording’s option choices, whichever view loads first');
   } finally { await vite.close(); }
 });
 

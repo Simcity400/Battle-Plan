@@ -178,7 +178,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         technology_artwork::TechnologyArtwork::KEY => {
             artwork_check(content, artwork::Kind::Technology, findings)
         }
-        research::Research::KEY | research::breakdown::ResearchBreakdown::KEY | <research::slots::ResearchSlots as AtHour>::KEY => {
+        research::Research::KEY | research::breakdown::ResearchBreakdown::KEY | research::history::ResearchHistoryAt::KEY | <research::slots::ResearchSlots as AtHour>::KEY => {
             let names = artwork_check(content, artwork::Kind::Technology, findings)?;
             Ok(format!("{names} Slots, assignments, progress, modifiers and grants require the recorded research tables."))
         }
@@ -231,8 +231,9 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         identities::CountryIdentities::KEY => Ok("No content dependency: holders are the recorded identity table.".into()),
         "game-score" => Ok("Scores, their reasons and the multipliers are the recorded CountryGameScores and GameScoreMultipliers rows; only the column hints localise the end screen's sort controls from the recorded content.".into()),
-        "factory-groups" => Ok("Factory group names are the recorded stack's building types counted by each production flag, localised; the counts are the recorded CountryFactories rows.".into()),
+        "factory-groups" | "factory-mix" => Ok("Factory group names are the recorded stack's building types counted by each production flag, localised; the counts are the recorded CountryFactories rows.".into()),
         "factory-parts" => Ok("No content dependency: the three factory groups are the game's own, read from the recorded CountryFactories row.".into()),
+        "faction-totals-at" => Ok("No content dependency: faction and group totals sum recorded TerritoryTotals or CountryFactories rows.".into()),
         "world-tension" | "world-tension-stack" => Ok("No content dependency: tension, contributions and the game's own threat text are the recorded WorldTension, ThreatCountryAggregates, ThreatSources and ThreatEvents rows; display text only loses its presentation controls.".into()),
         "nuclear-arsenal" => Ok("Nuclear type names localise the token spellings recorded in LexicalTokens; amounts and type ordinals are the recorded Nukes rows. A type the game names no token for is counted and shown unnamed.".into()),
         <forces::AirForceAt as at_hour::AtHour>::KEY => {
@@ -327,13 +328,12 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.push(Finding::new(Kind::Offline, key, "the goals, selections, pools and members a faction holds require recorded faction rows"));
             Ok("Faction goal and member-upgrade content loaded through the production readers; goal rewards and scripted names are described at a recorded hour.".into())
         }
-        wars::Wars::KEY => {
+        wars::Wars::KEY | wars::WarTimelineAt::KEY => {
             let catalogue = content.catalogue()?;
             catalogue.war_names()?;
             take(catalogue, "native war naming content", findings);
             Ok("Native war naming content loaded through the recorded stack; viewpoint groups, first-goal tokens, naming operands and continuity require recorded rows.".into())
         }
-        wars::WarLosses::KEY => Ok("No content dependency: casualties are the recorded CasualtyLifetimes counters of the relations each war held.".into()),
         <wars::contributions::WarContributions as at_hour::AtHour>::KEY => {
             content.catalogue()?.war_participation_factors()?;
             findings.push(Finding::new(Kind::Offline, "war-contributions", "participation ledgers and delivery histories need recorded WarParticipation and WarLendLeaseHistories rows; unavailable offline"));
@@ -479,10 +479,11 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "scoreboard headings", findings);
             Ok("The game's own column headings checked through the recorded content stack.".into())
         }
-        equipment_produced::EquipmentProduced::KEY | equipment_produced::EquipmentProducedTypes::KEY | equipment_produced::EquipmentProducedCountry::KEY | equipment_produced::EquipmentProducedAt::KEY => {
+        equipment_produced::EquipmentProduced::KEY | equipment_produced::EquipmentProducedTypes::KEY | equipment_produced::EquipmentProducedCountry::KEY | equipment_produced::EquipmentProducedAt::KEY | equipment_produced::EquipmentProducedRace::KEY => {
             let units = dashboard_base::catalogue::equipment_units(content.catalogue()?)?;
             Ok(format!("Equipment types resolve the recorded archetype spellings through the equipment database ({} types); design names localise the recorded naming operands; amounts are the recorded production totals and Rocket output.", units.equipment.len()))
         }
+        "raid-tally-at" => Ok("Raid availability comes from the recorded content stack's raid types; launch and success counts are the recorded Raids and RaidEnds rows.".into()),
         _ => Err("No content check is registered for this product.".into()),
     }
 }

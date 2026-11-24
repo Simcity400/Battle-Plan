@@ -1,13 +1,13 @@
 import { AFTER_PLAYHEAD_OPTION } from './options.ts';
 import type { OptionField } from './options';
 
-export const LINE_TIME_OPTIONS: readonly OptionField[] = [
+export const TIME_CHART_TIME_OPTIONS: readonly OptionField[] = [
   { key: 'playback', section: 'time', label: 'While following playback', kind: 'choice', default: 'draw-in',
-    choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'cursor', label: 'Whole campaign' }, { value: 'window', label: 'Recent window' }] },
-  AFTER_PLAYHEAD_OPTION,
+    choices: [{ value: 'draw-in', label: 'Grow to now' }, { value: 'window', label: 'Recent window' }] },
   { key: 'windowDays', section: 'time', label: 'Window length', kind: 'number', min: 7, max: 3650, step: 1, unit: 'days', default: 365,
     visibleWhen: options => options.playback === 'window' },
 ];
+export const LINES_VIEW_OPTIONS: readonly OptionField[] = [...TIME_CHART_TIME_OPTIONS, { ...AFTER_PLAYHEAD_OPTION, visibleWhen: () => false }];
 export const END_LABELS_OPTION: OptionField = { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true };
 export const LINE_AXIS_OPTIONS: readonly OptionField[] = [
   { key: 'yMin', section: 'axes', label: 'Value axis from', hint: 'Empty fits the data', kind: 'number', min: -1e9, max: 1e9, step: 1, default: null },

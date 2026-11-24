@@ -1,4 +1,5 @@
-import type { Artwork, ResearchBreakdownReply, ResearchCoverage, ResearchEntry, ResearchReply, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
+import { runAt } from '../../charts/series.ts';
+import type { Artwork, ResearchBound, ResearchBreakdownReply, ResearchCoverage, ResearchEntry, ResearchFolder, ResearchHistoryReply, ResearchItem, ResearchReply, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
@@ -49,6 +50,25 @@ export function isUnjoinedResearch(state: ResearchSlotState | null): state is Re
   return !!state?.token && state.entryFirstObservedHour === null;
 }
 
+export function researchStateAt(slot: ResearchSlotHistory, hour: number): ResearchSlotState | null {
+  if (Number.isNaN(hour)) return null;
+  if (!runAt(slot.availability, hour)) return null;
+  const state = runAt(slot.states, hour);
+  if (!state) return null;
+  return state.details?.remainingDays == null ? state : { ...state, details: { ...state.details,
+    remainingDays: Math.max(0, state.details.remainingDays - Math.floor((hour - state.firstHour) / 24)),
+  } };
+}
+
+export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObservedHour: number, hour: number): number | null {
+  if (Number.isNaN(hour)) return null;
+  const sample = runAt(slot.progress, hour);
+  if (!sample?.baseDaysRaw || sample.entryFirstObservedHour !== entryFirstObservedHour) return null;
+  const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
+  if (base <= 0n || done < 0n) return null;
+  return done >= base ? 1 : Number(done * 10_000n / base) / 10_000;
+}
+
 export function researchRateAt(state: ResearchSlotState, hour: number): { rateRaw: string; penaltyRaw: string; floored: boolean } | null {
   const modifiers = state.details?.modifiers;
   if (!modifiers || state.aheadReductionYearsRaw === null) return null;
@@ -60,47 +80,6 @@ export function researchRateAt(state: ResearchSlotState, hour: number): { rateRa
   const rate = (100000n + BigInt(modifiers.totalBonusRaw)) * 100000n / (100000n + penalty);
   const minimum = BigInt(modifiers.minimumSpeedRaw);
   return { rateRaw: (rate > minimum ? rate : minimum).toString(), penaltyRaw: penalty.toString(), floored: rate < minimum };
-}
-
-export interface ResearchFolderLook { key: string; name: string; colour: string; order: number }
-
-export type ResearchUse = string | readonly [token: string, databaseIndex: number];
-
-export type ResearchFolderLooks = ReadonlyMap<string, ResearchFolderLook>
-  & { readonly definitions?: ReadonlyMap<string, ReadonlyMap<number, ResearchFolderLook>> };
-
-export function researchFolderLooks(reply: Pick<ResearchReply, 'folders' | 'technologyFolders'>, tokens: Iterable<ResearchUse>,
-  palette: readonly string[]): Map<string, ResearchFolderLook> & { definitions: Map<string, Map<number, ResearchFolderLook>> } {
-  const byToken = new Map<string, string | null>(), byDefinition = new Map<string, Map<number, string | null>>();
-  for (const item of reply.technologyFolders) {
-    if (item.databaseIndex == null) byToken.set(item.token, item.folder);
-    else byDefinition.set(item.token, (byDefinition.get(item.token) ?? new Map<number, string | null>()).set(item.databaseIndex, item.folder));
-  }
-  const folderOf = (use: ResearchUse) => {
-    if (typeof use === 'string') return byToken.get(use);
-    const [token, index] = use, own = byDefinition.get(token);
-    return own?.has(index) ? own.get(index) : byToken.get(token);
-  };
-  const order = new Map(reply.folders.map((folder, index) => [folder.key, index]));
-  const names = new Map(reply.folders.map(folder => [folder.key, folder.name]));
-  const wanted = [...tokens];
-  const shown = [...new Set(wanted.flatMap(use => folderOf(use) ?? []))]
-    .sort((a, b) => (order.get(a) ?? Infinity) - (order.get(b) ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0));
-  const looks = new Map(shown.map((key, index): [string, ResearchFolderLook] => [key, { key, order: index,
-    name: contentTitle(names.get(key), key, 'Folder name unavailable'), colour: palette.length ? palette[index % palette.length] : 'currentColor' }]));
-  const byUse = new Map<string, ResearchFolderLook>(), definitions = new Map<string, Map<number, ResearchFolderLook>>();
-  for (const use of wanted) {
-    const key = folderOf(use), look = key ? looks.get(key) : undefined;
-    if (!look) continue;
-    if (typeof use === 'string') byUse.set(use, look);
-    else definitions.set(use[0], (definitions.get(use[0]) ?? new Map<number, ResearchFolderLook>()).set(use[1], look));
-  }
-  return Object.assign(byUse, { definitions });
-}
-
-export function researchFolderAt(looks: ResearchFolderLooks, token: string,
-  databaseIndex?: number | null): ResearchFolderLook | undefined {
-  return databaseIndex == null ? looks.get(token) : looks.definitions?.get(token)?.get(databaseIndex);
 }
 
 export type ResearchArtwork = Map<string, Artwork> & { readonly definitions: ReadonlyMap<string, ReadonlyMap<number, Artwork>> };
@@ -137,22 +116,6 @@ export function researchReadName(artwork: ResearchArtwork, read: ResearchSlotNow
   const { token, databaseIndex } = read.state;
   if (token === null) return undefined;
   return isUnjoinedResearch(read.state) ? read.definition?.name : researchArt(artwork, token, databaseIndex)?.name;
-}
-
-export function historyTokens(history: ResearchHistory): ResearchUse[] {
-  const tokens = new Set<string>(), definitions = new Map<string, Set<number>>();
-  for (const slot of history.slots) {
-    for (const entry of slot.entries) definitions.set(entry.token, (definitions.get(entry.token) ?? new Set<number>()).add(entry.databaseIndex));
-    for (const state of slot.states) if (state.token && !definitions.has(state.token)) tokens.add(state.token);
-  }
-  return [...tokens, ...[...definitions].flatMap(([token, indices]) => [...indices].map(index => [token, index] as const))];
-}
-
-export function researchFolderList(looks: ResearchFolderLooks): ResearchFolderLook[] {
-  const seen = new Map<string, ResearchFolderLook>();
-  const all = [...looks.values(), ...[...looks.definitions?.values() ?? []].flatMap(byIndex => [...byIndex.values()])];
-  for (const look of all) if (!seen.has(look.key)) seen.set(look.key, look);
-  return [...seen.values()].sort((a, b) => a.order - b.order);
 }
 
 const hour = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= -2147483648 && (n as number) <= 2147483647;
@@ -254,5 +217,82 @@ export function validateResearchBreakdown(input: unknown): ResearchBreakdownRepl
   const valid = !!reply && Array.isArray(reply.parts) && reply.parts.every(part => Number.isInteger(part.slot) && hour(part.firstObservedHour)
     && text(part.missing) && intervals(part.states) && part.states.every(validState) && intervals(part.progress) && part.progress.every(validProgress));
   if (!valid) throw new Error('Research breakdown does not match this assignment.');
+  return reply;
+}
+
+export interface ResearchName {
+  readonly label: string;
+  readonly missing: string | null;
+  readonly description: string | null;
+}
+
+export interface ResearchLooks {
+  name(token: string, databaseIndex: number | null): ResearchName;
+  folder(token: string, databaseIndex: number | null): { readonly key: string; readonly name: string } | undefined;
+}
+
+const looksCache = new WeakMap<ResearchHistoryReply, ResearchLooks>();
+const definitionKey = (token: string, databaseIndex: number | null) => `${token}\u0000${databaseIndex ?? ''}`;
+
+export function researchLooks(reply: ResearchHistoryReply): ResearchLooks {
+  const held = looksCache.get(reply);
+  if (held) return held;
+  const artwork = new Map(reply.artwork.map(art => [art.token, art]));
+  const definitions = new Map(reply.definitions.map(item => [definitionKey(item.token, item.databaseIndex), item]));
+  const folders = new Map(reply.folders.map((folder: ResearchFolder) => [folder.key, { key: folder.key, name: contentTitle(folder.name, folder.key, 'Folder name unavailable') }]));
+  const placed = new Map(reply.technologyFolders.map(item => [definitionKey(item.token, item.databaseIndex ?? null), item.folder]));
+  const looks: ResearchLooks = {
+    name(token, databaseIndex) {
+      const definition = definitions.get(definitionKey(token, databaseIndex));
+      const art = artwork.get(token);
+      const name = definition?.name ?? art?.name ?? null;
+      return { label: name ?? token, missing: name === null ? reply.unnamed : null, description: definition?.description ?? art?.description ?? null };
+    },
+    folder(token, databaseIndex) {
+      const key = placed.get(definitionKey(token, databaseIndex)) ?? placed.get(definitionKey(token, null));
+      return key ? folders.get(key) : undefined;
+    },
+  };
+  looksCache.set(reply, looks);
+  return looks;
+}
+
+export function researchHistoryProof(data: unknown, _requested: readonly [number, number], hour: number): readonly [number, number] | null {
+  const reply = data as ResearchHistoryReply;
+  const last = reply.nextChange === null ? Number.MAX_SAFE_INTEGER : reply.nextChange - 1;
+  return reply.hour <= hour && hour <= last ? [reply.hour, last] : null;
+}
+
+const BOUNDS = new Set(['exact', 'by', 'heldBefore', 'lastSeen']);
+const OUTCOMES = new Set(['active', 'completed', 'switched', 'unknown']);
+const validBound = (bound: ResearchBound | null) => bound === null || (!!bound && BOUNDS.has(bound.kind) && hour(bound.hour));
+const validItem = (item: ResearchItem, through: number) => typeof item?.token === 'string' && item.token.length > 0 && item.token.length <= 512
+  && templateIndex(item.databaseIndex) && hour(item.firstObservedHour) && item.firstObservedHour <= through && OUTCOMES.has(item.outcome)
+  && intervals(item.pieces) && item.pieces.every(piece => piece.lastHour <= through)
+  && validBound(item.start) && validBound(item.end) && (item.end === null) === (item.outcome === 'active')
+  && (item.origin === null || (Number.isInteger(item.origin.slot) && validBound(item.origin.start)))
+  && (item.tookDays === null || (Number.isInteger(item.tookDays) && item.tookDays >= 0));
+
+export function validateResearchHistory(input: unknown): ResearchHistoryReply {
+  const reply = input as ResearchHistoryReply;
+  let last = -1;
+  const valid = !!reply && typeof reply === 'object' && hour(reply.hour) && (reply.nextChange === null || (hour(reply.nextChange) && reply.nextChange > reply.hour))
+    && text(reply.unrecorded) && text(reply.partial) && typeof reply.unnamed === 'string' && Number.isInteger(reply.completed) && reply.completed >= 0
+    && intervals(reply.coverage) && reply.coverage.every(span => span.lastHour <= reply.hour)
+    && Array.isArray(reply.slots) && reply.slots.every(slot => {
+      const ordered = Number.isInteger(slot?.index) && slot.index > last;
+      last = slot?.index;
+      return ordered && intervals(slot.availability) && slot.availability.every(span => span.lastHour <= reply.hour)
+        && Array.isArray(slot.items) && slot.items.every(item => validItem(item, reply.hour));
+    })
+    && Array.isArray(reply.artwork) && reply.artwork.every(artworkEntry)
+    && Array.isArray(reply.folders) && reply.folders.every(folder => typeof folder?.key === 'string' && folder.key.length > 0 && text(folder.name))
+    && Array.isArray(reply.technologyFolders) && reply.technologyFolders.every(item => typeof item?.token === 'string' && item.token.length > 0
+      && (item.databaseIndex == null || templateIndex(item.databaseIndex)) && (item.folder === null || (typeof item.folder === 'string' && item.folder.length > 0)))
+    && Array.isArray(reply.definitions) && reply.definitions.every(item => typeof item?.token === 'string' && item.token.length > 0
+      && templateIndex(item.databaseIndex) && text(item.name, Infinity) && text(item.description, Infinity))
+    && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
+  if (!valid) throw new Error('Research history does not match this country and recording.');
+  keepDrawableIcons(reply.artwork);
   return reply;
 }

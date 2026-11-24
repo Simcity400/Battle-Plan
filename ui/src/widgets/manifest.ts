@@ -1,19 +1,29 @@
-import { widgetDefinition, type FamilyViewRenderer, type WidgetMeta, type WidgetViewSwitch } from '../dashboard/definitions.ts';
-import { resolveOptions, setOption, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
+import { widgetDefinition, type FamilyViewRenderer, type WidgetMeta, type WidgetRenderer, type WidgetViewSwitch } from '../dashboard/definitions.ts';
+import { resolveOptions, type OptionField, type OptionValue, type WidgetOptions } from '../dashboard/options.ts';
 import {
   DEFAULT_VIEW,
   manifestViewSwitch,
+  normalizeView,
   resolveActiveView,
   scopedOptionFields,
   viewKey,
   viewOwnedFields,
   type FamilyViewEntry,
+  type FamilyViewModule,
   type LegacyWidgetEntry,
 } from '../families/manifest.ts';
 import { FAMILY_VIEWS } from './familyManifest.ts';
 import { LEGACY_WIDGETS } from './legacyManifest.ts';
 
-export { FAMILY_VIEWS, LEGACY_WIDGETS };
+export { DEFAULT_VIEW, FAMILY_VIEWS, LEGACY_WIDGETS };
+
+export type OptionChoicesHook = NonNullable<WidgetRenderer['useOptionChoices']>;
+
+export const OPTION_CHOICES: Readonly<Record<string, () => Promise<OptionChoicesHook>>> = {
+  'air-kills-losses': () => import('../dashboard/useMilitaryAirLedger').then(module => module.useAirLossChoices),
+  'equipment-stockpile': () => import('./equipment-stockpile/useEquipmentStockpile').then(module => module.useStockpileChoices),
+  'resource-balance': () => import('./resource-balance/resourceChoices.ts').then(module => module.useResourceChoices),
+};
 
 export interface FamilyViewUiLoader {
   readonly load: () => Promise<{ default: FamilyViewRenderer }>;
@@ -36,11 +46,12 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'division-template': { load: () => import('./division-template') },
   'doctrine-mastery': { load: () => import('./doctrine-mastery') },
   'equipment-designs': { load: () => import('./equipment-designs') },
+  'equipment-produced': { load: () => import('./equipment-produced/family.tsx') },
   'event-choices': { load: () => import('./event-choices') },
   'event-feed': { load: () => import('./event-feed') },
   'factions': { load: () => import('./factions') },
   'fuel': { load: () => import('./fuel') },
-  'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },
+  'factories': { load: () => import('./factories') },
   'idea-timeline': { load: () => import('./idea-timeline') },
   'industrial-organisations': { load: () => import('./industrial-organisations') },
   'international-market': { load: () => import('./international-market') },
@@ -132,15 +143,6 @@ export function widgetViewOptions(kind: string, storedOptions?: WidgetOptions, v
   return resolved;
 }
 
-export function viewOptionsAsStored(kind: string, view: string, options: ResolvedWidgetOptions): WidgetOptions {
-  const stored: Record<string, OptionValue> = {};
-  for (const field of viewOptionFields(kind, view)) {
-    const value = options[field.key];
-    if (value !== undefined && value !== field.default) stored[field.key] = value;
-  }
-  return stored;
-}
-
 export function presetStoredOptions(kind: string, chosen: WidgetOptions): WidgetOptions {
   const fields = viewOptionFields(kind, resolveWidgetActiveView(kind, chosen));
   const stored: Record<string, OptionValue> = {};
@@ -148,9 +150,10 @@ export function presetStoredOptions(kind: string, chosen: WidgetOptions): Widget
   return stored;
 }
 
-export function setWidgetViewOption(kind: string, storedOptions: WidgetOptions | undefined, key: string, value: OptionValue): WidgetOptions | null {
-  return setOption(widgetOptionFields(kind, storedOptions), storedOptions, key, value);
+export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {
+  return legacyByPair.get(viewKey(kind, view)) ?? legacyByPair.get(viewKey(kind, DEFAULT_VIEW));
 }
+
 export function resolveWidgetActiveView(
   kind: string,
   storedOptions?: WidgetOptions,
@@ -158,6 +161,23 @@ export function resolveWidgetActiveView(
 ): string {
   const meta = metaOverride ?? widgetDefinition(kind);
   return resolveActiveView(storedOptions, meta, familyViewsForKind(kind), legacyEntriesForKind(kind));
+}
+
+export function activeFamilyView(
+  kind: string,
+  storedOptions?: WidgetOptions,
+  metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options'>,
+): FamilyViewEntry | undefined {
+  const view = resolveWidgetActiveView(kind, storedOptions, metaOverride);
+  return familyByPair.get(viewKey(kind, view));
+}
+
+export function isFamilyWidgetView(
+  kind: string,
+  storedOptions?: WidgetOptions,
+  metaOverride?: Pick<WidgetMeta, 'viewSwitch' | 'options'>,
+): boolean {
+  return activeFamilyView(kind, storedOptions, metaOverride) !== undefined;
 }
 
 export function isPlaybackDatedView(
@@ -192,6 +212,24 @@ export function resolveWidgetViewSwitch(
   return manifestViewSwitch(meta, familyViewsForKind(kind), legacyEntriesForKind(kind));
 }
 
+export function manifestKinds(): readonly string[] {
+  const seen = new Set<string>();
+  const kinds: string[] = [];
+  for (const entry of FAMILY_VIEWS) {
+    if (!seen.has(entry.kind)) {
+      seen.add(entry.kind);
+      kinds.push(entry.kind);
+    }
+  }
+  for (const entry of LEGACY_WIDGETS) {
+    if (!seen.has(entry.kind)) {
+      seen.add(entry.kind);
+      kinds.push(entry.kind);
+    }
+  }
+  return kinds;
+}
+
 export function manifestSlotsForKind(kind: string): readonly ('render' | 'countryChip' | 'subjectMenu')[] {
   const ui = Object.hasOwn(FAMILY_VIEW_UI, kind) ? FAMILY_VIEW_UI[kind] : undefined;
   if (ui?.slots?.length) return ui.slots;
@@ -200,4 +238,27 @@ export function manifestSlotsForKind(kind: string): readonly ('render' | 'countr
     if (entry.slots?.length) return entry.slots;
   }
   return ['render'];
+}
+
+const loadedSpecs = new Map<string, Promise<FamilyViewModule | undefined>>();
+const readySpecs = new Map<string, FamilyViewModule>();
+
+export function loadedFamilyViewSpec(kind: string, view?: string): FamilyViewModule | undefined {
+  return readySpecs.get(viewKey(kind, view));
+}
+
+export function loadFamilyViewSpec(kind: string, view?: string): Promise<FamilyViewModule | undefined> {
+  const key = viewKey(kind, normalizeView(view));
+  const entry = familyByPair.get(key);
+  if (!entry) return Promise.resolve(undefined);
+  let held = loadedSpecs.get(key);
+  if (!held) {
+    held = entry.loadSpec().then(mod => {
+      readySpecs.set(key, mod);
+      return mod;
+    });
+    loadedSpecs.set(key, held);
+    held.catch(() => { loadedSpecs.delete(key); });
+  }
+  return held;
 }

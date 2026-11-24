@@ -8,7 +8,7 @@ const SURFACE = '#161616';
 
 function reply(lastHour: number): ConvoyHealthReply {
   return {
-    branchId: '1', view: 'regions', tag: 'GER', firstHour: 0, lastHour, validThrough: lastHour, scale: 100000, rankMissing: null,
+    branchId: '1', view: 'regions', tag: 'GER', firstHour: 0, lastHour, validThrough: lastHour, scale: 100000, rankMissing: null, empty: null, activeUnlisted: { ids: [], missing: null },
     known: [[{ firstHour: 0, lastHour }], [], []], unheld: [], gaps: [{ firstHour: 30, lastHour: 39 }],
     regions: [{
       region: 17, name: 'English Channel', missing: null, pinned: false, efficiency: [],
@@ -49,7 +49,7 @@ test('no traffic is the empty lane, unrecorded hours keep their reason, and the 
   assert.equal(quiet.kind === 'value' && quiet.tone, 'muted', 'a full route is quiet');
   assert.equal(runs.at(-1)!.lastHour, 50);
   assert.equal(model.rows[0]!.region, 17, 'each lane names its region for the regions control');
-  assert.deepEqual(model.regions, { pickedHeading: 'Your regions', automaticHeading: 'Most active', addLabel: 'Add region' });
+  assert.deepEqual(model.regions, { pickedHeading: 'Your regions', automaticHeading: 'Most active', addLabel: 'Add region', active: { ids: [], missing: null } });
 });
 
 test('a reply that reaches past the displayed hour, or for the other view, draws nothing', () => {

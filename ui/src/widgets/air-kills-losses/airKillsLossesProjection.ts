@@ -54,6 +54,7 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
     family: 'airLosses',
     scale: 100_000,
     digits: 5,
+    shownDecimals: 0,
     leftHeader: 'Own losses',
     rightHeader: 'Enemy aircraft destroyed',
     unit: 'Aircraft',

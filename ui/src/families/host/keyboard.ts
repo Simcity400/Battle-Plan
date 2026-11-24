@@ -9,7 +9,7 @@ export interface FamilyKeyboardOptions {
   readonly totalCount?: number;
   readonly focusedKey: string | null;
   readonly focusedIndex?: number;
-  readonly pageStep: number;
+  readonly pageStep: FamilyPageSteps;
   readonly blocked: boolean;
   readonly typeaheadRef?: { current: { query: string; until: number } };
   readonly isPinnedTooltip: () => boolean;
@@ -23,18 +23,35 @@ export interface FamilyKeyboardOptions {
   readonly onEscape?: () => void;
 }
 
-export function navPageStep(nav: readonly FamilyNavTuple[], focusedKey: string | null, viewportHeight: number): number {
+export function usableRowHeight(fields: Readonly<Record<string, unknown>>, viewportHeight: number): number {
+  const rows = (fields.meta as { readonly rowViewport?: { readonly height: number } } | undefined)?.rowViewport;
+  return rows ? rows.height : viewportHeight;
+}
+
+export interface FamilyPageSteps {
+  readonly down: number;
+  readonly up: number;
+}
+
+export function navPageSteps(nav: readonly FamilyNavTuple[], focusedKey: string | null, viewportHeight: number): FamilyPageSteps {
   const at = Math.max(0, nav.findIndex(entry => entry[0] === focusedKey));
   const top = nav[at]?.[6];
-  if (top === undefined) return Math.max(1, nav.length);
-  const bottom = top + viewportHeight;
-  let step = 0;
+  if (top === undefined) return { down: Math.max(1, nav.length), up: Math.max(1, nav.length) };
+  const reach = top + viewportHeight;
+  let down = 0;
   for (let i = at + 1; i < nav.length; i++) {
     const entry = nav[i]!;
-    if (entry[6] === undefined || entry[6] + (entry[7] ?? 0) > bottom) break;
-    step++;
+    if (entry[6] === undefined || entry[6] + (entry[7] ?? 0) > reach) break;
+    down++;
   }
-  return Math.max(1, step);
+  const floor = top + (nav[at]![7] ?? 0) - viewportHeight;
+  let up = 0;
+  for (let i = at - 1; i >= 0; i--) {
+    const entry = nav[i]!;
+    if (entry[6] === undefined || entry[6] < floor) break;
+    up++;
+  }
+  return { down: Math.max(1, down), up: Math.max(1, up) };
 }
 
 export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, options: FamilyKeyboardOptions): void {
@@ -94,12 +111,12 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
   }
   if (event.key === 'PageDown') {
     event.preventDefault();
-    moveBy(pageStep);
+    moveBy(pageStep.down);
     return;
   }
   if (event.key === 'PageUp') {
     event.preventDefault();
-    moveBy(-pageStep);
+    moveBy(-pageStep.up);
     return;
   }
   if (event.key === 'Enter' || event.key === ' ') {

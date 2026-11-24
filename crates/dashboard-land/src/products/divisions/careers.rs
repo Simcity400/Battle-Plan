@@ -6,7 +6,7 @@ use crate::products::army::ArmyAttribution;
 use dashboard_query::identity::Holder;
 use dashboard_text::division_history;
 use content_reader_localisation::localisation::Argument;
-use replay_data::rows::{DivisionHistoryRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, tables};
+use replay_data::rows::{CountryLinkRow, CountryRow, DivisionHistoryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow, SharedDivisionHistoryRow, TableId, mask, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use content_reader_military::unit_medals::{Medal, Medals};
@@ -316,6 +316,18 @@ impl AtHour for DecoratedDivisions {
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         TABLES.to_vec()
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields = match table {
+            TableId::Countries => mask::<CountryRow>(&["canonical_slot", "tag"]),
+            TableId::CountryLinks => mask::<CountryLinkRow>(&["canonical_slot"]),
+            TableId::Divisions => mask::<DivisionRow>(&["roster_owner", "expeditionary_owner", "template", "reveal_skip"]),
+            TableId::DivisionStatus => mask::<DivisionStatusRow>(&["experience", "career_counter", "name", "naming", "country_ordinal"]),
+            TableId::DivisionLandInputs => mask::<DivisionLandInputsRow>(&["manpower"]),
+            _ => return None,
+        };
+        Some((0..64).filter(|column| fields & 1 << column != 0).collect())
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -653,14 +665,33 @@ fn rank_order(a: &Measures, b: &Measures, by: DecoratedRank, descending: bool) -
         .then(a.id.cmp(&b.id))
 }
 
-pub(super) fn first_in_order(mut measured: Vec<Measures>, by: DecoratedRank, descending: bool, count: usize) -> Vec<Measures> {
+pub(super) fn ranked(mut measured: Vec<Measures>, by: DecoratedRank, descending: bool, count: usize) -> (Vec<Measures>, bool) {
     let order = |a: &Measures, b: &Measures| rank_order(a, b, by, descending);
+    let mut next = None;
     if count < measured.len() {
         measured.select_nth_unstable_by(count, order);
+        next = Some(measured[count].clone());
         measured.truncate(count);
     }
     measured.sort_unstable_by(order);
-    measured
+    let unproven = measured.windows(2).any(|pair| decided_by_unread(&pair[0], &pair[1], by))
+        || measured.last().zip(next.as_ref()).is_some_and(|(last, next)| decided_by_unread(last, next, by));
+    (measured, unproven)
+}
+
+fn decided_by_unread(a: &Measures, b: &Measures, by: DecoratedRank) -> bool {
+    let tied = if by.named() { a.name.is_some() && a.name == b.name } else { a.of(by).is_some() && a.of(by) == b.of(by) };
+    if !tied {
+        return false;
+    }
+    for &other in RANKS.iter().filter(|&&other| other != by) {
+        match (a.of(other), b.of(other)) {
+            (Some(x), Some(y)) if x == y => {}
+            (Some(_), Some(_)) => return false,
+            _ => return true,
+        }
+    }
+    false
 }
 
 pub(super) fn filter_valid_through(countries: Option<&[CountryHours]>, hour: i32) -> i32 {
@@ -704,8 +735,13 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
             return Ok(reply);
         }
     };
+    dashboard_base::products::at_hour::count_rows(|| divisions.len() as u64);
     let content = &at.context.content;
-    let countries = Countries::read(frame)?.named(at.holders, at.hour);
+    let (countries, links_missing) = Countries::witnessed(frame);
+    let countries = countries.named(at.holders, at.hour);
+    if let Some(why) = links_missing {
+        refusals.note(format!("Division countries unavailable: {why}"));
+    }
     let passing = params.countries.as_ref().map(|spans| spans.iter().filter(|span| span.first_hour <= at.hour && at.hour <= span.last_hour).map(|span| span.tag.as_str()).collect::<HashSet<&str>>());
     let history = frame.complete::<tables::DivisionHistory>().unwrap_or(&[]);
     let mut measured = Vec::new();
@@ -736,6 +772,10 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
         unmeasured += usize::from(!measures.known(params.by));
         measured.push(measures);
     }
+    if passing.is_some() && measured.is_empty() && unplaced > 0 {
+        reply.missing = Some(format!("{unplaced} divisions' countries were not recorded at this hour, so which belong to the chosen countries is not known"));
+        return Ok(reply);
+    }
     let mut partial = Vec::new();
     if unmeasured > 0 {
         partial.push(format!("{unmeasured} of {} divisions' {} were not read at this hour; they follow the others", measured.len(), rank_word(params.by)));
@@ -743,8 +783,11 @@ fn decorated(frame: &DecodedFrame, params: &DecoratedDivisionsParams, at: &At<'_
     if unplaced > 0 {
         partial.push(format!("{unplaced} divisions' countries were not recorded at this hour; they are left out"));
     }
+    let (first, unproven) = ranked(measured, params.by, params.descending, usize::try_from(params.count).unwrap_or(usize::MAX));
+    if unproven {
+        partial.push(format!("Divisions with equal {} are ordered by a measure not read for some of them", rank_word(params.by)));
+    }
     reply.partial = (!partial.is_empty()).then(|| partial.join(". "));
-    let first = first_in_order(measured, params.by, params.descending, usize::try_from(params.count).unwrap_or(usize::MAX));
     let mut facts = Facts { frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
     content.group_notes(refusals);
     let mut templates = BTreeMap::<u64, ()>::new();

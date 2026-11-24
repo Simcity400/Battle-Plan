@@ -16,9 +16,9 @@ import { useKeyedReads } from '../../dashboard/keyedReads';
 import { resolveOptions } from '../../dashboard/options';
 import type { BattleLogProps } from '../battles/BattleLog';
 import type { BattleViewContext } from '../battles/BattleLogView';
-import { battleValueText, rowsById } from '../battles/battleRows';
+import { battlePartial, battleValueText, markPartial, rowsById } from '../battles/battleRows';
 import type { BattleCountryLabel } from '../battles/battleRows';
-import { battleOutcome, battleTooltip, clearBattleParts, heldTerrain, lengthText, lossWidth, missingTerrain, paintBattle, sameKnownSides, sideLook, subText, validateLandBattleTerrain } from './landBattleCourse';
+import { battleOutcome, battleTooltip, clearBattleParts, heldTerrain, lengthText, lossWidth, missingTerrain, paintBattle, peakValue, sameKnownSides, sideLook, subText, validateLandBattleTerrain } from './landBattleCourse';
 import type { HeldTerrain, SideLook } from './landBattleCourse';
 import { landManpowerSides } from './landBattlesData.ts';
 import type { LandBattleRow } from './landBattlesData';
@@ -378,10 +378,9 @@ export default function LandBattleList(props: Props) {
   const current = opened ? listed ?? (opened.hour <= context.shownHour ? opened.row : null) : null;
   const heldAt = opened && !listed && current ? opened.hour : null;
   const measureText = (row: LandBattleRow): { text: string; unknown?: string } => {
-    if (measure === 'Peak size') return row.peakUnknown ? { text: '—', unknown: 'Roster not recorded' } : { text: usNumber.format(row.peak.value) };
-    const value = measure === 'Length' ? row.length : row.casualties;
+    const value = measure === 'Peak size' ? peakValue(row) : measure === 'Length' ? row.length : row.casualties;
     if (value.value === null) return { text: '—', unknown: value.unknown };
-    return { text: measure === 'Length' ? lengthText(value.value, value.atLeast === true, false) : battleValueText(value) };
+    return { text: markPartial(measure === 'Length' ? lengthText(value.value, false) : battleValueText(value), battlePartial(value)) };
   };
   const columns = view === 'log' ? 'minmax(96px, 1.5fr) minmax(56px, 190px) minmax(128px, 168px) minmax(56px, 190px) minmax(68px, 1fr)'
     : 'minmax(96px, 1.5fr) minmax(56px, 190px) minmax(128px, 168px) minmax(56px, 190px) max-content minmax(68px, 1fr)';

@@ -1,5 +1,5 @@
 
-use dashboard_base::products::{Country, validate_country};
+use dashboard_base::products::{Country, regions::{ActiveRegions, NoRegions, automatic, no_regions}, validate_country};
 use dashboard_base::products::{LoadContext, Product, at_hour};
 use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}, styles::LookResolver};
 #[cfg(any(test, feature = "export-types"))]
@@ -162,6 +162,9 @@ pub struct NavalSupremacyReply {
     pub regions: Vec<SupremacyRegion>,
     #[doc = " Why the most active regions are not a proven rank at the asked hour: its day, or a region's score on it, is not recorded. A top then lists only the pinned regions."]
     pub rank_missing: Option<String>,
+    #[doc = " Why no region is listed in the ranked view; set only when `regions` is empty."]
+    pub empty: Option<NoRegions>,
+    pub active_unlisted: ActiveRegions,
     pub scale: i32,
     pub warnings: Vec<String>,
 }
@@ -485,7 +488,7 @@ fn control(query: &Query<'_>, sea: &SeaContent, country: &Country, (first, last)
     Ok(Control { runs: runs(pieces), unknown, hours })
 }
 
-fn ranked(at_hour: impl Iterator<Item = (u32, Option<i128>)>, top: Option<usize>) -> Result<Vec<u32>, String> {
+fn ranked(at_hour: impl Iterator<Item = (u32, Option<i128>)>) -> Result<Vec<u32>, String> {
     let mut order: Vec<(u32, i128)> = Vec::new();
     for (id, score) in at_hour {
         match score {
@@ -495,7 +498,6 @@ fn ranked(at_hour: impl Iterator<Item = (u32, Option<i128>)>, top: Option<usize>
         }
     }
     order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    order.truncate(top.unwrap_or(usize::MAX));
     Ok(order.into_iter().map(|(id, _)| id).collect())
 }
 
@@ -543,6 +545,8 @@ impl Product for NavalSupremacy {
             SupremacyLegendItem::decl(),
             UnknownDays::decl(),
             Choice::decl(),
+            NoRegions::decl(),
+            ActiveRegions::decl(),
             HourSpan::decl(),
             NavalSupremacyReply::decl(),
         ]
@@ -639,21 +643,29 @@ impl Product for NavalSupremacy {
             }
         };
         let mut rank_missing = None;
+        let mut ranked_view = false;
+        let mut hidden_active = 0u32;
+        let mut active_unlisted = ActiveRegions::default();
         let selected_regions: Vec<SupremacyRegion> = if let Some(explicit) = &params.regions {
             explicit.iter().map(|&id| make_region(id, true, runs.remove(&id).unwrap_or_default())).collect()
         } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
             let mut seen = HashSet::new();
             let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
             let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+            ranked_view = true;
             let scored = match (&last_day_unknown, last_day_index) {
                 (Some(reason), _) => Err(reason.clone()),
-                (None, Some(day)) => ranked(runs.iter().filter(|(id, _)| !seen.contains(id) && !hidden.contains(id)).map(|(&id, region_runs)| (id, activity_on(region_runs, day))), params.top),
+                (None, Some(day)) => ranked(runs.iter().filter(|(id, _)| !seen.contains(id)).map(|(&id, region_runs)| (id, activity_on(region_runs, day)))),
                 (None, None) => Ok(Vec::new()),
             };
             let scored = scored.unwrap_or_else(|reason| {
                 rank_missing = Some(reason);
                 Vec::new()
             });
+            let chosen = automatic(scored, &hidden, params.top.unwrap_or(usize::MAX), rank_missing.clone());
+            hidden_active = chosen.hidden;
+            active_unlisted = chosen.active_unlisted;
+            let scored = chosen.listed;
             let mut out = Vec::with_capacity(pinned_list.len() + scored.len());
             for id in pinned_list {
                 out.push(make_region(id, true, runs.remove(&id).unwrap_or_default()));
@@ -698,8 +710,10 @@ impl Product for NavalSupremacy {
             viewer_color: viewer_look.color,
             viewer_color_missing: viewer_look.color_missing,
             legend,
+            empty: no_regions(!ranked_view || !selected_regions.is_empty(), rank_missing.as_deref(), hidden_active, 0),
             regions: selected_regions,
             rank_missing,
+            active_unlisted,
             scale: SCALE,
             warnings,
         };

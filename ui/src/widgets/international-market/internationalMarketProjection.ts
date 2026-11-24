@@ -19,7 +19,7 @@ import { MARKET_TABS, marketColumns, marketTableBase } from './definition.ts';
 const UNKNOWN_COUNTRY: ResolvedIdentity = { value: notRecorded('Unknown country'), name: 'Unknown country' };
 const countryAt = (readView: BoundedReadView, tag: string | null | undefined, hour: number): ResolvedIdentity =>
   tag ? resolveIdentity(readView, 'country', tag, { atHour: hour }) : UNKNOWN_COUNTRY;
-import { cic, contractRows, levelText, offerRows, units, type MarketMatch, type MarketTab } from './marketData.ts';
+import { contractRows, levelText, offerRows, PRICE_MISSING, quoteText, type MarketMatch, type MarketRowMeta, type MarketTab } from './marketData.ts';
 
 export interface InternationalMarketProjectionOptions {
   readonly view: MarketTab;
@@ -102,7 +102,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
             { label: 'Price level', value: row.level === null ? notRecorded('Price level not recorded') : knownValue(levelText(row.level)) },
           ],
           tooltipAction: 'Click for market details',
-          meta: { title: `${seller.name}: market`, tags: row.seller ? [row.seller] : [], selected: `offer:${row.offer.country}:${row.variant}` },
+          meta: { title: `${seller.name}: market`, section: 'offers', row: String(row.offer.country), variant: row.variant } satisfies MarketRowMeta,
         };
       });
       return { columns, rows, hour, warnings: reply.warnings };
@@ -135,16 +135,18 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       const priceOf = (variant: string) => row.prices.find(item => item.variant === variant)?.amount ?? null;
       const levelOf = (variant: string) => row.levels.find(item => item.variant === variant)?.level ?? null;
       const single = row.equipment.length === 1 ? row.equipment[0]! : null;
-      const several = notApplicable('Several equipment: each is listed with its own amount, price and level');
+      const several = row.equipment.length === 0
+        ? notApplicable('No equipment in the recorded terms')
+        : notApplicable('Several equipment: each is listed with its own amount, price and level');
       const extra: TooltipExtraRow[] = [
         { label: 'Seller', value: seller.value, divider: true },
         { label: 'Buyer', value: buyer.value },
-        ...row.equipment.map((item, idx): TooltipExtraRow => {
-          const price = priceOf(item.variant);
-          const level = levelOf(item.variant);
-          const parts = [units(item.amount), ...(price !== null ? [cic(price)] : []), ...(level !== null ? [levelText(level)] : [])];
-          return { label: item.name ?? 'Equipment name unavailable', value: knownValue(parts.join(' · ')), lookupKey: item.variant, ...(idx === 0 ? { divider: true } : {}) };
-        }),
+        ...row.equipment.map((item, idx): TooltipExtraRow => ({
+          label: item.name ?? 'Equipment name unavailable',
+          value: knownValue(quoteText(item.amount, priceOf(item.variant) ?? undefined, levelOf(item.variant) ?? undefined, options.view === 'contracts')),
+          lookupKey: item.variant,
+          ...(idx === 0 ? { divider: true } : {}),
+        })),
       ];
 
       if (options.view === 'requests') {
@@ -163,11 +165,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
           tooltipTitle: `${seller.name} \u2192 ${buyer.name}`,
           tooltipExtra: extra,
           tooltipAction: 'Click for market details',
-          meta: {
-            title: `${seller.name} \u2192 ${buyer.name}`,
-            tags: [row.seller, row.buyer].filter((t): t is string => t !== null),
-            selected: `contract:true:${row.terms.id}`,
-          },
+          meta: { title: `${seller.name} \u2192 ${buyer.name}`, section: 'contracts', row: row.terms.key, variant: null } satisfies MarketRowMeta,
         };
       }
 
@@ -188,7 +186,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
         seller: { value: seller.value, iconSlot: true, icon: seller.icon, iconPending: seller.iconPending, country: row.seller ?? undefined, countryColor: seller.color },
         buyer: { value: buyer.value, iconSlot: true, icon: buyer.icon, iconPending: buyer.iconPending, country: row.buyer ?? undefined, countryColor: buyer.color },
         equipment: { value: knownValue(allEquipment || 'Equipment name unavailable'), iconSlot: true, artShape: 'wide', artName: allEquipment, ...art },
-        price: { value: single === null ? several : priceRaw === null ? notRecorded('Price not recorded') : knownValue(priceRaw) },
+        price: { value: single === null ? several : priceRaw === null ? notRecorded(PRICE_MISSING) : knownValue(priceRaw) },
         convoys: { value: assigned, format: 'integer', secondaryValue: needed },
         collected: { value: collected },
         deliveries: { value: deliveries },
@@ -201,11 +199,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
         tooltipTitle: `${seller.name} \u2192 ${buyer.name}`,
         tooltipExtra: extra,
         tooltipAction: 'Click for market details',
-        meta: {
-          title: `${seller.name} \u2192 ${buyer.name}`,
-          tags: [row.seller, row.buyer].filter((t): t is string => t !== null),
-          selected: `contract:false:${row.terms.id}`,
-        },
+        meta: { title: `${seller.name} \u2192 ${buyer.name}`, section: 'contracts', row: row.terms.key, variant: null } satisfies MarketRowMeta,
       };
     });
 
