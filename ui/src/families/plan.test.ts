@@ -749,6 +749,20 @@ test('held reply during a resize maps stationary client clicks through installed
     pipeline.page.frame();
     assert.equal(pipeline.view(wid)?.installedOwner, 'country:GER');
 
+    const posted: unknown[] = [];
+    worker.postMessage = message => { posted.push(message); };
+    const clicked: (string | null)[] = [];
+    pipeline.pointer(wid, 0, [50, 50], key => { clicked.push(key); });
+    assert.equal((posted.at(-1) as { installed?: number }).installed, 1, 'the pointer names the picture the page shows');
+    pipeline.page.offer({
+      lane: 0,
+      serial: 2,
+      entries: [makeEntry({ widget: wid, id: 2, owner: 'country:GER', h: 0, c: 100, lo: 0, hi: 100, surfaces: [] }) as unknown as Entry<ImageBitmap>],
+    });
+    pipeline.page.frame();
+    worker.onmessage?.({ data: { type: 'hit', widget: wid, key: 'row:SOV', installedId: 1, owner: 'country:GER' } } as MessageEvent<FromLane>);
+    assert.deepEqual(clicked, ['row:SOV'], 'a click answered for the picture shown when it was made stands though a repaint installed since');
+
     pipeline.retime(wid, { owner: 'country:SOV' });
     assert.equal(pipeline.view(wid)?.mode, 'reading', 'owner change clears installed picture immediately');
 
