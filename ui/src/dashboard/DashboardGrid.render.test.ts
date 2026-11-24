@@ -387,7 +387,7 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
         if (path.endsWith('/dashboard/follow/useFollowed.ts')) {
           return source.replace(/export function usePipeline\(/, 'function real_usePipeline(') + '\nexport function usePipeline() { return null; }';
         }
-        if (path.endsWith('/charts/useChartTokens.ts')) return 'export const useChartTokens = () => ({ categories: ["#777"] });';
+        if (path.endsWith('/charts/useChartTokens.ts')) return 'export const useChartTokens = () => ({ categories: ["#777"] }); export const useViewportHeight = () => 720;';
       },
     }] });
   try {

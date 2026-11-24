@@ -1,7 +1,8 @@
 import { liveKey } from '../../charts/live.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import { missingArt, PENDING_ART, type ArtResult } from '../../families/art/types.ts';
-import type { BoundedReadView, DeclaredCountryFilter, HourRanges } from '../../families/plan.ts';
+import type { HourRanges } from '../../families/holders.ts';
+import type { BoundedReadView, DeclaredCountryFilter } from '../../families/plan.ts';
 import type { TooltipListItem } from '../../families/host/index.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type {

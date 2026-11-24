@@ -5,7 +5,7 @@ import type { TooltipListItem } from '../../families/host/index.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type { MeterModel, MeterProjection, MeterRow, MeterSection } from '../../families/meter/model.ts';
 import { registerMeterProjection } from '../../families/meter/registry.ts';
-import type { DoctrineMasteryReply, MasteryReward } from '../../generated/dashboard';
+import type { MasteryReward } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
 import {
   activeTracks,
@@ -48,7 +48,8 @@ function readTrackNumbers(
   const read = (column: string): bigint | null => {
     const val = live?.get(liveKey(key, column));
     if (val === undefined) return null;
-    return typeof val === 'bigint' ? val : BigInt(Math.round(val));
+    if (typeof val === 'bigint') return val;
+    return typeof val === 'number' ? BigInt(Math.round(val)) : null;
   };
   const mastery = read('mastery');
   return {

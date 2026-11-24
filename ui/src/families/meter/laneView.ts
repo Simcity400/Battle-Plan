@@ -619,7 +619,7 @@ export function familyMeterLaneView(
         held.focusTipField = null;
       }
 
-      held.flusher.sync(input.speed, () => held!.wake?.());
+      held.flusher.sync(now, input.speed, () => held!.wake?.());
 
       if (bound.audit === true) {
         const auditId = bound.auditId ?? 0;

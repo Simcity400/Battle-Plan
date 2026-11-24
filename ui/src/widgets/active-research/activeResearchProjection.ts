@@ -7,7 +7,7 @@ import type { MeterModel, MeterProjection, MeterRow } from '../../families/meter
 import { registerMeterProjection } from '../../families/meter/registry.ts';
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { ResearchDefinitionText, ResearchSlotsReply } from '../../generated/dashboard';
-import { researchReadName, validateResearchReply, validateResearchSlots } from '../research/researchData.ts';
+import { researchArtwork, researchReadName, validateResearchReply, validateResearchSlots } from '../research/researchData.ts';
 import { slotNumbers } from '../research/researchSlots.ts';
 import type { ResearchData } from '../research/types';
 import { activeSlots, openedResearch, type OpenedResearch } from './activeResearchData.ts';
@@ -50,12 +50,14 @@ function folderNameFor(
   return folder ? contentTitle(folder.name, folder.key, '') || undefined : undefined;
 }
 
+const EMPTY_ARTWORK = new Map<string, never>();
+
 function techNameOf(
   data: ResearchData | undefined,
   read: ResearchSlotsReply['slots'][number],
   token: string,
 ): string {
-  const artwork = new Map(data ? data.names.map(item => [item.token, { token: item.token, name: item.name, icon: null }]) : []);
+  const artwork = researchArtwork(data, EMPTY_ARTWORK);
   const raw = researchReadName(artwork, read);
   return contentTitle(raw, token, 'Technology name unavailable');
 }
@@ -113,7 +115,7 @@ export const activeResearchProjection: MeterProjection<ActiveResearchProjectionO
     }
 
     let researchingCount = 0;
-    let oldestReadHour = readView.hour;
+    let oldestReadHour: number = readView.hour;
     let nextBoundary = Infinity;
     const rows: MeterRow[] = [];
 

@@ -219,13 +219,13 @@ export function deriveMeterAudit(model: MeterModel): readonly AuditRow[] {
     for (const section of model.sections) {
       if (section.rows) {
         for (const row of section.rows) {
-          rows.push({ key: row.key, value: row.audit });
+          rows.push({ row: row.key, key: row.key, value: row.audit });
         }
       }
       if (section.chipLines) {
         for (const line of section.chipLines) {
           for (const chip of line.chips) {
-            rows.push({ key: chip.key, value: chip.audit });
+            rows.push({ row: chip.key, key: chip.key, value: chip.audit });
           }
         }
       }
@@ -235,7 +235,7 @@ export function deriveMeterAudit(model: MeterModel): readonly AuditRow[] {
     for (const row of model.matrix.rows) {
       for (const cell of row.cells) {
         if (cell.audit !== undefined) {
-          rows.push({ key: cell.key, value: cell.audit });
+          rows.push({ row: cell.key, key: cell.key, value: cell.audit });
         }
       }
     }
