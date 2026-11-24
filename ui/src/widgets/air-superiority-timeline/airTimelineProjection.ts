@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, readableColour, authoredHex } from '../../charts/palette.ts';
+import { CHART_MEASURE_COLOURS, readableColour, authoredHex, reservedGrey } from '../../charts/palette.ts';
 import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -207,7 +207,7 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
   const viewpointSide = reply.viewpoint === null ? undefined : reply.sides[reply.viewpoint];
   const look: Look = {
     track,
-    contested: mix(options.surface, LANE_FILL, 0.3),
+    contested: reservedGrey(options.surface, reply.sides.flatMap(side => (side.color ? [readableColour(authoredHex(side.color), options.surface)] : []))),
     enemy: readableColour(CHART_MEASURE_COLOURS.short, options.surface),
     unknownSide: mix(options.surface, LANE_FILL, 0.45),
     viewpointColour: style?.color ? readableColour(authoredHex(style.color), options.surface) : sideColour(viewpointSide, options.surface, readableColour(CHART_MEASURE_COLOURS.bopRight, options.surface)),
