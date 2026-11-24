@@ -1130,7 +1130,7 @@ export type PoliticsHistoryReply = { branchId: string, mode: PoliticsHistoryMode
 /**
  * The branch's last hour: the history reads through it.
  */
-lastHour: number | null, tag: string | null,
+lastHour: number | null, hour: number | null, nextChange: number | null, unread: string | null, selected: string | null, tag: string | null,
 /**
  * The country the request named, which a reply is matched to: a slot follows its country through any tag.
  */
@@ -4312,6 +4312,8 @@ export type BalanceRange = { token: string, name: string | null, reason?: string
  */
 min: string | null, max: string | null, };
 export type BalanceMember = { tag: string | null, daily: string | null, weekly: string | null, };
+export type BalanceChange = { daily: string, weekly: string, weeklyChange: string, shown: ChangeShown, rate: string, };
+export type ChangeShown = "daily" | "weekly";
 export type BalanceSource = { token: string, name: string | null, daily: string, weekly: string, };
 export type BalanceRecord = { ordinal: number, token: string, name: string | null, nameReason?: string, left: BalanceSide, right: BalanceSide,
 /**
@@ -4321,7 +4323,7 @@ trending: BalanceSide | null, range: BalanceRange | null,
 /**
  * Every authored range in authored order; empty when content refuses.
  */
-ranges: Array<BalanceRange>, members: Array<BalanceMember>,
+ranges: Array<BalanceRange>, members: Array<BalanceMember>, change: BalanceChange | null,
 /**
  * The drift's sources; null when they cannot be derived.
  */
