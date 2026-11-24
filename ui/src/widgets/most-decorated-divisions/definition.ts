@@ -6,9 +6,9 @@ export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'kind', label: 'Division type', as: 'flag', offered: ['flag'] },
   { key: 'country', label: 'Country', as: 'flag', offered: OFFERED.country },
   { key: 'division', label: 'Division', as: 'plain', offered: OFFERED.text },
-  { key: 'medals', label: 'Medals', as: 'faint', tone: 'grey', offered: OFFERED.number },
+  { key: 'medals', label: 'Medals', as: 'plain', offered: ['plain'] },
   { key: 'experience', label: 'Experience', as: 'plain', offered: ['plain'] },
-  { key: 'kills', label: 'Casualties taken', as: 'faint', tone: 'grey', offered: OFFERED.number },
+  { key: 'casualtiesTaken', label: 'Casualties taken', as: 'faint', tone: 'grey', offered: OFFERED.number },
 ];
 export const DEFAULT_SORT = { column: 'medals', direction: 'descending' } as const;
 export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', sort: DEFAULT_SORT };

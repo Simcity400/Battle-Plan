@@ -18,7 +18,7 @@ export interface TimelineSpan {
   readonly meta?: unknown;
 }
 
-export type TimelineLaneKind = 'item' | 'group';
+export type TimelineLaneKind = 'item' | 'group' | 'heading';
 
 export interface TimelineLane {
   readonly key: string;
@@ -88,15 +88,21 @@ export function visibleLanes(
 export function deriveTimelineAudit(model: TimelineModel): AuditRow[] {
   const rows: AuditRow[] = [];
   if (model.summaryText) rows.push({ row: '__summary__', key: '__summary__', value: model.summaryText });
-  for (const lane of model.lanes) rows.push({ row: lane.key, key: lane.key, value: lane.auditValue });
+  for (const lane of model.lanes) {
+    const spans = lane.spans.map(spanAudit).join(',');
+    rows.push({ row: lane.key, key: lane.key, value: `${lane.auditValue}|${lane.flagTag ?? ''}|${spans}` });
+  }
   return rows;
 }
 
+function spanAudit(span: TimelineSpan): string {
+  const start = `${span.heldBefore ? '<' : span.startBy ? '~' : ''}${span.firstHour}`;
+  const end = span.open ? 'open' : `${span.lastHour}${span.endUnseen ? '~' : ''}`;
+  return `${span.id}:${start}-${end}:${span.label ?? ''}`;
+}
+
 export function spanAt(lane: TimelineLane, hit: TimelineHit): TimelineSpan | undefined {
-  if (hit.spanId) return lane.spans.find(s => s.id === hit.spanId);
-  const hour = hit.hour;
-  if (hour === undefined) return undefined;
-  return lane.spans.find(s => s.firstHour <= hour && (s.open || hour <= s.lastHour));
+  return hit.spanId ? lane.spans.find(s => s.id === hit.spanId) : undefined;
 }
 
 export function laneByKey(model: TimelineModel, key: string): TimelineLane | undefined {

@@ -883,3 +883,36 @@ describe('experience and fuel', () => {
     assert.deepEqual(labels, ['Fuel was not read on this day'], 'the card is the recorded day and its missing reason, not the sampled line');
   });
 });
+
+describe('multi-country order from the product', () => {
+  const base = Math.floor(H1936 / 96) * 96;
+  const hour = base + 50;
+  const line = (tag: string, value: number) => boundTiledSeries({ ...makeTiledLine(tag, [makeBucket(base, base + 50, value)]), decimals: 5 },
+    displayedHour(hour), { headValue: knownValue(value) });
+  const project = (extra: { answers?: Map<string, never>; panels?: Map<string, unknown> }) => politicalPowerProjection.project(createBoundedReadView({
+    hour,
+    series: new Map([['main', new Map([['GER', line('GER', 90)], ['ITA', line('ITA', 10)]])]]),
+    ...(extra.answers ? { answers: extra.answers } : {}),
+    ...(extra.panels ? { panels: extra.panels } : {}),
+  }), { tags: ['GER', 'ITA'], extent: [base, base + 95], gaps: [], surface: '#111111' });
+
+  it('orders lines by the followed ranking, not by the values it holds', () => {
+    const rank = parseFollowed(message(10, [{ id: 1, answer: { keys: [2n, 1n], columns: 1, values: [10n, 90n], names: ['ITA', 'GER'] } }])).answers[0]!.answer;
+    assert.deepEqual(project({ answers: new Map([['rank', rank as never]]) }).series.map(s => s.id), ['ITA', 'GER']);
+  });
+
+  it('orders lines by the paused ranking reply, and keeps the recorded order before any ranking', () => {
+    const panels = new Map<string, unknown>([['rank', { states: [{ country: 'ITA', run: { valueRaw: '1000000' }, missing: null }, { country: 'GER', run: { valueRaw: '9000000' }, missing: null }] }]]);
+    assert.deepEqual(project({ panels }).series.map(s => s.id), ['ITA', 'GER']);
+    assert.deepEqual(project({}).series.map(s => s.id), ['GER', 'ITA'], 'no ranking yet: the recorded order, never a client sort');
+  });
+
+  it('takes a head from the exact read when there is no followed answer and no tiles', () => {
+    const model = politicalPowerProjection.project(createBoundedReadView({
+      hour,
+      panels: new Map([['main', { states: [{ country: 'GER', run: { valueRaw: '2200000' }, missing: null }] }]]),
+    }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.equal(model.series[0]!.headValue, 22);
+    assert.deepEqual(model.auditRows?.map(row => row.value), ['22']);
+  });
+});

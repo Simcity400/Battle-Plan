@@ -4,16 +4,15 @@ import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults }
 
 export const DIRECTIONS = [{ value: 'sent', label: 'Sent' }, { value: 'received', label: 'Received' }] as const;
 export const COLUMNS: readonly TableColumnDefaults[] = [
-  { key: 'giver', label: 'From', as: 'flag', offered: OFFERED.country },
-  { key: 'receiver', label: 'To', as: 'flag', offered: OFFERED.country },
-  { key: 'equipment', label: 'Equipment', as: 'flagName', offered: ['flagName', 'name'] },
+  { key: 'country', label: 'Country', as: 'flag', offered: ['flag'], showNamesDefault: false },
+  { key: 'equipment', label: 'Equipment', as: 'plain', offered: OFFERED.text, hideable: false },
   { key: 'monthly', label: 'A month', as: 'faint', offered: OFFERED.number },
   { key: 'delivered', label: 'Delivered', as: 'faint', offered: OFFERED.number },
   { key: 'last', label: 'Last', as: 'plain', offered: OFFERED.text },
   { key: 'since', label: 'Since', as: 'plain', offered: OFFERED.text },
 ];
 export const DEFAULT_SORT = { column: 'delivered', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'direction', section: 'options', label: 'Direction', kind: 'choice', default: 'sent', choices: [...DIRECTIONS] },

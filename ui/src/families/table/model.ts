@@ -4,8 +4,7 @@ import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { ClockSummaryData, StatusMarkKind } from '../../draw/kit.ts';
 import { changedLiveRows } from '../../draw/views/fields.ts';
 import type { AuditRow } from '../../draw/notifications';
-import { flagArtHandle } from '../art/provider.ts';
-import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
+import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import {
   assertValue,
   compareTie,
@@ -129,72 +128,6 @@ export interface TableCell {
   readonly bar?: TableCellBar | null;
   readonly maximum?: number;
   readonly sortValue?: Value;
-}
-
-export function urlArtHandle(url: string): ArtHandle {
-  return { kind: 'url', url };
-}
-
-export function resolveCountryFromReadView(
-  readView: BoundedReadView,
-  tag: string | null | undefined,
-  atHour?: number,
-): {
-  readonly value: Value<string>;
-  readonly name: string;
-  readonly icon?: string;
-  readonly iconPending?: boolean;
-  readonly color?: string;
-} {
-  if (!tag) {
-    return { value: notRecorded('Unknown country'), name: 'Unknown country' };
-  }
-  const who = readView.who('country', tag, atHour);
-  let value: Value<string>;
-  let name = tag;
-  if (who.name.status === 'ready') {
-    if (who.name.value.trim()) {
-      value = knownValue(who.name.value);
-      name = who.name.value;
-    } else {
-      value = notRecorded('Country name unavailable');
-    }
-  } else if (who.name.status === 'pending') {
-    value = knownValue(tag);
-  } else {
-    value = notRecorded(who.name.reason || 'Country name unavailable');
-  }
-  let icon: string | undefined;
-  let iconPending = false;
-  if (who.flagChoice?.status === 'ready') {
-    const art = readView.art(flagArtHandle(who.flagChoice.value));
-    if (art.status === 'ready') {
-      icon = art.url;
-    } else if (art.status === 'pending') {
-      iconPending = true;
-    }
-  } else if (who.flagChoice?.status === 'pending') {
-    iconPending = true;
-  }
-  const color = who.colour?.status === 'ready' ? who.colour.value : undefined;
-  return {
-    value,
-    name,
-    ...(icon ? { icon } : {}),
-    ...(iconPending ? { iconPending: true } : {}),
-    ...(color ? { color } : {}),
-  };
-}
-
-export function resolveArtUrlFromReadView(
-  readView: BoundedReadView,
-  url: string | null | undefined,
-): { readonly icon?: string; readonly iconPending?: boolean } {
-  if (!url) return {};
-  const art = readView.art(urlArtHandle(url));
-  if (art.status === 'ready') return { icon: art.url };
-  if (art.status === 'pending') return { icon: url, iconPending: true };
-  return {};
 }
 
 export interface TableGroupSpec {
@@ -1049,7 +982,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
 }
 
 export type TableCellExtra = Partial<Pick<TableCell,
-  'secondaryValue' | 'subtext' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'icon' | 'iconPending' | 'shortage' | 'blank' | 'actionLabel'>>;
+  'secondaryValue' | 'subtext' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'icon' | 'iconPending' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
 
 export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly kind: string;

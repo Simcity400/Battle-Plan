@@ -7,7 +7,7 @@ import type { BoundedReadView } from '../../families/plan.ts';
 import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TrainingDivision, TrainingOrder, TrainingQueueReply } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
 const ON_DIVISION = 'Shown on each division';
@@ -29,7 +29,7 @@ export function validateTrainingQueue(value: unknown): TrainingQueueReply {
 }
 
 type QueueRow =
-  | { readonly kind: 'order'; readonly key: string; readonly order: TrainingOrder; readonly icon: string | undefined; readonly children: readonly QueueRow[] }
+  | { readonly kind: 'order'; readonly key: string; readonly order: TrainingOrder; readonly icon: string | undefined; readonly open: boolean; readonly children: readonly QueueRow[] }
   | { readonly kind: 'division'; readonly key: string; readonly division: TrainingDivision };
 
 function share(part: bigint, whole: bigint): Value<number> {
@@ -50,25 +50,35 @@ export function equipmentShare(division: TrainingDivision): Value<number> {
 
 const fraction = (value: Value<number>): Value<number> => value.kind === 'known' ? knownValue(value.value / 100) : value;
 const count = (value: number) => value.toLocaleString('en-US');
-const outOf = (have: number, need: number): Value<string> => knownValue(`${count(have)} / ${count(need)}`);
+const manpower = (have: number): Value<number> => have === 0 ? zeroValue(0) : knownValue(have);
+
+function orderLine(order: TrainingOrder): string {
+  const parts = [`${count(order.divisions.length)} ${order.divisions.length === 1 ? 'division' : 'divisions'}`];
+  if (order.locationName?.trim()) parts.push(order.locationName);
+  if (order.priorityName?.trim()) parts.push(order.priorityName);
+  return parts.join(' · ');
+}
 
 const [DIVISION, TRAINING, EQUIPMENT, MANPOWER] = COLUMNS;
 
 const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, never>>[] = [
-  { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
+  { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
     icon: row => row.kind === 'order' ? row.icon : undefined,
+    extra: row => (row.kind === 'order' ? { subtext: orderLine(row.order) } : {}),
     value: row => row.kind === 'order'
       ? textValue(row.order.templateName, row.order.templateMissing ?? 'Template name unavailable')
       : textValue(row.division.name, row.division.nameMissing ?? 'Division name unavailable') },
   { ...TRAINING!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => row.kind === 'division' ? trainingShare(row.division) : notApplicable(ON_DIVISION),
+    extra: row => (row.kind === 'order' ? { blank: true } : {}),
     bar: row => row.kind === 'division' ? { fraction: fraction(trainingShare(row.division)) } : null },
   { ...EQUIPMENT!, priority: 2, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => row.kind === 'division' ? equipmentShare(row.division) : notApplicable(ON_DIVISION),
+    extra: row => (row.kind === 'order' ? { blank: true } : {}),
     bar: row => row.kind === 'division' ? { fraction: fraction(equipmentShare(row.division)) } : null },
-  { ...MANPOWER!, priority: 3, numeric: true, widest: ['999,999 / 999,999'], hint: 'available / needed',
-    value: row => row.kind === 'order' ? outOf(row.order.manpower, row.order.manpowerNeeded) : outOf(row.division.manpower, row.division.manpowerNeeded),
-    sortValue: row => knownValue(row.kind === 'order' ? row.order.manpower : row.division.manpower) },
+  { ...MANPOWER!, priority: 3, numeric: true, cellKind: 'outOf', format: 'integer', widest: ['999,999 / 999,999'],
+    value: row => manpower(row.kind === 'order' ? row.order.manpower : row.division.manpower),
+    extra: row => ({ secondaryValue: knownValue(count(row.kind === 'order' ? row.order.manpowerNeeded : row.division.manpowerNeeded)) }) },
 ];
 
 function orderIcon(order: TrainingOrder, readView: BoundedReadView): string | undefined {
@@ -110,11 +120,12 @@ export const trainingQueueProjection: TableProjection<Record<string, never>> = r
     columns: QUEUE_COLUMNS,
     rows: (reply, _live, _hour, _options, readView) => {
       if (reply.missing !== null) return { rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
-      const rows: QueueRow[] = reply.orders.map(order => ({
+      const rows: QueueRow[] = reply.orders.map((order, at) => ({
         kind: 'order',
         key: `order:${order.order}`,
         order,
         icon: orderIcon(order, readView),
+        open: at === 0,
         children: order.divisions.map(division => ({ kind: 'division', key: `line:${division.line}`, division })),
       }));
       return {
@@ -127,7 +138,7 @@ export const trainingQueueProjection: TableProjection<Record<string, never>> = r
     rowKey: row => row.key,
     rowName: row => row.kind === 'order' ? (row.order.templateName ?? 'Template name unavailable') : (row.division.name ?? 'Division name unavailable'),
     children: row => row.kind === 'order' ? row.children : undefined,
-    initiallyOpen: () => false,
+    initiallyOpen: row => row.kind === 'order' && row.open,
     tooltipExtra: row => row.kind === 'order' ? orderTooltip(row.order) : divisionTooltip(row.division),
     tooltipNote: (_row, reply) => reply.readHour === null ? undefined : `As of ${formatDateOnly(reply.readHour)}`,
   }),
@@ -139,7 +150,8 @@ export const trainingQueueDeclaration: TableWidgetDeclaration<Record<string, nev
   label: 'Training queue',
   subject: 'training queue',
   emptyCampaign: 'Load a campaign to see the training queue.',
-  icon: 'helmet',
+  icon: 'person',
+  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its training queue.' },
   sources: ctx => {
     const params = ctx.countryTag ? { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) } : null;

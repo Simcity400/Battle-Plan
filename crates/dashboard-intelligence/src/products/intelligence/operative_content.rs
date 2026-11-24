@@ -10,7 +10,7 @@ use dashboard_base::{
 use dashboard_core::config::LoadContext;
 use engine_native_memory::{cdate::HOUR_EPOCH, cgame_date::NULL_RAW_HOUR};
 use content_reader_military::intelligence::Intelligence;
-use content_reader_key_names::unit_leader::{Leaders, Skills};
+use content_reader_key_names::unit_leader::{Leaders, Skills, Traits};
 use content_reader_localisation::localisation::{Argument, Localisation};
 use replay_data::rows::{CharacterPortraitRow, OperativeMembershipRow, PORTRAIT_LARGE, Recorded};
 use std::{
@@ -59,10 +59,17 @@ pub struct Assignment {
     pub icon: Option<Art>,
 }
 
+pub struct TraitShown {
+    pub token: Option<String>,
+    pub name: Shown,
+    pub art: Result<Art, String>,
+}
+
 pub struct OperativeContent {
     catalogue: Arc<Catalogue>,
     politics: Arc<PoliticsContent>,
     skills: Skills,
+    traits: Traits,
     operations: Intelligence,
     capture_days: Result<i32, String>,
     pub warnings: Vec<String>,
@@ -99,7 +106,7 @@ impl OperativeContent {
         warnings.extend(leaders.misreads.iter().cloned());
         warnings.extend(leaders.skills.warnings().iter().cloned());
         warnings.extend(operations.warnings.iter().cloned());
-        Ok(Self { catalogue, politics, skills: leaders.skills, operations, capture_days, warnings, drawn: Mutex::default() })
+        Ok(Self { catalogue, politics, skills: leaders.skills, traits: leaders.traits, operations, capture_days, warnings, drawn: Mutex::default() })
     }
 
     pub fn check(&self) -> Vec<(String, String)> {
@@ -113,6 +120,19 @@ impl OperativeContent {
         }
         refused.extend(self.operations.operation_refusals.iter().map(|why| ("operations".to_owned(), why.clone())));
         refused
+    }
+
+    pub fn operative_trait(&self, ordinal: u32) -> TraitShown {
+        let Some(token) = self.traits.by_ordinal(ordinal) else {
+            let why = format!("Trait {ordinal} is not among the recorded content's leader traits");
+            return TraitShown { token: None, name: Err(why.clone()), art: Err(why) };
+        };
+        let art = match self.traits.assignment_sprite(token) {
+            Ok(Some(sprite)) => Ok(Art::Sprite(sprite)),
+            Ok(None) => Err(format!("Trait {token} has no icon in the recorded content")),
+            Err(why) => Err(why.to_owned()),
+        };
+        TraitShown { token: Some(token.to_owned()), name: catalogue::localised_with(self.localisation(), token, &[], View::Plain), art }
     }
 
     pub fn localisation(&self) -> &Localisation {
