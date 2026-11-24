@@ -1,7 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { GroupSelection } from '../../generated/dashboard';
 import type { SourcePlan } from '../contract.ts';
-import { groupSelection, groupUnavailable } from '../groupSelection.ts';
+import { groupSelection } from '../groupSelection.ts';
 import type { FamilyPlanContext, FamilyViewportRequest } from '../plan.ts';
 
 export const FLOW_PER_SIDE = 6;
@@ -13,17 +12,9 @@ export function flowPerSide(view: FamilyViewportRequest): number {
   return Math.max(2, Math.min(FLOW_PER_SIDE, Math.floor((view.height - FLOW_CHROME) / FLOW_ROW_PITCH) - 1));
 }
 
-export function flowGroup(ctx: FamilyPlanContext): GroupSelection | null {
-  return groupSelection(ctx.widget.countries);
-}
-
-export function flowUnavailable(ctx: FamilyPlanContext): string | null {
-  return groupUnavailable(ctx.widget.countries);
-}
-
 export function flowSubject(ctx: FamilyPlanContext): string | null {
   if (ctx.countryTag) return ctx.countryTag;
-  if (flowGroup(ctx)) return null;
+  if (groupSelection(ctx.widget.countries)) return null;
   return !ctx.countries.all && ctx.countries.top === null && ctx.countries.tags.length === 1 ? ctx.countries.tags[0]! : null;
 }
 
@@ -34,7 +25,7 @@ export function countryFlowPlan(
   subject: string | null = flowSubject(ctx),
 ): SourcePlan {
   const top = ctx.countries.top;
-  const group = subject === null ? flowGroup(ctx) : null;
+  const group = subject === null ? groupSelection(ctx.widget.countries) : null;
   const tags = subject !== null || group !== null || ctx.countries.all || top !== null ? [] : ctx.countries.tags;
   const chosen = subject !== null ? { subject: countryFromKey(subject) } : group !== null ? { group } : { countries: tags.map(countryFromKey) };
   const params: Record<string, unknown> = {

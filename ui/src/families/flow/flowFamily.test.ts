@@ -220,7 +220,7 @@ test('the trade matrix keys a partner by its recorded slot and an unproven popul
 
 test('a faction is sent as the group, resolved in Rust at the hour, never as the union of its members or a one-member centre', async () => {
   const { tradeFlowDeclaration } = await import('../../widgets/trade-flows/tradeFlowsProjection.ts');
-  const ctx = (membership: 'hour' | 'ever' | 'end') => ({
+  const ctx = (membership: 'hour' | 'ever') => ({
     track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
     branch: { id: '1' },
     options: {},
@@ -235,8 +235,6 @@ test('a faction is sent as the group, resolved in Rust at the hour, never as the
   assert.equal(params.subject, undefined, 'one member so far is not a centred view of it');
   assert.equal(params.countries, undefined, 'no member list leaves the client');
   assert.deepEqual(paramsOf('ever').group, { type: 'faction', id: '42', membership: 'ever' });
-  assert.match(tradeFlowDeclaration.unavailable!(ctx('end'), 0) ?? '', /end of the recording/);
-  assert.equal(tradeFlowDeclaration.unavailable!(ctx('hour'), 0), null);
 });
 
 test('a recorded 0.04 a day is drawn as under one tenth and read exactly with its unit, never as 0', () => {

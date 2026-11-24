@@ -1,7 +1,7 @@
 import type { BoundedReadView } from '../../families/contract.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { flowEndpointKey, flowSideNotes, presentFlowEndpoint, projectCountryFlow, scaledAmount, UNKNOWN_COUNTRY } from '../../families/flow/countryFlow.ts';
-import { countryFlowPlan, flowPerSide, flowUnavailable } from '../../families/flow/countryFlowPlan.ts';
+import { countryFlowPlan, flowPerSide } from '../../families/flow/countryFlowPlan.ts';
 import type { FlowWidgetDeclaration } from '../../families/flow/declaration.ts';
 import type { FlowProjection } from '../../families/flow/model.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
@@ -49,7 +49,6 @@ export const tradeFlowDeclaration: FlowWidgetDeclaration = {
   sources: (ctx, view) => countryFlowPlan(ctx, 'trade-flow', { limit: flowPerSide(view) }),
   projection: tradeFlowProjection,
   projectionOptions: () => EMPTY_OPTIONS,
-  unavailable: flowUnavailable,
   jumpToDate: true,
 };
 
@@ -245,6 +244,5 @@ export const tradeMatrixDeclaration: HeatMatrixWidgetDeclaration = {
   sources: ctx => countryFlowPlan(ctx, 'trade-flow', {}, null),
   projection: tradeMatrixProjection,
   projectionOptions: () => EMPTY_OPTIONS,
-  unavailable: flowUnavailable,
   jumpToDate: true,
 };

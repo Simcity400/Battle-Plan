@@ -83,6 +83,7 @@ const OWN: &[Registered] = &[
     dashboard_air::registrations::AIRCRAFT_CATALOGUE_AIRCRAFTCATALOGUE,
     dashboard_world::registrations::ARTWORK_SPRITEARTWORK,
     dashboard_land::registrations::ARMY_ARMYSIZE,
+    dashboard_land::registrations::ARMY_ARMYBREAKDOWN,
     dashboard_world::registrations::IDENTITIES_COUNTRYIDENTITIES,
     dashboard_world::registrations::STYLES_COUNTRYFACTS,
     dashboard_world::registrations::STYLES_COUNTRYSTYLES,
@@ -187,6 +188,7 @@ pub static PRODUCTS: &[Registered] = &ALL;
 
 const MOVED_OWN: &[&str] = &[
     dashboard_land::registrations::ARMY_ARMYSIZE.key,
+    dashboard_land::registrations::ARMY_ARMYBREAKDOWN.key,
     dashboard_world::registrations::IDENTITIES_COUNTRYIDENTITIES.key,
     dashboard_world::registrations::STYLES_COUNTRYFACTS.key,
     dashboard_world::registrations::STYLES_COUNTRYSTYLES.key,
