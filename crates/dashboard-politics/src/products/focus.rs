@@ -321,7 +321,7 @@ impl Fold {
                 .then(|| self.carry.as_ref().filter(|carry| carry.who == who && i64::from(carry.last_hour) + 1 == i64::from(hour)))
                 .flatten();
             let held = if extends { before.as_ref().map_or(0, |before| before.completed_bytes.len()) } else { 0 };
-            let keep_carry = !listed_changed && extends && held == order.completed_bytes.len() && prev_carry.is_some();
+            let keep_carry = continuing && !listed_changed && extends && held == order.completed_bytes.len() && prev_carry.is_some();
             let now_counts = if done_complete && !keep_carry {
                 let mut counts: BTreeMap<&[u8], usize> = BTreeMap::new();
                 for bytes in &order.completed_bytes {
@@ -333,7 +333,6 @@ impl Fold {
             } else {
                 None
             };
-            let carry_dates = if extends { None } else { prev_carry.map(|carry| &carry.dates) };
             let completed: Vec<FocusEntry> = order
                 .completed
                 .iter()
@@ -342,12 +341,12 @@ impl Fold {
                 .map(|(position, (token, bytes))| FocusEntry {
                     ordinal: position as u32,
                     token: token.clone(),
-                    completed_by_hour: if extends && position < held {
+                    completed_by_hour: if extends && position < held && continuing {
                         prior.get(position).and_then(|entry| entry.completed_by_hour)
-                    } else if extends {
+                    } else if extends && position >= held {
                         continuing.then_some(hour)
                     } else if now_counts.as_ref().is_some_and(|counts| counts.get(bytes.as_slice()) == Some(&1)) {
-                        carry_dates.and_then(|dates| dates.get(bytes.as_slice())).copied()
+                        prev_carry.and_then(|carry| carry.dates.get(bytes.as_slice())).copied()
                     } else {
                         None
                     },

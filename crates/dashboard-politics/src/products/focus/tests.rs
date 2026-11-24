@@ -12,6 +12,7 @@ const GER: u32 = 9001;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     frame.tables[table.index()] = TableView::Complete(rows).into();
+    frame.metrics.table_ns[table.index()] = 1;
 }
 
 fn frame(hour: i32) -> DecodedFrame {
@@ -314,7 +315,7 @@ fn recompleted_focus_unread_completed_table_load_stretch_and_lossy_bytes_never_c
 }
 
 #[test]
-fn positional_copy_after_cleared_continuity_never_restores_carry_eligibility() {
+fn cleared_continuity_drops_date_at_recovery_and_subsequent_tree_change() {
     let make_absence = |hour: i32| {
         let mut frame = source(1, hour, Some(1_000));
         set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: 7, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
@@ -343,7 +344,7 @@ fn positional_copy_after_cleared_continuity_never_restores_carry_eligibility() {
     let src = Source::from_replay(dashboard_base::SourceKey { source_id: "focus-carry-absence".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let fold = read(&dashboard_base::queries::query(&src, 1).unwrap(), &"GER".into(), &AtomicBool::new(false)).unwrap();
     assert_eq!(fold.segment_at(105).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", Some(105))]);
-    assert_eq!(fold.segment_at(107).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", Some(105))]);
+    assert_eq!(fold.segment_at(107).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", None)]);
     assert_eq!(fold.segment_at(108).unwrap().1.order.completed, [entry(0, "x", None)]);
 
     let make_stretch = |branch: u64, hour: i32, tree: &[u8], completed: &[&str]| {
@@ -370,7 +371,7 @@ fn positional_copy_after_cleared_continuity_never_restores_carry_eligibility() {
     assert_eq!(query.timeline.stretches.len(), 2);
     let fold = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
     assert_eq!(fold.segment_at(105).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", Some(105))]);
-    assert_eq!(fold.segment_at(107).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", Some(105))]);
+    assert_eq!(fold.segment_at(107).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", None)]);
     assert_eq!(fold.segment_at(108).unwrap().1.order.completed, [entry(0, "x", None)]);
 
     let make_unavail = |hour: i32| {
@@ -402,7 +403,7 @@ fn positional_copy_after_cleared_continuity_never_restores_carry_eligibility() {
     let src = Source::from_replay(dashboard_base::SourceKey { source_id: "focus-carry-unavail".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let fold = read(&dashboard_base::queries::query(&src, 1).unwrap(), &"GER".into(), &AtomicBool::new(false)).unwrap();
     assert_eq!(fold.segment_at(105).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", Some(105))]);
-    assert_eq!(fold.segment_at(107).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", Some(105))]);
+    assert_eq!(fold.segment_at(107).unwrap().1.order.completed, [entry(0, "a", None), entry(1, "x", None)]);
     assert_eq!(fold.segment_at(108).unwrap().1.order.completed, [entry(0, "x", None)]);
 }
 
