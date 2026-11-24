@@ -15,6 +15,7 @@ import { commandPowerProjection } from '../../widgets/command-power/commandPower
 import { stabilityProjection } from '../../widgets/stability/stabilityProjection.ts';
 import { registerTimeChart, type TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
+import { createTimeChartGestures, parseTimeChartHit } from './hostAdapter.ts';
 import { timeChartLaneView } from './laneView.ts';
 import { formatChartAxisValue, layoutTimeChart, niceChartTicks } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
@@ -570,5 +571,81 @@ describe('time-chart laneView integration', () => {
 
     const afterSeekBack = projectHovered(new Map([['hover', { hour: until + 24, data: breakdown }]]));
     assert.equal(afterSeekBack.hoverDetail, null, 'a hover read after the displayed hour is never shown');
+  });
+});
+
+describe('time-chart picture authority', () => {
+  const plotRect = { left: 0, top: 0, width: 100, height: 100 };
+  const gestureContext = (shown: readonly [number, number], axis: readonly [number, number], zoomWindow: readonly [number, number] | null) => {
+    const asked: (readonly [number, number] | null)[] = [];
+    const setZoomWindow = (next: readonly [number, number] | null) => { asked.push(next); };
+    return {
+      asked,
+      ctx: {
+        fields: { meta: { plotRect, transform: { xFrom: shown[0], xTo: shown[1], axisFrom: axis[0], axisTo: axis[1] } } },
+        viewport: { zoomWindow } as never,
+        extent: [0, 1000] as const,
+        setZoomWindow,
+      },
+    };
+  };
+
+  it('zooms within the drawn axis, not the branch extent', () => {
+    const gestures = createTimeChartGestures();
+    const { ctx, asked } = gestureContext([0, 100], [0, 100], null);
+    assert.equal(gestures.onWheel({ deltaY: -1 } as WheelEvent, [50, 50], ctx), true);
+    assert.deepEqual(asked, [[10, 90]]);
+  });
+
+  it('keeps drag state per mounted chart', () => {
+    const gestures = createTimeChartGestures();
+    const a = gestureContext([10, 40], [0, 100], [10, 40]);
+    const b = gestureContext([0, 100], [0, 100], null);
+    gestures.onDragStart([50, 50], a.ctx);
+    gestures.onDragStart([50, 50], b.ctx);
+    gestures.onDragMove([60, 50], [-10, 0], a.ctx);
+    assert.deepEqual(a.asked, [[13, 43]], 'a second chart starting a drag does not clear the first');
+    gestures.onDragMove([60, 50], [-10, 0], b.ctx);
+    assert.deepEqual(b.asked, [], 'an unzoomed chart does not pan');
+  });
+
+  const pictureModel = (hour: number, extra: Partial<TimeChartModel> = {}): TimeChartModel => ({
+    kind: 'command-power',
+    measureTitle: 'Command power',
+    mode: 'lines',
+    hour,
+    extent: [H1936, H1936 + 1000],
+    yAxis: { format: 'number' },
+    series: [{ id: 'cp', key: 'cp', name: 'Command power', color: '#c76a90', role: 'primary', points: [{ hour: H1936, value: 5 }, { hour, value: 5 }] }],
+    ...extra,
+  });
+
+  it('gives a marker hit its recorded hour', () => {
+    const hour = H1936 + 400;
+    const model = pictureModel(hour, { markers: [{ id: 'spend', hour: H1936 + 200, title: 'Command power spent' }] });
+    const layout = layoutTimeChart(model, 600, 260, FONT, measure);
+    const placed = layout.markers[0]!;
+    const key = hitTestTimeChart(model, layout, [placed.x, placed.y]);
+    assert.equal(key, `marker:0@${H1936 + 200}`);
+    assert.equal(parseTimeChartHit(key)?.hour, H1936 + 200);
+  });
+
+  it('names a gap by its own identity and never by its future end', () => {
+    const hour = H1936 + 400;
+    const model = pictureModel(hour, {
+      view: { x: [H1936 + 100, hour] },
+      gaps: [
+        { firstHour: H1936 + 10, lastHour: H1936 + 20, reason: 'Earlier gap' },
+        { firstHour: H1936 + 300, lastHour: H1936 + 900, reason: 'Ongoing gap' },
+      ],
+    });
+    const layout = layoutTimeChart(model, 600, 260, FONT, measure);
+    assert.equal(layout.gaps.length, 1, 'the earlier gap is outside the window');
+    const placed = layout.gaps[0]!;
+    const key = hitTestTimeChart(model, layout, [(placed.x0 + placed.x1) / 2, 100]);
+    assert.equal(key, 'gap:1');
+    const tip = deriveTimeChartTooltip(model, layout, key);
+    assert.equal(tip?.payload?.note, 'Ongoing gap');
+    assert.equal(tip?.payload?.subtitle, `From ${formatDateOnly(H1936 + 300)}`, 'no end after the displayed hour');
   });
 });

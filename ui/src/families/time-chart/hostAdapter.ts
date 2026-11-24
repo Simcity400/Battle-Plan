@@ -61,6 +61,19 @@ function plotRectOf(fields: Readonly<Record<string, unknown>>): PlotRect | null 
   return meta?.plotRect && meta.plotRect.width > 0 ? meta.plotRect : null;
 }
 
+interface InstalledAxis {
+  readonly shown: readonly [number, number];
+  readonly full: readonly [number, number];
+}
+
+function installedAxisOf(fields: Readonly<Record<string, unknown>>): InstalledAxis | null {
+  const meta = fields.meta as { readonly transform?: { readonly xFrom: number; readonly xTo: number; readonly axisFrom?: number; readonly axisTo?: number } } | undefined;
+  const t = meta?.transform;
+  if (!t || !Number.isFinite(t.xFrom) || !Number.isFinite(t.xTo) || t.axisFrom === undefined || t.axisTo === undefined) return null;
+  if (!(t.axisTo > t.axisFrom) || !(t.xTo > t.xFrom)) return null;
+  return { shown: [t.xFrom, t.xTo], full: [t.axisFrom, t.axisTo] };
+}
+
 function insidePlot(point: readonly [number, number], plot: PlotRect): boolean {
   return point[0] >= plot.left && point[0] <= plot.left + plot.width && point[1] >= plot.top && point[1] <= plot.top + plot.height;
 }
@@ -68,57 +81,62 @@ function insidePlot(point: readonly [number, number], plot: PlotRect): boolean {
 function clampWindow(
   from: number,
   to: number,
-  extent: readonly [number, number],
+  axis: readonly [number, number],
 ): readonly [number, number] | null {
-  const fullSpan = Math.max(1, extent[1] - extent[0]);
+  const fullSpan = Math.max(1, axis[1] - axis[0]);
   const span = Math.max(MIN_ZOOM_SPAN_HOURS, Math.min(fullSpan, to - from));
   if (span >= fullSpan - 0.5) return null;
-  let lo = Math.max(extent[0], from);
+  let lo = Math.max(axis[0], from);
   let hi = lo + span;
-  if (hi > extent[1]) {
-    hi = extent[1];
-    lo = Math.max(extent[0], hi - span);
+  if (hi > axis[1]) {
+    hi = axis[1];
+    lo = Math.max(axis[0], hi - span);
   }
   return [lo, hi];
 }
 
-function createTimeChartGestures() {
-  let dragStartWindow: readonly [number, number] | null = null;
-  let dragPlotWidth = 0;
+interface DragState {
+  readonly window: readonly [number, number];
+  readonly axis: readonly [number, number];
+  readonly plotWidth: number;
+}
+
+export function createTimeChartGestures() {
+  const drags = new WeakMap<FamilyGestureContext['setZoomWindow'], DragState>();
 
   return {
     onWheel(event: WheelEvent, point: readonly [number, number], ctx: FamilyGestureContext) {
-      if (!ctx.extent) return false;
       const plot = plotRectOf(ctx.fields);
-      if (!plot || !insidePlot(point, plot)) return false;
-      const [extFrom, extTo] = ctx.extent;
-      const fullSpan = extTo - extFrom;
+      const axis = installedAxisOf(ctx.fields);
+      if (!plot || !axis || !insidePlot(point, plot)) return false;
+      const fullSpan = axis.full[1] - axis.full[0];
       if (fullSpan <= MIN_ZOOM_SPAN_HOURS) return false;
-      const [curFrom, curTo] = ctx.viewport.zoomWindow ?? ctx.extent;
+      const [curFrom, curTo] = axis.shown;
       const frac = Math.max(0, Math.min(1, (point[0] - plot.left) / plot.width));
       const anchor = curFrom + frac * (curTo - curFrom);
       const factor = event.deltaY > 0 ? 1.25 : 0.8;
       const nextSpan = Math.max(MIN_ZOOM_SPAN_HOURS, Math.min(fullSpan, (curTo - curFrom) * factor));
-      const next = clampWindow(anchor - frac * nextSpan, anchor + (1 - frac) * nextSpan, ctx.extent);
-      ctx.setZoomWindow(next);
+      ctx.setZoomWindow(clampWindow(anchor - frac * nextSpan, anchor + (1 - frac) * nextSpan, axis.full));
       return true;
     },
     onDragStart(point: readonly [number, number], ctx: FamilyGestureContext) {
       const plot = plotRectOf(ctx.fields);
-      const inside = !!plot && insidePlot(point, plot);
-      dragPlotWidth = inside ? plot.width : 0;
-      dragStartWindow = inside ? ctx.viewport.zoomWindow : null;
+      const axis = installedAxisOf(ctx.fields);
+      if (plot && axis && ctx.viewport.zoomWindow && insidePlot(point, plot)) {
+        drags.set(ctx.setZoomWindow, { window: axis.shown, axis: axis.full, plotWidth: plot.width });
+      } else {
+        drags.delete(ctx.setZoomWindow);
+      }
     },
     onDragMove(_point: readonly [number, number], delta: readonly [number, number], ctx: FamilyGestureContext) {
-      if (!dragStartWindow || !ctx.extent || dragPlotWidth <= 0) return;
-      const span = dragStartWindow[1] - dragStartWindow[0];
-      const shiftHours = -(delta[0] / dragPlotWidth) * span;
-      const next = clampWindow(dragStartWindow[0] + shiftHours, dragStartWindow[1] + shiftHours, ctx.extent);
-      ctx.setZoomWindow(next);
+      const drag = drags.get(ctx.setZoomWindow);
+      if (!drag || drag.plotWidth <= 0) return;
+      const span = drag.window[1] - drag.window[0];
+      const shiftHours = -(delta[0] / drag.plotWidth) * span;
+      ctx.setZoomWindow(clampWindow(drag.window[0] + shiftHours, drag.window[1] + shiftHours, drag.axis));
     },
-    onDragEnd() {
-      dragStartWindow = null;
-      dragPlotWidth = 0;
+    onDragEnd(ctx: FamilyGestureContext) {
+      drags.delete(ctx.setZoomWindow);
     },
     onDoubleClick(point: readonly [number, number], ctx: FamilyGestureContext) {
       const plot = plotRectOf(ctx.fields);

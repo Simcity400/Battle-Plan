@@ -137,6 +137,7 @@ export interface PlacedColumnItem {
 export interface PlacedGap {
   readonly index: number;
   readonly gap: ChartGap;
+  readonly ongoing: boolean;
   readonly x0: number;
   readonly x1: number;
 }
@@ -654,7 +655,7 @@ export function layoutTimeChart(
       const ga = Math.max(xDomain[0], gap.firstHour);
       const gb = Math.min(xDomain[1], model.hour, gap.lastHour);
       if (gb <= ga) continue;
-      placedGaps.push({ index: i, gap, x0: toX(ga), x1: toX(gb) });
+      placedGaps.push({ index: i, gap, ongoing: gap.lastHour > model.hour, x0: toX(ga), x1: toX(gb) });
     }
   }
 

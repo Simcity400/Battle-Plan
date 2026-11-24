@@ -5,7 +5,7 @@ import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel, TimeChartSeriesModel } from './model.ts';
 
 export type ParsedChartInspect =
-  | { readonly kind: 'marker'; readonly index: number }
+  | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'label'; readonly seriesId: string }
   | { readonly kind: 'gap'; readonly index: number }
   | { readonly kind: 'fold'; readonly index: number }
@@ -16,8 +16,11 @@ export type ParsedChartInspect =
 export function parseChartInspect(key: string | null | undefined): ParsedChartInspect | null {
   if (!key) return null;
   if (key.startsWith('marker:')) {
-    const index = Number(key.slice(7));
-    return Number.isInteger(index) && index >= 0 ? { kind: 'marker', index } : null;
+    const [rawIndex, rawHour] = key.slice(7).split('@');
+    const index = Number(rawIndex);
+    const hour = rawHour === undefined ? undefined : Number(rawHour);
+    if (!Number.isInteger(index) || index < 0 || (hour !== undefined && !Number.isFinite(hour))) return null;
+    return hour === undefined ? { kind: 'marker', index } : { kind: 'marker', index, hour };
   }
   if (key.startsWith('label:')) {
     const seriesId = key.slice(6);
@@ -127,16 +130,16 @@ export function hitTestTimeChart(
   }
 
   if (layout.markerLaneHeight > 0 && py >= layout.baseY && py <= layout.axisY + 2 && px >= layout.left - 8 && px <= layout.left + layout.plotWidth + 8) {
-    let bestIdx = -1;
+    let best: (typeof layout.markers)[number] | null = null;
     let bestDist = 11;
     for (const m of layout.markers) {
       const d = Math.abs(px - m.x);
       if (d <= bestDist) {
         bestDist = d;
-        bestIdx = m.index;
+        best = m;
       }
     }
-    if (bestIdx >= 0) return `marker:${bestIdx}`;
+    if (best) return `marker:${best.index}@${best.marker.hour}`;
   }
 
   if (px < layout.left || px > layout.left + layout.plotWidth || py < layout.top - 4 || py > layout.baseY + 4) {
@@ -288,9 +291,11 @@ export function deriveTimeChartTooltip(
   if (!parsed || !inspectKey) return null;
 
   if (parsed.kind === 'gap') {
-    const placed = layout.gaps[parsed.index];
+    const placed = layout.gaps.find(item => item.index === parsed.index);
     if (!placed) return null;
-    const span = `${formatDateOnly(placed.gap.firstHour)} \u2013 ${formatDateOnly(placed.gap.lastHour)}`;
+    const span = placed.ongoing
+      ? `From ${formatDateOnly(placed.gap.firstHour)}`
+      : `${formatDateOnly(placed.gap.firstHour)} \u2013 ${formatDateOnly(placed.gap.lastHour)}`;
     return {
       hour: placed.gap.firstHour,
       rowKey: inspectKey,

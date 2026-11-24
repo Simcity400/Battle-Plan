@@ -454,6 +454,8 @@ export function timeChartLaneView(
         transform: {
           xFrom: layout.xDomain[0],
           xTo: layout.xDomain[1],
+          axisFrom: model.extent[0],
+          axisTo: model.hour,
           yMin: layout.yDomain[0],
           yMax: layout.yDomain[1],
           log: model.yAxis.log === true,
