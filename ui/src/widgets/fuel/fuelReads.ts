@@ -37,8 +37,6 @@ export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: strin
 }
 
 
-export const MOST_PARTS = 8;
-
 export function usePartSeries(runtime: WidgetRuntime, gate: SeriesGate, track: BoundTrack, kind: string, measures: readonly (string | null)[],
   history: { key: string; spans: readonly HourSpan[] } | null, active: boolean) {
   const tag = history?.key ?? null;

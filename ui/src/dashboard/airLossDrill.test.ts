@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { airLossParts, ledgerCountryAt, ledgerShare, militaryAirIndex, validateMilitaryAirReply } from './militaryAirLedger.ts';
+import { airLossParts, ledgerCountryAt, ledgerShare, militaryAirIndex } from './militaryAirLedger.ts';
 import { airLossDrillActor, airLossDrillActors, airLossDrillHistory } from './airLossDrill.ts';
 import { runAt } from '../charts/series.ts';
 import { partOf } from './militaryAirParts.fixture.ts';
@@ -20,7 +20,7 @@ const reply = (): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, la
     leaf({ dealt: true, opponent: 'opponent', points: [[11, 16, '700000']] })].map(partOf), regions: [], buildings: [], warnings: [] });
 
 test('full cause histories wait for supplying reads, retain signed corrections, aliases and gaps outside top N', () => {
-  const index = militaryAirIndex(validateMilitaryAirReply(reply()));
+  const index = militaryAirIndex(reply());
   const history = airLossDrillHistory(index, '7:91', 10, 20, false);
   const at = (hour: number) => history.map(part => runAt(part.runs, hour)?.value ?? null);
   assert.deepEqual(at(14), [0, 0]);
@@ -42,7 +42,7 @@ test('drawn candidates keep all 5,000 opaque tags and the supplying-hour holder 
   const data = reply();
   data.countries = Array.from({ length: 5000 }, (_, id) => ({ tag: `authored Ω ${id}, separators|[]`, identity: `${id}:9`, present: [span(10, 16)], membership: [] }));
   data.parts = [];
-  const index = militaryAirIndex(validateMilitaryAirReply(data));
+  const index = militaryAirIndex(data);
   const tags = data.countries.map(country => country.tag);
   const actors = airLossDrillActors(index, 12, [...tags, tags[0]]);
   assert.equal(actors.length, 5000);

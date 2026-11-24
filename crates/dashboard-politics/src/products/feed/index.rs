@@ -111,7 +111,8 @@ pub(crate) struct Scanned {
 pub(crate) struct Feed {
     pub index: Arc<Index<Item>>,
     pub notices: Vec<Notice>,
-    pub warnings: Vec<String>,
+    pub warnings: families::DatedNotes,
+    pub unattributed: Vec<i32>,
     pub projects_unrecorded: Vec<(i32, i32)>,
 }
 
@@ -530,10 +531,12 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     let (first, last) = (query.timeline.first, query.timeline.last);
     let mut refused: Vec<Notice> = Vec::new();
     let mut rows: Vec<EventFeedRow> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    if let Some((made, notes)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, cancelled)? {
+    let mut warnings: families::DatedNotes = Vec::new();
+    let mut unattributed = Vec::new();
+    if let Some((made, notes, left_out)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, cancelled)? {
         rows.extend(made);
         warnings.extend(notes);
+        unattributed = left_out;
     }
     if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, cancelled)? {
         rows.extend(made);
@@ -541,7 +544,7 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     let mut projects_unrecorded = Vec::new();
     if let Some((made, notes, unrecorded)) = family(families::project_completions(source, query, context, first, last, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, cancelled)? {
         rows.extend(made);
-        warnings.extend(notes);
+        warnings.extend(notes.into_iter().map(|note| (first, note)));
         projects_unrecorded = unrecorded;
     }
     let localisation = match context.content.as_ref() {
@@ -565,9 +568,10 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
             occurrences.push(occurrence);
         }
     }
+    warnings.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    warnings.dedup_by(|later, earlier| later.1 == earlier.1);
     warnings.sort();
-    warnings.dedup();
-    Ok(Feed { index: Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?), notices: refused, warnings, projects_unrecorded })
+    Ok(Feed { index: Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?), notices: refused, warnings, unattributed, projects_unrecorded })
 }
 
 fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {

@@ -8,7 +8,7 @@ use super::{
 use dashboard_base::{Source, products::{LoadContext, at_hour::entry}, test_fixtures::{CAMPAIGN, records, source}};
 use replay::campaign::Replay;
 use replay_data::rows::{
-    CountryLinkRow, CountryRow, IndustrialOrganisationDetailsRow, IndustrialOrganisationRow, ProductionLicenseRecordRow, ProductionLineOutputRow, ProductionLineRow, Recorded, TableRows,
+    CountryLinkRow, CountryProductionModifiersRow, CountryRow, ModifierBreakdownNode, ProductionLineModifiersRow, ProductionModifierTree, IndustrialOrganisationDetailsRow, IndustrialOrganisationRow, ProductionLicenseRecordRow, ProductionLineOutputRow, ProductionLineRow, Recorded, TableRows,
     VariantDefinitionRow,
 };
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -102,16 +102,66 @@ fn moved_recording() -> Source {
     Source::from_replay(dashboard_base::SourceKey { source_id: "production-moved".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
-fn breakdown(source: &Source, handle: &str, hour: i32) -> std::io::Result<breakdown::ProductionLineBreakdownReply> {
-    let params = ProductionBreakdownParams { branch_id: "1".into(), country: "GER".into(), handle: handle.into(), group: "efficiency".into(), hour, within: None };
+fn factor(source: &Source, handle: &str, group: &str, hour: i32) -> std::io::Result<breakdown::ProductionLineBreakdownReply> {
+    let params = ProductionBreakdownParams { branch_id: "1".into(), country: "GER".into(), handle: handle.into(), group: group.into(), hour };
     <ProductionLineBreakdown as dashboard_base::products::Product>::load(source, &params, &load(), &AtomicBool::new(false))
+}
+
+fn breakdown(source: &Source, handle: &str, hour: i32) -> std::io::Result<breakdown::ProductionLineBreakdownReply> {
+    factor(source, handle, "efficiency", hour)
+}
+
+fn modified_recording() -> Source {
+    let frames = (FIRST..=LAST)
+        .map(|hour| {
+            let mut frame = frame(hour);
+            *frame.tables[TableId::ProductionLineModifiers.index()] = TableView::Complete(TableRows::ProductionLineModifiers(vec![ProductionLineModifiersRow {
+                line: 1,
+                organisation_dirty: (1_100..1_130).contains(&hour),
+                ..Default::default()
+            }]));
+            *frame.tables[TableId::CountryProductionModifiers.index()] = if hour < 1_150 {
+                TableView::Complete(TableRows::CountryProductionModifiers(vec![CountryProductionModifiersRow {
+                    country: 11,
+                    trees: engine_executable::native_values::production_modifiers::KEYS.into_iter().map(|key| ProductionModifierTree { key, nodes: vec![ModifierBreakdownNode { children: 0, value: 0, name: b"synthetic source".to_vec() }], failure: Vec::new() }).collect(),
+                    ..Default::default()
+                }]))
+            } else {
+                TableView::Unavailable { reason: "country modifiers unread in the fixture".into() }
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    Source::from_replay(dashboard_base::SourceKey { source_id: "production-modified".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+}
+
+#[test]
+fn a_breakdown_is_the_clicked_line_and_its_operands_at_the_clicked_hour_alone() {
+    let source = modified_recording();
+    let pending = breakdown(&source, "1", 1_120).unwrap();
+    assert_eq!(pending.hour, 1_120);
+    assert_eq!(pending.group.as_ref().and_then(|group| group.total_raw.as_deref()), Some("5000000"), "the line's stored efficiency at the hour");
+    assert!(pending.warnings.iter().any(|warning| warning.starts_with("Organisation bonuses were pending refresh")), "the hour's own warnings reach the reply: {:?}", pending.warnings);
+    assert!(pending.warnings.iter().all(|warning| !warning.contains("not recorded")), "operands missing at a LATER hour say nothing about this one: {:?}", pending.warnings);
+    let settled = breakdown(&source, "1", 1_140).unwrap();
+    assert!(settled.warnings.iter().all(|warning| !warning.starts_with("Organisation bonuses")), "the pending refresh of an earlier hour is not this hour's: {:?}", settled.warnings);
+    let unread = breakdown(&source, "1", 1_160).unwrap();
+    let kept = unread.group.as_ref().expect("the witnessed efficiency total is kept when the country's modifiers are unread");
+    assert_eq!(kept.total_raw.as_deref(), Some("5000000"));
+    assert!(kept.parts.iter().all(|part| part.unknown.as_deref() == Some("The country's production modifiers were not recorded at this hour")));
+    assert_eq!(unread.missing, None);
+    assert_eq!(factor(&source, "1", "output", 1_160).unwrap().group.and_then(|group| group.total_raw), Some("200000".into()), "the recorded IC rate is the line's own");
+    let start = factor(&source, "1", "start", 1_160).unwrap();
+    assert_eq!((start.group, start.missing.as_deref()), (None, Some("The country's production modifiers were not recorded at this hour")));
+    assert!(breakdown(&source, "1", UNREAD.0).is_err(), "the lines are unread at the clicked hour: nothing from another hour stands in");
 }
 
 #[test]
 fn a_breakdown_opens_for_the_line_the_country_holds_at_the_clicked_hour() {
     let source = recording();
     let alias = breakdown(&source, "1", 1_120).expect("raw country 11's line is GER's: GER's slot holds it");
-    assert_eq!(alias.key, "1#1");
+    assert_eq!(alias.hour, 1_120);
     assert!(breakdown(&source, "3", 1_120).is_err(), "ITA's line is not GER's");
     assert!(breakdown(&source, "2", 1_210).is_err(), "a line that ended at 1200 is not the country's after it");
     let moved = moved_recording();
@@ -253,11 +303,7 @@ fn a_countrys_designs_at_the_hour_are_its_creators_with_their_obsolete_flags_cur
 }
 
 #[test]
-fn a_line_key_names_its_handle_and_a_positive_appearance() {
-    assert_eq!(parse_key("7460358193208#1"), Some((7_460_358_193_208, 1)));
-    assert_eq!(parse_key("12#0"), None);
-    assert_eq!(parse_key("12"), None);
-    assert_eq!(parse_key("x#1"), None);
+fn weekly_units_need_a_positive_cost() {
     assert_eq!(weekly_units_raw(200_000, 700_000), Some(200_000));
     assert_eq!(weekly_units_raw(1, 0), None);
 }
@@ -447,6 +493,8 @@ fn artwork_queries_fetch_state_continent_tokens_appearance_refs_and_reserved_nam
         countries: Vec::new(),
         only: Some(MarketSection::Offers),
         lease_side: None,
+        group: None,
+        row: None,
     };
     let mut market_held = DecodedFrame {
         branch: 1,

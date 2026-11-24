@@ -116,4 +116,23 @@ test('event choices projection turns blank authored title or option text into no
   const openMeta = model.rows.find(r => r.key === openOcc.id)!.meta as EventDetailSubject;
   assert.equal(openMeta.firedHour, fired);
   assert.equal(openMeta.asOfHour, atHour);
+
+  const productSource = buildRowSourceFromHead('test:choices-status', {
+    ...head,
+    total: '2',
+    counts: [{ key: 'awaiting', total: '1' }],
+    rows: [
+      { hour: fired, key: openOcc.id, ordinal: '0', live: true, status: 'awaiting', occurrence: openOcc },
+      { hour: fired, key: blankOcc.id, ordinal: '1', live: false, status: 'notRecorded', occurrence: occurrence([fire(fired, 'ITA', 'GER')]) },
+    ],
+  }, undefined, atHour)!;
+  const awaitingModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', productSource]]) }),
+    { events: ['country'], awaiting: true, artwork: false, breaks: [] },
+  );
+  assert.equal(awaitingModel.titleSummary, '1 awaiting');
+  assert.equal(awaitingModel.rows[0]?.live, true);
+  assert.equal(awaitingModel.rows[1]?.live, false);
+  assert.equal(awaitingModel.rows[1]?.cells.choice?.value.kind, 'notRecorded');
+  assert.equal((awaitingModel.rows[1]?.meta as EventDetailSubject).awaiting, false);
 });

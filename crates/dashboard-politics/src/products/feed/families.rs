@@ -122,11 +122,14 @@ fn follows_observed(query: &Query<'_>, unobserved: &[dashboard_base::span::HourS
         && !unobserved.iter().any(|span| span.first_hour <= before && before <= span.last_hour)
 }
 
-pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, categories: &[EventFeedCategory], cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, Vec<String>)> {
+pub(crate) type DatedNotes = Vec<(i32, String)>;
+
+pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, categories: &[EventFeedCategory], cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, DatedNotes, Vec<i32>)> {
     let wanted = |kind: EventFeedKind| categories.contains(&kind.category());
     if !wanted(EventFeedKind::WarStarted) && !wanted(EventFeedKind::FactionJoined) {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
+    let mut notes: DatedNotes = Vec::new();
     let reply = groups::shared(source, query, context, cancelled)?;
     let within = |hour: i32| from <= hour && hour <= to;
     let mut rows = Vec::new();
@@ -151,16 +154,12 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
     }
     if wanted(EventFeedKind::FactionJoined) {
         for faction in &reply.factions {
+            notes.extend(faction.names.iter().filter_map(|run| run.reason.as_ref().map(|reason| (run.first_hour, format!("Faction names are unavailable: {reason}")))));
             let name = |hour: i32| {
-                let named = faction
-                    .names
-                    .iter()
-                    .find(|run| run.first_hour <= hour && hour <= run.last_hour)
-                    .and_then(|run| run.name.as_deref())
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_owned);
-                let name_missing = named.is_none().then(|| "Faction name not recorded at this hour".to_owned());
-                Some(EventFeedItem { token: (!faction.recorded_name.is_empty()).then(|| faction.recorded_name.clone()), name: named, icon: None, description: None, name_missing, ..Default::default() })
+                let run = faction.names.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour);
+                let named = run.and_then(|run| run.name.as_deref()).filter(|name| !name.is_empty()).map(str::to_owned);
+                let name_missing = named.is_none().then(|| run.and_then(|run| run.reason.clone()).unwrap_or_else(|| "Faction name not recorded at this hour".to_owned()));
+                Some(EventFeedItem { token: run.and_then(|run| run.token.clone()), name: named, icon: None, description: None, name_missing, ..Default::default() })
             };
             for member in &faction.members {
                 if within(member.first_hour) && follows_observed(query, &reply.unobserved.factions, member.first_hour) {
@@ -173,7 +172,8 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
             }
         }
     }
-    Ok((rows, reply.warnings.clone()))
+    let unattributed = if wanted(EventFeedKind::WarStarted) { reply.unobserved.unattributed.iter().copied().filter(|&hour| within(hour)).collect() } else { Vec::new() };
+    Ok((rows, notes, unattributed))
 }
 
 fn native_war_ends(query: &Query<'_>, ends: &[(i32, String, String)], cancelled: &AtomicBool) -> io::Result<BTreeSet<(i32, String, String)>> {

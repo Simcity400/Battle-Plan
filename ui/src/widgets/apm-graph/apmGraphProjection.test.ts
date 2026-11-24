@@ -3,10 +3,12 @@ import { describe, it } from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { boundTiledSeries, createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
+import { readPlanExact } from '../../families/broker.ts';
+import { freezeGate } from '../../families/sources.ts';
 import { IdentityIndex } from '../../families/identity/index.ts';
 import { createSnapshotIdentityProvider } from '../../families/identity/provider.ts';
 import type { ApmReply } from '../../generated/dashboard';
-import { apmGraphProjection } from './apmGraphProjection.ts';
+import { apmGraphDeclaration, apmGraphProjection } from './apmGraphProjection.ts';
 
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H1943 = engineHour({ year: 1943, month: 9, day: 7, hour: 1 })!;
@@ -65,7 +67,7 @@ describe('apm-graph projection', () => {
       nameMissing: null,
       tag: 'ITA',
       hour: H1943,
-      summary: { apm: 100 - i * 8, confirmedApm: 100 - i * 8, orders: '100', pausedOrders: '5', unpausedMinutes: 10, complete: true, gaps: false },
+      summary: { apm: 100 - i * 8, confirmedApm: 100 - i * 8, orders: String((100 - i * 8) * 10), confirmedOrders: String((100 - i * 8) * 10), pausedOrders: '5', unpausedMinutes: 10, unpausedMinutesNum: '10', unpausedMinutesDen: '1', complete: true, gaps: false },
       points: [],
     }));
     const head: ApmReply = { available: true, players: [], series, warnings: [] };
@@ -106,7 +108,7 @@ describe('apm-graph projection', () => {
         nameMissing: null,
         tag: 'ITA',
         hour: H1943,
-        summary: { apm: 42, confirmedApm: 42, orders: '42', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: true },
+        summary: { apm: 42, confirmedApm: 42, orders: '42', confirmedOrders: '42', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: true },
         points: [],
       }],
       warnings: [],
@@ -120,7 +122,7 @@ describe('apm-graph projection', () => {
         nameMissing: null,
         tag: 'GER',
         hour: H1936 + 1,
-        summary: { apm: 20, confirmedApm: 20, orders: '20', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: true },
+        summary: { apm: 20, confirmedApm: 20, orders: '20', confirmedOrders: '20', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: true },
         points: [],
       }],
       warnings: [],
@@ -175,7 +177,7 @@ describe('apm-graph projection', () => {
         nameMissing: null,
         tag: 'ITA',
         hour: H1943,
-        summary: { apm: 50, confirmedApm: 50, orders: '50', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: false },
+        summary: { apm: 50, confirmedApm: 50, orders: '50', confirmedOrders: '50', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
         points: [],
       }],
       warnings: [],
@@ -189,7 +191,7 @@ describe('apm-graph projection', () => {
         nameMissing: null,
         tag: 'GER',
         hour: H1936 + 5,
-        summary: { apm: 30, confirmedApm: 30, orders: '30', pausedOrders: '0', unpausedMinutes: 1, complete: true, gaps: false },
+        summary: { apm: 30, confirmedApm: 30, orders: '30', confirmedOrders: '30', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
         points: [],
       }],
       warnings: [],
@@ -253,5 +255,244 @@ describe('apm-graph projection', () => {
     );
     const departed = model.series.find(s => s.id === departedId);
     assert.equal(departed?.name, 'EarlyDepartedName', 'departed player uses dated name <= displayed hour, not future branch-latest name');
+  });
+
+  it('formats derived eAPM from exact recorded operands without float drift or Math.round and shows operands in hover tooltip', () => {
+    const exactId = 'user:exact';
+    const smallId = 'user:small';
+    const halfId = 'user:half';
+    const driftFloat = 3 / (3 / 10);
+    const head = {
+      available: true,
+      players: [],
+      series: [
+        {
+          id: exactId,
+          name: 'Exact',
+          nameMissing: null,
+          tag: 'GER',
+          hour: H1943,
+          summary: {
+            apm: driftFloat,
+            confirmedApm: driftFloat,
+            orders: '3',
+            confirmedOrders: '3',
+            pausedOrders: '0',
+            unpausedMinutes: 3 / 10,
+            unpausedMinutesNum: '3',
+            unpausedMinutesDen: '10',
+            complete: true,
+            gaps: false,
+          },
+          points: [],
+        },
+        {
+          id: halfId,
+          name: 'Half',
+          nameMissing: null,
+          tag: 'ITA',
+          hour: H1943,
+          summary: {
+            apm: 29.5,
+            confirmedApm: 29.5,
+            orders: '59',
+            confirmedOrders: '59',
+            pausedOrders: '0',
+            unpausedMinutes: 2,
+            unpausedMinutesNum: '2',
+            unpausedMinutesDen: '1',
+            complete: true,
+            gaps: false,
+          },
+          points: [],
+        },
+        {
+          id: smallId,
+          name: 'Small',
+          nameMissing: null,
+          tag: 'FRA',
+          hour: H1943,
+          summary: {
+            apm: 1 / 3,
+            confirmedApm: 1 / 3,
+            orders: '1',
+            confirmedOrders: '1',
+            pausedOrders: '0',
+            unpausedMinutes: 3,
+            unpausedMinutesNum: '3',
+            unpausedMinutesDen: '1',
+            complete: true,
+            gaps: false,
+          },
+          points: [],
+        },
+      ],
+      warnings: [],
+    } as unknown as ApmReply;
+    const tiledMap = new Map(head.series.map(s => [s.id, boundTiledSeries(makeTiled(s.id, s.summary.apm!), displayedHour(H1943))]));
+    const readView = createBoundedReadView({
+      hour: H1943,
+      panels: new Map([['head', head]]),
+      series: new Map([['apm', tiledMap]]),
+      hovers: new Map([['hover', { hour: H1943, data: head }]]),
+    });
+    const model = apmGraphProjection.project(readView, {
+      group: 'player',
+      extent: [H1936, H1943],
+      surface: '#111111',
+      gaps: [],
+      yMin: null,
+      yMax: null,
+      available: true,
+    });
+    assert.equal(model.series[0]?.endLabel?.value, '10', '3 actions in 3/10 min is exact 10, not float 9.999999999999998 -> 9');
+    assert.equal(model.series[1]?.endLabel?.value, '29', '59 actions in 2 min (29.5) truncates toward zero to 29, never Math.round 30');
+    assert.equal(model.series[2]?.endLabel?.value, '<1', '1 action in 3 min prints <1, never 0');
+    assert.equal(model.auditRows?.find(r => r.row === exactId)?.value, '10');
+    assert.equal(model.auditRows?.find(r => r.row === halfId)?.value, '29');
+    assert.equal(model.auditRows?.find(r => r.row === smallId)?.value, '<1');
+    const items = model.hoverDetail?.items ?? [];
+    assert.ok(items.some(item => item.label === 'Exact' && item.value === '10'), 'hover rate uses exact operands');
+    assert.ok(items.some(item => item.label === 'Half' && item.value === '29'), 'hover rate truncates toward zero');
+    assert.ok(items.some(item => item.label === 'Small' && item.value === '<1'), 'hover sub-unit rate prints <1');
+    assert.ok(items.some(item => item.label.includes('3 actions') && item.label.includes('0.3 min')), `hover shows recorded operands for Exact: ${JSON.stringify(items)}`);
+    assert.ok(items.some(item => item.label.includes('1 action') && item.label.includes('3 min')), `hover shows recorded operands for Small: ${JSON.stringify(items)}`);
+  });
+
+  it('R2-S18: reads exact single-hour eAPM for head, end label, and audit through readPlanExact and omits heads for departed players', async () => {
+    const h0 = H1936;
+    const h1 = H1936 + 1;
+    const plan = apmGraphDeclaration.sources({
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+      branch: { id: '1', firstHour: h0, lastHour: h1, gaps: [] },
+      countries: { all: true, tags: [], top: null },
+      options: { group: 'player' },
+      aux: {
+        available: true,
+        warnings: [],
+        players: [
+          { id: 'user:active', name: 'Active', nameMissing: null, tags: ['GER'], runs: [{ firstHour: h0, lastHour: h1, tag: 'GER', name: 'Active', nameMissing: null }] },
+          { id: 'user:departed', name: 'Departed', nameMissing: null, tags: ['ITA'], runs: [{ firstHour: h0, lastHour: h0, tag: 'ITA', name: 'Departed', nameMissing: null }] },
+        ],
+        series: [],
+      },
+      gateSpan: (a: number, b: number) => ({ firstHour: a, lastHour: b }),
+    } as never, { width: 800, height: 300, following: true, staticSpan: null });
+
+    const headEntry = plan.entries.find(e => e.name === 'head')!;
+    assert.equal(headEntry.read.shape, 'point', 'apm-graph head must be a single-hour point read, not a 168-hour trailing window');
+    const followParams = (headEntry.read as { followQuery?: { params?: { windowHours?: number } } }).followQuery?.params;
+    assert.equal(followParams?.windowHours, 1, 'followed head must use a 1-hour window matching the hourly line');
+
+    const requests: { product: string; params: Record<string, unknown> }[] = [];
+    const client = {
+      product: async (req: { product: string; params: Record<string, unknown> }) => {
+        requests.push({ product: req.product, params: req.params });
+        if (req.params.hour === h1) {
+          return {
+            data: {
+              available: true,
+              warnings: [],
+              players: [],
+              series: [{
+                id: 'user:active',
+                name: 'Active',
+                nameMissing: null,
+                tag: 'GER',
+                hour: h1,
+                summary: { apm: 20, confirmedApm: 20, orders: '20', confirmedOrders: '20', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
+                points: [],
+              }],
+            } satisfies ApmReply,
+          };
+        }
+        return {
+          data: {
+            available: true,
+            warnings: [],
+            players: [],
+            series: [
+              {
+                id: 'user:active',
+                name: 'Active',
+                nameMissing: null,
+                tag: 'GER',
+                hour: h1,
+                summary: { apm: 10, confirmedApm: 10, orders: '20', confirmedOrders: '20', pausedOrders: '0', unpausedMinutes: 2, unpausedMinutesNum: '2', unpausedMinutesDen: '1', complete: true, gaps: false },
+                points: [],
+              },
+              {
+                id: 'user:departed',
+                name: 'Departed',
+                nameMissing: null,
+                tag: 'ITA',
+                hour: h0,
+                summary: { apm: 15, confirmedApm: 15, orders: '15', confirmedOrders: '15', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
+                points: [],
+              },
+            ],
+          } satisfies ApmReply,
+        };
+      },
+    };
+    const exactView = await readPlanExact(plan, displayedHour(h1), {
+      client: client as never,
+      following: true,
+      timeMode: 'follow',
+      branch: { firstHour: h0, lastHour: h1 },
+      window: { firstHour: h0, lastHour: h1 },
+      staticSpan: null,
+      gate: freezeGate({
+        recorded: h => h as never,
+        span: (a, b) => ({ firstHour: a, lastHour: b }) as never,
+      }),
+    });
+    assert.ok(exactView);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.params.hour, h1, 'readPlanExact must request exact hour h1, not a trailing span');
+
+    const model = apmGraphProjection.project(exactView, {
+      group: 'player',
+      extent: [h0, h1],
+      surface: '#111111',
+      gaps: [],
+      yMin: null,
+      yMax: null,
+      available: true,
+    });
+    assert.equal(model.series[0]?.headValue, 20);
+    assert.equal(model.series[0]?.headHour, h1);
+    assert.equal(model.series[0]?.endLabel?.value, '20');
+    assert.equal(model.auditRows?.find(r => r.row === 'user:active')?.value, '20');
+
+    const staleDepartedView = createBoundedReadView({
+      hour: h1,
+      panels: new Map([['head', {
+        available: true,
+        warnings: [],
+        players: [],
+        series: [{
+          id: 'user:departed',
+          name: 'Departed',
+          nameMissing: null,
+          tag: 'ITA',
+          hour: h0,
+          summary: { apm: 15, confirmedApm: 15, orders: '15', confirmedOrders: '15', pausedOrders: '0', unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
+          points: [],
+        }],
+      } satisfies ApmReply]]),
+    });
+    const staleModel = apmGraphProjection.project(staleDepartedView, {
+      group: 'player',
+      extent: [h0, h1],
+      surface: '#111111',
+      gaps: [],
+      yMin: null,
+      yMax: null,
+      available: true,
+    });
+    assert.equal(staleModel.series[0]?.headValue, null, 'departed player observed only at h0 < h1 gets no head value at h1');
+    assert.equal(staleModel.series[0]?.endLabel, null, 'departed player gets no end label at h1');
+    assert.equal(staleModel.auditRows?.length, 0, 'departed player is not audited as a head at h1');
   });
 });

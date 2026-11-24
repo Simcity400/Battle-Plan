@@ -9,6 +9,7 @@ import {
 } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
+import { lineChartSettings } from '../../families/time-chart/settings.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
@@ -29,7 +30,7 @@ import {
   memberAt,
   missingSpansOf,
   rankEntry,
-  rankedOrder,
+  rankedOrder, unnamedLooks,
   auditReading,
   headReading,
   headValueOf,
@@ -49,6 +50,7 @@ export interface StabilityOptions {
   readonly showStability: boolean;
   readonly showWarSupport: boolean;
   readonly zoom: boolean;
+  readonly windowHours?: number | null;
 }
 
 
@@ -169,16 +171,17 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
 
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
     const presentSet = new Set(present);
-    const ordered = [...rankedOrder(readView, present), ...tags.filter(tag => !presentSet.has(tag))];
+    const ranking = rankedOrder(readView, present);
+    const ordered = [...ranking.order, ...tags.filter(tag => !presentSet.has(tag))];
 
-    const looks = countrySeriesLooks(ordered, readView, {
+    const looks = unnamedLooks(countrySeriesLooks(ordered, readView, {
       holders: options.holders,
       from: options.extent[0],
       surface: options.surface,
       withFlag: !single,
       recordedOrdinal: tag => rowOf.get(tag) ?? 0,
       singleColor: CHART_MEASURE_COLOURS.stability,
-    });
+    }), ranking.unnamed, hour);
 
     const stabIcon: ChartArtSlot | undefined = single && options.showStability
       ? { art: readView.art(measureArtHandle('stability')), label: 'Stability' }
@@ -214,7 +217,6 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           ...named('Stability'),
           icon: single ? stabIcon : undefined,
           missingSpans: missingSpansOf(bounded),
-          rank,
           endLabel: isTail || !stabReading || !('value' in stabReading)
             ? null
             : {
@@ -247,7 +249,6 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           ...named('War support'),
           icon: single ? warIcon : undefined,
           missingSpans: missingSpansOf(bounded),
-          rank,
           endLabel: isTail || !warReading || !('value' in warReading)
             ? null
             : {
@@ -291,12 +292,14 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       mode: 'lines',
       hour,
       extent: options.extent,
+      ...(options.windowHours ? { view: { x: [Math.max(options.extent[0], hour - options.windowHours), hour] as const } } : {}),
       yAxis: {
         format: 'percent',
         fixed: options.zoom ? null : [0, 100],
       },
       series,
       markers: markers.length > 0 ? markers : undefined,
+      ...(ranking.warnings.length > 0 ? { warnings: ranking.warnings } : {}),
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       hoverDetail: single
         ? breakdownDetail(readView, [
@@ -340,9 +343,8 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
           family,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
-            ? { product: 'series-state', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
+            ? { product: 'series-state', coverage: 'row', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
             : null,
           exactProduct: 'series-state',
         },
@@ -361,9 +363,8 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
           family,
           tags,
           ...(within ? { within } : {}),
-          marks: false,
           headQuery: tags.length
-            ? { product: 'series-state', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
+            ? { product: 'series-state', coverage: 'row', params: { branchId: ctx.branch.id, family, reads: countries.map(country => ({ country })) } }
             : null,
           exactProduct: 'series-state',
         },
@@ -406,7 +407,7 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
     const rank = rankEntry(ctx, { kind: 'country-stability', measure: showStab ? 'stability' : 'warSupport' }, tags);
     if (rank && (showStab || showWar)) entries.push(rank);
     return {
-      owner: `stability:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showStab ? 1 : 0}:${showWar ? 1 : 0}:${['markFocus', 'markGovernment', 'markWars', 'markFactions'].map(key => ctx.options[key] !== false ? 1 : 0).join('')}:${ctx.following ? 1 : 0}`,
+      owner: `stability:${ctx.track.source.id}:${ctx.branch.id}:${tags.join(',')}:${showStab ? 1 : 0}:${showWar ? 1 : 0}:${['markFocus', 'markGovernment', 'markWars', 'markFactions'].map(key => ctx.options[key] !== false ? 1 : 0).join('')}`,
       entries,
     };
   },
@@ -422,6 +423,7 @@ export const stabilityDeclaration: TimeChartWidgetDeclaration<StabilityOptions> 
       showStability: ctx.options.stability !== false,
       showWarSupport: ctx.options.warSupport !== false,
       zoom: ctx.options.scale === 'zoom',
+      windowHours: lineChartSettings(ctx.options).windowHours,
     };
   },
 };

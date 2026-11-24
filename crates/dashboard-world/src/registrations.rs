@@ -6,6 +6,8 @@ dashboard_base::register_products! {
     STYLES_COUNTRYSTYLES => crate::products::styles::CountryStyles,
     GROUPS_COUNTRYGROUPS => crate::products::groups::CountryGroups,
     GROUP_COUNTS_GROUPCOUNTS => crate::products::group_counts::GroupCounts,
+    HISTORY_AT_COUNTRYGROUPSAT => crate::products::history_at::CountryGroupsAt,
+    HISTORY_AT_SUBJECTSAT => crate::products::history_at::SubjectsAt,
     LAND_OWNERS_LANDOWNERSPRODUCT => crate::products::land_owners::LandOwnersProduct,
     SCALARS_WORLDTENSIONSTACK => crate::products::scalars::WorldTensionStack,
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,
@@ -22,6 +24,7 @@ dashboard_base::register_hourly_products! {
     SCALARS_NUCLEARARSENAL => crate::products::scalars::NuclearArsenal,
     SCALARS_WORLDTENSION => crate::products::scalars::WorldTension,
     SCALARS_FACTORYPARTS => crate::products::scalars::FactoryParts,
+    SCALARS_FACTORYMIX => crate::products::scalars::FactoryMix,
     AUTONOMY_LEVELS_AUTONOMYLEVELS => crate::products::autonomy_levels::AutonomyLevels,
 }
 
@@ -35,3 +38,4 @@ type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, St
 pub const EXACT_NUCLEARARSENAL: ExactPanel = exact_panel::<crate::products::scalars::NuclearArsenal>;
 pub const EXACT_GAMESCORE: ExactPanel = exact_panel::<crate::products::scalars::GameScore>;
 pub const EXACT_TERRITORYSHARE: ExactPanel = exact_panel::<crate::products::territory::TerritoryShare>;
+pub const EXACT_FACTORYMIX: ExactPanel = exact_panel::<crate::products::scalars::FactoryMix>;

@@ -1,6 +1,6 @@
 use super::spending::{ConstructionSpendingParams, Facts, facts};
 use super::{COST_SCALE, SpendingGap};
-use dashboard_base::products::breakdown::{self, Amount, Breakdown, History, HistoryBuilder, Node, counted};
+use dashboard_base::products::breakdown::{self, Amount, Breakdown, Exact, History, HistoryBuilder, Node, counted};
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
 use dashboard_base::Source;
 use replay_data::rows::TagHolderRow;
@@ -116,11 +116,11 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
         let mut held = 0_i128;
         for step in steps {
             match step.total_raw.as_deref().and_then(|raw| raw.parse::<i128>().ok()) {
-                Some(total) => {
-                    events.push((step.known_at, place, Amount::Known(total - held)));
+                Some(total) if let Some(spent) = Exact::new(total - held, i128::from(COST_SCALE)) => {
+                    events.push((step.known_at, place, Amount::Known(spent)));
                     held = total;
                 }
-                None => {
+                _ => {
                     events.push((step.known_at, place, Amount::NotRecorded("Spending was not recorded at this hour".into())));
                     break;
                 }
@@ -131,13 +131,19 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
     for line in &facts.lines {
         let (railway, building, state, to_state) = line.leaf;
         for (repair, start) in [(false, line.new_from), (true, line.repair_from)] {
-            let Some(start) = start else { continue };
-            let place = (repair, railway, building, state, to_state);
-            let held = buildings.entry(place).or_insert(None);
-            *held = held.or(line.building);
-            for &(hour, gap) in &line.gaps {
-                events.push((hour.max(start), place, Amount::Partial(0, gap_reason(gap).into())));
+            if start.is_some() {
+                let held = buildings.entry((repair, railway, building, state, to_state)).or_insert(None);
+                *held = held.or(line.building);
             }
+        }
+        for &(hour, gap) in &line.gaps {
+            let (repair, at) = match (line.new_from, line.repair_from) {
+                (_, Some(repair)) if hour >= repair => (true, hour),
+                (Some(new), _) => (false, hour.max(new)),
+                (None, Some(repair)) => (true, repair),
+                (None, None) => continue,
+            };
+            events.push((at, (repair, railway, building, state, to_state), Amount::Partial(Exact::ZERO, gap_reason(gap).into())));
         }
     }
     events.sort_by_key(|event| (event.0, event.1));
@@ -147,8 +153,7 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
         let next = ordinals.len() as u32;
         ordinals.entry(building).or_insert(next);
     }
-    let decimals = COST_SCALE.checked_ilog10().unwrap_or(0) as u8;
-    let mut built = HistoryBuilder::new(decimals, facts.from, facts.to);
+    let mut built = HistoryBuilder::new(facts.from, facts.to);
     for (hour, place, amount) in events {
         let building = buildings.get(&place).copied().flatten();
         let purpose = if place.0 { Node::new("repair", "Repairs", 1) } else { Node::new("new", "New buildings", 0) };

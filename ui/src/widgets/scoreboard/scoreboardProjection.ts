@@ -15,7 +15,7 @@ import {
   type HourRanges,
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
-import { identityAsker, identityMoved, newIdentityBoundary, type IdentityAsker, type IdentityRead, type ResolvedIdentity } from '../../families/table/identityCell.ts';
+import { identityCell, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
@@ -93,16 +93,6 @@ export function scoreboardColumnsSpec(shown: readonly ScoreboardColumn[], top: n
   ];
 }
 
-function countryCell(identity: ResolvedIdentity, tag: string): TableCell {
-  return {
-    value: identity.value,
-    iconSlot: true,
-    country: tag,
-    ...(identity.icon ? { icon: identity.icon } : {}),
-    ...(identity.iconPending ? { iconPending: true } : {}),
-    ...(identity.color ? { countryColor: identity.color } : {}),
-  };
-}
 
 interface ScoreboardIncCache {
   readonly validFrom: number;
@@ -111,24 +101,36 @@ interface ScoreboardIncCache {
   readonly answers: readonly (FollowedAnswer | undefined)[];
   readonly partials: readonly (FollowedAnswer | undefined)[];
   readonly entries: readonly { readonly key: string; readonly displayTag: string; readonly wireName: string }[];
+  readonly identity: string;
   readonly wireToIndices: ReadonlyMap<string, readonly number[]>;
-  readonly identity: readonly (readonly IdentityRead[])[];
   readonly model: TableModel;
 }
 
 const scoreboardIncCache = new WeakMap<ScoreboardProjectionOptions, ScoreboardIncCache>();
+
+const countryColourOf = (cell: TableCell): { readonly countryColor?: string } => (cell.countryColor ? { countryColor: cell.countryColor } : {});
+
+const nameOf = (cell: TableCell, tag: string): string => (cell.value.kind === 'known' ? String(cell.value.value) : tag);
+
+function identityStamp(readView: BoundedReadView, entries: readonly { readonly displayTag: string }[], hour: number): string {
+  return entries.map(entry => {
+    const cell = identityCell(readView, 'country', entry.displayTag, { atHour: hour });
+    return JSON.stringify([entry.displayTag, cell.value, cell.countryColor ?? null, cell.art?.status ?? null, cell.art?.status === 'ready' ? cell.art.url : null]);
+  }).join(',');
+}
 
 function buildScoreboardRow(
   entry: { readonly key: string; readonly displayTag: string; readonly wireName: string },
   readView: BoundedReadView,
   hour: number,
   options: ScoreboardProjectionOptions,
-  ask: IdentityAsker['ask'],
+  boundary: IdentityBoundary,
 ): TableRow {
   const { key, displayTag, wireName } = entry;
-  const identity = ask(displayTag, hour);
-  const colour = identity.color ? { countryColor: identity.color } : {};
-  const cells: Record<string, TableCell> = { country: countryCell(identity, displayTag) };
+  const cells: Record<string, TableCell> = {
+    country: identityCell(readView, 'country', displayTag, { atHour: hour, boundary }),
+  };
+  const colour = countryColourOf(cells.country!);
   let hasPartial = false;
   for (let i = 0; i < options.shown.length; i++) {
     const column = options.shown[i]!;
@@ -154,7 +156,7 @@ function buildScoreboardRow(
   }
   return {
     key,
-    name: identity.name,
+    name: nameOf(cells.country!, displayTag),
     cells,
     ...(hasPartial ? { tooltipNote: 'Partial values omit unrecorded inputs at this hour.' } : {}),
   };
@@ -172,7 +174,7 @@ function sameRow(before: TableRow, after: TableRow): boolean {
   for (const key in after.cells) {
     const a = before.cells[key];
     const b = after.cells[key]!;
-    if (!a || a.country !== b.country || a.icon !== b.icon || a.iconPending !== b.iconPending || a.countryColor !== b.countryColor || !sameValue(a.value, b.value)) return false;
+    if (!a || a.country !== b.country || a.art !== b.art || a.countryColor !== b.countryColor || !sameValue(a.value, b.value)) return false;
   }
   return true;
 }
@@ -214,13 +216,12 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       if (options.top == null && options.unobserved?.some(([first, last]) => first <= reply.hour && reply.hour <= last)) {
         return { columns, rows: [], hour: reply.hour, rowTimeBoundaries: false, empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers, warnings: reply.warnings };
       }
-      const boundary = newIdentityBoundary();
-      const { ask } = identityAsker(readView, boundary);
       const rows: TableRow[] = reply.rows.map(row => {
         const key = countryKey(row.country);
-        const identity = ask(row.tag, reply.hour);
-        const colour = identity.color ? { countryColor: identity.color } : {};
-        const cells: Record<string, TableCell> = { country: countryCell(identity, row.tag) };
+        const cells: Record<string, TableCell> = {
+          country: identityCell(readView, 'country', row.tag, { atHour: reply.hour }),
+        };
+        const colour = countryColourOf(cells.country!);
         let hasPartial = false;
         options.shown.forEach((column, at) => {
           const rawCell = row.cells[at]!;
@@ -237,7 +238,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         });
         return {
           key,
-          name: identity.name,
+          name: nameOf(cells.country!, row.tag),
           cells,
           ...(hasPartial ? { tooltipNote: 'Partial values omit unrecorded inputs at this hour.' } : {}),
         };
@@ -250,7 +251,6 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         rank: true,
         rankMarkers: options.rankMarkers,
         warnings: reply.warnings,
-        ...(boundary.next < Infinity ? { nextChangeAt: boundary.next } : {}),
         ...(!rows.length ? { empty: 'No countries available for this selection.', emptyKind: 'unavailable' } : {}),
       };
     }
@@ -262,6 +262,7 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       && hour >= prevInc.validFrom
       && hour < prevInc.validUntil
       && prevInc.entries.length > 0
+      && prevInc.identity === identityStamp(readView, prevInc.entries, hour)
       && (
         options.top == null
         || prevInc.rankAnswer === rankAnswer
@@ -295,9 +296,6 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         collectDiff(prevInc.answers[i], nextAnswers[i]);
         if (canPatch) collectDiff(prevInc.partials[i], nextPartials[i]);
       }
-      for (let i = 0; i < prevInc.identity.length && canPatch; i++) {
-        if (identityMoved(prevInc.identity[i]!, readView)) touchedIndices.add(i);
-      }
       if (canPatch) {
         if (touchedIndices.size === 0) {
           const nextModel: TableModel = { ...prevInc.model, hour, changedKeys: new Set(), changedRows: new Map() };
@@ -311,35 +309,27 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
           return nextModel;
         }
         {
-          const boundary = newIdentityBoundary();
           const nextRows = prevInc.model.rows.slice();
-          const nextIdentity = prevInc.identity.slice();
           const changedKeys = new Set<string>();
           const changedRows = new Map<string, TableRow>();
           for (const idx of touchedIndices) {
-            const asker = identityAsker(readView, boundary);
-            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options, asker.ask);
+            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options, newIdentityBoundary());
             nextRows[idx] = built;
-            nextIdentity[idx] = asker.reads;
             changedKeys.add(built.key);
             changedRows.set(built.key, built);
           }
-          const nextChangeAt = Math.min(prevInc.model.nextChangeAt ?? Infinity, boundary.next);
           const nextModel: TableModel = {
             ...prevInc.model,
             hour,
             rows: nextRows,
             changedKeys,
             changedRows,
-            ...(nextChangeAt < Infinity ? { nextChangeAt } : {}),
           };
           scoreboardIncCache.set(options, {
             ...prevInc,
-            validUntil: Math.min(prevInc.validUntil, boundary.next),
             rankAnswer,
             answers: nextAnswers,
             partials: nextPartials,
-            identity: nextIdentity,
             model: nextModel,
           });
           return nextModel;
@@ -379,11 +369,8 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
 
     const held = prevInc ? new Map(prevInc.model.rows.map(row => [row.key, row])) : null;
     const boundary = newIdentityBoundary();
-    const identity: (readonly IdentityRead[])[] = [];
     const rows: TableRow[] = activeEntries.map(entry => {
-      const asker = identityAsker(readView, boundary);
-      const built = buildScoreboardRow(entry, readView, hour, options, asker.ask);
-      identity.push(asker.reads);
+      const built = buildScoreboardRow(entry, readView, hour, options, boundary);
       const before = held?.get(built.key);
       return before && sameRow(before, built) ? before : built;
     });
@@ -392,7 +379,6 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       rows,
       hour,
       rowTimeBoundaries: false,
-      ...(boundary.next < Infinity ? { nextChangeAt: boundary.next } : {}),
       rank: true,
       rankMarkers: options.rankMarkers,
       ...(!rows.length ? { empty: 'No countries available for this selection.', emptyKind: 'unavailable' } : {}),
@@ -418,8 +404,8 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         answers: options.shown.map(col => (col.available && col.family ? readView.answer(col.key) : undefined)),
         partials: options.shown.map(col => (col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined)),
         entries: activeEntries,
+        identity: identityStamp(readView, activeEntries, hour),
         wireToIndices,
-        identity,
         model,
       });
     }

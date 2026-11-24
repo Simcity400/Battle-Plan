@@ -5,9 +5,9 @@ import { flagChoiceArt } from '../../families/art/provider.ts';
 import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownPart, BreakdownProjection } from '../../families/breakdown/model.ts';
 import { breakdownParts, breakdownTotal, type BreakdownWords } from '../../families/breakdown/product.ts';
-import { groupSelection, groupUnavailable } from '../../families/groupSelection.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
+import { formatRational } from '../../families/valueFormat.ts';
 import type { TerritoryBreakdownReply } from '../../generated/dashboard';
 
 export interface TerritoryBreakdownOptions {
@@ -46,7 +46,7 @@ export const territoryBreakdownProjection: BreakdownProjection<TerritoryBreakdow
   project(readView: BoundedReadView, options: TerritoryBreakdownOptions): BreakdownModel {
     const reply = readView.panel<TerritoryBreakdownReply>('main');
     const verb = options.rule === 'owned' ? 'Owned' : 'Controlled';
-    const words: BreakdownWords = { unit: UNITS[options.measure], verb, format: (raw, decimals) => formatScalar(raw, { decimals, maxDecimals: decimals }) };
+    const words: BreakdownWords = { unit: UNITS[options.measure], verb, format: (numerator, denominator) => formatRational(numerator, denominator, { maxDecimals: options.measure === 'states' ? 2 : 0 }) };
     const hour = Math.floor(readView.hour);
     if (!reply) return { hour, rootLabel: verb, total: { known: false, value: null, text: '', unit: words.unit, verb }, parts: [] };
     const total = breakdownTotal(reply.breakdown, words);
@@ -112,6 +112,5 @@ export const territoryBreakdown: BreakdownWidgetSpec<TerritoryBreakdownOptions> 
     rule: ctx.options.rule === 'owned' ? 'owned' : 'controlled',
     chosen: ctx.widget.countries.kind !== 'all',
   }),
-  unavailable: ctx => groupUnavailable(ctx.widget.countries),
   sources,
 };

@@ -22,7 +22,7 @@ import { pagedTailEntry } from '../table/logHelpers.ts';
 import { DEFAULT_TAIL_PAGE_SIZE } from '../table/rowSource.ts';
 import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
 import type { TableModel } from '../table/model.ts';
-import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry } from './auditBinding.ts';
+import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry, type PlanAuditSnapshot } from './auditBinding.ts';
 import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
@@ -285,6 +285,21 @@ test('F6: bound audit reader verifies an earlier snapshot with the verifier capt
   }, undefined);
   assert.equal(pictureError('bars', shown, await exactOf(shown)), null, 'two rows with the same cell names compare cell by cell and a correct picture passes');
   await assert.rejects(exactOf([auditRow('GER', '3'), auditRow('GER', '4')]), /Audit key GER repeats/, 'a repeated audit key is refused, never collapsed');
+  const ranged = new AuditSnapshotStore<BoundAuditEntry<PlanAuditSnapshot<readonly string[], Record<string, never>>>>(16);
+  const rangedId = ranged.create({ verify: createPlanAuditVerifier<readonly string[], Record<string, never>>(), snapshot: {
+    projection: { family: 'table', kind: 'synthetic-audit', project: () => ['GER', 'FRA', 'ITA', 'ENG'] },
+    options: {},
+    exactReadView: async () => createBoundedReadView({ hour: 5, panels: new Map() }),
+    deriveRows: (rows, _hour, fields) => {
+      const range = fields?.range as { first: number; count: number } | undefined;
+      return rows.slice(range?.first ?? 0, (range?.first ?? 0) + (range?.count ?? rows.length)).map(key => auditRow(key, key));
+    },
+  } });
+  const sampled = createBoundAuditReader(ranged);
+  const full = await sampled(5, rangedId, { range: { first: 0, count: 4 } });
+  const shorter = await sampled(5, rangedId, { range: { first: 0, count: 2 } });
+  assert.deepEqual([...full!.values.keys()], ['GER', 'FRA', 'ITA', 'ENG'], 'R4-S6: a full viewport sample is checked against its own installed range');
+  assert.deepEqual([...shorter!.values.keys()], ['GER', 'FRA'], 'R4-S6: a later, shorter sample under the same audit id is checked against its own range, and the earlier one is not changed by it');
 });
 
 test('F8 & F9: listbox mirror uses stable key-based IDs, invalidates on prefix change, and honors explicit selected state', () => {
@@ -657,6 +672,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
   const hoverHits: (ParsedFamilyHit | null)[] = [];
   const dragEvents: string[] = [];
   let doubleClicks = 0;
+  let expired = false;
 
   const stop = bindFamilyPointer({
     bodyNode: body as unknown as HTMLElement,
@@ -672,7 +688,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
     focusAnchorRef: { current: { x: 0, y: 0 } },
     accessibleRef: { current: null },
     pointerMode: 'continuous',
-    isBlocked: () => !installed,
+    isBlocked: () => !installed || expired,
     getInstalled: () => installed,
     getViewportHeight: () => 800,
     parseHit: (hitKey, inst) => parseTimeChartHit(hitKey) ?? parseDefaultRowHit(hitKey) ?? (inst ? null : null),
@@ -706,6 +722,24 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
   body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 2 });
   assert.equal(activations.length, 1, 'drag past CLICK_CANCEL_PX cancels click activation');
   assert.deepEqual(dragEvents, ['start', `move:${CLICK_CANCEL_PX + 10},0`, 'end']);
+
+  dragEvents.length = 0;
+  body.dispatch('pointerdown', { button: 0, clientX: 100, clientY: 70, pointerId: 3 });
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 3 });
+  const panned = installed;
+  installed = { ...installed!, id: 8, owner: 'owner-B' };
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 30, clientY: 70, pointerId: 3 });
+  body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 30, clientY: 70, pointerId: 3 });
+  assert.deepEqual(dragEvents, ['start', `move:${CLICK_CANCEL_PX + 10},0`, 'end'], 'R4-S9: a pan that meets an owner change ends there, and the replacement chart never gets the old owner’s range');
+  dragEvents.length = 0;
+  installed = panned;
+  const blockedBefore = expired;
+  body.dispatch('pointerdown', { button: 0, clientX: 100, clientY: 70, pointerId: 4 });
+  expired = true;
+  body.dispatch('pointermove', { isTrusted: true, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 4 });
+  body.dispatch('pointerup', { button: 0, clientX: 100 + CLICK_CANCEL_PX + 10, clientY: 70, pointerId: 4 });
+  assert.deepEqual([blockedBefore, dragEvents], [false, []], 'R4-S9: a pan does not start on an expired picture');
+  expired = false;
 
   let dblPrevented = false;
   body.dispatch('dblclick', { clientX: 100, clientY: 70, preventDefault() { dblPrevented = true; } });
@@ -903,10 +937,11 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
   const pending: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
   const fakePipeline = {
     pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pending.push(cb); },
-    inspect() {},
+    inspect(_pipe: number, token: string | null) { inspected.push(token); },
     view() { return null; },
   } as unknown as Pipeline;
-  const reply = (key: string | null, id: number, owner = 'owner-A') => pending.shift()!(key, { installedId: id, owner });
+  const inspected: (string | null)[] = [];
+  const reply = (key: string | null, id: number, owner = 'owner-A', at = 0) => pending.splice(at, 1)[0]!(key, { installedId: id, owner });
   const activations: InstalledAction[] = [];
   const menus: (string | null)[] = [];
   const inspectedKeyRef = { current: null as string | null };
@@ -992,6 +1027,22 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
   reply('row:ENG', 12, 'owner-B');
   assert.equal(activations.length, 2, 'an owner change before the release hit arrives refuses it');
 
+  body.dispatch('pointermove', { isTrusted: true, clientX: 24, clientY: 10 });
+  reply('row:GER', 13, 'owner-C');
+  assert.equal(inspectedKeyRef.current, 'GER');
+  body.dispatch('pointerdown', { button: 0, clientX: 24, clientY: 10, pointerId: 7 });
+  installed = picture(14, ['FRA', 'GER'], 'owner-C');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 25, clientY: 10 });
+  reply('row:FRA', 14, 'owner-C', 1);
+  assert.equal(inspectedKeyRef.current, 'FRA', 'FRA moved under the pointer and is the hover of picture 14');
+  inspected.length = 0;
+  reply('row:GER', 13, 'owner-C');
+  assert.equal(inspectedKeyRef.current, 'FRA', 'R4-S7: the late press reply keeps GER for click matching but does not publish it as the hover');
+  assert.deepEqual(inspected, [], 'R4-S7: and does not inspect GER in the lane');
+  body.dispatch('pointerup', { button: 0, clientX: 25, clientY: 10, pointerId: 7 });
+  reply('row:FRA', 14, 'owner-C');
+  assert.equal(activations.length, 2, 'press on GER and release on FRA is still not a click');
+
   stop();
   tooltips.dispose();
 });
@@ -1044,9 +1095,14 @@ test('R3-S1: a paged table scrolled past its head asks the absolute rows under t
   } as unknown as DashboardClient;
   const gate: FrozenGate = { recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never, span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never) };
   const exact = await readPlanExact(plan, 200, { client, following: false, timeMode: 'pin', branch: { firstHour: 0, lastHour: 5000 }, window: null, staticSpan: null, gate, rowWindow: window });
-  assert.deepEqual(asked, [[0, HEAD], [HEAD + 2 * DEFAULT_TAIL_PAGE_SIZE, DEFAULT_TAIL_PAGE_SIZE]], 'the exact read takes the head and the one page holding rows 596 to 613');
+  assert.deepEqual(asked, [[2 * DEFAULT_TAIL_PAGE_SIZE, DEFAULT_TAIL_PAGE_SIZE]], 'the exact read of a scrolled window takes only the snapshot page holding rows 596 to 613, never the head');
   assert.deepEqual(exact?.rowWindow, window, 'and projects the same window the lane painted');
   assert.deepEqual(exact?.rows('main')?.sliceAt(200, 596, 2).map(slot => (slot.kind === 'data' ? slot.row.key : slot.kind)), ['e596', 'e597']);
+  const snapshotHours: unknown[] = [];
+  const atSnapshot = { product: async (request: { params: Record<string, unknown> }) => { snapshotHours.push(request.params.hour); return client.product(request as never, new AbortController().signal); } } as unknown as DashboardClient;
+  const atS = await readPlanExact(plan, 200, { client: atSnapshot, following: false, timeMode: 'pin', branch: { firstHour: 0, lastHour: 5000 }, window: null, staticSpan: null, gate, rowWindow: window, snapshotHour: () => 150 });
+  assert.deepEqual(snapshotHours, [150], 'a scrolled source is audited at the hour of the snapshot the picture shows');
+  assert.equal(atS?.rows('main')?.at, 150);
 
   const model: TableModel = { columns, hour: 200, rows: Array.from({ length: 18 }, (_, i) => ({ key: `e${596 + i}`, name: `e${596 + i}`, cells: { event: { value: { kind: 'known', value: `e${596 + i}` } } } })) as never, windowOffset: 596, totalRows: TOTAL };
   const audited = tableHostAdapter.deriveAuditRows!(model, 200, { viewport, settings, expanded: {}, theme: undefined, fields: { ...installed, range: { first: 4, count: 10 } } });

@@ -8,7 +8,7 @@ import type { FollowRefusal } from '../dashboard/regionGate';
 import type { BoundWindow, GatedHour } from '../dashboard/regionTime';
 import { forwardRequest, productRequest } from '../dashboard/request.ts';
 import { createBoundedReadView, displayedHour } from './boundedView.ts';
-import { buildRowSourceFromHead, DEFAULT_TAIL_PAGE_SIZE, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, DEFAULT_TAIL_PAGE_SIZE, pageOffsets, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type SnapshotPage, type TableRowSource } from './table/rowSource.ts';
 import type {
   ArtProvider,
   BoundedReadView,
@@ -75,7 +75,7 @@ function readSignature(read: SourceTimeShape): unknown {
     case 'trailing-window':
       return ['trailing-window', read.coverage, read.product, read.windowHours, read.followQuery, read.params, read.dynamicKeys ?? []];
     case 'pixel-binned':
-      return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.marks === true, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null, read.top ?? null];
+      return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null, read.top ?? null];
     case 'exact-hover':
       return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params];
     case 'paged-rows':
@@ -274,17 +274,6 @@ export function buildTailPageRequest(
     product: entry.read.tailQuery.product,
     params,
   });
-}
-
-export function tailPageOffsets(window: RowWindow, headLimit: number, pageSize: number): readonly number[] {
-  const first = Math.max(0, Math.floor(window.first));
-  const end = first + Math.max(0, Math.floor(window.count));
-  if (end <= headLimit) return [];
-  const startPage = Math.floor((Math.max(first, headLimit) - headLimit) / pageSize);
-  const endPage = Math.floor((end - 1 - headLimit) / pageSize);
-  const offsets: number[] = [];
-  for (let page = startPage; page <= endPage; page++) offsets.push(headLimit + page * pageSize);
-  return offsets;
 }
 
 export function buildStaticRequest(
@@ -576,6 +565,7 @@ export interface ExactReadOptions {
   readonly identity?: IdentityProvider;
   readonly art?: ArtProvider;
   readonly rowWindow?: RowWindow | null;
+  readonly snapshotHour?: (name: string) => number | null;
 }
 
 interface ExactPart {
@@ -592,8 +582,8 @@ export function exactEntries(plan: SourcePlan): readonly SourceEntry[] {
   if (!primary) return NO_ENTRIES;
   const out: SourceEntry[] = [primary];
   for (const entry of plan.entries) {
-    if (entry === primary || entry.name === primary.name || !readsWithoutFollow(entry.read)) continue;
-    out.push(entry);
+    if (entry === primary || entry.name === primary.name) continue;
+    if (readsWithoutFollow(entry.read) || (entry.read.shape === 'pixel-binned' && entry.read.exactProduct)) out.push(entry);
   }
   return out;
 }
@@ -672,6 +662,20 @@ async function readEntryExact(
   }
 
   if (read.shape === 'paged-rows') {
+    const identity = `${entry.source.id}|${entry.branch}|${entry.name}`;
+    const headLimit = Math.max(1, read.tailQuery.limit);
+    const window = options.rowWindow;
+    if (window && window.count > 0 && window.first + window.count > headLimit) {
+      const at = Math.min(recorded, options.snapshotHour?.(entry.name) ?? recorded);
+      const pageSize = Math.max(1, read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
+      const validate = read.validate ?? validateGenericTailReply;
+      const asks = pageOffsets(window, pageSize).map(offset => ({ offset, limit: pageSize, hour: at }));
+      const raws = await Promise.all(asks.map(ask => fetchRaw(buildTailPageRequest(entry, ask)!)));
+      const pages: Record<number, SnapshotPage> = {};
+      asks.forEach((ask, i) => { pages[ask.offset] = { ...ask, raw: raws[i], reply: validate(raws[i], at) }; });
+      const rowSource = buildRowSourceFromHead(identity, undefined, undefined, recorded, pages);
+      return { name: entry.name, hour: recorded, panel: raws[0], ...(rowSource ? { rows: rowSource } : {}) };
+    }
     const params = tailQueryParams(read.tailQuery, recorded, 0, read.tailQuery.limit);
     const request = productRequest({
       sourceId: entry.source.id,
@@ -679,25 +683,8 @@ async function readEntryExact(
       product: read.tailQuery.product,
       params,
     });
-    const headLimit = Math.max(1, read.tailQuery.limit);
-    const pageSize = Math.max(1, read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
-    const offsets = options.rowWindow ? tailPageOffsets(options.rowWindow, headLimit, pageSize) : [];
-    const [raw, ...pages] = await Promise.all([
-      fetchRaw(request),
-      ...offsets.map(offset => fetchRaw(buildTailPageRequest(entry, { offset, limit: pageSize, hour: recorded })!)),
-    ]);
-    const validate = read.validate ?? validateGenericTailReply;
-    const snapshot = offsets.length
-      ? {
-          identity: `${entry.source.id}|${entry.branch}|${entry.name}`,
-          frozenHour: recorded as number,
-          headLimit,
-          pageSize,
-          pages: Object.fromEntries(offsets.map((offset, i) => [offset, validate(pages[i], recorded).rows])),
-          refusals: {},
-        }
-      : undefined;
-    const rowSource = buildRowSourceFromHead(`${entry.source.id}|${entry.branch}|${entry.name}`, raw, undefined, recorded, snapshot);
+    const raw = await fetchRaw(request);
+    const rowSource = buildRowSourceFromHead(identity, raw, undefined, recorded);
     return { name: entry.name, hour: recorded, panel: raw, ...(rowSource ? { rows: rowSource } : {}) };
   }
 

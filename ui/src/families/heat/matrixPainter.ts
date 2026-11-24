@@ -14,12 +14,13 @@ import {
   FLAG_SLOT_HEIGHT,
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
+  type ArtSlotState,
 } from '../../draw/kit.ts';
 import { mix } from '../../shell/appearance/color.ts';
-import { toFlagSlotState } from '../art/adapters.ts';
+import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
 import { collectArtUrls } from '../art/provider.ts';
-import type { ArtProvider, FamilyTheme } from '../contract.ts';
-import type { IdentityIndex } from '../identity/index.ts';
+import type { FamilyTheme } from '../contract.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
 import type { HeatMatrixLayout } from './matrixLayout.ts';
 import { MATRIX_COLUMN_NAME_ANGLE, MATRIX_COLUMN_NAME_HEIGHT, MATRIX_PAD, MATRIX_TRAILING_GAP } from './matrixLayout.ts';
@@ -37,14 +38,12 @@ export interface DrawHeatMatrixInput {
   readonly scrollTop: number;
   readonly hoveredCell: { readonly row: number; readonly column: number } | null;
   readonly focusedCell: { readonly row: number; readonly column: number } | null;
-  readonly artProvider?: ArtProvider;
-  readonly identityIndex?: IdentityIndex | null;
+  readonly artCache?: LaneArtCache;
 }
 
 export function collectVisibleMatrixArt(
   model: HeatMatrixModel,
   layout: HeatMatrixLayout,
-  identityIndex?: IdentityIndex | null,
 ): readonly string[] {
   const handles = [];
   for (let r = layout.firstRow; r < layout.endRow; r++) {
@@ -55,21 +54,14 @@ export function collectVisibleMatrixArt(
     const entity = model.columns[c];
     if (entity?.flag) handles.push(entity.flag);
   }
-  return collectArtUrls(handles, identityIndex);
+  return collectArtUrls(handles);
 }
 
 function resolveEntityFlag(
   entity: MatrixAxisEntity,
-  artProvider?: ArtProvider,
-) {
-  if (entity.flag) {
-    if (artProvider) {
-      return toFlagSlotState(artProvider.resolve(entity.flag), entity.tag ?? entity.id);
-    }
-    return { kind: 'pending' as const };
-  }
-  if (entity.flagPending) return { kind: 'pending' as const };
-  return { kind: 'missing' as const, tag: entity.tag ?? entity.id };
+  artCache?: LaneArtCache,
+): ArtSlotState {
+  return entity.flag ? toArtSlotState(resolveCachedArt(entity.flag, artCache), entity.tag ?? entity.id) : { kind: 'none' };
 }
 
 export function rampColour(theme: FamilyTheme, ramp: MatrixRamp | undefined, intensity: number): string {
@@ -160,7 +152,7 @@ function drawColumnName(ctx: Canvas2D, label: string, x: number, bottom: number,
 }
 
 export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void {
-  const { model, layout, theme, scrollLeft, scrollTop, hoveredCell, focusedCell, artProvider } = input;
+  const { model, layout, theme, scrollLeft, scrollTop, hoveredCell, focusedCell, artCache } = input;
   const tokens = resolveKitTokens(theme);
 
   ctx.save();
@@ -358,7 +350,7 @@ export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void 
     if (layout.showFlags) {
       const flagHeight = Math.min(FLAG_SLOT_HEIGHT, ch - 4);
       const flagWidth = Math.round(flagHeight * (FLAG_SLOT_WIDTH / FLAG_SLOT_HEIGHT));
-      const flagState = resolveEntityFlag(entity, artProvider);
+      const flagState = resolveEntityFlag(entity, artCache);
       drawFlagSlot(ctx, cursorX, Math.round(y + (ch - flagHeight) / 2), flagState, theme, { width: flagWidth, height: flagHeight });
       cursorX += flagWidth + 6;
     }
@@ -454,7 +446,7 @@ export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void 
       const flagWidth = layout.wide ? 16 : FLAG_SLOT_WIDTH;
       const fx = Math.round(x + (cw - flagWidth) / 2);
       const fy = Math.round(flagBandTop + (flagBandH - flagHeight) / 2) - (entity.color ? 1 : 0);
-      drawFlagSlot(ctx, fx, fy, resolveEntityFlag(entity, artProvider), theme, { width: flagWidth, height: flagHeight });
+      drawFlagSlot(ctx, fx, fy, resolveEntityFlag(entity, artCache), theme, { width: flagWidth, height: flagHeight });
     } else {
       const code = entity.shortLabel ?? entity.tag ?? entity.label;
       drawNameSlot(ctx, code, x + 2, flagBandTop, Math.max(8, cw - 4), flagBandH, theme, {

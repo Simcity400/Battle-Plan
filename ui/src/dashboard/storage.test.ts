@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
-import { doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, layoutsUnsaved, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
+import { doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
 import { resolveOptions, setOption, type OptionField } from './options.ts';
 import { viewOwnedFields } from '../families/manifest.ts';
 import '../widgets/definitions.ts';
@@ -25,16 +25,6 @@ test('a page is at its default until its saved layouts differ from the designed 
   storage.values.set('battleplan.workspace-layouts.v1.politics', '{not json');
   assert.notEqual(loadLayouts(storage, 'politics').warning, null);
   assert.equal(layoutsAtDefault('politics', storage), false, 'unreadable saved layouts');
-});
-
-test('a layout change not yet saved, on the shown page or one kept aside, counts as unsaved', () => {
-  const { library } = loadLayouts(memoryStorage(), 'overview');
-  const saved = library.layouts[0].template;
-  const edited = { ...saved, widgets: saved.widgets.slice(1) };
-  assert.equal(layoutsUnsaved([{ library, template: saved }]), false);
-  assert.equal(layoutsUnsaved([{ library, template: edited }]), true, 'a widget removed in Edit without saving');
-  assert.equal(layoutsUnsaved([{ library, template: saved }, { library, template: edited }]), true, 'another page kept its unsaved edit');
-  assert.equal(layoutsUnsaved([{ library, template: { ...saved } }], template => ({ ...template, name: 'merged' })), false, 'merged the same way, equal');
 });
 
 test('Done with unsaved layout changes opens the save step, and with none just leaves Edit; a close names each page left unsaved', () => {
@@ -325,8 +315,17 @@ test('restoration drops non-string tag entries and counts notes across layouts',
 
 test('an uninstalled widget retains faction selections beyond thirty without a private default limit', () => {
   const template = defaultTemplate(); template.widgets[0].kind = 'uninstalled-faction-widget';
-  template.widgets[0].countries = { kind: 'factions', count: 5000, membership: 'end' };
+  template.widgets[0].countries = { kind: 'factions', count: 5000, membership: 'hour' };
   assert.deepEqual(parseTemplate(template)?.widgets[0].countries, template.widgets[0].countries);
+});
+
+test('members at the end of the recording are not a stored choice any more', () => {
+  for (const countries of [{ kind: 'factions', count: 5, membership: 'end' }, { kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }]) {
+    const template = defaultTemplate();
+    (template.widgets[0] as { countries: unknown }).countries = countries;
+    const parsed = parseTemplate(template);
+    assert.ok(!parsed?.widgets.some(widget => 'membership' in widget.countries && (widget.countries.membership as string) === 'end'), JSON.stringify(countries));
+  }
 });
 
 test('stored faction-total counts survive an installed widget choice maximum', () => {

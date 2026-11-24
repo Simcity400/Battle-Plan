@@ -1,13 +1,15 @@
+import { unavailableArt } from '../../families/art/types.ts';
 import { colour, readableColour } from '../../charts/palette.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import { bridgeGaps } from '../../charts/timeline/runState.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { boundedRuns, clipSpansToHour, countryLook, inHourSpans, nextBoundaryAfter, spanStart, timelineModel, wholeBranchProof } from '../../families/timeline/helpers.ts';
+import { boundedRuns, clipSpansToHour, countryLook, inHourSpans, nextBoundaryAfter, spanStart, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { groupCountsRead, rankedCounts } from '../../dashboard/groupCounts.ts';
+import { groupsAt, historyAtRead } from '../../dashboard/historyAt.ts';
 import type { CountryGroupReply, FactionGroup, GroupCountsReply } from '../../generated/dashboard';
 import {
   factionChangeHours,
@@ -89,19 +91,20 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
   kind: 'factions',
 
   nextChange(readView, opt) {
-    const reply = readView.panel<CountryGroupReply>('main');
+    const at = groupsAt(readView, 'main');
     const counts = readView.panel<GroupCountsReply>('counts')?.nextChange ?? Infinity;
-    return reply ? Math.min(counts, nextBoundaryAfter(factionChangeHours(reply, viewsOf(readView, reply, opt)), readView.hour)) : Infinity;
+    return at ? Math.min(counts, at.nextChange, nextBoundaryAfter(factionChangeHours(at.groups, viewsOf(readView, at.groups, opt)), readView.hour)) : Infinity;
   },
 
   project(readView, opt) {
     const hour = readView.hour;
-    const reply = readView.panel<CountryGroupReply>('main');
+    const at = groupsAt(readView, 'main');
+    const reply = at?.groups;
     const base = { hour, firstHour: opt.firstHour, labelWidth: 240 };
     if (!reply) return timelineModel(base);
     const views = viewsOf(readView, reply, opt);
     const counts = rankedCounts(readView.panel<GroupCountsReply>('counts'));
-    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, nextBoundaryAfter(factionChangeHours(reply, views), hour));
+    const nextChangeAt = Math.min(counts?.nextChange ?? Infinity, at!.nextChange, nextBoundaryAfter(factionChangeHours(reply, views), hour));
     if (!reply.factions.length) return timelineModel({ ...base, empty: 'No factions recorded', warnings: reply.warnings, nextChangeAt });
     const gaps = factionGaps(reply);
     const selected = selectedAt(opt, hour);
@@ -145,7 +148,7 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
         key: source.id,
         kind: heading ? 'group' as const : 'item' as const,
         ...(heading ? { swatch: about.faction.color, ruleColor: about.faction.color } : { depth: 1, parentKey: headerKey }),
-        ...(!heading ? (look ? { flag: look.flag, flagTag: look.tag } : { flagTag: '?' }) : {}),
+        ...(!heading ? (look ? { flag: look.flag, flagTag: look.tag } : { flag: unavailableArt('The country is not recorded at this hour'), flagTag: '?' }) : {}),
         label: name,
         subtitle: source.label,
         spans,
@@ -161,7 +164,7 @@ export const factionsProjection: TimelineProjection<FactionsOptions> = registerF
     if (!lane) return null;
     const at = hit.hour ?? model.hour;
     const meta = lane.meta as FactionLaneMeta | undefined;
-    const reply = readView.panel<CountryGroupReply>('main');
+    const reply = groupsAt(readView, 'main')?.groups;
     const view = meta && reply ? viewsOf(readView, reply, opt).find(item => item.id === meta.factionId) : undefined;
     if (lane.kind === 'group') {
       const count = view ? membersAt(view, at) : null;
@@ -206,15 +209,7 @@ export const factionsDeclaration: TimelineWidgetDeclaration<FactionsOptions> = {
       source: ctx.track.source,
       branch: ctx.branch.id,
       offset: ctx.track.axisOffset,
-      read: {
-        shape: 'branch-to-hour',
-        coverage: { mode: 'population', form: 'all' },
-        product: 'country-groups',
-        followQuery: null,
-        params: { branchId: ctx.branch.id },
-        buildSpanParams: params => params,
-        provenInterval: wholeBranchProof,
-      },
+      read: historyAtRead('country-groups-at', ctx.branch.id),
     }, {
       name: 'counts',
       source: ctx.track.source,

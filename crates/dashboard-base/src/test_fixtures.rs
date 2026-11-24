@@ -170,5 +170,54 @@ pub fn source_with_content(
     )
 }
 
+pub struct Played {
+    pub hour: i32,
+    pub rows: u64,
+    pub visited: u64,
+    pub pending: bool,
+    pub value: std::sync::Arc<dashboard_follow::panel::PanelData>,
+}
+
+pub fn played(replay: &replay::campaign::Replay, exact: &dashboard_follow::panel::AtHour, first: i32, to: i32) -> Vec<Played> {
+    use playhead::pages::{Pages, Span, WorldPages};
+    use std::sync::{Arc, atomic::AtomicBool};
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
+    let seed = (exact.advance)(first, true, &AtomicBool::new(false), None);
+    assert!(seed.rows > 0, "the seed reads populated rows");
+    let (send, played) = std::sync::mpsc::channel();
+    let advance = exact.advance.clone();
+    let hook: playhead::Hook = Box::new(move |step, lanes| {
+        let (read, visited) = crate::products::at_hour::counted(|| advance(step.last(), step.reset(), &AtomicBool::new(false), Some(dashboard_follow::panel::ProductStep { step, lanes, held: None, wake: None })));
+        let _ = send.send(Played { hour: step.last(), rows: read.rows, visited, pending: read.pending, value: read.value });
+    });
+    let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 1, ring: 3, speed: 1.0, rate: 1.0, ..playhead::Settings::default() };
+    let playhead = playhead::Playhead::new(Arc::clone(&pages), playhead::Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap();
+    let reader = playhead.declare(seed.lanes, None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(first);
+    let (mut head, mut out) = (first, Vec::new());
+    loop {
+        let mut next = None;
+        playhead
+            .drive_until(&mut consumer, head, || match played.try_recv() {
+                Ok(item) => {
+                    next = Some(item);
+                    std::ops::ControlFlow::Break(Ok(()))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => std::ops::ControlFlow::Continue(()),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => std::ops::ControlFlow::Break(Err("step hook channel disconnected".into())),
+            })
+            .unwrap();
+        let read: Played = next.unwrap();
+        let hour = read.hour;
+        out.push(read);
+        if hour >= to { break; }
+        if hour >= head { head = (head + 1).min(to); }
+    }
+    drop(consumer);
+    playhead.finish();
+    out
+}
+
 pub mod snow_content;
 pub mod visual_mods;

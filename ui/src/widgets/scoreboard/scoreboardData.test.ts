@@ -1,20 +1,22 @@
+import { IdentityIndex } from '../../families/identity/index.ts';
+import { createSnapshotIdentityProvider } from '../../families/identity/provider.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL, parseAnswer } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';
 import { compileFollowPlan } from '../../families/broker.ts';
-import type { IdentityProvider } from '../../families/contract.ts';
 import { buildColumnLayouts } from '../../families/table/layout.ts';
 import { deriveTableAudit, deriveTableTooltip, resolveTableRows } from '../../families/table/model.ts';
 import { tableDefaults, tableSettingsOf } from '../../families/table/settings.ts';
 import type { ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
 import { gatedHour } from '../../test-support/gated.ts';
 import { DEFAULT_SORT, OPTIONS, TABLE_BASE, definition } from './definition.ts';
-import { isPartial, rankedTags, scoreboardParams, scoreboardSort, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
+import { rankedTags, scoreboardParams, scoreboardSort, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
 import { scoreboardColumnsSpec, scoreboardDeclaration, scoreboardProjection } from './scoreboardProjection.ts';
 
 const family = (kind: string, measure: string) => ({ kind, measure });
@@ -31,19 +33,12 @@ const taken: ScoreboardColumn = { key: 'casualtiesTaken', label: 'Casualties tak
 const registry = [factories, casualties, power, stability, taken];
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
-const identityOf = (names: Readonly<Record<string, string>>, colour?: string, nextChangeAt = Infinity): IdentityProvider => ({
-  resolve: (kind, key, atHour) => ({
-    kind,
-    key,
-    atHour,
-    holder: { status: 'ready', value: key },
-    name: names[key] ? { status: 'ready', value: names[key]! } : { status: 'absent', reason: 'Name not recorded' },
-    colour: colour ? { status: 'ready', value: colour } : { status: 'absent', reason: 'Colour not recorded' },
-    flagChoice: { status: 'absent', reason: 'Flag not recorded' },
-    validInterval: [0, 1000],
-    nextChangeAt,
-  }),
-});
+const NAMES = (() => {
+  const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: '1', content: 1 });
+  const named = (tag: string, name: string) => ({ tag, name, color: [102, 102, 102] as [number, number, number], valid: [0, 5_000] as [number, number], flagChoice: { keys: [tag, null, null] as [string, null, null], reasons: [null, null, null] as [null, null, null] } });
+  index.ingestStylesReply({ branchId: '1', hour: 0, styles: [named('GER', 'Germany'), named('GDR', 'East Germany'), named('ITA', 'Italy')], warnings: [] });
+  return createSnapshotIdentityProvider(index);
+})();
 
 test('the scoreboard follows playback over the registry defaults with the top ten, and its settings keep their meaning', () => {
   assert.equal(definition.defaultTime, 'follow');
@@ -64,7 +59,7 @@ test('a reply’s cells are exact amounts, a missing value keeps its reason, and
   ] }, 2);
   const shown = [taken, stability];
   const model = scoreboardProjection.project(
-    createBoundedReadView({ hour: 40, panels: new Map([['main', reply]]) }),
+    createBoundedReadView({ identity: NAMES, hour: 40, panels: new Map([['main', reply]]) }),
     { shown, candidates: ['GER'], top: null, rankMarkers: false },
   );
   const settings = tableDefaults(model.columns, TABLE_BASE);
@@ -79,7 +74,7 @@ test('a reply’s cells are exact amounts, a missing value keeps its reason, and
   const cells = [{ valueRaw: '1', missing: null, partial: false }, { valueRaw: '2', missing: null, partial: false }];
   const both = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 5, tag: 'GER', cells }, { country: 'GER', tag: 'GER', cells }] }, 2);
   const bothModel = scoreboardProjection.project(
-    createBoundedReadView({ hour: 40, panels: new Map([['main', both]]) }),
+    createBoundedReadView({ identity: NAMES, hour: 40, panels: new Map([['main', both]]) }),
     { shown, candidates: [], top: null, rankMarkers: false },
   );
   assert.deepEqual(bothModel.rows.map(row => row.key), [countryKey(5), 'GER']);
@@ -93,12 +88,9 @@ test('followed values and rankings preserve exact precision, partial markers and
   const followed = answer({ keys: [7n, 8n, 0n], columns: 1, names: ['ITA', 'GER', 'SOV'], values: [(1n << 60n) + 3n, 0n, 0n], states: [V, U, CELL.noRow],
     reasons: [null, null, 'SOV is held by no country'] });
   assert.deepEqual(rankedTags(followed), ['ITA']);
-  assert.equal(isPartial(1n), true);
-  assert.equal(isPartial(0n), false);
-  assert.equal(isPartial(undefined), false);
 
   const model = scoreboardProjection.project(
-    createBoundedReadView({ hour: 40, answers: new Map([['factories', followed]]) }),
+    createBoundedReadView({ identity: NAMES, hour: 40, answers: new Map([['factories', followed]]) }),
     { shown: [factories, casualties], candidates: ['ITA', 'GER', 'SOV', 'ENG'], top: null, rankMarkers: false },
   );
   const byKey = new Map(model.rows.map(row => [row.key, row]));
@@ -121,7 +113,6 @@ test('followed scoreboard filters selected countries by holder existence at hour
     [slotKey]: [{ tag: 'GER', firstHour: 0, lastHour: 104 }, { tag: 'GDR', firstHour: 105, lastHour: 200 }],
     ITA: [{ tag: 'ITA', firstHour: 110, lastHour: 200 }],
   };
-  const identity = identityOf({ GER: 'Germany', GDR: 'East Germany', ITA: 'Italy' });
   const facAns = parseFollowed(message(100, [{
     id: 1,
     answer: {
@@ -149,8 +140,8 @@ test('followed scoreboard filters selected countries by holder existence at hour
     top: null,
     rankMarkers: false,
   };
-  const followed = scoreboardProjection.project(createBoundedReadView({ hour: 100, answers: new Map([['factories', facAns]]), identity }), opts);
-  const exact = scoreboardProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', exactReply]]), identity }), opts);
+  const followed = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 100, answers: new Map([['factories', facAns]]) }), opts);
+  const exact = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 100, panels: new Map([['main', exactReply]]) }), opts);
 
   assert.deepEqual(followed.rows.map(r => r.key), [slotKey], 'ITA does not exist at hour 100 and is omitted on follow as on exact');
   assert.deepEqual(followed.rows[0]!.cells.country!.value, { kind: 'known', value: 'Germany' }, 'slot key resolves display label via dated tag GER');
@@ -166,7 +157,7 @@ test('followed scoreboard filters selected countries by holder existence at hour
   assert.equal(scoreboardProjection.nextChange?.(emptyReadView(100), opts), 105, 'nextChange reports slot tag switch boundary');
 });
 
-test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, matches Rust missing reasons without TS rewriting, enables country colours, and keeps rows when all columns are unavailable', () => {
+test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, matches Rust missing reasons without TS rewriting, colours score cells with the dated country colour, and keeps rows when all columns are unavailable', () => {
   const bin525 = readFileSync(new URL('../../../../crates/dashboard-follow/fixtures/series_slot_tag_525.bin', import.meta.url));
   const bin800 = readFileSync(new URL('../../../../crates/dashboard-follow/fixtures/series_slot_tag_800.bin', import.meta.url));
   const ans525 = parseAnswer(new Uint8Array(bin525));
@@ -204,16 +195,16 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
   const settings = tableSettingsOf(undefined, specs, TABLE_BASE);
   const layouts = buildColumnLayouts(specs, settings);
 
-  const f525 = scoreboardProjection.project(createBoundedReadView({ hour: 525, answers: new Map([['politicalPower', ans525]]) }), opts);
-  const e525 = scoreboardProjection.project(createBoundedReadView({ hour: 525, panels: new Map([['main', exact525]]) }), opts);
+  const f525 = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 525, answers: new Map([['politicalPower', ans525]]) }), opts);
+  const e525 = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 525, panels: new Map([['main', exact525]]) }), opts);
   assert.deepEqual(
     deriveTableAudit({ model: f525, flatRows: resolveTableRows(f525, settings), visibleColumns: layouts, rankShown: true }),
     deriveTableAudit({ model: e525, flatRows: resolveTableRows(e525, settings), visibleColumns: layouts, rankShown: true }),
     'S2+N3: real native FOL3 bytes for [Slot(7), Tag(ITA)] at hour 525 match exact board audit verbatim',
   );
 
-  const f800 = scoreboardProjection.project(createBoundedReadView({ hour: 800, answers: new Map([['politicalPower', ans800]]) }), opts);
-  const e800 = scoreboardProjection.project(createBoundedReadView({ hour: 800, panels: new Map([['main', exact800]]) }), opts);
+  const f800 = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 800, answers: new Map([['politicalPower', ans800]]) }), opts);
+  const e800 = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 800, panels: new Map([['main', exact800]]) }), opts);
   assert.deepEqual(
     deriveTableAudit({ model: f800, flatRows: resolveTableRows(f800, settings), visibleColumns: layouts, rankShown: true }),
     deriveTableAudit({ model: e800, flatRows: resolveTableRows(e800, settings), visibleColumns: layouts, rankShown: true }),
@@ -221,16 +212,9 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
   );
 
   assert.equal(scoreboardDeclaration.countries.mode, 'multi');
-  const colouredReply = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [
-    { country: 'GER', tag: 'GER', cells: [{ valueRaw: '5', missing: null, partial: false }] },
-  ] }, 1);
-  const coloured = scoreboardProjection.project(
-    createBoundedReadView({ hour: 40, panels: new Map([['main', colouredReply]]), identity: identityOf({ GER: 'Germany' }, 'rgb(10, 20, 30)', 120) }),
-    { shown: [power], candidates: ['GER'], top: null, rankMarkers: false },
-  );
-  assert.deepEqual(Object.values(coloured.rows[0]!.cells).map(cell => cell.countryColor), ['rgb(10, 20, 30)', 'rgb(10, 20, 30)'], 'M6: every cell of a country row carries the colour the recording gives that country at the hour');
-  assert.equal(coloured.rows[0]!.name, 'Germany');
-  assert.equal(coloured.nextChangeAt, 120, 'the name and colour hold until the identity changes');
+  const ger800 = f800.rows.find(row => row.cells.country!.country === 'GER')!;
+  assert.equal(ger800.cells.politicalPower!.countryColor, ger800.cells.country!.countryColor, 'M6: a score cell carries the dated colour of its country for country-tone bars');
+  assert.ok(ger800.cells.country!.countryColor, 'M6: the dated colour is from identity');
 
   assert.deepEqual(
     scoreboardParams('1', gatedHour(50), [power], [], null, factories),

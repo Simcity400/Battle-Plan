@@ -80,7 +80,7 @@ test('widget metadata preserves world controls and content-choice title policies
     assert.match(picker, /<button(?=[^>]*aria-label="Add Unavailable world")(?=[^>]*disabled="")[^>]*>/, 'an entry the recording may lack cannot be added yet');
 
     const { definition: army } = await vite.ssrLoadModule('/ui/src/widgets/army-size/definition.ts');
-    const { measureChoices } = await vite.ssrLoadModule('/ui/src/widgets/army-size/armySizeData.ts');
+    const { measureChoices } = await vite.ssrLoadModule('/ui/src/widgets/army-size/armySizeMeta.ts');
     const optionFields = await vite.ssrLoadModule('/ui/src/dashboard/settings/OptionFields.tsx');
     const { scopedOptionKey } = await vite.ssrLoadModule('/ui/src/dashboard/options.ts');
     const raceMeasure = scopedOptionKey('measure', 'race');

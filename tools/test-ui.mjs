@@ -11,7 +11,6 @@ const tabFullTest = 'ui/src/components/VirtualList.dom.test.ts';
 export const browserTests = [
   'ui/src/charts/live.dom.test.ts',
   'ui/src/charts/paintCost.dom.test.ts',
-  'ui/src/charts/shareDrawing.test.ts',
   'ui/src/charts/table/Table.dom.test.ts',
   'ui/src/components/DateTimePicker.dom.test.ts',
   'ui/src/components/loadable.dom.test.ts',
@@ -21,6 +20,7 @@ export const browserTests = [
   'ui/src/dashboard/outsideRecording.dom.test.ts',
   'ui/src/dashboard/timeFindings.dom.test.ts',
   'ui/src/dashboard/timeSweep.dom.test.ts',
+  'ui/src/dashboard/subjectMenu.dom.test.ts',
   'ui/src/dashboard/follow/held.dom.test.ts',
   'ui/src/dashboard/follow/install.dom.test.ts',
   'ui/src/families/host/host.dom.test.ts',
@@ -29,7 +29,6 @@ export const browserTests = [
   'ui/src/dashboard/prepareLane.dom.test.ts',
   'ui/src/recorder/RecorderPanel.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
-  'ui/src/widgets/raid-log/raidPlayback.dom.test.ts',
   tabFullTest,
 ];
 const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts']);

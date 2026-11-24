@@ -24,7 +24,7 @@ function entity(country: ResolvedCountry, trailing?: string): MatrixAxisEntity {
     id: country.key,
     label: country.name,
     tag: country.tag,
-    flag: country.flagHandle,
+    flag: country.flag,
     ...(trailing ? { trailing } : {}),
   };
 }

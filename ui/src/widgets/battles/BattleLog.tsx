@@ -15,7 +15,7 @@ import type { TooltipRow } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { RevealClock } from '../../charts/reveal';
-import { battleDate, battleDateMoment, battlePlaceText, battleShortDate, battleTooltip, battleValueText, battleWinner, rowsById } from './battleRows.ts';
+import { battleDate, battleDateMoment, battlePartial, battlePlaceText, battleShortDate, battleTooltip, battleValueText, battleValueTitle, battleWinner, markPartial, rowsById } from './battleRows.ts';
 import type { BattleCountryLabel, BattleLabels, BattleLossFormatter, BattleMeasure, BattleRow, BattleSideSummary } from './battleRows';
 import BattleSides from './BattleSides';
 import './battles.css';
@@ -56,7 +56,7 @@ export interface BattleLogProps<T extends BattleRow> {
 
 function measureText<T extends BattleRow>(measure: BattleMeasure<T>, row: T): string {
   const value = measure.value(row);
-  return value.value === null ? '—' : (measure.format ?? battleValueText)(value, row);
+  return value.value === null ? '—' : markPartial((measure.format ?? battleValueText)(value, row), battlePartial(value));
 }
 
 function useMeasurePainter<T extends BattleRow>(root: RefObject<HTMLDivElement | null>, measures: readonly BattleMeasure<T>[], paintHead: BattleLogProps<T>['paintHead']) {
@@ -91,8 +91,8 @@ function sideCell<T extends BattleRow>(row: T, index: number, country: BattleCou
         <CountryFlagUrl className="log-flag" url={named.flag} detail={named.flagDetail} reason={named.flagReason} pending={named.flagPending} fixedSize />
       </span>; })}
     {side.countriesUnknown && <span className="battle-muted">Countries unknown</span>}
-    {side.counts.map((value: BattleValue) => <span className="battle-count" key={value.label}>{battleValueText(value)} {value.label}</span>)}
-    {side.losses.map((value: BattleValue) => <span className="battle-count" key={value.label}>{formatLoss ? formatLoss(value, row, index, false) : battleValueText(value)} {value.label}</span>)}
+    {side.counts.map((value: BattleValue) => <span className="battle-count" key={value.label}>{markPartial(`${battleValueText(value)} ${value.label}`, battlePartial(value))}</span>)}
+    {side.losses.map((value: BattleValue) => <span className="battle-count" key={value.label}>{markPartial(`${formatLoss ? formatLoss(value, row, index, false) : battleValueText(value)} ${value.label}`, battlePartial(value))}</span>)}
   </span>;
 }
 
@@ -128,9 +128,9 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
       render: row => <span className="battle-table-date" title={battleDate(battleDateMoment(row), labels.unknownStart)}>
         {live && row.end === null && <i className="live-dot" aria-label={labels.ongoing} />}{battleShortDate(row, labels.unknownStart)}</span> },
     ...measures.map((measure, index) => ({ key: measure.label, header: measure.title, label: measure.title, hint: measure.hint, numeric: true, width: 'max-content',
-      priority: 3 + index, text: (row: T) => { const value = measure.value(row); return value.value === null ? '—' : (measure.format ?? battleValueText)(value, row); },
+      priority: 3 + index, text: (row: T) => measureText(measure, row),
       renderMissing: true, value: (row: T) => measure.value(row).value, bar: 'visible' as const,
-      render: (row: T) => { const value = measure.value(row); return <span title={(measure.tooltipFormat ?? measure.format ?? battleValueText)(value, row)}
+      render: (row: T) => { const value = measure.value(row); return <span title={battleValueTitle(value, (measure.tooltipFormat ?? measure.format ?? battleValueText)(value, row))}
         data-battle-measure={JSON.stringify([row.id, measure.label])}>{measureText(measure, row)}</span>; } })),
     { key: 'sides', header: compactSides?.label ?? '', label: compactSides?.label ?? label, value: row => row.id, sortable: false,
       width: compactSides ? 'calc(var(--space-6) * 7)' : 'minmax(160px, 2fr)', render: sides },

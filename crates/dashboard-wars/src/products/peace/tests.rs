@@ -152,6 +152,16 @@ fn a_conference_listed_again_is_a_second_card_and_its_finalizer_joins_the_listin
 }
 
 #[test]
+fn a_finalizer_without_a_conference_identity_warns_from_its_publication_not_from_its_own_hour() {
+    let settled = [Settled {
+        publication_hour: 311,
+        row: PeaceSettlementRow { sequence: 5, conference: None, hour: Some(300), failure: Some(b"unreadable".to_vec()), ..Default::default() },
+    }];
+    let (_, _, warnings) = fold(&[], &[], &settled, &joins());
+    assert_eq!(warnings.iter().map(|warning| warning.hour).collect::<Vec<_>>(), [Some(311)], "{warnings:?}");
+}
+
+#[test]
 fn a_settlement_is_its_log_rows_cells_and_a_cell_not_recorded_leaves_it_out() {
     use replay_data::{rows::SettledPeaceSubject, value::Value as _};
     let columns = SETTLEMENT_COLUMNS.map(|name| dashboard_declare::field(TableId::PeaceSettlements, name).expect("a settlement column"));

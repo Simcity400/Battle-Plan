@@ -3735,6 +3735,14 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             introduced: EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
         }],
     );
+    history[TableId::LandCombatEdges.index()] = LastChange {
+        introduced: LAND_COMBAT_EDGES_FORMAT,
+        ..table(
+            TableId::LandCombatEdges,
+            LAND_COMBAT_EDGES_FORMAT,
+            "land combat openings and division exits",
+        )
+    };
     history[TableId::CombatEngagementRefreshes.index()] = LastChange {
         introduced: ENGAGED_REFRESH_WITNESS_FORMAT,
         ..table(
@@ -4757,7 +4765,12 @@ mod tests {
         assert_eq!(ENGAGED_REFRESH_WITNESS_FORMAT, 146);
         assert_eq!(RAID_COMPLETION_FIELDS_FORMAT, 147);
         assert_eq!(EVENT_WINDOWS_FORMAT, 148);
-        assert_eq!(FORMAT_VERSION, EVENT_WINDOWS_FORMAT);
+        assert_eq!(LAND_COMBAT_EDGES_FORMAT, 149);
+        assert_eq!(FORMAT_VERSION, LAND_COMBAT_EDGES_FORMAT);
+        let edges = TableId::LandCombatEdges.last_change();
+        assert_eq!(edges.introduced, LAND_COMBAT_EDGES_FORMAT);
+        assert!(edges.table_gap(TableId::LandCombatEdges, EVENT_WINDOWS_FORMAT).is_some());
+        assert!(edges.table_gap(TableId::LandCombatEdges, LAND_COMBAT_EDGES_FORMAT).is_none());
         let refreshes = TableId::CombatEngagementRefreshes.last_change();
         assert_eq!(refreshes.introduced, ENGAGED_REFRESH_WITNESS_FORMAT);
         assert_eq!(refreshes.format, ENGAGED_REFRESH_WITNESS_FORMAT);

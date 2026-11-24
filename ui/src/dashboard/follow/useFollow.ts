@@ -10,11 +10,10 @@ import type { Reading } from './useFollowed';
 import { holdElement } from '../../draw/bitmapSurface.ts';
 import { asFailure, type Failure } from '../queryError.ts';
 
-export { screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
+export { NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
 
 const noStructure = () => '';
 
-export const panelStructure = (_answer: FollowedAnswer | undefined, entry: FollowEntry) => entry.panel ? String(entry.version) : '';
 
 export interface Followed {
   status: 'off' | FollowEntry['status'];

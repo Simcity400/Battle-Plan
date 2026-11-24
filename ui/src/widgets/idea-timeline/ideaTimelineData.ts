@@ -1,12 +1,12 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { holdingLabel, lookOf } from '../../dashboard/ideaHistoryReply.ts';
-import type { CategoryInfo, IdeaHistoryReply, IdeaHolding, IdeaInfo } from '../../generated/dashboard';
+import type { Artwork, CategoryInfo, IdeaHistoryReply, IdeaHolding, IdeaInfo } from '../../generated/dashboard';
 
 export interface IdeaLaneSpan {
   readonly id: string;
   readonly holding: IdeaHolding;
   readonly label: string;
-  readonly icon: string | null;
+  readonly artwork: Artwork;
 }
 
 export interface IdeaLane {
@@ -37,7 +37,7 @@ export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo): IdeaL
   }
   const span = (holding: IdeaHolding): IdeaLaneSpan => {
     const look = lookOf(reply, holding);
-    return { id: `${holding.token}:${holding.firstHour}`, holding, label: holdingLabel(look, holding), icon: look.artwork.icon ?? null };
+    return { id: `${holding.token}:${holding.firstHour}`, holding, label: holdingLabel(look, holding), artwork: look.artwork };
   };
   const lanes: IdeaLane[] = [];
   for (const slot of category.slots) {

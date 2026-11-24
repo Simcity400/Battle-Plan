@@ -101,7 +101,7 @@ export const organisationsProjection: TableProjection<OrganisationsProjectionOpt
         key: row.id,
         name,
         cells: {
-          kind: artKindCell(readView, urlArtHandle(image), 'wide', row.name),
+          kind: artKindCell(readView, urlArtHandle(image), 'wide', row.name, 'The product drew no picture for this organisation'),
           organisation: { value: row.name ? knownValue(row.name) : notRecorded(row.nameUnknown ?? 'Organisation name not recorded') },
           size: { value: count(row.size, row.detailsMissing ?? 'Size not recorded'), format: 'integer' },
           funds: { value: funds(valueFromLive(live, liveKey(row.id, 'funds'), row.detailsMissing ? { overrideMissing: row.detailsMissing } : undefined)), format: 'integer' },

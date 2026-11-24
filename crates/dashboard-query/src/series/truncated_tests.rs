@@ -345,7 +345,7 @@ fn a_rank_reply_keeps_every_asked_country_reads_every_measure_and_holds_only_whe
     assert_eq!(gap.rank_at(BASE, 2, false).unwrap(), Err("GER's army was not recorded at this hour".to_owned()), "an unrecorded contender refuses the rank");
 
     let zero = Line::new(&query, &ABSENT_ZERO_EXP, &ABSENT_ZERO_EXP.measures[0]).unwrap();
-    assert_eq!(zero.rank_at(BASE, 3, false).unwrap(), Ok(vec!["ITA".to_owned(), "GER".to_owned(), "FRA".to_owned()]));
+    assert_eq!(zero.rank_at(BASE, 3, false).unwrap(), Ok(vec![Country::from("ITA"), Country::from("GER"), Country::from("FRA")]));
     let states = zero.states(&[read("FRA", BASE, None)], None).unwrap();
     assert_eq!(states[0].run.as_ref().map(|run| run.value_raw.as_str()), Some("0"), "a country absent from a complete absent-is-none table reads zero, as its rank does");
 }

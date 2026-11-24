@@ -72,7 +72,7 @@ export interface Presented<B extends Bitmap> {
   lane: number;
   serial: number;
   resets: [number, number][];
-  closed?: number[];
+  closed?: [widget: number, lo: number, hi: number][];
   confirmed?: [number, 'followed' | 'panel', number, number, number][];
   entries: Entry<B>[];
 }
@@ -86,7 +86,7 @@ export interface LaneHost<B extends Bitmap> {
   release(bytes: number): void;
   fail(reason: string): void;
   failSub?(sub: number, reason: string): void;
-  failWidget?(widget: number, reason: string): void;
+  failWidget?(widget: number, reason: string, stamp?: number): void;
   later(run: () => void): void;
   schedule?(run: () => void): void;
   hit?(widget: number, key: string | null, installedId?: number, owner?: string): void;
@@ -236,7 +236,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly toldConfirmedFollowed = new Map<number, number>();
   private readonly routeConfirmedPanel = new Map<number, number>();
   private readonly toldConfirmedPanel = new Map<number, number>();
-  private readonly pendingClosed = new Set<number>();
+  private readonly pendingClosed = new Map<number, readonly [lo: number, hi: number]>();
   private held: Held[] = [];
   private early: { native: number; seek: number; bytes: Uint8Array; stamp?: number }[] = [];
   private earlyPanels: { native: number; seek: number; bytes: Uint8Array; completedOnly?: number }[] = [];
@@ -408,7 +408,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const owner of [...users]) this.failSub(owner, reason);
   }
 
-  private failWidget(widget: Widget, reason: string) {
+  private failWidget(widget: Widget, reason: string, stamp: number | undefined) {
     if (this.failedWidgets.has(widget.id)) return;
     this.failedWidgets.add(widget.id);
     widget.halted = widget.binding.generation;
@@ -418,7 +418,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.motionWidgets.delete(widget.id);
     this.dirtyWidgets.delete(widget.id);
     this.syncWindowTracking(widget);
-    this.host.failWidget?.(widget.id, reason);
+    this.host.failWidget?.(widget.id, reason, stamp);
   }
 
   private markSub(id: number, closeOpen = false) {
@@ -428,7 +428,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (set) for (const wid of set) {
         this.dirtyWidgets.add(wid);
         if (closeOpen) {
-          this.pendingClosed.add(wid);
+          this.noteClosed(wid, -Infinity, Infinity);
           const widget = this.widgets.get(wid);
           if (widget) this.closeOpen(widget);
         }
@@ -579,16 +579,25 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const [id, owner] of this.presented) if (owner.widget === widget) this.presented.delete(id);
   }
 
-  bind(widget: number, binding: Binding, model?: unknown, retry = false) {
+  bind(widget: number, binding: Binding, model?: unknown, retry = false, remounted = false) {
     const held = this.widgets.get(widget);
     if (!held) return;
     const ownerChanged = binding.owner !== undefined && held.binding.owner !== undefined && binding.owner !== held.binding.owner;
+    const prev = held.binding;
     held.binding = binding;
     if (ownerChanged) held.supplied = { stamp: undefined, statics: null, identity: held.supplied.identity };
     if (model !== undefined) held.own = this.store.resolve(model);
     if (model !== undefined || ownerChanged) held.model = this.compose(held);
     this.bounded(held);
-    held.sent = {};
+    const keepSurfaces = !ownerChanged && !retry && !remounted && held.installed !== null
+      && prev.pin === binding.pin && prev.offset === binding.offset
+      && prev.surfaces.length === binding.surfaces.length
+      && prev.surfaces.every((surface, at) => {
+        const next = binding.surfaces[at];
+        return !!next && surface.width === next.width && surface.height === next.height && surface.dpr === next.dpr;
+      });
+    if (!keepSurfaces && held.installed) held.installed = { ...held.installed, contents: {} };
+    held.sent = keepSurfaces ? { ...held.installed!.contents } : {};
     held.forceFull = false;
     held.inflight = null;
     if (ownerChanged) {
@@ -622,8 +631,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       ...change.dated !== undefined ? { dated: change.dated } : {},
     };
     const held = this.widgets.get(widget);
-    if (held) this.supplied(held, resolved);
-    else this.earlySupply.set(widget, { ...this.earlySupply.get(widget), ...resolved });
+    if (held) { this.supplied(held, resolved); return; }
+    const early = this.earlySupply.get(widget);
+    const next: Resolved = { ...early };
+    if (resolved.statics !== undefined) { next.statics = resolved.statics; next.stamp = change.stamp; }
+    if (resolved.identity !== undefined) next.identity = resolved.identity;
+    if (resolved.dated !== undefined && (resolved.statics !== undefined || change.stamp === early?.stamp)) next.dated = resolved.dated;
+    this.earlySupply.set(widget, next);
   }
 
   private closeOpen(widget: Widget) {
@@ -640,11 +654,24 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.syncOpenTracking(widget);
   }
 
+  private noteClosed(widget: number, lo: number, hi: number) {
+    const was = this.pendingClosed.get(widget);
+    this.pendingClosed.set(widget, was ? [Math.max(was[0], lo), Math.min(was[1], hi)] : [lo, hi]);
+  }
+
   private bounded(widget: Widget) {
-    if (!widget.binding.dated || !Number.isFinite(widget.binding.dated.c)) return;
+    const dated = widget.binding.dated;
+    if (!dated || !Number.isFinite(dated.c)) return;
     if (!widget.installed?.open && !widget.inflight?.open) return;
-    this.pendingClosed.add(widget.id);
+    this.noteClosed(widget.id, dated.h, dated.c);
     this.closeOpen(widget);
+    const shown = widget.installed;
+    if (!shown) return;
+    shown.c = Math.min(shown.c, dated.c);
+    if (Math.min(shown.c, shown.hi) < Math.max(shown.h, dated.h)) {
+      widget.installed = null;
+      widget.sent = {};
+    }
   }
 
   private supplied(held: Widget, change: Resolved) {
@@ -1713,7 +1740,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         } catch (error) {
           const message = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
           if (this.host.failWidget) {
-            this.failWidget(widget, message);
+            this.failWidget(widget, message, widget.supplied.stamp);
             failedLocally = true;
           } else {
             painted = { surfaces: [], fields: {}, motion: false };
@@ -1794,7 +1821,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         moved = true;
       }
     }
-    const closed = this.pendingClosed.size ? [...this.pendingClosed] : undefined;
+    const closed = this.pendingClosed.size ? [...this.pendingClosed].map(([widget, [lo, hi]]): [number, number, number] => [widget, lo, hi]) : undefined;
     if (closed) { this.pendingClosed.clear(); moved = true; }
     let crops: B[] = [];
     let failedEntries: Set<number> | null = null;
@@ -1809,7 +1836,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           this.presented.delete(orig.id);
           const route = this.routeOf(widget);
           const stillCurrent = this.widgets.get(widget.id) === widget && widget.binding.generation === orig.binding && (route === null || this.facts.generation(route).seek === orig.gen.seek);
-          if (stillCurrent) this.failWidget(widget, reason);
+          if (stillCurrent) this.failWidget(widget, reason, orig.stamp);
           else if (widget.inflight?.id === orig.id) { widget.inflight = null; this.syncWindowTracking(widget); }
         }
       } else {
@@ -1836,7 +1863,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           this.syncWindowTracking(widget);
         }
       }
-      if (closed) for (const wid of closed) if (this.widgets.has(wid)) this.pendingClosed.add(wid);
+      if (closed) for (const [wid, lo, hi] of closed) if (this.widgets.has(wid)) this.noteClosed(wid, lo, hi);
       for (const [route, prev] of toldMoved) {
         if (!this.natives.has(route)) continue;
         if (prev === undefined) this.told.delete(route);
@@ -1883,7 +1910,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.syncWindowTracking(widget);
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode: base.mode, ...base.reason !== undefined ? { reason: base.reason } : {},
-      ...open ? { open } : {}, ...(base.viewport ? { viewport: base.viewport } : {}), surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0 });
+      ...open ? { open } : {}, ...(base.viewport ? { viewport: base.viewport } : {}), surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms: 0, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
 
   private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel', failureOrigin?: FailureOrigin): Entry<B> {
@@ -1915,7 +1942,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, ...(widget.binding.owner !== undefined ? { owner: widget.binding.owner } : {}), id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...reason !== undefined ? { reason } : {},
       ...open ? { open } : {}, ...failureOrigin !== undefined ? { failureOrigin } : {}, ...(viewport ? { viewport } : {}),
-      surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms });
+      surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms, ...widget.supplied.stamp !== undefined ? { stamp: widget.supplied.stamp } : {} });
   }
 
   private prune(hour: number) {

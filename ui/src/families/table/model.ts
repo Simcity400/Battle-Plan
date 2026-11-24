@@ -26,7 +26,9 @@ import { canonicalAuditData } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import { formatDateHover, spokenValue, valueStateProps, type DateBoundKind, type ValueFormat } from '../valueFormat.ts';
 import { treeColumnOf, type FamilyColumnLayout } from './layout.ts';
-import { identityAsker, identityMoved, newIdentityBoundary, type IdentityAsker, type IdentityRead, type ResolvedIdentity } from './identityCell.ts';
+import { artHoverText } from '../art/adapters.ts';
+import { unavailableArt, type ArtResult } from '../art/types.ts';
+import { newIdentityBoundary, resolveIdentity, type IdentityBoundary, type ResolvedIdentity } from './identityCell.ts';
 import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
 
 export type TableCellKind =
@@ -40,8 +42,9 @@ export type TableCellKind =
   | 'skill'
   | 'icons'
   | 'date'
+  | 'stockpileNet'
   | 'stockpileSum'
-  | 'stockpileParts'
+  | 'stockpileBalance'
   | 'status'
   | 'action'
   | 'twoWay'
@@ -51,30 +54,30 @@ export type TableCellKind =
 
 export type TableHeaderGroup =
   | { readonly kind: 'shortOver' }
-  | { readonly kind: 'parts'; readonly parts: readonly { readonly label: string; readonly notRecordedReason?: string }[] };
+  | { readonly kind: 'parts'; readonly parts: readonly { readonly label: string; readonly operator?: string; readonly notRecordedReason?: string }[] };
 
 export interface TableCellFlag {
   readonly tag: string;
-  readonly icon?: string;
-  readonly pending?: boolean;
+  readonly art: ArtResult;
+  readonly artKey?: string;
   readonly dimmed?: boolean;
 }
 
 export interface TableCellIconItem {
-  readonly url?: string;
-  readonly pending?: boolean;
+  readonly art: ArtResult;
   readonly name: string;
   readonly count?: number;
 }
 
 export interface TableCellStockpile {
-  readonly balance: number | null;
-  readonly need: number | null;
-  readonly stock: number | null;
-  readonly produced: number | null;
-  readonly balanceMissing?: string | null;
-  readonly needMissing?: string | null;
+  readonly produced: string | null;
+  readonly need: string | null;
+  readonly balance: string | null;
+  readonly short: boolean;
+  readonly share: number | null;
   readonly producedMissing?: string | null;
+  readonly needMissing?: string | null;
+  readonly balanceMissing?: string | null;
   readonly ai?: boolean;
 }
 
@@ -118,16 +121,14 @@ export interface TableCell {
   readonly inlinePrefix?: string;
   readonly inlineSubtext?: string;
   readonly unitSuffix?: string;
-  readonly unitIcon?: string;
-  readonly unitIconPending?: boolean;
+  readonly unitArt?: ArtResult;
   readonly missingFigure?: string;
   readonly boundedDate?: DateBoundKind;
   readonly splitBar?: readonly TableCellSplitSegment[];
   readonly secondaryValue?: Value;
-  readonly icon?: string;
+  readonly art?: ArtResult;
+  readonly artKey?: string;
   readonly iconSlot?: boolean;
-  readonly iconPending?: boolean;
-  readonly iconArt?: string;
   readonly artShape?: 'wide' | 'square' | 'portrait' | 'equipment' | 'counter';
   readonly artName?: string;
   readonly flags?: readonly TableCellFlag[];
@@ -281,11 +282,11 @@ export type TableProjection<TOptions = unknown> = FamilyProjection<TableModel, T
   readonly family: 'table';
 };
 
-export function resolveCell(cell: TableCell): { readonly value: Value; readonly icon?: string; readonly iconPending?: boolean } {
+export function resolveCellAtHour(cell: TableCell): { readonly value: Value; readonly art?: ArtResult } {
   assertValue(cell.value, 'table cell');
   if (cell.bar) assertValue(cell.bar.fraction, 'table cell bar');
   if (cell.sortValue) assertValue(cell.sortValue, 'table cell sortValue');
-  return { value: cell.value, icon: cell.icon, ...(cell.iconPending ? { iconPending: true } : {}) };
+  return { value: cell.value, ...(cell.art ? { art: cell.art } : {}) };
 }
 
 function validateRowCells(row: TableRow): void {
@@ -823,9 +824,8 @@ export interface CellPaintModel {
   readonly status: 'dot' | 'outline' | 'fill' | null;
   readonly country: string | null;
   readonly countryColor: string | null;
-  readonly icon: string | null;
+  readonly art: ArtResult | null;
   readonly iconSlot: boolean;
-  readonly iconPending?: boolean;
 }
 
 const scaledColumn = (column: Pick<FamilyColumnLayout, 'display' | 'tone' | 'barEligible' | 'cellKind'>): boolean =>
@@ -944,9 +944,7 @@ export function resolveCellPaintModel(
   column: Pick<FamilyColumnLayout, 'key' | 'display' | 'tone' | 'numeric' | 'valueFormat' | 'cellKind'>,
   maxima: ReadonlyMap<string, number>,
 ): CellPaintModel {
-  const resolved = cell
-    ? resolveCell(cell)
-    : { value: notRecorded('Not recorded'), icon: undefined, iconPending: undefined };
+  const resolved: { readonly value: Value; readonly art?: ArtResult } = cell ? resolveCellAtHour(cell) : { value: notRecorded('Not recorded') };
   const bar = cell
     ? barFractionOf(cell, resolved.value, cell.maximum ?? maxima.get(column.key), column.cellKind === 'twoWay' || column.cellKind === 'shaded')
     : { fraction: null, alert: false };
@@ -961,9 +959,8 @@ export function resolveCellPaintModel(
     status: cell?.status ?? null,
     country,
     countryColor,
-    icon: resolved.icon ?? null,
+    art: resolved.art ?? null,
     iconSlot: cell?.iconSlot === true,
-    ...(resolved.iconPending ? { iconPending: true } : {}),
   };
 }
 
@@ -1049,25 +1046,17 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
           ...(model.dateGrouped ? { showDate: item.showDate !== false, isDayEnd: item.isDayEnd === true, isLiveEnd: item.isLiveEnd === true } : {}),
         })),
     ];
-    let handled = false;
     for (const col of visibleColumns) {
       const cell = item.row.cells[col.key];
-      const painted = resolveCellPaintModel(cell, col, maxima);
-      if (cell?.iconArt === undefined) {
-        rowOut.push(auditCell(item.key, col.key, canonicalAuditData(painted)));
-        continue;
-      }
-      handled = true;
-      const { icon: _arrived, iconPending: _arriving, ...shown } = painted;
-      rowOut.push(auditCell(item.key, col.key, canonicalAuditData({ ...shown, iconArt: cell.iconArt })));
+      const { art: _status, ...painted } = resolveCellPaintModel(cell, col, maxima);
+      rowOut.push(auditCell(item.key, col.key, canonicalAuditData({
+        ...painted,
+        artKey: cell?.artKey ?? null,
+        flags: cell?.flags?.map(flag => [flag.tag, flag.artKey ?? null, flag.dimmed === true]) ?? null,
+      })));
     }
-    const tooltip = deriveRowTooltip(item, model.columns);
-    if (handled) {
-      const { countryFlag: _arrivedFlag, ...shown } = tooltip;
-      rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData(shown)));
-    } else {
-      rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData(tooltip)));
-    }
+    const { countryFlag: _flagStatus, rows: tooltipRows, ...tooltip } = deriveRowTooltip(item, model.columns);
+    rowOut.push(auditCell(item.key, '_tooltip', canonicalAuditData({ ...tooltip, rows: tooltipRows.filter(row => row.lookupKey !== ART_STATUS_ROW) })));
     if (rowAuditCache && model.rowTimeBoundaries === false) {
       rowAuditCache.set(item.row, { sig: rowSig, rows: rowOut });
     }
@@ -1142,7 +1131,7 @@ export function deriveTableMirror(
       ...(item.isTreeGroup ? { group: true, open: item.isOpen } : {}),
       cells: columns.map(col => {
         const cell = item.row.cells[col.key];
-        const resolved = cell ? resolveCell(cell) : { value: notRecorded('Not recorded') };
+        const resolved = cell ? resolveCellAtHour(cell) : { value: notRecorded('Not recorded') };
         return { column: col.key, spoken: spokenValue(resolved.value, cell?.format ?? col.format) };
       }),
     };
@@ -1169,6 +1158,27 @@ const BOUNDED_HOVER_PREFIX: Readonly<Record<DateBoundKind, string>> = {
   before: 'Before',
 };
 
+export const ART_STATUS_ROW = 'art-status';
+
+function artStatuses(cell: TableCell, inTitle: boolean): { readonly label: string; readonly text: string }[] {
+  const out: { readonly label: string; readonly text: string }[] = [];
+  const note = (label: string, art: ArtResult | undefined) => {
+    const text = art ? artHoverText(art) : null;
+    if (text) out.push({ label, text });
+  };
+  for (const flag of cell.flags ?? []) note(`${flag.tag} flag`, flag.art);
+  if (!inTitle) note(cell.artName ?? 'Art', cell.art);
+  note(cell.unitSuffix ?? 'Icon', cell.unitArt);
+  for (const item of cell.icons ?? []) note(item.name, item.art);
+  return out;
+}
+
+function tooltipFlag(art: ArtResult): NonNullable<TooltipContent['countryFlag']> {
+  if (art.status === 'ready') return { flag: art.url };
+  if (art.status === 'pending') return { flagPending: true };
+  return { flagReason: artHoverText(art) ?? '' };
+}
+
 export function deriveRowTooltip(
   found: Extract<FlatTableRow, { kind: 'data' }>,
   allColumns: readonly TableColumnSpec[],
@@ -1178,17 +1188,17 @@ export function deriveRowTooltip(
   const nameIndex = treeColumnOf(allColumns);
   const firstCol = allColumns[nameIndex];
   const firstCell = firstCol ? row.cells[firstCol.key] : undefined;
-  const firstResolved = firstCell ? resolveCell(firstCell) : null;
+  const firstResolved = firstCell ? resolveCellAtHour(firstCell) : null;
   const firstText = firstResolved && hasMeasuredValue(firstResolved.value) ? String(firstResolved.value.value) : undefined;
   const title = row.tooltipTitle ?? (firstCol?.cellKind === 'date' ? found.name : (firstText ?? found.name));
   for (let i = 0; i < allColumns.length; i++) {
     const col = allColumns[i]!;
-    if (col.cellKind === 'kind' || col.cellKind === 'action') continue;
+    if (col.cellKind === 'kind' || col.cellKind === 'action' || col.cellKind === 'stockpileNet' || col.cellKind === 'stockpileSum' || col.cellKind === 'stockpileBalance') continue;
     if (!col.label && col.cellKind !== 'date') continue;
     if (i === nameIndex && col.cellKind !== 'date' && (firstText === undefined || firstText === title)) continue;
     const cell = row.cells[col.key];
     if (!cell) continue;
-    const resolved = resolveCell(cell);
+    const resolved = resolveCellAtHour(cell);
     if (col.cellKind === 'date' && hasMeasuredValue(resolved.value) && typeof resolved.value.value === 'number') {
       const hoverDate = formatDateHover(resolved.value.value);
       const text = cell.boundedDate ? `${BOUNDED_HOVER_PREFIX[cell.boundedDate]} ${hoverDate}` : hoverDate;
@@ -1196,6 +1206,11 @@ export function deriveRowTooltip(
       continue;
     }
     rows.push(tooltipRowFromValue(col.label, resolved.value, cell.format ?? col.format));
+  }
+  for (let i = 0; i < allColumns.length; i++) {
+    const cell = row.cells[allColumns[i]!.key];
+    if (!cell) continue;
+    for (const status of artStatuses(cell, i === nameIndex && cell.country !== undefined)) rows.push({ label: status.label, value: status.text, lookupKey: ART_STATUS_ROW });
   }
   const extraRows = typeof row.tooltipExtra === 'function' ? row.tooltipExtra() : row.tooltipExtra;
   if (extraRows) {
@@ -1214,7 +1229,7 @@ export function deriveRowTooltip(
   return {
     title,
     rows,
-    ...(firstResolved?.icon ? { countryFlag: { flag: firstResolved.icon } } : {}),
+    ...(firstResolved?.art && firstCell?.country !== undefined ? { countryFlag: tooltipFlag(firstResolved.art) } : {}),
     ...(noteParts.length ? { note: noteParts.join(' \u00b7 ') } : {}),
     ...(row.tooltipDetail ? { detail: row.tooltipDetail } : {}),
   };
@@ -1284,8 +1299,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
   readonly value?: (row: TRow, live: LiveValues<number | bigint | string> | null, hour: number, options: TOptions) => Value;
   readonly whenNull?: DeclarativeNullable<TRow, TOptions>;
   readonly partial?: (row: TRow, live: LiveValues<number | bigint | string> | null, options: TOptions) => string | null;
-  readonly icon?: (row: TRow, options: TOptions) => string | undefined;
-  readonly iconPending?: (row: TRow, options: TOptions) => boolean;
+  readonly art?: (row: TRow, readView: BoundedReadView, options: TOptions) => ArtResult | undefined;
   readonly iconSlot?: boolean;
   readonly country?: string | ((row: TRow, options: TOptions) => string | null);
   readonly lookHour?: (row: TRow, hour: number, options: TOptions) => number;
@@ -1298,7 +1312,7 @@ export interface DeclarativeColumnSpec<TRow, TOptions = unknown> extends TableCo
 }
 
 export type TableCellExtra = Partial<Pick<TableCell,
-  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'unitSuffix' | 'unitIcon' | 'unitIconPending' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'icon' | 'iconSlot' | 'iconPending' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
+  'secondaryValue' | 'subtext' | 'inlinePrefix' | 'inlineSubtext' | 'unitSuffix' | 'unitArt' | 'missingFigure' | 'boundedDate' | 'splitBar' | 'flags' | 'icons' | 'iconStripKind' | 'artShape' | 'artName' | 'art' | 'artKey' | 'iconSlot' | 'shortage' | 'blank' | 'actionLabel' | 'statusKind'>>;
 
 export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly kind: string;
@@ -1320,7 +1334,7 @@ export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
     readonly nextChangeAt?: number;
   };
   readonly rowKey: (row: TRow) => string;
-  readonly rowName: (row: TRow, hour: number, options: TOptions, who: IdentityAsker['ask']) => string;
+  readonly rowName: (row: TRow, hour: number, options: TOptions, who: TableWho) => string;
   readonly naWhen?: (row: TRow, options: TOptions) => string | null;
   readonly unsorted?: boolean;
   readonly rank?: boolean | ((options: TOptions) => boolean);
@@ -1332,7 +1346,7 @@ export interface DeclarativeTableSpec<TReply, TRow, TOptions = unknown> {
   readonly children?: (row: TRow) => readonly TRow[] | undefined;
   readonly initiallyOpen?: (row: TRow) => boolean;
   readonly muted?: (row: TRow) => boolean;
-  readonly tooltipTitle?: (row: TRow, hour: number, options: TOptions) => string | undefined;
+  readonly tooltipTitle?: (row: TRow, hour: number, options: TOptions, who: TableWho) => string | undefined;
   readonly tooltipExtra?: (row: TRow, reply: TReply, live: LiveValues<number | bigint | string> | null, hour: number, options: TOptions) => readonly TooltipExtraRow[] | undefined;
   readonly tooltipNote?: (row: TRow, reply: TReply, live: LiveValues<number | bigint | string> | null, hour: number, options: TOptions) => string | undefined;
   readonly tooltipAction?: (row: TRow, options: TOptions) => string | undefined;
@@ -1354,6 +1368,32 @@ function resolveNullable<TRow, TOptions>(
   }
   return { kind: whenNull.kind, reason: whenNull.reason };
 }
+
+function identitySignature<TRow, TOptions>(
+  readView: BoundedReadView,
+  colSpecs: readonly DeclarativeColumnSpec<TRow, TOptions>[],
+  rows: readonly TRow[],
+  hour: number,
+  options: TOptions,
+): string {
+  const parts: string[] = [];
+  for (const col of colSpecs) {
+    if (!col.countryField) continue;
+    for (const row of rows) {
+      const tag = readPath(row, col.countryField);
+      if (typeof tag !== 'string' || !tag) continue;
+      const who = resolveIdentity(readView, 'country', tag, { atHour: col.lookHour ? col.lookHour(row, hour, options) : hour });
+      parts.push(JSON.stringify([tag, who.value, who.color ?? null, who.art ? artStatusKey(who.art) : null]));
+    }
+  }
+  return parts.join(',');
+}
+
+function artStatusKey(art: ArtResult): string {
+  return art.status === 'ready' ? `ready:${art.url}` : art.status;
+}
+
+export type TableWho = (tag: string, atHour: number) => ResolvedIdentity;
 
 export function declareTableProjection<TReply, TRow, TOptions = unknown>(
   spec: DeclarativeTableSpec<TReply, TRow, TOptions>,
@@ -1378,7 +1418,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
     readonly colSpecs: readonly DeclarativeColumnSpec<TRow, TOptions>[];
     readonly rawRows: readonly TRow[];
     readonly keyToIndex: ReadonlyMap<string, number>;
-    readonly identity: readonly (readonly IdentityRead[])[];
+    readonly identity: string;
     readonly model: TableModel;
   }
   const incCache = new WeakMap<object, WeakMap<object, IncrementalDeclCache>>();
@@ -1406,47 +1446,44 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
       let prevInc: IncrementalDeclCache | undefined;
       if (canIncremental) {
         prevInc = incCache.get(reply as object)?.get(options as object);
-        if (prevInc && hour >= prevInc.validFrom && hour < prevInc.validUntil) {
+        if (prevInc && hour >= prevInc.validFrom && hour < prevInc.validUntil && prevInc.identity === identitySignature(readView, prevInc.colSpecs, prevInc.rawRows, hour, options)) {
           const changed = changedLiveRows(prevInc.live, live);
           if (changed !== null) {
-            const held = prevInc;
-            const moved = new Set(changed);
-            for (let i = 0; i < held.identity.length; i++) {
-              if (identityMoved(held.identity[i]!, readView)) moved.add(held.model.rows[i]!.key);
+            if (changed.size === 0) {
+              return { ...prevInc.model, hour, changedKeys: changed, changedRows: new Map() };
             }
-            if (moved.size === 0) {
-              return { ...held.model, hour, changedKeys: moved, changedRows: new Map() };
+            {
+              const colSpecs = prevInc.colSpecs;
+              const boundary = newIdentityBoundary();
+              const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, readView, boundary, row);
+              const nextRows = prevInc.model.rows.slice();
+              const touchedKeys = new Set<string>();
+              const touchedRows = new Map<string, TableRow>();
+              for (const key of changed) {
+                const idx = prevInc.keyToIndex.get(key);
+                if (idx === undefined) continue;
+                const built = buildRow(prevInc.rawRows[idx]!);
+                nextRows[idx] = built;
+                touchedKeys.add(key);
+                touchedRows.set(key, built);
+              }
+              const nextChangeAt = Math.min(prevInc.model.nextChangeAt ?? Infinity, boundary.next);
+              const nextModel: TableModel = {
+                ...prevInc.model,
+                hour,
+                rows: nextRows,
+                changedKeys: touchedKeys,
+                changedRows: touchedRows,
+                ...(nextChangeAt < Infinity ? { nextChangeAt } : {}),
+              };
+              incCache.get(reply as object)!.set(options as object, {
+                ...prevInc,
+                live,
+                validUntil: Math.min(prevInc.validUntil, boundary.next),
+                model: nextModel,
+              });
+              return nextModel;
             }
-            const boundary = newIdentityBoundary();
-            const nextRows = held.model.rows.slice();
-            const nextIdentity = held.identity.slice();
-            const touchedRows = new Map<string, TableRow>();
-            for (const key of moved) {
-              const idx = held.keyToIndex.get(key);
-              if (idx === undefined) continue;
-              const asker = identityAsker(readView, boundary);
-              const built = buildDeclarativeRow(spec, held.colSpecs, reply, live, hour, options, asker.ask, held.rawRows[idx]!);
-              nextRows[idx] = built;
-              nextIdentity[idx] = asker.reads;
-              touchedRows.set(key, built);
-            }
-            const nextChangeAt = Math.min(held.model.nextChangeAt ?? Infinity, boundary.next);
-            const nextModel: TableModel = {
-              ...held.model,
-              hour,
-              rows: nextRows,
-              changedKeys: new Set(touchedRows.keys()),
-              changedRows: touchedRows,
-              ...(nextChangeAt < Infinity ? { nextChangeAt } : {}),
-            };
-            incCache.get(reply as object)!.set(options as object, {
-              ...held,
-              live,
-              validUntil: Math.min(held.validUntil, boundary.next),
-              identity: nextIdentity,
-              model: nextModel,
-            });
-            return nextModel;
           }
         }
       }
@@ -1514,13 +1551,8 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
       }
       const extracted = spec.rows(reply, live, hour, options, readView);
       const boundary = newIdentityBoundary();
-      const identity: (readonly IdentityRead[])[] = [];
-      const builtRows = extracted.rows.map(row => {
-        const asker = identityAsker(readView, boundary);
-        const built = buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, asker.ask, row);
-        identity.push(asker.reads);
-        return built;
-      });
+      const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, readView, boundary, row);
+      const builtRows = extracted.rows.map(buildRow);
       const rowsNext = Math.min(boundary.next, extracted.nextChangeAt ?? Infinity);
       const model: TableModel = {
         columns,
@@ -1559,7 +1591,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
           colSpecs,
           rawRows: extracted.rows,
           keyToIndex,
-          identity,
+          identity: identitySignature(readView, colSpecs, extracted.rows, hour, options),
           model,
         });
       }
@@ -1568,6 +1600,8 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
   };
 }
 
+const withArt = (art: ArtResult | undefined): { readonly art?: ArtResult } => (art ? { art } : {});
+
 function buildDeclarativeRow<TReply, TRow, TOptions>(
   spec: DeclarativeTableSpec<TReply, TRow, TOptions>,
   colSpecs: readonly DeclarativeColumnSpec<TRow, TOptions>[],
@@ -1575,7 +1609,8 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
   live: LiveValues<number | bigint | string> | null,
   hour: number,
   options: TOptions,
-  ask: IdentityAsker['ask'],
+  readView: BoundedReadView,
+  boundary: IdentityBoundary,
   row: TRow,
 ): TableRow {
   const key = spec.rowKey(row);
@@ -1587,7 +1622,9 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
     let cellValue: Value;
     let iconSlot = col.iconSlot;
     let countryTag: string | undefined;
-    let identity: ResolvedIdentity | undefined;
+    let countryArt: ArtResult | undefined;
+    let countryArtKey: string | undefined;
+    let countryColor: string | undefined;
     let bar: TableCellBar | null | undefined;
     let sortValue: Value | undefined;
 
@@ -1605,9 +1642,13 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         if (col.lookHour) cellLookHour = col.lookHour(row, hour, options);
         if (tag === null) {
           cellValue = notRecorded('Unknown country');
+          countryArt = unavailableArt('The country is not recorded');
         } else {
-          identity = ask(tag, cellLookHour ?? hour);
-          cellValue = identity.value;
+          const who = resolveIdentity(readView, 'country', tag, { atHour: cellLookHour ?? hour, boundary });
+          cellValue = who.value;
+          countryArt = who.art;
+          countryArtKey = who.artKey;
+          countryColor = who.color;
         }
       } else if (col.value) {
         cellValue = col.value(row, live, hour, options);
@@ -1625,13 +1666,13 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
       } else {
         cellValue = notRecorded('No value source declared');
       }
-      if (col.lookHour && cellLookHour === undefined) cellLookHour = col.lookHour(row, hour, options);
       if (col.country) {
         const resolvedCountry = typeof col.country === 'string' ? readPath(row, col.country) : col.country(row, options);
         countryTag = typeof resolvedCountry === 'string' && resolvedCountry ? resolvedCountry : undefined;
       }
-      const countryColor = identity?.color
-        ?? (countryTag && (col.numeric || col.tone === 'country') ? ask(countryTag, cellLookHour ?? hour).color : undefined);
+      if (countryColor === undefined && countryTag && (col.numeric || col.tone === 'country')) {
+        countryColor = resolveIdentity(readView, 'country', countryTag, { atHour: cellLookHour ?? (col.lookHour ? col.lookHour(row, hour, options) : hour), boundary }).color;
+      }
       bar = col.bar ? col.bar(row, live, options) : undefined;
       if (col.sortValue) {
         sortValue = col.sortValue(row, live, hour, options);
@@ -1642,13 +1683,11 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
       cells[col.key] = {
         value: cellValue,
         ...(col.format ? { format: col.format } : {}),
-        ...(col.icon ? { icon: col.icon(row, options) } : {}),
-        ...(col.iconPending?.(row, options) ? { iconPending: true } : {}),
+        ...withArt(col.art ? col.art(row, readView, options) : countryArt),
+        ...(!col.art && countryArtKey ? { artKey: countryArtKey } : {}),
         ...(iconSlot ? { iconSlot: true } : {}),
-        ...(identity?.icon ? { icon: identity.icon } : {}),
-        ...(identity?.iconPending ? { iconPending: true } : {}),
-        ...(countryColor ? { countryColor } : {}),
         ...(countryTag ? { country: countryTag } : {}),
+        ...(countryColor ? { countryColor } : {}),
         ...(col.status ? { status: col.status(row, options) } : {}),
         ...(col.cellTone ? { tone: col.cellTone(row, options) } : {}),
         ...(bar !== undefined ? { bar } : {}),
@@ -1661,8 +1700,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
     cells[col.key] = {
       value: cellValue,
       ...(col.format ? { format: col.format } : {}),
-      ...(col.icon ? { icon: col.icon(row, options) } : {}),
-      ...(col.iconPending?.(row, options) ? { iconPending: true } : {}),
+      ...withArt(col.art?.(row, readView, options)),
       ...(iconSlot ? { iconSlot: true } : {}),
       ...(countryTag ? { country: countryTag } : {}),
       ...(col.status ? { status: col.status(row, options) } : {}),
@@ -1673,15 +1711,16 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
     };
   }
   const childItems = spec.children?.(row);
+  const who: TableWho = (tag, atHour) => resolveIdentity(readView, 'country', tag, { atHour, boundary });
   return {
     key,
-    name: spec.rowName(row, hour, options, ask),
+    name: spec.rowName(row, hour, options, who),
     cells,
     ...(spec.group ? { group: spec.group(row, hour, options) } : {}),
-    ...(childItems ? { children: childItems.map(child => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, ask, child)) } : {}),
+    ...(childItems ? { children: childItems.map(child => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, readView, boundary, child)) } : {}),
     ...(spec.initiallyOpen ? { initiallyOpen: spec.initiallyOpen(row) } : {}),
     ...(spec.muted?.(row) ? { muted: true } : {}),
-    ...(spec.tooltipTitle ? { tooltipTitle: spec.tooltipTitle(row, hour, options) } : {}),
+    ...(spec.tooltipTitle ? { tooltipTitle: spec.tooltipTitle(row, hour, options, who) } : {}),
     ...(spec.tooltipExtra ? { tooltipExtra: () => spec.tooltipExtra!(row, reply, live, hour, options) } : {}),
     ...(spec.tooltipNote ? { tooltipNote: spec.tooltipNote(row, reply, live, hour, options) } : {}),
     ...(spec.tooltipAction ? { tooltipAction: spec.tooltipAction(row, options) } : {}),

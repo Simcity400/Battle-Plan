@@ -13,9 +13,9 @@ import {
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
-import type { ChartGap, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
+import type { ChartExactRational, ChartGap, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
-import { formatRecordedPercent, formatShare } from '../../families/valueFormat.ts';
+import { formatRational, formatRecordedPercent, formatScaledPercent, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
 
 export interface WorldTensionChartOptions {
@@ -28,6 +28,8 @@ export interface WorldTensionChartOptions {
 }
 
 const OTHER_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
+const WORLD_UNKNOWN = 'World tension was not recorded at this hour.';
+const END_UNKNOWN = 'Not recorded at this hour.';
 const FALLBACK_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
 
 export function validateWorldTensionStack(raw: unknown): WorldTensionStackReply {
@@ -55,27 +57,49 @@ export function validateWorldTensionHover(raw: unknown): WorldTensionReply {
   return reply;
 }
 
-function scaleDecimals(scale: number): number | null {
-  if (!Number.isInteger(scale) || scale <= 0) return null;
-  let d = 0;
-  let v = scale;
-  while (v > 1 && v % 10 === 0) {
-    v /= 10;
-    d++;
-  }
-  return v === 1 ? d : null;
+function parseRawInt(raw: string | null | undefined): bigint | null {
+  return typeof raw === 'string' && /^-?\d+$/.test(raw) ? BigInt(raw) : null;
 }
 
-function formatEndPct(value: number, mode: 'share' | 'recorded'): string {
-  return mode === 'share' ? formatShare(value / 100) : formatRecordedPercent(value);
+function exactBandRational(
+  rawStr: string | null | undefined,
+  mode: 'share' | 'recorded',
+  tensionRawStr: string | null | undefined,
+  sumRawStr: string | null | undefined,
+  tensionScale: number,
+  contributionScale: number,
+): ChartExactRational | null {
+  const raw = parseRawInt(rawStr);
+  if (raw === null) return null;
+  if (mode === 'recorded') {
+    return contributionScale > 0 ? { raw, denominator: BigInt(contributionScale) } : null;
+  }
+  const tension = parseRawInt(tensionRawStr);
+  const sum = parseRawInt(sumRawStr);
+  if (tension === null || sum === null || tensionScale <= 0) return null;
+  if (sum > 0n) {
+    return { raw: raw * tension, denominator: sum * BigInt(tensionScale) };
+  }
+  return tension === 0n && sum === 0n && raw === 0n ? { raw: 0n, denominator: 1n } : null;
+}
+
+function formatEndPct(value: number, mode: 'share' | 'recorded', exact: ChartExactRational | null): string {
+  if (exact) {
+    if (mode === 'share' && exact.raw >= 0n && exact.raw <= exact.denominator * 100n) {
+      return formatShareRatio(exact.raw, exact.denominator * 100n);
+    }
+    return formatRational(exact.raw, exact.denominator, { maxDecimals: 5, percent: true });
+  }
+  return mode === 'share' && value >= 0 && value <= 100 ? formatShare(value / 100) : formatRecordedPercent(value);
+}
+
+function formatTotalPct(value: number, exact: ChartExactRational | null): string {
+  return exact ? formatRational(exact.raw, exact.denominator, { maxDecimals: 5, percent: true }) : formatRecordedPercent(value);
 }
 
 function formatRawPct(raw: string, scale: number, signed = true): string | null {
-  if (!/^-?\d+$/.test(raw) || scale <= 0) return null;
-  const decimals = scaleDecimals(scale);
-  if (decimals !== null) return formatRecordedPercent(BigInt(raw), { decimals, signed });
-  const n = Number(raw);
-  return Number.isFinite(n) ? formatRecordedPercent(n / scale, { signed }) : null;
+  if (!/^-?\d+$/.test(raw) || !Number.isSafeInteger(scale) || scale <= 0) return null;
+  return formatScaledPercent(BigInt(raw), BigInt(scale), { signed });
 }
 
 function contributorLabel(
@@ -308,9 +332,17 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       || reply.bands.some(b => b.values.some(v => v !== null && v < 0))
       || (reply.other?.values.some(v => v !== null && v < 0) ?? false);
     const endHour = reply.endHour;
+    const totalScale = reply.tensionScale;
+    const totalExactSeries: readonly (ChartExactRational | null)[] | undefined = Array.isArray(reply.totalRaw) && reply.totalRaw.length === reply.hours.length && totalScale > 0
+      ? reply.totalRaw.map(rawStr => {
+          const parsed = parseRawInt(rawStr);
+          return parsed !== null ? { raw: parsed, denominator: BigInt(totalScale) } : null;
+        })
+      : undefined;
     const bandInfos = reply.bands.map(band => contributorLabel(readView, band.tag, band.remembered, hour));
     const bandColors = resolveBandColors(bandInfos.map(info => info.color), options.surface);
     const orderedBands: ChartStackBand[] = [];
+    const bandEndExacts: (ChartExactRational | null)[] = [];
     for (let i = 0; i < reply.bands.length; i++) {
       const band = reply.bands[i]!;
       const info = bandInfos[i]!;
@@ -319,7 +351,15 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         ? { art: readView.art(flagArtHandle(info.flagChoice, 'panel')), tag: band.tag ?? undefined, label: info.name }
         : undefined;
       const endVal = endHour !== null ? band.endValue : null;
-      const validEnd = endVal != null && Number.isFinite(endVal) && (options.values === 'share' ? endVal > 0 : endVal !== 0);
+      const endExact = endHour !== null
+        ? exactBandRational(band.endRaw, options.values, reply.cappedEndTensionRaw, reply.endSumRaw, reply.tensionScale, reply.contributionScale)
+        : null;
+      bandEndExacts.push(endExact);
+      const validEnd = endVal != null && Number.isFinite(endVal) && (endExact ? endExact.raw !== 0n : endVal !== 0);
+      const bandExactSeries: readonly (ChartExactRational | null)[] | undefined = Array.isArray(band.valuesRaw) && band.valuesRaw.length === reply.hours.length
+        ? band.valuesRaw.map((rawStr, idx) =>
+            exactBandRational(rawStr, options.values, reply.totalRaw?.[idx], reply.sumRaw?.[idx], reply.tensionScale, reply.contributionScale))
+        : undefined;
       orderedBands.push({
         id: `slot:${band.slot}`,
         key: `slot:${band.slot}`,
@@ -327,21 +367,29 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         color,
         opacity: 0.84,
         values: band.values,
+        ...(bandExactSeries ? { exact: bandExactSeries } : {}),
         ...(flag ? { flag } : {}),
         endLabel: validEnd
           ? {
               ...(flag ? { flag } : {}),
               name: info.name,
               fullName: info.fullName,
-              value: formatEndPct(endVal, options.values),
+              value: formatEndPct(endVal, options.values, endExact),
             }
           : null,
       });
     }
+    const otherEndExact = endHour !== null && reply.other
+      ? exactBandRational(reply.other.endRaw, options.values, reply.cappedEndTensionRaw, reply.endSumRaw, reply.tensionScale, reply.contributionScale)
+      : null;
     if (reply.other) {
       const otherLabel = reply.other.count > 0 ? `Other (${reply.other.count})` : 'Other';
       const otherEnd = endHour !== null ? reply.other.endValue : null;
-      const validOther = otherEnd != null && Number.isFinite(otherEnd) && (options.values === 'share' ? otherEnd > 0 : otherEnd !== 0);
+      const validOther = otherEnd != null && Number.isFinite(otherEnd) && (otherEndExact ? otherEndExact.raw !== 0n : otherEnd !== 0);
+      const otherExactSeries: readonly (ChartExactRational | null)[] | undefined = Array.isArray(reply.other.valuesRaw) && reply.other.valuesRaw.length === reply.hours.length
+        ? reply.other.valuesRaw.map((rawStr, idx) =>
+            exactBandRational(rawStr, options.values, reply.totalRaw?.[idx], reply.sumRaw?.[idx], reply.tensionScale, reply.contributionScale))
+        : undefined;
       orderedBands.push({
         id: 'other',
         key: 'other',
@@ -349,40 +397,31 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         color: OTHER_COLOR,
         opacity: 0.72,
         values: reply.other.values,
+        ...(otherExactSeries ? { exact: otherExactSeries } : {}),
         endLabel: validOther
           ? {
               name: otherLabel,
               shortName: 'Other',
               fullName: otherLabel,
-              value: formatEndPct(otherEnd, options.values),
+              value: formatEndPct(otherEnd, options.values, otherEndExact),
             }
           : null,
       });
     }
-    let lastTotal: number | null = null;
-    if (endHour !== null) {
-      for (let i = reply.hours.length - 1; i >= 0; i--) {
-        if (reply.hours[i]! <= hour) {
-          const candidate = reply.total[i] ?? null;
-          lastTotal = candidate !== null && Number.isFinite(candidate) ? candidate : null;
-          break;
-        }
-      }
-    }
+    const worldRaw = parseRawInt(reply.cappedEndTensionRaw);
+    const lastTotalExact: ChartExactRational | null = worldRaw !== null && totalScale > 0 ? { raw: worldRaw, denominator: BigInt(totalScale) } : null;
+    const lastTotal = reply.cappedEndTension !== null && Number.isFinite(reply.cappedEndTension) ? reply.cappedEndTension : null;
+    const worldText = lastTotal !== null ? formatTotalPct(lastTotal, lastTotalExact) : null;
+    const endText = (value: number | null, exact: ChartExactRational | null, missing: string | null) =>
+      endHour !== null && value !== null && Number.isFinite(value) ? formatEndPct(value, options.values, exact) : (missing ?? END_UNKNOWN);
     const worldIcon = { art: readView.art(measureArtHandle('worldTension')), label: 'World tension' };
     const markers = options.showMarkers ? buildMarkers(readView, reply, hour) : undefined;
     const hoverDetail = buildHoverDetail(readView, hour);
-    const auditRows = endHour === null
-      ? []
-      : [
-          ...(lastTotal !== null ? [auditRow('__total__', formatRecordedPercent(lastTotal))] : []),
-          ...reply.bands.flatMap(band => (band.endValue != null && Number.isFinite(band.endValue) && (options.values === 'share' ? band.endValue > 0 : band.endValue !== 0)
-            ? [auditRow(`slot:${band.slot}`, formatEndPct(band.endValue, options.values))]
-            : [])),
-          ...(reply.other && reply.other.endValue != null && Number.isFinite(reply.other.endValue) && (options.values === 'share' ? reply.other.endValue > 0 : reply.other.endValue !== 0)
-            ? [auditRow('other', formatEndPct(reply.other.endValue, options.values))]
-            : []),
-        ];
+    const auditRows = [
+      auditRow('__total__', worldText ?? reply.endMissing ?? WORLD_UNKNOWN),
+      ...reply.bands.map((band, i) => auditRow(`slot:${band.slot}`, endText(band.endValue, bandEndExacts[i] ?? null, band.endMissing))),
+      ...(reply.other ? [auditRow('other', endText(reply.other.endValue, otherEndExact, reply.other.endMissing))] : []),
+    ];
     return {
       kind: 'world-tension',
       measureTitle: 'World tension',
@@ -398,11 +437,13 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       stack: {
         hours: reply.hours,
         bands: orderedBands,
+        bandFormat: 'signedPercent',
         step: true,
         total: {
           color: CHART_MEASURE_COLOURS.lightInk,
           values: reply.total,
-          endLabel: lastTotal !== null ? { icon: worldIcon, value: formatRecordedPercent(lastTotal) } : null,
+          ...(totalExactSeries ? { exact: totalExactSeries } : {}),
+          endLabel: worldText !== null ? { icon: worldIcon, value: worldText } : null,
         },
       },
       ...(markers && markers.length > 0 ? { markers } : {}),

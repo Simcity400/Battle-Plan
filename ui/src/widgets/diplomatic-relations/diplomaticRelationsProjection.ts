@@ -54,8 +54,7 @@ export function projectDiplomaticRelations(readView: BoundedReadView, options: D
       shortLabel: owner.tag,
       tag: owner.tag,
       ...(resolved.nameMissing ? { nameMissing: resolved.nameMissing } : {}),
-      flag: resolved.flag ?? null,
-      flagPending: resolved.pending === true,
+      ...(resolved.flag ? { flag: resolved.flag } : {}),
       group,
       meta: { countryId: owner.countryId, readHour: owner.readHour ?? null },
     };

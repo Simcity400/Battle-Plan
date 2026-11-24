@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { colourOf, coloursIn, flagIn, forgetTimelines, heldFacts, heldStyles, heldTimeline, identitySince, lookStarts, stylesIn, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
+import { askTimeline, flagIn, forgetTimelines, heldFacts, heldTimeline, identitySince, stylesIn, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
 import type { CountryTimeline } from './countryTimeline';
 import { answerHeld } from './countryNamesAt.ts';
 import { FactRequests, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
 import type { FactSpec } from './countryFacts';
 import type { CountryFactsReply, CountryStyle, CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client';
+
+const heldStyles = (client: DashboardClient, src: { sourceId: string; revision: string; branchId: string; content: number },
+  rec: DashboardSource | undefined, hour: number, tags: readonly string[]) => {
+  const timeline = rec ? askTimeline(client, src, rec, hour) : heldTimeline(client, src);
+  return timeline ? stylesIn(timeline, hour, tags) : undefined;
+};
 
 const REPLY: CountryFactsReply = {
   branchId: '1', known: [[10, 20], [30, 40]], names: ['Germany', 'German Reich'], reasons: ['not a country at this hour', 'no recorded map colour'],
@@ -55,14 +61,6 @@ test('a held timeline answers every hour it holds, as country-styles would, and 
   assert.equal(heldStyles(client, source, undefined, 12, ['GER']), undefined);
   forgetTimelines(client, 'timeline');
   assert.equal(at(12, ['GER']), undefined, 'a forgotten timeline is read again');
-});
-
-test('a look runs from each hour it changes and ends where the timeline stops holding appearances, until it holds them again', () => {
-  const timeline = { reply: { known: [[0, 99], [120, 200]] }, runs: new Map([['GER', [[0], [50], [130]]]]) } as unknown as CountryTimeline;
-  assert.deepEqual(lookStarts(timeline, 'GER', 0, 150), [[0, true], [50, true], [100, false], [120, true], [130, true], [201, false]]);
-  assert.deepEqual(lookStarts(timeline, 'GER', 60, 150), [[60, true], [100, false], [120, true], [130, true], [201, false]], 'from the first hour asked');
-  assert.deepEqual(lookStarts(undefined, 'GER', 0, 150), [[150, true], [151, false]], 'the hour asked alone, no timeline held');
-  assert.deepEqual(lookStarts(timeline, 'ITA', 0, 150), [[150, true], [151, false]], 'a country the timeline does not hold');
 });
 
 test('a malformed country facts reply is refused', () => {
@@ -204,23 +202,6 @@ test('each run names the flag preparation chose for it, and a tag that is not a 
   assert.deepEqual(flagIn(timeline, 12, 'ENG'), { reason: 'not a country at this hour' });
   assert.deepEqual(flagIn(timeline, 25, 'GER'), { reason: 'country facts were not recorded at this hour' },
     'an hour a finished preparation holds no facts of says so');
-});
-
-test('a held timeline gives each country its packed map colour, one object per colour, released with it', async () => {
-  const { client } = facts();
-  heldStyles(client, source, recording, 12, ['GER']);
-  await settle();
-  const timeline = heldTimeline(client, source)!;
-  assert.deepEqual([...coloursIn(timeline, 12, ['GER', 'D01'])!], [['GER', 0x336699], ['D01', -1]]);
-  assert.equal(coloursIn(timeline, 36, ['GER'])!.get('GER'), -1, 'a run without a recorded colour has none');
-  assert.equal(coloursIn(timeline, 25, ['GER']), undefined);
-  const colour = colourOf(timeline, 0x336699);
-  assert.deepEqual(colour, { color: [0x33, 0x66, 0x99] });
-  assert.equal(colourOf(timeline, 0x336699), colour, 'every country and hour drawn in a colour shares it');
-  forgetTimelines(client, 'timeline');
-  heldStyles(client, source, recording, 12, ['GER']);
-  await settle();
-  assert.notEqual(colourOf(heldTimeline(client, source)!, 0x336699), colour);
 });
 
 test('identities at the head are read at the hour one last changed, which reads the same as the head', () => {

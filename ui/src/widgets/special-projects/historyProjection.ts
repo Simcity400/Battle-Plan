@@ -1,6 +1,6 @@
 import { colour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { urlArtHandle } from '../../families/art/provider.ts';
+import { productIconArt } from '../../families/art/provider.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -71,11 +71,11 @@ function completedSince(project: ProjectRecord, shown: ProjectStatus): number {
   return since;
 }
 
-function projectLane(reply: SpecialProjectsReply, project: ProjectRecord, ordinal: number, hour: number, gaps: readonly HourSpan[], options: SpecialProjectsHistoryOptions): TimelineLane | null {
+function projectLane(readView: BoundedReadView, reply: SpecialProjectsReply, project: ProjectRecord, ordinal: number, hour: number, gaps: readonly HourSpan[], options: SpecialProjectsHistoryOptions): TimelineLane | null {
   const shown = statusAt(project, hour);
   if (!shown) return null;
   const info = reply.presentations[shown.presentation]!;
-  const icon = urlArtHandle(info.icon);
+  const icon = productIconArt(readView, info.icon, info.iconMissing);
   const fill = colour(options.surface, ordinal);
   const ranges = options.membership?.[reply.tag];
   const stretches: [number, number, boolean][] = [];
@@ -102,7 +102,6 @@ function projectLane(reply: SpecialProjectsReply, project: ProjectRecord, ordina
         color: fill,
         label: info.name,
         icon,
-        iconMissing: !icon,
         ...spanStart(first, options.firstHour, gaps),
         endUnseen: !open && inHourSpans(gaps, last + 1),
         open,
@@ -121,7 +120,6 @@ function projectLane(reply: SpecialProjectsReply, project: ProjectRecord, ordina
     label: info.name,
     subtitle,
     icon,
-    iconMissing: !icon,
     spans,
     auditValue: `${info.name}|${subtitle}`,
     meta: { tag: reply.tag, project: project.id },
@@ -171,7 +169,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
       const own = gapsOf(reply, hour);
       gaps.push(...own);
       const projectLanes = reply.projects
-        .map(project => projectLane(reply, project, ordinal++, hour, own, options))
+        .map(project => projectLane(readView, reply, project, ordinal++, hour, own, options))
         .filter((lane): lane is TimelineLane => lane !== null);
       if (shown.length > 1) {
         const look = countryLook(readView, reply.tag, hour);
@@ -179,7 +177,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
           key: `country:${reply.tag}`,
           kind: 'heading',
           label: look.name,
-          ...(look.flag ? { flag: look.flag } : {}),
+          flag: look.flag,
           flagTag: reply.tag,
           ...(reply.unavailable ? { subtitle: reply.unavailable } : projectLanes.length ? {} : { subtitle: 'No special projects yet' }),
           spans: [],

@@ -214,6 +214,11 @@
   text-overflow: ellipsis;
 }
 
+.tf-th-static-fill {
+  flex: 1;
+  width: 100%;
+}
+
 .tf-th-short-over {
   display: inline-flex;
   align-items: center;
@@ -237,17 +242,42 @@
   background: rgba(255, 255, 255, 0.22);
 }
 
+.tf-th-parts-block {
+  flex: 1;
+  align-self: stretch;
+  justify-content: center;
+}
+
+.tf-th.end .tf-th-parts-block {
+  align-items: stretch;
+}
+
+.tf-th-parts-block .tf-th-unit {
+  align-self: flex-end;
+}
+
 .tf-th-parts {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
   width: 100%;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 0;
+  align-items: center;
+}
+
+.tf-th-operator {
+  flex: none;
+  width: 8px;
+  margin-left: 2px;
+  text-align: center;
+  color: var(--muted);
+  font-weight: 400;
 }
 
 .tf-th-part {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
   min-width: 0;
 }

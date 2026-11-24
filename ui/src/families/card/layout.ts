@@ -6,6 +6,10 @@ export const CARD_PAD_TOP = 4;
 export const CARD_PAD_BOTTOM = 8;
 export const CARD_HERO_HEIGHT = 94;
 export const CARD_SECTION_HEIGHT = 30;
+export const CARD_METER_HEIGHT = 26;
+export const CARD_GUTTER = 58;
+export const CARD_METER_NAME = 150;
+export const CARD_METER_FIGURE = 96;
 export const CARD_FLAG_COLUMN = 70;
 export const CARD_FLAG_INSET = 10;
 export const CARD_FLAG_COLUMN_COMPACT = 46;
@@ -50,6 +54,7 @@ export interface CardLayout {
 function rowHeight(row: CardRow, model: CardModel): number {
   if (row.kind === 'hero') return CARD_HERO_HEIGHT;
   if (row.kind === 'section') return CARD_SECTION_HEIGHT;
+  if (row.kind === 'meter' || row.kind === 'list') return CARD_METER_HEIGHT;
   return model.rowHeight;
 }
 

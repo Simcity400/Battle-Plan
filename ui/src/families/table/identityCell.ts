@@ -1,5 +1,5 @@
-import { flagArtHandle } from '../art/provider.ts';
-import { artHandleKey } from '../art/types.ts';
+import { flagArtHandle, flagChoiceArt } from '../art/provider.ts';
+import { artHandleKey, unavailableArt, type ArtResult } from '../art/types.ts';
 import type { ArtFlagSize, ArtHandle, BoundedReadView, EntityKind, FieldStatus } from '../plan.ts';
 import { knownValue, notRecorded, type Value } from '../value.ts';
 import type { TableCell, TableCellFlag } from './model.ts';
@@ -12,26 +12,18 @@ export function newIdentityBoundary(): IdentityBoundary {
   return { next: Infinity };
 }
 
-export interface ArtState {
-  readonly icon?: string;
-  readonly iconPending?: boolean;
-  readonly iconArt?: string;
+export interface CellArt {
+  readonly art?: ArtResult;
+  readonly artKey?: string;
 }
 
-export function artState(readView: BoundedReadView, handle: ArtHandle | null): ArtState {
-  if (!handle) return {};
-  const art = readView.art(handle);
-  const iconArt = artHandleKey(handle);
-  if (art.status === 'ready') return { icon: art.url, iconArt };
-  if (art.status === 'pending') return { iconPending: true, iconArt };
-  return { iconArt };
+export function cellArt(readView: BoundedReadView, handle: ArtHandle | null, missing: string): { readonly art: ArtResult; readonly artKey?: string } {
+  return handle ? { art: readView.art(handle), artKey: artHandleKey(handle) } : { art: unavailableArt(missing) };
 }
 
-function flagState(readView: BoundedReadView, choice: FieldStatus<string> | undefined, size: ArtFlagSize): ArtState {
-  if (!choice) return {};
-  if (choice.status === 'ready') return artState(readView, flagArtHandle(choice.value, size));
-  if (choice.status === 'pending') return { iconPending: true };
-  return {};
+function flagArt(readView: BoundedReadView, choice: FieldStatus<string> | undefined, size: ArtFlagSize): CellArt {
+  if (choice?.status === 'ready') return cellArt(readView, flagArtHandle(choice.value, size), '');
+  return { art: flagChoiceArt(readView, choice, size) };
 }
 
 export interface IdentityOptions {
@@ -40,7 +32,7 @@ export interface IdentityOptions {
   readonly boundary?: IdentityBoundary;
 }
 
-export interface ResolvedIdentity extends ArtState {
+export interface ResolvedIdentity extends CellArt {
   readonly value: Value<string>;
   readonly name: string;
   readonly color?: string;
@@ -60,48 +52,9 @@ export function resolveIdentity(readView: BoundedReadView, kind: EntityKind, key
   return {
     value,
     name: value.kind === 'known' ? value.value : key,
-    ...flagState(readView, who.flagChoice, options.flag ?? 'panel'),
+    ...(kind === 'country' ? flagArt(readView, who.flagChoice, options.flag ?? 'panel') : {}),
     ...(who.colour?.status === 'ready' ? { color: who.colour.value } : {}),
   };
-}
-
-export function identitySignature(who: ResolvedIdentity): string {
-  const reason = who.value.kind === 'notRecorded' ? who.value.reason : '';
-  return `${who.value.kind}\u0000${who.name}\u0000${reason}\u0000${who.icon ?? ''}\u0000${who.iconPending ? 1 : 0}\u0000${who.iconArt ?? ''}\u0000${who.color ?? ''}`;
-}
-
-export type IdentityRead = readonly [tag: string, atHour: number, signature: string];
-
-export interface IdentityAsker {
-  readonly ask: (tag: string, atHour: number) => ResolvedIdentity;
-  readonly reads: IdentityRead[];
-}
-
-export function identityAsker(readView: BoundedReadView, boundary: IdentityBoundary): IdentityAsker {
-  const reads: IdentityRead[] = [];
-  const held = new Map<string, ResolvedIdentity>();
-  return {
-    reads,
-    ask(tag, atHour) {
-      const at = Math.min(atHour, readView.hour);
-      const id = `${tag}\u0000${at}`;
-      let who = held.get(id);
-      if (!who) {
-        who = resolveIdentity(readView, 'country', tag, { atHour: at, boundary });
-        held.set(id, who);
-        reads.push([tag, at, identitySignature(who)]);
-      }
-      return who;
-    },
-  };
-}
-
-export function identityMoved(reads: readonly IdentityRead[], readView: BoundedReadView): boolean {
-  for (let i = 0; i < reads.length; i++) {
-    const [tag, atHour, signature] = reads[i]!;
-    if (identitySignature(resolveIdentity(readView, 'country', tag, { atHour })) !== signature) return true;
-  }
-  return false;
 }
 
 export function identityCell(readView: BoundedReadView, kind: EntityKind, key: string | null, options: IdentityOptions = {}): TableCell {
@@ -110,8 +63,8 @@ export function identityCell(readView: BoundedReadView, kind: EntityKind, key: s
   return {
     value: who.value,
     iconSlot: true,
-    ...(who.icon ? { icon: who.icon } : {}),
-    ...(who.iconPending ? { iconPending: true } : {}),
+    ...(who.art ? { art: who.art } : {}),
+    ...(who.artKey ? { artKey: who.artKey } : {}),
     ...(who.color ? { countryColor: who.color } : {}),
     ...(kind === 'country' ? { country: key } : {}),
   };
@@ -126,8 +79,8 @@ export function identityFlags(readView: BoundedReadView, kind: EntityKind, keys:
     const who = resolveIdentity(readView, kind, key, options);
     return {
       tag: key,
-      ...(who.icon ? { icon: who.icon } : {}),
-      ...(who.iconPending ? { pending: true } : {}),
+      art: who.art ?? flagChoiceArt(readView, undefined),
+      ...(who.artKey ? { artKey: who.artKey } : {}),
       ...(options.dimmed?.[index] ? { dimmed: true } : {}),
     };
   });
@@ -145,17 +98,17 @@ export function artNameCell(
     iconSlot: true,
     artShape: shape,
     ...(name ? { artName: name } : {}),
-    ...artState(readView, handle),
+    ...cellArt(readView, handle, missing),
   };
 }
 
-export function artKindCell(readView: BoundedReadView, handle: ArtHandle | null, shape: TableCell['artShape'], name: string | null): TableCell {
+export function artKindCell(readView: BoundedReadView, handle: ArtHandle | null, shape: TableCell['artShape'], name: string | null, missing: string): TableCell {
   return {
     value: name ? knownValue(name) : notRecorded('Not recorded'),
     iconSlot: true,
     artShape: shape,
     ...(name ? { artName: name } : {}),
-    ...artState(readView, handle),
+    ...cellArt(readView, handle, missing),
   };
 }
 

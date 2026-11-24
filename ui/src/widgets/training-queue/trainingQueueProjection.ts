@@ -1,10 +1,12 @@
+import { productIconArt } from '../../families/art/provider.ts';
+import type { ArtResult } from '../../families/art/types.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { TrainingDivision, TrainingOrder, TrainingQueueReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
@@ -29,7 +31,7 @@ export function validateTrainingQueue(value: unknown): TrainingQueueReply {
 }
 
 type QueueRow =
-  | { readonly kind: 'order'; readonly key: string; readonly order: TrainingOrder; readonly icon: string | undefined; readonly open: boolean; readonly children: readonly QueueRow[] }
+  | { readonly kind: 'order'; readonly key: string; readonly order: TrainingOrder; readonly icon: ArtResult; readonly open: boolean; readonly children: readonly QueueRow[] }
   | { readonly kind: 'division'; readonly key: string; readonly division: TrainingDivision };
 
 function share(part: bigint, whole: bigint): Value<number> {
@@ -68,7 +70,7 @@ const [DIVISION, TRAINING, EQUIPMENT, MANPOWER] = COLUMNS;
 
 const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, never>>[] = [
   { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Motorized Infantry Division 1941 B'],
-    icon: row => row.kind === 'order' ? row.icon : undefined,
+    art: row => row.kind === 'order' ? row.icon : undefined,
     extra: row => (row.kind === 'order' ? { iconSlot: true, subtext: orderLine(row.order) } : {}),
     value: row => row.kind === 'order'
       ? textValue(row.order.templateName, row.order.templateMissing ?? 'Template name unavailable')
@@ -86,10 +88,8 @@ const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, nev
     extra: row => { const [, needed, reason] = manpowerOf(row); return { secondaryValue: neededText(needed, reason) }; } },
 ];
 
-function orderIcon(order: TrainingOrder, readView: BoundedReadView): string | undefined {
-  if (order.icon === null) return undefined;
-  const art = readView.art({ kind: 'url', url: order.icon });
-  return art.status === 'ready' ? art.url : undefined;
+function orderIcon(order: TrainingOrder, readView: BoundedReadView): ArtResult {
+  return productIconArt(readView, order.icon, 'The product drew no icon for this template');
 }
 
 function orderTooltip(order: TrainingOrder): TooltipExtraRow[] {
@@ -112,7 +112,7 @@ function divisionTooltip(division: TrainingDivision): TooltipExtraRow[] {
       label: need.name ?? 'Equipment name unavailable',
       value: heldMissing === null
         ? knownValue(`${count(Number(BigInt(need.heldRaw) / FIXED))} / ${count(Number(BigInt(need.needRaw) / FIXED))}`)
-        : notRecorded(heldMissing),
+        : partialValue(`${count(Number(BigInt(need.needRaw) / FIXED))} needed`, heldMissing),
       lookupKey: need.archetype,
       ...(at === 0 ? { divider: true } : {}),
     }));

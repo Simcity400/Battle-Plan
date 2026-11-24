@@ -1,12 +1,17 @@
+import { artHandleKey } from '../../families/art/types.ts';
+import { flagArtHandle } from '../../families/art/provider.ts';
+import { flagChoiceKey } from '../../families/identity/types.ts';
+import { createSnapshotIdentityProvider } from '../../families/identity/provider.ts';
+import { IdentityIndex } from '../../families/identity/index.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey } from '../../charts/live.ts';
-import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL, parseAnswer } from '../../dashboard/follow/message.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';
-import { datedIdentity } from '../../families/identity/dated.fixture.ts';
-import { deriveTableTooltip, resolveCell, resolveTableRows } from '../../families/table/model.ts';
+import { deriveTableTooltip, resolveCellAtHour, resolveTableRows } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import type { ApmReply } from '../../generated/dashboard';
 import { apmFromSort, apmHeadRows, apmHeadStructure, apmLiveValues, apmSortValue, clockHead } from './apmHead.ts';
@@ -66,16 +71,16 @@ function headAnswer(rows: readonly {
 
 test('a followed eAPM reads back as the request path\'s series: rates, counts, arbitrary UTF-8 tags, dated names, and missing values with reasons', () => {
   const followed = headAnswer([
-    { key: 0n, id: 'GER', values: [bits(2.35), bits(2.35), 47n, 3n, bits(20), 1n, 0n, 'GER', 160n, 'GER', null] },
-    { key: 1n, id: 'user:ab', values: [null, bits(0.5), null, null, bits(0), 1n, 1n, 'CUSTOM_MOD_TAG_12345', 150n, 'DatedPlayer', null] },
-    { key: 2n, id: 'user:cd', values: [bits(1.2), bits(1.2), 12n, 0n, bits(10), 1n, 0n, 'FRA', 150n, null, 'Player name is not valid UTF-8.'] },
+    { key: 0n, id: 'GER', values: [bits(2.35), bits(2.35), 47n, 3n, bits(20), 1n, 0n, 'GER', 160n, 'GER', null, '47', '20', '1'] },
+    { key: 1n, id: 'user:ab', values: [null, bits(0.5), null, null, bits(0), 1n, 1n, 'CUSTOM_MOD_TAG_12345', 150n, 'DatedPlayer', null, '5', '0', '1'] },
+    { key: 2n, id: 'user:cd', values: [bits(1.2), bits(1.2), 12n, 0n, bits(10), 1n, 0n, 'FRA', 150n, null, 'Player name is not valid UTF-8.', '12', '10', '1'] },
   ]);
   const rows = apmHeadRows(followed);
   assert.deepEqual(rows[0], {
     id: 'GER', name: 'GER', nameMissing: null, tag: 'GER', hour: 160, points: [],
-    summary: { apm: 2.35, confirmedApm: 2.35, orders: '47', pausedOrders: '3', unpausedMinutes: 20, complete: true, gaps: false },
+    summary: { apm: 2.35, confirmedApm: 2.35, orders: '47', confirmedOrders: '47', pausedOrders: '3', unpausedMinutes: 20, unpausedMinutesNum: '20', unpausedMinutesDen: '1', complete: true, gaps: false },
   });
-  assert.deepEqual(rows[1]!.summary, { apm: null, confirmedApm: 0.5, orders: null, pausedOrders: null, unpausedMinutes: 0, complete: true, gaps: true });
+  assert.deepEqual(rows[1]!.summary, { apm: null, confirmedApm: 0.5, orders: null, confirmedOrders: '5', pausedOrders: null, unpausedMinutes: 0, unpausedMinutesNum: '0', unpausedMinutesDen: '1', complete: true, gaps: true });
   assert.equal(rows[1]!.tag, 'CUSTOM_MOD_TAG_12345', 'tags longer than 8 bytes survive round-trip via text table');
   assert.equal(rows[1]!.name, 'DatedPlayer', 'dated player name comes from the head window');
   assert.equal(rows[2]!.name, null);
@@ -116,7 +121,7 @@ test('apm-table resolves country at row observation hour including hour 0, gives
         nameMissing: null,
         tag: 'GER',
         hour: 0,
-        summary: { apm: null, confirmedApm: null, orders: '12', pausedOrders: null, unpausedMinutes: 0, complete: true, gaps: true },
+        summary: { apm: null, confirmedApm: null, orders: '12', confirmedOrders: '12', pausedOrders: null, unpausedMinutes: 0, unpausedMinutesNum: '0', unpausedMinutesDen: '1', complete: true, gaps: true },
         points: [],
       },
       {
@@ -125,15 +130,11 @@ test('apm-table resolves country at row observation hour including hour 0, gives
         nameMissing: 'Player name is not valid UTF-8.',
         tag: 'CUSTOM_MOD_TAG_12345',
         hour: 0,
-        summary: { apm: 4.5, confirmedApm: 4.5, orders: '45', pausedOrders: '0', unpausedMinutes: 10, complete: true, gaps: false },
+        summary: { apm: 4.5, confirmedApm: 4.5, orders: '45', confirmedOrders: '45', pausedOrders: '0', unpausedMinutes: 10, unpausedMinutesNum: '10', unpausedMinutesDen: '1', complete: true, gaps: false },
         points: [],
       },
     ],
   };
-  const identity = datedIdentity({
-    GER: [{ from: 0, name: 'Weimar' }, { from: 50, name: 'Reich' }],
-    CUSTOM_MOD_TAG_12345: [{ from: 0, name: 'Custom Realm' }],
-  });
   const opts = {
     players: true,
     showPaused: true,
@@ -144,11 +145,18 @@ test('apm-table resolves country at row observation hour including hour 0, gives
     windowHours: 168,
     staticSpan: [300, 400] as readonly [number, number],
   };
-  const model = apmTableProjection.project(createBoundedReadView({ hour: 400, panels: new Map([['main', reply]]), identity }), opts);
+  const idx = new IdentityIndex({ sourceId: 's', revision: '1', branchId: '1', content: 1 });
+  const style = (tag: string, name: string, key: string, valid: [number, number]) => ({ tag, name, color: [102, 102, 102] as [number, number, number], valid, flagChoice: { keys: [key, null, null] as [string, null, null], reasons: [null, null, null] as [null, null, null] } });
+  idx.ingestStylesReply({ branchId: '1', hour: 0, styles: [style('GER', 'Weimar', 'GER_old', [0, 49]), style('CUSTOM_MOD_TAG_12345', 'Custom Realm', 'CUSTOM_mod', [0, 400])], warnings: [] });
+  idx.ingestStylesReply({ branchId: '1', hour: 50, styles: [style('GER', 'Reich', 'GER_new', [50, 400])], warnings: [] });
+  const identity = createSnapshotIdentityProvider(idx);
+  const model = apmTableProjection.project(createBoundedReadView({ hour: 400, identity, panels: new Map([['main', reply]]) }), opts);
   assert.equal(model.empty, undefined, 'early unobserved gap [10,20] does not suppress range [300,400]');
   const row = model.rows.find(r => r.key === 'p1')!;
   assert.deepEqual(row.cells.name!.value, { kind: 'known', value: 'Alice' }, 'M2: uses window dated name Alice, never branch-end RenamedLater');
-  assert.deepEqual(resolveCell(row.cells.country!).value, { kind: 'known', value: 'Weimar' }, 'country cell resolves at observation hour 0, not window end 400');
+  const resolvedCountry = resolveCellAtHour(row.cells.country!);
+  assert.deepEqual(resolvedCountry.value, { kind: 'known', value: 'Weimar' }, 'country cell resolves at observation hour 0, not window end 400');
+  assert.equal(row.cells.country!.artKey, artHandleKey(flagArtHandle(flagChoiceKey({ keys: ['GER_old', null, null], reasons: [null, null, null] }), 'panel')), 'flag resolves at observation hour 0');
 
   assert.equal(row.cells.apm!.value.kind, 'notApplicable', 'zero unpaused minutes makes rate notApplicable');
   assert.equal(row.cells.paused!.value.kind, 'notRecorded', 'unknown paused orders never inherits rate notApplicable');
@@ -159,13 +167,13 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   assert.deepEqual(missingRow.cells.name!.value, { kind: 'notRecorded', reason: 'Player name is not valid UTF-8.' }, 'S12: missing player name stays notRecorded with reason, never internal id');
   assert.equal(missingRow.name, 'Name not recorded');
   assert.equal(missingRow.tooltipTitle, 'Name not recorded');
-  assert.deepEqual(resolveCell(missingRow.cells.country!).value, { kind: 'known', value: 'Custom Realm' }, 'M3: long UTF-8 tag resolves its country look');
+  assert.deepEqual(resolveCellAtHour(missingRow.cells.country!).value, { kind: 'known', value: 'Custom Realm' }, 'M3: long UTF-8 tag resolves its country look');
 
   const followed = headAnswer([
     { key: 0n, id: 'p1', values: [null, null, 12n, null, bits(0), 1n, 1n, 'GER', 0n, 'Alice', null] },
     { key: 1n, id: 'user:deadbeef', values: [bits(4.5), bits(4.5), 45n, 0n, bits(10), 1n, 0n, 'CUSTOM_MOD_TAG_12345', 0n, null, 'Player name is not valid UTF-8.'] },
   ]);
-  const followedModel = apmTableProjection.project(createBoundedReadView({ hour: 400, answers: new Map([['main', followed]]), identity }), opts);
+  const followedModel = apmTableProjection.project(createBoundedReadView({ hour: 400, identity, answers: new Map([['main', followed]]) }), opts);
   assert.deepEqual(followedModel.rows.find(r => r.key === 'p1')!.cells.name!.value, { kind: 'known', value: 'Alice' });
   assert.deepEqual(followedModel.rows.find(r => r.key === 'user:deadbeef')!.cells.name!.value, { kind: 'notRecorded', reason: 'Player name is not valid UTF-8.' });
 
@@ -179,4 +187,78 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   assert.equal(apmTableProjection.nextChange?.(emptyReadView(55), followOpts), 188, 'trailing window leaves gap [10,20] at 20 + 168 = 188');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 180, panels: new Map([['main', reply]]) }), followOpts).emptyKind, 'unavailable', 'trailing [13,180] overlaps [10,20]');
   assert.equal(apmTableProjection.project(createBoundedReadView({ hour: 188, panels: new Map([['main', reply]]) }), followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');
+});
+
+test('apm-table formats derived eAPM and played duration from exact recorded operands without float drift and includes operands in tooltip', () => {
+  const driftFloat = 3 / (3 / 10);
+  const reply = {
+    available: true,
+    warnings: [],
+    players: [],
+    series: [
+      {
+        id: 'exact',
+        name: 'Exact',
+        nameMissing: null,
+        tag: 'GER',
+        hour: 100,
+        summary: {
+          apm: driftFloat,
+          confirmedApm: driftFloat,
+          orders: '3',
+          confirmedOrders: '3',
+          pausedOrders: '0',
+          unpausedMinutes: 3 / 10,
+          unpausedMinutesNum: '3',
+          unpausedMinutesDen: '10',
+          complete: true,
+          gaps: false,
+        },
+        points: [],
+      },
+      {
+        id: 'trunc',
+        name: 'Trunc',
+        nameMissing: null,
+        tag: 'ITA',
+        hour: 100,
+        summary: {
+          apm: 1 / 59.5,
+          confirmedApm: 1 / 59.5,
+          orders: '1',
+          confirmedOrders: '1',
+          pausedOrders: '0',
+          unpausedMinutes: 59.5,
+          unpausedMinutesNum: '119',
+          unpausedMinutesDen: '2',
+          complete: true,
+          gaps: false,
+        },
+        points: [],
+      },
+    ],
+  } as unknown as ApmReply;
+  const opts = {
+    players: true,
+    showPaused: false,
+    rankMarkers: false,
+    branchFirst: 0,
+    windowHours: 168,
+    staticSpan: [0, 100] as readonly [number, number],
+  };
+  const model = apmTableProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', reply]]) }), opts);
+  const exactRow = model.rows.find(r => r.key === 'exact')!;
+  const truncRow = model.rows.find(r => r.key === 'trunc')!;
+  assert.deepEqual(exactRow.cells.apm!.value, { kind: 'known', value: '10' }, '3 / (3/10) formats exact 10, not float 9.999999999999998 -> 9.9');
+  assert.deepEqual(exactRow.cells.minutes!.value, { kind: 'known', value: '<0:01' }, 'non-zero sub-minute duration prints <0:01, not 0:00');
+  assert.deepEqual(truncRow.cells.apm!.value, { kind: 'known', value: '<0.1' }, '1 / 59.5 prints <0.1, never 0');
+  assert.deepEqual(truncRow.cells.minutes!.value, { kind: 'known', value: '0:59' }, '59.5 minutes truncates to 0:59, never Math.round 1:00');
+  assert.ok(exactRow.cells.apm!.bar && exactRow.cells.apm!.bar.fraction.kind === 'known' && exactRow.cells.apm!.bar.fraction.value === 1, 'bar geometry still scales from float apm');
+
+  const cols = apmTableColumns(true, false);
+  const flat = resolveTableRows(model, tableSettingsOf(undefined, cols, { density: 'comfortable', sort: { column: 'apm', direction: 'descending' } }));
+  const tip = deriveTableTooltip(flat, 'exact', cols)!;
+  assert.equal(tip.rows.find(r => r.label === 'eAPM')?.valueState?.text, '10');
+  assert.equal(tip.rows.find(r => r.label === 'Actions')?.valueState?.text, '3');
+  assert.equal(tip.rows.find(r => r.label === 'Unpaused time')?.valueState?.text, '0.3 min');
 });

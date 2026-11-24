@@ -527,6 +527,51 @@ fn a_rows_history_is_hidden_while_it_is_gone_unavailable_or_unread() {
 }
 
 #[test]
+fn a_key_an_hour_read_in_part_did_not_reach_is_unread_there_never_absent_or_its_last_value() {
+    let recording = histories();
+    let held = recording.run(0).unwrap();
+    let (first, last) = (held.first_hour, held.last_hour());
+    let mut columns = vec![field(TableId::Countries, "tag"), field(TableId::Countries, "stability_raw")];
+    columns.sort_unstable();
+    let partial = first + 50;
+    for keys in [Keys::All, Keys::These(&[1, 2, 3, 4, 99])] {
+        let read = checked(&recording, 0, TableId::Countries, &columns, keys, first, last);
+        assert_eq!(read.statuses, statuses(&recording, 0, TableId::Countries, first, last).unwrap(), "{keys:?}");
+        assert!(matches!(read.reading(4, partial), Reading::Cells(_)), "the one country read at {partial} keeps its value");
+        assert!(matches!(read.reading(1, partial), Reading::Unread { status: Status::Truncated { .. }, reason: None }), "{:?}", read.reading(1, partial));
+        assert!(matches!(read.reading(1, partial - 1), Reading::Cells(_)) && matches!(read.reading(1, partial + 1), Reading::Cells(_)));
+        assert_eq!(read.reading(2, first + 300), Reading::Absent, "gone at a whole read");
+        assert!(matches!(read.reading(2, first + 1000), Reading::Unread { status: Status::Unavailable { .. }, reason: Some("refused") }), "{:?}", read.reading(2, first + 1000));
+        assert!(matches!(read.reading(99, partial), Reading::Unread { .. }) && read.reading(99, partial + 1) == Reading::Absent, "a key never seen is unknown where the read was partial");
+        assert!(matches!(read.reading(1, last + 1), Reading::Unread { status: Status::NotRecorded, .. }));
+        for key in [1, 2, 3, 99] {
+            let runs = read.readings(key);
+            assert_eq!((runs.first().map(|run| run.0), runs.last().map(|run| run.1)), (Some(first), Some(last)), "{keys:?} key {key}");
+            assert!(runs.windows(2).all(|pair| pair[0].1 + 1 == pair[1].0 && pair[0].2 != pair[1].2), "{keys:?} key {key}: {runs:?}");
+            for hour in [first, partial - 1, partial, partial + 1, first + 300, first + 1000, first + 1550, last] {
+                let at = runs.iter().find(|run| run.0 <= hour && hour <= run.1).unwrap();
+                assert_eq!(at.2, read.reading(key, hour), "{keys:?} key {key} at {hour}");
+            }
+        }
+        assert!(read.readings(3).iter().any(|run| run.2 == Reading::Absent) && read.readings(3).iter().any(|run| matches!(run.2, Reading::Cells(_))));
+    }
+    let three = checked(&recording, 0, TableId::Countries, &columns, Keys::These(&[3]), first, last);
+    assert_eq!(three.statuses, statuses(&recording, 0, TableId::Countries, first, last).unwrap(), "blocks no asked key lives in still say how they were read");
+    assert!(matches!(three.reading(3, partial), Reading::Unread { .. }) && three.reading(3, partial + 1) == Reading::Absent);
+}
+
+#[test]
+fn the_hours_statuses_of_a_history_cost_no_decode_beyond_its_walk() {
+    let recording = histories();
+    let first = recording.run(0).unwrap().first_hour;
+    let tag = [field(TableId::Countries, "tag")];
+    let (_, walked) = replay_columnar::unit::reader::count_decodes(|| crate::points::cells(&recording, 0, TableId::Countries, &tag, Keys::All, first, first + 999, None, &mut |_, _, _| true).unwrap());
+    let (read, counted) = replay_columnar::unit::reader::count_decodes(|| history(&recording, 0, TableId::Countries, &tag, Keys::All, first, first + 999).unwrap());
+    assert_eq!(counted, walked);
+    assert!(read.statuses.iter().any(|held| matches!(held.status, Status::Truncated { .. })) && read.reasons.is_empty());
+}
+
+#[test]
 fn a_history_of_some_keys_is_those_keys_history() {
     let recording = histories();
     let tag = field(TableId::Countries, "tag");
@@ -973,6 +1018,7 @@ fn format_143_recording_opens_withholds_variant_tables_and_unverified_required_t
         crate::lanes::Keys::All,
         100,
         100,
+        None,
         &mut |hour, key, cells| {
             queried.push((hour, key, cells.map(|c| c.to_vec())));
             true

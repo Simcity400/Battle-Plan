@@ -3,12 +3,12 @@ import type { OptionField } from '../../dashboard/options';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
-import { artState } from '../../families/table/identityCell.ts';
+import { cellArt } from '../../families/table/identityCell.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY, tableFamilyOptions, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
-import { formatScalar } from '../../families/valueFormat.ts';
-import type { BreakdownPart, PowerSpendingBreakdownReply, SpendCurrency } from '../../generated/dashboard';
+import { formatRational } from '../../families/valueFormat.ts';
+import type { BreakdownAmount, BreakdownPart, PowerSpendingBreakdownReply, SpendCurrency } from '../../generated/dashboard';
 
 const UNIT: Readonly<Record<SpendCurrency, string>> = { Political: 'PP', Command: 'CP' };
 
@@ -40,47 +40,53 @@ function validate(raw: unknown): PowerSpendingBreakdownReply {
   return reply as PowerSpendingBreakdownReply;
 }
 
-function amountOf(part: Pick<BreakdownPart, 'raw' | 'state' | 'reason'>, what: string): Value {
-  if (part.raw === null || part.state === 'notRecorded') return notRecorded(part.reason ?? `${what} was not recorded`);
-  const raw = BigInt(part.raw);
+const POWER_SCALE = 5;
+const SPENT_FORMAT = { decimals: POWER_SCALE, maxDecimals: 0 };
+
+function units(amount: BreakdownAmount): bigint {
+  return (BigInt(amount.numerator) * 10n ** BigInt(POWER_SCALE)) / BigInt(amount.denominator);
+}
+
+function amountOf(part: Pick<BreakdownPart, 'amount' | 'state' | 'reason'>, what: string): Value {
+  if (part.amount === null || part.state === 'notRecorded') return notRecorded(part.reason ?? `${what} was not recorded`);
+  const raw = units(part.amount);
   if (part.state === 'partial' || part.state === 'atLeast') return partialValue(raw, part.reason ?? 'Some payments were not recorded', { atLeast: part.state === 'atLeast' });
   return raw === 0n ? zeroValue(0n) : knownValue(raw);
 }
 
 function picture(readView: BoundedReadView, part: BreakdownPart): TableCell {
-  return { value: knownValue(part.name), artShape: 'square', artName: part.name, ...(part.art ? { iconSlot: true, ...artState(readView, { kind: 'sprite', ...part.art }) } : {}) };
+  return { value: knownValue(part.name), artShape: 'square', artName: part.name, ...(part.art ? { iconSlot: true, ...cellArt(readView, { kind: 'sprite', ...part.art }, '') } : {}) };
 }
 
-function row(readView: BoundedReadView, part: BreakdownPart, decimals: number, top: boolean, keyPrefix: string): TableRow {
+function row(readView: BoundedReadView, part: BreakdownPart, top: boolean, keyPrefix: string): TableRow {
   const key = `${keyPrefix}${part.key}`;
-  const format = { decimals, maxDecimals: 0 };
   return {
     key,
     name: part.name,
     cells: {
       ...(top ? { picture: picture(readView, part) } : {}),
       item: part.nameMissing ? { value: notRecorded(part.nameMissing), missingFigure: part.name } : { value: knownValue(part.name) },
-      spent: { value: amountOf(part, part.name), format },
+      spent: { value: amountOf(part, part.name), format: SPENT_FORMAT },
       share: top
         ? { value: part.share === null ? notRecorded(part.reason ?? 'No share where the whole is a lower bound') : part.share === 0 ? zeroValue(0) : knownValue(part.share) }
         : { value: notApplicable('A share is shown for each category'), blank: true },
       last: { value: part.last === null ? notRecorded('Date not recorded') : knownValue(part.last) },
     },
     ...(part.reason ? { tooltipNote: part.reason } : {}),
-    ...(part.children.length ? { children: part.children.map(child => row(readView, child, decimals, false, `${key}/`)) } : {}),
+    ...(part.children.length ? { children: part.children.map(child => row(readView, child, false, `${key}/`)) } : {}),
   };
 }
 
 function summary(reply: PowerSpendingBreakdownReply, currency: SpendCurrency): { readonly text: string; readonly partial: string | null } {
-  const decimals = reply.breakdown.decimals;
-  const amount = (raw: string) => formatScalar(BigInt(raw), { decimals, maxDecimals: 0 });
+  const amount = (exact: BreakdownAmount) => formatRational(BigInt(exact.numerator), BigInt(exact.denominator));
   const total = reply.breakdown.total;
-  const parts = [`${total.raw === null ? 'Not recorded' : amount(total.raw)} spent`];
-  if (reply.gainedRaw !== null) parts.push(`${amount(reply.gainedRaw)} gained`);
-  if (currency === 'Command' && reply.lostAtCapRaw !== null && BigInt(reply.lostAtCapRaw) > 0n) parts.push(`${amount(reply.lostAtCapRaw)} lost at the cap`);
+  const parts = [`${total.amount === null ? 'Not recorded' : amount(total.amount)} spent`];
+  if (reply.gained !== null) parts.push(`${amount(reply.gained)} gained`);
+  if (currency === 'Command' && reply.lostAtCap !== null && BigInt(reply.lostAtCap.numerator) > 0n) parts.push(`${amount(reply.lostAtCap)} lost at the cap`);
   const reasons = [
     ...(total.state !== 'known' && total.reason ? [total.reason] : []),
-    ...(reply.gainedReason ? [reply.gainedReason] : reply.gainedRaw === null ? ['Gains were not recorded'] : []),
+    ...(reply.gainedReason ? [reply.gainedReason] : reply.gained === null ? ['Gains were not recorded'] : []),
+    ...(currency === 'Command' && reply.lostAtCapReason && reply.lostAtCapReason !== reply.gainedReason ? [reply.lostAtCapReason] : []),
   ];
   return { text: parts.join(' · '), partial: reasons.length ? reasons.join('; ') : null };
 }
@@ -96,7 +102,7 @@ function projectSpending(readView: BoundedReadView, options: PowerSpendingProjec
   if (refused !== undefined) return { columns, rows: [], hour, refused };
   const reply = readView.panel<PowerSpendingBreakdownReply>('main');
   if (!reply) return { columns, rows: [], hour };
-  const rows = reply.breakdown.parts.map(part => row(readView, part, reply.breakdown.decimals, true, ''));
+  const rows = reply.breakdown.parts.map(part => row(readView, part, true, ''));
   const said = summary(reply, options.currency);
   const base: TableModel = {
     columns,

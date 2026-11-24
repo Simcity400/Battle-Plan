@@ -157,6 +157,74 @@ typed_codec!(
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct LandCombatEdgesRow {
+    pub id: u64,
+    pub kind: u8,
+    pub hour: i32,
+    pub combat: u64,
+    pub division: Option<u64>,
+    pub side: u8,
+    pub manpower: Option<i32>,
+    pub casualties_before: Option<i32>,
+    pub casualties_after: Option<i32>,
+    pub withheld: u8,
+}
+impl LandCombatEdgesRow {
+    pub const OPENED: u8 = 0;
+    pub const EXITED: u8 = 1;
+    pub const NO_SIDE: u8 = u8::MAX;
+    pub const COMBAT_UNREADABLE: u8 = 1;
+    pub const DIVISION_UNREADABLE: u8 = 2;
+    pub const SIDE_UNKNOWN: u8 = 4;
+    pub const HOUR_UNREADABLE: u8 = 8;
+    const REASONS: [(u8, &'static str); 4] = [
+        (Self::COMBAT_UNREADABLE, "The combat could not be read"),
+        (Self::DIVISION_UNREADABLE, "The division could not be read"),
+        (Self::SIDE_UNKNOWN, "The division was on neither side of the combat"),
+        (Self::HOUR_UNREADABLE, "The game hour could not be read; the row carries the hour it was drained"),
+    ];
+
+    pub fn withheld_reason(&self) -> Option<String> {
+        let known = Self::REASONS.iter().fold(0, |bits, &(bit, _)| bits | bit);
+        let mut reasons: Vec<&str> = Self::REASONS
+            .iter()
+            .filter(|&&(bit, _)| self.withheld & bit != 0)
+            .map(|&(_, reason)| reason)
+            .collect();
+        if self.withheld & !known != 0 {
+            reasons.push("Withheld for a reason this build does not know");
+        }
+        (!reasons.is_empty()).then(|| reasons.join("; "))
+    }
+}
+typed_codec!(
+    LandCombatEdgesRow,
+    128,
+    |r| (r.combat as u128) << 64 | r.id as u128,
+    |k| Self { combat: (k >> 64) as u64, id: k as u64, ..Default::default() },
+    {
+        0 => (kind): U8,
+        1 => (hour): I32,
+        2 => (division): OptionalU64,
+        3 => (side): U8,
+        4 => (manpower): OptionalI32,
+        5 => (casualties_before): OptionalI32,
+        6 => (casualties_after): OptionalI32,
+        7 => (withheld): U8
+    },
+    |r| {
+        if r.kind > LandCombatEdgesRow::EXITED {
+            Err(invalid("land combat edge kind invalid"))
+        } else if r.side > 1 && r.side != LandCombatEdgesRow::NO_SIDE {
+            Err(invalid("land combat edge side invalid"))
+        } else {
+            Ok(())
+        }
+    }
+);
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandEventCoverageRow {
     pub id: u32,
     pub epoch: u64,

@@ -80,10 +80,16 @@ fn a_nuclear_total_adds_the_shown_counts_as_the_top_bar_does_and_ranks_ties_by_t
     let mut rank = serde_json::to_value(&countries).unwrap();
     let mut changed = rows.to_vec();
     changed[0] = nuke(1, 0, 8);
-    nuclear_arsenal::rerank(&mut rank, &changed, 1, "GER").unwrap();
+    nuclear_arsenal::rerank(&mut rank, &changed, 1, "GER", None).unwrap();
     assert_eq!(rank, serde_json::to_value(nuclear_arsenal::countries(&changed, tag).0).unwrap());
     let (sentinel, _, _) = nuclear_arsenal::countries(&[NukeRow { country: 1, nuke_type: 0, amount_raw: i64::MAX, ready: 0 }, nuke(1, 1, 1)], tag);
     assert_eq!(sentinel[0].total, 0xa7c5 + 1, "the top bar adds the game's sentinel as it shows it");
+    let chosen = nuclear_arsenal::chosen_countries(countries, &[(9, 3, "FRA".to_owned()), (8, 5, "ITA".to_owned()), (7, 1, "GER".to_owned())]);
+    assert_eq!(
+        chosen.iter().map(|country| (country.tag.as_str(), country.slot, country.total)).collect::<Vec<_>>(),
+        [("GER", Some(7), 5), ("FRA", Some(9), 1), ("ITA", Some(8), 0)],
+        "each chosen holder is one row keyed by its slot, the product orders them, and one with no stockpile row in a whole table holds none"
+    );
 }
 
 #[test]
@@ -299,7 +305,7 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
     slots.insert(2, vec![(10, 19, Some(1_000_000)), (20, 29, Some(4_000_000)), (30, 39, Some(6_000_000))]);
     slots.insert(3, vec![(20, 29, Some(2_000_000)), (30, 39, Some(4_000_000))]);
     let complete = [(10, 39)];
-    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, aggregates_complete: &complete, missing: &[] };
+    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, aggregates_complete: &complete, tension_missing: &[], aggregates_missing: &[] };
     let tag_of = |slot: u32, _: i32| match slot {
         1 => Some(("GER".to_owned(), false)),
         2 => Some(("JAP".to_owned(), false)),
@@ -310,24 +316,39 @@ fn world_tension_stack_computes_exact_shares_folds_other_and_clips_future() {
     let out = compute_stack(&input, 10, 25, 2, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
     assert_eq!(out.end_hour, Some(25));
     assert_eq!(out.capped_end_tension, Some(100.0));
+    assert_eq!(out.capped_end_tension_raw.as_deref(), Some("100000"));
+    assert_eq!(out.end_sum_raw.as_deref(), Some("12000000"));
     assert!(!out.downsampled);
     assert_eq!(out.hours, [10, 20]);
     assert_eq!(out.total, [Some(25.0), Some(100.0)]);
+    assert_eq!(out.total_raw, [Some("25000".into()), Some("100000".into())]);
+    assert_eq!(out.sum_raw, [Some("2500000".into()), Some("12000000".into())]);
     assert_eq!(out.bands.len(), 2);
     assert_eq!(out.bands[0].tag.as_deref(), Some("GER"));
     assert_eq!(out.bands[1].tag.as_deref(), Some("JAP"));
     assert_eq!(out.bands[0].end_value, Some(50.0));
+    assert_eq!(out.bands[0].end_raw.as_deref(), Some("6000000"));
+    assert_eq!(out.bands[0].values_raw, [Some("1500000".into()), Some("6000000".into())]);
     assert!((out.bands[1].end_value.unwrap() - 100.0 / 3.0).abs() < 1e-9);
+    assert_eq!(out.bands[1].end_raw.as_deref(), Some("4000000"));
     let other = out.other.unwrap();
     assert_eq!(other.count, 1);
     assert!((other.end_value.unwrap() - 100.0 / 6.0).abs() < 1e-9);
+    assert_eq!(other.end_raw.as_deref(), Some("2000000"));
+    assert_eq!(other.values_raw, [Some("0".into()), Some("2000000".into())]);
     assert_eq!(out.next_change_hour, Some(30));
 
     let rec = compute_stack(&input, 10, 25, 2, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
-    assert_eq!(rec.total, [Some(25.0), Some(120.0)]);
+    assert_eq!(rec.total, [Some(25.0), Some(100.0)]);
+    assert_eq!(rec.total_raw, [Some("25000".into()), Some("100000".into())]);
+    assert_eq!(rec.capped_end_tension_raw.as_deref(), Some("100000"));
     assert_eq!(rec.bands[0].end_value, Some(60.0));
+    assert_eq!(rec.bands[0].end_raw.as_deref(), Some("6000000"));
     assert_eq!(rec.bands[1].end_value, Some(40.0));
-    assert_eq!(rec.other.unwrap().end_value, Some(20.0));
+    assert_eq!(rec.bands[1].end_raw.as_deref(), Some("4000000"));
+    let rec_other = rec.other.unwrap();
+    assert_eq!(rec_other.end_value, Some(20.0));
+    assert_eq!(rec_other.end_raw.as_deref(), Some("2000000"));
 }
 
 #[test]
@@ -344,7 +365,7 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
     slots.insert(7, vec![(10, 19, Some(-50_000))]);
     let complete = [(10, 19)];
     let missing = [MissingSpan { first_hour: 30, last_hour: 35, reason: "gap".into() }];
-    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, aggregates_complete: &complete, missing: &missing };
+    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, aggregates_complete: &complete, tension_missing: &missing, aggregates_missing: &missing };
     let tag_of = |slot: u32, _: i32| match slot {
         1 => Some(("GER".to_owned(), false)),
         2 => Some(("JAP".to_owned(), false)),
@@ -393,6 +414,57 @@ fn world_tension_stack_preserves_negative_contributions_independent_coverage_and
 }
 
 #[test]
+fn world_tension_stack_states_the_recorded_world_scalar_and_each_missing_reason_never_a_sum_or_subtotal() {
+    use dashboard_query::series::MissingSpan;
+    use std::collections::{BTreeMap, HashSet};
+    use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
+
+    let tension = vec![(10, 14, 100_000)];
+    let sum = vec![(10, 19, 12_500_000)];
+    let mut slots = BTreeMap::new();
+    slots.insert(1, vec![(10, 19, Some(10_000_000))]);
+    slots.insert(2, vec![(10, 19, Some(2_000_000))]);
+    slots.insert(3, vec![(10, 14, Some(500_000))]);
+    let complete = [(10, 14)];
+    let tension_missing = [MissingSpan { first_hour: 15, last_hour: 19, reason: "World tension withheld".into() }];
+    let aggregates_missing = [MissingSpan { first_hour: 15, last_hour: 19, reason: "Contributions truncated".into() }];
+    let input = StackInput { tension: &tension, sum: &sum, slots: &slots, aggregates_complete: &complete, tension_missing: &tension_missing, aggregates_missing: &aggregates_missing };
+    let tag_of = |slot: u32, _: i32| match slot {
+        1 => Some(("GER".to_owned(), false)),
+        2 => Some(("JAP".to_owned(), false)),
+        3 => Some(("ITA".to_owned(), false)),
+        _ => None,
+    };
+    let no_change = |_: u32, _: i32| None;
+
+    let all = compute_stack(&input, 10, 12, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    assert_eq!(all.total, [Some(100.0)], "a recorded world tension of 100% is 100%, not the uncapped 125% sum");
+    assert_eq!(all.total_raw, [Some("100000".into())]);
+    assert_eq!(all.capped_end_tension_raw.as_deref(), Some("100000"));
+    assert_eq!(all.end_missing, None);
+
+    let japan: HashSet<&str> = ["JAP"].into_iter().collect();
+    let one = compute_stack(&input, 10, 12, 5, TensionValueMode::Recorded, Some(&japan), None, None, 200, tag_of, no_change);
+    assert_eq!(one.total, [Some(100.0)], "one selected contributor of 20% does not make the world 20%");
+    assert_eq!(one.bands.len(), 1);
+    assert_eq!(one.bands[0].end_raw.as_deref(), Some("2000000"));
+
+    let gap = compute_stack(&input, 10, 17, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
+    assert_eq!(gap.end_missing.as_deref(), Some("World tension withheld"), "the world end states why it is not known");
+    let ita = gap.bands.iter().find(|band| band.slot == 3).unwrap();
+    assert_eq!(ita.end_raw, None);
+    assert_eq!(ita.end_missing.as_deref(), Some("Contributions truncated"), "an unread contribution states its own reason");
+    let ger = gap.bands.iter().find(|band| band.slot == 1).unwrap();
+    assert_eq!(ger.end_raw.as_deref(), Some("10000000"), "a witnessed contribution keeps its value beside an unread world scalar");
+    assert_eq!(ger.end_missing, None);
+
+    let share_gap = compute_stack(&input, 10, 17, 5, TensionValueMode::Share, None, None, None, 200, tag_of, no_change);
+    let ger_share = share_gap.bands.iter().find(|band| band.slot == 1).unwrap();
+    assert_eq!(ger_share.end_value, None);
+    assert_eq!(ger_share.end_missing.as_deref(), Some("World tension withheld"), "a share of an unread world tension says why");
+}
+
+#[test]
 fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
     use std::collections::BTreeMap;
     use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
@@ -407,7 +479,7 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
     let mut slots = BTreeMap::new();
     slots.insert(1, runs);
     let complete = [(0, 79)];
-    let input = StackInput { tension: &[], sum: &sum, slots: &slots, aggregates_complete: &complete, missing: &[] };
+    let input = StackInput { tension: &[], sum: &sum, slots: &slots, aggregates_complete: &complete, tension_missing: &[], aggregates_missing: &[] };
     let out = compute_stack(
         &input,
         0,
@@ -453,7 +525,7 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
     let mut slots = BTreeMap::new();
     slots.insert(1, vec![(10, 19, Some(400_000))]);
     let complete = [(10, 19)];
-    let input = StackInput { tension: &[], sum: &[(10, 19, 400_000)], slots: &slots, aggregates_complete: &complete, missing: &[] };
+    let input = StackInput { tension: &[], sum: &[(10, 19, 400_000)], slots: &slots, aggregates_complete: &complete, tension_missing: &[], aggregates_missing: &[] };
 
     let named_20 = Named::new(&holders, 20);
     assert_eq!(named_20.next_change(1, 20), Some(26));
@@ -533,7 +605,8 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
         sum: &[(10, 40, 1_000_000)],
         slots: &slots,
         aggregates_complete: &complete,
-        missing: &[],
+        tension_missing: &[],
+        aggregates_missing: &[],
     };
     let tag_of = |slot: u32, _: i32| match slot {
         1 => Some(("GER".to_owned(), false)),
@@ -548,9 +621,48 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
     assert_eq!(out.hours, [10, 25], "ITA joining at hour 25 introduces a step change");
     let ita = out.bands.iter().find(|b| b.tag.as_deref() == Some("ITA")).unwrap();
     assert_eq!(ita.values, [None, Some(3.0)], "ITA has no contribution before joining Axis at hour 25");
-    assert_eq!(out.total, [Some(5.0), Some(8.0)], "group total sums only current members at each hour");
+    assert_eq!(out.total, [None, None], "the world line is the recorded world scalar, never the members' subtotal");
 
     let top_out = compute_stack(&input, 10, 30, 5, TensionValueMode::Recorded, None, None, Some(2), 200, tag_of, |_, _| None);
     assert_eq!(top_out.bands.len(), 2);
     assert!(top_out.other.is_none(), "Top-N selection omits Other band");
+}
+
+#[test]
+fn factory_mix_computes_rust_shares_keeps_witnessed_parts_and_refuses_unreconciled_shares() {
+    use super::factory_mix::row_mix;
+    use replay_data::rows::CountryFactoriesRow;
+
+    let base = CountryFactoriesRow {
+        country: 1,
+        military_total_raw: 40 * 100_000,
+        military_damaged_raw: 10 * 100_000,
+        naval_total_raw: 20 * 100_000,
+        civilian_total_raw: 40 * 100_000,
+        ..Default::default()
+    };
+    let (total, values, shares, total_missing, parts_missing) = row_mix(&base, "built", &[0, 1, 2]);
+    assert_eq!(total, Some(100));
+    assert_eq!(values, vec![Some(30), Some(20), Some(40), Some(10), Some(0), Some(0)]);
+    assert_eq!(shares, vec![Some(0.3), Some(0.2), Some(0.4), Some(0.1), Some(0.0), Some(0.0)]);
+    assert!(total_missing.is_none());
+    assert!(parts_missing.is_none());
+
+    let mut partial = base.clone();
+    partial.military_damaged_raw = 50 * 100_000;
+    let (total_p, values_p, shares_p, total_missing_p, parts_missing_p) = row_mix(&partial, "built", &[0, 1, 2]);
+    assert_eq!(total_p, Some(100));
+    assert_eq!(values_p, vec![None, Some(20), Some(40), None, Some(0), Some(0)], "witnessed naval and civilian counts stay");
+    assert_eq!(shares_p, vec![None, Some(0.2), Some(0.4), None, Some(0.0), Some(0.0)], "witnessed shares stay beside unreconciled military");
+    assert!(total_missing_p.is_none());
+    assert!(parts_missing_p.is_some());
+
+    let mut neg_free = base;
+    neg_free.consumer_goods = 50;
+    let (total_n, values_n, shares_n, total_missing_n, parts_missing_n) = row_mix(&neg_free, "free", &[0, 1, 2]);
+    assert_eq!(total_n, Some(40));
+    assert_eq!(values_n, vec![Some(30), Some(20), Some(-10)], "witnessed counts stay even when civilian free is negative");
+    assert_eq!(shares_n, vec![None, None, None], "shares refused when a part is negative");
+    assert!(total_missing_n.is_none());
+    assert!(parts_missing_n.is_some());
 }

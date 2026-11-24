@@ -145,10 +145,6 @@ export function resolveHostInput(
   return expansion ? { kind: 'toggle', action: toggled, expansion } : null;
 }
 
-export function dragContinues(drag: InstalledRecord | null, gate: HostInputGate): boolean {
-  return drag !== null && !gate.held && gate.current !== null && gate.current.picture.owner === drag.picture.owner;
-}
-
 export class BoundSelections {
   #log: (readonly [generation: number, key: string | null])[] = [];
 

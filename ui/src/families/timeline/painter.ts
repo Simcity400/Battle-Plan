@@ -14,12 +14,12 @@ import {
   drawTimeAxis,
   drawTimeAxisGrid,
   drawTimelineBar,
-  type ArtSlotState,
   type TimeAxisTick,
 } from '../../draw/kit.ts';
-import { drawMediaSlot, toArtSlotState } from '../art/adapters.ts';
-import { unavailableArt } from '../art/types.ts';
-import type { ArtHandle, ArtProvider, FamilyTheme } from '../contract.ts';
+import { drawMediaSlot, resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
+import { NO_ART } from '../art/types.ts';
+import type { FamilyTheme } from '../contract.ts';
 import {
   BAR_HEIGHT,
   BAR_HEIGHT_ICONS,
@@ -38,7 +38,7 @@ import { coalescedGaps, paintedSpans, type TimelineResolution } from './resoluti
 export interface TimelinePaintInput {
   readonly model: TimelineModel;
   readonly layout: TimelineLayout;
-  readonly art: ArtProvider;
+  readonly artCache?: LaneArtCache;
   readonly theme: FamilyTheme;
   readonly scrollTop: number;
   readonly expanded: Readonly<Record<string, boolean>>;
@@ -62,14 +62,10 @@ const DIAMOND = 12;
 const MARK = 14;
 const OUTCOME_GAP = 16;
 
-function artState(art: ArtProvider, handle: ArtHandle | null | undefined, missing: boolean | undefined, name: string): ArtSlotState {
-  if (handle) return toArtSlotState(art.resolve(handle), name);
-  return missing ? { kind: 'missing', resolvedName: name } : { kind: 'none' };
-}
 
 function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: TimelinePaintInput): void {
   const { lane } = placed;
-  const { layout, theme, art, expanded } = input;
+  const { layout, theme, expanded, artCache } = input;
   const mid = y + placed.height / 2;
   let x = LABEL_PAD + (lane.depth ?? 0) * INDENT;
   const right = layout.labelWidth;
@@ -77,19 +73,11 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
     drawChevron(ctx, x - 4, mid, laneOpen(lane, expanded), theme);
     x += CHEVRON + 6;
   }
-  if (lane.flag || lane.flagTag) {
-    drawMediaSlot(ctx, x, mid, FLAG_W, FLAG_H, {
-      kind: 'flag',
-      art: lane.flag ? art.resolve(lane.flag) : unavailableArt('Flag unavailable'),
-      tag: lane.flagTag,
-    }, theme);
+  if (lane.flag) {
+    drawMediaSlot(ctx, x, mid, FLAG_W, FLAG_H, { kind: 'flag', art: lane.flag, ...(lane.flagTag ? { tag: lane.flagTag } : {}) }, theme, { artCache });
     x += FLAG_W + 8;
-  } else if (lane.icon || lane.iconMissing) {
-    drawMediaSlot(ctx, x, mid, LANE_ICON, LANE_ICON, {
-      kind: 'art',
-      art: lane.icon ? art.resolve(lane.icon) : unavailableArt('Art unavailable'),
-      resolvedName: lane.label,
-    }, theme, { radius: 3 });
+  } else if (lane.icon) {
+    drawMediaSlot(ctx, x, mid, LANE_ICON, LANE_ICON, { kind: 'art', art: lane.icon, name: lane.label }, theme, { artCache, radius: 3 });
     x += LANE_ICON + 8;
   } else if (lane.swatch) {
     ctx.save();
@@ -149,11 +137,11 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
 }
 
 function drawSide(ctx: Canvas2D, side: TimelineSideLabel, x: number, right: number, mid: number, input: TimelinePaintInput, leadName: boolean, stripLimit = right): number {
-  const { theme, art } = input;
+  const { theme, artCache } = input;
   ctx.save();
   if (side.dim) ctx.globalAlpha = LOSER_ALPHA;
   if (x + FLAG_W <= right) {
-    drawMediaSlot(ctx, x, mid, FLAG_W, FLAG_H, { kind: 'flag', art: side.flag ? art.resolve(side.flag) : unavailableArt('Flag unavailable'), tag: side.flagTag }, theme);
+    drawMediaSlot(ctx, x, mid, FLAG_W, FLAG_H, { kind: 'flag', art: side.flag, tag: side.flagTag }, theme, { artCache });
     x += FLAG_W + 6;
   }
   if (leadName) {
@@ -167,7 +155,7 @@ function drawSide(ctx: Canvas2D, side: TimelineSideLabel, x: number, right: numb
   }
   for (const member of side.strip) {
     if (x + STRIP_W > Math.min(right, stripLimit)) break;
-    drawMediaSlot(ctx, x, mid, STRIP_W, STRIP_H, { kind: 'flag', art: member.flag ? art.resolve(member.flag) : unavailableArt('Flag unavailable'), tag: member.tag }, theme);
+    drawMediaSlot(ctx, x, mid, STRIP_W, STRIP_H, { kind: 'flag', art: member.flag, tag: member.tag }, theme, { artCache });
     x += STRIP_W + 2;
   }
   ctx.restore();
@@ -192,14 +180,14 @@ function drawSides(ctx: Canvas2D, sides: readonly [TimelineSideLabel, TimelineSi
 
 function drawOutcome(ctx: Canvas2D, lane: TimelineLane, mid: number, input: TimelinePaintInput): void {
   const { outcome } = lane;
-  const { layout, theme, art } = input;
+  const { layout, theme, artCache } = input;
   if (!outcome || layout.compact) return;
   let x = layout.plotRight + OUTCOME_GAP;
   const right = layout.width - LABEL_PAD;
   if (right - x < 40) return;
   ctx.save();
   if (outcome.mark === 'flag') {
-    drawMediaSlot(ctx, x, mid, MARK, MARK, { kind: 'art', art: outcome.flag ? art.resolve(outcome.flag) : unavailableArt('Art unavailable'), resolvedName: outcome.text }, theme);
+    drawMediaSlot(ctx, x, mid, MARK, MARK, { kind: 'art', art: outcome.flag ?? NO_ART, resolvedName: outcome.text }, theme, { artCache });
   } else {
     ctx.fillStyle = outcome.mark === 'ongoing' ? theme.accent : theme.muted;
     ctx.beginPath();
@@ -247,11 +235,11 @@ function drawSplit(ctx: Canvas2D, span: TimelineSpan, x0: number, x1: number, mi
 }
 
 function drawMarks(ctx: Canvas2D, span: TimelineSpan, mid: number, input: TimelinePaintInput): void {
-  const { layout, theme, art } = input;
+  const { layout, theme, artCache } = input;
   for (const mark of span.marks ?? []) {
     if (mark.hour < layout.startHour || mark.hour > layout.endHour) continue;
     const x = hourToX(layout, mark.hour);
-    drawMediaSlot(ctx, x - MARK / 2, mid, MARK, MARK, { kind: 'art', art: mark.art ? art.resolve(mark.art) : unavailableArt('Art unavailable'), resolvedName: mark.label }, theme);
+    drawMediaSlot(ctx, x - MARK / 2, mid, MARK, MARK, { kind: 'art', art: mark.art, resolvedName: mark.label }, theme, { artCache });
   }
 }
 
@@ -286,7 +274,7 @@ function drawGroupRule(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Ti
 }
 
 function laneHasIcons(lane: TimelineLane): boolean {
-  return lane.spans.some(span => span.icon || span.iconMissing);
+  return lane.spans.some(span => span.icon !== undefined);
 }
 
 function drawOpenedMarker(ctx: Canvas2D, lane: TimelineLane, mid: number, input: TimelinePaintInput): void {
@@ -315,7 +303,7 @@ function drawOpenedMarker(ctx: Canvas2D, lane: TimelineLane, mid: number, input:
 }
 
 function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: TimelinePaintInput): void {
-  const { layout, model, theme, art } = input;
+  const { layout, model, theme, artCache } = input;
   const icons = model.iconsOnBars && laneHasIcons(lane);
   const barH = lane.barHeight ?? (icons ? BAR_HEIGHT_ICONS : BAR_HEIGHT);
   const y = Math.round(mid - barH / 2);
@@ -336,7 +324,7 @@ function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Timelin
       heldBefore: span.heldBefore,
       startBy: span.startBy,
       endUnseen: span.endUnseen,
-      ...(icons && (span.icon || span.iconMissing) ? { icon: artState(art, span.icon, span.iconMissing, span.label ?? lane.label) } : {}),
+      ...(icons && span.icon ? { icon: toArtSlotState(resolveCachedArt(span.icon, artCache), span.label ?? lane.label) } : {}),
       ...(span.label && barH >= BAR_HEIGHT ? { label: span.label } : {}),
     });
     drawMarks(ctx, span, mid, input);

@@ -2,8 +2,6 @@ import { readTokens } from '../charts/tokens.ts';
 import { resolveKitTokens } from '../draw/kit.ts';
 import type { FamilyTheme } from './contract.ts';
 
-export type { FamilyTheme };
-
 export function readFamilyTheme(): FamilyTheme | undefined {
   if (typeof document === 'undefined') return undefined;
   const tokens = readTokens();

@@ -1,25 +1,19 @@
 import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
-import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
+import { GROUP_EMPTY } from '../../families/bars/forceAtRace.ts';
+import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings, type SeriesRaceBaseOptions } from '../../families/bars/seriesRace.ts';
+import { type BarsDataRow, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
-import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
+import type { BoundedReadView } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { NukeCountry, NukeType } from '../../generated/dashboard';
-import { typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
+import { nuclearArsenalSources, nukeRowIdentity, typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
-export interface NuclearArsenalRaceOptions {
-  readonly all: boolean;
-  readonly chosenTags: readonly string[];
-  readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
-  readonly membership: Readonly<Record<string, HourRanges>> | null;
-  readonly unobserved: HourRanges;
-  readonly top: number | null;
+export interface NuclearArsenalRaceOptions extends SeriesRaceBaseOptions {
   readonly split: boolean;
 }
 
@@ -37,7 +31,7 @@ function makeRow(
   types: ReadonlyMap<number, { readonly label: string; readonly color: string }>,
   split: boolean,
 ): BarsDataRow {
-  const pres = countryRowPresentation(readView, row.tag);
+  const { key, pres } = nukeRowIdentity(readView, row);
   const value = row.total === 0 ? zeroValue() : knownValue(row.total);
   const tooltipItems: TooltipListItem[] = [
     { label: 'Nuclear stockpile', value: formatScalar(row.total, 'integer') },
@@ -72,8 +66,8 @@ function makeRow(
   }
   return {
     kind: 'data',
-    key: row.tag,
-    subject: row.tag,
+    key,
+    subject: key,
     label: pres.label,
     labelMissing: pres.labelMissing,
     media: pres.media,
@@ -89,25 +83,10 @@ function makeRow(
   };
 }
 
-function compareExplicitRows(a: BarsDataRow, b: BarsDataRow): number {
-  const aMissing = a.numeric === null || a.numeric === undefined;
-  const bMissing = b.numeric === null || b.numeric === undefined;
-  if (aMissing !== bMissing) return aMissing ? 1 : -1;
-  if (!aMissing && !bMissing && a.numeric !== b.numeric) return b.numeric! - a.numeric!;
-  return compareTags(a.subject ?? a.key, b.subject ?? b.key);
-}
-
 export const nuclearArsenalRaceProjection: BarsProjection<NuclearArsenalRaceOptions> = registerFamilyProjection({
   kind: 'nuclear-arsenal',
   family: 'bars',
-  nextChange(readView, options) {
-    const hour = readView.hour;
-    return Math.min(
-      nextHoldersChange(options.holders, hour),
-      nextRangesChange(options.unobserved, hour),
-      nextMembershipChange(options.membership, hour),
-    );
-  },
+  nextChange: () => Infinity,
   project(readView: BoundedReadView, options: NuclearArsenalRaceOptions): BarsModel {
     const hour = readView.hour;
     const baseModel = {
@@ -118,10 +97,6 @@ export const nuclearArsenalRaceProjection: BarsProjection<NuclearArsenalRaceOpti
       scaleUnit: 'Nuclear bombs',
       scaleFormat: { decimals: 0 },
     };
-
-    if (options.top == null && options.unobserved.some(([first, last]) => first <= hour && hour <= last)) {
-      return { ...baseModel, rows: [], empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable' };
-    }
 
     const refused = readView.refused('main');
     if (refused) {
@@ -139,57 +114,16 @@ export const nuclearArsenalRaceProjection: BarsProjection<NuclearArsenalRaceOpti
     }
 
     const types = typeInfoMap(reply.types);
-    let selected: NukeCountry[];
-    if (options.top != null || options.all) {
-      selected = reply.countries;
-    } else if (options.membership) {
-      selected = reply.countries.filter(row => inHourRanges(options.membership![row.tag], hour));
-    } else if (options.holders) {
-      const activeTags = new Set<string>();
-      for (const runs of Object.values(options.holders)) {
-        const tag = holderTagAt(runs, hour);
-        if (tag !== null) activeTags.add(tag);
-      }
-      selected = reply.countries.filter(row => activeTags.has(row.tag));
-    } else {
-      const chosen = new Set(options.chosenTags);
-      selected = reply.countries.filter(row => chosen.has(row.tag));
-    }
-
-    const rows = selected.map(row => makeRow(readView, row, types, options.split));
-    if (options.top == null && !options.all) rows.sort(compareExplicitRows);
+    const rows = reply.countries.map(row => makeRow(readView, row, types, options.split));
 
     return {
       ...baseModel,
       rows,
       warnings: reply.warnings,
-      ...(!rows.length ? { empty: 'No nuclear stockpile recorded at this date.', emptyKind: 'empty' as const } : {}),
+      ...(!rows.length ? { empty: options.group ? GROUP_EMPTY : 'No nuclear stockpile recorded at this date.', emptyKind: 'empty' as const } : {}),
     };
   },
 }, 'race');
-
-function nuclearArsenalRaceSources(ctx: FamilyPlanContext): SourcePlan {
-  const top = ctx.countries.top;
-  const asked = top != null ? { branchId: ctx.branch.id, top } : { branchId: ctx.branch.id };
-  return {
-    owner: `nuclear-arsenal:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top ?? 'all'}`,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage: top != null ? { mode: 'population', form: 'top', limit: top } : { mode: 'population', form: 'all' },
-        product: 'nuclear-arsenal',
-        followQuery: { panel: 'nuclear-arsenal', ...asked },
-        params: asked,
-        validate: validateNuclearArsenal,
-      },
-    }],
-  };
-}
 
 export const nuclearArsenalRaceDeclaration: BarsWidgetDeclaration<NuclearArsenalRaceOptions> = {
   family: 'bars',
@@ -203,17 +137,11 @@ export const nuclearArsenalRaceDeclaration: BarsWidgetDeclaration<NuclearArsenal
     allowSlots: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },
-  sources: nuclearArsenalRaceSources,
+  sources: ctx => nuclearArsenalSources(ctx, 'race'),
   projection: nuclearArsenalRaceProjection,
-  projectionOptions: ctx => ({
-    all: ctx.countries.all,
-    chosenTags: ctx.countries.tags,
-    holders: ctx.countries.top == null ? ctx.countries.holders : null,
-    membership: ctx.countries.top == null ? ctx.countries.membership : null,
-    unobserved: ctx.countries.top == null ? ctx.countries.unobserved : [],
-    top: ctx.countries.top,
-    split: ctx.options.split !== false,
-  }),
+  projectionOptions: ctx => ({ ...seriesRaceSelection(ctx), split: ctx.options.split !== false }),
+  unavailable: seriesRaceUnavailable,
+  warnings: (_ctx, followRefused) => seriesRaceWarnings(followRefused),
   jumpToDate: true,
   keyByBranch: true,
 };

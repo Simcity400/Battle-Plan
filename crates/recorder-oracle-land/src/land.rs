@@ -548,9 +548,107 @@ pub fn compare_events(
     Ok(())
 }
 
+pub fn compare_edges(
+    replay: &Replay,
+    frame: &DecodedFrame,
+    killed: &BTreeMap<u64, i32>,
+    report: &mut Report,
+) -> io::Result<()> {
+    const SELECTED: [TableId; 2] = [TableId::LandCombatEdges, TableId::LandEventCoverage];
+    let mut rows = Vec::new();
+    let mut blocks = replay
+        .index
+        .iter()
+        .filter(|b| b.branch == frame.branch && b.first_hour <= frame.hour)
+        .collect::<Vec<_>>();
+    blocks.sort_by_key(|b| b.first_hour);
+    for b in blocks {
+        replay.visit_blocks(
+            &[&b],
+            &SELECTED,
+            |_, _, decoded| {
+                if decoded.hour > frame.hour {
+                    return Ok(false);
+                }
+                let [coverage] = decoded.complete::<tables::LandEventCoverage>()? else {
+                    return Err(invalid("land event coverage must have one row"));
+                };
+                if !coverage.complete {
+                    return Ok(true);
+                }
+                match decoded.complete::<tables::LandCombatEdges>() {
+                    Ok(edges) => rows.extend_from_slice(edges),
+                    Err(error) => report.limitation(
+                        "land combat edges were not recorded for this hour",
+                        format!("hour {}: {error}", decoded.hour),
+                    ),
+                }
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
+    }
+    check_edges(&rows, killed, report);
+    Ok(())
+}
+
+fn check_edges(rows: &[replay_data::rows::LandCombatEdgesRow], killed: &BTreeMap<u64, i32>, report: &mut Report) {
+    let mut latest: BTreeMap<u64, i32> = BTreeMap::new();
+    for row in rows {
+        let Some(division) = row.division else { continue };
+        if let (Some(before), Some(after)) = (row.casualties_before, row.casualties_after)
+            && after < before
+        {
+            report.difference(
+                format!("LandCombatEdges {} division {division} casualties at exit", row.id),
+                after,
+                format!("at least {before}, the count before its loss flush"),
+            );
+        }
+        for value in [row.casualties_before, row.casualties_after].into_iter().flatten() {
+            let held = latest.entry(division).or_insert(value);
+            *held = (*held).max(value);
+        }
+    }
+    for (&division, &recorded) in &latest {
+        let Some(&saved) = killed.get(&division) else { continue };
+        if saved < recorded {
+            report.difference(
+                format!("LandCombatEdges division {division} casualties"),
+                recorded,
+                format!("at most {saved}, the saved lifetime casualties"),
+            );
+        }
+    }
+    report.compared("LandCombatEdges casualties", latest.len());
+    report.limitation(
+        "the save keeps each division's lifetime casualties, not the count at each combat edge; it bounds the recorded counts but cannot certify one edge or an opening roster",
+        "LandCombatEdges",
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn edge_casualties_above_the_saved_lifetime_count_or_falling_at_an_exit_are_differences() {
+        use replay_data::rows::LandCombatEdgesRow;
+        let edge = |id, division, before, after| LandCombatEdgesRow {
+            id,
+            kind: LandCombatEdgesRow::EXITED,
+            division: Some(division),
+            casualties_before: before,
+            casualties_after: after,
+            ..Default::default()
+        };
+        let killed = BTreeMap::from([(5, 812), (6, 40)]);
+        let mut report = Report::default();
+        check_edges(&[edge(1, 5, Some(300), Some(812)), edge(2, 6, Some(40), None)], &killed, &mut report);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        let mut wrong = Report::default();
+        check_edges(&[edge(1, 5, Some(300), Some(900)), edge(2, 6, Some(41), Some(40))], &killed, &mut wrong);
+        assert_eq!(wrong.differences.len(), 3, "{:?}", wrong.differences);
+    }
     fn read(bytes: &[u8]) -> io::Result<Saved> {
         super::read(
             &content_reader_parser::parser::parse(bytes)?.items,

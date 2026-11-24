@@ -100,7 +100,7 @@ fn convoy_health_distinguishes_no_traffic_unknown_traffic_and_full_efficiency() 
         (50, 99, TrafficProof::unknown(TRAFFIC_NOT_RECORDED)),
     ];
     let eff_bad = [(20, 29, 62_000), (60, 69, 40_000)];
-    let cells_r7 = build_region_cells(7, &eff_bad, &traffic, &known, &[], &[], 0, 99);
+    let cells_r7 = build_region_cells(7, &eff_bad, &traffic, &known, &[], &[], &[], 0, 99);
     assert_eq!(
         cells_r7,
         vec![
@@ -112,7 +112,7 @@ fn convoy_health_distinguishes_no_traffic_unknown_traffic_and_full_efficiency() 
             ConvoyCellRun { first_hour: 70, last_hour: 99, state: ConvoyCellState::NotRecorded { reason: TRAFFIC_NOT_RECORDED.to_owned() } },
         ]
     );
-    let cells_r9 = build_region_cells(9, &[], &traffic, &known, &[], &[], 0, 99);
+    let cells_r9 = build_region_cells(9, &[], &traffic, &known, &[], &[], &[], 0, 99);
     assert_eq!(
         cells_r9,
         vec![
@@ -141,10 +141,10 @@ fn witnessed_naval_route_is_proven_even_when_another_client_has_no_route() {
 
     let proof = traffic_in_frame(&frame, 36);
     let known = [HourSpan { first_hour: 100, last_hour: 100 }];
-    let cells_r59 = build_region_cells(59, &[], &[(100, 100, proof.clone())], &known, &[], &[], 100, 100);
+    let cells_r59 = build_region_cells(59, &[], &[(100, 100, proof.clone())], &known, &[], &[], &[], 100, 100);
     assert_eq!(cells_r59, vec![ConvoyCellRun { first_hour: 100, last_hour: 100, state: ConvoyCellState::Efficiency { value: 100_000 } }]);
 
-    let cells_r99 = build_region_cells(99, &[], &[(100, 100, proof)], &known, &[], &[], 100, 100);
+    let cells_r99 = build_region_cells(99, &[], &[(100, 100, proof)], &known, &[], &[], &[], 100, 100);
     assert_eq!(cells_r99, vec![ConvoyCellRun { first_hour: 100, last_hour: 100, state: ConvoyCellState::NotRecorded { reason: NO_PATH.to_owned() } }]);
 }
 
@@ -168,7 +168,7 @@ fn a_recording_gap_is_taken_out_of_the_unheld_hours_and_keeps_its_own_reason() {
     let gaps = [(span(27, 39), "Hours not read")];
     assert_eq!(without(&[span(24, 45)], &gaps), vec![span(24, 26), span(40, 45)]);
     let known = [span(24, 45)];
-    let cells = build_region_cells(17, &[(24, 45, 50_000)], &[], &known, &[span(43, 45)], &gaps, 24, 45);
+    let cells = build_region_cells(17, &[(24, 45, 50_000)], &[], &known, &[], &[span(43, 45)], &gaps, 24, 45);
     assert_eq!(
         cells,
         vec![
@@ -273,6 +273,11 @@ fn the_automatic_regions_are_ranked_at_the_asked_hour_and_every_lists_each_regio
     assert_eq!(today.valid_through, 47, "the order and every cell hold to the end of the day");
     assert!(today.regions[0].cells.iter().all(|cell| cell.first_hour >= 24 && cell.last_hour <= 30));
     assert_eq!(today.rank_missing, None);
+    assert_eq!(today.active_unlisted.ids, [17], "active at the hour past the top: the chooser's Active now");
+    let removed = health_of(&source, &ConvoyHealthParams { top: Some(1), hidden_regions: Some(vec![18]), ..regions(24, 30) });
+    assert_eq!((removed.regions.iter().map(|r| r.region).collect::<Vec<_>>(), removed.active_unlisted.ids.clone()), (vec![17], vec![18]));
+    let all_removed = health_of(&source, &ConvoyHealthParams { top: Some(1), hidden_regions: Some(vec![17, 18]), ..regions(24, 30) });
+    assert_eq!(all_removed.empty, Some(NoRegions::Filtered { hidden: 2, outside: 0 }), "removing every active region is not \"No convoys\"");
     let before = health_of(&source, &ConvoyHealthParams { top: Some(2), ..regions(0, 23) });
     assert_eq!(before.regions.iter().map(|r| r.region).collect::<Vec<_>>(), vec![17, 18], "most loss first, a full route after it");
     assert_eq!(before.valid_through, 23, "both readings change at hour 24");
@@ -286,4 +291,23 @@ fn an_hour_whose_convoy_state_is_not_recorded_ranks_no_automatic_region_and_says
     let reply = health_of(&gapped(), &ConvoyHealthParams { top: Some(7), pinned_regions: Some(vec![17]), ..regions(24, 30) });
     assert!(reply.rank_missing.is_some());
     assert_eq!(reply.regions.iter().map(|r| (r.region, r.pinned)).collect::<Vec<_>>(), vec![(17, true)], "the pin stays");
+    assert_eq!(reply.active_unlisted.missing, reply.rank_missing);
+    let unpinned = health_of(&gapped(), &ConvoyHealthParams { top: Some(7), ..regions(24, 30) });
+    assert!(matches!(unpinned.empty, Some(NoRegions::Unread { .. })), "{:?}", unpinned.empty);
+}
+
+#[test]
+fn a_value_a_truncated_hour_reached_is_kept_and_an_unreached_hour_says_why() {
+    let known = [HourSpan { first_hour: 0, last_hour: 9 }];
+    let unread = [(10, 19, "Regional convoy efficiency was read in part at this hour".to_owned())];
+    let traffic = [(0, 19, TrafficProof::default())];
+    let cells = build_region_cells(17, &[(0, 14, 70_000)], &traffic, &known, &unread, &[], &[], 0, 19);
+    assert_eq!(
+        cells,
+        vec![
+            ConvoyCellRun { first_hour: 0, last_hour: 14, state: ConvoyCellState::Efficiency { value: 70_000 } },
+            ConvoyCellRun { first_hour: 15, last_hour: 19, state: ConvoyCellState::NotRecorded { reason: "Regional convoy efficiency was read in part at this hour".into() } },
+        ],
+        "the truncated hours that reached the region keep its value; the rest are not recorded with their reason, never the earlier value"
+    );
 }

@@ -1,5 +1,6 @@
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
-import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
+import type { ArtResult } from '../art/types.ts';
+import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 
 export interface MatrixGroup {
@@ -14,8 +15,7 @@ export interface MatrixAxisEntity {
   readonly shortLabel?: string;
   readonly nameMissing?: string;
   readonly tag?: string;
-  readonly flag?: ArtHandle | null;
-  readonly flagPending?: boolean;
+  readonly flag?: ArtResult;
   readonly group?: MatrixGroup | null;
   readonly color?: string;
   readonly trailing?: string;
@@ -82,10 +82,6 @@ export interface MatrixCells {
 const SELF: MatrixCell = { kind: 'diagonal' };
 
 export const NO_CELLS: MatrixCells = { present: new Map(), absent: { kind: 'empty' } };
-
-export function matrixPairIndex(columnCount: number, rowIndex: number, columnIndex: number): number {
-  return rowIndex * columnCount + columnIndex;
-}
 
 export function matrixCellAt(model: Pick<HeatMatrixModel, 'rows' | 'columns' | 'cells'>, rowIndex: number, columnIndex: number): MatrixCell {
   const present = model.cells.present.get(rowIndex * model.columns.length + columnIndex);

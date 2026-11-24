@@ -1,6 +1,5 @@
 import type { ChartBucket } from '../charts/chartSummary';
 import type { LiveValues } from '../charts/live';
-import type { MarkCluster } from '../charts/markSummary';
 import type { Run } from '../charts/series';
 import type { DashboardSource } from '../dashboard/client';
 import type { Channel } from '../dashboard/follow/facts';
@@ -108,7 +107,6 @@ export interface PixelBinnedSourceRead {
   readonly keys?: readonly { readonly tag: string; readonly part: string }[];
   readonly partBits?: number;
   readonly within?: ReadonlyMap<string, readonly HourSpan[]>;
-  readonly marks?: boolean;
   readonly headQuery?: Readonly<Record<string, unknown>> | null;
   readonly exactProduct?: DeclaredProduct;
   readonly params?: Readonly<Record<string, unknown>> | null;
@@ -170,14 +168,11 @@ export interface CompiledFollowSubscription {
 }
 
 export interface BoundedSlice<T> extends Iterable<T> {
+  readonly source: object;
   readonly closedLength: number;
   readonly length: number;
   readonly tail?: T;
   at(index: number): T | undefined;
-}
-
-export interface BoundedMarkCluster extends Omit<MarkCluster, 'bins'> {
-  readonly bins?: BoundedSlice<readonly [number, number]> | MarkCluster['bins'];
 }
 
 export interface BoundedSeries {
@@ -191,7 +186,6 @@ export interface BoundedSeries {
   readonly headValue?: Value;
   readonly missing: BoundedSlice<MissingSpan>;
   readonly approximate?: BoundedSlice<{ readonly firstHour: number; readonly lastHour: number }>;
-  readonly marks: BoundedSlice<BoundedMarkCluster>;
   readonly validInterval: readonly [lo: number, hi: number];
 }
 

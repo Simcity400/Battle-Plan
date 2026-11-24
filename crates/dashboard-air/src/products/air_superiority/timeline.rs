@@ -7,7 +7,7 @@ use super::{
     index::{self, AirIndex},
     names, region_name, side_of,
 };
-use dashboard_base::{Source, products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, at_hour::{self, AtHour, Read}, regions::NoRegions}, span::HourSpan};
+use dashboard_base::{Source, products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, at_hour::{self, AtHour, Read}, regions::{ActiveRegions, NoRegions, automatic, no_regions}}, span::HourSpan};
 use dashboard_query::{Query, identity::Holders, timeline::Stretch};
 use rayon::prelude::*;
 use replay_lanes::lanes::{self, Chart};
@@ -218,6 +218,7 @@ pub struct AirTimelineReply {
     pub rank_missing: Option<String>,
     #[doc = " Why no row is listed; set only when `rows` is empty."]
     pub empty: Option<NoRegions>,
+    pub active_unlisted: ActiveRegions,
     #[doc = " With `every`: the days of a region without a score, as runs."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub absent: Option<Vec<(u32, Option<AirDayCell>)>>,
@@ -825,6 +826,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     let composer = Days { index: &index, holders: &query.holders, days: &shown_window.reads, rows: &charted, params, theatres: shown_window.theatres.as_deref() };
     let mut rank_missing = None;
     let mut filtered = (0u32, 0u32);
+    let mut active_unlisted = ActiveRegions::default();
     let shown = if every {
         let mut shown: Vec<u32> = shown_window.candidates().into_iter().collect();
         shown.push(ABSENT);
@@ -834,8 +836,10 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         let ranked = composer.rank_at(&candidates, cancelled)?;
         filtered = (ranked.regions.iter().filter(|region| hidden_set.contains(region)).count() as u32, ranked.outside);
         rank_missing = ranked.missing;
+        let chosen = automatic(ranked.regions, &hidden_set, params.top.unwrap_or(TOP), rank_missing.clone());
+        active_unlisted = chosen.active_unlisted;
         let mut shown = pinned_list;
-        shown.extend(ranked.regions.into_iter().filter(|region| !hidden_set.contains(region)).take(params.top.unwrap_or(TOP)));
+        shown.extend(chosen.listed);
         shown
     };
     let mut resolver = RecordedSideResolver::new(source, &query, load, cancelled, &mut warnings)?;
@@ -846,11 +850,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     }
     let shown = &shown[..cells.cells.len()];
     let rows = named(shown, cells.cells, cells.readouts.into_iter().map(Some).collect());
-    let empty = (!every && rows.is_empty()).then(|| match (&rank_missing, filtered) {
-        (Some(reason), _) => NoRegions::Unread { reason: reason.clone() },
-        (None, (hidden, outside)) if hidden + outside > 0 => NoRegions::Filtered { hidden, outside },
-        (None, _) => NoRegions::None,
-    });
+    let empty = no_regions(every || !rows.is_empty(), rank_missing.as_deref(), filtered.0, filtered.1);
     Ok(AirTimelineReply {
         first_hour,
         last_hour: view_last,
@@ -864,6 +864,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         rows,
         rank_missing,
         empty,
+        active_unlisted,
         absent,
         scale: SCALE,
         bad_below: BAD_BELOW,
@@ -883,7 +884,7 @@ impl Product for AirSuperiorityTimeline {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![AirTimelineParams::decl(), AirTimelineReply::decl(), AirTimelineRow::decl(), AirDayCell::decl(), AirDaySides::decl(), AirLead::decl(), AirDayPart::decl(), AirReadout::decl(), HourSpan::decl()]
+        vec![AirTimelineParams::decl(), AirTimelineReply::decl(), AirTimelineRow::decl(), AirDayCell::decl(), AirDaySides::decl(), AirLead::decl(), AirDayPart::decl(), AirReadout::decl(), ActiveRegions::decl(), HourSpan::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

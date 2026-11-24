@@ -2,7 +2,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
-import { artKindCell, artState, identityFlags, identityName, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import { artKindCell, cellArt, identityFlags, identityName, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableCellIconItem, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -78,8 +78,8 @@ function stateCell(operative: RosterOperative): TableCell {
 function traitsCell(readView: BoundedReadView, operative: RosterOperative, artwork: readonly string[]): TableCell {
   if (operative.traitsMissing !== null) return { value: notRecorded(operative.traitsMissing) };
   const icons: TableCellIconItem[] = operative.traits.map((entry: OperativeTrait) => {
-    const art = artState(readView, urlArtHandle(entry.icon === null ? null : artwork[entry.icon]));
-    return { name: entry.name ?? entry.token ?? 'Trait not named', ...(art.icon ? { url: art.icon } : {}), ...(art.iconPending ? { pending: true } : {}) };
+    const { art } = cellArt(readView, urlArtHandle(entry.icon === null ? null : artwork[entry.icon] ?? null), 'The product drew no icon for this trait');
+    return { name: entry.name ?? entry.token ?? 'Trait not named', art };
   });
   return { value: knownValue(operative.traits.length), icons, iconStripKind: 'traits' };
 }
@@ -139,7 +139,7 @@ export const rosterProjection: TableProjection<RosterProjectionOptions> = regist
         key: JSON.stringify([operative.roster, operative.id]),
         name: name.kind === 'known' ? name.value : operative.id,
         cells: {
-          kind: artKindCell(readView, urlArtHandle(portrait), 'portrait', name.kind === 'known' ? name.value : null),
+          kind: artKindCell(readView, urlArtHandle(portrait), 'portrait', name.kind === 'known' ? name.value : null, operative.portrait === null ? 'The recording holds no portrait for this operative' : 'The product drew no portrait for this operative'),
           operative: { value: name },
           skill: { value: operative.skill === null ? notRecorded('Skill not recorded') : knownValue(operative.skill) },
           progress: progressCell(operative),

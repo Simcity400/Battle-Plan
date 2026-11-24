@@ -4,7 +4,9 @@ import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/mode
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import type { NavalLossesAtReply } from '../../generated/dashboard';
-import { navalLossesRaceProjection, type NavalLossesRaceOptions } from './navalLossesRaceProjection.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { BARS_VIEWS } from '../manifest/bars.ts';
+import { navalLossesRaceDeclaration, navalLossesRaceProjection, type NavalLossesRaceOptions } from './navalLossesRaceProjection.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
   return {
@@ -31,12 +33,9 @@ const BASE_OPTS: NavalLossesRaceOptions = {
   attribution: 'lost',
   period: 'month',
   split: true,
-  candidates: [],
-  holders: null,
-  membership: null,
-  unobserved: [],
   top: 10,
   all: false,
+  group: false,
 };
 
 test('naval-losses race splits ships and convoys from naval-losses-at and surfaces missing baseline as unavailable', () => {
@@ -48,8 +47,8 @@ test('naval-losses race splits ships and convoys from naval-losses-at and surfac
       { key: 'convoys', name: 'Convoys', unresolved: false },
     ],
     rows: [
-      { country: 'ENG', tag: 'ENG', total: 40, missing: null, values: [10, 30], partsMissing: null },
-      { country: 'GER', tag: 'GER', total: 15, missing: null, values: [12, 3], partsMissing: null },
+      { country: 'ENG', slot: null, tag: 'ENG', total: 40, missing: null, values: [10, 30], partsMissing: null },
+      { country: 'GER', slot: null, tag: 'GER', total: 15, missing: null, values: [12, 3], partsMissing: null },
     ],
     missing: null,
     warnings: [],
@@ -74,4 +73,40 @@ test('naval-losses race splits ships and convoys from naval-losses-at and surfac
   );
   assert.equal(missingModel.emptyKind, 'unavailable');
   assert.equal(missingModel.empty, 'Tables unread');
+});
+
+test('every race and mix view sends a group whole, and naval losses keys each row by its recorded slot', async () => {
+  const ctx = (view: string) => ({
+    track: { source: { id: 's', revision: 1 }, axisOffset: 0 },
+    branch: { id: '1' },
+    options: { view },
+    countries: { top: null, all: false, every: ['GER', 'ITA'], tags: ['GER', 'ITA'], membership: { GER: [[0, 1000]], ITA: [[600, 1000]] }, holders: null, unobserved: [] },
+    widget: { countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'hour', aggregate: false } },
+  }) as unknown as Parameters<typeof navalLossesRaceDeclaration.sources>[0];
+  for (const [kind, view] of [['naval-losses', 'race'], ['naval-losses', 'mix'], ['army-size', 'race'], ['army-size', 'mix'], ['navy-size', 'mix'], ['air-force-size', 'mix'], ['nuclear-arsenal', 'race'], ['nuclear-arsenal', 'mix'], ['occupation-reserve-manpower', 'main'], ['game-score', 'race']] as const) {
+    const spec = await BARS_VIEWS.find(entry => entry.kind === kind && entry.view === view)!.loadSpec();
+    const declaration = spec.declaration as unknown as typeof navalLossesRaceDeclaration;
+    const plan = declaration.sources(ctx(view), { following: true, staticSpan: null });
+    assert.deepEqual(plan.entries.map(entry => entry.name), ['main'], `${kind} ${view}: one read`);
+    const read = plan.entries[0]!.read;
+    assert.ok(read.shape === 'point');
+    if (read.shape !== 'point') continue;
+    const asked = (read.buildExactParams ? read.buildExactParams(read.params!, 500 as never, 'static') : read.params) as { group?: unknown; countries?: readonly unknown[]; top?: unknown };
+    assert.deepEqual(asked.group, { type: 'faction', id: '42', membership: 'hour' }, `${kind} ${view}: the group`);
+    assert.ok(!asked.countries?.length && asked.top == null, `${kind} ${view}: never its members or a top`);
+    assert.equal((declaration.projectionOptions(ctx(view)) as { group?: boolean }).group, true);
+  }
+  const reply: NavalLossesAtReply = {
+    firstHour: 321, lastHour: 599, parts: [], missing: null, warnings: [],
+    rows: [{ country: 'GER', slot: 7, tag: 'GER', total: 4, missing: null, values: [], partsMissing: null }],
+  };
+  const read = navalLossesRaceDeclaration.sources(ctx('race'), { following: true, staticSpan: null }).entries[0]!.read;
+  assert.ok(read.shape === 'point');
+  if (read.shape !== 'point') return;
+  assert.deepEqual(read.provenInterval?.(reply, 500), [321, 599], 'asked again at 600, when the membership changes');
+  const options = navalLossesRaceDeclaration.projectionOptions(ctx('race'));
+  const view = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
+  assert.deepEqual(navalLossesRaceProjection.project(view, options).rows.map(row => row.key), [countryKey(7)]);
+  const none = navalLossesRaceProjection.project(createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', { ...reply, rows: [] }]]) }), options);
+  assert.deepEqual([none.emptyKind, none.empty], ['empty', 'No country of this group at this date.']);
 });

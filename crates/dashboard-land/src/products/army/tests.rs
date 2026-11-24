@@ -180,7 +180,7 @@ fn unit_group_titles_use_group_title_localisation_key_with_bare_fallback() {
 #[test]
 fn army_at_ranks_and_splits_battalion_groups_at_an_hour() {
     let source = recording();
-    let asked = serde_json::to_value(ArmyAtParams { branch_id: "1".into(), countries: Vec::new(), top: Some(2), count_for: ArmyAttribution::Host }).unwrap();
+    let asked = serde_json::to_value(ArmyAtParams { branch_id: "1".into(), countries: Vec::new(), top: Some(2), group: None, count_for: ArmyAttribution::Host }).unwrap();
     let panel = dashboard_base::products::at_hour::exact_panel::<ArmyAt>(&source, &LoadContext { content: None }, &asked).unwrap();
     let reply = (panel.exact().unwrap().cold)(1_800, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply["missing"], serde_json::Value::Null);
@@ -201,4 +201,170 @@ fn army_at_ranks_and_splits_battalion_groups_at_an_hour() {
     assert_eq!(after_rows[0]["total"], 9);
     assert_eq!(after_rows[1]["tag"], "GER");
     assert_eq!(after_rows[1]["total"], 3);
+}
+
+fn breakdown_fixture() -> Source {
+    let tokens = [(10u32, "unit_alpha"), (11, "unit_beta"), (12, "unit_gamma")];
+    let frames: Vec<DecodedFrame> = (100..=140)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let mut countries = vec![CountryRow {
+                id: 9001,
+                canonical_slot: 7,
+                tag: if hour >= 120 { b"ZZZ".to_vec() } else { b"AAA".to_vec() },
+                ..CountryRow::default()
+            }];
+            let mut links = vec![CountryLinkRow { id: 9001, canonical_slot: 7 }];
+            if hour >= 120 {
+                countries.push(CountryRow { id: 9009, canonical_slot: 9, tag: b"AAA".to_vec(), ..CountryRow::default() });
+                links.push(CountryLinkRow { id: 9009, canonical_slot: 9 });
+            }
+            *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
+            *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links));
+            let mut divisions = vec![division(1, 9001, 0, 1)];
+            if hour >= 120 {
+                divisions.push(division(2, 9001, 0, 2));
+                divisions.push(division(3, 9009, 0, 3));
+            }
+            *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(divisions));
+            *frame.tables[TableId::DivisionTemplateIcons.index()] = if (125..=129).contains(&hour) {
+                TableView::Unavailable { reason: "templates unread in test".into() }
+            } else {
+                TableView::Complete(TableRows::DivisionTemplateIcons(vec![
+                    template(1, vec![unit(10, 2), unit(11, 1)]),
+                    template(2, vec![unit(12, 4)]),
+                    template(3, vec![unit(12, 5)]),
+                ]))
+            };
+            *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+                tokens.iter().map(|&(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).collect(),
+            ));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    Source::from_replay(
+        dashboard_base::SourceKey { source_id: "army-breakdown-test".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+
+#[test]
+fn army_breakdown_excludes_records_first_seen_after_hour_reports_next_change_and_keeps_slot_separate_on_reused_tag() {
+    let src = breakdown_fixture();
+    let ctx = LoadContext { content: None };
+
+    let at119 = ArmyBreakdown::load(
+        &src,
+        &ArmyBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), count_for: ArmyAttribution::Owner, hour: 119 },
+        &ctx,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(at119.hour, 119);
+    assert_eq!(at119.next_change, Some(120));
+    assert!(at119.available);
+    assert_eq!(at119.types.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(), vec!["unknown:unit_alpha", "unknown:unit_beta"]);
+    assert!(at119.runs.iter().all(|r| r.last_hour <= 119 && r.raw == "3"));
+    assert!(at119.mix.iter().all(|m| m.last_hour <= 119));
+    assert!(at119.warnings.iter().all(|w| !w.contains("unit_gamma")), "future token warning must not leak before hour 120");
+
+    let at120 = ArmyBreakdown::load(
+        &src,
+        &ArmyBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), count_for: ArmyAttribution::Owner, hour: 120 },
+        &ctx,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(at120.hour, 120);
+    assert_eq!(at120.next_change, Some(125));
+    assert_eq!(at120.types.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(), vec!["unknown:unit_alpha", "unknown:unit_beta", "unknown:unit_gamma"]);
+    assert_eq!(at120.runs.last().unwrap().raw, "7");
+
+    let at135 = ArmyBreakdown::load(
+        &src,
+        &ArmyBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), count_for: ArmyAttribution::Owner, hour: 135 },
+        &ctx,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(at135.next_change, None);
+    assert!(at135.missing.iter().any(|m| m.first_hour == 125 && m.last_hour == 129), "unread template window produces a missing span rather than zero");
+    assert!(at135.runs.iter().all(|r| r.last_hour < 125 || r.first_hour > 129));
+    assert!(at135.mix.iter().all(|m| m.last_hour < 125 || m.first_hour > 129));
+
+    let slot9 = ArmyBreakdown::load(
+        &src,
+        &ArmyBreakdownParams { branch_id: "1".into(), country: Country::Slot(9), count_for: ArmyAttribution::Owner, hour: 135 },
+        &ctx,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(slot9.types.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(), vec!["unknown:unit_gamma"], "reused tag AAA on slot 9 must not inherit slot 7 history");
+    assert_eq!(slot9.runs.first().unwrap().first_hour, 120);
+    assert_eq!(slot9.runs.first().unwrap().raw, "5");
+
+    let asked = serde_json::to_value(ArmyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, group: None, count_for: ArmyAttribution::Owner }).unwrap();
+    let panel = dashboard_base::products::at_hour::exact_panel::<ArmyAt>(&src, &ctx, &asked).unwrap();
+    let hover115 = (panel.exact().unwrap().cold)(115, &AtomicBool::new(false)).unwrap();
+    assert_eq!(hover115["rows"][0]["total"], 3, "earlier hover reads hour 115 rather than playhead total 7");
+    assert_eq!(hover115["parts"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn army_breakdown_keeps_witnessed_totals_and_withholds_mix_when_army_mix_table_is_unavailable() {
+    use replay_data::rows::{ArmyMixRow, ArmyTotalRow, Recorded, TagHolderRow, TagNameRow};
+    let frames: Vec<DecodedFrame> = (200..=210)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+                CountryRow { id: 9001, canonical_slot: 7, tag: b"AAA".to_vec(), ..CountryRow::default() },
+            ]));
+            *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+                CountryLinkRow { id: 9001, canonical_slot: 7 },
+            ]));
+            *frame.tables[TableId::TagNames.index()] = TableView::Complete(TableRows::TagNames(vec![
+                TagNameRow { number: 1, tag: b"AAA".to_vec() },
+            ]));
+            *frame.tables[TableId::TagHolders.index()] = TableView::Complete(TableRows::TagHolders(vec![
+                TagHolderRow { number: 1, epoch: 0, slot: 7, id: 9001, tag: b"AAA".to_vec() },
+            ]));
+            *frame.tables[TableId::ArmyTotals.index()] = TableView::Complete(TableRows::ArmyTotals(vec![
+                ArmyTotalRow { slot: 7, owner_battalions: Recorded::Value(6), ..Default::default() },
+            ]));
+            *frame.tables[TableId::ArmyMix.index()] = if (204..=206).contains(&hour) {
+                TableView::Unavailable { reason: "mix table unread".into() }
+            } else {
+                TableView::Complete(TableRows::ArmyMix(vec![
+                    ArmyMixRow { slot: 7, attribution: 0, token: 10, battalions: 6 },
+                ]))
+            };
+            *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+                LexicalTokenRow { token: 10, literal: b"unit_alpha".to_vec() },
+            ]));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive_framework::framework::Writers::new(Vec::new()), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let src = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "army-mix-gap".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let reply = ArmyBreakdown::load(
+        &src,
+        &ArmyBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), count_for: ArmyAttribution::Owner, hour: 210 },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(reply.runs, vec![ArmyRun { first_hour: 200, last_hour: 210, total: Some(6.0), raw: "6".into() }], "witnessed totals stay intact across unread mix hours");
+    assert_eq!(reply.mix.iter().map(|m| (m.first_hour, m.last_hour)).collect::<Vec<_>>(), vec![(200, 203), (207, 210)], "mix is not fabricated across unread mix hours");
+    assert_eq!(reply.missing.len(), 1);
+    assert_eq!((reply.missing[0].first_hour, reply.missing[0].last_hour), (204, 206));
 }

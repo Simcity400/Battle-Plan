@@ -10,7 +10,7 @@ const SURFACE = '#161616';
 
 function reply(lastHour: number): NavalSupremacyReply {
   return {
-    firstHour: 0, lastHour, validThrough: lastHour, firstDayHour: 0, dayHours: 24, days: 3, rankMissing: null,
+    firstHour: 0, lastHour, validThrough: lastHour, firstDayHour: 0, dayHours: 24, days: 3, rankMissing: null, empty: null, activeUnlisted: { ids: [], missing: null },
     unknown: [{ firstDay: 1, lastDay: 1, reason: 'collector queue overflow' }],
     gaps: [], viewerName: 'German Reich', viewerColor: [90, 90, 90], legend: [], scale: 100000, warnings: [],
     regions: [{
@@ -94,7 +94,7 @@ test('each day takes the viewer colour of its own hour, and a hit names its own 
 
 test('a hundred played hours ask each completed tile once, the current tile once a day and today alone each hour; Shares asks today only', async () => {
   const { askUnits } = await import('../../families/readUnits.ts');
-  const { DAY_PIECE_HOURS, DAY_TILE_HOURS } = await import('../../families/heat/dayTiles.ts');
+  const { DAY_TILE_HOURS } = await import('../../families/heat/dayTiles.ts');
   const end = 24 * 3000;
   const branch = { id: '1', firstHour: 0, lastHour: end };
   const gate = {
@@ -124,8 +124,8 @@ test('a hundred played hours ask each completed tile once, the current tile once
         keys.set(unit.name, unit.key);
       }
     }
-    assert.ok(widest <= DAY_TILE_HOURS && widestNow <= DAY_PIECE_HOURS);
-    assert.equal(tileAsks, declaration === supremacySharesDeclaration ? 0 : Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8));
+    assert.ok(widest <= DAY_TILE_HOURS && widestNow <= 24);
+    assert.equal(tileAsks, declaration === supremacySharesDeclaration ? 0 : Math.floor(1000 / 64) + Math.floor((1000 % 64) / 8) + 4);
   }
 });
 
@@ -146,10 +146,20 @@ test('history comes from the tiles, laid out once, and the rows and readout from
 });
 
 test('an hour whose day is not recorded lists no automatic region and says why, never "no activity"', () => {
-  const data = { ...reply(60), regions: [], rankMissing: 'The day was not recorded' };
+  const data = { ...reply(60), regions: [], rankMissing: 'The day was not recorded', empty: { kind: 'unread' as const, reason: 'The day was not recorded' }, activeUnlisted: { ids: [], missing: 'The day was not recorded' } };
   const timeline = projectSupremacyTimeline(view(60, data), { viewer: null, surface: SURFACE, tiles: 0 });
-  assert.equal(timeline.empty, 'The day was not recorded');
+  assert.equal(timeline.empty, 'The day was not recorded.');
   assert.equal(timeline.emptyKind, 'unavailable');
+  assert.deepEqual(timeline.regions?.active, data.activeUnlisted, 'the chooser hears that activity at the hour is not known');
   const shares = projectSupremacyShares(view(60, data), { viewer: null, surface: SURFACE, tiles: 0 });
-  assert.equal(shares.empty, 'The day was not recorded');
+  assert.equal(shares.empty, 'The day was not recorded.');
+  const hidden = projectSupremacyShares(view(60, { ...data, rankMissing: null, empty: { kind: 'filtered' as const, hidden: 1, outside: 0 }, activeUnlisted: { ids: [7], missing: null } }), { viewer: null, surface: SURFACE, tiles: 0 });
+  assert.deepEqual([hidden.empty, hidden.regionsActive?.ids], ['The only active sea region at this date is removed from this chart.', [7]], 'removing the only active region is not "no naval activity"');
+});
+
+test('a day the read did not reach for a region carries its own reason into the lane', () => {
+  const data = reply(60);
+  const unread = { ...data, unknown: [], regions: [{ ...data.regions[0]!, runs: [{ firstDay: 0, lastDay: 2, control: null, friendly: null, enemy: null, share: null, own: null, missing: 'Naval region control was read in part at this hour' }] }] };
+  const model = projectSupremacyTimeline(view(60, unread), { viewer: null, surface: SURFACE, tiles: 0 });
+  assert.deepEqual(model.rows[0]!.runs[0]!.cell, { kind: 'missing', reason: 'Naval region control was read in part at this hour' });
 });

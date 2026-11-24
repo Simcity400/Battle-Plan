@@ -1,27 +1,20 @@
 import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
-import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { countryRowPresentation, type BarsLegendItem, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
+import { GROUP_EMPTY } from '../../families/bars/forceAtRace.ts';
+import { seriesRaceSelection, seriesRaceUnavailable, seriesRaceWarnings, type SeriesRaceBaseOptions } from '../../families/bars/seriesRace.ts';
+import { type BarsLegendItem, type BarsModel, type BarsProjection, type BarsSegment } from '../../families/bars/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/shareRows.ts';
-import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../../families/contract.ts';
-import { holderTagAt, inHourRanges, nextHoldersChange, nextMembershipChange, nextRangesChange, type HolderRun, type HourRanges } from '../../families/holders.ts';
+import type { BoundedReadView } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import { formatScalar, formatShare } from '../../families/valueFormat.ts';
-import type { NuclearArsenalReply, NukeCountry, NukeType } from '../../generated/dashboard';
-import { typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
+import type { NuclearArsenalReply, NukeType } from '../../generated/dashboard';
+import { nuclearArsenalSources, nukeRowIdentity, typeName, validateNuclearArsenal } from './nuclearArsenalData.ts';
 
 const PART_SURFACE = DEFAULT_CARD_SURFACE;
 
-export interface NuclearArsenalMixOptions {
-  readonly top: number | null;
-  readonly all: boolean;
-  readonly chosenTags: readonly string[];
-  readonly holders?: Readonly<Record<string, readonly HolderRun[]>> | null;
-  readonly membership?: Readonly<Record<string, HourRanges>> | null;
-  readonly unobserved?: HourRanges;
-}
+export type NuclearArsenalMixOptions = SeriesRaceBaseOptions;
 
 function sharePct(share: number): string {
   return formatShare(share);
@@ -30,20 +23,9 @@ function sharePct(share: number): string {
 export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOptions> = registerFamilyProjection({
   kind: 'nuclear-arsenal',
   family: 'bars',
-  nextChange(readView, options) {
-    const hour = readView.hour;
-    return Math.min(
-      nextHoldersChange(options.holders, hour),
-      nextRangesChange(options.unobserved, hour),
-      nextMembershipChange(options.membership, hour),
-    );
-  },
+  nextChange: () => Infinity,
   project(readView: BoundedReadView, options: NuclearArsenalMixOptions): BarsModel {
     const hour = readView.hour;
-    const ranked = options.top != null || options.all;
-    if (!ranked && options.unobserved?.some(([first, last]) => first <= hour && hour <= last)) {
-      return buildShareRowsModel({ hour, rows: [], empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable' });
-    }
     const refused = readView.refused('main');
     if (refused) {
       return buildShareRowsModel({ hour, rows: [], empty: refused, emptyKind: 'unavailable' });
@@ -62,37 +44,16 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
       typeByOrdinal.set(type.ordinal, { type, color: colour(PART_SURFACE, index), label: typeName(type) });
     });
 
-    let selected: NukeCountry[];
-    if (ranked) {
-      selected = reply.countries;
-    } else if (options.membership) {
-      selected = reply.countries.filter(row => inHourRanges(options.membership![row.tag], hour));
-    } else if (options.holders) {
-      const activeTags = new Set<string>();
-      for (const runs of Object.values(options.holders)) {
-        const tag = holderTagAt(runs, hour);
-        if (tag !== null) activeTags.add(tag);
-      }
-      selected = reply.countries.filter(row => activeTags.has(row.tag));
-    } else {
-      const chosen = new Set(options.chosenTags);
-      selected = reply.countries.filter(row => chosen.has(row.tag));
-    }
-
-    if (!ranked) {
-      selected = [...selected].sort((a, b) => b.total - a.total || compareTags(a.tag, b.tag));
-    }
-
     const usedOrdinals = new Set<number>();
     const rows: ShareRowEntry[] = [];
-    for (const row of selected) {
-      const pres = countryRowPresentation(readView, row.tag);
+    for (const row of reply.countries) {
+      const { key, pres } = nukeRowIdentity(readView, row);
       const countText = formatScalar(row.total, { decimals: 0 });
       const tooltipItems: TooltipListItem[] = [{ label: 'Nuclear stockpile', value: countText }];
       if (row.total <= 0) {
         rows.push({
-          key: row.tag,
-          subject: row.tag,
+          key,
+          subject: key,
           label: pres.label,
           labelMissing: pres.labelMissing,
           media: pres.media,
@@ -109,8 +70,8 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
         const reason = 'Weapon type breakdown does not reconcile with the recorded total at this hour';
         tooltipItems.push({ label: 'Weapon types', missingReason: reason });
         rows.push({
-          key: row.tag,
-          subject: row.tag,
+          key,
+          subject: key,
           label: pres.label,
           labelMissing: pres.labelMissing,
           media: pres.media,
@@ -146,8 +107,8 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
       }
 
       rows.push({
-        key: row.tag,
-        subject: row.tag,
+        key,
+        subject: key,
         label: pres.label,
         labelMissing: pres.labelMissing,
         media: pres.media,
@@ -170,37 +131,10 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
       legend,
       unit: 'Warheads',
       warnings: reply.warnings,
-      ...(!rows.length ? { empty: 'No nuclear stockpile recorded at this date.', emptyKind: 'empty' as const } : {}),
+      ...(!rows.length ? { empty: options.group ? GROUP_EMPTY : 'No nuclear stockpile recorded at this date.', emptyKind: 'empty' as const } : {}),
     });
   },
 }, 'mix');
-
-function nuclearArsenalMixSources(ctx: FamilyPlanContext): SourcePlan {
-  const top = ctx.countries.top;
-  const asked = top != null ? { branchId: ctx.branch.id, top } : { branchId: ctx.branch.id };
-  const coverage: SourceCoverage = top != null
-    ? { mode: 'population', form: 'top', limit: top }
-    : { mode: 'population', form: 'all' };
-  return {
-    owner: `nuclear-arsenal:mix:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${top ?? 'all'}`,
-    entries: [{
-      name: 'main',
-      source: ctx.track.source,
-      branch: ctx.branch.id,
-      offset: ctx.track.axisOffset,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage,
-        product: 'nuclear-arsenal',
-        followQuery: { panel: 'nuclear-arsenal', ...asked },
-        params: asked,
-        validate: validateNuclearArsenal,
-      },
-    }],
-    allowEmptyFollow: false,
-  };
-}
 
 export const nuclearArsenalMixDeclaration: BarsWidgetDeclaration<NuclearArsenalMixOptions> = {
   family: 'bars',
@@ -215,26 +149,11 @@ export const nuclearArsenalMixDeclaration: BarsWidgetDeclaration<NuclearArsenalM
     everyOnTop: true,
     requireGroupsWhen: widget => widget.countries.kind === 'group' && widget.countries.group.type !== 'top',
   },
-  sources: nuclearArsenalMixSources,
+  sources: ctx => nuclearArsenalSources(ctx, 'mix'),
   projection: nuclearArsenalMixProjection,
-  projectionOptions: ctx => {
-    const ranked = ctx.countries.top != null || ctx.countries.all;
-    return {
-      top: ctx.countries.top,
-      all: ctx.countries.all,
-      chosenTags: ranked ? [] : ctx.countries.tags,
-      holders: ranked ? null : ctx.countries.holders,
-      membership: ranked ? null : ctx.countries.membership,
-      unobserved: ranked ? [] : ctx.countries.unobserved,
-    };
-  },
-  unavailable: ctx => {
-    if (!ctx.countries.all && ctx.countries.top == null && ctx.following && !ctx.countries.tags.length && ctx.countries.membership === null) {
-      return 'No countries available for this selection.';
-    }
-    return null;
-  },
-  warnings: (_ctx, followRefused) => (followRefused ? [`Values are not followed here: ${followRefused}.`] : []),
+  projectionOptions: seriesRaceSelection,
+  unavailable: seriesRaceUnavailable,
+  warnings: (_ctx, followRefused) => seriesRaceWarnings(followRefused),
   jumpToDate: true,
   keyByBranch: true,
 };
