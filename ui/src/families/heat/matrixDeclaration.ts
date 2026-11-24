@@ -1,6 +1,5 @@
 import type { IconName } from '../../components/Icons';
 import type { OptionField } from '../../dashboard/options';
-import type { FamilyTheme } from '../contract.ts';
 import type {
   AuxProductSpec,
   CountryPolicy,
@@ -34,7 +33,7 @@ export interface HeatMatrixWidgetDeclaration<TProjectionOptions = Record<string,
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
   readonly projection: HeatMatrixProjection<TProjectionOptions>;
-  readonly projectionOptions: (ctx: FamilyPlanContext<TAux>, look: HeatLook) => TProjectionOptions;
+  readonly projectionOptions: (ctx: FamilyPlanContext<TAux>, look?: HeatLook) => TProjectionOptions;
   readonly unavailable?: (ctx: FamilyPlanContext<TAux>, moment: number) => string | null;
   readonly warnings?: (ctx: FamilyPlanContext<TAux>, followRefused: string | null) => readonly string[];
   readonly jumpToDate?: boolean;

@@ -45,8 +45,7 @@ const verifyLanesAudit = createPlanAuditVerifier<HeatLanesModel, unknown>();
 
 export interface FamilyHeatLanesHostProps<TOptions> {
   readonly declaration: HeatLanesProjection<TOptions>;
-  readonly view?: string;
-  readonly options: TOptions | null;
+  readonly options: TOptions;
   readonly label: string;
   readonly subject: string;
   readonly widget: WidgetSpec;
@@ -102,7 +101,6 @@ function parseLaneHit(hitKey: string | null): { readonly key: string; readonly t
 
 export default function FamilyHeatLanesHost<TOptions>({
   declaration,
-  view,
   options,
   label,
   subject,
@@ -222,7 +220,6 @@ export default function FamilyHeatLanesHost<TOptions>({
 
   const latestRef = useRef({
     declaration,
-    view,
     options,
     theme,
     staticBundle,
@@ -240,7 +237,6 @@ export default function FamilyHeatLanesHost<TOptions>({
   });
   latestRef.current = {
     declaration,
-    view,
     options,
     theme,
     staticBundle,
@@ -264,7 +260,6 @@ export default function FamilyHeatLanesHost<TOptions>({
     const w = Math.max(1, width || 360);
     const h = Math.max(1, height || 220);
     const cur = latestRef.current;
-    if (cur.options === null) return;
     const staticPanels = cur.staticBundle?.panels;
     const staticAnswers = cur.staticBundle?.answers;
 
@@ -288,7 +283,6 @@ export default function FamilyHeatLanesHost<TOptions>({
     const bindingModel: FamilyHeatLanesBinding<TOptions> = {
       family: 'heat-lanes',
       kind: cur.declaration.kind,
-      ...(cur.view ? { view: cur.view } : {}),
       options: cur.options,
       sources: sourceIdsRef.current,
       ...(staticPanels && Object.keys(staticPanels).length ? { staticPanels } : {}),

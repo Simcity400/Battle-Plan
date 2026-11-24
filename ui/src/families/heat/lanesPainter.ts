@@ -19,7 +19,7 @@ import {
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
 } from '../../draw/kit.ts';
-import { parseColor, readableText } from '../../shell/appearance/color.ts';
+import { mix, parseColor, readableText } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { artUrlForHandle } from '../art/provider.ts';
@@ -158,6 +158,25 @@ function drawRowFlag(
   drawFlagSlot(ctx, x, fy, { kind: 'missing', tag: row.tag ?? row.id }, theme);
 }
 
+export const READOUT_SWATCH = 10;
+export const READOUT_VALUE_SLOT = 50;
+const READOUT_GAP = 8;
+
+function drawReadoutSwatch(ctx: Canvas2D, x: number, middleY: number, swatch: string, theme: FamilyTheme): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(x + 0.5, middleY - READOUT_SWATCH / 2 + 0.5, READOUT_SWATCH - 1, READOUT_SWATCH - 1, 2);
+  if (swatch === 'hollow') {
+    ctx.strokeStyle = theme.lineSoft;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = swatch;
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawRowReadout(
   ctx: Canvas2D,
   row: HeatLaneRow,
@@ -171,18 +190,23 @@ function drawRowReadout(
   if (!readout || width <= 0) return;
   const middleY = y + rowHeight / 2;
   if (readout.kind === 'missing') {
-    drawMissingMark(ctx, x, middleY, width, theme, { figure: readout.figure, align: 'right' });
+    drawMissingMark(ctx, x, middleY, width, theme, { figure: readout.figure, align: 'left' });
     return;
   }
+  ctx.save();
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
   if (readout.kind === 'clear') {
-    ctx.save();
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
     ctx.fillStyle = theme.muted;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(ellipsise(readout.label, width, s => textWidth(ctx, s)), x + width, middleY);
+    ctx.fillText(ellipsise(readout.label, width, s => textWidth(ctx, s)), x, middleY);
     ctx.restore();
     return;
+  }
+  let cursor = x;
+  if (readout.swatch) {
+    drawReadoutSwatch(ctx, cursor, middleY, readout.swatch, theme);
+    cursor += READOUT_SWATCH + READOUT_GAP;
   }
   const color = readout.color
     ?? (readout.tone === 'positive'
@@ -192,34 +216,37 @@ function drawRowReadout(
         : readout.tone === 'muted'
           ? theme.muted
           : theme.text);
-
-  ctx.save();
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  if (readout.secondary && rowHeight >= 24) {
-    ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  const secondaryColor = mix(theme.text, theme.surface, 0.25);
+  if (readout.form === 'word') {
+    ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
     ctx.fillStyle = color;
-    const primaryW = textWidth(ctx, readout.primary);
-    ctx.font = `${LABEL_WEIGHT} ${Math.max(10, theme.fontSize.small - 1)}px ${theme.font}`;
-    const secW = textWidth(ctx, readout.secondary);
-    if (primaryW + 8 + secW <= width) {
+    const room = Math.max(0, x + width - cursor);
+    const primary = ellipsise(readout.primary, room, s => textWidth(ctx, s));
+    ctx.fillText(primary, cursor, middleY);
+    if (readout.secondary) {
+      const after = cursor + textWidth(ctx, primary) + 6;
+      ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(readout.secondary, x + width, middleY);
-      ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-      ctx.fillStyle = color;
-      ctx.fillText(readout.primary, x + width - secW - 8, middleY);
-    } else {
-      ctx.font = `${VALUE_WEIGHT} ${Math.max(10, theme.fontSize.small - 0.5)}px ${theme.font}`;
-      ctx.fillStyle = color;
-      ctx.fillText(ellipsise(readout.primary, width, s => textWidth(ctx, s)), x + width, middleY - 5);
-      ctx.font = `${LABEL_WEIGHT} ${Math.max(9.5, theme.fontSize.small - 1.5)}px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.fillText(ellipsise(readout.secondary, width, s => textWidth(ctx, s)), x + width, middleY + 6);
+      const rest = x + width - after;
+      if (rest > 12) ctx.fillText(ellipsise(readout.secondary, rest, s => textWidth(ctx, s)), after, middleY);
     }
-  } else {
-    ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-    ctx.fillStyle = color;
-    ctx.fillText(ellipsise(readout.primary, width, s => textWidth(ctx, s)), x + width, middleY);
+    ctx.restore();
+    return;
+  }
+  ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+  ctx.fillStyle = color;
+  const slot = Math.min(READOUT_VALUE_SLOT, Math.max(0, x + width - cursor));
+  if (readout.primary) {
+    ctx.textAlign = 'right';
+    ctx.fillText(ellipsise(readout.primary, slot, s => textWidth(ctx, s)), cursor + slot, middleY);
+    ctx.textAlign = 'left';
+  }
+  if (readout.secondary) {
+    const after = cursor + slot + READOUT_GAP;
+    const rest = x + width - after;
+    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+    ctx.fillStyle = secondaryColor;
+    if (rest > 12) ctx.fillText(ellipsise(readout.secondary, rest, s => textWidth(ctx, s)), after, middleY);
   }
   ctx.restore();
 }
@@ -298,6 +325,8 @@ export function drawHeatLanes(
   const laneBarHeight = Math.max(8, layout.rowHeight - laneBarPad * 2);
   const laneRadius = 3;
 
+  const anyPinned = model.rows.some(row => row.pinned);
+  const autoNameColor = mix(theme.text, theme.surface, 0.25);
   for (let i = layout.firstRow; i < layout.endRow; i++) {
     const row = model.rows[i]!;
     const y = layout.plotTop + i * layout.rowStride - scrollTop;
@@ -321,9 +350,9 @@ export function drawHeatLanes(
     }
     const nameMaxW = Math.max(16, layout.nameWidth - nameX);
     drawNameSlot(ctx, row.label, nameX, y, nameMaxW, layout.rowHeight, theme, {
-      fontSize: theme.fontSize.small,
+      fontSize: theme.fontSize.body,
       maxLines: 1,
-      color: row.nameMissing ? theme.muted : theme.text,
+      color: row.nameMissing ? theme.muted : anyPinned && !row.pinned ? autoNameColor : theme.text,
     });
 
     const barY = y + laneBarPad;

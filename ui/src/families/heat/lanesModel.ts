@@ -43,6 +43,8 @@ export interface HeatLaneRun {
 export type HeatLaneReadout =
   | {
       readonly kind: 'value';
+      readonly form?: 'value' | 'word';
+      readonly swatch?: string | 'hollow';
       readonly primary: string;
       readonly secondary?: string;
       readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted';
