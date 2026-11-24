@@ -5,6 +5,7 @@ import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
+import { closedExtent, historyFits } from './history.ts';
 import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
 import type {
   ChartColumnModel,
@@ -213,13 +214,23 @@ function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number
     if (scaled < low) low = scaled;
     if (scaled > high) high = scaled;
   };
-  if (bounded.runs && bounded.runs.length > 0) {
-    for (const run of bounded.runs) {
+  const runs = bounded.runs && bounded.runs.length > 0 ? bounded.runs : null;
+  const history = closedExtent(bounded, scale);
+  const fits = historyFits(history, { from: xDomain[0], to: xDomain[1] });
+  if (fits) {
+    if (history.low < low) low = history.low;
+    if (history.high > high) high = history.high;
+  }
+  const from = fits ? history.items : 0;
+  if (runs) {
+    for (let i = from; i < runs.length; i++) {
+      const run = runs.at(i)!;
       if (run.lastHour < xDomain[0] || run.firstHour > xDomain[1]) continue;
       include(run.value);
     }
   } else {
-    for (const bucket of bounded.buckets) {
+    for (let i = from; i < bounded.buckets.length; i++) {
+      const bucket = bounded.buckets.at(i);
       if (!bucket || bucket.lastHour < xDomain[0] || bucket.firstHour > xDomain[1]) continue;
       include(bucket.minValue);
       include(bucket.maxValue);

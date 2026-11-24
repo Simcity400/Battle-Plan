@@ -4,6 +4,7 @@ import type { ChartBucket } from '../../charts/chartSummary.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { Canvas2D, MeasureText } from '../../charts/textWidth.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
+import type { Run } from '../../charts/series.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { readyArt } from '../art/types.ts';
 import { boundTiledSeries, createBoundedReadView, displayedHour } from '../boundedView.ts';
@@ -20,11 +21,12 @@ import { registerFamilyProjection } from '../registry.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
 import { timeChartLane } from './laneView.ts';
-import { assertFreshPaint, assertQuietFrames, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, installRecordingCanvas, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
 import { SceneTiles } from '../sceneTiles.ts';
 import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
-import { buildLineSubpaths } from './painter.ts';
+import { buildLineSubpaths, lineOf } from './painter.ts';
+import { pathCalls, type RecordedPath2D } from './path2d.fixture.ts';
 import { parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildBoundedStack, headReading, headValueOf } from './seriesHelpers.ts';
@@ -1642,4 +1644,143 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     const armyHover = deriveTimeChartTooltip(armyModel, layoutTimeChart(armyModel, 600, 260, FONT, measure), `plot:${hoverAt}`);
     assert.equal(armyHover?.payload?.items?.[0]?.value, '9,999,999,999,999');
   });
+});
+
+describe('playback cost', () => {
+  const BIN = 24;
+  const T0 = Math.floor(H1936 / BIN) * BIN;
+  const PLAYED = 10;
+  const surface = { width: 720, height: 260, dpr: 1 };
+  const shape = [0.3, 0.5, 0.4, 0.6];
+  const bucketAt = (i: number, value: (i: number) => number) => {
+    const v = value(i);
+    return makeBucket(T0 + i * BIN, T0 + (i + 1) * BIN - 1, v, v * 0.9, v * 1.1, value(i + 1), T0 + (i + 1) * BIN - 2);
+  };
+
+  it('draws the same vertices from the hour-space history as from the points, as the history grows and after a seek back', () => {
+    const value = (i: number) => (i % 7 === 3 ? 20 : 10 + (i % 5));
+    const buckets = Array.from({ length: 40 }, (_, i) => (i === 17 ? null : { ...bucketAt(i, value), firstBreak: i === 25 }));
+    const tiledOf = (runs?: readonly Run[]): TiledLine => ({ tag: 'GER', head: 'h', decimals: 0, missing: [], parts: [], marks: null,
+      summary: { from: T0, to: T0 + 40 * BIN - 1, width: 40, buckets, ...(runs ? { runs: [...runs] } : {}), tiles: { binHours: BIN, valueAt: () => null } } });
+    const line = tiledOf();
+    const runLine = tiledOf(Array.from({ length: 30 }, (_, i) => ({ firstHour: T0 + i * BIN, lastHour: T0 + i * BIN + (i % 3 === 0 ? 0 : BIN - 1), value: value(i), ...(i === 12 ? { breakBefore: true } : {}) })));
+    const check = (tiled: TiledLine, step: boolean, scale: number, hour: number, head: number | null) => {
+      const bounded = boundTiledSeries(tiled, displayedHour(hour), head === null ? {} : { headValue: knownValue(head) });
+      const series = { id: 's', key: 's', name: 'S', color: '#e3a83b', role: 'primary' as const, step, valueScale: scale, bounded, headValue: head, headHour: hour };
+      const model: TimeChartModel = { kind: 'k', measureTitle: 'M', mode: 'lines', hour, extent: [T0, T0 + 40 * BIN], yAxis: { format: 'number' }, series: [series] };
+      const layout = layoutTimeChart(model, 720, 260, FONT, measure);
+      const points = buildLineSubpaths(series, layout, hour);
+      const drawn = lineOf(series, layout, hour);
+      const vertices = drawn.paths.map(item => (item.path as unknown as RecordedPath2D).subpaths()).flat();
+      assert.equal(vertices.length, points.subpaths.length, `${step ? 'step' : 'line'} at ${hour - T0}: the same subpaths`);
+      vertices.forEach((sub, at) => {
+        const expected = points.subpaths[at]!;
+        assert.equal(sub.length, expected.length, `subpath ${at} at ${hour - T0}: the same vertex count`);
+        sub.forEach(([x, y], k) => {
+          assert.ok(Math.abs(x - expected[k]![0]) < 1e-6 && Math.abs(y - expected[k]![1]) < 1e-6, `subpath ${at} vertex ${k} at ${hour - T0}: ${x},${y} is ${expected[k]}`);
+        });
+      });
+      assert.deepEqual(drawn.end?.map(v => Math.round(v * 1e6)), points.end?.map(v => Math.round(v * 1e6)), 'the same end dot');
+    };
+    for (const tiled of [line, runLine]) {
+      for (const step of [false, true]) {
+        for (const hour of [T0 + 5 * BIN + 3, T0 + 18 * BIN + 7, T0 + 26 * BIN + 1, T0 + 26 * BIN + 9, T0 + 39 * BIN + 5, T0 + 8 * BIN + 2]) {
+          check(tiled, step, 1, hour, 11);
+          check(tiled, step, 100, hour, null);
+        }
+      }
+    }
+  });
+
+  interface CostChart {
+    readonly name: string;
+    readonly projection: { readonly kind: string; project(view: never, options: never): unknown };
+    readonly options: (extent: readonly [number, number]) => unknown;
+    readonly lines: Readonly<Record<string, Readonly<Record<string, (i: number) => number>>>>;
+  }
+  const periodic = (scale: number) => (i: number) => shape[i % 4]! * scale;
+  const subject = '\u00007';
+  const ruling = (extent: readonly [number, number]) => ({
+    subject, extent, gaps: [], surface: '#111111', showChanges: true, showLeaders: true,
+    history: {
+      branchId: '1', tag: 'GER', asked: 7, decimals: 5, warnings: [], unobserved: [],
+      ideologies: [{ token: 'democratic', name: 'Democratic', color: [0, 0, 255] }, { token: 'fascism', name: 'Fascist', color: [150, 75, 0] }],
+      parties: [{ token: 'democratic', parts: [{ part: 0, firstHour: extent[0], lastHour: extent[1] }] }, { token: 'fascism', parts: [{ part: 1, firstHour: extent[0], lastHour: extent[1] }] }],
+      ruling: [{ token: 'fascism', firstHour: extent[0], lastHour: extent[1], startsSegment: true }],
+      elections: [], leaders: [], people: [], ideologyTypes: [], partyNames: [], partyNameRuns: [],
+    },
+  });
+  const CHARTS: readonly CostChart[] = [
+    { name: 'stability', projection: stabilityProjection as never, options: extent => ({ tags: ['GER'], extent, gaps: [], surface: '#111111', showStability: true, showWarSupport: true, zoom: false }),
+      lines: { stability: { GER: periodic(1) }, warSupport: { GER: periodic(0.8) } } },
+    { name: 'political power', projection: politicalPowerProjection as never, options: extent => ({ tags: ['GER'], extent, gaps: [], surface: '#111111' }), lines: { main: { GER: periodic(100) } } },
+    { name: 'command power', projection: commandPowerProjection as never, options: extent => ({ tags: ['GER'], extent, gaps: [], surface: '#111111', showCeiling: true }),
+      lines: { main: { GER: periodic(40) }, ceiling: { GER: () => 150 } } },
+    { name: 'fuel', projection: fuelProjection as never, options: extent => ({ tag: 'GER', capacity: true, area: true, digits: 0, extent, gaps: [] }),
+      lines: { fuel: { GER: periodic(32_768 * 500_000) }, capacity: { GER: () => 32_768 * 700_000 } } },
+    { name: 'experience', projection: experienceProjection as never, options: extent => ({ tag: 'GER', extent, gaps: [] }),
+      lines: { army: { GER: periodic(32_768 * 30) }, navy: { GER: periodic(32_768 * 10) }, air: { GER: periodic(32_768 * 50) } } },
+    { name: 'navy size lines', projection: navyLinesProjection as never,
+      options: extent => ({ tags: ['A01', 'A02', 'A03'], top: null, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent, gaps: [], surface: '#111111' }),
+      lines: { main: { A01: periodic(1000), A02: periodic(2000), A03: periodic(3000) } } },
+    { name: 'supply health', projection: supplyHealthProjection as never, options: extent => ({ subject, extent, gaps: [] }),
+      lines: { noSupply: { [subject]: periodic(0.1) }, strained: { [subject]: periodic(0.3) }, inSupply: { [subject]: periodic(0.6) } } },
+    { name: 'ruling party', projection: rulingPartyProjection as never, options: ruling,
+      lines: { popularity: { [`${subject}\u00000`]: periodic(40), [`${subject}\u00001`]: periodic(60) } } },
+  ];
+
+  const play = (chart: CostChart, closed: number) => {
+    const counts = { projections: 0, layouts: 0, paints: 0, reads: 0 };
+    registerFamilyProjection({ ...chart.projection, family: 'time-chart', project: (view: never, options: never) => { counts.projections++; return chart.projection.project(view, options); } } as never);
+    const lane = {
+      ...timeChartLane,
+      layout: (...args: Parameters<typeof timeChartLane.layout>) => { counts.layouts++; return timeChartLane.layout(...args); },
+      paint: (...args: Parameters<typeof timeChartLane.paint>) => { counts.paints++; return timeChartLane.paint(...args); },
+    };
+    const recording = installRecordingCanvas();
+    try {
+      const view = createLaneView(lane, () => {});
+      const extent = [T0, T0 + (closed + 1) * BIN - 1] as const;
+      const tiledBySource = Object.fromEntries(Object.entries(chart.lines).map(([source, tags]) => [source, Object.fromEntries(Object.entries(tags).map(([tag, value]) => [tag, {
+        source, tag, head: 'h', decimals: 0, binHours: BIN, from: T0, to: extent[1], width: closed + 1,
+        buckets: Array.from({ length: closed + 1 }, (_, i) => bucketAt(i, value)), missing: [], parts: [],
+      }]))]));
+      const binding = new LaneTransport().carry({
+        family: 'time-chart', kind: chart.projection.kind, options: chart.options(extent), sources: {}, extent, width: surface.width, height: surface.height, scrollTop: 0, theme: LANE_THEME, tiledBySource,
+      } as TimeChartBinding);
+      for (const lines of Object.values(binding.tiledBySource!)) {
+        for (const line of Object.values(lines)) {
+          (line as { buckets: unknown }).buckets = line.buckets.map(b => b && new Proxy(b, { get: (target, key) => { counts.reads++; return Reflect.get(target, key); } }));
+        }
+      }
+      const state = new Map<string, unknown>();
+      let seq = 0;
+      const paint = (hour: number) => view.paint({
+        widget: 1, subs: [], pictures: [], model: binding, hour, seek: 0, speed: 24,
+        binding: { generation: 1, surfaces: [surface], offset: 0, pin: null }, inspect: null, now: 1000,
+      }, state, () => `c${++seq}`);
+      const reset = () => { counts.projections = 0; counts.layouts = 0; counts.paints = 0; counts.reads = 0; pathCalls.count = 0; };
+      const first = T0 + closed * BIN + 2;
+      paint(first);
+      reset();
+      for (let again = 0; again < 4; again++) paint(first);
+      const quiet = { ...counts };
+      reset();
+      for (let hour = first + 1; hour <= first + PLAYED; hour++) paint(hour);
+      return { quiet, played: { ...counts, path: pathCalls.count } };
+    } finally {
+      recording.restore();
+    }
+  };
+
+  for (const chart of CHARTS) {
+    it(`${chart.name}: a frame at the same hour does nothing, and a played hour walks no history`, () => {
+      const short = play(chart, 16);
+      const long = play(chart, 128);
+      assert.deepEqual(long.quiet, { projections: 0, layouts: 0, paints: 0, reads: 0 }, 'frames at the same hour project, lay out, paint and read nothing');
+      assert.equal(long.played.paints, PLAYED, 'every played hour moves the axis end, so it is painted');
+      assert.equal(long.played.reads, short.played.reads, `a played hour reads the same buckets for 16 and 128 closed buckets (${short.played.reads} and ${long.played.reads} over ${PLAYED} hours)`);
+      assert.equal(long.played.path, short.played.path, `and makes the same path calls (${short.played.path} and ${long.played.path})`);
+    });
+  }
 });
