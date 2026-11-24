@@ -17,7 +17,7 @@ export const OPTIONS: readonly OptionField[] = [
 ];
 
 export const definition = {
-  kind: 'scoreboard', version: 1, title: 'Scoreboard', icon: 'grid',
+  kind: 'scoreboard', version: 1, title: 'Scoreboard', icon: 'table',
   description: 'Compare countries across selected measures.',
   timeModes: ['follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: false,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES,

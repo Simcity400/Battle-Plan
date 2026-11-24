@@ -8,6 +8,7 @@ export type OptionSection = 'countries' | 'time' | 'options' | 'axes' | 'interac
 
 interface FieldBase {
   key: string;
+  storeAs?: string;
   section: OptionSection;
   label: string;
   hint?: string;
@@ -117,7 +118,8 @@ export function validOption(field: OptionField, value: unknown): value is Option
 export function resolveOptions(fields: readonly OptionField[] = [], stored?: WidgetOptions): Record<string, OptionValue> {
   const resolved: Record<string, OptionValue> = {};
   for (const field of fields) {
-    const value = stored && Object.hasOwn(stored, field.key) ? stored[field.key] : undefined;
+    const at = field.storeAs ?? field.key;
+    const value = stored && Object.hasOwn(stored, at) ? stored[at] : undefined;
     resolved[field.key] = validOption(field, value) ? value : field.default;
   }
   return resolved;
@@ -126,9 +128,10 @@ export function resolveOptions(fields: readonly OptionField[] = [], stored?: Wid
 export function setOption(fields: readonly OptionField[] = [], stored: WidgetOptions | undefined, key: string, value: OptionValue): WidgetOptions | null {
   const field = fields.find(item => item.key === key);
   if (!field || !validOption(field, value)) return null;
+  const at = field.storeAs ?? key;
   const next: Record<string, OptionValue> = { ...stored };
-  if (value === field.default) delete next[key];
-  else next[key] = value;
+  if (value === field.default) delete next[at];
+  else next[at] = value;
   return next;
 }
 

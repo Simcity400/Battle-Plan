@@ -14,7 +14,7 @@ import { hasMeasuredValue, type Value } from '../value.ts';
 import { formatValueState } from '../valueFormat.ts';
 import { drawApprovedCell, TREE_CHEVRON_LANE, TREE_INDENT_PX, type CellRenderContext } from './cellPainters.ts';
 import type { FamilyColumnLayout, FamilyTableLayout } from './layout.ts';
-import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableRow } from './model.ts';
+import { computeColumnMaxima, resolveCellAtHour, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
 import {
   CELL_INSET,
   CHILD_ROW_HEIGHT,
@@ -154,6 +154,7 @@ export interface DrawFamilyTableInput {
   readonly staticRowLooks?: boolean;
   readonly rowHeightMode?: 'standard' | 'media';
   readonly rowGeom?: RowLayoutGeometry | null;
+  readonly rowIndex?: ReadonlyMap<string, number>;
   readonly clockSummary?: ClockSummaryData;
 }
 
@@ -271,6 +272,7 @@ export function drawFamilyTable(
     staticRowLooks,
     rowHeightMode = 'standard',
     rowGeom = null,
+    rowIndex,
     clockSummary,
   } = input;
 
@@ -453,6 +455,21 @@ export function drawFamilyTable(
     return marker && marker.until > now ? `${item.key}\u0002${item.rank}\u0002${marker.delta}` : `${item.key}\u0002${item.rank}`;
   };
 
+  const artStateOf = (url: string): number => (artCache
+    ? (artCache.bitmapOf(url) ? 1 : artCache.stateOfUrl(url) === 'failed' ? 2 : 3)
+    : (icons?.get(url) ? 1 : icons?.get(url) === null ? 2 : 0));
+
+  const cellListSignature = (cell: TableCell): string => {
+    let sig = '';
+    if (cell.flags) {
+      for (const flag of cell.flags) sig += `f${flag.tag}\u0005${flag.icon ?? ''}\u0005${flag.icon ? artStateOf(flag.icon) : 0}\u0005${flag.pending ? 1 : 0}${flag.dimmed ? 1 : 0}`;
+    }
+    if (cell.icons) {
+      for (const entry of cell.icons) sig += `i${entry.url ?? ''}\u0005${entry.url ? artStateOf(entry.url) : 0}\u0005${entry.pending ? 1 : 0}\u0005${entry.name}\u0005${entry.count ?? ''}`;
+    }
+    return sig;
+  };
+
   const computeLook = (item: Extract<FlatTableRow, { kind: 'data' }>, column: FamilyColumnLayout) => {
     const cell = item.row.cells[column.key];
     const paintModel = resolveCellPaintModel(cell, column, hour, maxima, theme);
@@ -463,16 +480,11 @@ export function drawFamilyTable(
     const fill = paintModel.bar.alert ? theme.red : colorOf(theme, paintModel.tone ?? undefined, paintModel.countryColor, fraction);
     const icon = paintModel.icon ?? undefined;
     const iconPending = paintModel.iconPending === true;
-    const iconState = icon === undefined
-      ? (iconPending ? 3 : 0)
-      : (artCache
-        ? (artCache.bitmapOf(icon) ? 1 : artCache.stateOfUrl(icon) === 'failed' ? 2 : 3)
-        : (icons?.get(icon) ? 1 : icons?.get(icon) === null ? 2 : 0));
-    const art = icon === undefined && !iconPending ? '' : `${icon ?? ''}\u0003${iconState}`;
+    const art = icon === undefined && !iconPending ? '' : `${icon ?? ''}\u0003${icon === undefined ? 3 : artStateOf(icon)}`;
     const treeKey = item.isTreeGroup ? (item.isOpen ? 'o' : 'c') : String(item.level);
     const textVal = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
     const secVal = cell?.secondaryValue ? (cell.secondaryValue.kind === 'known' || cell.secondaryValue.kind === 'zero' ? String(cell.secondaryValue.value) : cell.secondaryValue.kind) : '';
-    const extraSig = `${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? `${cell.stockpile.balance ?? ''}:${cell.stockpile.produced ?? ''}` : ''}\u0004${cell?.flags?.length ?? 0}\u0004${cell?.icons?.length ?? 0}`;
+    const extraSig = `${cell?.subtext ?? ''}\u0004${secVal}\u0004${cell?.shortage ? 1 : 0}\u0004${cell?.stockpile ? JSON.stringify(cell.stockpile) : ''}\u0004${cell ? cellListSignature(cell) : ''}`;
     const key = `${formatted.kind}\u0002${textVal}\u0002${paintModel.missingName ? 1 : 0}\u0002${pixels}\u0002${fill}\u0002${paintModel.countryColor ?? ''}\u0002${art}\u0002${treeKey}\u0002${item.row.muted ? 1 : 0}\u0002${paintModel.status ?? ''}\u0002${extraSig}`;
     return { paintModel, formatted, fraction, fill, key };
   };
@@ -746,9 +758,12 @@ export function drawFamilyTable(
 
   const visibleIndices: number[] = [];
   if (moving) {
-    for (let index = 0; index < rows.length; index++) {
+    const onScreen = (index: number) => {
       const y = rowY(rows[index]!, index);
-      if (y + heightAt(index) > 0 && y < height) visibleIndices.push(index);
+      return y + heightAt(index) > 0 && y < height;
+    };
+    for (const index of glidingIndices(rows, glide, rowIndex, first, last)) {
+      if (onScreen(index)) visibleIndices.push(index);
     }
   } else {
     for (let index = first; index < last; index++) visibleIndices.push(index);
@@ -834,6 +849,28 @@ export function drawFamilyTable(
   return { drew: true, paintedCells, measurements };
 }
 
+function glidingIndices(
+  rows: readonly FlatTableRow[],
+  glide: ReadonlyMap<string, GlideOffset>,
+  rowIndex: ReadonlyMap<string, number> | undefined,
+  first: number,
+  last: number,
+): number[] {
+  if (!rowIndex) {
+    const all: number[] = [];
+    for (let index = 0; index < rows.length; index++) all.push(index);
+    return all;
+  }
+  const out: number[] = [];
+  for (let index = first; index < last; index++) out.push(index);
+  for (const key of glide.keys()) {
+    const index = rowIndex.get(key);
+    if (index !== undefined && (index < first || index >= last) && rows[index]?.kind === 'data' && rows[index]!.key === key) out.push(index);
+  }
+  out.sort((a, b) => a - b);
+  return out;
+}
+
 export function hitFamilyTable(
   layout: FamilyTableLayout,
   rows: readonly FlatTableRow[],
@@ -847,11 +884,17 @@ export function hitFamilyTable(
   now?: number,
   glideDuration?: number,
   rowGeom?: RowLayoutGeometry | null,
+  rowIndex?: ReadonlyMap<string, number>,
+  viewportHeight?: number,
 ): { readonly kind: 'row' | 'empty'; readonly rowKey?: string; readonly column?: string; readonly toggle?: boolean; readonly action?: boolean } {
   let item: FlatTableRow | undefined;
   const useGlide = Boolean(glide && glide.size > 0 && glideDuration && glideDuration > 0 && now !== undefined);
   if (useGlide) {
-    for (let i = rows.length - 1; i >= 0; i--) {
+    const candidates = rowIndex && viewportHeight !== undefined && !rowGeom
+      ? glidingIndices(rows, glide!, rowIndex, Math.max(0, Math.floor(scrollTop / rowHeight) - 2), Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + 2))
+      : glidingIndices(rows, glide!, undefined, 0, rows.length);
+    for (let c = candidates.length - 1; c >= 0; c--) {
+      const i = candidates[c]!;
       const candidate = rows[i]!;
       const top = rowGeom ? rowGeom.tops[i]! : i * rowHeight;
       const h = rowGeom ? rowGeom.heights[i]! : rowHeight;
@@ -885,7 +928,7 @@ export function hitFamilyTable(
   for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
     const col = layout.columns[colIndex]!;
     if (bodyX >= x && bodyX < x + col.width) {
-      const toggle = colIndex === 0 && item.isTreeGroup && bodyX - x <= CELL_INSET + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 8;
+      const toggle = colIndex === 0 && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + (item.level - 1) * TREE_INDENT_PX + TREE_CHEVRON_LANE + 8;
       const action = col.cellKind === 'action';
       return { kind: 'row', rowKey: item.key, column: col.key, toggle, action };
     }
