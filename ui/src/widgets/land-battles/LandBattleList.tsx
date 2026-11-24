@@ -20,7 +20,6 @@ import { battlePartial, battleValueText, markPartial, rowsById } from '../battle
 import type { BattleCountryLabel } from '../battles/battleRows';
 import { battleOutcome, battleTooltip, clearBattleParts, heldTerrain, lengthText, lossWidth, missingTerrain, paintBattle, peakValue, sameKnownSides, sideLook, subText, validateLandBattleTerrain } from './landBattleCourse';
 import type { HeldTerrain, SideLook } from './landBattleCourse';
-export { paintBattle } from './landBattleCourse';
 import { landManpowerSides } from './landBattlesData.ts';
 import type { LandBattleRow } from './landBattlesData';
 import { definition } from './definition';

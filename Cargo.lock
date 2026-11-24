@@ -14492,6 +14492,7 @@ dependencies = [
  "dashboard-air",
  "dashboard-base",
  "dashboard-core",
+ "dashboard-effects",
  "dashboard-follow",
  "dashboard-land",
  "dashboard-politics",

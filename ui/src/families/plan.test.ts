@@ -10,7 +10,7 @@ import { Pipeline, type LaneWorker, type PipelineHost } from '../dashboard/follo
 import { lastRecordedBranchHour, recordingEndTime, resolveWindow, type BoundTrack, type WidgetSpec } from '../dashboard/model.ts';
 import { PlaybackController } from '../dashboard/playback.ts';
 import { RefusedError } from '../dashboard/queryError.ts';
-import { axisAt, lastRecordedHour, resolveRegion, SPEC } from '../dashboard/regionTime.ts';
+import { axisAt, lastRecordedHour, regionHour, regionOutside, SPEC } from '../dashboard/regionTime.ts';
 import type { TiledLine } from '../dashboard/tiles/view';
 import { Lane, type LaneView } from '../draw/lane.ts';
 import type { FromLane } from '../draw/laneMessages';
@@ -964,9 +964,8 @@ test('a recording ending in a trailing gap resolves campaign mode and end pins t
   const historyWidget = { ...campaignWidget, kind: 'unregistered-history-kind' } as WidgetSpec;
   assert.deepEqual(resolveWindow(historyWidget, track, [track], 150), { firstHour: 100, lastHour: 200 });
 
-  const region = resolveRegion({ widget: campaignWidget, action: SPEC }, track, [track], axisAt(150));
-  assert.equal(region.hour, 200);
-  assert.equal(region.outside, null);
+  assert.equal(regionHour({ widget: campaignWidget, action: SPEC }, track, [track], axisAt(150)), 200);
+  assert.equal(regionOutside({ widget: campaignWidget, action: SPEC }, track, [track], axisAt(150)), null);
 
   const pinnedEnd = recordingEndTime({ timeModes: ['pin'], scope: 'moment' }, [track]);
   assert.deepEqual(pinnedEnd, { mode: 'pin', windows: { main: { firstOffset: 100, lastOffset: 100 } } });

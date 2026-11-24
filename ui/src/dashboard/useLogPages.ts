@@ -16,8 +16,6 @@ import { productRequest } from './request.ts';
 import { forwardRequest, type DeclaredProduct } from './request.ts';
 import type { BoundWindow } from './regionTime';
 
-export type { BoundFacetFilter };
-
 export interface LogSpec {
   source: DashboardSource;
   branchId: string;

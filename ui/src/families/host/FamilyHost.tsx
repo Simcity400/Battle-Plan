@@ -349,7 +349,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const lastTableRef = useRef<unknown>(null);
   const lastRowCountRef = useRef(-1);
   const lastFocusNavRef = useRef<unknown>(null);
-  const lastAuditRef = useRef<{ readonly id: number; readonly key: readonly unknown[]; readonly context: { fields: Readonly<Record<string, unknown>> } } | null>(null);
+  const lastAuditRef = useRef<{ readonly id: number; readonly key: readonly unknown[] } | null>(null);
 
   const [meta, setMeta] = useState<FamilyMetaState>(() => ({
     mode: staticSources ? 'picture' : 'reading',
@@ -558,16 +558,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       } else {
         const deriveRows = curAdapter.deriveAuditRows;
         const readExact = cur.exactReadView;
-        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme, fields: fieldsNow() };
+        const context = { viewport, settings: cur.settings, expanded: expansionRef.current, theme: cur.theme };
         const snapshot: PlanAuditSnapshot<TModel, TOptions> = {
           projection: cur.declaration,
           options: cur.options,
           exactReadView: hour => readExact(hour, rowWindow),
-          deriveRows: (model, hour) => deriveRows(model, hour, context),
+          deriveRows: (model, hour, fields) => deriveRows(model, hour, { ...context, fields: fields ?? EMPTY_FIELDS }),
           ...(curAdapter.auditOrdered !== undefined ? { ordered: curAdapter.auditOrdered } : {}),
         };
         auditId = audit.capture(snapshot, PLAN_VERIFIER);
-        lastAuditRef.current = { id: auditId, key, context };
+        lastAuditRef.current = { id: auditId, key };
       }
     }
 
@@ -856,8 +856,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         scrollTop: viewportRef.current.scrollTop,
       };
       const installedAuditId = auditIdOf(fields.audit);
-      const capturedAudit = lastAuditRef.current;
-      if (capturedAudit && capturedAudit.id === installedAuditId) capturedAudit.context.fields = fields;
       const installed: InstalledPicture = {
         id: shown.id,
         owner: shown.installedOwner ?? shown.owner ?? '',
@@ -1344,7 +1342,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           className="fh-sr-only"
           aria-label={label}
           role={adapter.tree ? 'treegrid' : undefined}
-          {...(rowsFocus ? { onFocus: onRowFocus, onBlur: onRowBlur, onKeyDown } : {})}
+          {...(rowsFocus ? { tabIndex: -1, onFocus: onRowFocus, onBlur: onRowBlur, onKeyDown } : {})}
         >
           <thead ref={mirrorHeadRef} />
           <tbody ref={mirrorBodyRef} />

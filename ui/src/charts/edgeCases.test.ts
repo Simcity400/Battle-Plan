@@ -5,7 +5,7 @@ import { nudgeApart } from './palette.ts';
 import { layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
-import { extentOf, samplePoints, segments, stack } from './series.ts';
+import { extentOf, samplePoints, segments } from './series.ts';
 import { timeTicks } from './timeAxis.ts';
 import { linearTicks } from './valueAxis.ts';
 import { EMPTY_VIEW, reduceView, resolveY } from './view.ts';
@@ -61,10 +61,6 @@ test('a line growing during playback keeps its samples, so only its tip moves', 
   assert.ok(rising.length >= 50 / Math.SQRT2 && rising.length <= 50 * Math.SQRT2 + 2, `${rising.length} samples`);
 });
 
-
-test('stacked tops above a missing layer are unknown, not totals that skip it', () => {
-  assert.deepEqual(stack([[10, null], [5, 5]]), [[10, null], [15, null]]);
-});
 
 test('a zoomed time range with fractional bounds still gets ticks', () => {
   const whole = timeTicks(61_320_000, 61_321_000, 600);

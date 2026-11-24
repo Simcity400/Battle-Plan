@@ -177,8 +177,6 @@ export const countedSince = (observations: readonly number[], hour: number): num
 
 export const typeLabel = (type: { key: string; name: string | null }) => contentTitle(type.name, type.key, 'Equipment type name unavailable');
 
-export const raceRows = (entries: readonly CountryRaceEntry[]) => entries.map(entry => entry.tag).sort().join(',');
-
 export const producedWindows = (firstHour: number, lastHour: number) => windowsOf(firstHour, lastHour);
 
 export function validateProducedWindow(data: unknown): EquipmentProducedReply {

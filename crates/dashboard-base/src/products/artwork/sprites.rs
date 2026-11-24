@@ -146,6 +146,18 @@ pub fn settled_art(drawn: &DrawnArt) -> super::ArtResolution {
     }
 }
 
+pub fn keep_settled<K: Ord>(store: &std::sync::Mutex<std::collections::BTreeMap<K, DrawnArt>>, key: K, draw: impl FnOnce() -> DrawnArt) -> super::ArtResolution {
+    if let Some(cached) = store.lock().unwrap_or_else(|error| error.into_inner()).get(&key) {
+        return settled_art(cached);
+    }
+    let drawn = draw();
+    let settled = settled_art(&drawn);
+    if !matches!(settled, super::ArtResolution::Failed { retryable: true, .. }) {
+        store.lock().unwrap_or_else(|error| error.into_inner()).insert(key, drawn);
+    }
+    settled
+}
+
 crate::reply_warnings!(SpriteArtworkReply);
 
 pub fn icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, String> {
@@ -316,6 +328,25 @@ fn images(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_retryable_failure_is_never_kept_so_a_recovered_file_is_drawn_on_the_next_ask() {
+        let (catalogue, _folder) = crate::catalogue::tests::localisation_catalogue(&[]);
+        let store = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        let draw = |resolution: super::super::ArtResolution| drawn_art(|| "portrait sample".to_owned(), &catalogue, move |_| resolution.clone());
+        let failed = super::super::ArtResolution::Failed { reason: "read failed".into(), retryable: true };
+        let ready = super::super::ArtResolution::Ready {
+            asset_id: "sample".into(), url: "art://sample".into(), origin: super::super::ArtOrigin::BaseGame, file: "gfx/sample.dds".into(),
+            frame: super::super::ArtFrame { frame_index: 0, frame_count: 1, frame_width: 1, frame_height: 1, texture_width: 1, texture_height: 1, output_width: 1, output_height: 1 },
+            provenance: super::super::ArtProvenance { from_current_install: true, label: "Current installation".into(), scope_key: "s".into() },
+        };
+        assert_eq!(keep_settled(&store, 1, || draw(failed.clone())), failed);
+        assert_eq!(keep_settled(&store, 1, || draw(ready.clone())), ready, "the file recovered: the next ask draws it");
+        assert_eq!(keep_settled(&store, 1, || panic!("a settled answer is kept")), ready);
+        let refused = super::super::ArtResolution::Refused { reason: "unsupported".into(), construct: "sprite-render".into(), origin: None, file: None };
+        assert_eq!(keep_settled(&store, 2, || draw(refused.clone())), refused);
+        assert_eq!(keep_settled(&store, 2, || panic!("a refusal is kept")), refused);
+    }
 
     #[test]
     fn when_neither_attempt_draws_a_refusal_or_failure_outranks_a_confirmed_miss() {

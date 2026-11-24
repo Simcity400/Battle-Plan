@@ -3,21 +3,21 @@ use dashboard_effects::ScriptedEffects;
 use dashboard_base::products::Country;
 use super::{
     HolderTag, Holding, PoliticsRun, by_id, decimal, holdings, pieces,
-    state::{BALANCE_TABLES, BalanceRange, BalanceSide, NameScope, expand_scoped, raw_scripted_text, resolve_balance_name},
+    state::{BalanceRange, BalanceSide, NameScope, raw_scripted_text, resolve_balance_name},
     stretch_runs, tags_of, token, value_at, within,
 };
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, at_hour, check_reply_budget}};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, check_reply_budget}};
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, timeline::Stretch};
-use dashboard_text::scripted_text::{ScriptedText, probe_unselected_tables};
+use dashboard_text::scripted_text::ScriptedText;
 use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -103,6 +103,10 @@ pub struct PoliticsHistoryReply {
     pub mode: PoliticsHistoryMode,
     #[doc = " The branch's last hour: the history reads through it."]
     pub last_hour: Option<i32>,
+    pub hour: Option<i32>,
+    pub next_change: Option<i32>,
+    pub unread: Option<String>,
+    pub selected: Option<String>,
     pub tag: Option<String>,
     #[doc = " The country the request named, which a reply is matched to: a slot follows its country through any tag."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
@@ -145,7 +149,10 @@ impl Product for PoliticsStateHistory {
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid politics history branch")?;
         match params.mode {
-            PoliticsHistoryMode::Country => dashboard_base::products::validate_country(params.country.as_ref().ok_or("Missing country")?),
+            PoliticsHistoryMode::Country => {
+                params.hour.ok_or("A country's balance history names its hour")?;
+                dashboard_base::products::validate_country(params.country.as_ref().ok_or("Missing country")?)
+            }
             _ => Ok(()),
         }
     }
@@ -154,17 +161,57 @@ impl Product for PoliticsStateHistory {
         let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid politics history branch"))?)?;
         let catalogue = matches!(params.mode, PoliticsHistoryMode::Country)
             .then(|| context.content().and_then(|content| catalogue::catalogue(source, content)).map_err(|error| error.to_string()));
-        let reply = answer(&query, params, catalogue, cancelled)?;
+        let reply = match (params.mode, params.country.as_ref(), params.hour) {
+            (PoliticsHistoryMode::Country, Some(country), Some(hour)) => {
+                let index = indexed(source, &query, country, cancelled)?;
+                country_reply(&query, params, &index, hour, catalogue)
+            }
+            _ => answer(&query, params, catalogue, cancelled)?,
+        };
         check_reply_budget(&reply)?;
         Ok(reply)
     }
 }
 
-pub fn answer(query: &Query<'_>, params: &PoliticsHistoryParams, catalogue: Option<Result<Arc<Catalogue>, String>>, cancelled: &AtomicBool) -> io::Result<PoliticsHistoryReply> {
-    let mut reply = PoliticsHistoryReply {
+const KEPT: usize = 8;
+
+#[derive(Default)]
+struct Kept(Vec<((u64, Country), Arc<Mutex<Option<Arc<BalanceIndex>>>>)>);
+
+fn indexed(source: &Source, query: &Query<'_>, country: &Country, cancelled: &AtomicBool) -> io::Result<Arc<BalanceIndex>> {
+    let slot = {
+        let state = source.state::<Kept>();
+        let mut kept = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = (query.timeline.id, country.clone());
+        let entry = match kept.0.iter().position(|(held, _)| *held == key) {
+            Some(at) => kept.0.remove(at),
+            None => (key, Arc::new(Mutex::new(None))),
+        };
+        let slot = Arc::clone(&entry.1);
+        kept.0.push(entry);
+        if kept.0.len() > KEPT {
+            kept.0.remove(0);
+        }
+        slot
+    };
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(index) = held.as_ref() {
+        return Ok(Arc::clone(index));
+    }
+    let index = Arc::new(balance_index(query, &holdings(&query.holders), country, cancelled)?);
+    *held = Some(Arc::clone(&index));
+    Ok(index)
+}
+
+fn shell(query: &Query<'_>, params: &PoliticsHistoryParams) -> PoliticsHistoryReply {
+    PoliticsHistoryReply {
         branch_id: params.branch_id.clone(),
         mode: params.mode,
         last_hour: Some(query.timeline.last),
+        hour: None,
+        next_change: None,
+        unread: None,
+        selected: None,
         tag: params.country.as_ref().map(|country| query.holders.nearest_name(country, query.timeline.last)),
         asked: params.country.clone(),
         known: Vec::new(),
@@ -172,18 +219,33 @@ pub fn answer(query: &Query<'_>, params: &PoliticsHistoryParams, catalogue: Opti
         names: BTreeMap::new(),
         holder_balances: Vec::new(),
         warnings: Vec::new(),
-    };
+    }
+}
+
+fn country_reply(query: &Query<'_>, params: &PoliticsHistoryParams, index: &BalanceIndex, hour: i32, catalogue: Option<Result<Arc<Catalogue>, String>>) -> PoliticsHistoryReply {
+    let mut reply = shell(query, params);
+    let hour = hour.min(query.timeline.last);
+    reply.tag = params.country.as_ref().map(|country| query.holders.nearest_name(country, hour));
+    balances_at(index, &holdings(&query.holders), hour, catalogue, &mut reply);
+    reply
+}
+
+pub fn answer(query: &Query<'_>, params: &PoliticsHistoryParams, catalogue: Option<Result<Arc<Catalogue>, String>>, cancelled: &AtomicBool) -> io::Result<PoliticsHistoryReply> {
+    let mut reply = shell(query, params);
     let held = holdings(&query.holders);
     match params.mode {
         PoliticsHistoryMode::Elections => elections(query, &held, &mut reply, cancelled)?,
         PoliticsHistoryMode::Country => {
             let country = params.country.as_ref().ok_or_else(|| dashboard_core::invalid("A country history names its country"))?;
-            let holders: Vec<u32> = held.iter().filter(|(_, held)| held.iter().any(|holding| dashboard_world::products::holder_tags::matches(country, (holding.slot, holding.id), &holding.tag))).map(|(&slot, _)| slot).collect();
-            balances(query, &held, &holders, true, params.hour, catalogue, &mut reply, cancelled)?;
+            let hour = params.hour.ok_or_else(|| dashboard_core::invalid("A country's balance history names its hour"))?;
+            let index = balance_index(query, &held, country, cancelled)?;
+            return Ok(country_reply(query, params, &index, hour, catalogue));
         }
         PoliticsHistoryMode::Memberships => {
             let holders: Vec<u32> = held.keys().copied().collect();
-            balances(query, &held, &holders, false, None, catalogue, &mut reply, cancelled)?;
+            let gathered = gather(query, &held, &holders, false, cancelled)?;
+            reply.known = joined(query.timeline.stretches.iter().map(|stretch| (stretch.first, stretch.last)).collect());
+            present(gathered.holders, &held, catalogue, &mut reply, gathered.unresolved.len(), gathered.unnamed.len());
         }
     }
     Ok(reply)
@@ -427,44 +489,6 @@ impl<'a> Presentation<'a> {
     }
 }
 
-fn staged_history_frame(
-    query: &Query<'_>,
-    hour: i32,
-    catalogue: &Catalogue,
-    items: &[(String, NameScope)],
-) -> io::Result<Option<DecodedFrame>> {
-    if items.is_empty() || query.timeline.at(hour).is_none() {
-        return Ok(None);
-    }
-    let Ok(content) = catalogue.scripted_content() else {
-        return Ok(None);
-    };
-    let mut frames = at_hour::Frames::new(query)?;
-    let mut loaded: BTreeSet<TableId> = BALANCE_TABLES.into_iter().collect();
-    let reads: Vec<at_hour::Read> = loaded.iter().copied().map(at_hour::Read::all).collect();
-    let mut frame = frames.frame(hour, &reads, "Balance of power")?;
-    for _ in 0..8 {
-        let text = ScriptedText::new(&frame, &catalogue.localisation, content, 0);
-        let needed: Vec<TableId> = probe_unselected_tables(&frame, || {
-            for (raw, scope) in items {
-                let _ = expand_scoped(&text, raw, *scope);
-            }
-        })
-        .into_iter()
-        .filter(|table| loaded.insert(*table))
-        .collect();
-        if needed.is_empty() {
-            break;
-        }
-        let reads: Vec<at_hour::Read> = needed.iter().copied().map(at_hour::Read::all).collect();
-        let extra = frames.frame(hour, &reads, "Balance of power")?;
-        for table in needed {
-            frame.tables[table.index()] = extra.tables[table.index()].clone();
-        }
-    }
-    Ok(Some(frame))
-}
-
 fn texts(runs: impl IntoIterator<Item = (i32, i32, String)>) -> Vec<PoliticsRun> {
     let mut out: Vec<PoliticsRun> = Vec::new();
     for (first, last, value) in runs {
@@ -476,13 +500,49 @@ fn texts(runs: impl IntoIterator<Item = (i32, i32, String)>) -> Vec<PoliticsRun>
     out
 }
 
-#[derive(Default)]
-struct Gathered {
+#[derive(Clone, Default)]
+pub(crate) struct Gathered {
     values: BTreeMap<String, Vec<(i32, i32, i128)>>,
     records: BTreeMap<String, Vec<(i32, i32, i128)>>,
     ranges: BTreeMap<String, Vec<(i32, i32, String)>>,
     trending: BTreeMap<String, Vec<(i32, i32, String)>>,
     shown: Vec<(i32, i32, String)>,
+}
+
+fn clip<T: Clone>(runs: &[(i32, i32, T)], hour: i32) -> Vec<(i32, i32, T)> {
+    runs.iter().filter(|run| run.0 <= hour).map(|(first, last, value)| (*first, (*last).min(hour), value.clone())).collect()
+}
+
+impl Gathered {
+    fn sort(&mut self) {
+        for runs in self.values.values_mut().chain(self.records.values_mut()) {
+            runs.sort_unstable_by_key(|run| run.0);
+        }
+        for runs in self.ranges.values_mut().chain(self.trending.values_mut()) {
+            runs.sort_by_key(|run| run.0);
+        }
+        self.shown.sort_by_key(|run| run.0);
+    }
+
+    fn through(&self, hour: i32) -> Self {
+        let numbers = |map: &BTreeMap<String, Vec<(i32, i32, i128)>>| map.iter().map(|(token, runs)| (token.clone(), clip(runs, hour))).filter(|(_, runs)| !runs.is_empty()).collect();
+        let words = |map: &BTreeMap<String, Vec<(i32, i32, String)>>| map.iter().map(|(token, runs)| (token.clone(), clip(runs, hour))).collect();
+        Self { values: numbers(&self.values), records: numbers(&self.records), ranges: words(&self.ranges), trending: words(&self.trending), shown: clip(&self.shown, hour) }
+    }
+
+    fn edges(&self, out: &mut Vec<i32>) {
+        let mut push = |first: i32, last: i32| {
+            out.push(first);
+            out.push(last.saturating_add(1));
+        };
+        for runs in self.values.values().chain(self.records.values()) {
+            runs.iter().for_each(|run| push(run.0, run.1));
+        }
+        for runs in self.ranges.values().chain(self.trending.values()) {
+            runs.iter().for_each(|run| push(run.0, run.1));
+        }
+        self.shown.iter().for_each(|run| push(run.0, run.1));
+    }
 }
 
 pub(crate) fn earliest(memberships: &[(i32, i32, u32, String)]) -> Vec<(i32, i32, u32, String)> {
@@ -498,28 +558,47 @@ pub(crate) fn earliest(memberships: &[(i32, i32, u32, String)]) -> Vec<(i32, i32
     out
 }
 
-fn balances(
-    query: &Query<'_>,
-    held: &BTreeMap<u32, Vec<Holding>>,
-    only: &[u32],
-    whole: bool,
-    hour: Option<i32>,
-    catalogue: Option<Result<Arc<Catalogue>, String>>,
-    reply: &mut PoliticsHistoryReply,
-    cancelled: &AtomicBool,
-) -> io::Result<()> {
+#[derive(Default)]
+pub(crate) struct Gather {
+    holders: BTreeMap<u32, Gathered>,
+    unresolved: Vec<i32>,
+    unnamed: Vec<i32>,
+    read: Vec<(i32, i32)>,
+}
+
+fn complete_spans(query: &Query<'_>, stretch: &Stretch, table: TableId) -> io::Result<Vec<(i32, i32)>> {
+    let statuses = dashboard_query::cost::storage(|| lanes::statuses(query.replay.recording(), stretch.run, table, stretch.first, stretch.last))?;
+    Ok(statuses.into_iter().filter(|run| replay_recording::columnar_frames::complete(run.status)).map(|run| (run.first, run.last)).collect())
+}
+
+fn both_read(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while i < a.len() && j < b.len() {
+        let (first, last) = (a[i].0.max(b[j].0), a[i].1.min(b[j].1));
+        if first <= last {
+            out.push((first, last));
+        }
+        if a[i].1 < b[j].1 { i += 1 } else { j += 1 }
+    }
+    out
+}
+
+fn gather(query: &Query<'_>, held: &BTreeMap<u32, Vec<Holding>>, only: &[u32], whole: bool, cancelled: &AtomicBool) -> io::Result<Gather> {
     let ids = by_id(held);
-    let mut gathered: BTreeMap<u32, Gathered> = BTreeMap::new();
-    let (mut unresolved, mut unnamed) = (0_u64, 0_u64);
+    let mut out = Gather::default();
     for stretch in &query.timeline.stretches {
         check(cancelled)?;
+        if whole {
+            let read = both_read(&complete_spans(query, stretch, TableId::PowerBalances)?, &complete_spans(query, stretch, TableId::PowerBalanceMembers)?);
+            out.read.extend(read);
+        }
         let members = stretch_runs(query, stretch, TableId::PowerBalanceMembers, "country")?;
         let mut held_by: Vec<(i32, i32, u32, u32)> = Vec::new();
         for (&key, runs) in &members {
             let record = (key >> 32) as u32;
             for (first, last, country) in within(Some(runs), stretch.first, stretch.last) {
                 let Some(holdings) = u32::try_from(country).ok().and_then(|country| ids.get(&country)) else {
-                    unresolved += 1;
+                    out.unresolved.push(first);
                     continue;
                 };
                 for holding in holdings.iter().filter(|holding| only.binary_search(&holding.slot).is_ok()) {
@@ -542,12 +621,12 @@ fn balances(
             let named = runs.get(&u128::from(record)).map(|runs| tokens(&history, &runs.balance, from, to)).unwrap_or_default();
             let covered: i64 = named.iter().map(|&(a, b, _)| i64::from(b) - i64::from(a) + 1).sum();
             if covered < i64::from(to) - i64::from(from) + 1 {
-                unnamed += 1;
+                out.unnamed.push(from);
             }
             local.entry(slot).or_default().extend(named.into_iter().map(|(a, b, token)| (a, b, record, token)));
         }
         for (slot, memberships) in local {
-            let holder = gathered.entry(slot).or_default();
+            let holder = out.holders.entry(slot).or_default();
             holder.shown.extend(earliest(&memberships).into_iter().map(|(first, last, _, token)| (first, last, token)));
             let mut by_token: BTreeMap<&str, Vec<(i32, i32, u32, String)>> = BTreeMap::new();
             for held in &memberships {
@@ -564,7 +643,71 @@ fn balances(
             }
         }
     }
-    reply.known = joined(query.timeline.stretches.iter().map(|stretch| (stretch.first, stretch.last)).collect());
+    for holder in out.holders.values_mut() {
+        holder.sort();
+    }
+    out.unresolved.sort_unstable();
+    out.unnamed.sort_unstable();
+    Ok(out)
+}
+
+pub(crate) struct BalanceIndex {
+    gather: Gather,
+    runs: Vec<(i32, i32)>,
+    boundaries: Vec<i32>,
+}
+
+pub(crate) fn balance_index(query: &Query<'_>, held: &BTreeMap<u32, Vec<Holding>>, country: &Country, cancelled: &AtomicBool) -> io::Result<BalanceIndex> {
+    let mut holders: Vec<u32> = held.iter().filter(|(_, held)| held.iter().any(|holding| dashboard_world::products::holder_tags::matches(country, (holding.slot, holding.id), &holding.tag))).map(|(&slot, _)| slot).collect();
+    holders.sort_unstable();
+    let gather = gather(query, held, &holders, true, cancelled)?;
+    let runs: Vec<(i32, i32)> = holders.iter().flat_map(|slot| held.get(slot).into_iter().flatten()).map(|holding| (holding.first, holding.last)).collect();
+    let mut boundaries = Vec::new();
+    for holder in gather.holders.values() {
+        holder.edges(&mut boundaries);
+    }
+    for &(first, last) in gather.read.iter().chain(&runs) {
+        boundaries.push(first);
+        boundaries.push(last.saturating_add(1));
+    }
+    boundaries.extend(gather.unresolved.iter().chain(&gather.unnamed));
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    Ok(BalanceIndex { gather, runs, boundaries })
+}
+
+const UNREAD_BEFORE: &str = "The balance of power was not read for part of this campaign before this date";
+
+impl BalanceIndex {
+    fn unread_through(&self, hour: i32, known: &[HourSpan]) -> bool {
+        let held: i64 = joined(self.runs.iter().map(|&(first, last)| (first, last.min(hour))).filter(|(first, last)| first <= last).collect())
+            .iter()
+            .map(|span| i64::from(span.last_hour) - i64::from(span.first_hour) + 1)
+            .sum();
+        let read: i64 = known.iter().map(|span| i64::from(span.last_hour) - i64::from(span.first_hour) + 1).sum();
+        read < held
+    }
+}
+
+fn selected(holder: &Gathered, hour: i32) -> Option<String> {
+    let at = holder.shown.partition_point(|run| run.0 <= hour);
+    holder.shown[..at].last().map(|run| run.2.clone()).or_else(|| holder.values.iter().min_by_key(|(_, runs)| runs[0].0).map(|(token, _)| token.clone()))
+}
+
+pub(crate) fn balances_at(index: &BalanceIndex, held: &BTreeMap<u32, Vec<Holding>>, hour: i32, catalogue: Option<Result<Arc<Catalogue>, String>>, reply: &mut PoliticsHistoryReply) {
+    let known: Vec<(i32, i32)> = index.gather.read.iter().filter(|span| span.0 <= hour).map(|&(first, last)| (first, last.min(hour))).collect();
+    reply.known = joined(known);
+    reply.hour = Some(hour);
+    reply.next_change = index.boundaries.get(index.boundaries.partition_point(|&at| at <= hour)).copied();
+    reply.unread = index.unread_through(hour, &reply.known).then(|| UNREAD_BEFORE.to_owned());
+    let holders: BTreeMap<u32, Gathered> = index.gather.holders.iter().map(|(&slot, holder)| (slot, holder.through(hour))).collect();
+    reply.selected = holders.values().next().and_then(|holder| selected(holder, hour));
+    let unresolved = index.gather.unresolved.partition_point(|&at| at <= hour);
+    let unnamed = index.gather.unnamed.partition_point(|&at| at <= hour);
+    present(holders, held, catalogue, reply, unresolved, unnamed);
+}
+
+fn present(gathered: BTreeMap<u32, Gathered>, held: &BTreeMap<u32, Vec<Holding>>, catalogue: Option<Result<Arc<Catalogue>, String>>, reply: &mut PoliticsHistoryReply, unresolved: usize, unnamed: usize) {
     let (catalogue, catalogue_reason) = match catalogue {
         Some(Ok(catalogue)) => (Some(catalogue), None),
         Some(Err(error)) => {
@@ -578,75 +721,21 @@ fn balances(
         reply.warnings.push(format!("1 refused balance ranges: {error}"));
     }
     let power_balances = effects.as_ref().and_then(|effects| effects.as_ref().ok()).and_then(|effects| effects.view(None).power_balances);
-    let presentation = Presentation {
-        catalogue: catalogue.as_deref(),
-        catalogue_reason: catalogue_reason.as_deref(),
-        balances: power_balances,
-    };
-    let staged_frame = if let (Some(hour), Some(catalogue)) = (hour, catalogue.as_deref()) {
-        let mut items = Vec::new();
-        for (&slot, holder) in &gathered {
-            for balance_token in holder.values.keys() {
-                if let Some(raw) = raw_scripted_text(catalogue, balance_token) {
-                    items.push((raw, NameScope::Empty));
-                }
-                if let Some(definition) = power_balances.and_then(|db| db.definition(balance_token.as_bytes())) {
-                    for bytes in [&definition.left, &definition.right] {
-                        if let Some(raw) = raw_scripted_text(catalogue, &token(bytes)) {
-                            items.push((raw, NameScope::Empty));
-                        }
-                    }
-                }
-                if let Some(ranges) = power_balances.and_then(|db| db.ranges(balance_token.as_bytes())) {
-                    for range in ranges {
-                        if let Some(raw) = raw_scripted_text(catalogue, &token(&range.id)) {
-                            items.push((raw, NameScope::Country(Some(slot))));
-                        }
-                    }
-                }
-            }
-        }
-        staged_history_frame(query, hour, catalogue, &items)?
-    } else {
-        None
-    };
+    let presentation = Presentation { catalogue: catalogue.as_deref(), catalogue_reason: catalogue_reason.as_deref(), balances: power_balances };
     let mut refused = 0_u64;
-    {
-        let mut scripted = None;
-        for (slot, mut holder) in gathered {
-            let mut balances = Vec::new();
-            for (token, mut values) in std::mem::take(&mut holder.values) {
-                values.sort_unstable_by_key(|run| run.0);
-                let mut records = holder.records.remove(&token).unwrap_or_default();
-                records.sort_unstable_by_key(|run| run.0);
-                let mut held_ranges = holder.ranges.remove(&token).unwrap_or_default();
-                held_ranges.sort_by_key(|run| run.0);
-                let mut trending = holder.trending.remove(&token).unwrap_or_default();
-                trending.sort_by_key(|run| run.0);
-                let (left, right, ranges) = presentation.authored(staged_frame.as_ref(), &mut scripted, &token, slot, &mut reply.names, &mut refused);
-                let (name, _) = presentation.resolve(staged_frame.as_ref(), &mut scripted, &token, NameScope::Empty, &mut reply.names, &mut refused);
-                balances.push(BalanceHistory {
-                    name,
-                    token,
-                    left,
-                    right,
-                    ranges,
-                    values: decimal(values),
-                    record: decimal(records),
-                    range: texts(held_ranges),
-                    trending: texts(trending),
-                });
-            }
-            holder.shown.sort_by_key(|run| run.0);
-            reply.holder_balances.push(HolderBalances {
-                holder: slot.to_string(),
-                tags: held.get(&slot).map(|held| tags_of(held)).unwrap_or_default(),
-                balances,
-                shown: texts(holder.shown),
-            });
+    let mut scripted = None;
+    for (slot, mut holder) in gathered {
+        let mut balances = Vec::new();
+        for (token, values) in std::mem::take(&mut holder.values) {
+            let records = holder.records.remove(&token).unwrap_or_default();
+            let held_ranges = holder.ranges.remove(&token).unwrap_or_default();
+            let trending = holder.trending.remove(&token).unwrap_or_default();
+            let (left, right, ranges) = presentation.authored(None, &mut scripted, &token, slot, &mut reply.names, &mut refused);
+            let (name, _) = presentation.resolve(None, &mut scripted, &token, NameScope::Empty, &mut reply.names, &mut refused);
+            balances.push(BalanceHistory { name, token, left, right, ranges, values: decimal(values), record: decimal(records), range: texts(held_ranges), trending: texts(trending) });
         }
+        reply.holder_balances.push(HolderBalances { holder: slot.to_string(), tags: held.get(&slot).map(|held| tags_of(held)).unwrap_or_default(), balances, shown: texts(holder.shown) });
     }
-    drop(staged_frame);
     if refused != 0 {
         reply.warnings.push(format!("{refused} refused balance names: no plain localisation in the recorded content"));
     }
@@ -656,6 +745,4 @@ fn balances(
     if unnamed != 0 {
         reply.warnings.push(format!("{unnamed} refused balance memberships: the record's balance was not read"));
     }
-    Ok(())
 }
-

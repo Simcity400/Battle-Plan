@@ -838,3 +838,206 @@ fn a_narrow_range_counts_only_its_own_raids_and_raids_are_available_only_once_on
     let chosen = load_with(&[records(1, frames)], RaidLogParams { branch_id: "1".into(), from: None, to: None, countries: vec![Country::Slot(1)], catalogue: false });
     assert_eq!(chosen.episodes.len(), 1, "R4-S13: a raid by a chosen slot is kept though no tag names its raider");
 }
+
+mod tail;
+
+#[test]
+fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps_slots_distinct() {
+    use super::{RaidTallyAt, RaidTallyAtParams, RaidTallyMetric};
+    use super::tally::{RaidTally, RaidTallyParams};
+
+    let make_source = |frames: Vec<DecodedFrame>| {
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        Source::from_replay(
+            SourceKey { source_id: "raid-tally-test".into(), revision: "1".into() },
+            "memory.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+
+    let scope = RaidScope { province: 10, ..Default::default() };
+    let countries = vec![(10, 7, b"AAA".as_slice()), (20, 9, b"BBB".as_slice())];
+    let frames = vec![
+        make_frame(1, 10, countries.clone(), 20, TableView::Complete(TableRows::Raids(vec![])), vec![]),
+        make_frame(
+            1,
+            11,
+            countries.clone(),
+            20,
+            TableView::Complete(TableRows::Raids(vec![raid_row(1, 7, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10))])),
+            vec![target_row(1, scope.clone(), 40)],
+        ),
+        make_frame(
+            1,
+            12,
+            countries.clone(),
+            20,
+            TableView::Complete(TableRows::Raids(vec![raid_row(1, 7, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(10))])),
+            vec![target_row(1, scope.clone(), 40)],
+        ),
+    ];
+    let source = make_source(frames);
+    let ctx = LoadContext { content: None };
+    let cancel = AtomicBool::new(false);
+
+    let at_10 = RaidTally::load(
+        &source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, metric: RaidTallyMetric::Both, hour: 10 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(at_10.hour, 10);
+    assert_eq!(at_10.available, None);
+    assert_eq!(at_10.next_change, Some(11));
+    assert_eq!(at_10.series.len(), 1);
+    assert_eq!(at_10.series[0].runs.len(), 1);
+    assert_eq!((at_10.series[0].runs[0].launched, at_10.series[0].runs[0].succeeded), (0, 0));
+
+    let top_10 = RaidTally::load(
+        &source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![], top: Some(2), metric: RaidTallyMetric::Both, hour: 10 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert!(top_10.series.is_empty(), "slot first launching at T+1 is absent from top-N reply at T");
+    assert_eq!(top_10.next_change, Some(11));
+
+    let at_11 = RaidTally::load(
+        &source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, metric: RaidTallyMetric::Both, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(at_11.available, Some(true));
+    assert_eq!(at_11.next_change, Some(12));
+    assert_eq!(at_11.series[0].runs.last().map(|r| (r.launched, r.succeeded)), Some((1, 0)));
+
+    let at_12 = RaidTally::load(
+        &source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, metric: RaidTallyMetric::Both, hour: 12 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(at_12.next_change, None);
+    assert_eq!(at_12.series[0].runs.last().map(|r| (r.launched, r.succeeded)), Some((1, 1)));
+
+    let hover_11 = RaidTallyAt::load(
+        &source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], group: None, top: None, metric: RaidTallyMetric::Both, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(hover_11.missing, None);
+    assert_eq!(hover_11.rows.len(), 1);
+    assert_eq!((&hover_11.rows[0].country, hover_11.rows[0].launched, hover_11.rows[0].succeeded), (&Country::Slot(7), 1, 0));
+
+    let mut unread_target_frame = make_frame(
+        1,
+        14,
+        countries.clone(),
+        20,
+        TableView::Complete(TableRows::Raids(vec![raid_row(2, 7, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(5))])),
+        vec![],
+    );
+    *unread_target_frame.tables[TableId::RaidTargets.index()] = TableView::Unavailable { reason: "targets unread".into() };
+    let gap_frames = vec![
+        make_frame(
+            1,
+            10,
+            countries.clone(),
+            20,
+            TableView::Complete(TableRows::Raids(vec![raid_row(1, 7, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10))])),
+            vec![target_row(1, scope.clone(), 40)],
+        ),
+        make_frame(1, 11, countries.clone(), 20, TableView::Unavailable { reason: "raids unread".into() }, vec![]),
+        make_frame(1, 12, countries.clone(), 20, TableView::Unavailable { reason: "raids unread".into() }, vec![]),
+        make_frame(
+            1,
+            13,
+            countries.clone(),
+            20,
+            TableView::Complete(TableRows::Raids(vec![raid_row(1, 7, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(10))])),
+            vec![target_row(1, scope.clone(), 40)],
+        ),
+        unread_target_frame,
+    ];
+    let gap_source = make_source(gap_frames);
+    let gap_reply = RaidTally::load(
+        &gap_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, metric: RaidTallyMetric::Both, hour: 14 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(gap_reply.missing.len(), 1);
+    assert_eq!((gap_reply.missing[0].first_hour, gap_reply.missing[0].last_hour), (11, 12));
+    assert!(gap_reply.series[0].runs.iter().all(|r| r.last_hour < 11 || r.first_hour > 12), "runs never bridge unread Raids hours");
+    assert_eq!(gap_reply.series[0].runs.last().map(|r| (r.launched, r.succeeded)), Some((2, 1)), "unread RaidTargets does not discard witnessed Raids counts");
+
+    let hover_gap = RaidTallyAt::load(
+        &gap_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![], group: None, top: Some(3), metric: RaidTallyMetric::Both, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert!(hover_gap.missing.is_some());
+    assert!(hover_gap.rows.is_empty(), "exact hover at unread Raids hour never fabricates zeros or rank");
+
+    let reuse_frames = vec![
+        make_frame(
+            1,
+            10,
+            vec![(10, 7, b"AAA".as_slice()), (20, 8, b"CCC".as_slice())],
+            20,
+            TableView::Complete(TableRows::Raids(vec![raid_row(1, 7, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10))])),
+            vec![target_row(1, scope.clone(), 40)],
+        ),
+        make_frame(1, 11, vec![(10, 7, b"AAA".as_slice()), (20, 8, b"CCC".as_slice())], 20, TableView::Complete(TableRows::Raids(vec![])), vec![]),
+        make_frame(
+            1,
+            12,
+            vec![(20, 8, b"CCC".as_slice()), (30, 9, b"AAA".as_slice())],
+            20,
+            TableView::Complete(TableRows::Raids(vec![raid_row(2, 9, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10))])),
+            vec![target_row(2, scope, 40)],
+        ),
+        make_frame(1, 13, vec![(20, 8, b"CCC".as_slice()), (30, 9, b"AAA".as_slice())], 20, TableView::Complete(TableRows::Raids(vec![])), vec![]),
+    ];
+    let reuse_source = make_source(reuse_frames);
+    let slot7 = RaidTally::load(
+        &reuse_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, metric: RaidTallyMetric::Both, hour: 13 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    let slot9 = RaidTally::load(
+        &reuse_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![Country::Slot(9)], top: None, metric: RaidTallyMetric::Both, hour: 13 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    let top_reuse = RaidTally::load(
+        &reuse_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![], top: Some(5), metric: RaidTallyMetric::Both, hour: 13 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(slot7.series[0].runs.last().map(|r| r.launched), Some(1));
+    assert_eq!(slot9.series[0].runs.last().map(|r| r.launched), Some(1));
+    assert_eq!(top_reuse.series.len(), 2, "reused tag keeps slots 7 and 9 separate");
+    assert_eq!(top_reuse.series.iter().map(|s| s.slot).collect::<Vec<_>>(), vec![7, 9]);
+}

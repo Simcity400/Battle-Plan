@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { liveKey } from '../../charts/live.ts';
 import { engineHour, firstHourOfMonth } from '../../dashboard/calendar.ts';
+import { NOT_LIVE_CELL, sectionValues, valuedGroup, type LiveSection } from '../../dashboard/follow/liveCells.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import type { InstalledPicture } from '../../families/plan.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from '../../families/time-chart/hitTest.ts';
@@ -118,7 +119,7 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
     const sep = 1941 * 12 + 8;
     const live = {
       get: (key: string) => (key === liveKey(`r:${sep}`, 'p0') || key === liveKey(`r:${sep}`, 'total') ? 90000 : undefined),
-      missing: () => 'CombatLogManpower was not recorded',
+      missing: (key: string) => (key.startsWith(`r:${sep}\u0000`) ? NOT_LIVE_CELL : 'CombatLogManpower was not recorded'),
     };
     const model = armyLossesProjection.project(createBoundedReadView({
       hour: H1941_SEP15,
@@ -289,5 +290,95 @@ describe('army-losses-by-month projection (acceptance cases 1-9)', () => {
     assert.equal(segColor(modelA, 'archetype:artillery_equipment'), segColor(modelB, 'archetype:artillery_equipment'), 'artillery colour must stay identical when rank swaps');
     assert.equal(legColor(modelA, 'archetype:infantry_equipment'), legColor(modelB, 'archetype:infantry_equipment'));
     assert.equal(legColor(modelA, 'archetype:artillery_equipment'), legColor(modelB, 'archetype:artillery_equipment'));
+  });
+
+  it('R2-S17: reads every bound live segment even when its static baseline was zero, and keeps static values only for unbound segments', () => {
+    const may = 1941 * 12 + 4;
+    const sep = 1941 * 12 + 8;
+    const reply = makeReply({
+      rollup: {
+        unitScale: 1,
+        wrapI32: true,
+        parts: [
+          { key: 'ground', label: 'Ground', otherCount: 0 },
+          { key: 'air', label: 'Air', otherCount: 0 },
+          { key: 'navy', label: 'Navy', otherCount: 0 },
+        ],
+        months: [
+          {
+            month: may,
+            firstHour: firstHourOfMonth(may),
+            lastHour: firstHourOfMonth(may + 1) - 1,
+            liveRow: null,
+            missing: null,
+            values: ['10000', '0', '0'],
+            total: '10000',
+          },
+          {
+            month: sep,
+            firstHour: firstHourOfMonth(sep),
+            lastHour: firstHourOfMonth(sep + 1) - 1,
+            liveRow: `r:${sep}`,
+            missing: null,
+            values: ['80000', '0', '0'],
+            total: '80000',
+          },
+        ],
+      },
+    });
+    const section: LiveSection = {
+      groups: [{ table: 1, columns: [0, 1], keys: ['0'] }],
+      rows: [`r:${sep}`],
+      kinds: [
+        { id: 'p0', op: 'sum', scale: 1 },
+        { id: 'p2', op: 'sum', scale: 1 },
+        { id: 'total', op: 'sum', scale: 1 },
+      ],
+      cells: [
+        0, 0, 1, 0, 0, 0,
+        0, 1, 1, 0, 0, 1,
+        0, 2, 2, 0, 0, 0, 0, 0, 1,
+      ],
+    };
+    const live = sectionValues(section, [valuedGroup(section.groups[0]!, [80000, 4500])]);
+    const model = armyLossesProjection.project(createBoundedReadView({
+      hour: H1941_SEP15,
+      panels: new Map([['main', reply]]),
+      live: new Map([['main', live]]),
+    }), {
+      measure: 'manpower',
+      ledger: 'combat',
+      stack: 'channel',
+      foldUnrecorded: true,
+      countryName: 'German Reich',
+      following: true,
+      extent: [H1936, H1941_SEP15],
+    });
+    const sepSlot = model.columns!.months.find(m => m.year === 1941 && m.month === 9)!;
+    assert.equal(sepSlot.status, 'recorded', 'unbound segment p1 keeps its static 0 without marking the month not-recorded');
+    assert.equal(sepSlot.segments.find(s => s.id === 'ground')?.value, 80000);
+    assert.equal(sepSlot.segments.find(s => s.id === 'air')?.value, 0);
+    assert.equal(sepSlot.segments.find(s => s.id === 'navy')?.value, 4500, 'bound navy segment updates from 0 baseline to 4500');
+    assert.equal(sepSlot.segments.find(s => s.id === 'navy')?.exactText, '4,500');
+    assert.equal(sepSlot.totalValue, 84500);
+    assert.equal(sepSlot.totalText, '84,500');
+
+    const missingNavyLive = sectionValues(section, [valuedGroup(section.groups[0]!, [80000, 'Naval column was not recorded'])]);
+    const missingModel = armyLossesProjection.project(createBoundedReadView({
+      hour: H1941_SEP15,
+      panels: new Map([['main', reply]]),
+      live: new Map([['main', missingNavyLive]]),
+    }), {
+      measure: 'manpower',
+      ledger: 'combat',
+      stack: 'channel',
+      foldUnrecorded: true,
+      countryName: 'German Reich',
+      following: true,
+      extent: [H1936, H1941_SEP15],
+    });
+    const missingSlot = missingModel.columns!.months.find(m => m.year === 1941 && m.month === 9)!;
+    assert.equal(missingSlot.status, 'not-recorded', 'a bound zero-baseline segment that becomes missing must mark the month not-recorded');
+    assert.equal(missingSlot.reason, 'Naval column was not recorded');
   });
 });

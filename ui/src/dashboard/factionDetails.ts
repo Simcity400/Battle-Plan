@@ -36,28 +36,10 @@ export function validateFactionDetails(value: unknown): FactionDetailReply {
 export const detailsStructure = (reply: FactionDetailReply): string => JSON.stringify(reply);
 
 export const FACTION_ROW = 'faction';
-export const projectionKey = liveKey(FACTION_ROW, 'projection');
 export const manpowerTotalKey = liveKey(FACTION_ROW, 'manpower');
 export const researchBaseKey = liveKey(FACTION_ROW, 'research');
-export const goalProgressKey = (ordinal: number) => liveKey(`goal:${ordinal}`, 'progress');
 export const resourceKey = (ordinal: number) => liveKey(`resource:${ordinal}`, 'amount');
 export const manpowerKey = (ordinal: number) => liveKey(`manpower:${ordinal}`, 'value');
-
-export const FIXED5_MAX = 92233720124192;
-
-export type GoalProgress = { kind: 'percent'; percent: number } | { kind: 'unmeasured' } | { kind: 'missing'; reason: string };
-export function goalProgress(values: LiveValues<number>, ordinal: number): GoalProgress {
-  const key = goalProgressKey(ordinal);
-  const raw = values.get(key);
-  if (raw === undefined) return { kind: 'missing', reason: values.missing(key) || 'Not recorded' };
-  if (raw === FIXED5_MAX) return { kind: 'unmeasured' };
-  return Number.isFinite(raw) && Math.abs(raw) < 2 ** 53 ? { kind: 'percent', percent: raw / 1000 } : { kind: 'missing', reason: 'Not recorded' };
-}
-
-export function liveNumber(values: LiveValues<number>, key: string): { value: number } | { reason: string } {
-  const value = values.get(key);
-  return value === undefined ? { reason: values.missing(key) || 'Not recorded' } : { value };
-}
 
 export function liveTextsOf(live: Live<LiveValues<number>>, write: (values: LiveValues<number>, key: string) => string): LiveTexts {
   return { text: key => write(live.read(), key), subscribe: changed => live.subscribe(changed) };
