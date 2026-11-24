@@ -108,3 +108,15 @@ fn a_medal_total_above_the_identified_awards_keeps_the_rest_as_unidentified() {
     assert_eq!(unidentified(2, 2), None);
     assert_eq!(unidentified(-1, 0), None);
 }
+
+#[test]
+fn decorated_divisions_hold_until_the_country_filter_next_changes() {
+    use super::careers::{CountryHours, filter_valid_through};
+    let span = |first_hour: i32, last_hour: i32| CountryHours { tag: "GER".into(), first_hour, last_hour };
+    let spans = [span(100, 199), span(300, 399)];
+    assert_eq!(filter_valid_through(None, 150), i32::MAX, "every country never changes membership");
+    assert_eq!(filter_valid_through(Some(&spans), 50), 99, "a country joins at 100");
+    assert_eq!(filter_valid_through(Some(&spans), 150), 199, "and leaves after 199");
+    assert_eq!(filter_valid_through(Some(&spans), 250), 299);
+    assert_eq!(filter_valid_through(Some(&spans), 399), i32::MAX);
+}
