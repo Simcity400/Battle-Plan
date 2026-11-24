@@ -99,6 +99,7 @@ export default function DeclaredBarsWidget<TProjectionOptions, TAux>({
       countryLooks={plan.displayedCountryLooks}
       identitySnapshot={plan.identitySnapshot}
       onIdentityDemands={plan.onIdentityDemands}
+      onViewportSize={plan.measureViewport}
       selectedKey={selectedKey}
       onActivate={onActivate}
       onAddRegion={onAddRegion}

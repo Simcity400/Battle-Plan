@@ -166,7 +166,13 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     subscriptions={plan.subscriptions}
     allowEmptyFollow={plan.allowEmptyFollow}
     owner={plan.owner}
-    staticSources={plan.staticBundle ? { panels: plan.staticBundle.panels, answers: plan.staticBundle.answers, hour: plan.staticBundle.hour } : null}
+    staticSources={plan.staticBundle ? {
+      panels: plan.staticBundle.panels,
+      answers: plan.staticBundle.answers,
+      hour: plan.staticBundle.hour,
+      ...(plan.staticBundle.follows ? { follows: true } : {}),
+      ...(plan.staticBundle.provenInterval ? { provenInterval: plan.staticBundle.provenInterval } : {}),
+    } : null}
     exactReadView={displayedCtx && perfLog && !blockedState ? plan.exactReadView : undefined}
     offset={plan.offset}
     pin={plan.pin}
@@ -174,6 +180,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     countryLooks={plan.displayedCountryLooks}
     identitySnapshot={plan.identitySnapshot}
     onIdentityDemands={plan.onIdentityDemands}
+    onViewportSize={plan.measureViewport}
     selectedKey={selectedKey}
     onActivate={onActivate}
     contextMenuItems={declaration.jumpToDate ? contextMenuItems : undefined}

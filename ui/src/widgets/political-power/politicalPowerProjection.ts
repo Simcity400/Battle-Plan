@@ -2,7 +2,7 @@ import { CHART_MEASURE_COLOURS, colour, nudgeApart, readableColour } from '../..
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { rowAmount } from '../../dashboard/follow/painters.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
-import { missingArt, PENDING_ART } from '../../families/art/types.ts';
+import { failedArt, missingArt, PENDING_ART } from '../../families/art/types.ts';
 import type { ArtHandle, BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { holderTagAt, type HolderRun } from '../../families/holders.ts';
 import {
@@ -27,7 +27,7 @@ export interface PoliticalPowerOptions {
   readonly surface: string;
 }
 
-const PP_ICON_HANDLE: ArtHandle = { scope: 'sprite', choice: 'GFX_pol_power', sprite: 'GFX_pol_power', frame: 0 };
+const PP_ICON_HANDLE: ArtHandle = { kind: 'sprite', key: 'GFX_pol_power', frame: 0 };
 
 function formatEndAmount(value: number): string {
   if (Math.abs(value) >= 10_000) return formatChartAxisValue(value, 'power');
@@ -110,7 +110,9 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
           ? { art: readView.art(flagArtHandle(who.flagChoice.value, 'panel')), tag: identityTag }
           : who.flagChoice?.status === 'absent'
             ? { art: missingArt(who.flagChoice.reason), tag: identityTag }
-            : { art: PENDING_ART, tag: identityTag };
+            : who.flagChoice?.status === 'failed'
+              ? { art: failedArt(who.flagChoice.reason, who.flagChoice.retryable), tag: identityTag }
+              : { art: PENDING_ART, tag: identityTag };
       const color = isTail ? 'rgba(245, 245, 245, 0.22)' : (colourMap.get(tag) ?? CHART_MEASURE_COLOURS.politicalPower);
       const headValue = headByTag.get(tag) ?? null;
 

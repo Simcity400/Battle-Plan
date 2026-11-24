@@ -2571,7 +2571,8 @@ impl Captured {
             ),
             flags,
             timed(TableId::ScriptVariables, || {
-                self.variables_input(outcomes[8], baseline, scratch)
+                let stamp = projection.as_deref().map(Projection::current_stamp);
+                self.variables_input(outcomes[8], baseline, stamp, scratch)
             }),
             TableInput::Sampled(self.operations_table(outcomes[9])),
             scalar_table::<tables::OperationAssignments, _>(
@@ -3218,11 +3219,12 @@ impl Captured {
         &self,
         outcome: Outcome,
         baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        stamp: Option<(u64, BranchId, Hour)>,
         scratch: &mut ScriptVariableComparison,
     ) -> TableInput {
         #[cfg(feature = "conversion_check")]
         let reference = self.reference_variables(outcome, baseline, scratch);
-        let input = self.changed_variables(outcome, baseline, scratch);
+        let input = self.changed_variables(outcome, baseline, stamp, scratch);
         #[cfg(feature = "conversion_check")]
         conversion_check::record(baseline, &reference, &input);
         input
@@ -3232,6 +3234,7 @@ impl Captured {
         &self,
         outcome: Outcome,
         baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        stamp: Option<(u64, BranchId, Hour)>,
         scratch: &mut ScriptVariableComparison,
     ) -> TableInput {
         let started = std::time::Instant::now();
@@ -3243,11 +3246,9 @@ impl Captured {
                 | TableInput::SliceUpdate { .. }
                 | TableInput::SharedComplete(_)
         );
-        scratch.kept = match (baseline, self.variable_delta.generation) {
-            (Some((token, _)), Some(generation)) if holds_capture => Some(Kept {
-                at: token.destination(),
-                generation,
-            }),
+        let destination = baseline.map(|(token, _)| token.destination()).or(stamp);
+        scratch.kept = match (destination, self.variable_delta.generation) {
+            (Some(at), Some(generation)) if holds_capture => Some(Kept { at, generation }),
             _ => None,
         };
         work.ns = elapsed_ns(started);
@@ -3541,15 +3542,38 @@ impl Captured {
         let seed = previous.seed.require("ScriptVariables.seed").ok()?;
         let mut equal = *seed == scope.seed;
         let old = &previous.entries;
-        if scope.entries_len != old.len()
-            || old.windows(2).any(|pair| pair[0].name >= pair[1].name)
+        if scope.entries_len != old.len() {
+            return None;
+        }
+        let current =
+            &self.variable_entries.first[scope.entries_start..scope.entries_start + scope.entries_len];
+        let mut diverged = None;
+        for (index, (entry, prev)) in current.iter().zip(old.iter()).enumerate() {
+            if index > 0 && old[index - 1].name >= prev.name {
+                return None;
+            }
+            let name =
+                &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
+            if prev.name.as_slice() != name {
+                diverged = Some(index);
+                break;
+            }
+            equal &= entry.value_raw == prev.value_raw;
+        }
+        let Some(from) = diverged else {
+            return Some(equal);
+        };
+        if old[from..].windows(2).any(|pair| pair[0].name >= pair[1].name)
             || !clear_seen(seen, old.len())
         {
             return None;
         }
-        for entry in &self.variable_entries.first
-            [scope.entries_start..scope.entries_start + scope.entries_len]
-        {
+        let full = from / 64;
+        seen[..full].fill(u64::MAX);
+        if from % 64 != 0 {
+            seen[full] = (1_u64 << (from % 64)) - 1;
+        }
+        for entry in &current[from..] {
             let name =
                 &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len];
             let index = old
