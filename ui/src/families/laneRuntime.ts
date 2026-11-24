@@ -1,6 +1,7 @@
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import { sameRevision, type Revisions } from '../dashboard/follow/payloads.ts';
 import type { LaneView, Painted, PaintInput, Scene, Surface } from '../draw/lane.ts';
+import { markCanvasPainted } from '../draw/laneDispatch.ts';
 import { LaneArtCache, type LaneArtFetcher } from './art/laneCache.ts';
 import { createLaneArtProvider, type ArtResolutions } from './art/provider.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from './cadence.ts';
@@ -424,7 +425,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const binding = input.model;
       const surface = input.binding.surfaces[0];
       const waiting: Painted = { ...EMPTY, nextChangeAt: input.hour + 1 };
-      if (!isBinding(binding) || !surface || !binding.theme) return waiting;
+      if (!isBinding(binding) || !surface || surface.width <= 0 || surface.height <= 0 || !binding.theme) return waiting;
       const theme = binding.theme;
       const projection = projectionOf(binding, input.widget);
       if (projection === 'loading') return WAITING;
@@ -571,10 +572,15 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.artKey = artKey;
           keep.art.requestVisible(shown, projected.artUrls);
         }
-        keep.ctx.save();
-        keep.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const painted = family.paint(keep.ctx, frame);
-        keep.ctx.restore();
+        const drawCanvas = () => {
+          keep.ctx.save();
+          keep.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          const result = family.paint(keep.ctx, frame);
+          keep.ctx.restore();
+          return result;
+        };
+        const painted = drawCanvas();
+        markCanvasPainted(keep.canvas, drawCanvas);
         keep.motion = painted === true;
         keep.expiry = typeof painted === 'number' ? painted : Infinity;
         keep.drawn = { binding, model, layout, hour: drawn };

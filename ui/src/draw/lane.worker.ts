@@ -3,7 +3,7 @@ import { panelViews, readingStructure } from './panels/views.ts';
 import { stretch } from './weakCpu.ts';
 import type { FromLane, ToLane } from './laneMessages';
 import { drawnViews } from './views/drawn.ts';
-import { cropAll, laneDispatch, macrotaskSchedule, type LaneSide } from './laneDispatch.ts';
+import { cropSurfaces, laneDispatch, macrotaskSchedule, type LaneSide } from './laneDispatch.ts';
 
 const fields = fieldsView(readingStructure, (product, panel, hour) => {
   const view = product === undefined ? undefined : panelViews[product];
@@ -17,7 +17,7 @@ export function startLaneWorker(
   const schedule = overrides && 'schedule' in overrides ? overrides.schedule : macrotaskSchedule();
   return laneDispatch(post, {
     views: overrides?.views ?? ((kind, wake) => kind === 'fields' ? fields : drawnViews(kind, wake) ?? fields),
-    crop: overrides?.crop ?? (sources => cropAll(sources, source => createImageBitmap(source as OffscreenCanvas))),
+    crop: overrides?.crop ?? (sources => cropSurfaces(sources)),
     later: overrides?.later ?? (run => { if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => run()); else setTimeout(run, 16); }),
     ...schedule ? { schedule } : {},
     ...overrides?.clock ? { clock: overrides.clock } : {},

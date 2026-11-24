@@ -1,4 +1,4 @@
-import { Lane, type LaneHost, type LaneView } from './lane.ts';
+import { Lane, type Bitmapped, type LaneHost, type LaneView } from './lane.ts';
 import type { FromLane, FromPull, ToLane, ToPull } from './laneMessages';
 
 export interface WakeChannel {
@@ -58,6 +58,78 @@ export function cropAll<S, B extends { close(): void }>(sources: readonly S[], m
         failWith,
       );
     });
+  });
+}
+
+interface TransferableSurface<B> extends Bitmapped {
+  transferToImageBitmap?(): B;
+}
+
+const canvasRestores = new WeakMap<object, () => void>();
+const transferredCanvases = new WeakSet<object>();
+
+export function markCanvasPainted(canvas: object, restore: () => void): void {
+  canvasRestores.set(canvas, restore);
+  transferredCanvases.delete(canvas);
+}
+
+const defaultFallback = (source: Bitmapped): Promise<ImageBitmap> => createImageBitmap(source as OffscreenCanvas);
+
+export function cropSurfaces<B extends { close(): void } = ImageBitmap>(
+  sources: readonly Bitmapped[],
+  fallback: (source: Bitmapped) => Promise<B> = defaultFallback as unknown as (source: Bitmapped) => Promise<B>,
+): Promise<B[]> {
+  if (!sources.length) return Promise.resolve([]);
+  const remaining = new Map<Bitmapped, number>();
+  let allTransferable = true;
+  for (let i = 0; i < sources.length; i++) {
+    const source = sources[i]!;
+    const count = (remaining.get(source) ?? 0) + 1;
+    remaining.set(source, count);
+    if (
+      count > 1
+      || !canvasRestores.has(source)
+      || source.width <= 0
+      || source.height <= 0
+      || typeof (source as TransferableSurface<B>).transferToImageBitmap !== 'function'
+    ) {
+      allTransferable = false;
+    }
+  }
+  if (allTransferable) {
+    const out: B[] = [];
+    try {
+      for (let i = 0; i < sources.length; i++) {
+        const source = sources[i] as TransferableSurface<B>;
+        if (transferredCanvases.has(source)) {
+          canvasRestores.get(source)!();
+          transferredCanvases.delete(source);
+        }
+        const bitmap = source.transferToImageBitmap!();
+        transferredCanvases.add(source);
+        out.push(bitmap);
+      }
+      return Promise.resolve(out);
+    } catch (error) {
+      for (let i = 0; i < out.length; i++) out[i]!.close();
+      return Promise.reject(error);
+    }
+  }
+  return cropAll(sources, source => {
+    const left = remaining.get(source)!;
+    remaining.set(source, left - 1);
+    const restore = canvasRestores.get(source);
+    if (restore && transferredCanvases.has(source)) {
+      restore();
+      transferredCanvases.delete(source);
+    }
+    const surface = source as TransferableSurface<B>;
+    if (restore && left === 1 && surface.width > 0 && surface.height > 0 && typeof surface.transferToImageBitmap === 'function') {
+      const bitmap = surface.transferToImageBitmap();
+      transferredCanvases.add(source);
+      return Promise.resolve(bitmap);
+    }
+    return fallback(source);
   });
 }
 
