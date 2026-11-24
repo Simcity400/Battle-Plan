@@ -5,6 +5,15 @@
 #include <xmmintrin.h>
 #include <emmintrin.h>
 
+static void rearm_guard_page(uintptr_t address) {
+    MEMORY_BASIC_INFORMATION info;
+    if (VirtualQuery((const void *)address, &info, sizeof info) == sizeof info &&
+        info.State == MEM_COMMIT && (info.Protect & PAGE_GUARD) == 0) {
+        DWORD previous;
+        VirtualProtect((void *)address, 1, info.Protect | PAGE_GUARD, &previous);
+    }
+}
+
 static int copy_fault(EXCEPTION_POINTERS *ep, const unsigned char *src,
                       size_t len, const unsigned char *dst) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
@@ -12,14 +21,18 @@ static int copy_fault(EXCEPTION_POINTERS *ep, const unsigned char *src,
         code != EXCEPTION_IN_PAGE_ERROR) {
         return 0;
     }
-    if (ep->ExceptionRecord->NumberParameters >= 2) {
-        uintptr_t address = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
-        if (address == (uintptr_t)-1) {
-            return 1;
-        }
-        return address - (uintptr_t)src < len || address - (uintptr_t)dst < len;
+    if (ep->ExceptionRecord->NumberParameters < 2) {
+        return 0;
     }
-    return 0;
+    uintptr_t address = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
+    if (address != (uintptr_t)-1 && address - (uintptr_t)src >= len &&
+        address - (uintptr_t)dst >= len) {
+        return 0;
+    }
+    if (code == STATUS_GUARD_PAGE_VIOLATION) {
+        rearm_guard_page(address);
+    }
+    return 1;
 }
 
 static __forceinline void copy_other_bytes(unsigned char *dst,
