@@ -300,10 +300,6 @@ impl Sum {
     fn amount(&self) -> Option<BreakdownAmount> {
         self.known.filter(|_| self.measured > 0 || self.missing.is_empty()).map(Exact::wire)
     }
-
-    fn whole(&self) -> Option<Exact> {
-        self.known.filter(|_| matches!(self.state(), BreakdownState::Known | BreakdownState::Partial))
-    }
 }
 
 fn remember(reasons: &mut Vec<String>, reason: &str) {
@@ -369,19 +365,24 @@ fn class(branch: &Branch) -> u8 {
     }
 }
 
-fn share_of(part: &Sum, whole: Option<Exact>) -> Option<f64> {
-    match (whole, part.whole()) {
-        (Some(whole), Some(part)) if whole.numerator() > 0 && part.numerator() > 0 => Some(part.of(whole)),
-        _ => None,
+fn exact_share_of(part: &Sum, denominator: Option<Exact>) -> Option<f64> {
+    if part.state() != BreakdownState::Known {
+        return None;
     }
-}
-
-fn exact_share_of(part: &Sum, parent: Option<Exact>) -> Option<f64> {
-    (part.state() == BreakdownState::Known).then(|| share_of(part, parent)).flatten()
+    let (Some(whole), Some(amount)) = (denominator, part.known) else {
+        return None;
+    };
+    if whole.numerator() <= 0 || amount.numerator() <= 0 || amount.compare(whole).is_gt() {
+        return None;
+    }
+    Some(amount.of(whole))
 }
 
 fn parts(children: Vec<Branch>, whole: Option<Exact>, parent: Option<Exact>) -> Vec<BreakdownPart> {
     let mut children = children;
+    let has_negative = children.iter().any(|child| child.sum.known.is_some_and(|amount| amount.numerator() < 0));
+    let whole = whole.filter(|_| !has_negative);
+    let parent = parent.filter(|_| !has_negative);
     children.sort_by(|a, b| {
         class(a)
             .cmp(&class(b))
@@ -391,10 +392,10 @@ fn parts(children: Vec<Branch>, whole: Option<Exact>, parent: Option<Exact>) -> 
     children
         .into_iter()
         .map(|branch| {
-            let own_whole = branch.sum.whole().filter(|_| whole.is_some() && branch.sum.state() == BreakdownState::Known);
+            let own_whole = branch.sum.known.filter(|_| whole.is_some() && branch.sum.state() == BreakdownState::Known);
             let children = parts(branch.children, whole, own_whole);
             BreakdownPart {
-                share: share_of(&branch.sum, whole),
+                share: exact_share_of(&branch.sum, whole),
                 parent_share: exact_share_of(&branch.sum, parent),
                 key: branch.node.key,
                 name: branch.node.name,
@@ -429,10 +430,10 @@ fn assemble(mut root: Branch, unrecorded: &Unrecorded, qualified: &[String], unw
     if state == BreakdownState::Known && (unrecorded.hours > 0 || !qualified.is_empty()) {
         state = BreakdownState::Partial;
     }
-    let whole = root.sum.known.filter(|_| matches!(state, BreakdownState::Known | BreakdownState::Partial));
+    let whole = root.sum.known.filter(|_| state == BreakdownState::Known);
     Breakdown {
         total: BreakdownTotal { amount: if unwitnessed { None } else { root.sum.amount() }, state, reason },
-        parts: parts(root.children, whole, whole.filter(|_| state == BreakdownState::Known)),
+        parts: parts(root.children, whole, whole),
         unrecorded_hours: unrecorded.hours,
     }
 }

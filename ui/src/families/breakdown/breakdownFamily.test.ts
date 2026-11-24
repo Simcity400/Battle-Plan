@@ -454,3 +454,47 @@ test('a name the recording does not hold is the key with its reason, never passe
   assert.equal(read.parts[0]!.nameMissing, 'The recorded localisation holds no name for group_a_cat');
   assert.ok(JSON.stringify(buildBreakdownTooltip(read, breakdownLevel(read), 'group_a_cat', THEME)).includes('The recorded localisation holds no name'));
 });
+
+test('R3-S1/R3-S7: recorded corrections and partial totals lay out and hover without throwing and print no withheld shares', () => {
+  const corrected: Breakdown = {
+    unrecordedHours: 0,
+    total: { amount: exact('87'), state: 'known', reason: null },
+    parts: [
+      wire('lost', 1, '100', { share: null, parentShare: null }),
+      wire('level', 2, '0', { share: null, parentShare: null }),
+      wire('returned', 0, '-13', { share: null, parentShare: null }),
+    ],
+  };
+  const read = model(corrected);
+  const level = breakdownLevel(read);
+  const parts = layoutBreakdown({ ...at(1111, 346), level, view: 'parts', userExpanded: {} }) as PartsViewLayout;
+  assert.deepEqual(parts.rows.map(row => row.part.text), ['100', '0', '-13'], 'both signed amounts stay shown');
+  assert.ok(parts.rows.every(row => row.shareText === ''), 'withheld shares print blank on every row');
+  const ring = layoutBreakdown({ ...at(1111, 346), level, view: 'ring', userExpanded: {} }) as RingViewLayout;
+  assert.equal(ring.innerSlices.length, 1);
+  const mosaic = layoutBreakdown({ ...at(1111, 346), level, view: 'mosaic', userExpanded: {} }) as MosaicViewLayout;
+  assert.equal(mosaic.tiles.length, 1);
+  const lostTip = buildBreakdownTooltip(read, level, 'lost', THEME)!;
+  const returnedTip = buildBreakdownTooltip(read, level, 'returned', THEME)!;
+  assert.equal(lostTip.items?.some(item => item.label === 'Share') ?? false, false);
+  assert.equal(returnedTip.items?.some(item => item.label === 'Share') ?? false, false);
+  assert.ok(JSON.stringify(lostTip).includes('100'));
+  assert.ok(JSON.stringify(returnedTip).includes('-13'));
+
+  const partial: Breakdown = {
+    unrecordedHours: 2,
+    total: { amount: exact('40'), state: 'partial', reason: 'Spending was not recorded for 2 hours; Some costs were not recorded' },
+    parts: [
+      wire('a', 0, '30', { share: null, parentShare: null }),
+      wire('b', 1, '10', { state: 'partial', reason: 'Some costs were not recorded', share: null, parentShare: null }),
+    ],
+  };
+  const partialRead = model(partial);
+  const partialLevel = breakdownLevel(partialRead);
+  const partialParts = layoutBreakdown({ ...at(1111, 346), level: partialLevel, view: 'parts', userExpanded: {} }) as PartsViewLayout;
+  assert.ok(partialParts.totalLine.partialTabRect, 'partial total keeps its mark');
+  assert.ok(partialParts.rows.every(row => row.shareText === ''), 'no global share printed when total is partial');
+  const partialTip = buildBreakdownTooltip(partialRead, partialLevel, 'b', THEME)!;
+  assert.equal(partialTip.items?.some(item => item.label === 'Share') ?? false, false);
+  assert.ok(JSON.stringify(partialTip).includes('Some costs were not recorded'), 'partial part keeps its reason on hover');
+});
