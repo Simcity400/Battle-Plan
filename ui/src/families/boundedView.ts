@@ -409,11 +409,11 @@ export function clipMissingSpans(spans: readonly MissingSpan[], hour: DisplayedH
   return [...sliceMissingSpans(spans, hour).slice];
 }
 
-export function clipMarks(clusters: readonly MarkCluster[], hour: DisplayedHour): BoundedMarkCluster[] {
+function clipMarks(clusters: readonly MarkCluster[], hour: DisplayedHour): BoundedMarkCluster[] {
   return [...sliceMarks(clusters, hour).slice];
 }
 
-export function clipRuns(runs: readonly Run[], hour: DisplayedHour): Run[] {
+function clipRuns(runs: readonly Run[], hour: DisplayedHour): Run[] {
   return [...sliceRuns(runs, hour).slice];
 }
 

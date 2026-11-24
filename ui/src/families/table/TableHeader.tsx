@@ -286,25 +286,3 @@ export function FamilyTableHeader({
     </div>
   </div>;
 }
-
-export function buildHeaderColumns(
-  layoutColumns: readonly TableHeaderColumn[],
-  specs: ReadonlyMap<string, TableColumnSpec>,
-): TableHeaderColumn[] {
-  return layoutColumns.map(col => {
-    const spec = specs.get(col.key);
-    return {
-      ...col,
-      unit: spec?.unit,
-      text: spec?.text,
-      hideable: spec?.hideable,
-      sortable: spec?.sortable,
-      hint: spec?.hint,
-      notRecordedReason: spec?.notRecordedReason,
-      headerGroup: spec?.headerGroup,
-      displays: spec && spec.offered.length > 1 ? spec.offered.map(display => [display, DISPLAY_LABELS[display]] as const) : [],
-    };
-  });
-}
-
-export { HEADER_CARET_LANE };

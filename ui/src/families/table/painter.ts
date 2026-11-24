@@ -1027,7 +1027,7 @@ export function hitFamilyTable(
   return { kind: 'row', rowKey: item.key };
 }
 
-export function hasNonZeroMeasured(value: Value): boolean {
+function hasNonZeroMeasured(value: Value): boolean {
   return hasMeasuredValue(value) && value.kind !== 'zero';
 }
 

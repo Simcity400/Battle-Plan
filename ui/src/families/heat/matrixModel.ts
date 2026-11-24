@@ -83,7 +83,7 @@ const SELF: MatrixCell = { kind: 'diagonal' };
 
 export const NO_CELLS: MatrixCells = { present: new Map(), absent: { kind: 'empty' } };
 
-export function matrixPairIndex(columnCount: number, rowIndex: number, columnIndex: number): number {
+function matrixPairIndex(columnCount: number, rowIndex: number, columnIndex: number): number {
   return rowIndex * columnCount + columnIndex;
 }
 

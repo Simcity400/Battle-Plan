@@ -48,7 +48,7 @@ function isFamilyValue(input: unknown): input is Value {
   }
 }
 
-export interface FamilyAuditField {
+interface FamilyAuditField {
   readonly id: number;
   readonly rows: readonly FamilyAuditRow[];
 }

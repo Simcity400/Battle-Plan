@@ -1,7 +1,5 @@
 import type { IconName } from '../../components/Icons';
 import type { OptionValue } from '../../dashboard/options';
-import type { BoundWindow } from '../../dashboard/regionTime';
-import { resolveHeadSpan } from '../broker.ts';
 import {
   holderTagAt,
   nextHoldersChange,
@@ -16,7 +14,6 @@ import type {
   AuxProductSpec,
   CountryPolicy,
   DeclaredCountryFilter,
-  DeclaredCountryState,
   FamilyPlanContext,
   FamilyViewportRequest,
   SourcePlan,
@@ -24,7 +21,6 @@ import type {
 import type { TableColumnSpec, TableProjection } from './model.ts';
 import type { TableBase, TableSettings } from './settings.ts';
 
-export type GatedSpan = BoundWindow;
 export type DeclaredFactionRun = FamilyFactionRun;
 export {
   holderTagAt,
@@ -32,13 +28,9 @@ export {
   nextMembershipChange,
   nextRangesChange,
   nextWindowRangesChange,
-  resolveHeadSpan,
 };
 export type {
-  AuxProductSpec,
-  CountryPolicy,
   DeclaredCountryFilter,
-  DeclaredCountryState,
   HolderRun,
   HourRanges,
 };
@@ -84,7 +76,3 @@ export interface TableWidgetDeclaration<TProjectionOptions = Record<string, neve
 }
 
 export type AnyTableWidgetDeclaration = TableWidgetDeclaration<any, any>;
-
-export function isTableWidgetDeclaration(value: unknown): value is AnyTableWidgetDeclaration {
-  return !!value && typeof value === 'object' && (value as { family?: unknown }).family === 'table' && 'sources' in value && 'projection' in value;
-}
