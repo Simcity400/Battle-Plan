@@ -1381,8 +1381,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       joined = joinComponents(components);
       const dated = widget.binding.dated;
       if (joined && dated) {
-        if (target < dated.h) return null;
-        if (joined.window[0] < dated.h) joined = { ...joined, window: [dated.h, joined.window[1]] };
+        const lo = Math.max(joined.window[0], dated.h);
+        const c = Math.min(joined.c, dated.c);
+        if (target < dated.h || lo > c) return null;
+        joined = { h: Math.max(joined.h, dated.h), c, window: [lo, joined.window[1]] };
       }
     }
     if (!joined) return null;
