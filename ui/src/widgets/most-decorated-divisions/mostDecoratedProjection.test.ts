@@ -84,9 +84,9 @@ test('a division shows its recorded medals, experience word and casualties; an u
   assert.deepEqual(unread!.cells.medals!.value, notRecorded('Medal history was not read'));
   assert.deepEqual(unread!.cells.casualtiesTaken!.value, zeroValue(0));
   const strip = decorated!.cells.medals!.icons ?? [];
-  assert.deepEqual(strip.map(item => [item.name, item.count, Boolean(item.url) || item.pending === true]), [['Order of the Cloud', 2, true]], 'each medal draws its own sprite');
-  assert.deepEqual(partlyKnown!.cells.medals!.icons?.map(item => [item.name, item.count ?? 1, Boolean(item.url) || item.pending === true]),
-    [['Order of the Cloud', 1, true], ['Medal not identified', 2, false]], 'the awards that could not be identified are drawn without art, never dropped');
+  assert.deepEqual(strip.map(item => [item.name, item.count, item.art.status]), [['Order of the Cloud', 2, 'pending']], 'each medal draws its own sprite');
+  assert.deepEqual(partlyKnown!.cells.medals!.icons?.map(item => [item.name, item.count ?? 1, item.art.status]),
+    [['Order of the Cloud', 1, 'pending'], ['Medal not identified', 2, 'unavailable']], 'the awards that could not be identified carry their reason, never dropped');
   const tip = typeof decorated!.tooltipExtra === 'function' ? decorated!.tooltipExtra() : decorated!.tooltipExtra;
   assert.deepEqual(tip?.map(row => [row.label, row.value]), [['Order of the Cloud', knownValue('×2')]]);
   assert.equal(model.warnings?.[0], answered.partial, 'an order among only the divisions it could place says so');

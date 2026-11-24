@@ -1,7 +1,7 @@
 import { artTooltipItem } from '../art/adapters.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import { flagChoiceArt, productIconArt } from '../art/provider.ts';
-
+import type { ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';

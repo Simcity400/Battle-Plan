@@ -1,3 +1,5 @@
+import { IdentityIndex } from '../../families/identity/index.ts';
+import { createSnapshotIdentityProvider } from '../../families/identity/provider.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -30,6 +32,13 @@ const taken: ScoreboardColumn = { key: 'casualtiesTaken', label: 'Casualties tak
 const registry = [factories, casualties, power, stability, taken];
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
+const NAMES = (() => {
+  const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: '1', content: 1 });
+  const named = (tag: string, name: string) => ({ tag, name, color: [102, 102, 102] as [number, number, number], valid: [0, 5_000] as [number, number], flagChoice: { keys: [tag, null, null] as [string, null, null], reasons: [null, null, null] as [null, null, null] } });
+  index.ingestStylesReply({ branchId: '1', hour: 0, styles: [named('GER', 'Germany'), named('GDR', 'East Germany'), named('ITA', 'Italy')], warnings: [] });
+  return createSnapshotIdentityProvider(index);
+})();
+
 test('the scoreboard follows playback over the registry defaults with the top ten, and its settings keep their meaning', () => {
   assert.equal(definition.defaultTime, 'follow');
   assert.equal(definition.defaultCountries.kind, 'group');
@@ -49,8 +58,8 @@ test('a reply’s cells are exact amounts, a missing value keeps its reason, and
   ] }, 2);
   const shown = [taken, stability];
   const model = scoreboardProjection.project(
-    createBoundedReadView({ hour: 40, panels: new Map([['main', reply]]) }),
-    { shown, candidates: ['GER'], top: null, rankMarkers: false, looks: { GER: [{ from: 0, name: 'Germany' }] } },
+    createBoundedReadView({ identity: NAMES, hour: 40, panels: new Map([['main', reply]]) }),
+    { shown, candidates: ['GER'], top: null, rankMarkers: false },
   );
   const settings = tableDefaults(model.columns, TABLE_BASE);
   const flat = resolveTableRows(model, settings);
@@ -64,8 +73,8 @@ test('a reply’s cells are exact amounts, a missing value keeps its reason, and
   const cells = [{ valueRaw: '1', missing: null, partial: false }, { valueRaw: '2', missing: null, partial: false }];
   const both = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 5, tag: 'GER', cells }, { country: 'GER', tag: 'GER', cells }] }, 2);
   const bothModel = scoreboardProjection.project(
-    createBoundedReadView({ hour: 40, panels: new Map([['main', both]]) }),
-    { shown, candidates: [], top: null, rankMarkers: false, looks: { GER: [{ from: 0, name: 'Germany' }] } },
+    createBoundedReadView({ identity: NAMES, hour: 40, panels: new Map([['main', both]]) }),
+    { shown, candidates: [], top: null, rankMarkers: false },
   );
   assert.deepEqual(bothModel.rows.map(row => row.key), [countryKey(5), 'GER']);
   assert.throws(() => validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 5, tag: 'GER', cells }, { country: 5, tag: 'GER', cells }] }, 2), /Invalid Scoreboard row/);
@@ -83,8 +92,8 @@ test('followed values and rankings preserve exact precision, partial markers and
   assert.equal(isPartial(undefined), false);
 
   const model = scoreboardProjection.project(
-    createBoundedReadView({ hour: 40, answers: new Map([['factories', followed]]) }),
-    { shown: [factories, casualties], candidates: ['ITA', 'GER', 'SOV', 'ENG'], top: null, rankMarkers: false, looks: {} },
+    createBoundedReadView({ identity: NAMES, hour: 40, answers: new Map([['factories', followed]]) }),
+    { shown: [factories, casualties], candidates: ['ITA', 'GER', 'SOV', 'ENG'], top: null, rankMarkers: false },
   );
   const byKey = new Map(model.rows.map(row => [row.key, row]));
   assert.deepEqual(byKey.get('ITA')!.cells.factories!.value, { kind: 'known', value: (1n << 60n) + 3n });
@@ -105,11 +114,6 @@ test('followed scoreboard filters selected countries by holder existence at hour
   const holders = {
     [slotKey]: [{ tag: 'GER', firstHour: 0, lastHour: 104 }, { tag: 'GDR', firstHour: 105, lastHour: 200 }],
     ITA: [{ tag: 'ITA', firstHour: 110, lastHour: 200 }],
-  };
-  const looks = {
-    GER: [{ from: 0, name: 'Germany' }],
-    GDR: [{ from: 105, name: 'East Germany' }],
-    ITA: [{ from: 110, name: 'Italy' }],
   };
   const facAns = parseFollowed(message(100, [{
     id: 1,
@@ -137,10 +141,9 @@ test('followed scoreboard filters selected countries by holder existence at hour
     holders,
     top: null,
     rankMarkers: false,
-    looks,
   };
-  const followed = scoreboardProjection.project(createBoundedReadView({ hour: 100, answers: new Map([['factories', facAns]]) }), opts);
-  const exact = scoreboardProjection.project(createBoundedReadView({ hour: 100, panels: new Map([['main', exactReply]]) }), opts);
+  const followed = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 100, answers: new Map([['factories', facAns]]) }), opts);
+  const exact = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 100, panels: new Map([['main', exactReply]]) }), opts);
 
   assert.deepEqual(followed.rows.map(r => r.key), [slotKey], 'ITA does not exist at hour 100 and is omitted on follow as on exact');
   assert.deepEqual(followed.rows[0]!.cells.country!.value, { kind: 'known', value: 'Germany' }, 'slot key resolves display label via dated tag GER');
@@ -170,7 +173,6 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
     },
     top: null,
     rankMarkers: false,
-    looks: { GER: [{ from: 500, name: 'Germany' }], ITA: [{ from: 800, name: 'Italy' }] },
   };
   const exact525: ScoreboardReply = {
     branchId: '1',
@@ -195,16 +197,16 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
   const settings = tableSettingsOf(undefined, specs, TABLE_BASE);
   const layouts = buildColumnLayouts(specs, settings);
 
-  const f525 = scoreboardProjection.project(createBoundedReadView({ hour: 525, answers: new Map([['politicalPower', ans525]]) }), opts);
-  const e525 = scoreboardProjection.project(createBoundedReadView({ hour: 525, panels: new Map([['main', exact525]]) }), opts);
+  const f525 = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 525, answers: new Map([['politicalPower', ans525]]) }), opts);
+  const e525 = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 525, panels: new Map([['main', exact525]]) }), opts);
   assert.deepEqual(
     deriveTableAudit({ model: f525, flatRows: resolveTableRows(f525, settings), visibleColumns: layouts, rankShown: true }),
     deriveTableAudit({ model: e525, flatRows: resolveTableRows(e525, settings), visibleColumns: layouts, rankShown: true }),
     'S2+N3: real native FOL3 bytes for [Slot(7), Tag(ITA)] at hour 525 match exact board audit verbatim',
   );
 
-  const f800 = scoreboardProjection.project(createBoundedReadView({ hour: 800, answers: new Map([['politicalPower', ans800]]) }), opts);
-  const e800 = scoreboardProjection.project(createBoundedReadView({ hour: 800, panels: new Map([['main', exact800]]) }), opts);
+  const f800 = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 800, answers: new Map([['politicalPower', ans800]]) }), opts);
+  const e800 = scoreboardProjection.project(createBoundedReadView({ identity: NAMES, hour: 800, panels: new Map([['main', exact800]]) }), opts);
   assert.deepEqual(
     deriveTableAudit({ model: f800, flatRows: resolveTableRows(f800, settings), visibleColumns: layouts, rankShown: true }),
     deriveTableAudit({ model: e800, flatRows: resolveTableRows(e800, settings), visibleColumns: layouts, rankShown: true }),
@@ -237,7 +239,6 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
     holders: { GER: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] },
     top: null,
     rankMarkers: false,
-    looks: { GER: [{ from: 0, name: 'Germany' }] },
   });
   assert.equal(unavailModel.rows.length, 1);
   assert.deepEqual(unavailModel.rows[0]!.cells.casualties!.value, { kind: 'notRecorded', reason: casualties.reason });

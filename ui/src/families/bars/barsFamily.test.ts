@@ -214,7 +214,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
         value: { value: knownValue(31), format: 'integer' },
         numeric: 31,
         target: { numeric: 42, value: knownValue(42), format: 'integer', shortfall: knownValue(-11), shortfallNumeric: 11 },
-        readout: { primary: '31 / 42 a day', shortfall: '\u221211', iconMissing: true },
+        readout: { primary: '31 / 42 a day', shortfall: '\u221211' },
       },
     ],
   };

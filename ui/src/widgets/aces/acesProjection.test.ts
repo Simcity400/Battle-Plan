@@ -23,7 +23,7 @@ test('an ace shows its wing, when it became an ace, and its portrait as missing 
   const [first, second] = model.rows;
   assert.deepEqual(first!.cells.wing!.value, knownValue('Jagdgeschwader 52'));
   assert.deepEqual([first!.cells.since!.value.kind, first!.cells.since!.boundedDate], ['known', 'by'], 'a first sighting is an upper bound: by that date');
-  assert.deepEqual([first!.cells.portrait!.artShape, first!.cells.portrait!.icon, first!.cells.ace!.subtext], ['portrait', undefined, '“Bubi”']);
+  assert.deepEqual([first!.cells.portrait!.artShape, first!.cells.portrait!.art?.status, first!.cells.ace!.subtext], ['portrait', 'unavailable', '“Bubi”']);
   assert.deepEqual(first!.cells.portrait!.value, notRecorded('Ace portrait culture not recorded'));
   assert.deepEqual(second!.cells.wing!.value, knownValue('No wing'));
   assert.deepEqual(second!.cells.since!.value, notRecorded('First sighting not recorded'));

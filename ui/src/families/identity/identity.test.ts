@@ -975,7 +975,7 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
 
   assert.deepEqual(toArtSlotState(refusedArt('Unsupported flag format')), { kind: 'refused', reason: 'Unsupported flag format' });
   assert.deepEqual(toArtSlotState(NO_ART), { kind: 'none' });
-  assert.deepEqual(toArtSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', tag: 'GER' });
+  assert.deepEqual(toArtSlotState(productArt({ status: 'confirmedMissing', reason: 'No flag file' }), 'GER'), { kind: 'missing', reason: 'No flag file', label: 'GER' });
 });
 
 test('an entity failure belongs to its window and a retryable one is asked again after its backoff', async () => {

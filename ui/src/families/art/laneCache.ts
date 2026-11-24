@@ -114,7 +114,7 @@ export class LaneArtCache<TBitmap extends ArtBitmap = ImageBitmap> {
             retry: () => this.retry(resolution.url),
           };
         }
-        return { status: 'pending' };
+        return resolution;
       }
     }
   }

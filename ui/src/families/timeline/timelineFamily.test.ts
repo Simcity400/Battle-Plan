@@ -77,8 +77,8 @@ test('an item that ended is not open, an item with no art is a named missing ico
   const model = project(H(1940));
   const [civilian, war] = lane(model, 'economy').spans;
   assert.deepEqual([civilian!.open, civilian!.lastHour], [false, H(1937, 6) - 1]);
-  assert.equal(civilian!.iconMissing, true);
-  assert.deepEqual([war!.open, war!.lastHour, war!.icon], [true, H(1940), { kind: 'url', url: 'asset://icons/war.png' }]);
+  assert.equal(civilian!.icon?.status, 'unavailable', 'no art is a named reason, not a bare missing flag');
+  assert.deepEqual([war!.open, war!.lastHour, war!.icon?.status], [true, H(1940), 'pending']);
 });
 
 test('a slot read during an unrecorded stretch says so, and an end inside the stretch is not a guessed edge', () => {
@@ -278,7 +278,6 @@ test('timeline legend reserves bodyTop, shifts hit testing, and paints legend en
   drawTimeline(ctx as never, {
     model,
     layout,
-    readView: createBoundedReadView({ hour: H(1940), panels: new Map() }),
     theme: LANE_THEME,
     scrollTop: 0,
     expanded: {},

@@ -1223,7 +1223,7 @@ export function deriveRowTooltip(
   for (let i = 0; i < allColumns.length; i++) {
     const cell = row.cells[allColumns[i]!.key];
     if (!cell) continue;
-    for (const status of artStatuses(cell, i === nameIndex)) rows.push({ label: status.label, value: status.text, lookupKey: ART_STATUS_ROW });
+    for (const status of artStatuses(cell, i === nameIndex && cell.country !== undefined)) rows.push({ label: status.label, value: status.text, lookupKey: ART_STATUS_ROW });
   }
   const extraRows = typeof row.tooltipExtra === 'function' ? row.tooltipExtra() : row.tooltipExtra;
   if (extraRows) {
@@ -1242,7 +1242,7 @@ export function deriveRowTooltip(
   return {
     title,
     rows,
-    ...(firstResolved?.art ? { countryFlag: tooltipFlag(firstResolved.art) } : {}),
+    ...(firstResolved?.art && firstCell?.country !== undefined ? { countryFlag: tooltipFlag(firstResolved.art) } : {}),
     ...(noteParts.length ? { note: noteParts.join(' \u00b7 ') } : {}),
     ...(row.tooltipDetail ? { detail: row.tooltipDetail } : {}),
   };
@@ -1628,6 +1628,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
     let iconSlot = col.iconSlot;
     let countryTag: string | undefined;
     let countryArt: ArtResult | undefined;
+    let countryArtKey: string | undefined;
     let countryColor: string | undefined;
     let bar: TableCellBar | null | undefined;
     let sortValue: Value | undefined;
@@ -1651,6 +1652,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
           const who = resolveIdentity(readView, 'country', tag, { atHour: cellLookHour ?? hour, boundary });
           cellValue = who.value;
           countryArt = who.art;
+          countryArtKey = who.artKey;
           countryColor = who.color;
         }
       } else if (col.value) {
@@ -1684,6 +1686,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         value: cellValue,
         ...(col.format ? { format: col.format } : {}),
         ...withArt(col.art ? col.art(row, readView, options) : countryArt),
+        ...(!col.art && countryArtKey ? { artKey: countryArtKey } : {}),
         ...(iconSlot ? { iconSlot: true } : {}),
         ...(countryTag ? { country: countryTag } : {}),
         ...(countryColor ? { countryColor } : {}),
