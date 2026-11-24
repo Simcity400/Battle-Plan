@@ -62,7 +62,7 @@ const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   },
   redraw: () => Infinity,
   status: model => (model.rows.length > 0 || model.empty !== undefined ? 'picture' : 'scene'),
-  view: () => [],
+  view: [],
   layout(model, _binding, surface, theme, measure) {
     const font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
     return layoutFamilyBars(model, surface.width, surface.height, theme, text => {

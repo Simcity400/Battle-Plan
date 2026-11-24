@@ -269,7 +269,7 @@ export function familyBinding<TOptions, TBinding, TSettings>(
     ...(ctx.auditId !== undefined ? { auditId: ctx.auditId } : {}),
     pauseFlush: ctx.pauseFlush,
   };
-  return { ...base, ...extras } as TBinding & FamilyBaseBinding<TOptions>;
+  return { ...extras, ...base } as TBinding & FamilyBaseBinding<TOptions>;
 }
 
 export function parseFamilyHit(adapter: Pick<FamilyHostAdapter, 'parseHit'>, hitKey: string | null): ParsedFamilyHit | null {
