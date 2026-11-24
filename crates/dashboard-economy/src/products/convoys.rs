@@ -240,14 +240,16 @@ pub struct ConvoyHealthReply {
     pub last_hour: i32,
     #[doc = " Fixed-point denominator of every efficiency."]
     pub scale: u32,
-    #[doc = " Hours each table the view reads was read and available (regional efficiency; resource"]
-    #[doc = " deals, convoy clients), in the hours asked: outside them a row not shown is not recorded,"]
-    #[doc = " not absent; an hour read but refused holds no rows and is not known."]
+    #[doc = " Hours each table the view reads was read whole (regional efficiency; resource deals,"]
+    #[doc = " convoy clients), in the hours asked: outside them a row not shown is not recorded, not"]
+    #[doc = " absent, though a row shown there was witnessed."]
     pub known: Vec<Vec<HourSpan>>,
     #[doc = " Hours no country held the tag: nothing is known of it there. Recording gaps are `gaps`."]
     pub unheld: Vec<HourSpan>,
     pub gaps: Vec<HourSpan>,
     pub regions: Vec<ConvoyRegion>,
+    #[doc = " Why the most strained regions are not a proven rank: an hour of the view, or of a region, is not recorded. A top then lists only the pinned regions."]
+    pub rank_missing: Option<String>,
     pub deals: Vec<ConvoyDeal>,
     pub leases: Vec<ConvoyLease>,
     pub resources: Vec<ConvoyResource>,
@@ -439,6 +441,49 @@ pub(crate) fn missing_traffic(complete: &[Vec<(i32, i32)>], spans: &[(i32, i32)]
         }
     }
     out
+}
+
+fn covers(known: &[HourSpan], gaps: &[(HourSpan, &str)], unheld: &[HourSpan], from: i32, to: i32) -> bool {
+    let mut spans: Vec<(i32, i32)> = known.iter().chain(unheld).chain(gaps.iter().map(|(span, _)| span)).map(|span| (span.first_hour, span.last_hour)).collect();
+    spans.sort_unstable();
+    let mut next = i64::from(from);
+    for (first, last) in spans {
+        if i64::from(first) > next {
+            break;
+        }
+        next = next.max(i64::from(last) + 1);
+    }
+    next > i64::from(to)
+}
+
+pub(crate) fn most_strained(regions: &BTreeMap<u32, ConvoyRegion>, eligible: impl Fn(u32) -> bool, top: Option<usize>, whole: bool) -> (Vec<u32>, Option<String>) {
+    let mut missing = (!whole).then(|| "Regional convoy efficiency was not recorded for part of the view".to_owned());
+    let mut auto: Vec<(u32, i128, u64)> = Vec::new();
+    for (&id, entry) in regions.iter().filter(|(id, _)| eligible(**id)) {
+        let mut deficit: i128 = 0;
+        let mut active_hours: u64 = 0;
+        for run in &entry.cells {
+            match &run.state {
+                ConvoyCellState::Efficiency { value } => {
+                    let span = (i64::from(run.last_hour) - i64::from(run.first_hour) + 1).max(0) as u64;
+                    active_hours += span;
+                    deficit += i128::from((i64::from(SCALE) - value).max(0)) * i128::from(span);
+                }
+                ConvoyCellState::NotRecorded { reason } => {
+                    missing.get_or_insert_with(|| reason.clone());
+                }
+                _ => {}
+            }
+        }
+        if deficit > 0 || active_hours > 0 {
+            auto.push((id, deficit, active_hours));
+        }
+    }
+    auto.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+    if let Some(limit) = top {
+        auto.truncate(if missing.is_some() { 0 } else { limit });
+    }
+    (auto.into_iter().map(|(id, ..)| id).collect(), missing)
 }
 
 fn complete_spans(recording: &Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
@@ -637,10 +682,6 @@ pub(crate) fn without(spans: &[HourSpan], gaps: &[(HourSpan, &str)]) -> Vec<Hour
     out
 }
 
-fn reads(recording: &Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
-    dashboard_query::cost::storage(|| lanes::available_reads(recording, run, table, first, last))
-}
-
 fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, first: i32, last: i32) -> io::Result<History> {
     dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, first, last))
 }
@@ -660,7 +701,7 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
         for &(at, table) in tables {
             let read = match params.view {
                 ConvoyView::Regions => complete_spans(recording, run, table, stretch.first, stretch.last)?,
-                ConvoyView::Trade => reads(recording, run, table, stretch.first, stretch.last)?,
+                ConvoyView::Trade => complete_spans(recording, run, table, stretch.first, stretch.last)?,
             };
             gathered.known[at].extend(spans(read));
         }
@@ -932,6 +973,7 @@ impl Product for ConvoyHealth {
                 (region, ConvoyRegion { region, name, missing, pinned: false, cells, readout, efficiency })
             })
             .collect();
+        let mut rank_missing: Option<String> = None;
         let regions: Vec<ConvoyRegion> = if let Some(explicit) = &params.regions {
             explicit
                 .iter()
@@ -945,27 +987,9 @@ impl Product for ConvoyHealth {
             let mut seen = HashSet::new();
             let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
             let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
-            let mut auto: Vec<(u32, i128, u64)> = all_regions
-                .iter()
-                .filter(|(id, _)| !seen.contains(id) && !hidden.contains(id))
-                .map(|(&id, entry)| {
-                    let mut deficit: i128 = 0;
-                    let mut active_hours: u64 = 0;
-                    for run in &entry.cells {
-                        if let ConvoyCellState::Efficiency { value } = run.state {
-                            let span = (i64::from(run.last_hour) - i64::from(run.first_hour) + 1).max(0) as u64;
-                            active_hours += span;
-                            deficit += i128::from((i64::from(SCALE) - value).max(0)) * i128::from(span);
-                        }
-                    }
-                    (id, deficit, active_hours)
-                })
-                .filter(|&(_, deficit, active)| deficit > 0 || active > 0)
-                .collect();
-            auto.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
-            if let Some(limit) = params.top {
-                auto.truncate(limit);
-            }
+            let whole = covers(&known[0], &recorded_gaps, &unheld, from, to);
+            let (auto, missing) = most_strained(&all_regions, |id| !seen.contains(&id) && !hidden.contains(&id), params.top, whole);
+            rank_missing = missing;
             let mut ordered = Vec::with_capacity(pinned_list.len() + auto.len());
             for id in pinned_list {
                 if let Some(mut entry) = all_regions.remove(&id) {
@@ -973,7 +997,7 @@ impl Product for ConvoyHealth {
                     ordered.push(entry);
                 }
             }
-            for (id, _, _) in auto {
+            for id in auto {
                 if let Some(entry) = all_regions.remove(&id) {
                     ordered.push(entry);
                 }
@@ -1013,6 +1037,7 @@ impl Product for ConvoyHealth {
             unheld,
             gaps,
             regions,
+            rank_missing,
             deals,
             leases,
             resources,

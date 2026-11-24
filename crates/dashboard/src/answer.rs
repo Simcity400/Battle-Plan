@@ -117,6 +117,7 @@ pub fn answers(product: &str, params: &Value) -> bool {
         return kind(params).is_some_and(|kind| {
             dashboard_declare::series(kind).is_some() || dashboard_land::products::army::SERIES == kind
                 || (product == dashboard_query::tile::PRODUCT && dashboard_players::products::player_apm::head::SERIES == kind)
+                || (product == dashboard_query::tile::PRODUCT && dashboard_production::products::stockpile::lines::SERIES == kind)
         });
     }
     crate::products::MOVED.contains(&product)
@@ -151,6 +152,12 @@ pub fn answer(source: &Source, product: &str, params: &Value, context: &LoadCont
         let query = query(source, branch)?;
         if kind(params) == Some(dashboard_players::products::player_apm::head::SERIES) {
             return Ok(serde_json::to_value(dashboard_players::products::player_apm::head::tile(source, branch, query.timeline.last, params)?)?);
+        }
+        if kind(params) == Some(dashboard_production::products::stockpile::lines::SERIES) {
+            if product != dashboard_query::tile::PRODUCT {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "The stockpile over time is served as tiles and its at-hour lines"));
+            }
+            return Ok(serde_json::to_value(dashboard_production::products::stockpile::lines::tile(source, &query, params, context, cancelled)?)?);
         }
         if kind(params) == Some(dashboard_land::products::army::SERIES) {
             if product == dashboard_query::tile::PRODUCT {

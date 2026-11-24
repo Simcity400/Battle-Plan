@@ -1,7 +1,7 @@
 import { compareTags } from '../dashboard/tagOrder.ts';
 import type { LiveValues } from '../charts/live';
 import { NO_VALUE, NOT_READ, NOT_RECORDED } from '../dashboard/follow/liveCells.ts';
-import { CELL, cellNumber, cellState, cellValue, rowName, rowReason } from '../dashboard/follow/message.ts';
+import { CELL, cellNumber, cellState, cellValue, rowName, rowNameText, rowReason } from '../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../dashboard/follow/message';
 
 export type Scalar = number | bigint | string;
@@ -236,19 +236,77 @@ export function valueFromWireCell(answer: FollowedAnswer | undefined, row: numbe
   return notRecorded(reason ?? options?.unrecordedReason ?? NOT_RECORDED);
 }
 
-const rowIndexes = new WeakMap<object, Map<string, number>>();
+const rowIndexes = new WeakMap<object, ReadonlyMap<string, number>>();
+
+interface HeldNames {
+  readonly bytes: Uint8Array;
+  readonly starts: Int32Array;
+  readonly lengths: Int32Array;
+  readonly index: ReadonlyMap<string, number>;
+}
+
+const HELD_PER_SIZE = 8;
+const HELD_SIZES = 64;
+const heldNames = new Map<number, HeldNames[]>();
+
+function sameNames(answer: FollowedRows, held: HeldNames): boolean {
+  const u8 = answer.views.u8;
+  for (let row = 0; row < answer.rows; row++) {
+    const text = rowNameText(answer, row);
+    const length = held.lengths[row]!;
+    if (text < 0) {
+      if (length !== -1) return false;
+      continue;
+    }
+    const start = answer.text + answer.ends[text]!;
+    if (answer.ends[text + 1]! - answer.ends[text]! !== length) return false;
+    const from = held.starts[row]!;
+    for (let i = 0; i < length; i++) if (u8[start + i] !== held.bytes[from + i]) return false;
+  }
+  return true;
+}
+
+function holdNames(answer: FollowedRows, index: ReadonlyMap<string, number>): HeldNames {
+  const starts = new Int32Array(answer.rows);
+  const lengths = new Int32Array(answer.rows);
+  let total = 0;
+  for (let row = 0; row < answer.rows; row++) {
+    const text = rowNameText(answer, row);
+    lengths[row] = text < 0 ? -1 : answer.ends[text + 1]! - answer.ends[text]!;
+    if (text >= 0) total += lengths[row]!;
+  }
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (let row = 0; row < answer.rows; row++) {
+    starts[row] = at;
+    const text = rowNameText(answer, row);
+    if (text < 0) continue;
+    const start = answer.text + answer.ends[text]!;
+    bytes.set(answer.views.u8.subarray(start, start + lengths[row]!), at);
+    at += lengths[row]!;
+  }
+  return { bytes, starts, lengths, index };
+}
 
 export function answerRowIndex(answer: FollowedRows): ReadonlyMap<string, number> {
-  const cacheKey = answer.decoded;
-  let index = rowIndexes.get(cacheKey);
+  const cached = rowIndexes.get(answer.decoded);
+  if (cached) return cached;
+  const held = heldNames.get(answer.rows) ?? [];
+  let index = held.find(names => sameNames(answer, names))?.index;
   if (!index) {
-    index = new Map<string, number>();
+    const built = new Map<string, number>();
     for (let row = 0; row < answer.rows; row++) {
       const name = rowName(answer, row);
-      if (name !== null && !index.has(name)) index.set(name, row);
+      if (name !== null && !built.has(name)) built.set(name, row);
     }
-    rowIndexes.set(cacheKey, index);
+    index = built;
+    held.unshift(holdNames(answer, built));
+    if (held.length > HELD_PER_SIZE) held.length = HELD_PER_SIZE;
+    heldNames.delete(answer.rows);
+    heldNames.set(answer.rows, held);
+    if (heldNames.size > HELD_SIZES) heldNames.delete(heldNames.keys().next().value!);
   }
+  rowIndexes.set(answer.decoded, index);
   return index;
 }
 

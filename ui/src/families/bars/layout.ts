@@ -166,8 +166,22 @@ function layoutBarsBody(
   const hasHeader = Boolean(model.caption || model.leftHeader || model.rightHeader || (twoSidedLayout === 'stacked-pair' && model.legend?.length));
   const headerTop = BARS_PAD_TOP;
   const headerHeight = hasHeader ? BARS_HEADER_HEIGHT : 0;
-  const hasLegend = form === 'stacked' && Boolean(model.legend?.length);
-  const legendHeight = hasLegend ? BARS_LEGEND_ROW_HEIGHT : 0;
+  const hasLegend = (form === 'stacked' || form === 'share') && Boolean(model.legend?.length || model.scaleUnit);
+  let legendRows = hasLegend ? 1 : 0;
+  if (hasLegend && model.legend?.length && h >= 240) {
+    const entryGap = 14;
+    const rightReserve = model.scaleUnit ? Math.min(Math.floor(w * 0.3), Math.ceil(measure ? measure(model.scaleUnit) : model.scaleUnit.length * 6.5)) + entryGap : 0;
+    const avail = Math.max(80, w - BARS_PAD_X * 2 - rightReserve);
+    let totalW = 0;
+    for (let i = 0; i < model.legend.length; i++) {
+      const entry = model.legend[i]!;
+      const text = entry.share ? `${entry.label} ${entry.share}` : entry.value ? `${entry.label} ${entry.value}` : entry.label;
+      const itemW = 18 + (measure ? measure(text) : text.length * 6.5);
+      totalW += (i > 0 ? entryGap : 0) + itemW;
+    }
+    if (totalW > avail) legendRows = 2;
+  }
+  const legendHeight = legendRows * BARS_LEGEND_ROW_HEIGHT;
   const wantAxis = (model.showAxis ?? (form === 'ordered')) && h >= 140 && w >= 240;
   const axisHeight = wantAxis ? BARS_AXIS_HEIGHT : 0;
 

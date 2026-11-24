@@ -122,16 +122,6 @@ export function drawAxes(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, f
   ctx.restore();
 }
 
-export function drawValueRule(ctx: Canvas2D, frame: PlotFrame, tokens: ChartTokens, value: number): void {
-  const y = frame.toY(value);
-  if (!Number.isFinite(y) || y < frame.plotTop || y > frame.plotTop + frame.plotHeight) return;
-  ctx.save();
-  ctx.strokeStyle = tokens.axis;
-  ctx.lineWidth = tokens.lineWidth.series / 2 + tokens.lineWidth.grid / 2;
-  ctx.beginPath(); ctx.moveTo(frame.plotLeft, crisp(y)); ctx.lineTo(frame.plotLeft + frame.plotWidth, crisp(y)); ctx.stroke();
-  ctx.restore();
-}
-
 export function clipToPlot(ctx: Canvas2D, frame: PlotFrame): void {
   ctx.beginPath();
   ctx.rect(frame.plotLeft, frame.plotTop - 2, frame.plotWidth + 2, frame.plotHeight + 4);

@@ -17,10 +17,11 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { EventFeedKind, EventFeedSpanReply, MembershipRun, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
 import { kindsRequest, validateSpan } from '../event-feed/eventFeedData.ts';
 import { reasonsOf } from '../event-feed/scriptedGaps.ts';
-import { cardFacets, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
+import { cardFacets, daysBetween, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import {
   awaitingText,
   choiceAt,
@@ -47,6 +48,7 @@ export interface EventChoicesProjectionOptions {
 
 const HEAD_LIMIT = 256;
 const CONTINUING: readonly EventFeedKind[] = ['eventOptionSelected'];
+const nonBlank = (value: string | null | undefined): string | null => (value && value.trim().length > 0 ? value : null);
 
 function buildChoiceRow(
   readView: BoundedReadView,
@@ -76,10 +78,11 @@ function buildChoiceRow(
   if (open) {
     choiceCell = logStatusCell('Awaiting choice', 'waiting');
   } else if (at.choice) {
-    if (chosenLine && !chosenLine.missing) {
+    const chosenText = chosenLine && !chosenLine.missing ? nonBlank(chosenLine.text) : null;
+    if (chosenText !== null) {
       choiceCell = {
-        value: knownValue(chosenLine.text),
-        ...(chosenLine.letter ? { inlinePrefix: chosenLine.letter } : {}),
+        value: knownValue(chosenText),
+        ...(chosenLine?.letter ? { inlinePrefix: chosenLine.letter } : {}),
       };
     } else if (chosenLine?.letter) {
       choiceCell = {
@@ -93,12 +96,15 @@ function buildChoiceRow(
     choiceCell = { value: notRecorded(at.pause ? 'Choice not recorded (recording paused)' : 'Choice not recorded') };
   }
 
-  const rawTitle = card.item?.name ?? null;
+  const rawTitle = nonBlank(card.item?.name);
+  const safeChoiceText = nonBlank(choiceText(card)) ?? 'Title not recorded';
   const countryFlag = card.country ? identityFlags(readView, 'country', [card.country], { atHour: nameHour, boundary })[0] : undefined;
   const countryName = card.country ? identityName(readView, 'country', card.country, nameHour) : null;
   const detailSubject: EventDetailSubject = {
     key: card.occurrence.id,
     hour: firstRow.hour,
+    firedHour: firstRow.hour,
+    asOfHour: at.hour,
     title: rawTitle,
     countryTag: card.country,
     countryName,
@@ -125,19 +131,19 @@ function buildChoiceRow(
 
   return {
     key: card.occurrence.id,
-    name: choiceText(card),
+    name: safeChoiceText,
     rowHour: firstRow.hour,
     live: open,
     cells: {
       date: logDateCell(firstRow.hour),
       kind: artwork
         ? {
-            value: rawTitle !== null ? knownValue(choiceText(card)) : notRecorded(reasons.nameMissing ?? 'Event picture not recorded'),
+            value: rawTitle !== null ? knownValue(safeChoiceText) : notRecorded(reasons.nameMissing ?? 'Event picture not recorded'),
             icon,
             iconPending,
             iconSlot: true,
             artShape: 'wide',
-            artName: choiceText(card),
+            artName: safeChoiceText,
           }
         : { value: notApplicable('Game artwork hidden'), blank: true },
       country: logCountryCell(readView, countryEntries, nameHour, boundary),
@@ -147,7 +153,7 @@ function buildChoiceRow(
       choice: choiceCell,
       action: { value: knownValue('View'), actionLabel: 'View' },
     },
-    tooltipTitle: choiceText(card),
+    tooltipTitle: safeChoiceText,
     tooltipExtra,
     tooltipAction: 'Click to view event',
     meta: detailSubject,
@@ -167,25 +173,25 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
         hideHeader: true,
         unsorted: true,
         dateGrouped: true,
-        rowHeightMode: 'media',
         empty: 'No recorded events match these settings.',
       };
     }
     const refused = readView.refused('main');
     if (refused !== undefined) {
-      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, rowHeightMode: 'media', refused };
+      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused };
     }
     const source = readView.rows<ScriptPageRow & DatedLogRow>('main');
     if (!source) {
-      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, rowHeightMode: 'media' };
+      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true };
     }
     if (source.refused !== null) {
-      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, rowHeightMode: 'media', refused: source.refused };
+      return { columns: EVENT_CHOICES_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused: source.refused };
     }
     const countryFn = options.filter.passing
       ? (tag: string, atHour: number) => !!options.filter.passing![tag]?.some(([first, last]) => first <= atHour && atHour <= last)
       : null;
     const boundary = newIdentityBoundary();
+    let nextAwaitingChange = Infinity;
     const { slots, rows, windowOffset, totalRows } = projectPagedSlots(
       source,
       hour,
@@ -207,6 +213,12 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
           countryFn,
         );
         if (!resolved) return null;
+        if (isOpen(resolved.item)) {
+          const startHour = resolved.item.card.first.row.hour;
+          const elapsed = Math.max(0, daysBetween(startHour, hour));
+          const nextDay = startHour + (elapsed + 1) * 24;
+          if (nextDay > hour && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
+        }
         return buildChoiceRow(readView, resolved.item, options.artwork, boundary);
       },
     );
@@ -219,6 +231,9 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
     }
     const orderedSlots = [...liveRows.map(row => ({ kind: 'data' as const, row })), ...restSlots];
     const orderedRows = [...liveRows, ...rows.filter(r => !r.live)];
+    const titleSummary = !options.awaiting && source.total > 0
+      ? `${formatScalar(source.total, 'integer')} ${source.total === 1 ? 'event' : 'events'}`
+      : null;
     const rawHead = source.rawHead as { readonly warnings?: readonly string[]; readonly unavailable?: readonly { readonly label: string; readonly reason: string }[] } | undefined;
     const warnings = [
       ...(rawHead?.warnings ?? []),
@@ -233,11 +248,12 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       hideHeader: true,
       unsorted: true,
       dateGrouped: true,
-      rowHeightMode: 'media',
       windowOffset,
       totalRows,
-      nextChangeAt: boundary.next,
+      nextChangeAt: Math.min(boundary.next, nextAwaitingChange),
       rowTimeBoundaries: false,
+      titleSummary,
+      ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
       ...(warnings.length ? { warnings } : {}),
       ...(orderedSlots.length === 0 ? { empty: 'No recorded events match these settings.' } : {}),
     };

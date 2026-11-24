@@ -57,8 +57,8 @@ function sampleStack(): WorldTensionStackReply {
     ],
     other: { count: 31, values: [0, 3, 12], endValue: 12 },
     events: [
-      { hour: H1936 + 5000, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
-      { hour: H1941 + 200, tag: 'JAP', remembered: false, reason: 'Future event', addedRaw: '1000000', firstRead: H1941 + 200, lastRead: null },
+      { hour: H1936 + 5000, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
+      { hour: H1941 + 200, slot: 2, secondCountry: 0, place: 0, tag: 'JAP', remembered: false, reason: 'Future event', addedRaw: '1000000', firstRead: H1941 + 200, lastRead: null },
     ],
     missing: [],
     nextChangeHour: H1941 + 24,
@@ -84,7 +84,7 @@ describe('world-tension projections', () => {
     });
     assert.equal(model.mode, 'stack');
     assert.equal(model.stack?.step, true);
-    assert.equal(model.stack?.bands[0]?.key, 'GER');
+    assert.equal(model.stack?.bands[0]?.key, 'slot:1');
     assert.equal(model.stack?.bands.at(-1)?.id, 'other');
     assert.equal(model.stack?.bands.at(-1)?.endLabel?.name, 'Other (31)');
     assert.equal(model.stack?.bands.at(-1)?.endLabel?.shortName, 'Other');
@@ -140,7 +140,7 @@ describe('world-tension projections', () => {
     });
     assert.equal(model.mode, 'lines');
     assert.equal(model.series.length, 3);
-    assert.equal(model.series[0]?.key, 'GER');
+    assert.equal(model.series[0]?.key, 'slot:1');
     assert.equal(model.series[0]?.step, true);
     assert.equal(model.series[0]?.endLabel?.value, '60%');
     assert.equal(model.series[0]?.points?.length, 3);
@@ -206,7 +206,7 @@ describe('world-tension projections', () => {
     assert.ok(negBand?.endLabel, 'negative contribution band keeps its end label');
     assert.equal(negModel.stack?.total?.endLabel?.value, '6.5%', 'recorded world total label is 6.5%');
     assert.ok(negModel.auditRows?.some(r => r.row === '__total__' && r.value === '6.5%'));
-    assert.ok(negModel.auditRows?.some(r => r.row === 'ITA' && r.value === '\u22120.5%'), 'negative contribution appears in audit');
+    assert.ok(negModel.auditRows?.some(r => r.row === 'slot:3' && r.value === '\u22120.5%'), 'negative contribution appears in audit');
 
     const negLayout = layoutTimeChart(negModel, 720, 260, 'Segoe UI', measure);
     assert.ok(negLayout.yDomain[0] < 0, 'stack yDomain includes room below zero for negative bands');
@@ -265,7 +265,7 @@ describe('world-tension projections', () => {
     const reply: WorldTensionStackReply = {
       ...sampleStack(),
       events: [
-        { hour: hoverHour, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '900000', firstRead: hoverHour, lastRead: null },
+        { hour: hoverHour, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '900000', firstRead: hoverHour, lastRead: null },
       ],
     };
     const hoverReply: WorldTensionReply = {
@@ -401,5 +401,53 @@ describe('world-tension projections', () => {
       gateSpan: (a: number, b: number) => ({ firstHour: a, lastHour: b }),
     } as never, { width: 800, height: 300, following: false, staticSpan: null });
     assert.ok(plan.entries.some(e => e.name === 'hover' && e.read.shape === 'exact-hover'), 'lines view declares exact-hover entry');
+  });
+
+  it('S14 + R3-S11: keys world-tension bands and audit rows by slot (even when two slots share a tag), and includes secondary country and place in events table rowKey', () => {
+    const sharedTagReply = {
+      ...sampleStack(),
+      bands: [
+        { slot: 1, tag: 'GER', remembered: true, values: [0, 20, 30], minValues: [], maxValues: [], endValue: 30, endRaw: '3000000' },
+        { slot: 2, tag: 'GER', remembered: false, values: [0, 10, 40], minValues: [], maxValues: [], endValue: 40, endRaw: '4000000' },
+      ],
+      other: null,
+      events: [
+        { hour: H1936 + 5000, slot: 1, secondCountry: 2, place: 0, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
+        { hour: H1936 + 5000, slot: 1, secondCountry: 3, place: 0, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '400000', firstRead: H1936 + 5000, lastRead: null },
+        { hour: H1936 + 5000, slot: 1, secondCountry: 3, place: 1, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '300000', firstRead: H1936 + 5000, lastRead: null },
+      ],
+    } as unknown as WorldTensionStackReply;
+
+    const view = createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', sharedTagReply]]),
+      identity: makeIdentity(),
+    });
+    const stackModel = worldTensionProjection.project(view, {
+      extent: [H1936, H1941],
+      surface: '#111111',
+      layers: 5,
+      values: 'recorded',
+      showMarkers: false,
+      gaps: [],
+    });
+    assert.deepEqual(stackModel.stack?.bands.map(b => b.key), ['slot:1', 'slot:2'], 'stack bands key by slot, not tag');
+    const stackAuditKeys = (stackModel.auditRows ?? []).map(r => r.row);
+    assert.equal(new Set(stackAuditKeys).size, stackAuditKeys.length, 'R3-S11: audit keys must be unique when two slots share a tag');
+    assert.ok(stackAuditKeys.includes('slot:1') && stackAuditKeys.includes('slot:2'), 'R3-S11: stack audit keys use slot ids');
+
+    const linesModel = worldTensionLinesProjection.project(view, {
+      extent: [H1936, H1941],
+      surface: '#111111',
+      gaps: [],
+    });
+    assert.deepEqual(linesModel.series.map(s => s.key), ['slot:1', 'slot:2'], 'lines key by slot, not tag');
+    assert.deepEqual(linesModel.series.map(s => s.id), ['slot:1', 'slot:2'], 'lines id by slot, not tag');
+    const linesAuditKeys = (linesModel.auditRows ?? []).map(r => r.row);
+    assert.deepEqual(linesAuditKeys, ['slot:1', 'slot:2'], 'R3-S11: lines audit keys use slot ids');
+
+    const table = worldTensionEventsProjection.project(view, { branchFirst: H1936 });
+    const rowKeys = table.rows.map(r => r.key);
+    assert.equal(new Set(rowKeys).size, 3, 'events table rowKey distinguishes secondary country and occurrence ordinal');
   });
 });

@@ -1,4 +1,3 @@
-import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
@@ -10,8 +9,11 @@ import {
   branchGapsOf,
   exactHoverReadings,
   missingSpansOf,
-  seriesHeadValue,
   withinMapOf,
+  auditReading,
+  headReading,
+  headValueOf,
+  type HeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 
@@ -42,9 +44,12 @@ export const experienceProjection: TimeChartProjection<ExperienceOptions> = regi
   project(readView: BoundedReadView, options: ExperienceOptions) {
     const hour = readView.hour;
     const tag = options.tag;
+    const readings: [string, HeadReading | null][] = [];
     const series: TimeChartSeriesModel[] = EXPERIENCE_BRANCHES.map((branch, rank) => {
       const bounded = tag ? readView.series(branch.id)?.get(tag) ?? null : null;
-      const headValue = tag ? seriesHeadValue(bounded, readView.answer(branch.id), 0, 0, EXPERIENCE_SCALE) : null;
+      const reading = tag ? headReading(readView, branch.id, { tag }, 0, EXPERIENCE_SCALE) : null;
+      if (tag) readings.push([branch.id, reading]);
+      const headValue = headValueOf(reading);
       const exact = exactHoverReadings(readView, `${branch.id}Hover`, 0, EXPERIENCE_SCALE)?.[0] ?? null;
       const icon = { art: readView.art(measureArtHandle(branch.art)), label: `${branch.label} experience` };
       return {
@@ -76,9 +81,7 @@ export const experienceProjection: TimeChartProjection<ExperienceOptions> = regi
       yAxis: { format: 'number', decimals: 2 },
       series,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
-      auditRows: series.flatMap(s => (s.headValue === null || s.headValue === undefined
-        ? []
-        : [auditRow(s.id, formatExperience(s.headValue))])),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatExperience)),
     };
   },
 });

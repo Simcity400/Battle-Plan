@@ -805,6 +805,15 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
         }
     }
     let charted = Charted { parts: &parts, days: &days, first_day, at_hour: &at_hours };
+    let recording = query.replay.recording();
+    let statuses: Vec<Vec<(i32, i32, bool)>> = stretches
+        .iter()
+        .map(|stretch| {
+            dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, stretch.run, TableId::RaidAirScores, stretch.first, stretch.last))
+                .map(|held| held.into_iter().map(|status| (status.first, status.last, replay_recording::columnar_frames::complete(status.status))).collect())
+        })
+        .collect::<io::Result<_>>()?;
+    let whole = |part: usize, hour: i32| statuses[part].iter().any(|&(first, last, complete)| complete && first <= hour && hour <= last);
     let mut held_links: HashMap<(usize, usize), Arc<Vec<CountryLinkRow>>> = HashMap::new();
     let mut reads: Vec<Option<DayRead>> = Vec::with_capacity(count);
     for (at, day) in days.iter().enumerate() {
@@ -824,7 +833,7 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
             let cut = links.cuts.partition_point(|cut| *cut <= day.hour);
             Arc::clone(held_links.entry((day.part, cut)).or_insert_with(|| Arc::new(links.at(day.hour))))
         });
-        reads.push(Some(DayRead { hour: day.hour, witnesses: charted.witnesses(at), complete: true, links }));
+        reads.push(Some(DayRead { hour: day.hour, witnesses: charted.witnesses(at), complete: whole(day.part, day.hour), links }));
     }
     dashboard_text::metadata::check_cancel(cancelled)?;
     let theatres = params.theatres.as_deref().filter(|ids| !ids.is_empty()).map(|ids| theatre_days(query, &stretches, &reads, &days, ids));

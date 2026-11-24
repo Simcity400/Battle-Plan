@@ -44,6 +44,7 @@ export const airForceSizeMixProjection: BarsProjection<AirForceSizeMixOptions> =
       decimals: 0,
       valueFormat: { decimals: 0 },
       valueLabel,
+      unit: options.measure === 'wings' ? 'Wings' : 'Planes',
       partsLabel: 'Aircraft types',
       emptyMessage,
       ...(note ? { note } : {}),
