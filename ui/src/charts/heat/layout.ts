@@ -78,11 +78,35 @@ export function heatNavigation(periods: readonly HeatPeriod[]) {
   };
 }
 
+export function inclusiveTerminalHour(
+  periods: readonly HeatPeriod[],
+  loading: readonly { firstHour: number; lastHour: number }[] | undefined,
+  from: number,
+  to: number,
+  until: number | null,
+): number | null {
+  const end = Math.min(to, until ?? to);
+  if (end < from || end !== to) return null;
+  if (periods.some(period => period.firstHour === end && (period.readHour == null || period.readHour <= (until ?? Infinity)))) return end;
+  if (loading?.some(span => span.firstHour === end && span.firstHour <= span.lastHour)) return end;
+  return null;
+}
+
 export function cellRect(period: HeatPeriod, row: number, count: number, frame: { plotTop: number; plotHeight: number; plotLeft: number; plotWidth: number; toX: (hour: number) => number },
-  from: number, to: number, until: number | null) {
+  from: number, to: number, until: number | null, terminalHour: number | null = null) {
   if (period.readHour != null && period.readHour > (until ?? Infinity) || period.lastHour < from || period.firstHour > to || !count) return null;
-  const left = Math.max(frame.plotLeft, frame.toX(Math.max(from, period.firstHour)));
-  const right = Math.min(frame.plotLeft + frame.plotWidth, frame.toX(Math.min(to, period.lastHour + 1, until == null ? Infinity : until + 1)));
   const rowHeight = frame.plotHeight / count;
-  return right > left ? { left, top: frame.plotTop + row * rowHeight + 1, width: right - left, height: Math.max(1, rowHeight - 2) } : null;
+  const top = frame.plotTop + row * rowHeight + 1;
+  const height = Math.max(1, rowHeight - 2);
+  const plotRight = frame.plotLeft + frame.plotWidth;
+  if (terminalHour != null && frame.plotWidth > 1) {
+    if (period.firstHour === terminalHour) return { left: plotRight - 1, top, width: 1, height };
+    const maxRight = period.lastHour < terminalHour ? plotRight - 1 : plotRight;
+    const left = Math.max(frame.plotLeft, frame.toX(Math.max(from, period.firstHour)));
+    const right = Math.min(maxRight, frame.toX(Math.min(to, period.lastHour + 1, until == null ? Infinity : until + 1)));
+    return right > left ? { left, top, width: right - left, height } : null;
+  }
+  const left = Math.max(frame.plotLeft, frame.toX(Math.max(from, period.firstHour)));
+  const right = Math.min(plotRight, frame.toX(Math.min(to, period.lastHour + 1, until == null ? Infinity : until + 1)));
+  return right > left ? { left, top, width: right - left, height } : null;
 }

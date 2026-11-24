@@ -22,7 +22,7 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { windowExtent } from '../../dashboard/widgetRequests';
 import { mix } from '../../shell/appearance/color';
 import { useHeadHour } from '../army-size/headHour.ts';
-import { columnTooltip, pickedDay, shownRegions, uncoveredSpans, weatherPeriods, weatherRows } from './weatherData';
+import { columnTooltip, pickedDay, shownRegions, weatherCatalogRegions, weatherHistoryPeriods, weatherLoadingSpans, weatherRows, weatherScale, weatherTail, weatherTailPeriod } from './weatherData';
 import type { Choice, WeatherPeriod, WeatherShow } from './weatherData';
 import { useWeatherInView } from './useWeather';
 import './weather.css';
@@ -47,22 +47,37 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics }
   const clockHour = () => recordedHour(track, Math.floor(runtime.clock.getHour()) + axisOffset);
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
-  const { options, show, modifier, data, error, retry, onSummaryView } = useWeatherInView(widget, runtime, active, extent);
-  useShownEachFrame(runtime.clock, () => data ? following ? clockHour() : data.lastHour : null);
+  const { options, show, modifier, data, tailData, tailWindow, visibleExtent, error, retry, onSummaryView } = useWeatherInView(widget, runtime, active, extent);
+  useShownEachFrame(runtime.clock, () => data ? following ? clockHour() : tailData ? Math.max(data.lastHour, tailData.lastHour) : data.lastHour : null);
   const dayHours = data?.dayHours ?? 1;
   const chosenTheatres = useMemo(() => contentSet(options.theatres).map(contentKey), [options.theatres]);
   const air = useAirTheatres(track, extent?.[1] ?? null, active && chosenTheatres.length > 0);
   const inTheatres = useMemo(() => theatreRegions(air.theatres, chosenTheatres), [air.theatres, chosenTheatres]);
-  const regions = useMemo(() => data ? shownRegions(data, contentSet(options.regions).map(contentKey), inTheatres) : [], [data, options.regions, inTheatres]);
-  const periods = useMemo(() => data && extent ? weatherPeriods(data.columns, extent, data.dayHours) : [], [data, extent?.[0], extent?.[1]]);
-  const unreached = useMemo(() => data && extent ? uncoveredSpans(extent, data) : [], [data, extent?.[0], extent?.[1]]);
+  const catalogRegions = useMemo(() => data ? weatherCatalogRegions(data, tailData) : [], [data, tailData]);
+  const regions = useMemo(() => data ? shownRegions({ regions: catalogRegions }, contentSet(options.regions).map(contentKey), inTheatres) : [], [data, catalogRegions, options.regions, inTheatres]);
+  const tailFirst = tailWindow?.first ?? null, tailLast = tailWindow?.last ?? null;
+  const historyEnd = extent && tailFirst !== null ? Math.min(extent[1], tailFirst - 1) : extent?.[1] ?? null;
+  const historyPeriods = useMemo(() => data && extent && historyEnd !== null
+    ? weatherHistoryPeriods(data.columns, [extent[0], historyEnd], data.dayHours, null) : [], [data, extent?.[0], historyEnd]);
+  const tailPeriod = useMemo(() => extent ? weatherTailPeriod(tailData, extent) : null, [tailData, extent?.[0], extent?.[1]]);
+  const unreached = useMemo(() => data && extent
+    ? weatherLoadingSpans(extent, data, tailFirst !== null && tailLast !== null ? { first: tailFirst, last: tailLast } : null, tailPeriod !== null)
+    : [], [data, extent?.[0], extent?.[1], tailFirst, tailLast, tailPeriod !== null]);
   const grey = mix(tokens.surface, tokens.text, 0.1);
   const gap = `color-mix(in srgb, ${tokens.error} ${tokens.gapOpacity * 100}%, ${tokens.surface})`;
   const flagColour = useCallback((index: number) => tokens.categories[index % tokens.categories.length], [tokens.categories]);
   const ramp = useCallback((value: number, highest: number) => signedColor(value, 0, highest, grey, grey, tokens.accent), [grey, tokens.accent]);
   const temperature = useCallback((value: number, low: number, high: number) => signedColor(value, low, high, grey, tokens.accent, tokens.error), [grey, tokens.accent, tokens.error]);
-  const heat = useMemo(() => data ? weatherRows(data, regions, periods, show, modifier, { flag: flagColour, ramp, temperature, clear: tokens.surface, gap }) : null,
-    [data, regions, periods, show, modifier, flagColour, ramp, temperature, tokens.surface, gap]);
+  const scale = useMemo(() => data ? weatherScale(data, historyPeriods, show, modifier, visibleExtent, tailData, tailPeriod) : null,
+    [data, historyPeriods, show, modifier, visibleExtent?.[0], visibleExtent?.[1], tailData, tailPeriod]);
+  const scaleHighest = scale?.highest ?? 0, scaleLow = scale?.low ?? 0, scaleHigh = scale?.high ?? 0;
+  const heat = useMemo(() => data ? weatherRows(data, regions, historyPeriods, show, modifier,
+    { flag: flagColour, ramp, temperature, clear: tokens.surface, gap }, { highest: scaleHighest, low: scaleLow, high: scaleHigh }) : null,
+    [data, regions, historyPeriods, show, modifier, flagColour, ramp, temperature, tokens.surface, gap, scaleHighest, scaleLow, scaleHigh]);
+  const heatTail = useMemo(() => tailData && tailPeriod ? weatherTail(tailData, regions, tailPeriod, show, modifier,
+    { flag: flagColour, ramp, temperature, clear: tokens.surface, gap }, { highest: scaleHighest, low: scaleLow, high: scaleHigh }) : undefined,
+    [tailData, tailPeriod, regions, show, modifier, flagColour, ramp, temperature, tokens.surface, gap, scaleHighest, scaleLow, scaleHigh]);
+  const chartRevision = useMemo(() => [heat, heatTail], [heat, heatTail]);
   const legend = useMemo(() => show === 'conditions' ? (data?.flags ?? []).map((flag, index) => ({ id: flag.id, label: flag.name, color: flagColour(index) }))
     : show === 'temperature' ? [{ id: 'cold', label: 'Colder', color: tokens.accent }, { id: 'warm', label: 'Warmer', color: tokens.error }]
     : show === 'modifiers' && data ? [{ id: 'modifier', label: data.modifiers.find(item => item.id === modifier)?.name ?? 'Modifier', color: tokens.accent }] : [],
@@ -74,17 +89,21 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics }
     if (unreached.some(span => span.firstHour <= hour && hour <= span.lastHour)) return { title: region.name, rows: [{ label: date }, { label: 'Loading…' }] };
     const shown = period as WeatherPeriod | null;
     if (!shown) return { title: region.name, rows: [{ label: date }, { label: 'Not recorded' }] };
+    if (shown.source === 'tail' && tailData) return columnTooltip(tailData, region, shown.column, show, modifier, date, dayLabel);
     return columnTooltip(data, region, shown.column, show, modifier, date, dayLabel);
-  }, [data, regions, show, modifier, unreached]);
+  }, [data, tailData, regions, show, modifier, unreached]);
   const onMenu = useCallback((hour: number, x: number, y: number) => {
-    const period = periods.find(item => item.firstHour <= hour && hour <= item.lastHour);
+    const period = tailPeriod && tailPeriod.firstHour <= hour && hour <= tailPeriod.lastHour
+      ? tailPeriod : historyPeriods.find(item => item.firstHour <= hour && hour <= item.lastHour);
     if (track) menu.open(x, y, [jumpItem(runtime, track.id, period?.exact === false ? hour : period?.readHour ?? hour)]);
-  }, [track, periods, menu.open, runtime]);
+  }, [track, historyPeriods, tailPeriod, menu.open, runtime]);
   const anchor = useRef<HTMLDivElement>(null);
   const [picked, setPicked] = useState<{ id: string; name: string } | null>(null);
   const [drillWarnings, setDrillWarnings] = useState<readonly string[]>([]);
   const [drillShown, setDrillShown] = useState<number | null>(null);
-  useDiagnostics(onDiagnostics, data ? [...data.warnings, ...data.temperature === 'available' ? [] : [data.temperature], ...drillWarnings] : null);
+  const warnings = useMemo(() => data ? [...new Set([...data.warnings, ...(tailData?.warnings ?? []), ...data.temperature === 'available' ? [] : [data.temperature], ...drillWarnings])] : null,
+    [data, tailData, drillWarnings]);
+  useDiagnostics(onDiagnostics, warnings);
   if (!track) return <WidgetState kind="empty" icon="sun" message="Load a campaign to see weather." />;
   const caption = data && <div className="weather-caption">
     <div className="weather-key" aria-label="Data states">
@@ -98,9 +117,9 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics }
     : !data ? <WidgetState kind="loading" label="Loading weather…" />
     : chosenTheatres.length && !air.theatres ? <WidgetState kind="unavailable" message={air.unavailable ?? 'Air theatres are not known at this time.'} />
     : !heat || !heat.rows.length ? <WidgetState kind="empty" message="No regions match these filters." />
-    : <div className="weather-chart"><HeatChart label="Weather by region" rows={heat.rows} periods={periods} labelCatalogue={regions.map(region => region.name)}
+    : <div className="weather-chart"><HeatChart label="Weather by region" rows={heat.rows} periods={historyPeriods} tail={heatTail} inclusiveTerminal labelCatalogue={regions.map(region => region.name)}
       extent={extent} playhead={widget.time.mode === 'follow' ? clockHour() : null} liveHead={liveHead} branchStart={track.branch.firstHour}
-      legend={legend} afterPlayhead={widget.time.mode !== 'follow'} look="split" active={active} revision={`${show}:${modifier}:${data.lastHour}`}
+      legend={legend} afterPlayhead={widget.time.mode !== 'follow'} look="split" active={active} revision={chartRevision}
       hoursPerSecond={hoursPerSecond} loading={unreached} tooltip={tooltip} onContextMenu={onMenu} onSummaryView={onSummaryView}
       pickOwner={track.source.id} onPick={(row, _period, hour) => {
         const region = regions.find(item => item.id === row.id);

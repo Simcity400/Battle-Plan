@@ -1,7 +1,7 @@
 import { keyTarget } from '../rowNavigation.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cellRect, cellRuns, heatNavigation, heatWindow, heatRowAt, periodAt } from './layout.ts';
+import { cellRect, cellRuns, heatNavigation, heatWindow, heatRowAt, inclusiveTerminalHour, periodAt } from './layout.ts';
 import { keyedStop, keyStopList } from '../hover.ts';
 import { hitZone, plotFrame } from '../frame.ts';
 const parts = [
@@ -17,6 +17,28 @@ test('layout clips exact periods, leaves missing days blank and hides future rea
   assert.deepEqual(cellRect(periods[0], 1, 2, frame, 10, 72, null), { left: 90, top: 71, width: 14, height: 48 });
   assert.equal(cellRect(periods[1], 0, 2, frame, 0, 72, 50), null);
   assert.equal(cellRect({ ...periods[1], readHour: 50 }, 0, 2, frame, 0, 72, 55)?.width, 8);
+});
+
+test('interior sub-pixel cells keep exact main width while opt-in terminal slot reserves one pixel at the right edge', () => {
+  const tenYearSpan = 3650 * 24;
+  const convoyFrame = { plotTop: 20, plotHeight: 100, plotLeft: 80, plotWidth: 400, toX: (h: number) => 80 + (h / tenYearSpan) * 400 };
+  const oneDay = { firstHour: 0, lastHour: 23, readHour: 23 };
+  const convoyRect = cellRect(oneDay, 0, 1, convoyFrame, 0, tenYearSpan, tenYearSpan);
+  assert.ok(convoyRect);
+  assert.ok(Math.abs(convoyRect.width - (24 / tenYearSpan) * 400) < 1e-9, 'sub-pixel interior day keeps exact width');
+  assert.ok(convoyRect.width < 0.2, 'one day on a 10-year 400px chart is never widened to 1px');
+
+  const midnightFrame = { plotTop: 20, plotHeight: 100, plotLeft: 80, plotWidth: 336, toX: (h: number) => 80 + (h - 1992) * 2 };
+  const yesterday = { firstHour: 2136, lastHour: 2159, readHour: 2159 };
+  const today = { firstHour: 2160, lastHour: 2160, readHour: 2160 };
+  assert.equal(cellRect(today, 0, 2, midnightFrame, 1992, 2160, 2160), null, 'without opt-in, geometry stays byte-identical to main');
+  const terminal = inclusiveTerminalHour([yesterday, today], undefined, 1992, 2160, 2160);
+  assert.equal(terminal, 2160);
+  const yesterdayRect = cellRect(yesterday, 0, 2, midnightFrame, 1992, 2160, 2160, terminal);
+  const todayRect = cellRect(today, 0, 2, midnightFrame, 1992, 2160, 2160, terminal);
+  assert.deepEqual(yesterdayRect, { left: 80 + (2136 - 1992) * 2, top: 21, width: 47, height: 48 }, 'yesterday stops 1px short of plot right');
+  assert.deepEqual(todayRect, { left: 80 + 335, top: 21, width: 1, height: 48 }, 'today occupies the dedicated 1px terminal column');
+  assert.equal(inclusiveTerminalHour([{ firstHour: 2160, lastHour: 2160, readHour: null }], undefined, 1992, 2160, 2159), null);
 });
 test('keyboard steps rows with boundaries and no phantom empty row', () => {
   assert.equal(keyTarget('ArrowUp', 0, 3, 1), 0);

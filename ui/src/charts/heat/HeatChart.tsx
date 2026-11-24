@@ -11,7 +11,8 @@ import { font, VALUE_LABEL_GAP } from '../draw';
 import { toLocal } from '../surface';
 import { keyTarget } from '../rowNavigation';
 import type { Range } from '../view';
-import { cellRect, cellRuns, heatNavigation, heatWindow, heatRowAt, joinedCellPeriod, marginColor, periodAt, splitStripes } from './layout';
+import type { PlotFrame } from '../frame';
+import { cellRect, cellRuns, heatNavigation, heatWindow, heatRowAt, inclusiveTerminalHour, joinedCellPeriod, marginColor, periodAt, splitStripes } from './layout';
 import { drawUnknownHatch } from '../hatch';
 import { drawRecordedGap } from '../draw';
 import type { HeatLook, HeatPart, HeatPeriod, HeatRow, HeatTail } from './layout';
@@ -27,6 +28,7 @@ export interface HeatChartProps {
   label: string; rows: readonly HeatRow[]; periods: readonly HeatPeriod[];
   tail?: HeatTail;
   liveTail?: Live<HeatTail | null>;
+  inclusiveTerminal?: boolean;
   labelCatalogue?: readonly string[];
   extent: Range; playhead: number | null; branchStart: number;
   liveHead?: LiveHead;
@@ -123,13 +125,30 @@ export default function HeatChart(props: HeatChartProps) {
     setHoverRow(heatRowAt(pointerY.current, window, top, props.rows.length));
   };
   const legend = useMemo(() => props.legend?.map((item, index) => ({ ...item, id: item.id ?? String(index) })) ?? [], [props.legend]);
-  const navigation = useMemo(() => heatNavigation(periods), [periods]);
+  const baseNavigation = useMemo(() => heatNavigation(periods), [periods]);
+  const navigation = useMemo(() => {
+    if (!props.inclusiveTerminal) return baseNavigation;
+    return {
+      keyHours: baseNavigation.keyHours,
+      snap(hour: number, frame?: PlotFrame) {
+        if (!frame || typeof frame !== 'object' || !frame.x) return baseNavigation.snap(hour);
+        const until = props.afterPlayhead ? null
+          : props.liveHead && props.playhead != null ? Math.max(props.extent[0], Math.min(props.extent[1], props.liveHead.read())) : props.playhead;
+        const terminal = inclusiveTerminalHour(periods, props.loading, frame.x[0], frame.x[1], until);
+        if (terminal !== null && frame.plotWidth > 1 && frame.toX(hour) >= frame.plotLeft + frame.plotWidth - 1) return terminal;
+        return baseNavigation.snap(hour);
+      },
+    };
+  }, [baseNavigation, props.inclusiveTerminal, periods, props.loading, props.afterPlayhead, props.liveHead, props.playhead, props.extent[0], props.extent[1]]);
   const historyLast = useMemo(() => heatNavigation(history).keyHours.at(-1) ?? -Infinity, [history]);
   const colours = useRef(new WeakMap<readonly HeatPart[], { grey: string; color: string | null }>());
   const layers = useMemo<ChartLayer[]>(() => {
     const gaps = overlayRuns(periods.filter(period => period.readHour == null), [], () => false, []);
     return [{ draw(ctx, frame, tokens, state) {
       const grey = mix(tokens.surface, tokens.text, 0.2);
+      const terminalHour = props.inclusiveTerminal
+        ? inclusiveTerminalHour(periods, props.loading, frame.x[0], frame.x[1], state.playhead)
+        : null;
       let lo = 0, hi = navigation.keyHours.length;
       while (lo < hi) { const mid = (lo + hi) >>> 1; if (navigation.keyHours[mid] <= (state.playhead ?? Infinity)) lo = mid + 1; else hi = mid; }
       const read = state.playhead == null ? Infinity : navigation.keyHours[lo - 1] ?? -Infinity;
@@ -140,15 +159,38 @@ export default function HeatChart(props: HeatChartProps) {
       const drawnRows = held.runs;
       const cellsFrame = { ...frame, plotTop: frame.plotTop - window.offset, plotHeight: visible.length * window.rowHeight };
       for (const period of gaps) {
-        drawRecordedGap(ctx, frame, tokens, period.firstHour, period.lastHour, state.playhead);
+        if (terminalHour !== null && period.firstHour === terminalHour && frame.plotWidth > 1) {
+          ctx.save(); ctx.fillStyle = tokens.error; ctx.globalAlpha = tokens.gapOpacity;
+          ctx.fillRect(frame.plotLeft + frame.plotWidth - 1, frame.plotTop, 1, frame.plotHeight);
+          ctx.restore();
+        } else if (terminalHour !== null && period.lastHour < terminalHour && frame.plotWidth > 1) {
+          const left = Math.max(frame.plotLeft, frame.toX(Math.max(frame.x[0], period.firstHour)));
+          const right = Math.min(frame.plotLeft + frame.plotWidth - 1, frame.toX(Math.min(frame.x[1], period.lastHour + 1, state.playhead == null ? Infinity : state.playhead + 1)));
+          if (right > left) {
+            ctx.save(); ctx.fillStyle = tokens.error; ctx.globalAlpha = tokens.gapOpacity;
+            ctx.fillRect(left, frame.plotTop, right - left, frame.plotHeight);
+            ctx.restore();
+          }
+        } else {
+          drawRecordedGap(ctx, frame, tokens, period.firstHour, period.lastHour, state.playhead);
+        }
       }
-      for (const [from, to] of spanRanges(props.loading, frame.x[0], frame.x[1], state.playhead))
-        fillPendingBand(ctx, tokens, frame.toX(from), frame.toX(to), frame.plotTop, frame.plotHeight);
+      for (const [from, to] of spanRanges(props.loading, frame.x[0], frame.x[1], state.playhead)) {
+        const right = terminalHour !== null && to <= terminalHour && frame.plotWidth > 1
+          ? Math.min(frame.plotLeft + frame.plotWidth - 1, frame.toX(to)) : frame.toX(to);
+        fillPendingBand(ctx, tokens, frame.toX(from), right, frame.plotTop, frame.plotHeight);
+      }
+      if (terminalHour !== null && frame.plotWidth > 1 && props.loading?.some(span => span.firstHour === terminalHour && span.firstHour <= span.lastHour)) {
+        fillPendingBand(ctx, tokens, frame.plotLeft + frame.plotWidth - 1, frame.plotLeft + frame.plotWidth, frame.plotTop, frame.plotHeight);
+      }
       const live = props.liveTail?.read() ?? null;
       drawnRows.forEach((runs, index) => {
         const drawCell = ({ period, cell }: ReturnType<typeof cellRuns>[number]) => {
-          const rect = cellRect(period, index, visible.length, cellsFrame, frame.x[0], frame.x[1], state.playhead);
+          const rect = cellRect(period, index, visible.length, cellsFrame, frame.x[0], frame.x[1], state.playhead, terminalHour);
           if (!rect) return;
+          if (terminalHour !== null && period.firstHour === terminalHour) {
+            ctx.fillStyle = tokens.surface; ctx.fillRect(rect.left, rect.top, rect.width, rect.height);
+          }
           if (cell.filtered) {
             ctx.strokeStyle = tokens.border; ctx.lineWidth = tokens.lineWidth.grid;
             ctx.strokeRect(rect.left, rect.top, rect.width, rect.height);
@@ -166,18 +208,19 @@ export default function HeatChart(props: HeatChartProps) {
         const tail = props.tail, cell = tail?.cells[window.first + index];
         const shown = tail && cell && tail.period.readHour != null && tail.period.readHour <= read;
         const last = runs.at(-1);
-        const joined = shown && last && joinedCellPeriod(last.period, tail.period, last.cell, cell);
+        const joined = shown && last && (terminalHour === null || tail.period.firstHour !== terminalHour)
+          && joinedCellPeriod(last.period, tail.period, last.cell, cell);
         runs.forEach((run, at) => { if (!joined || at < runs.length - 1) drawCell(run); });
         if (shown) drawCell({ period: joined || tail.period, cell });
         const liveCell = live?.cells[window.first + index];
         if (live && liveCell) {
-          const rect = cellRect(live.period, index, visible.length, cellsFrame, frame.x[0], frame.x[1], state.playhead);
+          const rect = cellRect(live.period, index, visible.length, cellsFrame, frame.x[0], frame.x[1], state.playhead, terminalHour);
           if (rect) { ctx.fillStyle = tokens.surface; ctx.fillRect(rect.left, rect.top, rect.width, rect.height); }
           drawCell({ period: live.period, cell: liveCell });
         }
       });
     } }];
-  }, [visible, periods, history, historyLast, props.tail, props.liveTail, props.look, props.loading, navigation.keyHours, window.offset, window.rowHeight]);
+  }, [visible, periods, history, historyLast, props.tail, props.liveTail, props.inclusiveTerminal, props.look, props.loading, navigation.keyHours, window.offset, window.rowHeight]);
   const liveHead = useMemo<LiveHead | undefined>(() => {
     const head = props.liveHead, tail = props.liveTail;
     if (!head || !tail) return head;

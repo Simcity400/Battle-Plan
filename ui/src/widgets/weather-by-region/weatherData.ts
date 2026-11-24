@@ -1,4 +1,4 @@
-import type { HeatCell, HeatPeriod, HeatRow } from '../../charts/heat/layout';
+import type { HeatCell, HeatPeriod, HeatRow, HeatTail } from '../../charts/heat/layout';
 import type { TooltipContent } from '../../charts/tooltip';
 import type {
   RegionalWeatherChoice as Choice, RegionalWeatherProvincesReply as ProvincesReply, RegionalWeatherColumn as WeatherColumn, RegionalWeatherColumnRegion as WeatherColumnRegion, RegionalWeatherColumns as WeatherColumns, RegionalWeatherColumnMeasure as WeatherMeasure, RegionalWeatherReply as WeatherReply,
@@ -7,8 +7,9 @@ import type {
 export type {
   RegionalWeatherChoice as Choice, RegionalWeatherProvince as ProvinceWeather, RegionalWeatherProvincesReply as ProvincesReply, RegionalWeatherReply as WeatherReply,
 } from '../../generated/dashboard';
-export interface WeatherPeriod extends HeatPeriod { column: number }
+export interface WeatherPeriod extends HeatPeriod { column: number; source?: 'base' | 'tail' }
 export type WeatherShow = 'conditions' | 'temperature' | 'modifiers';
+export interface WeatherScale { highest: number; low: number; high: number }
 
 export const TEMPERATURE_SCALE = 100000;
 
@@ -22,9 +23,66 @@ export function weatherWindow(branch: { firstHour: number; lastHour: number }, e
   if (dayOf(extent[1]) - dayOf(extent[0]) + 1 <= pixels) {
     const first = Math.max(branch.firstHour, Math.floor(extent[0] / BLOCK_HOURS) * BLOCK_HOURS);
     const last = Math.min(branch.lastHour, Math.ceil((extent[1] + 1) / BLOCK_HOURS) * BLOCK_HOURS - 1);
-    return { first, last, width: dayOf(last) - dayOf(first) + 1 };
+    return { first, last, width: Math.max(1, dayOf(last) - dayOf(first) + 1) };
   }
   return { first: Math.max(branch.firstHour, dayOf(extent[0]) * DAY_HOURS), last: Math.min(branch.lastHour, (dayOf(extent[1]) + 1) * DAY_HOURS - 1), width: pixels };
+}
+
+export function weatherTailWindow(branch: { firstHour: number; lastHour: number }, extent: readonly [number, number], pixels: number, limit?: number) {
+  if (limit == null) return null;
+  const cap = Math.min(branch.lastHour, Math.floor(limit));
+  if (cap < branch.firstHour) return null;
+  const base = weatherWindow(branch, extent, pixels);
+  let colFirst: number, colLast: number;
+  if (dayOf(extent[1]) - dayOf(extent[0]) + 1 <= pixels) {
+    colFirst = Math.max(branch.firstHour, dayOf(cap) * DAY_HOURS);
+    colLast = Math.min(branch.lastHour, (dayOf(cap) + 1) * DAY_HOURS - 1);
+  } else {
+    const totalDays = Math.max(1, dayOf(base.last) - dayOf(base.first) + 1);
+    const daysPerColumn = Math.max(1, Math.ceil(totalDays / Math.max(1, base.width)));
+    const colIndex = Math.floor((dayOf(cap) - dayOf(base.first)) / daysPerColumn);
+    colFirst = Math.max(branch.firstHour, (dayOf(base.first) + colIndex * daysPerColumn) * DAY_HOURS);
+    colLast = Math.min(base.last, (dayOf(base.first) + (colIndex + 1) * daysPerColumn) * DAY_HOURS - 1);
+  }
+  if (colFirst > extent[1] || colLast < extent[0] || cap < colFirst || cap >= colLast) return null;
+  return { first: colFirst, last: cap, width: 1 };
+}
+
+export function weatherCatalogRegions(base: WeatherReply, tail?: WeatherReply): readonly Choice[] {
+  if (!tail || !tail.regions.length) return base.regions;
+  const ids = new Set(base.regions.map(region => region.id));
+  const extra = tail.regions.filter(region => !ids.has(region.id));
+  return extra.length ? [...base.regions, ...extra] : base.regions;
+}
+
+export function weatherLoadingSpans(
+  extent: readonly [number, number],
+  base: { firstHour: number; lastHour: number },
+  tailWindow: { first: number; last: number } | null,
+  tailReady: boolean,
+): { firstHour: number; lastHour: number }[] {
+  const spans = uncoveredSpans(extent, base);
+  if (!tailWindow) return spans;
+  const tailStart = Math.max(extent[0], tailWindow.first);
+  const tailEnd = Math.min(extent[1], tailWindow.last);
+  if (tailStart > tailEnd) return spans;
+  if (tailReady) {
+    return spans.flatMap(span => {
+      if (span.lastHour < tailStart || span.firstHour > tailEnd) return [span];
+      return [
+        ...span.firstHour < tailStart ? [{ firstHour: span.firstHour, lastHour: tailStart - 1 }] : [],
+        ...span.lastHour > tailEnd ? [{ firstHour: tailEnd + 1, lastHour: span.lastHour }] : [],
+      ];
+    });
+  }
+  const merged = [...spans, { firstHour: tailStart, lastHour: tailEnd }].sort((a, b) => a.firstHour - b.firstHour);
+  const out: { firstHour: number; lastHour: number }[] = [];
+  for (const span of merged) {
+    const last = out.at(-1);
+    if (last && span.firstHour <= last.lastHour + 1) last.lastHour = Math.max(last.lastHour, span.lastHour);
+    else out.push({ ...span });
+  }
+  return out;
 }
 
 const isChoice = (value: unknown): value is Choice => !!value && typeof value === 'object'
@@ -78,7 +136,54 @@ export function weatherPeriods(columns: WeatherColumns, extent: readonly [number
       column: index, ...columnDays(column, dayHours) > 1 ? { exact: false } : {} }]);
 }
 
-export function shownRegions(reply: WeatherReply, regions: readonly string[], inTheatres: ReadonlySet<string> | null = null): Choice[] {
+export function weatherHistoryPeriods(
+  columns: WeatherColumns,
+  extent: readonly [number, number],
+  dayHours: number,
+  tailWindow: { first: number; last: number } | null,
+): WeatherPeriod[] {
+  const limit = tailWindow ? Math.min(extent[1], tailWindow.first - 1) : extent[1];
+  return extent[0] <= limit ? weatherPeriods(columns, [extent[0], limit], dayHours) : [];
+}
+
+export function weatherTailPeriod(
+  tail: WeatherReply | undefined,
+  extent: readonly [number, number],
+): WeatherPeriod | null {
+  if (!tail || tail.columns.columns.length !== 1) return null;
+  const period = weatherPeriods(tail.columns, extent, tail.dayHours)[0];
+  return period ? { ...period, source: 'tail' } : null;
+}
+
+export interface WeatherFallback {
+  client: unknown;
+  scope: string;
+  base: WeatherReply;
+  tailKey: string | null;
+  tail?: WeatherReply;
+}
+
+export function selectWeatherReplies(
+  client: unknown,
+  scope: string,
+  baseData: WeatherReply | undefined,
+  baseError: unknown,
+  tailKey: string | null,
+  tailData: WeatherReply | undefined,
+  tailError: unknown,
+  kept: WeatherFallback | null,
+): { data: WeatherReply | undefined; tailData: WeatherReply | undefined; nextKept: WeatherFallback | null } {
+  const validKept = kept && kept.client === client && kept.scope === scope ? kept : null;
+  const resolvedTail = tailKey === null ? undefined
+    : tailData ?? (validKept && validKept.tailKey === tailKey && !tailError ? validKept.tail : undefined);
+  const resolvedBase = baseData ?? (validKept && !baseError ? validKept.base : undefined);
+  const nextKept = resolvedBase
+    ? { client, scope, base: resolvedBase, tailKey: resolvedTail ? tailKey : null, tail: resolvedTail }
+    : validKept;
+  return { data: resolvedBase, tailData: resolvedTail, nextKept };
+}
+
+export function shownRegions(reply: { regions: readonly Choice[] }, regions: readonly string[], inTheatres: ReadonlySet<string> | null = null): Choice[] {
   return reply.regions.filter(region => (!regions.length || regions.includes(region.id)) && (!inTheatres || inTheatres.has(region.id)));
 }
 
@@ -91,57 +196,114 @@ function stats(measure: WeatherMeasure | undefined, column: number) {
     zero: values[0] === '0' && values[2] === '0' } : null;
 }
 
+export interface WeatherColours {
+  flag: (index: number) => string;
+  ramp: (value: number, highest: number) => string;
+  temperature?: (value: number, low: number, high: number) => string;
+  clear?: string;
+  gap?: string;
+}
+
+export function weatherScale(
+  base: WeatherReply,
+  periods: readonly WeatherPeriod[],
+  show: WeatherShow,
+  modifier: string | null,
+  visibleExtent?: readonly [number, number] | null,
+  tail?: WeatherReply,
+  tailPeriod?: WeatherPeriod | null,
+): WeatherScale {
+  if (show === 'conditions') return { highest: 0, low: 0, high: 0 };
+  const id = show === 'temperature' ? 'temp' : modifier !== null ? `mod:${modifier}` : null;
+  if (id === null) return { highest: 0, low: 0, high: 0 };
+  const inView = (period: WeatherPeriod) => !visibleExtent || (period.lastHour >= visibleExtent[0] && period.firstHour <= visibleExtent[1]);
+  const shownColumns = new Set(periods.filter(inView).map(period => period.column));
+  let highest = 0, low = 0, high = 0;
+  const observe = (reply: WeatherReply, columns: ReadonlySet<number>) => {
+    if (!columns.size) return;
+    for (const region of reply.columns.regions) {
+      const measure = region.measures.find(item => item.id === id);
+      const values = measure?.values;
+      if (!values) continue;
+      for (const column of columns) {
+        const entry = values[column];
+        if (!entry) continue;
+        const min = Number(entry[0]), max = Number(entry[2]);
+        if (show === 'modifiers') highest = Math.max(highest, Math.abs(min) / MODIFIER_SCALE, Math.abs(max) / MODIFIER_SCALE);
+        else { low = Math.min(low, min / TEMPERATURE_SCALE); high = Math.max(high, max / TEMPERATURE_SCALE); }
+      }
+    }
+  };
+  observe(base, shownColumns);
+  if (tail && tailPeriod && inView(tailPeriod)) observe(tail, new Set([tailPeriod.column]));
+  return { highest, low, high };
+}
+
+const BLANK_CELL: HeatCell = { parts: [] };
+const UNKNOWN_CELL: HeatCell = { parts: [], unknown: true };
+
+function weatherCell(
+  reply: WeatherReply,
+  entry: { region: WeatherColumnRegion; measures: Map<string, WeatherMeasure> } | undefined,
+  column: number,
+  readHour: number | null,
+  show: WeatherShow,
+  modifier: string | null,
+  colours: WeatherColours,
+  scale: WeatherScale,
+): HeatCell {
+  if (readHour === null) return BLANK_CELL;
+  const days = columnDays(reply.columns.columns[column], reply.dayHours);
+  if (show === 'temperature') {
+    const value = stats(entry?.measures.get('temp'), column);
+    if (!value) return BLANK_CELL;
+    const degrees = value.mean / TEMPERATURE_SCALE;
+    return { parts: [{ id: 'temp', label: temperatureText(String(value.mean)),
+      color: colours.temperature?.(degrees, scale.low, scale.high) ?? colours.ramp(Math.abs(degrees), Math.max(-scale.low, scale.high)), share: 1 }],
+      ...value.days < days ? { approximate: true } : {} };
+  }
+  if (show === 'modifiers') {
+    const value = modifier === null ? null : stats(entry?.measures.get(`mod:${modifier}`), column);
+    if (!value) return UNKNOWN_CELL;
+    const raw = value.mean / MODIFIER_SCALE;
+    const partial = value.days < days ? { approximate: true } : {};
+    return value.zero ? { parts: [], ...partial } : { parts: [{ id: modifier!, label: String(raw), color: colours.ramp(Math.abs(raw), scale.highest), share: 1 }], ...partial };
+  }
+  const observed = entry?.region.observed?.[column] ?? 0;
+  if (!observed) return UNKNOWN_CELL;
+  const set = reply.flags.flatMap((flag, index) => {
+    const flagged = entry!.measures.get(flag.id)?.days[column] ?? 0;
+    return flagged > 0 ? [{ index, flag, flagged }] : [];
+  });
+  const unread = days - observed;
+  if (!set.length && !unread) return BLANK_CELL;
+  const clear = entry!.region.clear?.[column] ?? 0;
+  const total = set.reduce((sum, item) => sum + item.flagged, clear + unread);
+  return { parts: [...set.map(({ index, flag, flagged }) => ({ id: flag.id, label: flag.name, color: colours.flag(index), share: flagged / total })),
+    ...clear ? [{ id: 'clear', label: 'No condition', color: colours.clear ?? 'transparent', share: clear / total }] : [],
+    ...unread ? [{ id: 'unread', label: 'Not recorded', color: colours.gap ?? 'transparent', share: unread / total }] : []] };
+}
+
 export function weatherRows(reply: WeatherReply, regions: readonly Choice[], periods: readonly WeatherPeriod[], show: WeatherShow, modifier: string | null,
-  colours: { flag: (index: number) => string; ramp: (value: number, highest: number) => string; temperature?: (value: number, low: number, high: number) => string;
-    clear?: string; gap?: string }): { rows: HeatRow[]; highest: number } {
+  colours: WeatherColours, scale?: WeatherScale): { rows: HeatRow[]; highest: number } {
   const byRegion = regionMeasures(reply);
-  const columns = reply.columns.columns;
-  const extremes = (id: string) => [...byRegion.values()].flatMap(({ measures }) => measures.get(id)?.values ?? [])
-    .flatMap(values => values ? [[Number(values[0]), Number(values[2])] as const] : []);
-  let highest = 0;
-  if (show === 'modifiers' && modifier !== null)
-    for (const [min, max] of extremes(`mod:${modifier}`)) highest = Math.max(highest, Math.abs(min) / MODIFIER_SCALE, Math.abs(max) / MODIFIER_SCALE);
-  let low = 0, high = 0;
-  if (show === 'temperature')
-    for (const [min, max] of extremes('temp')) { low = Math.min(low, min / TEMPERATURE_SCALE); high = Math.max(high, max / TEMPERATURE_SCALE); }
-  const blank: HeatCell = { parts: [] }, unknown: HeatCell = { parts: [], unknown: true };
+  const resolvedScale = scale ?? weatherScale(reply, periods, show, modifier);
   const rows = regions.map(region => {
     const entry = byRegion.get(region.id);
-    const cells = periods.map(({ column, readHour }): HeatCell => {
-      if (readHour === null) return blank;
-      const days = columnDays(columns[column], reply.dayHours);
-      if (show === 'temperature') {
-        const value = stats(entry?.measures.get('temp'), column);
-        if (!value) return blank;
-        const degrees = value.mean / TEMPERATURE_SCALE;
-        return { parts: [{ id: 'temp', label: temperatureText(String(value.mean)),
-          color: colours.temperature?.(degrees, low, high) ?? colours.ramp(Math.abs(degrees), Math.max(-low, high)), share: 1 }],
-          ...value.days < days ? { approximate: true } : {} };
-      }
-      if (show === 'modifiers') {
-        const value = modifier === null ? null : stats(entry?.measures.get(`mod:${modifier}`), column);
-        if (!value) return unknown;
-        const raw = value.mean / MODIFIER_SCALE;
-        const partial = value.days < days ? { approximate: true } : {};
-        return value.zero ? { parts: [], ...partial } : { parts: [{ id: modifier!, label: String(raw), color: colours.ramp(Math.abs(raw), highest), share: 1 }], ...partial };
-      }
-      const observed = entry?.region.observed?.[column] ?? 0;
-      if (!observed) return unknown;
-      const set = reply.flags.flatMap((flag, index) => {
-        const flagged = entry!.measures.get(flag.id)?.days[column] ?? 0;
-        return flagged > 0 ? [{ index, flag, flagged }] : [];
-      });
-      const unread = days - observed;
-      if (!set.length && !unread) return blank;
-      const clear = entry!.region.clear?.[column] ?? 0;
-      const total = set.reduce((sum, item) => sum + item.flagged, clear + unread);
-      return { parts: [...set.map(({ index, flag, flagged }) => ({ id: flag.id, label: flag.name, color: colours.flag(index), share: flagged / total })),
-        ...clear ? [{ id: 'clear', label: 'No condition', color: colours.clear ?? 'transparent', share: clear / total }] : [],
-        ...unread ? [{ id: 'unread', label: 'Not recorded', color: colours.gap ?? 'transparent', share: unread / total }] : []] };
-    });
+    const cells = periods.map(({ column, readHour }): HeatCell =>
+      weatherCell(reply, entry, column, readHour, show, modifier, colours, resolvedScale));
     return { id: region.id, label: region.name, cells };
   });
-  return { rows, highest };
+  return { rows, highest: resolvedScale.highest };
+}
+
+export function weatherTail(reply: WeatherReply, regions: readonly Choice[], period: WeatherPeriod, show: WeatherShow, modifier: string | null,
+  colours: WeatherColours, scale: WeatherScale): HeatTail {
+  const byRegion = regionMeasures(reply);
+  return {
+    period,
+    cells: regions.map(region => weatherCell(reply, byRegion.get(region.id), period.column, period.readHour, show, modifier, colours, scale)),
+  };
 }
 
 export function columnTooltip(reply: WeatherReply, region: Choice, column: number, show: WeatherShow, modifier: string | null,
