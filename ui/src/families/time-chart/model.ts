@@ -154,6 +154,7 @@ export interface ChartOverlayLabel {
 export interface ChartHoverDetail {
   readonly hour: number;
   readonly items: readonly TooltipListItem[];
+  readonly replacesSeries?: boolean;
 }
 
 export type ChartValueFormat = 'number' | 'percent' | 'compact' | 'signed1' | 'power';

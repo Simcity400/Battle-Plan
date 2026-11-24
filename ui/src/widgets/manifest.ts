@@ -26,6 +26,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'apm-table': { load: () => import('./apm-table') },
   'command-power': { load: () => import('./command-power'), slots: ['render', 'countryChip'] },
   'division-template': { load: () => import('./division-template') },
+  'fuel': { load: () => import('./fuel'), slots: ['render', 'countryChip'] },
   'factories': { load: () => import('./factories'), slots: ['render', 'countryChip'] },
   'game-score': { load: () => import('./game-score') },
   'minefields': { load: () => import('./minefields') },

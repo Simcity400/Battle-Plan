@@ -38,7 +38,7 @@ function formatEndAmount(value: number): string {
 
 export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions> = registerTimeChart({
   kind: 'political-power',
-  family: 'series',
+  family: 'time-chart',
   variant: 'line',
   joinMode: 'join',
   measureTitle: 'Political power',
@@ -119,7 +119,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
 });
 
 export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowerOptions> = {
-  family: 'series',
+  family: 'time-chart',
   kind: 'political-power',
   label: 'Political power',
   subject: 'political power',

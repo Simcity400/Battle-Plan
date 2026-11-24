@@ -13,6 +13,8 @@ import { knownValue, notRecorded } from '../value.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { commandPowerProjection } from '../../widgets/command-power/commandPowerProjection.ts';
 import { stabilityProjection } from '../../widgets/stability/stabilityProjection.ts';
+import { experienceProjection } from '../../widgets/experience/experienceProjection.ts';
+import { fuelProjection } from '../../widgets/fuel/fuelProjection.ts';
 import { registerTimeChart, type TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
@@ -356,7 +358,7 @@ describe('time-chart laneView integration', () => {
   it('paints a registered chart over BoundedReadView with LaneArtCache demands, hit-tests lines, emits tooltip and audit rows', () => {
     registerTimeChart({
       kind: 'test-pp',
-      family: 'series',
+      family: 'time-chart',
       variant: 'line',
       joinMode: 'join',
       measureTitle: 'Political power',
@@ -750,7 +752,7 @@ describe('time-chart picture authority', () => {
   it('repaints a same-hour correction of history', () => {
     registerTimeChart({
       kind: 'test-correction',
-      family: 'series',
+      family: 'time-chart',
       variant: 'line',
       joinMode: 'join',
       measureTitle: 'Correction',
@@ -795,7 +797,7 @@ describe('time-chart picture authority', () => {
   it('reads head rows by an index, not a scan per tag', () => {
     registerTimeChart({
       kind: 'test-head-index',
-      family: 'series',
+      family: 'time-chart',
       variant: 'line',
       joinMode: 'join',
       measureTitle: 'Index',
@@ -829,5 +831,55 @@ describe('time-chart picture authority', () => {
       inspect: null, now: 0,
     }, new Map(), () => 'c');
     assert.deepEqual((painted.fields.audit?.value as { rows: readonly { value?: string }[] }).rows.map(row => row.value), ['7']);
+  });
+});
+
+describe('experience and fuel', () => {
+  const base = Math.floor(H1936 / 96) * 96;
+  const hour = base + 90;
+  const raw = (value: number) => value * 32_768;
+
+  it('draws experience in points from the raw fixed-point series, one line per branch with its own end label', () => {
+    const line = makeTiledLine('GER', [makeBucket(base, base + 95, raw(10), raw(10), raw(32.57), raw(32.57), base + 89)]);
+    const model = experienceProjection.project(createBoundedReadView({
+      hour,
+      series: new Map([
+        ['army', new Map([['GER', boundTiledSeries(line, displayedHour(hour), { headValue: knownValue(raw(32.57)) })]])],
+        ['navy', new Map([['GER', boundTiledSeries(line, displayedHour(hour), { headValue: notRecorded('Navy experience was not read') })]])],
+      ]),
+    }), { tag: 'GER', extent: [base, base + 95], gaps: [] });
+    assert.deepEqual(model.series.map(s => s.id), ['army', 'navy', 'air']);
+    assert.equal(model.series[0]!.endLabel?.value, '32.57');
+    assert.equal(model.series[0]!.endLabel?.name, 'Army');
+    assert.equal(model.series[1]!.endLabel, null, 'a branch not recorded has no end label');
+    assert.equal(model.series[2]!.headValue, null, 'a branch with no series is missing, not zero');
+    const layout = layoutTimeChart(model, 960, 300, FONT, measure);
+    assert.ok(layout.yDomain[1] > 32 && layout.yDomain[1] < 50, `axis in points: ${layout.yDomain[1]}`);
+  });
+
+  it('draws fuel against a dashed stepped capacity, and its hover card is the recorded day', () => {
+    const fuelLine = makeTiledLine('GER', [makeBucket(base, base + 95, raw(598_000))]);
+    const capLine = makeTiledLine('GER', [makeBucket(base, base + 95, raw(665_000))]);
+    const reply = {
+      tag: 'GER', hour: base + 50, quantityScale: 32_768, gainScale: 100_000, dayHours: 24, warnings: [], missing: null,
+      read: null,
+    };
+    const model = fuelProjection.project(createBoundedReadView({
+      hour,
+      series: new Map([
+        ['fuel', new Map([['GER', boundTiledSeries(fuelLine, displayedHour(hour), { headValue: knownValue(raw(598_000)) })]])],
+        ['capacity', new Map([['GER', boundTiledSeries(capLine, displayedHour(hour), { headValue: knownValue(raw(665_000)) })]])],
+      ]),
+      hovers: new Map([['fuelHover', { hour: base + 50, data: { ...reply, missing: 'Fuel was not read on this day' } }]]),
+    }), { tag: 'GER', capacity: true, area: true, digits: 0, extent: [base, base + 95], gaps: [] });
+    assert.equal(model.series[0]!.endLabel?.value, '598K');
+    assert.equal(model.series[1]!.role, 'ceiling');
+    assert.equal(model.series[1]!.step, true);
+    assert.ok(model.series[1]!.dash?.length);
+    assert.equal(model.series[1]!.endLabel?.value, '665K');
+    assert.equal(model.series[1]!.endLabel?.valueMuted, true);
+    const tip = deriveTimeChartTooltip(model, layoutTimeChart(model, 960, 300, FONT, measure), `plot:${base + 50}`);
+    const labels = tip?.payload?.items?.map(item => item.label) ?? [];
+    assert.deepEqual(labels, ['Fuel was not read on this day'], 'the card is the recorded day and its missing reason, not the sampled line');
   });
 });

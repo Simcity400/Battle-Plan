@@ -43,7 +43,7 @@ function formatEndAmount(value: number): string {
 
 export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = registerTimeChart({
   kind: 'command-power',
-  family: 'series',
+  family: 'time-chart',
   variant: 'rate-with-ceiling',
   joinMode: 'join',
   measureTitle: 'Command power',
@@ -171,7 +171,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
 });
 
 export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOptions> = {
-  family: 'series',
+  family: 'time-chart',
   kind: 'command-power',
   label: 'Command power',
   subject: 'command power',
