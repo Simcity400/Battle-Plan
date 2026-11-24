@@ -797,7 +797,10 @@ fn the_requests_a_widget_sends_parse_into_its_query() {
         _ => panic!("a ranked series"),
     }
     let chosen_top = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-game-scores", "measure": "total" }, "reads": [{ "country": "GER", "hour": 0 }], "top": 1 } });
-    assert!(crate::parse(&chosen_top, &nobody()).is_err(), "a top of countries names no tag");
+    match crate::parse(&chosen_top, &nobody()).unwrap() {
+        Query::Series { countries, mode: SeriesMode::Top { n: 1, least: false }, .. } => assert_eq!(countries, vec!["GER".into()]),
+        _ => panic!("a top of named countries ranks them"),
+    }
     let world = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "top": 3 } });
     assert!(crate::parse(&world, &nobody()).is_err(), "a singleton is never ranked");
     let tension = serde_json::json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "world-tension", "measure": "tension" }, "reads": [{ "country": "World", "hour": 0 }] } });
@@ -1421,16 +1424,104 @@ fn dated_panel_merge_keeps_the_reading_and_its_confirmation_separate() {
 }
 
 #[test]
-fn a_message_with_a_product_waiting_for_its_table_is_never_merged() {
+fn dated_panel_merge_survives_a_waiting_product_and_coalesces_siblings() {
     use crate::panel::dated;
-    let step = |hour, records: &[(u32, u8)]| {
+    let step = |hour, records: &[(u32, u8, &[u8])]| {
         let mut batch = dated::ProductBatch::new((0, 3, 9));
-        for &(id, kind) in records { batch.changed(id, hour, kind, if kind == dated::DATA { b"x" } else { b"" }); }
+        for &(id, kind, body) in records {
+            batch.changed(id, hour, kind, body);
+        }
         batch.finish(Some(hour))
     };
-    assert!(dated::merge(&step(10, &[(7, dated::DATA)]), &step(34, &[(7, dated::WAITING)])).is_err());
-    assert!(dated::merge(&step(34, &[(7, dated::WAITING)]), &step(58, &[(8, dated::DATA)])).is_err());
-    assert!(dated::merge(&step(10, &[(7, dated::DATA)]), &step(34, &[(8, dated::STANDS)])).is_ok());
+    let (merged, superseded) = dated::merge(&step(10, &[(7, dated::DATA, b"v1")]), &step(34, &[(7, dated::WAITING, b"")])).unwrap();
+    assert_eq!(superseded, 1);
+    assert_eq!(
+        dated::records(&merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour, r.body)).collect::<Vec<_>>(),
+        [(7, dated::DATA, 10, &b"v1"[..]), (7, dated::WAITING, 34, &b""[..]), (0, dated::COMPLETED, 34, &b""[..])]
+    );
+    let (merged, superseded) = dated::merge(
+        &step(34, &[(7, dated::WAITING, b""), (8, dated::DATA, b"older-payload")]),
+        &step(58, &[(7, dated::WAITING, b""), (8, dated::DATA, b"newer")]),
+    ).unwrap();
+    assert_eq!(superseded, 3);
+    assert_eq!(
+        dated::records(&merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour, r.body)).collect::<Vec<_>>(),
+        [(7, dated::WAITING, 34, &b""[..]), (8, dated::DATA, 58, &b"newer"[..]), (0, dated::COMPLETED, 58, &b""[..])]
+    );
+    let (merged, superseded) = dated::merge(&step(34, &[(7, dated::WAITING, b"")]), &step(58, &[(7, dated::DATA, b"ready")])).unwrap();
+    assert_eq!(superseded, 1);
+    assert_eq!(
+        dated::records(&merged).unwrap().iter().map(|r| (r.id, r.kind, r.hour, r.body)).collect::<Vec<_>>(),
+        [(7, dated::WAITING, 34, &b""[..]), (7, dated::DATA, 58, &b"ready"[..]), (0, dated::COMPLETED, 58, &b""[..])]
+    );
+    assert!(dated::merge(&step(10, &[(7, dated::DATA, b"x")]), &step(34, &[(8, dated::STANDS, b"")])).is_ok());
+}
+
+#[test]
+fn passed_panel_messages_coalesce_with_waiting_and_interleaved_steps() {
+    use crate::panel::dated;
+    use crate::push::{FOLLOW, PANEL, Push};
+    let panel_step = |hour, body: &[u8]| {
+        let mut batch = dated::ProductBatch::new((0, 0, 0));
+        batch.changed(7, hour, dated::WAITING, b"");
+        batch.changed(8, hour, dated::DATA, body);
+        batch.finish(Some(hour))
+    };
+    let payload = vec![b'a'; 512];
+    let one_panel = panel_step(10, &payload);
+    let one_step = rows_message(10, false, &[(1, 1)]);
+    let budget = playhead::ByteBudget::new(1 << 20);
+    let push = Push::with_budget(budget.clone());
+    push.head(0, 0, 5);
+    for (hour, value) in [(10, 1), (20, 2), (30, 3)] {
+        push.offer_kind(FOLLOW, rows_message(hour, false, &[(1, value)]));
+        push.offer_kind(PANEL, panel_step(hour, &payload));
+    }
+    assert_eq!(push.counters().merges, 0);
+    assert_eq!(budget.used(), 3 * (crate::answer::charge(&one_step) + crate::answer::charge(&one_panel)));
+    push.head(0, 0, 35);
+    assert_eq!(push.counters().merges, 4);
+    assert_eq!(push.counters().unmerged, 0);
+    assert_eq!(budget.used(), crate::answer::charge(&one_step) + crate::answer::charge(&one_panel));
+    let (first_kind, first_bytes, ..) = push.try_take().unwrap();
+    let (second_kind, second_bytes, ..) = push.try_take().unwrap();
+    assert!(push.try_take().is_none());
+    let panel_bytes = if first_kind == PANEL { first_bytes } else { assert_eq!(second_kind, PANEL); second_bytes };
+    let records = dated::records(&panel_bytes).unwrap();
+    assert_eq!(
+        records.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(),
+        [(7, dated::WAITING, 10), (8, dated::DATA, 30), (0, dated::COMPLETED, 30)]
+    );
+}
+
+#[test]
+fn panel_budget_overflow_refuses_only_the_offending_panel() {
+    use crate::panel::dated;
+    use crate::push::{PANEL, Push};
+    let mut batch = dated::ProductBatch::new((0, 0, 0));
+    batch.changed(1, 40, dated::DATA, b"small-one");
+    batch.changed(2, 40, dated::DATA, &vec![b'x'; 2048]);
+    batch.changed(3, 40, dated::DATA, b"small-three");
+    let packet = batch.finish(Some(40));
+    let budget = playhead::ByteBudget::new(2048);
+    let push = Push::with_budget(budget.clone());
+    push.offer_kind(PANEL, packet);
+    assert!(push.failed().is_none());
+    assert!(budget.used() <= 2048);
+    let (kind, sent, ..) = push.try_take().unwrap();
+    assert_eq!(kind, PANEL);
+    let records = dated::records(&sent).unwrap();
+    assert_eq!(records.len(), 4);
+    assert_eq!((records[0].id, records[0].kind, records[0].body), (1, dated::DATA, &b"small-one"[..]));
+    assert_eq!((records[1].id, records[1].kind, records[1].stepped()), (2, dated::REFUSED, true));
+    assert!(std::str::from_utf8(records[1].body).unwrap().contains("byte payload limit"));
+    assert_eq!((records[2].id, records[2].kind, records[2].body), (3, dated::DATA, &b"small-three"[..]));
+    assert_eq!((records[3].id, records[3].kind, records[3].hour), (0, dated::COMPLETED, 40));
+    let mut next = dated::ProductBatch::new((0, 0, 0));
+    next.changed(1, 50, dated::DATA, b"still-alive");
+    push.offer_kind(PANEL, next.finish(Some(50)));
+    assert!(push.failed().is_none());
+    assert!(push.try_take().is_some());
 }
 
 #[test]

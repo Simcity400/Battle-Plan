@@ -1,6 +1,6 @@
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsModel, BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import {
   nextSeriesRaceChange,
   projectSeriesRace,
@@ -15,7 +15,7 @@ const CONTRIBUTIONS_FAMILY = { kind: 'threat-contributions', measure: 'contribut
 
 export type WorldTensionRaceOptions = SeriesRaceBaseOptions;
 
-export const worldTensionRaceProjection: BarsProjection<WorldTensionRaceOptions> = registerBarsProjection({
+export const worldTensionRaceProjection: BarsProjection<WorldTensionRaceOptions> = registerFamilyProjection({
   kind: 'world-tension',
   family: 'bars',
   nextChange(readView, options) {

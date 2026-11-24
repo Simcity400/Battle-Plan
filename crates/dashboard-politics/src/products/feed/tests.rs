@@ -689,7 +689,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     use replay_data::{
         event_feed_rows::{
             EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript, EventFeedScriptChange,
-            decisions::{DecisionChange, Operation, TAKEN, TARGETED_TIMED, TIMED},
+            decisions::{DecisionChange, Operation, TARGETED_TIMED, TIMED},
         },
         rows::{Recorded, TableId, TableRows},
     };
@@ -755,7 +755,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
             dec_ev(2, 100, EventFeedSource::DecisionActivated, 1, Some(DecisionChange::new(Operation::Store, TIMED)), Some(11), Some(0), None),
             dec_ev(3, 100, EventFeedSource::DecisionActivated, 2, Some(DecisionChange::new(Operation::Store, TARGETED_TIMED)), Some(12), Some(0), Some(9001)),
             dec_ev(4, 100, EventFeedSource::DecisionActivated, 3, Some(DecisionChange::new(Operation::Store, TIMED)), Some(13), Some(0), None),
-            dec_ev(9, 100, EventFeedSource::DecisionSelected, 4, Some(DecisionChange::new(Operation::Store, TAKEN)), None, None, None),
+            dec_ev(9, 100, EventFeedSource::DecisionSelected, 4, None, None, None, None),
         ],
     );
     let b1_h101 = pack(

@@ -23,6 +23,20 @@ export interface FamilyKeyboardOptions {
   readonly onEscape?: () => void;
 }
 
+export function navPageStep(nav: readonly FamilyNavTuple[], focusedKey: string | null, viewportHeight: number): number {
+  const at = Math.max(0, nav.findIndex(entry => entry[0] === focusedKey));
+  const top = nav[at]?.[6];
+  if (top === undefined) return Math.max(1, nav.length);
+  const bottom = top + viewportHeight;
+  let step = 0;
+  for (let i = at + 1; i < nav.length; i++) {
+    const entry = nav[i]!;
+    if (entry[6] === undefined || entry[6] + (entry[7] ?? 0) > bottom) break;
+    step++;
+  }
+  return Math.max(1, step);
+}
+
 export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, options: FamilyKeyboardOptions): void {
   const { nav, pageStep, blocked } = options;
   const totalCount = options.totalCount ?? nav.length;

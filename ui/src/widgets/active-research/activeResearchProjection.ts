@@ -4,7 +4,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { unavailableArt, NO_ART } from '../../families/art/types.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type { MeterModel, MeterProjection, MeterRow } from '../../families/meter/model.ts';
-import { registerMeterProjection } from '../../families/meter/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
 import type { ResearchDefinitionText, ResearchSlotsReply } from '../../generated/dashboard';
 import { researchArtwork, researchReadName, validateResearchReply, validateResearchSlots } from '../research/researchData.ts';
@@ -86,7 +86,7 @@ function techNameOf(
   return contentTitle(raw, token, 'Technology name unavailable');
 }
 
-export const activeResearchProjection: MeterProjection<ActiveResearchProjectionOptions> = registerMeterProjection({
+export const activeResearchProjection: MeterProjection<ActiveResearchProjectionOptions> = registerFamilyProjection({
   family: 'meters',
   kind: 'active-research',
   nextChange(readView): number {

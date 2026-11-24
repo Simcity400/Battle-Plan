@@ -97,7 +97,7 @@ pub struct SpriteArtworkReply {
 }
 
 #[derive(Clone, Debug)]
-pub struct NotDrawn(pub super::ArtResolution);
+pub struct NotDrawn(pub Box<super::ArtResolution>);
 
 impl std::fmt::Display for NotDrawn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -120,9 +120,9 @@ pub fn drawn_art(
             (ready @ super::ArtResolution::Ready { .. }, _) => Ok(ready),
             (attempt, None) => {
                 *first = Some(attempt.clone());
-                Err(NotDrawn(attempt))
+                Err(NotDrawn(Box::new(attempt)))
             }
-            (attempt, Some(earlier)) => Err(NotDrawn(neither_drew(earlier, attempt))),
+            (attempt, Some(earlier)) => Err(NotDrawn(Box::new(neither_drew(earlier, attempt)))),
         }
     })
 }
@@ -141,7 +141,8 @@ fn neither_drew(earlier: super::ArtResolution, later: super::ArtResolution) -> s
 
 pub fn settled_art(drawn: &DrawnArt) -> super::ArtResolution {
     match drawn.get() {
-        Ok(resolution) | Err(NotDrawn(resolution)) => resolution.clone(),
+        Ok(resolution) => resolution.clone(),
+        Err(NotDrawn(resolution)) => super::ArtResolution::clone(resolution),
     }
 }
 

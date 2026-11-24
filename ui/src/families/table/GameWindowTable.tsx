@@ -23,6 +23,7 @@ import { DetailWindowHost } from '../host/DetailWindowHost';
 import type { AnyTableWidgetDeclaration } from './declaration.ts';
 import type { InstalledAction } from '../contract.ts';
 import { FamilyWidget } from '../host/registry';
+import { gameWindowSelectionAt, openGameWindow, type OpenedGameWindow } from './gameWindowOpen.ts';
 import './gameWindowTable.css';
 
 const NO_LINES: readonly string[] = [];
@@ -49,7 +50,7 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
   const drill = useDrill(runtime, useRegion(widget));
   const dispatch = drill.dispatch;
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries]);
-  const [picked, setPicked] = useState<{ readonly scope: string; readonly key: string; readonly meta: unknown } | null>(null);
+  const [picked, setPicked] = useState<OpenedGameWindow<S> | null>(null);
   const opened = picked?.scope === scope ? picked : null;
   const [inherited, setInherited] = useState<WindowPosition | null>(null);
   const [shownFor, setShownFor] = useState<{ readonly key: string; readonly shown: ShownWindow } | null>(null);
@@ -72,16 +73,18 @@ export default function GameWindowTable<S extends GameWindowSelection>({ declara
   useEffect(() => close, [scope, close]);
 
   const activate = useCallback(({ subject: key, meta, hour }: InstalledAction) => {
-    if (!Window || !track || row.select(track, key, meta, hour) === null) return;
+    const clicked = Window && track ? row.select(track, key, meta, hour) : null;
+    if (!clicked) return;
+    const { opened: next, drill: opening } = openGameWindow(scope, key, clicked, WINDOW_BREAKDOWN);
     setInherited(claimGameWindowSlot(row.kind, slotOwner, handOver));
-    setPicked({ scope, key, meta });
-    dispatch({ type: 'open', breakdown: WINDOW_BREAKDOWN, hour, follow: drill.followsAt(hour) });
-  }, [Window, track, row, slotOwner, handOver, scope, dispatch, drill]);
+    setPicked(next);
+    dispatch(opening);
+  }, [Window, track, row, slotOwner, handOver, scope, dispatch]);
 
   const open = drill.state.breakdown !== null && opened !== null && Window !== null;
   const at = useRegionHour(runtime, drill.region, active && open);
   const shut = drill.gate.stage.stage !== 'open' && drill.gate.stage.stage !== 'unbound';
-  const selection = open && track && at !== null ? row.select(track, opened.key, opened.meta, at) : null;
+  const selection = open && at !== null ? gameWindowSelectionAt(opened, at) : null;
   openedKey.current = opened?.key ?? null;
   const onShown = useCallback((next: ShownWindow | null) => {
     const key = openedKey.current;

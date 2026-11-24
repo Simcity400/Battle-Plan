@@ -1,16 +1,23 @@
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BarsProjection } from '../../families/bars/model.ts';
-import { registerBarsProjection } from '../../families/bars/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FamilyPlanContext } from '../../families/contract.ts';
 import { contentKey, contentSet, type OptionValue } from '../../dashboard/options.ts';
 import { militaryAirModel, militaryAirParams, militaryAirSources, type MilitaryAirAtOptions } from '../bombing-damage/militaryAirAt.ts';
 
-export const airKillsLossesProjection: BarsProjection<MilitaryAirAtOptions> = registerBarsProjection({
+export const airKillsLossesProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
   kind: 'air-kills-losses',
   family: 'bars',
   nextChange: () => Infinity,
   project: (readView, options) => militaryAirModel(readView, options),
 }, 'butterfly');
+
+export const airKillsLossesPairedProjection: BarsProjection<MilitaryAirAtOptions> = registerFamilyProjection({
+  kind: 'air-kills-losses',
+  family: 'bars',
+  nextChange: () => Infinity,
+  project: (readView, options) => militaryAirModel(readView, options),
+}, 'paired');
 
 const numbers = (value: OptionValue | undefined) => contentSet(value ?? '').map(contentKey).map(Number).filter(Number.isInteger);
 
@@ -47,4 +54,15 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
   }),
   jumpToDate: true,
   keyByBranch: true,
+};
+
+export const airKillsLossesPairedDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptions> = {
+  ...airKillsLossesDeclaration,
+  projection: airKillsLossesPairedProjection,
+  projectionOptions: ctx => ({
+    ...airKillsLossesDeclaration.projectionOptions(ctx),
+    leftHeader: 'Own losses',
+    rightHeader: 'Destroyed',
+    paired: { solid: 'Destroyed (solid)', outline: 'Own losses (outline)' },
+  }),
 };

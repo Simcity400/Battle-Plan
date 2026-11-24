@@ -9,7 +9,7 @@ import { formatValueState, notRecordedLabel, type ValueFormat } from '../valueFo
 
 export type BarsForm = 'ordered' | 'two-sided' | 'share' | 'net' | 'stacked';
 
-export type BarsTwoSidedLayout = 'paired' | 'split-sides';
+export type BarsTwoSidedLayout = 'paired' | 'split-sides' | 'stacked-pair';
 
 export interface BarsRowMedia {
   readonly kind: 'none' | 'flag' | 'art';

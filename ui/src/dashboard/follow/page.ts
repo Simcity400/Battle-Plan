@@ -94,6 +94,7 @@ export interface WidgetView {
   painted?: number;
   structure?: string;
   dim: boolean;
+  expired?: boolean;
   fields?: Readonly<Record<string, unknown>>;
   tooltip: unknown;
 }
@@ -650,9 +651,9 @@ export class Page<B extends Bitmap = Bitmap> {
     if (widget.bounds && (at < widget.bounds[0] || at > widget.bounds[1])) return { mode: 'outside', target: at, ...(widget.owner !== undefined ? { owner: widget.owner } : {}), binding: widget.binding, dim: false, tooltip: null };
     if (!shown) return { mode: widget.status, reason: widget.reason, ...(widget.failureOrigin ? { failureOrigin: widget.failureOrigin } : {}), ...(widget.owner !== undefined ? { owner: widget.owner } : {}), target: at, binding: widget.binding, dim: false, tooltip: null };
     const tip = shown.fields.tooltip as { key: string; text: unknown } | undefined;
-    const until = Math.min(shown.c, shown.hi);
+    const until = Math.min(shown.c, shown.hi), expired = !this.playing && at > until;
     return { mode: shown.mode, reason: shown.reason, ...(shown.failureOrigin ? { failureOrigin: shown.failureOrigin } : {}), id: shown.id, ...(widget.owner !== undefined ? { owner: widget.owner } : {}), ...(shown.owner !== undefined ? { installedOwner: shown.owner } : {}), binding: widget.binding, installedBinding: shown.binding, gen: shown.gen, validInterval: [shown.lo, shown.hi] as const, ...(shown.viewport ? { viewport: shown.viewport } : {}), h: shown.h, through: Math.min(at, until), painted: Math.min(Math.max(shown.h, shown.lo), at, until), structure: shown.structure ?? structureOf(widget.content, shown.fields), target: at,
-      dim: (!this.playing && at > until) || shown.binding !== widget.binding, fields: shown.fields,
+      dim: expired || shown.binding !== widget.binding, expired, fields: shown.fields,
       tooltip: tip && widget.inspect !== null && tip.key === widget.inspect ? tip.text : null };
   }
 
