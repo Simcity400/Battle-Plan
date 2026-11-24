@@ -324,6 +324,65 @@ fn text_the_shared_resolver_cannot_expand_shows_its_key_and_says_why() {
     assert!(failures.iter().any(|line| line.contains("SYNTHETIC_ABSENT")), "{failures:?}");
 }
 
+#[test]
+fn bonuses_for_different_equipment_targets_are_never_summed_together() {
+    content_reader_script::test_game::enter();
+    let layers = synthetic_layers(&[(
+        "common/military_industrial_organization/organizations/00_synthetic.txt",
+        br#"
+            synthetic_works_organisation = {
+                trait = {
+                    token = synthetic_everything
+                    position = { x = 0 y = 0 }
+                    equipment_bonus = { soft_attack = 0.1 }
+                }
+                trait = {
+                    token = synthetic_armour_only
+                    position = { x = 1 y = 0 }
+                    limit_to_equipment_type = { synthetic_armour }
+                    equipment_bonus = { soft_attack = 0.1 }
+                }
+                trait = {
+                    token = synthetic_also_everything
+                    position = { x = 2 y = 0 }
+                    equipment_bonus = { soft_attack = 0.05 }
+                }
+            }
+        "#,
+    )]);
+    let catalog = mio_traits::read(&layers).unwrap();
+    let tree = catalog.tree("synthetic_works_organisation").unwrap().unwrap();
+    let row = IndustrialOrganisationDetailsRow::default();
+    let lexical: Result<&[LexicalTokenRow], String> = Ok(&[]);
+    let mut details = extract_details(&row, &lexical);
+    details.unlocked = ["synthetic_everything", "synthetic_armour_only", "synthetic_also_everything"]
+        .map(|token| Spelled::Text(token.to_owned()))
+        .to_vec();
+    let soft_attack = |value| Bonus { name: "soft_attack".to_owned(), value };
+    let policy = Policy {
+        token: b"synthetic_policy".to_vec(),
+        name: Vec::new(),
+        icon: Vec::new(),
+        visible: Vec::new(),
+        available: Vec::new(),
+        groups: vec![
+            (b"synthetic_group_a".to_vec(), vec![soft_attack(10_000)]),
+            (b"synthetic_group_b".to_vec(), vec![soft_attack(10_000)]),
+        ],
+        organisation_modifiers: Default::default(),
+    };
+    let totals = aggregate_bonuses(&details, &tree, Some(&policy));
+    assert_eq!(
+        totals,
+        vec![
+            (BonusTarget::Organisation, vec![soft_attack(15_000)]),
+            (BonusTarget::Equipment(vec![b"synthetic_armour".to_vec()]), vec![soft_attack(10_000)]),
+            (BonusTarget::Group(b"synthetic_group_a".to_vec()), vec![soft_attack(10_000)]),
+            (BonusTarget::Group(b"synthetic_group_b".to_vec()), vec![soft_attack(10_000)]),
+        ]
+    );
+}
+
 fn cache_key(layers: &ResolvedLayers, window: &str) -> WindowCacheKey {
     WindowCacheKey {
         source_id: "src".to_owned(),
