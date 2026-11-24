@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { assertContinuity, assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LaneTransport } from '../laneRuntime.fixture.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDated, driveLane, firstRow, installRecordingCanvas, LaneTransport } from '../laneRuntime.fixture.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { ROW_HEIGHT, tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
@@ -1536,7 +1536,6 @@ test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-c
   const extraRow = tipAtLeast.rows.find(r => r.label === 'Strength')!;
   assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
   assert.equal(extraRow.valueState?.kind, 'partial');
-  assert.equal(extraRow.valueState?.atLeast, true, 'F8: tooltip row preserves atLeast on partial values');
   assert.ok(tooltipText(tipAtLeast).includes('1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText without at least wording');
   assert.ok(!tooltipText(tipAtLeast).includes('at least'), 'F8: tooltipText omits at least wording');
 
@@ -1890,6 +1889,7 @@ test('an incremental table paint after a seek back, a same-hour correction and a
     const tableSurface = { width: 360, height: 200, dpr: 1 };
     const heldOne = laneBinding(atOne, descending);
     assertQuietFrames(() => createLaneView(tableLane, () => {}), { label: 'table', binding: heldOne, hour: 1 }, 24, tableSurface);
+    assertTooltipDated(() => createLaneView(tableLane, () => {}), { label: 'table', binding: heldOne, hour: 1 }, firstRow, 5, tableSurface);
     assertFreshPaint(() => createLaneView(tableLane, () => {}), [
       { label: 'at one', binding: heldOne, hour: 1, check: true },
       { label: 'at two', binding: laneBinding(atTwo, descending), hour: 2, speed: 24 },

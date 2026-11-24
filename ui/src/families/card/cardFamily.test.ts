@@ -13,7 +13,7 @@ import { displayedHour } from '../boundedView.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { formatDateOnly } from '../valueFormat.ts';
-import { assertFreshPaint, assertQuietFrames, LANE_THEME } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, assertTooltipDated, firstRow, LANE_THEME } from '../laneRuntime.fixture.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { cardHostAdapter } from './hostAdapter.ts';
@@ -147,6 +147,7 @@ test('national spirits list the product’s membership at the displayed hour, in
   const renamed = { ...reply, looks: reply.looks.map(entry => (entry.artwork.token === 'mod_spirit_b' ? { ...entry, artwork: { ...entry.artwork, name: 'Invented Spirit Renamed' } } : entry)) } as IdeaHistoryReply;
   const surface = { width: 420, height: 160, dpr: 1 };
   assert.equal(assertQuietFrames(() => createLaneView(cardLane, () => {}), { label: 'spirits', binding: lane(reply), hour }, 24, surface), first + 40 * DAY);
+  assertTooltipDated(() => createLaneView(cardLane, () => {}), { label: 'spirits', binding: lane(reply), hour }, firstRow, 5, surface);
   assertFreshPaint(() => createLaneView(cardLane, () => {}), [
     { label: 'held', binding: lane(reply), hour, check: true },
     { label: 'a spirit gained', binding: lane(later), hour: gained, speed: 24 },

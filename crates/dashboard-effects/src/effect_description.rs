@@ -695,6 +695,34 @@ struct Renderer<'r, 'c, 'f> {
     concise: Option<(u32, u32)>,
 }
 
+pub enum MioText<'a> {
+    Bonuses(&'a [content_reader_military::mio_traits::Bonus]),
+    Modifiers(&'a content_reader_script::modifiers::Modifiers),
+    TraitModifiers(&'a content_reader_military::mio_traits::TraitName),
+}
+
+pub fn mio_text(
+    text: MioText<'_>,
+    context: &Context<'_, '_>,
+    scopes: &EventScopes,
+) -> Vec<Result<String, String>> {
+    context.session.replace(None);
+    let graph = Rc::new(RefCell::new(scopes.clone()));
+    let mut out = Renderer {
+        context,
+        graph,
+        evaluator: OnceCell::new(),
+        out: Description::default(),
+        scripted_stack: Vec::new(),
+        concise: None,
+    };
+    let projected = crate::triggers::event_scopes::project(&out.graph.borrow(), 0);
+    match projected {
+        Ok(projected) => out.char_mio_lines(text, projected),
+        Err(why) => vec![Err(why.to_string())],
+    }
+}
+
 pub fn trim_description(text: &str) -> &str {
     text.trim_matches(['\n', '\t', '\r', ' '])
 }

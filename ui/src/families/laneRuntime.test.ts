@@ -5,7 +5,7 @@ import { Lane } from '../draw/lane.ts';
 import type { BoundedReadView, FamilyProjection } from './contract.ts';
 import { createLaneView, lazyLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
 import { familyBinding, type FamilyBindingContext, type FamilyHostAdapter } from './host/adapter.ts';
-import { assertContinuity, assertFreshPaint, assertQuietFrames, driveLane, installRecordingCanvas, LANE_THEME as THEME, LaneTransport } from './laneRuntime.fixture.ts';
+import { assertContinuity, assertFreshPaint, assertQuietFrames, assertTooltipDated, driveLane, installRecordingCanvas, LANE_THEME as THEME, LaneTransport } from './laneRuntime.fixture.ts';
 import { bindFamilyManifest, registerFamilyProjection } from './registry.ts';
 import { IdentityIndex } from './identity/index.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
@@ -55,7 +55,7 @@ const family: LaneFamily<Binding, Model, Layout> = {
   tooltip(frame, key) {
     counts.tooltip++;
     const row = frame.model.rows.find(item => item.key === key);
-    return row ? { hour: frame.hour, rowKey: key, content: { title: key, rows: [] } as never } : null;
+    return row ? { rowKey: key, content: { title: key, rows: [] } as never } : null;
   },
   structure: frame => ({ meta: { count: frame.model.rows.length }, nav: frame.layout.rows.map(row => row.key) }),
   mirror: frame => {
@@ -397,6 +397,39 @@ test('a changed static answer, option or source mapping crosses once and rebuild
   }
 });
 
+registerFamilyProjection<FamilyProjection<Model, Options>>({
+  kind: 'windowed',
+  family: 'test-lane',
+  project(view: BoundedReadView): Model {
+    counts.project++;
+    const first = view.rowWindow?.first ?? 0;
+    return { hour: view.hour, bucket: 0, rows: [{ key: `row ${first}`, v: first }], name: '' };
+  },
+});
+
+test('a row window change re-projects only a projection that read the window', () => {
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(family, () => {}), recording.canvases);
+    const rows = rowsAt([{ key: 'A', v: 1 }]);
+    const at = (first: number) => ({ first, count: 10 });
+    lane.paint({ label: 'plain', binding: binding(rows, DOWN, { window: at(0) }), hour: 12 });
+    reset();
+    lane.paint({ label: 'plain, scrolled', binding: binding(rows, DOWN, { window: at(40) }), hour: 12 });
+    assert.equal(counts.project, 0, 'a projection that never read the window is reused');
+    const windowed = (first: number) => ({ ...binding(rows, DOWN, { window: at(first) }), kind: 'windowed' });
+    lane.paint({ label: 'windowed', binding: windowed(0), hour: 12 });
+    reset();
+    lane.paint({ label: 'windowed, same window', binding: windowed(0), hour: 12 });
+    assert.equal(counts.project, 0);
+    lane.paint({ label: 'windowed, scrolled', binding: windowed(40), hour: 12 });
+    assert.equal(counts.project, 1, 'a projection that read the window projects the new one');
+    assert.deepEqual(lane.picture(), ['t:0:0=#eef1f6|row 40 40  0']);
+  } finally {
+    recording.restore();
+  }
+});
+
 const GLIDE_MS = 100;
 const gliding: LaneFamily<Binding, Model, Layout> = {
   ...family,
@@ -410,6 +443,10 @@ const gliding: LaneFamily<Binding, Model, Layout> = {
     return moving;
   },
 };
+
+test('a tooltip on a picture that stands across hours is dated by the hour it is shown at, as a fresh paint dates it', () => {
+  assertTooltipDated(() => createLaneView(family, () => {}), { label: 'fixture', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12 }, 'A');
+});
 
 test('a transition continues only from the last drawn placement: a seek, a pin or a refusal between drops it even when the model is reused, and a same-hour tick keeps it', () => {
   assertContinuity(() => createLaneView(gliding, () => {}), {

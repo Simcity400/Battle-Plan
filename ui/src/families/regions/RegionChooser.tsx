@@ -1,4 +1,5 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Icon } from '../../components/Icons';
 import { failureText } from '../../dashboard/queryError.ts';
 import type { ActiveRegions } from '../../generated/dashboard';
 import { regionChooserGroups, type RegionInChart } from './regionRows.ts';
@@ -20,14 +21,21 @@ export default function RegionChooser({ list, inChart, active, seaOnly, automati
   const groups = useMemo(() => regionChooserGroups(list, inChart, active, seaOnly, query), [list, inChart, active, seaOnly, query]);
   const flat = useMemo(() => groups.flatMap(group => group.rows), [groups]);
   const optionId = (index: number) => `${id}-region-${index}`;
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (highlight < 0) return;
+    listRef.current?.querySelector<HTMLElement>(`[id="${optionId(highlight)}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [highlight]);
   const choose = (index: number) => {
     const row = flat[index];
     if (row) onChoose(row.id, row.inChart);
   };
   let index = 0;
   return <div className="region-chooser">
+    <div className="region-chooser-search-box">
+    <Icon name="search" className="region-chooser-search-icon" />
     <input className="region-chooser-search" data-popover-autofocus type="search" placeholder="Search regions" aria-label="Search regions"
-      aria-controls={`${id}-list`} aria-activedescendant={highlight >= 0 && highlight < flat.length ? optionId(highlight) : undefined} value={query}
+      role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls={`${id}-list`} aria-activedescendant={highlight >= 0 && highlight < flat.length ? optionId(highlight) : undefined} value={query}
       onChange={event => { setQuery(event.currentTarget.value); setHighlight(-1); }}
       onKeyDown={event => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -39,7 +47,8 @@ export default function RegionChooser({ list, inChart, active, seaOnly, automati
           choose(highlight);
         }
       }} />
-    <div id={`${id}-list`} className="region-chooser-list" role="listbox" aria-label="Regions">
+    </div>
+    <div ref={listRef} id={`${id}-list`} className="region-chooser-list" role="listbox" aria-label="Regions">
       {groups.map(group => <div key={group.title} role="group" aria-label={group.title}>
         <div className="region-chooser-group" aria-hidden="true">{group.title}</div>
         {group.note && <p className="region-chooser-note-line">{/[.!?]$/u.test(group.note) ? group.note : `${group.note}.`}</p>}
@@ -59,7 +68,7 @@ export default function RegionChooser({ list, inChart, active, seaOnly, automati
       {list.kind === 'ready' && !flat.length && <p className="region-chooser-empty">{query ? 'No matching regions' : 'No regions in this recording'}</p>}
     </div>
     <div className="region-chooser-footer">
-      <button type="button" className="button small quiet" disabled={automatic} onClick={onReset}>Reset to automatic</button>
+      <button type="button" className="button small quiet" disabled={automatic} onClick={onReset}><Icon name="refresh" />Reset to automatic</button>
     </div>
   </div>;
 }

@@ -13,7 +13,7 @@ import { splitForLanes } from '../dashboard/follow/split.ts';
 import { componentReading } from '../dashboard/follow/useFollowed.ts';
 import { installedEntry } from '../dashboard/follow/store.ts';
 import type { Pipeline } from '../dashboard/follow/pipeline';
-import { PayloadSender } from '../dashboard/follow/payloads.ts';
+import { PayloadSender, PayloadStore } from '../dashboard/follow/payloads.ts';
 import { boundDated } from '../families/host/dated.ts';
 
 interface Fake extends Bitmap { content: string; closed: boolean }
@@ -3450,6 +3450,20 @@ test('payloads are taken in on every message, not at paint: two binds between pa
   assert.deepEqual(seen.at(-1), ['GER', 'ITA'], 'the tile the first bind brought is still there for the second');
   assert.equal(crossed, 2, 'each tile crossed once');
   sender.release(second);
+});
+
+test('a keyed container holding a scalar crosses whole, so 0, 1, null and an empty panel decode apart, and object entries still cross one by one', () => {
+  const store = new PayloadStore();
+  let crossed = 0;
+  const sender = new PayloadSender(message => { crossed += message.put?.length ?? 0; store.apply(structuredClone(message)); });
+  const decoded = (staticPanels: object) => (store.resolve(structuredClone(sender.acquire({ staticPanels }).wire)) as { staticPanels: unknown }).staticPanels;
+  assert.deepEqual([{ main: 0 }, { main: 1 }, { main: null }, {}].map(decoded), [{ main: 0 }, { main: 1 }, { main: null }, {}]);
+  const a = { rows: [1] };
+  const b = { rows: [2] };
+  decoded({ main: a, other: b });
+  const before = crossed;
+  assert.deepEqual(decoded({ main: a, other: { rows: [3] } }), { main: a, other: { rows: [3] } });
+  assert.equal(crossed - before, 1, 'only the changed entry crosses');
 });
 
 test('a date-only supply for a stamp the lane does not hold is dropped, and a new owner clears the previous owner’s statics', async () => {

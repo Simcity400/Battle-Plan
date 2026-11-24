@@ -44,7 +44,7 @@ const formatRaw = (raw: string) => formatTerritory(Number(raw));
 function TerritoryRaceView({ widget, runtime, active, onDiagnostics, options, measure, rule }: WidgetProps & Chosen & { options: Readonly<Record<string, OptionValue>> }) {
   const family = useMemo(() => ({ kind: 'territory', measure: territorySeriesMeasure(measure, rule) }), [measure, rule]);
   const onWarnings = useCallback((warnings: readonly string[]) => onDiagnostics(warnings.length ? [...warnings] : NO_WARNINGS), [onDiagnostics]);
-  return <MeasureRace widget={widget} runtime={runtime} active={active} measure={family} decimals={0} view={options.view === 'lines' ? 'lines' : 'race'}
+  return <MeasureRace widget={widget} runtime={runtime} active={active} measure={family} decimals={0} view="lines"
     options={options} label={`Territory, ${territoryMeasureLabel(measure, rule)}`} icon="map" format={formatRaw} formatValue={formatTerritory}
     note={territoryNote(measure)} onWarnings={onWarnings} />;
 }
