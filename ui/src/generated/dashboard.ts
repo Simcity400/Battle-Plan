@@ -1608,7 +1608,11 @@ export type NavalSupremacyReply = { firstHour: number, lastHour: number,
 /**
  * Day 0 starts at this hour (a multiple of `dayHours`); day `n` covers the `n`th day after.
  */
-firstDayHour: number, dayHours: number, days: number, unknown: Array<UnknownDays>, gaps: Array<HourSpan>, viewerName?: string, viewerNameMissing?: string, viewerColor?: [number, number, number], viewerColorMissing?: string, legend: Array<SupremacyLegendItem>, regions: Array<SupremacyRegion>, scale: number, warnings: Array<string>, };
+firstDayHour: number, dayHours: number, days: number, unknown: Array<UnknownDays>, gaps: Array<HourSpan>, viewerName?: string, viewerNameMissing?: string, viewerColor?: [number, number, number], viewerColorMissing?: string, legend: Array<SupremacyLegendItem>, regions: Array<SupremacyRegion>,
+/**
+ * Why the most active regions are not a proven rank: a day of the view, or a region's score on one, is not recorded. A top then lists only the pinned regions.
+ */
+rankMissing: string | null, scale: number, warnings: Array<string>, };
 export type LeaderPortraitsParams = { branchId: string, hour: number, references: Array<string>, edge: number, };
 export type LeaderPortrait = { reference: string, image: string | null, missing: string | null, resolution: ArtResolution, };
 export type LeaderPortraitsReply = { portraits: Array<LeaderPortrait>, warnings: Array<string>, };
@@ -2200,15 +2204,19 @@ export type ConvoyHealthReply = { branchId: string, view: ConvoyView, tag: strin
  */
 scale: number,
 /**
- * Hours each table the view reads was read and available (regional efficiency; resource
- * deals, convoy clients), in the hours asked: outside them a row not shown is not recorded,
- * not absent; an hour read but refused holds no rows and is not known.
+ * Hours each table the view reads was read whole (regional efficiency; resource deals,
+ * convoy clients), in the hours asked: outside them a row not shown is not recorded, not
+ * absent, though a row shown there was witnessed.
  */
 known: Array<Array<HourSpan>>,
 /**
  * Hours no country held the tag: nothing is known of it there. Recording gaps are `gaps`.
  */
-unheld: Array<HourSpan>, gaps: Array<HourSpan>, regions: Array<ConvoyRegion>, deals: Array<ConvoyDeal>, leases: Array<ConvoyLease>, resources: Array<ConvoyResource>, warnings: Array<string>, };
+unheld: Array<HourSpan>, gaps: Array<HourSpan>, regions: Array<ConvoyRegion>,
+/**
+ * Why the most strained regions are not a proven rank: an hour of the view, or of a region, is not recorded. A top then lists only the pinned regions.
+ */
+rankMissing: string | null, deals: Array<ConvoyDeal>, leases: Array<ConvoyLease>, resources: Array<ConvoyResource>, warnings: Array<string>, };
 export type ConvoyView = "regions" | "trade";
 export type ConvoyCellState = { "kind": "efficiency", value: bigint, } | { "kind": "noTraffic" } | { "kind": "notRecorded", reason: string, };
 export type ConvoyCellRun = { firstHour: number, lastHour: number, state: ConvoyCellState, };
@@ -4300,7 +4308,11 @@ known: boolean,
  * Why it is not known.
  */
 reason: string | null, readHour?: number, name?: string, nameMissing?: string, color?: [number, number, number], factionId?: string, factionName?: string, };
-export type DiplomaticRelationsReply = { owners: Array<OpinionOwner>, cells: Array<OpinionMatrixCell>, domain: [number, number], warnings: Array<string>, };
+export type DiplomaticRelationsReply = {
+/**
+ * Why the asked top countries are not known: factories, which rank them, were not read whole, or a row names an unresolved country. No owners then.
+ */
+topMissing: string | null, owners: Array<OpinionOwner>, cells: Array<OpinionMatrixCell>, domain: [number, number], warnings: Array<string>, };
 export type DiplomaticRelationsParamsAtHour = DiplomaticRelationsParams & { hour: number };
 export type VolunteerFlowParams = { branchId: string,
 /**
