@@ -939,7 +939,7 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
     let q_all = Query::Cells { table: TableId::CountryExperience.index(), columns: vec![0], rows: Rows::All };
     let q_keys = Query::Cells { table: TableId::CountryExperience.index(), columns: vec![0], rows: Rows::Keys(vec![9001, 9002, 9003]) };
     let res_series = dashboard_declare::series("country-resources").unwrap();
-    let q_parts = Query::Series { series: res_series, measure: res_series.measure("produced").unwrap(), countries: vec!["GER".into()], mode: SeriesMode::Parts { top: None }, identity: identity.clone() };
+    let q_parts = Query::Series { series: res_series, measure: res_series.measure("produced").unwrap(), countries: vec!["GER".into()], mode: SeriesMode::Parts { top: None }, identity };
 
     let line_scalar = Line::new(&state, exp_series, army).unwrap();
     let line_ratio = Line::new(&state, &RATIO_EXP, &RATIO_EXP.measures[0]).unwrap();

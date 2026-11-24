@@ -627,7 +627,7 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
         "Row-scoped missing omits aliased witness at 128 and keeps unwitnessed trailing hour 125"
     );
 
-    let tile_reply = tile::tile(&rel, "1", &[ask.clone()], None, 6, 0, false).unwrap();
+    let tile_reply = tile::tile(&rel, "1", std::slice::from_ref(&ask), None, 6, 0, false).unwrap();
     let in_range: Vec<MissingSpan> = tile_reply
         .lines[0]
         .missing
