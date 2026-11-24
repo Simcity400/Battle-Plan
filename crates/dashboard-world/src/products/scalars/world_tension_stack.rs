@@ -70,6 +70,7 @@ pub struct TensionStackBand {
     pub max_values: Vec<Option<f64>>,
     pub end_value: Option<f64>,
     pub end_raw: Option<String>,
+    pub end_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -81,6 +82,7 @@ pub struct TensionStackOther {
     pub values_raw: Vec<Option<String>>,
     pub end_value: Option<f64>,
     pub end_raw: Option<String>,
+    pub end_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -110,7 +112,7 @@ pub struct WorldTensionStackReply {
     pub end_hour: Option<i32>,
     pub capped_end_tension: Option<f64>,
     pub capped_end_tension_raw: Option<String>,
-    pub end_total_raw: Option<String>,
+    pub end_missing: Option<String>,
     pub end_sum_raw: Option<String>,
     pub downsampled: bool,
     pub refused: Option<String>,
@@ -677,7 +679,19 @@ pub(super) struct StackInput<'a> {
     pub sum: &'a [(i32, i32, i64)],
     pub slots: &'a BTreeMap<u32, Vec<(i32, i32, Option<i64>)>>,
     pub aggregates_complete: &'a [(i32, i32)],
-    pub missing: &'a [MissingSpan],
+    pub tension_missing: &'a [MissingSpan],
+    pub aggregates_missing: &'a [MissingSpan],
+}
+
+const TENSION_UNKNOWN: &str = "World tension was not recorded at this hour.";
+const CONTRIBUTION_UNKNOWN: &str = "This country's threat contribution was not recorded at this hour.";
+const SUM_UNKNOWN: &str = "The sum of threat contributions was not recorded at this hour.";
+const NO_SHARE: &str = "Threat contributions sum to zero or less at this hour, so no share is defined.";
+const NOT_MEMBER: &str = "Not a member of the selected group at this hour.";
+const REST_UNKNOWN: &str = "A shown country's contribution was not recorded at this hour, so the rest is not known.";
+
+fn reason_at(spans: &[MissingSpan], hour: i32) -> Option<&str> {
+    spans.iter().find(|span| span.first_hour <= hour && hour <= span.last_hour).map(|span| span.reason.as_str())
 }
 
 pub(super) struct DatedGroupFilter {
@@ -766,7 +780,7 @@ pub(super) struct StackOutput {
     pub end_hour: Option<i32>,
     pub capped_end_tension: Option<f64>,
     pub capped_end_tension_raw: Option<String>,
-    pub end_total_raw: Option<String>,
+    pub end_missing: Option<String>,
     pub end_sum_raw: Option<String>,
     pub downsampled: bool,
     pub hours: Vec<i32>,
@@ -794,6 +808,10 @@ pub(super) fn compute_stack(
 ) -> StackOutput {
     let tension_scale = (cthreat_source::FIXED_POINT_SCALE / cworld_threat::SCALAR_DIVISOR) as f64;
     let contribution_scale = cthreat_source::FIXED_POINT_SCALE as f64;
+    let mode_missing = match mode {
+        TensionValueMode::Share => input.tension_missing,
+        TensionValueMode::Recorded => input.aggregates_missing,
+    };
     let mut next_change: Option<i32> = next_run_change(input.tension, last);
     let bump = |best: &mut Option<i32>, candidate: Option<i32>| {
         if let Some(hour) = candidate {
@@ -806,7 +824,7 @@ pub(super) fn compute_stack(
         bump(&mut next_change, next_opt_run_change(runs, last));
         bump(&mut next_change, slot_next_change(slot, last));
     }
-    for span in input.missing {
+    for span in mode_missing {
         if span.first_hour > last {
             bump(&mut next_change, Some(span.first_hour));
             break;
@@ -906,7 +924,7 @@ pub(super) fn compute_stack(
     if let Some(gf) = group_filter {
         gf.collect_change_hours(first, last, &mut raw_hours);
     }
-    for span in input.missing {
+    for span in mode_missing {
         if span.last_hour < first || span.first_hour > last {
             continue;
         }
@@ -948,38 +966,32 @@ pub(super) fn compute_stack(
         other,
         other_raw,
     };
+    let member_at = |slot: u32, hour: i32| group_filter.is_none_or(|gf| slot_tag(slot, hour).is_some_and(|(tag, _)| gf.contains_at(&tag, hour)));
     let evaluate = |hour: i32| -> Sample {
         let tension_raw = lookup_run(input.tension, hour);
+        let total_pct = tension_raw.map(|raw| raw as f64 / tension_scale);
+        let total_raw = tension_raw.map(i128::from);
         let sum_raw = lookup_run(input.sum, hour);
         let agg_complete = is_complete(input.aggregates_complete, hour);
         let mut top_raws: Vec<Option<i64>> = Vec::with_capacity(top.len());
         let mut member_sum: i128 = 0;
-        let mut any_member_known = false;
         let mut any_member_missing = false;
         for entry in top {
-            let in_group = group_filter.is_none_or(|gf| {
-                slot_tag(entry.slot, hour).is_some_and(|(tag, _)| gf.contains_at(&tag, hour))
-            });
-            if !in_group {
+            if !member_at(entry.slot, hour) {
                 top_raws.push(None);
                 continue;
             }
             let raw = lookup_slot(input.slots.get(&entry.slot).map(Vec::as_slice), agg_complete, hour);
             match raw {
-                Some(v) => {
-                    member_sum += i128::from(v);
-                    any_member_known = true;
-                }
+                Some(v) => member_sum += i128::from(v),
                 None => any_member_missing = true,
             }
             top_raws.push(raw);
         }
-        let all_top_known = !any_member_missing && (top.is_empty() || any_member_known || group_filter.is_some());
+        let all_top_known = !any_member_missing;
         let top_sum_raw: Option<i128> = all_top_known.then_some(member_sum);
         match mode {
             TensionValueMode::Share => {
-                let total_pct = tension_raw.map(|raw| raw as f64 / tension_scale);
-                let total_raw = tension_raw.map(i128::from);
                 let (Some(t_raw), Some(s_val)) = (tension_raw, sum_raw) else {
                     return make_sample(hour, total_pct, total_raw, sum_raw, vec![None; top.len()], vec![None; top.len()], None, None);
                 };
@@ -1009,19 +1021,11 @@ pub(super) fn compute_stack(
                     .iter()
                     .map(|raw| raw.map(|v| v as f64 / contribution_scale))
                     .collect();
-                if !restricted {
-                    let total_raw = sum_raw.map(i128::from);
-                    let total_val = sum_raw.map(|s| s as f64 / contribution_scale);
-                    let other_raw = has_other
-                        .then(|| sum_raw.zip(top_sum_raw).map(|(s, top_sum)| i128::from(s) - top_sum))
-                        .flatten();
-                    let other_val = other_raw.map(|rem| rem as f64 / contribution_scale);
-                    make_sample(hour, total_val, total_raw, sum_raw, band_vals, top_raws, other_val, other_raw)
-                } else {
-                    let total_raw = (!any_member_missing && any_member_known).then_some(member_sum);
-                    let total_val = total_raw.map(|s| s as f64 / contribution_scale);
-                    make_sample(hour, total_val, total_raw, sum_raw, band_vals, top_raws, None, None)
-                }
+                let other_raw = has_other
+                    .then(|| sum_raw.zip(top_sum_raw).map(|(s, top_sum)| i128::from(s) - top_sum))
+                    .flatten();
+                let other_val = other_raw.map(|rem| rem as f64 / contribution_scale);
+                make_sample(hour, total_pct, total_raw, sum_raw, band_vals, top_raws, other_val, other_raw)
             }
         }
     };
@@ -1081,6 +1085,39 @@ pub(super) fn compute_stack(
         samples = reduced;
     }
     let end_sample = evaluate(last);
+    let end_tension = lookup_run(input.tension, last);
+    let end_sum = lookup_run(input.sum, last);
+    let world_reason = || reason_at(input.tension_missing, last).unwrap_or(TENSION_UNKNOWN).to_owned();
+    let share_reason = || match (mode, end_tension, end_sum) {
+        (TensionValueMode::Recorded, ..) => None,
+        (TensionValueMode::Share, None, _) => Some(world_reason()),
+        (TensionValueMode::Share, _, None) => Some(SUM_UNKNOWN.to_owned()),
+        (TensionValueMode::Share, Some(t), Some(s)) if s > 0 || (t == 0 && s == 0) => None,
+        (TensionValueMode::Share, ..) => Some(NO_SHARE.to_owned()),
+    };
+    let end_complete = is_complete(input.aggregates_complete, last);
+    let band_missing: Vec<Option<String>> = top
+        .iter()
+        .zip(&end_sample.bands)
+        .map(|(entry, value)| {
+            if value.is_some() {
+                None
+            } else if !member_at(entry.slot, last) {
+                Some(NOT_MEMBER.to_owned())
+            } else if lookup_slot(input.slots.get(&entry.slot).map(Vec::as_slice), end_complete, last).is_none() {
+                Some(reason_at(input.aggregates_missing, last).unwrap_or(CONTRIBUTION_UNKNOWN).to_owned())
+            } else {
+                Some(share_reason().unwrap_or_else(|| NO_SHARE.to_owned()))
+            }
+        })
+        .collect();
+    let other_missing = (has_other && end_sample.other.is_none()).then(|| {
+        if end_sum.is_none() {
+            SUM_UNKNOWN.to_owned()
+        } else {
+            share_reason().unwrap_or_else(|| REST_UNKNOWN.to_owned())
+        }
+    });
     let end_hour = (end_sample.total.is_some()
         || end_sample.bands.iter().any(Option::is_some)
         || end_sample.other.is_some())
@@ -1139,6 +1176,7 @@ pub(super) fn compute_stack(
                 max_values: std::mem::take(&mut band_maxs[i]),
                 end_value: end_sample.bands.get(i).copied().flatten(),
                 end_raw,
+                end_missing: band_missing[i].clone(),
             }
         })
         .collect();
@@ -1148,12 +1186,13 @@ pub(super) fn compute_stack(
         values_raw: other_raw_series,
         end_value: end_sample.other,
         end_raw: end_sample.other_raw.map(|v| v.to_string()),
+        end_missing: other_missing,
     });
     StackOutput {
         end_hour,
         capped_end_tension,
         capped_end_tension_raw,
-        end_total_raw: end_sample.total_raw.map(|v| v.to_string()),
+        end_missing: end_tension.is_none().then(world_reason),
         end_sum_raw: end_sample.sum_raw.map(|v| v.to_string()),
         downsampled,
         hours,
@@ -1284,7 +1323,7 @@ impl Product for WorldTensionStack {
                 end_hour: None,
                 capped_end_tension: None,
                 capped_end_tension_raw: None,
-                end_total_raw: None,
+                end_missing: None,
                 end_sum_raw: None,
                 downsampled: false,
                 refused: None,
@@ -1324,7 +1363,7 @@ impl Product for WorldTensionStack {
                     end_hour: None,
                     capped_end_tension: None,
                     capped_end_tension_raw: None,
-                    end_total_raw: None,
+                    end_missing: None,
                     end_sum_raw: None,
                     downsampled: false,
                     refused: Some(reason),
@@ -1366,7 +1405,8 @@ impl Product for WorldTensionStack {
                 sum: &held.sum,
                 slots: &held.slots,
                 aggregates_complete: &held.aggregates_complete,
-                missing: mode_missing,
+                tension_missing: &held.tension_missing,
+                aggregates_missing: &held.aggregates_missing,
             };
             let out = compute_stack(
                 &input,
@@ -1478,7 +1518,7 @@ impl Product for WorldTensionStack {
             end_hour: computed.as_ref().and_then(|c| c.end_hour),
             capped_end_tension: computed.as_ref().and_then(|c| c.capped_end_tension),
             capped_end_tension_raw: computed.as_ref().and_then(|c| c.capped_end_tension_raw.clone()),
-            end_total_raw: computed.as_ref().and_then(|c| c.end_total_raw.clone()),
+            end_missing: computed.as_ref().and_then(|c| c.end_missing.clone()),
             end_sum_raw: computed.as_ref().and_then(|c| c.end_sum_raw.clone()),
             downsampled: computed.as_ref().is_some_and(|c| c.downsampled),
             refused: None,

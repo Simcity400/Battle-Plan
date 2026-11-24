@@ -28,6 +28,8 @@ export interface WorldTensionChartOptions {
 }
 
 const OTHER_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
+const WORLD_UNKNOWN = 'World tension was not recorded at this hour.';
+const END_UNKNOWN = 'Not recorded at this hour.';
 const FALLBACK_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
 
 export function validateWorldTensionStack(raw: unknown): WorldTensionStackReply {
@@ -330,7 +332,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       || reply.bands.some(b => b.values.some(v => v !== null && v < 0))
       || (reply.other?.values.some(v => v !== null && v < 0) ?? false);
     const endHour = reply.endHour;
-    const totalScale = options.values === 'share' ? reply.tensionScale : reply.contributionScale;
+    const totalScale = reply.tensionScale;
     const totalExactSeries: readonly (ChartExactRational | null)[] | undefined = Array.isArray(reply.totalRaw) && reply.totalRaw.length === reply.hours.length && totalScale > 0
       ? reply.totalRaw.map(rawStr => {
           const parsed = parseRawInt(rawStr);
@@ -353,9 +355,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         ? exactBandRational(band.endRaw, options.values, reply.cappedEndTensionRaw, reply.endSumRaw, reply.tensionScale, reply.contributionScale)
         : null;
       bandEndExacts.push(endExact);
-      const validEnd = endVal != null && Number.isFinite(endVal) && (options.values === 'share'
-        ? (endExact ? endExact.raw > 0n : endVal > 0)
-        : (endExact ? endExact.raw !== 0n : endVal !== 0));
+      const validEnd = endVal != null && Number.isFinite(endVal) && (endExact ? endExact.raw !== 0n : endVal !== 0);
       const bandExactSeries: readonly (ChartExactRational | null)[] | undefined = Array.isArray(band.valuesRaw) && band.valuesRaw.length === reply.hours.length
         ? band.valuesRaw.map((rawStr, idx) =>
             exactBandRational(rawStr, options.values, reply.totalRaw?.[idx], reply.sumRaw?.[idx], reply.tensionScale, reply.contributionScale))
@@ -385,9 +385,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
     if (reply.other) {
       const otherLabel = reply.other.count > 0 ? `Other (${reply.other.count})` : 'Other';
       const otherEnd = endHour !== null ? reply.other.endValue : null;
-      const validOther = otherEnd != null && Number.isFinite(otherEnd) && (options.values === 'share'
-        ? (otherEndExact ? otherEndExact.raw > 0n : otherEnd > 0)
-        : (otherEndExact ? otherEndExact.raw !== 0n : otherEnd !== 0));
+      const validOther = otherEnd != null && Number.isFinite(otherEnd) && (otherEndExact ? otherEndExact.raw !== 0n : otherEnd !== 0);
       const otherExactSeries: readonly (ChartExactRational | null)[] | undefined = Array.isArray(reply.other.valuesRaw) && reply.other.valuesRaw.length === reply.hours.length
         ? reply.other.valuesRaw.map((rawStr, idx) =>
             exactBandRational(rawStr, options.values, reply.totalRaw?.[idx], reply.sumRaw?.[idx], reply.tensionScale, reply.contributionScale))
@@ -410,42 +408,20 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
           : null,
       });
     }
-    let lastTotal: number | null = null;
-    let lastTotalExact: ChartExactRational | null = null;
-    if (endHour !== null) {
-      const endTotalParsed = parseRawInt(reply.endTotalRaw);
-      if (endTotalParsed !== null && totalScale > 0) {
-        lastTotalExact = { raw: endTotalParsed, denominator: BigInt(totalScale) };
-      }
-      for (let i = reply.hours.length - 1; i >= 0; i--) {
-        if (reply.hours[i]! <= hour) {
-          const candidate = reply.total[i] ?? null;
-          lastTotal = candidate !== null && Number.isFinite(candidate) ? candidate : null;
-          if (!lastTotalExact && totalExactSeries?.[i]) lastTotalExact = totalExactSeries[i] ?? null;
-          break;
-        }
-      }
-    }
+    const worldRaw = parseRawInt(reply.cappedEndTensionRaw);
+    const lastTotalExact: ChartExactRational | null = worldRaw !== null && totalScale > 0 ? { raw: worldRaw, denominator: BigInt(totalScale) } : null;
+    const lastTotal = reply.cappedEndTension !== null && Number.isFinite(reply.cappedEndTension) ? reply.cappedEndTension : null;
+    const worldText = lastTotal !== null ? formatTotalPct(lastTotal, lastTotalExact) : null;
+    const endText = (value: number | null, exact: ChartExactRational | null, missing: string | null) =>
+      endHour !== null && value !== null && Number.isFinite(value) ? formatEndPct(value, options.values, exact) : (missing ?? END_UNKNOWN);
     const worldIcon = { art: readView.art(measureArtHandle('worldTension')), label: 'World tension' };
     const markers = options.showMarkers ? buildMarkers(readView, reply, hour) : undefined;
     const hoverDetail = buildHoverDetail(readView, hour);
-    const auditRows = endHour === null
-      ? []
-      : [
-          ...(lastTotal !== null ? [auditRow('__total__', formatTotalPct(lastTotal, lastTotalExact))] : []),
-          ...reply.bands.flatMap((band, i) => {
-            const exact = bandEndExacts[i] ?? null;
-            const valid = band.endValue != null && Number.isFinite(band.endValue) && (options.values === 'share'
-              ? (exact ? exact.raw > 0n : band.endValue > 0)
-              : (exact ? exact.raw !== 0n : band.endValue !== 0));
-            return valid ? [auditRow(`slot:${band.slot}`, formatEndPct(band.endValue!, options.values, exact))] : [];
-          }),
-          ...(reply.other && reply.other.endValue != null && Number.isFinite(reply.other.endValue) && (options.values === 'share'
-            ? (otherEndExact ? otherEndExact.raw > 0n : reply.other.endValue > 0)
-            : (otherEndExact ? otherEndExact.raw !== 0n : reply.other.endValue !== 0))
-            ? [auditRow('other', formatEndPct(reply.other.endValue, options.values, otherEndExact))]
-            : []),
-        ];
+    const auditRows = [
+      auditRow('__total__', worldText ?? reply.endMissing ?? WORLD_UNKNOWN),
+      ...reply.bands.map((band, i) => auditRow(`slot:${band.slot}`, endText(band.endValue, bandEndExacts[i] ?? null, band.endMissing))),
+      ...(reply.other ? [auditRow('other', endText(reply.other.endValue, otherEndExact, reply.other.endMissing))] : []),
+    ];
     return {
       kind: 'world-tension',
       measureTitle: 'World tension',
@@ -467,7 +443,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
           color: CHART_MEASURE_COLOURS.lightInk,
           values: reply.total,
           ...(totalExactSeries ? { exact: totalExactSeries } : {}),
-          endLabel: lastTotal !== null ? { icon: worldIcon, value: formatTotalPct(lastTotal, lastTotalExact) } : null,
+          endLabel: worldText !== null ? { icon: worldIcon, value: worldText } : null,
         },
       },
       ...(markers && markers.length > 0 ? { markers } : {}),
