@@ -1,5 +1,5 @@
 import { countryKey } from '../../dashboard/countryKey.ts';
-import type { SeriesDrop, SeriesEventPage, SeriesRun, SeriesState } from '../../generated/dashboard';
+import type { SeriesDrop, SeriesRun, SeriesState } from '../../generated/dashboard';
 
 export interface MeasureStates {
   branchId: string;
@@ -8,7 +8,6 @@ export interface MeasureStates {
   states: readonly SeriesState[];
 }
 const raw = (value: unknown): value is string => typeof value === 'string' && /^-?\d+$/.test(value);
-const ordinal = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
 const hour = (value: unknown): value is number => Number.isSafeInteger(value);
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const decimals = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 12;
@@ -26,15 +25,6 @@ export function validateMeasureStates(value: unknown): MeasureStates {
       && (state.notApplicable === undefined || typeof state.notApplicable === 'boolean')))
     throw new Error('The balance hour reply is malformed.');
   return value as unknown as MeasureStates;
-}
-
-export function validateMeasureDrops(value: unknown): SeriesEventPage {
-  if (!object(value) || !ordinal(value.firstOrdinal) || !ordinal(value.total)
-    || !(value.cursor === null || ordinal(value.cursor))
-    || !Array.isArray(value.rows) || !value.rows.every(event => object(event) && typeof event.tag === 'string'
-      && hour(event.hour) && ordinal(event.ordinal) && drop(event.row) && event.hour === event.row.hour))
-    throw new Error('The balance event page is malformed.');
-  return value as unknown as SeriesEventPage;
 }
 
 export interface ReachedLine {

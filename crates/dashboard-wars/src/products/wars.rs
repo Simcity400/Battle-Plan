@@ -1,6 +1,7 @@
 
 pub mod contributions;
 mod inputs;
+mod measures;
 mod native;
 mod naming;
 mod participation;
@@ -9,6 +10,7 @@ mod walk;
 mod tests;
 
 pub use inputs::{RunWars, run_wars};
+pub use measures::{WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide};
 pub use participation::{WarContributionCountry, WarContributionGroup};
 
 use dashboard_base::products::{LoadContext, Product, at_hour};

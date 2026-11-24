@@ -153,12 +153,13 @@ export function brokenText(observation: Observation | null): string | null {
   return `${observation.upperBound ? 'By ' : ''}${formatDateOnly(observation.hour)}`;
 }
 
-export function countsText(counts: CipherCounts): string {
+export function countsText(counts: CipherCounts, partial = false): string {
   return [
     `${counts.broken} broken`,
     `${counts.decrypting} decrypting`,
     ...(counts.paused ? [`${counts.paused} paused`] : []),
     ...(counts.breakUnknown ? [`${counts.breakUnknown} not known`] : []),
+    ...(partial ? ['Partial'] : []),
   ].join(' \u00b7 ');
 }
 
@@ -195,7 +196,7 @@ export function readDecryption(readView: BoundedReadView, options: DecryptionFil
       kind: 'empty',
       empty: options.filterAll ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.',
       emptyKind: 'empty',
-      summaryText: countsText({ broken: 0, decrypting: 0, paused: 0, breakUnknown: 0 }),
+      summaryText: countsText({ broken: 0, decrypting: 0, paused: 0, breakUnknown: 0 }, reply.attemptsUnknown !== null),
       warnings: reply.warnings,
     };
   }
@@ -221,7 +222,7 @@ export function readDecryption(readView: BoundedReadView, options: DecryptionFil
     live: readView.live('main'),
     pairs,
     byStatus,
-    summaryText: countsText(counts),
+    summaryText: countsText(counts, reply.attemptsUnknown !== null),
     notes: reply.attemptsUnknown ? [reply.attemptsUnknown] : [],
     country,
   };

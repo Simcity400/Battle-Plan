@@ -17,7 +17,7 @@ export const GRAPH_OPTIONS: readonly OptionField[] = [
 ];
 
 export const DEFAULT_SORT = { column: 'apm', direction: 'descending' } as const;
-export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', overflow: 'scroll', showRank: false, sort: DEFAULT_SORT };
+export const TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'all', showRank: false, sort: DEFAULT_SORT };
 const COLUMN_DEFAULTS: readonly TableColumnDefaults[] = [
   { key: 'country', label: 'Country', as: 'flag', offered: OFFERED.country, showNamesDefault: false },
   { key: 'name', label: 'Player', as: 'plain', offered: OFFERED.text, hideable: false },

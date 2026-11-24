@@ -28,7 +28,7 @@ import { productRequest } from '../../dashboard/request.ts';
 import { bucketEdges, bucketRead, UNRECORDED_MESSAGE, type BoundWindow } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
-import DeclaredTableWidget from '../../families/table/DeclaredTableWidget.tsx';
+import { FamilyWidget } from '../../families/host/registry';
 import type { CountryRef, ProductionLineBreakdownReply, ProductionLinesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import ProductionDrill from './ProductionDrill';
@@ -106,7 +106,6 @@ export default function ProductionLinesWidget(props: WidgetProps) {
   const [factor, setFactor] = useState<string | null>(null);
   useEffect(() => { dispatch({ type: 'close' }); setOpened(null); }, [track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const extent: [number, number] = track ? [track.branch.firstHour, track.branch.lastHour] : [0, 1];
-  const headHour = () => Math.floor((track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour) ?? extent[1]);
   const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const shown: [number, number] = widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : extent;
   const lineTag = pinned ? drillControl.gate.country?.holder?.tag : tag && isSlotKey(tag) ? drillLines.data?.tag : tag;
@@ -150,10 +149,11 @@ export default function ProductionLinesWidget(props: WidgetProps) {
 
   if (live) {
     return <div ref={anchor} className="game-window-table">
-      <DeclaredTableWidget
+      <FamilyWidget
+        family="table"
         declaration={productionLinesDeclaration}
         {...props}
-        onActivate={(handle, _meta, hour) => open(handle, 'efficiency', hour ?? headHour())}
+        onActivate={action => open(action.subject, 'efficiency', action.hour)}
       />
       <DetailWindowHost
         open={drill.breakdown !== null && !!opened}

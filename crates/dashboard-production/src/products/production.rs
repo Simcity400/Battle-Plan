@@ -8,7 +8,7 @@ mod tests;
 
 pub use breakdown::ProductionLineBreakdown;
 pub use catalogue::{EquipmentDesigns, IndustrialOrganisations, ProductionLicences};
-pub use lines::{ProductionLineDetail, ProductionLines};
+pub use lines::ProductionLines;
 pub use live::ProductionLinesAt;
 
 use dashboard_base::products::Country;

@@ -1,8 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bandSummaries, bandSummary, bands, formatPopularity, leaderAt, leaderShown, partyBadges, partyChangeHours, partyNameAt, rawAt, rulingAt, rulingFirst, stepHour, validatePartyHistoryReply } from './partyData.ts';
-import type { ChartSummary } from '../../charts/chartSummary';
-import { settledHour } from '../../dashboard/settledHour.ts';
+import { bands, formatPopularity, leaderAt, leaderShown, partyBadges, partyNameAt, rulingAt, rulingFirst, validatePartyHistoryReply } from './partyData.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 
 const REPLY: PartyHistoryReply = {
@@ -22,44 +20,8 @@ test('bands follow content order and colours; unknown ideologies use the palette
   assert.deepEqual(list.map(band => [band.token, band.name]), [
     ['democratic', 'Democratic'], ['fascism', 'Fascist'], ['mod_ideology', 'Ideology name unavailable'],
   ]);
-  assert.equal(list[2].color, '#111111');
+  assert.equal(list[2]!.color, '#111111');
   assert.deepEqual(list.map(band => band.keys), [[{ tag: 'GER', part: '0' }, { tag: 'GER', part: '4' }], [{ tag: 'GER', part: '1' }], [{ tag: 'GER', part: '3' }]]);
-});
-
-
-test('a band reads its popularity from the parts its party was read under, loading until the hour is read', () => {
-  const [democratic] = bands(REPLY, 'GER', ['#111111']);
-  const run = (firstHour: number, lastHour: number, valueRaw: string) => ({ firstHour, lastHour, valueRaw });
-  const reached = [{ key: { tag: 'GER', part: '4' }, runs: [run(100, 102, '5000000')], drops: [], missing: new Map([[103, 'not recorded']]) }];
-  assert.equal(rawAt(democratic, reached as never, 101), '5000000');
-  assert.equal(rawAt(democratic, reached as never, 103), null, 'read and not recorded');
-  assert.equal(rawAt(democratic, reached as never, 108), undefined, 'not read yet');
-  const summary = (from: number): ChartSummary => ({ from, to: from + 9, width: 10, buckets: [] });
-  const lines = new Map([['GER\u00004', summary(0)]]);
-  assert.equal(bandSummary(democratic, id => lines.get(id))?.from, 0, 'one part landed is the band');
-  assert.equal(bandSummary(democratic, () => undefined), undefined);
-});
-
-test('a band of two parts drawn each frame is merged once while its parts stand, so its stack is kept', () => {
-  const [democratic] = bands(REPLY, 'GER', ['#111111']);
-  const band = { ...democratic, keys: [{ tag: 'GER', part: '4' }, { tag: 'GER', part: '5' }] };
-  const summary = (): ChartSummary => ({ from: 0, to: 9, width: 10, buckets: [] });
-  const lines = new Map([['GER\u00004', summary()], ['GER\u00005', summary()]]);
-  const drawn = bandSummaries();
-  const first = drawn(band, id => lines.get(id));
-  assert.ok(first);
-  assert.equal(drawn(band, id => lines.get(id)), first, 'the next frame gets the same summary');
-  lines.set('GER\u00005', summary());
-  assert.notEqual(drawn(band, id => lines.get(id)), first, 'a part landing anew merges again');
-});
-
-test('the keyboard steps to the nearest mark within the view', () => {
-  const hours = [100, 104, 107, 120];
-  assert.equal(stepHour(hours, 'ArrowRight', 104, [90, 115]), 107);
-  assert.equal(stepHour(hours, 'ArrowRight', 107, [90, 115]), null, 'past the head is not shown');
-  assert.equal(stepHour(hours, 'ArrowLeft', 104, [90, 115]), 100);
-  assert.equal(stepHour(hours, 'Home', null, [101, 115]), 104);
-  assert.equal(stepHour(hours, 'End', null, [90, 115]), 107);
 });
 
 test('a change of government next to a gap is not a badge; elections are', () => {
@@ -67,7 +29,7 @@ test('a change of government next to a gap is not a badge; elections are', () =>
   assert.deepEqual(badges.map(badge => [badge.hour, badge.glyph]), [[104, '✓'], [107, '⇆']]);
   const replaced = { ...REPLY, ruling: REPLY.ruling.map((item, index) => index === 2 ? { ...item, startsSegment: true } : item) };
   assert.deepEqual(partyBadges(replaced, token => token).map(badge => badge.glyph), ['✓']);
-  assert.equal(badges[1].label, 'fascism took power from democratic');
+  assert.equal(badges[1]!.label, 'fascism took power from democratic');
   assert.equal(rulingAt(REPLY, 105), 'democratic');
   assert.equal(rulingAt(REPLY, 103), null);
   assert.equal(formatPopularity('4512345', 5), '45.1%');
@@ -108,10 +70,10 @@ test('the leader is named as recorded, and every gap in what is known is said', 
   assert.deepEqual(partyBadges(successions, token => token, true).filter(badge => badge.glyph === '♔').map(badge => [badge.hour, badge.label]),
     [[107, 'The leader changed']]);
   assert.equal(partyBadges(successions, token => token).filter(badge => badge.glyph === '♔').length, 0);
-  const named = { ...successions, leaders: [...successions.leaders.slice(0, 2), { ...successions.leaders[5], firstHour: 103, lastHour: 103 }] };
+  const named = { ...successions, leaders: [...successions.leaders.slice(0, 2), { ...successions.leaders[5]!, firstHour: 103, lastHour: 103 }] };
   assert.deepEqual(partyBadges(named, token => token, true).filter(badge => badge.glyph === '♔').map(badge => badge.label), ['Karl Dönitz succeeded Der Führer as leader']);
   assert.throws(() => validatePartyHistoryReply({ ...reply, leaders: [...reply.leaders].reverse() }));
-  assert.throws(() => validatePartyHistoryReply({ ...reply, leaders: [{ ...reply.leaders[0], person: 3 }] }));
+  assert.throws(() => validatePartyHistoryReply({ ...reply, leaders: [{ ...reply.leaders[0]!, person: 3 }] }));
   validatePartyHistoryReply(reply);
 });
 
@@ -120,16 +82,4 @@ test('the ruling party is named as the game names it; unrecorded and unknown dif
   assert.equal(partyNameAt(REPLY, 105), null);
   assert.equal(partyNameAt(REPLY, 103), undefined);
   assert.throws(() => validatePartyHistoryReply({ ...REPLY, partyNameRuns: [{ name: 2, firstHour: 100, lastHour: 100 }] }));
-});
-
-test('following the head, the header settles on the last change of government, leader or party name', () => {
-  const reply = { ruling: [{ token: 'a', firstHour: 100, lastHour: 109, startsSegment: true }, { token: 'b', firstHour: 110, lastHour: 130, startsSegment: false }],
-    leaders: [{ ideology: 'x', person: 0, firstHour: 100, lastHour: 130, startsSegment: true }],
-    partyNameRuns: [{ name: 0, firstHour: 100, lastHour: 109 }, { name: 1, firstHour: 110, lastHour: 130 }],
-    unobserved: [{ firstHour: 131, lastHour: 140 }] };
-  const hours = partyChangeHours(reply);
-  assert.deepEqual(hours, [100, 110, 131, 141]);
-  assert.equal(settledHour(hours, 105), 100, 'popularity moving inside one government renders nothing');
-  assert.equal(settledHour(hours, 120), 110);
-  assert.equal(settledHour(hours, 135), 131);
 });

@@ -20,7 +20,7 @@ export const CLOCK_COLUMNS: readonly DeclarativeColumnSpec<ClockRow, CampaignClo
   { key: 'time', label: 'Real time (h:mm:ss)', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'clockSeconds', sortable: false, hideable: false, widest: ['99:59:59', 'Gaps excluded'], value: row => row.value },
 ];
 
-export const CLOCK_TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'off', overflow: 'scroll', showRank: false, sort: { column: 'clock', direction: 'ascending' } };
+export const CLOCK_TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'off', showRank: false, sort: { column: 'clock', direction: 'ascending' } };
 
 const refusedClock = (reason: string, warnings: readonly string[] = []): ParsedClock => {
   const missing = notRecorded(reason);
