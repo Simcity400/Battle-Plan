@@ -95,7 +95,6 @@ export {
   type HeatLanesProjection,
 } from './lanesModel.ts';
 export {
-  computeAxisTicks,
   hitHeatLanes,
   hourToLaneX,
   LANE_AXIS_HEIGHT,
@@ -113,7 +112,6 @@ export {
   laneXToHour,
   layoutHeatLanes,
   projectLaneRunsToPixels,
-  type AxisTick,
   type HeatLanesLayout,
   type LaneHit,
   type LayoutHeatLanesInput,

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Canvas2D } from '../../charts/textWidth.ts';
+import { computeTimeAxisTicks } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
 import {
-  computeAxisTicks,
   createLanesPicture,
   createMatrixPicture,
   deriveLanesAudit,
@@ -398,7 +398,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   assert.equal(mirror.rows[0]!.name, 'English Channel');
   assert.equal(mirror.rows[0]!.cells[0]!.spoken, 'English Channel');
 
-  const ticks = computeAxisTicks(0, 167, 24, layout.plotLeft, layout.plotWidth);
+  const ticks = computeTimeAxisTicks(0, 167, layout.plotWidth, 24);
   assert.ok(ticks.length >= 2);
 
   const fake = makeFakeCtx();

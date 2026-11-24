@@ -306,9 +306,13 @@ test('timeline bars hide icon and name under the minimum width, mix ended items 
   const h1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
   const h1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
   const years = computeTimeAxisTicks(h1936, h1941, 600);
-  assert.deepEqual(years.map(tick => tick.label), ['1937', '1938', '1939', '1940', '1941']);
+  assert.deepEqual(years.map(tick => tick.label), ['1936', '1937', '1938', '1939', '1940', '1941']);
   const h1937 = engineHour({ year: 1937, month: 1, day: 1, hour: 1 })!;
   assert.ok(computeTimeAxisTicks(h1936, h1937, 600).some(tick => tick.label === 'Jul'), 'under two years the axis shows months');
+  const hWeek = engineHour({ year: 1936, month: 1, day: 8, hour: 1 })!;
+  const dayTicks = computeTimeAxisTicks(h1936, hWeek, 600);
+  assert.ok(dayTicks.some(tick => tick.label === '4 Jan'), 'short windows show days');
+  assert.ok(computeTimeAxisTicks(0, 167, 600, 24).length >= 2, 'non-calendar short windows still yield day ticks');
 
   const axis = makeFakeCtx();
   drawTimeAxis(axis.ctx, years, { plotLeft: 100, plotRight: 700, axisTop: 200, startHour: h1936, endHour: h1941, playhead: h1941, playheadLabel: '15 Sep 1941', theme: THEME });
