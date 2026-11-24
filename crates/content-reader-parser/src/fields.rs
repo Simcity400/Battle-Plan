@@ -111,8 +111,11 @@ mod tests {
 
     #[test]
     fn numeric_fields_use_the_crt_prefix_scan() {
-        let items = items(b"n = { \"12tail\" } f = \"1.25tail\"");
-        assert_eq!(scalar_list(last(&items, b"n").unwrap(), "n").unwrap(), [12]);
+        let items = items(b"n = { \"12tail\" five \"\" } f = \"1.25tail\"");
+        assert_eq!(
+            scalar_list(last(&items, b"n").unwrap(), "n").unwrap(),
+            [12, 0, 0]
+        );
         assert_eq!(number(last(&items, b"f").unwrap(), "f").unwrap(), 1.25);
     }
 
@@ -156,6 +159,7 @@ mod tests {
                 .to_string()
                 .contains("unnamed entry")
         );
+        assert!(items[1].key_str().unwrap_err().to_string().contains("no key"));
         let raw = Item {
             key: Some(vec![0xff, 0xfe]),
             key_quoted: false,

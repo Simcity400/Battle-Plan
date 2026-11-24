@@ -59,6 +59,37 @@ pub struct Game {
     pub audio: MapAudio,
 }
 
+const SIZE_LIMIT: usize = 4 * 1024 * 1024;
+
+struct Scopes(BTreeMap<String, CampaignMapSettings>);
+
+impl<'de> serde::Deserialize<'de> for Scopes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Scopes;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("map settings keyed by scope")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Scopes, A::Error> {
+                use serde::de::Error;
+                let mut scopes = BTreeMap::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let entry = map
+                        .next_value::<CampaignMapSettings>()
+                        .map_err(|why| A::Error::custom(format_args!("{key}: {why}")))?;
+                    if scopes.contains_key(&key) {
+                        return Err(A::Error::custom(format_args!("{key}: scope given twice")));
+                    }
+                    scopes.insert(key, entry);
+                }
+                Ok(Scopes(scopes))
+            }
+        }
+        deserializer.deserialize_map(Visit)
+    }
+}
+
 fn path() -> io::Result<PathBuf> {
     Ok(PathBuf::from(
         std::env::var_os("LOCALAPPDATA")
@@ -96,17 +127,22 @@ impl Store {
         }
     }
     fn load_from(path: &std::path::Path) -> io::Result<Self> {
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(error),
         };
-        if bytes.len() > 4 * 1024 * 1024 {
-            return Err(crate::invalid("Map settings exceed their size limit"));
+        let damaged = |why: &dyn std::fmt::Display| crate::invalid(format!("{}: {why}", path.display()));
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut io::Read::take(file, SIZE_LIMIT as u64 + 1), &mut bytes)?;
+        if bytes.len() > SIZE_LIMIT {
+            return Err(damaged(&"map settings exceed their size limit"));
         }
-        let entries: BTreeMap<String, CampaignMapSettings> = serde_json::from_slice(&bytes)?;
-        for entry in entries.values() {
-            entry.validate().map_err(crate::invalid)?;
+        let Scopes(entries) = serde_json::from_slice(&bytes).map_err(|error| damaged(&error))?;
+        for (key, entry) in &entries {
+            entry
+                .validate()
+                .map_err(|why| damaged(&format_args!("{key}: {why}")))?;
         }
         Ok(Self {
             entries,
@@ -217,7 +253,7 @@ impl Store {
             let mut entries = saved.entries;
             entries.insert(key, settings);
             let bytes = serde_json::to_vec(&entries)?;
-            if bytes.len() > 4 * 1024 * 1024 {
+            if bytes.len() > SIZE_LIMIT {
                 return Err(crate::invalid("Map settings exceed their size limit"));
             }
             Ok(receipt.replace(path, |out| io::Write::write_all(out, &bytes))?.with(entries, ()))
@@ -858,8 +894,33 @@ mod tests {
         fs::write(&path, b"not json").unwrap();
         let before = store.generation();
         store.reload_from(Ok(path.clone()));
-        assert!(store.check().is_err());
+        assert!(store.check().unwrap_err().contains(&path.display().to_string()));
         assert_ne!(store.generation(), before);
+        let loud = CampaignMapSettings {
+            audio: MapAudioOverrides {
+                voice: Some(500.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        fs::write(
+            &path,
+            serde_json::to_vec(&BTreeMap::from([("campaign-loud".to_owned(), loud)])).unwrap(),
+        )
+        .unwrap();
+        store.reload_from(Ok(path.clone()));
+        let error = store.check().unwrap_err();
+        assert!(error.contains("campaign-loud") && error.contains(&path.display().to_string()), "{error}");
+        for damaged in [
+            &br#"{"campaign-a":{"audio":{"voice":"loud"}}}"#[..],
+            br#"{"campaign-a":{"audio":{"voice":10,"voice":90}}}"#,
+            br#"{"campaign-a":{},"campaign-a":{}}"#,
+        ] {
+            fs::write(&path, damaged).unwrap();
+            store.reload_from(Ok(path.clone()));
+            let error = store.check().unwrap_err();
+            assert!(error.contains("campaign-a") && error.contains(&path.display().to_string()), "{error}");
+        }
         let before = store.generation();
         store.configure_game(&path);
         assert_ne!(

@@ -32,7 +32,8 @@ impl Config {
 
     fn load_from(path: &Path) -> io::Result<Self> {
         match fs::read(path) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| invalid(format!("{}: {error}", path.display()))),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error),
         }
@@ -123,6 +124,9 @@ mod tests {
             assert_eq!(saved.game_dir, Path::new(&format!("G{round}")));
             assert_eq!(saved.user_dir, Path::new(&format!("U{round}")));
         }
+        std::fs::write(&path, b"not json").unwrap();
+        let damaged = Config::load_from(&path).unwrap_err().to_string();
+        assert!(damaged.contains(&path.display().to_string()), "{damaged}");
         std::fs::remove_dir_all(&folder).unwrap();
     }
 
