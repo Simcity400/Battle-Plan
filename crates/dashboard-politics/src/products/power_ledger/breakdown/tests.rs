@@ -74,6 +74,9 @@ fn the_breakdown_at_an_hour_counts_only_what_was_read_by_then() {
     assert_eq!(parts[1].children.iter().map(|part| part.name.as_str()).collect::<Vec<_>>(), ["Plan A", "Plan B"]);
     assert_eq!(parts[0].ordinal, 2, "categories keep the order they were first recorded in");
     assert!(parts[2].other);
+    assert_eq!(parts[1].art.as_ref().map(|art| (art.key.as_str(), art.text)), Some(("decision_icon_small", Some(true))), "a known category carries its text icon");
+    assert_eq!((parts[0].art.as_ref(), parts[2].art.as_ref()), (None, None), "a category the mapping does not know, and other spending, carry none");
+    assert!(parts[1].children.iter().all(|part| part.art.is_none()), "items carry no category picture");
     assert_eq!(at.breakdown.total.state, BreakdownState::Partial, "two hours were not recorded");
     assert_eq!(at.breakdown.unrecorded_hours, 2);
     assert_eq!(at.through, 29, "the next gain is read at hour 30");

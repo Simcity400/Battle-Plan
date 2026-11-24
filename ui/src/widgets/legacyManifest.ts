@@ -2,7 +2,6 @@ import type { LegacyWidgetEntry } from '../families/manifest.ts';
 
 export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'air-kills-losses', view: 'lines', label: 'Lines', slots: ['render', 'countryChip'], load: () => import('./air-kills-losses') },
-  { kind: 'air-statistics', load: () => import('./air-statistics') },
   { kind: 'army-size', view: 'breakdown', label: 'Army breakdown', slots: ['render', 'countryChip'], load: () => import('./army-size') },
   { kind: 'autonomy', view: 'lines', label: 'Lines', load: () => import('./autonomy') },
   { kind: 'bombing-damage-breakdown', slots: ['render', 'countryChip'], load: () => import('./bombing-damage-breakdown') },
@@ -30,7 +29,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'naval-battles', load: () => import('./naval-battles') },
   { kind: 'naval-losses', view: 'lines', label: 'Lines', load: () => import('./naval-losses') },
   { kind: 'nuclear-arsenal', view: 'lines', label: 'Lines', playsBackDated: true, slots: ['render', 'countryChip'], load: () => import('./nuclear-arsenal') },
-  { kind: 'occupation-reserve-manpower', view: 'breakdown', label: 'Holder breakdown', load: () => import('./occupation-reserve-manpower') },
   { kind: 'occupation-trend', view: 'mix', label: 'Mix', load: () => import('./occupation-trend') },
   { kind: 'peace-deals', load: () => import('./peace-deals') },
   { kind: 'production-spending', load: () => import('./production-spending') },
@@ -38,7 +36,6 @@ export const LEGACY_WIDGETS: readonly LegacyWidgetEntry[] = [
   { kind: 'raid-tally', load: () => import('./raid-tally') },
   { kind: 'resource-balance', load: () => import('./resource-balance') },
   { kind: 'ships-sunk', load: () => import('./ships-sunk') },
-  { kind: 'special-projects', view: 'history', label: 'History', playsBackDated: true, load: () => import('./special-projects') },
   { kind: 'territory', load: () => import('./territory') },
   { kind: 'wars', load: () => import('./wars') },
 ];

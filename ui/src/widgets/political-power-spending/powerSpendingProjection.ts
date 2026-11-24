@@ -4,12 +4,11 @@ import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../famil
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { artState } from '../../families/table/identityCell.ts';
-import { registerTableProjection } from '../../families/table/registry.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY, tableFamilyOptions, type TableBase } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { BreakdownPart, PowerSpendingBreakdownReply, SpendCurrency } from '../../generated/dashboard';
-import { spendingCategoryArt } from './spendingCategoryArt.ts';
 
 const UNIT: Readonly<Record<SpendCurrency, string>> = { Political: 'PP', Command: 'CP' };
 
@@ -49,8 +48,7 @@ function amountOf(part: Pick<BreakdownPart, 'raw' | 'state' | 'reason'>, what: s
 }
 
 function picture(readView: BoundedReadView, part: BreakdownPart): TableCell {
-  const handle = spendingCategoryArt(part.key);
-  return { value: knownValue(part.name), artShape: 'square', artName: part.name, ...(handle ? { iconSlot: true, ...artState(readView, handle) } : {}) };
+  return { value: knownValue(part.name), artShape: 'square', artName: part.name, ...(part.art ? { iconSlot: true, ...artState(readView, { kind: 'sprite', ...part.art }) } : {}) };
 }
 
 function row(readView: BoundedReadView, part: BreakdownPart, decimals: number, top: boolean, keyPrefix: string): TableRow {
@@ -88,7 +86,7 @@ function summary(reply: PowerSpendingBreakdownReply, currency: SpendCurrency): {
 }
 
 function spendingProjection(kind: 'political-power-spending' | 'command-power-spending'): TableProjection<PowerSpendingProjectionOptions> {
-  return registerTableProjection({ kind, family: 'table', project: projectSpending });
+  return registerFamilyProjection({ kind, family: 'table', project: projectSpending });
 }
 
 function projectSpending(readView: BoundedReadView, options: PowerSpendingProjectionOptions): TableModel {

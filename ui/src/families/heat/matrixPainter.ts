@@ -176,14 +176,33 @@ export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void 
             : [rampColour(theme, model.ramp, 0), rampColour(theme, model.ramp, 1)],
         }
       : undefined;
+    const rawEntries = model.legend.entries;
+    let ordinaryLen = rawEntries?.length ?? 0;
+    while (ordinaryLen > 0 && rawEntries![ordinaryLen - 1]!.hatched) ordinaryLen--;
+    const trailing = rawEntries && ordinaryLen < rawEntries.length
+      ? rawEntries.slice(ordinaryLen).map(entry => ({
+          label: entry.label,
+          color: entry.color,
+          hatch: true,
+        }))
+      : undefined;
     drawLegendStrip(ctx, 0, 0, layout.width, layout.legendHeight, {
       gradient,
-      entries: model.legend.entries?.map(entry => ({
-        label: entry.label,
-        color: entry.color,
-        ...(entry.hatched ? { hatch: true } : {}),
-        ...(entry.outlined ? { outlined: true } : {}),
-      })),
+      ...(rawEntries ? {
+        entries: {
+          length: ordinaryLen,
+          at: i => {
+            const entry = rawEntries[i]!;
+            return {
+              label: entry.label,
+              color: entry.color,
+              ...(entry.hatched ? { hatch: true } : {}),
+              ...(entry.outlined ? { outlined: true } : {}),
+            };
+          },
+          ...(trailing ? { trailing } : {}),
+        },
+      } : {}),
       rightNote: model.legend.rightNote,
       padX: MATRIX_PAD,
       hairline: true,

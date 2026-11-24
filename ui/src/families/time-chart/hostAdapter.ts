@@ -2,20 +2,18 @@ import type { TiledLine } from '../../dashboard/tiles/view';
 import { displayedHour } from '../boundedView.ts';
 import type { FamilyGestureContext, FamilyHostAdapter, ParsedFamilyHit } from '../host/adapter.ts';
 import type { SerializedTiledLine } from '../sceneTiles.ts';
+import type { SourcePlan } from '../contract.ts';
 import type { TimeChartBinding } from './declaration.ts';
 import { parseChartInspect } from './hitTest.ts';
 import type { TimeChartModel } from './model.ts';
 
 const MIN_ZOOM_SPAN_HOURS = 24;
-let nextTiledRev = 1;
-const tiledRevCache = new WeakMap<TiledLine, { readonly rev: number; readonly serialized: SerializedTiledLine }>();
+const serializedLines = new WeakMap<TiledLine, SerializedTiledLine>();
 
-function serializeTiledLine(source: string, line: TiledLine): { readonly rev: number; readonly serialized: SerializedTiledLine } {
-  const cached = tiledRevCache.get(line);
-  if (cached && cached.serialized.source === source) return cached;
-  const rev = nextTiledRev++;
+function serializeTiledLine(source: string, line: TiledLine): SerializedTiledLine {
+  const cached = serializedLines.get(line);
+  if (cached && cached.source === source) return cached;
   const serialized: SerializedTiledLine = {
-    rev,
     source,
     tag: line.tag,
     head: line.head,
@@ -30,9 +28,38 @@ function serializeTiledLine(source: string, line: TiledLine): { readonly rev: nu
     parts: line.parts,
     marks: line.marks,
   };
-  const entry = { rev, serialized };
-  tiledRevCache.set(line, entry);
-  return entry;
+  serializedLines.set(line, serialized);
+  return serialized;
+}
+
+type HeadSources = NonNullable<TimeChartBinding['headSourceBySeries']>;
+const headSources = new WeakMap<SourcePlan, HeadSources | null>();
+
+function headSourcesOf(plan: SourcePlan): HeadSources | null {
+  let held = headSources.get(plan);
+  if (held !== undefined) return held;
+  const map: Record<string, HeadSources[string]> = {};
+  for (const entry of plan.entries) {
+    if (entry.read.shape === 'pixel-binned' && entry.read.headQuery) {
+      map[entry.name] = {
+        answerName: entry.name,
+        tags: entry.read.tags,
+        ...(entry.read.keys ? { keys: entry.read.keys } : {}),
+        ...(entry.read.partBits !== undefined ? { partBits: entry.read.partBits } : {}),
+      };
+    }
+  }
+  held = Object.keys(map).length ? map : null;
+  headSources.set(plan, held);
+  return held;
+}
+
+const zooms = new WeakMap<readonly [number, number], { readonly x: readonly [number, number] }>();
+
+function zoomOf(window: readonly [number, number]): { readonly x: readonly [number, number] } {
+  let zoom = zooms.get(window);
+  if (!zoom) zooms.set(window, zoom = { x: window });
+  return zoom;
 }
 
 export function parseTimeChartHit(hitKey: string | null): ParsedFamilyHit | null {
@@ -187,54 +214,21 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
   deriveAuditRows: model => model.auditRows ?? [],
   buildBinding: ctx => {
     if (!ctx.extent) return null;
-    const tiledLines: SerializedTiledLine[] = [];
-    const keepTiled: number[] = [];
-    const tiledBySource: Record<string, Record<string, number>> = {};
-
+    const tiledBySource: Record<string, Record<string, SerializedTiledLine>> = {};
     if (ctx.tiledSeries) {
       for (const [sourceName, lines] of Object.entries(ctx.tiledSeries)) {
-        const byTag: Record<string, number> = {};
-        for (const [tag, line] of lines) {
-          const entry = serializeTiledLine(sourceName, line);
-          keepTiled.push(entry.rev);
-          byTag[tag] = entry.rev;
-          tiledLines.push(entry.serialized);
-        }
+        const byTag: Record<string, SerializedTiledLine> = {};
+        for (const [tag, line] of lines) byTag[tag] = serializeTiledLine(sourceName, line);
         tiledBySource[sourceName] = byTag;
       }
     }
-
-    let headSourceBySeries: TimeChartBinding['headSourceBySeries'];
-    if (ctx.plan) {
-      const map: Record<string, {
-        readonly answerName: string;
-        readonly tags: readonly string[];
-        readonly keys?: readonly { readonly tag: string; readonly part: string }[];
-        readonly partBits?: number;
-      }> = {};
-      for (const entry of ctx.plan.entries) {
-        if (entry.read.shape === 'pixel-binned' && entry.read.headQuery) {
-          map[entry.name] = {
-            answerName: entry.name,
-            tags: entry.read.tags,
-            ...(entry.read.keys ? { keys: entry.read.keys } : {}),
-            ...(entry.read.partBits !== undefined ? { partBits: entry.read.partBits } : {}),
-          };
-        }
-      }
-      if (Object.keys(map).length) headSourceBySeries = map;
-    }
-
+    const headSourceBySeries = ctx.plan ? headSourcesOf(ctx.plan) : null;
     return {
       extent: ctx.extent,
-      ...(ctx.theme ? { theme: ctx.theme } : {}),
-      ...(ctx.viewport.zoomWindow ? { zoom: { x: ctx.viewport.zoomWindow } } : {}),
-      ...(tiledLines.length ? { tiledLines } : {}),
-      keepTiled,
+      ...(ctx.viewport.zoomWindow ? { zoom: zoomOf(ctx.viewport.zoomWindow) } : {}),
       tiledBySource,
       ...(headSourceBySeries ? { headSourceBySeries } : {}),
       ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}),
-      ...(ctx.focusedKey ? { focusedKey: ctx.focusedKey } : {}),
     };
   },
 };

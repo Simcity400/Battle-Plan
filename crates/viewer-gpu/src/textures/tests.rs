@@ -141,23 +141,20 @@ fn bc7_map_and_gui_share_logical_mips_and_header_colour_space() {
 }
 
 #[test]
-fn other_dx10_formats_keep_the_native_bgra_outcome_by_file_name() {
+fn unsupported_dx10_formats_are_refused_by_name() {
     for dxgi in [83, 95] {
-        let mut file = dx10_file(4, 4, 1, dxgi);
-        file.extend([0; 16]);
-        let read = files(vec![("gfx/other.dds", file)]);
-        let why = load_file("gfx/other.dds", &read, Decode::default())
-            .unwrap_err()
-            .to_string();
-        assert!(why.contains("gfx/other.dds") && why.contains("first level runs past the file"));
-        assert!(!why.contains("BC7"));
-
-        let mut file = dx10_file(1, 1, 1, dxgi);
-        file.extend([1, 2, 3, 4]);
-        let read = files(vec![("gfx/other.dds", file)]);
-        let texture = load_file("gfx/other.dds", &read, Decode::default()).unwrap();
-        assert_eq!(texture.format, dds::TextureFormat::Rgba8);
-        assert_eq!(texture.base().data, [3, 2, 1, 4]);
+        for (side, texels) in [(4, 64), (1, 4)] {
+            let mut file = dx10_file(side, side, 1, dxgi);
+            file.extend(std::iter::repeat_n(1, texels));
+            let read = files(vec![("gfx/other.dds", file)]);
+            let why = load_file("gfx/other.dds", &read, Decode::default())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                why.contains("gfx/other.dds") && why.contains(&format!("unsupported DXGI format {dxgi}")),
+                "{why}"
+            );
+        }
     }
 }
 

@@ -14,6 +14,8 @@ import {
   normalizeGameWindowRequest,
   normalizeScale,
   planGameWindowRender,
+  acceptRender,
+  frameShown,
   regionTooltipContent,
   wheelScrollPosition,
 } from './gameWindowLogic.ts';
@@ -109,22 +111,36 @@ test('a pass-through tooltip above the close button shows its tooltip but lets t
   assert.equal(hitTestClick(regions, 20, 16), null);
 });
 
-test('playback of one subject keeps one render in flight and then renders the latest hour', () => {
+test('one native render per window: a new hour, tab or subject waits for the outstanding one, which is never aborted while the window is open', () => {
   const subject = gameWindowSubjectKey(baseRequest(), 2);
   assert.equal(gameWindowSubjectKey(baseRequest({ hour: 140 }), 2), subject);
   assert.notEqual(gameWindowSubjectKey(baseRequest({ target: { tag: 'GER', variant: 'Panzer III' } }), 2), subject);
-  const at = (hour: number) => ({ key: gameWindowRequestKey(baseRequest({ hour }), 2), subject, active: true });
-  const flight = { key: at(100).key, subject };
-  assert.deepEqual(planGameWindowRender(at(101), flight, null), { step: 'wait', abort: false });
-  assert.equal(followGameWindowRender(flight, at(105), at(100).key), true);
-  assert.equal(followGameWindowRender(flight, at(100), at(100).key), false);
-  const other = { key: 'other', subject: 'other', active: true };
-  assert.deepEqual(planGameWindowRender(other, flight, null), { step: 'start', abort: true });
-  assert.equal(followGameWindowRender(flight, other, at(100).key), false);
-  assert.deepEqual(planGameWindowRender(at(100), flight, at(100).key), { step: 'reuse', abort: true });
-  assert.deepEqual(planGameWindowRender({ ...at(101), active: false }, flight, null), { step: 'idle', abort: true });
+  const at = (hour: number, generation = 0) => ({ key: gameWindowRequestKey(baseRequest({ hour }), 2), subject, generation, active: true });
+  const flight = { key: at(100).key, subject, generation: 0 };
+  assert.equal(planGameWindowRender(at(101), flight, null), 'wait');
+  assert.equal(followGameWindowRender(flight, at(105), null), true, 'the latest hour starts when the outstanding render settles');
+  assert.equal(followGameWindowRender(flight, at(100), null), false);
+  const other = { key: 'other', subject: 'other', generation: 0, active: true };
+  assert.equal(planGameWindowRender(other, flight, null), 'wait', 'another subject or tab also waits: no second native call');
+  assert.equal(followGameWindowRender(flight, other, null), true);
+  assert.equal(planGameWindowRender(at(100), null, { key: at(100).key, subject, generation: 0 }), 'reuse');
+  assert.equal(planGameWindowRender({ ...at(101), active: false }, flight, null), 'idle');
+  assert.equal(planGameWindowRender(at(101), null, null), 'start');
 });
 
+test('a seek hides the displayed frame and a reply from before the seek is never installed', () => {
+  const subject = gameWindowSubjectKey(baseRequest(), 2);
+  const want = (hour: number, generation: number) => ({ key: gameWindowRequestKey(baseRequest({ hour }), 2), subject, generation, active: true });
+  const shown = { key: want(100, 3).key, subject, generation: 3 };
+  assert.equal(frameShown(shown, want(101, 3)), true, 'playback keeps the last frame up while the next hour renders');
+  assert.equal(frameShown(shown, want(50, 4)), false, 'after a seek back the hour-100 picture and its regions are gone');
+  assert.equal(frameShown(shown, { ...want(100, 3), subject: 'other' }), false);
+  const late = { key: want(101, 3).key, subject, generation: 3 };
+  assert.equal(acceptRender(late, want(50, 4)), false, 'the hour-101 reply arrives after the seek: rejected');
+  assert.equal(acceptRender(late, want(102, 3)), true, 'within one stretch of playback a reply for an earlier hour is still the latest picture');
+  assert.equal(acceptRender(late, { ...want(102, 3), subject: 'other' }), false);
+  assert.equal(planGameWindowRender(want(50, 4), null, shown), 'start');
+});
 test('hit-tests top-most matching region, respects clips, and blocks disabled close clicks', () => {
   const regions: GameWindowRegion[] = [
     {
