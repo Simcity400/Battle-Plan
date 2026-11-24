@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseOptionKey, scopedOptionKey } from '../ui/src/dashboard/options.ts';
 import { DEFAULT_VIEW, normalizeView, viewKey } from '../ui/src/families/manifest.ts';
 import { widgetMetas } from '../ui/src/widgets/definitions.ts';
 import { FAMILY_MANIFESTS, FAMILY_VIEWS } from '../ui/src/widgets/familyManifest.ts';
@@ -58,6 +59,9 @@ for (const entry of FAMILY_VIEWS) {
   const key = viewKey(entry.kind, view);
   if (familyPairs.has(key)) errors.push(`duplicate FAMILY_VIEWS entry: (${entry.kind}, ${view})`);
   familyPairs.add(key);
+  if (view !== DEFAULT_VIEW && !parseOptionKey(scopedOptionKey('option', view))) {
+    errors.push(`FAMILY_VIEWS(${entry.kind}, ${view}): the view name cannot scope a stored option key`);
+  }
   let list = familyByKind.get(entry.kind);
   if (!list) familyByKind.set(entry.kind, list = []);
   list.push(entry);

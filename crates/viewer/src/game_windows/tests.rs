@@ -618,10 +618,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
 
     let empty_tips = BTreeMap::new();
     let missing_err = service
-        .render_window_from_layers(
+        .render_composed_from_layers(
             fixture.key("custom_mod_missing_window"),
             &fixture.layers,
-            &Assets::default(),
             RenderParams {
                 window_name: "custom_mod_missing_window",
                 scale: 1.0,
@@ -633,7 +632,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 admitted_gen: None,
             },
             &cancel,
-            |_, _, _| {},
+            |_| Ok(Prepared::uncached(Assets::default(), ())),
+            |_, _, _, _, _, _, _| {},
+            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
         )
         .err()
         .unwrap();
@@ -641,10 +642,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
     assert!(missing_err.to_string().contains("custom_mod_missing_window"));
 
     let blank_err = service
-        .render_window_from_layers(
+        .render_composed_from_layers(
             fixture.key("mod_blank_panel"),
             &fixture.layers,
-            &Assets::default(),
             RenderParams {
                 window_name: "mod_blank_panel",
                 scale: 1.0,
@@ -656,7 +656,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 admitted_gen: None,
             },
             &cancel,
-            |_, _, _| {},
+            |_| Ok(Prepared::uncached(Assets::default(), ())),
+            |_, _, _, _, _, _, _| {},
+            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
         )
         .err()
         .unwrap();
@@ -664,10 +666,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
 
     let cancelled = AtomicBool::new(true);
     let cancel_err = service
-        .render_window_from_layers(
+        .render_composed_from_layers(
             fixture.key("mod_only_panel"),
             &fixture.layers,
-            &Assets::default(),
             RenderParams {
                 window_name: "mod_only_panel",
                 scale: 1.0,
@@ -679,7 +680,9 @@ fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
                 admitted_gen: None,
             },
             &cancelled,
-            |_, _, _| {},
+            |_| Ok(Prepared::uncached(Assets::default(), ())),
+            |_, _, _, _, _, _, _| {},
+            |_, _, _, _, _, _| Ok(ComposedPlan::default()),
         )
         .err()
         .unwrap();
@@ -1066,6 +1069,7 @@ fn sub_window_regions_take_their_place_in_paint_order() {
         disabled: false,
         close: false,
         passthrough: false,
+        view: None,
         tooltip: None,
         alpha_mask: None,
     };

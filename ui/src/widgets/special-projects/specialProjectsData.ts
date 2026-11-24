@@ -67,6 +67,7 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
   const shown = input.shown;
   const index = (value: unknown) => integer(value) && value >= 0 && value < (input.projects as unknown[]).length;
   if (!object(shown) || !nullableInteger(shown.through) || !Array.isArray(shown.running) || !shown.running.every(index)
+    || !Array.isArray(shown.unknown) || !shown.unknown.every(index)
     || !Array.isArray(shown.completed) || !shown.completed.every(item => object(item) && index(item.project) && nullableInteger(item.date))
     || !integer(shown.undated) || shown.undated < 0 || shown.undated > shown.completed.length) return bad();
   return input as unknown as SpecialProjectsReply;
@@ -194,12 +195,6 @@ export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard
   if (found.readHour > bound.through) return 'Project rewards and output were read after this project was last recorded.';
   if (!inStatuses(card.project, bound, found.readHour)) return 'Project rewards and output were read while this project was not recorded.';
   return { project: found, choices: recordedChoices(card.project, bound, found) };
-}
-
-export function joinDue(details: SpecialProjectDetails, card: ProjectCard, hour: number, bound: EpisodeBound): { hour: number; list: boolean } | null {
-  const found = joined(details, card);
-  if (listStale(found, bound)) return { hour: found!.readHour, list: true };
-  return details.hour > hour ? { hour: details.hour, list: false } : null;
 }
 
 const shownRuns = (project: ProjectRecord, hour: number, membership?: readonly HourSpan[]) => {

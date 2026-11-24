@@ -3,10 +3,9 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
-import { resolveEntityFromReadView, signedRampColour } from '../../families/heat/scale.ts';
+import { labelsAtReadings, resolveEntityFromReadView, signedRampColour } from '../../families/heat/scale.ts';
 import type { DiplomaticRelationsReply, OpinionOrder } from '../../generated/dashboard';
-import { mix } from '../../shell/appearance/color.ts';
-import { OPTIONS } from './definition.ts';
+import { surfaceMix } from '../../shell/appearance/color.ts';
 
 export const RELATIONS_TOP_DEFAULT = 12;
 
@@ -33,11 +32,17 @@ export function projectDiplomaticRelations(readView: BoundedReadView, options: D
   if (owners.length < 2) {
     return emptyModel(hour, { empty: 'Fewer than two countries are shown at this date.', warnings: reply.warnings });
   }
-  const grey = mix(options.surface, '#f5f5f5', 0.08);
+  const grey = surfaceMix(options.surface, 0.08);
   const negative = readableColour(CHART_MEASURE_COLOURS.opinionNegative, options.surface);
   const positive = readableColour(CHART_MEASURE_COLOURS.opinionPositive, options.surface);
-  const entities: MatrixAxisEntity[] = owners.map(owner => {
-    const resolved = resolveEntityFromReadView(readView, 'country', owner.tag, hour, owner.name ?? owner.tag, owner.nameMissing ?? null, options.surface);
+  const resolvedOwners = owners.map(owner => resolveEntityFromReadView(readView, 'country', owner.tag, hour, owner.name ?? owner.tag, owner.nameMissing ?? null, options.surface));
+  const labelAt = labelsAtReadings(
+    readView,
+    owners.map((owner, index) => ({ tag: owner.tag, label: resolvedOwners[index]!.label, validFrom: resolvedOwners[index]!.validFrom })),
+    owners.flatMap(owner => (owner.readHour === null || owner.readHour === undefined ? [] : [owner.readHour])),
+  );
+  const entities: MatrixAxisEntity[] = owners.map((owner, index) => {
+    const resolved = resolvedOwners[index]!;
     const group = options.order === 'faction' && owner.factionId
       ? { id: owner.factionId, label: owner.factionName ?? 'Faction name not recorded', ...(owner.color ? { color: readableColour(authoredHex(owner.color), options.surface) } : {}) }
       : null;
@@ -73,12 +78,12 @@ export function projectDiplomaticRelations(readView: BoundedReadView, options: D
       gradient: { lowLabel: formatOpinion(low), highLabel: formatOpinion(high), stops: [negative, grey, positive] },
       ...(hasMissing ? { entries: [{ id: 'missing', label: 'Not recorded', color: grey, hatched: true }] } : {}),
     },
-    tooltip: (row, column, item, rowIndex) => {
+    tooltip: (_row, _column, item, rowIndex, columnIndex) => {
       if (item.kind === 'diagonal') return null;
-      const owner = owners[rowIndex];
-      const readHour = owner?.readHour ?? hour;
-      if (item.kind === 'missing') return { title: `${row.label}’s opinion of ${column.label}`, hour: readHour, missingReason: item.reason };
-      return { title: `${row.label}’s opinion of ${column.label}`, hour: readHour, exactValue: item.kind === 'value' ? item.text ?? '0' : '0' };
+      const readHour = owners[rowIndex]?.readHour ?? hour;
+      const title = `${labelAt(rowIndex, readHour)}’s opinion of ${labelAt(columnIndex, readHour)}`;
+      if (item.kind === 'missing') return { title, hour: readHour, missingReason: item.reason };
+      return { title, hour: readHour, exactValue: item.kind === 'value' ? item.text ?? '0' : '0' };
     },
     warnings: reply.warnings,
   };
@@ -99,7 +104,6 @@ export const diplomaticRelationsDeclaration: HeatMatrixWidgetDeclaration<Diploma
   subject: 'diplomatic relations',
   emptyCampaign: 'Load a campaign to see diplomatic relations.',
   icon: 'handshake',
-  optionFields: OPTIONS,
   countries: { mode: 'multi', labels: false, colours: false },
   sources: (ctx): SourcePlan => {
     const order = orderOf(ctx.options.order);

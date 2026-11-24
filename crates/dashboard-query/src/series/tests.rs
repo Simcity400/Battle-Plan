@@ -317,30 +317,6 @@ fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
     assert!(owners[0].missing[0].reason.contains("not available"), "{}", owners[0].missing[0].reason);
 }
 
-const SPECIAL_TOTAL: usize = 4;
-const PRODUCTION_DEMAND: usize = 5;
-
-fn surplus(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
-    replay_columnar::summary::Computed::of(cells.number(SPECIAL_TOTAL, slot).zip(cells.number(PRODUCTION_DEMAND, slot)).and_then(|(a, b)| a.checked_add(b)))
-}
-
-static SURPLUS: Series = Series {
-    kind: "test-surplus",
-    table: TableId::CountryResources,
-    key: Key::Country,
-    parts: Some(dashboard_declare::Parts { bits: 32, id: Some((0, 32)) }),
-    measures: &[Measure {
-        name: "surplus",
-        column: Column::Computed { id: 900, inputs: &["special_total", "production_demand"], value: surplus },
-        decimals: 5,
-        aggregates: 0,
-        carry: Carry::None,
-        rank: 0,
-    }],
-    drops: false,
-    absent_none: false,
-};
-
 const POWER: usize = 2;
 const COMMAND: usize = 3;
 

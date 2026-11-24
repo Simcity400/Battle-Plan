@@ -25,20 +25,22 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-type Reading = number | null;
+type Reading = number | string | null;
+
+function reading(country: string, hour: number, value: Reading) {
+  const recorded = typeof value === 'number';
+  return {
+    country, hour, drop: null,
+    run: recorded ? { valueRaw: String(value), firstHour: hour - 10, lastHour: hour + 10, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true } : null,
+    missing: recorded ? null : value ?? 'Factories not recorded',
+  };
+}
 
 function panelOf(hour: number, rows: readonly (readonly [string, ...Reading[]])[], measures: readonly string[] = ['free7']) {
   return {
     branchId: '1', hour, from: hour, until: hour, refused: null,
     measures: measures.map(name => ({ name, decimals: 0 })),
-    rows: rows.map(([country, ...values]) => ({
-      country,
-      readings: values.map(value => ({
-        country, hour, drop: null,
-        run: value === null ? null : { valueRaw: String(value), firstHour: hour - 10, lastHour: hour + 10, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true },
-        missing: value === null ? 'Factories not recorded' : null,
-      })),
-    })),
+    rows: rows.map(([country, ...values]) => ({ country, readings: values.map(value => reading(country, hour, value)) })),
   };
 }
 
@@ -54,29 +56,27 @@ const BASE_OPTS: FactoriesProjectionOptions = {
   top: 10,
 };
 
+const SPLIT = ['free7', 'free1', 'free2', 'free4'];
+
+function partsView(hour: number, panel: unknown) {
+  return createBoundedReadView({
+    hour: displayedHour(hour),
+    panels: new Map(panel === undefined ? [] : [['main', panel]]),
+    identity: fakeIdentity({ GER: { name: 'German Reich', color: '#6b7280' } }),
+  });
+}
+
 test('factories projection preserves Rust top order, uses identity resolver, and matches exact audit', () => {
   const identity = fakeIdentity({
     USA: { name: 'United States', color: '#3b82f6' },
     GER: { name: 'German Reich', color: '#6b7280' },
     SOV: { name: 'Soviet Union', color: '#dc2626' },
   });
-
-  const followedView = createBoundedReadView({
-    hour: displayedHour(500),
-    panels: new Map([['main', panelOf(500, [['USA', 240], ['GER', 210], ['SOV', 180]])]]),
-    identity,
-  });
-  const exactView = createBoundedReadView({
-    hour: displayedHour(500),
-    panels: new Map([['main', panelOf(500, [['USA', 240], ['GER', 210], ['SOV', 180]])]]),
-    identity,
-  });
-
-  const followedModel = factoriesProjection.project(followedView, BASE_OPTS);
-  const exactModel = factoriesProjection.project(exactView, BASE_OPTS);
+  const panel = panelOf(500, [['USA', 240], ['GER', 210], ['SOV', 180]]);
+  const followedModel = factoriesProjection.project(createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', panel]]), identity }), BASE_OPTS);
+  const exactModel = factoriesProjection.project(createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', structuredClone(panel)]]), identity }), BASE_OPTS);
   assertBarsModelValid(followedModel, 500);
   assertBarsModelValid(exactModel, 500);
-
   const dataRows = followedModel.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(dataRows.map(r => [r.key, r.label, r.numeric]), [
     ['USA', 'United States', 240],
@@ -88,46 +88,29 @@ test('factories projection preserves Rust top order, uses identity resolver, and
   assert.deepEqual(deriveBarsAudit(followedModel), deriveBarsAudit(exactModel));
 });
 
-test('factories projection keeps missing readings as notRecorded with null numeric and keeps the product order with missing last', () => {
-  const identity = fakeIdentity({
-    GER: { name: 'German Reich', color: '#6b7280' },
-    ENG: { name: 'United Kingdom', color: '#e11d48' },
-  });
+test('factories projection keeps missing readings as notRecorded with null numeric and keeps the product order verbatim', () => {
   const view = createBoundedReadView({
     hour: displayedHour(200),
     panels: new Map([['main', panelOf(200, [['GER', 0], ['ENG', null]])]]),
-    identity,
+    identity: fakeIdentity({ GER: { name: 'German Reich', color: '#6b7280' }, ENG: { name: 'United Kingdom', color: '#e11d48' } }),
   });
-
   const model = factoriesProjection.project(view, { ...BASE_OPTS, top: null });
   assertBarsModelValid(model, 200);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
-  assert.equal(rows[0]!.key, 'GER');
-  assert.equal(rows[0]!.value?.value.kind, 'zero');
-  assert.equal(rows[0]!.numeric, 0);
-  assert.equal(rows[1]!.key, 'ENG');
-  assert.equal(rows[1]!.value?.value.kind, 'notRecorded');
-  assert.equal(rows[1]!.numeric, null);
+  assert.deepEqual(rows.map(row => [row.key, row.value?.value.kind, row.numeric]), [['GER', 'zero', 0], ['ENG', 'notRecorded', null]]);
+});
+
+test('a top the product refuses says why, never that no factories were recorded', () => {
+  const model = factoriesProjection.project(partsView(300, { ...panelOf(300, []), refused: 'Country factories not recorded at this hour' }), BASE_OPTS);
+  assert.deepEqual([model.rows.length, model.empty, model.emptyKind], [0, 'Country factories not recorded at this hour', 'unavailable']);
 });
 
 test('factories projection splits into group segments and rejects reads past displayed hour', () => {
-  const identity = fakeIdentity({ GER: { name: 'German Reich', color: '#6b7280' } });
-  const view = createBoundedReadView({
-    hour: displayedHour(300),
-    panels: new Map([['main', panelOf(300, [['GER', 100, 60, 10, 30]], ['free7', 'free1', 'free2', 'free4'])]]),
-    identity,
-  });
-
+  const view = partsView(300, panelOf(300, [['GER', 100, 60, 10, 30]], SPLIT));
   const model = factoriesProjection.project(view, { ...BASE_OPTS, split: true });
   assertBarsModelValid(model, 300);
   const row = model.rows[0] as BarsDataRow;
-  assert.equal(row.segments?.length, 3);
-  assert.deepEqual(row.segments?.map(s => [s.key, Math.round(s.share * 100)]), [
-    ['military', 60],
-    ['naval', 10],
-    ['civilian', 30],
-  ]);
-
+  assert.deepEqual(row.segments?.map(s => [s.key, Math.round(s.share * 100)]), [['military', 60], ['naval', 10], ['civilian', 30]]);
   assert.throws(() => view.who('country', 'GER', displayedHour(301)), FutureDataError);
 });
 
@@ -146,4 +129,66 @@ test('a pinned view with split on asks every part with the total in one rank of 
   assert.equal(params?.top, undefined, 'chosen countries are not a top');
   assert.deepEqual(params?.countries, ['ENG', 'GER'], 'the product ranks among the chosen countries');
   assert.ok(params?.measures?.length, 'every part is read in the same reply');
+});
+
+test('a missing part leaves the rest of the proven total as not recorded, and missing damage is never a damaged share', () => {
+  const split = factoriesProjection.project(partsView(300, panelOf(300, [['GER', 100, 40, 'Dockyards not recorded', 0]], SPLIT)), { ...BASE_OPTS, split: true });
+  const row = split.rows[0] as BarsDataRow;
+  assert.deepEqual(row.segments?.map(s => [s.key, Math.round(s.share * 100), s.value.kind, s.hatched === true]), [
+    ['military', 40, 'known', false],
+    ['unrecorded', 60, 'notRecorded', true],
+  ]);
+
+  const built = { ...BASE_OPTS, mode: 'built' as const, damagedSource: 'damaged7' };
+  const unknownDamage = factoriesProjection.project(partsView(300, panelOf(300, [['GER', 100, 'Damage not recorded']], ['built7', 'damaged7'])), built).rows[0] as BarsDataRow;
+  assert.equal(unknownDamage.segments, undefined, 'the whole bar stays one known total');
+  assert.deepEqual(unknownDamage.tooltip?.items?.find(item => item.label === 'Damaged'), { label: 'Damaged', missingReason: 'Damage not recorded' });
+
+  const partDamage = factoriesProjection.project(
+    partsView(300, panelOf(300, [['GER', 100, 60, 10, 30, 6, 'Damage not recorded', 0]], ['built7', 'free1', 'free2', 'free4', 'damaged1', 'damaged2', 'damaged4'])), {
+      ...built,
+      split: true,
+      parts: BASE_OPTS.parts.map((part, at) => ({ ...part, damagedSource: `damaged${[1, 2, 4][at]}` })),
+    }).rows[0] as BarsDataRow;
+  assert.deepEqual(partDamage.segments?.map(s => [s.key, Math.round(s.share * 100)]), [
+    ['military', 54], ['damaged:military', 6], ['naval', 10], ['civilian', 30],
+  ]);
+});
+
+test('the one reply is read and indexed once per picture, not once per country and part', () => {
+  const countries = Array.from({ length: 40 }, (_, at) => [`C${at}`, 100 - at, 10, 10, 10] as const);
+  const view = partsView(300, panelOf(300, countries, SPLIT));
+  const reads = new Map<string, number>();
+  const counted = { ...view, panel: (name: string) => { reads.set(name, (reads.get(name) ?? 0) + 1); return view.panel(name); } };
+  factoriesProjection.project(counted as typeof view, { ...BASE_OPTS, split: true });
+  assert.deepEqual([...reads], [['main', 1]]);
+});
+
+test('a factory type keeps its colour when a type before it is deselected', () => {
+  const ctx = (types: string) => ({
+    track: { source: { id: 's', revision: 1 }, axisOffset: 0 },
+    branch: { id: '1' },
+    options: { split: true, count: 'free', types },
+    countries: { top: 5, all: false, every: [], tags: [], membership: null, holders: null, unobserved: [] },
+  }) as unknown as Parameters<typeof factoriesDeclaration.projectionOptions>[0];
+  const colourOf = (types: string, id: string) => factoriesDeclaration.projectionOptions(ctx(types)).parts.find(part => part.id === id)!.color;
+  assert.equal(colourOf('naval civilian', 'civilian'), colourOf('', 'civilian'));
+  assert.equal(colourOf('civilian', 'civilian'), colourOf('', 'civilian'));
+});
+
+test('a group with no member at the displayed hour asks nothing and says so', () => {
+  const ctx = {
+    track: { source: { id: 's', revision: 1 }, axisOffset: 0 },
+    branch: { id: '1' },
+    options: { count: 'free' },
+    countries: { top: null, all: false, every: [], tags: ['ITA'], membership: { ITA: [[600, 900]] } },
+  } as unknown as Parameters<typeof factoriesDeclaration.sources>[0];
+  const main = factoriesDeclaration.sources(ctx, { following: false, staticSpan: null }).entries[0]!.read;
+  assert.equal(main.shape, 'point');
+  if (main.shape !== 'point') return;
+  assert.equal(main.buildExactParams?.(main.params!, 500 as never, 'static'), null);
+  assert.deepEqual((main.buildExactParams?.(main.params!, 700 as never, 'static') as { countries: unknown }).countries, ['ITA']);
+  const model = factoriesProjection.project(partsView(500, undefined), { ...BASE_OPTS, top: null, membership: { ITA: [[600, 900]] } });
+  assert.equal(model.emptyKind, 'empty');
+  assert.equal(model.empty, 'No country of this group at this date.');
 });

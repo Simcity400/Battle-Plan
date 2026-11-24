@@ -1,9 +1,9 @@
 
 use super::{
-    AirCountryStyle, AirMode, AirSide, AirSuperiorityAt, AirSuperiorityParams, BAD_BELOW, GOOD_ABOVE, HourScores, RecordedSideResolver, SCALE, SideResolver,
+    AirMode, AirSide, AirSuperiorityAt, AirSuperiorityParams, BAD_BELOW, GOOD_ABOVE, HourScores, RecordedSideResolver, SCALE, SideResolver,
     assignment::AssignedSide,
     compose::{Cell, Compose, Pair, Roster, View},
-    country_style_at, hour_scores,
+    hour_scores,
     index::{self, AirIndex},
     names, region_name, side_of,
 };
@@ -29,7 +29,7 @@ pub const DAY: i32 = replay_data::cadence::STAGGER_PERIOD;
 const BUCKET: i32 = replay_columnar::summary::BASE_HOURS as i32;
 const SERIES: &str = "air-scores";
 const TOP: usize = 10;
-pub const TILE_DAYS: i32 = 256;
+const ABSENT: u32 = u32::MAX;
 
 #[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -63,10 +63,14 @@ pub struct AirTimelineParams {
     #[doc = " How many of the most active regions are shown, without `regions`."]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<usize>,
-    #[doc = " The tile of `TILE_DAYS` game days (on the absolute grid of days) whose cells are asked, of"]
-    #[doc = " the regions `regions` names, in their order; the whole view ranked when none."]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional, type = "number"))]
-    pub tile: Option<i64>,
+    #[doc = " Ranks the rows by their activity over the whole days from this hour to the view's first hour, kept per source and extended by the days added since."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub rank_from: Option<i32>,
+    #[doc = " Every region with a score in the view, unranked, and `absent`: the cells of a region without one."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub every: Option<bool>,
 }
 
 impl AirTimelineParams {
@@ -87,9 +91,6 @@ impl AirTimelineParams {
         self.moment().validate()?;
         if self.first_hour > self.last_hour {
             return Err("Air timeline hours are reversed");
-        }
-        if self.tile.is_some() && self.regions.is_none() {
-            return Err("An air timeline tile names its regions");
         }
         Ok(())
     }
@@ -169,10 +170,11 @@ pub struct AirTimelineReply {
     pub legend: Vec<u32>,
     #[doc = " The viewpoint side's index, at the last day it is present."]
     pub viewpoint: Option<u32>,
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub viewpoint_country_style: Option<AirCountryStyle>,
     pub gaps: Vec<HourSpan>,
     pub rows: Vec<AirTimelineRow>,
+    #[doc = " With `every`: the days of a region without a score, as runs."]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub absent: Option<Vec<(u32, Option<AirDayCell>)>>,
     pub scale: i32,
     pub bad_below: i32,
     pub good_above: i32,
@@ -237,7 +239,7 @@ impl<'a> Days<'a> {
     fn theatre_reason(&self, day: usize, region: u32) -> Option<&'static str> {
         match self.theatres?.get(day)? {
             None | Some(Err(())) => Some("theatres-not-recorded"),
-            Some(Ok(regions)) if !regions.contains(&region) => Some("outside-theatres"),
+            Some(Ok(regions)) if region != ABSENT && !regions.contains(&region) => Some("outside-theatres"),
             Some(Ok(_)) => None,
         }
     }
@@ -717,67 +719,35 @@ fn bounds(query: &Query<'_>, stretches: &[Stretch], viewpoint: bool) -> Option<H
     Some(out.into_iter().map(|(region, bound)| (region, u128::try_from(bound).unwrap_or(0))).collect())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Want {
-    Whole,
-    Tile(i64),
+struct Window {
+    first_day: i32,
+    first_hour: i32,
+    count: usize,
+    days: Vec<Option<DayAt>>,
+    parts: Vec<Part>,
+    at_hours: HashMap<usize, DayRows>,
+    reads: Vec<Option<DayRead>>,
+    stretches: Vec<Stretch>,
+    theatres: Option<Vec<Option<Result<HashSet<u32>, ()>>>>,
 }
 
-fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, cancelled: &AtomicBool, want: Want) -> io::Result<AirTimelineReply> {
-    let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid air branch"))?;
-    let query = dashboard_base::queries::query(source, branch)?;
-    let index = index::index(source, branch).map_err(|error| dashboard_core::refused(format!("Air sides are not known: {error}")))?;
-    dashboard_text::metadata::check_cancel(cancelled)?;
-    let (view_first, view_last) = match want {
-        Want::Tile(tile) => {
-            let hours = i64::from(TILE_DAYS * DAY);
-            let first = i64::from(params.first_hour).max(tile * hours);
-            let last = i64::from(params.last_hour).min(tile * hours + hours - 1);
-            if first > last {
-                return Err(dashboard_core::invalid("The air timeline's tile is outside its view"));
-            }
-            (first as i32, last as i32)
-        }
-        _ => (params.first_hour, params.last_hour),
-    };
+impl Window {
+    fn charted(&self) -> Charted<'_> {
+        Charted { parts: &self.parts, days: &self.days, first_day: self.first_day, at_hour: &self.at_hours }
+    }
+
+    fn candidates(&self) -> BTreeSet<u32> {
+        self.parts.iter().flat_map(|part| part.regions.keys().copied()).chain(self.at_hours.values().flat_map(|(rows, ..)| rows.iter().map(|row| row.region))).collect()
+    }
+}
+
+fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_last: i32, warnings: &mut Vec<String>, cancelled: &AtomicBool) -> io::Result<Window> {
     let first_day = view_first.div_euclid(DAY);
     let first_hour = first_day.checked_mul(DAY).ok_or_else(|| dashboard_core::invalid("Air timeline start is outside the calendar range"))?;
     let count = (i64::from(view_last.div_euclid(DAY)) - i64::from(first_day) + 1) as usize;
     if count.saturating_mul(2).saturating_sub(1) > MAX_PRODUCT_REPLY_BYTES {
         return Err(dashboard_core::refused("The air timeline's days pass the reply budget: choose a shorter range"));
     }
-    let names = names(source, load);
-    let mut warnings = names.warnings.clone();
-    let gaps: Vec<HourSpan> = query
-        .timeline
-        .unheld
-        .iter()
-        .filter_map(|gap| {
-            let a = gap.first.max(first_hour);
-            let b = gap.last.min(view_last);
-            (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
-        })
-        .collect();
-    let pinned_set: HashSet<u32> = params.pinned_regions.iter().flatten().copied().collect();
-    let hidden_set: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
-    let pinned_list: Vec<u32> = {
-        let mut seen = HashSet::new();
-        params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect()
-    };
-    let named = |regions: &[u32], cells: Vec<Vec<(u32, Option<AirDayCell>)>>, readouts: Vec<Option<AirReadout>>| -> Vec<AirTimelineRow> {
-        regions
-            .iter()
-            .zip(cells.into_iter().chain(std::iter::repeat_with(Vec::new)))
-            .zip(readouts.into_iter().chain(std::iter::repeat(None)))
-            .map(|((&region, cells), readout)| {
-                let (name, name_missing) = region_name(&names, region);
-                let pinned = params.regions.is_some() || pinned_set.contains(&region);
-                AirTimelineRow { region, name, name_missing, pinned, readout, cells }
-            })
-            .collect()
-    };
-    let top = params.regions.is_none().then(|| params.top.unwrap_or(TOP));
-
     let stretches: Vec<Stretch> = query.timeline.within(first_hour, view_last).collect();
     let mut days: Vec<Option<DayAt>> = vec![None; count];
     for (at, stretch) in stretches.iter().enumerate() {
@@ -785,9 +755,9 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
             days[(day - first_day) as usize] = Some(DayAt { hour: stretch.last.min(day * DAY + DAY - 1), part: at });
         }
     }
-    let parts = stretches.par_iter().map(|stretch| part(&query, stretch)).collect::<io::Result<Vec<_>>>().map_err(|error| dashboard_core::refused(format!("Air scores are not summarized in this recording: {error}")))?;
+    let parts = stretches.par_iter().map(|stretch| part(query, stretch)).collect::<io::Result<Vec<_>>>().map_err(|error| dashboard_core::refused(format!("Air scores are not summarized in this recording: {error}")))?;
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let links: Vec<Option<Links>> = stretches.par_iter().map(|stretch| links(&query, stretch)).collect();
+    let links: Vec<Option<Links>> = stretches.par_iter().map(|stretch| links(query, stretch)).collect();
 
     let mut at_hours: HashMap<usize, DayRows> = HashMap::new();
     let mut unread: HashSet<usize> = HashSet::new();
@@ -797,7 +767,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
             continue;
         }
         let reads = [Read::all(TableId::RaidAirScores), Read::all(TableId::CountryLinks)];
-        let frame = at_hour::frame_with(&query, read.hour, &reads, AirSuperiorityAt::columns, "Air superiority")?;
+        let frame = at_hour::frame_with(query, read.hour, &reads, AirSuperiorityAt::columns, "Air superiority")?;
         match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(&frame) {
             Ok(rows) => {
                 let complete = frame.complete::<tables::RaidAirScores>().is_ok();
@@ -836,58 +806,150 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         reads.push(Some(DayRead { hour: day.hour, witnesses: charted.witnesses(at), complete: true, links }));
     }
     dashboard_text::metadata::check_cancel(cancelled)?;
+    let theatres = params.theatres.as_deref().filter(|ids| !ids.is_empty()).map(|ids| theatre_days(query, &stretches, &reads, &days, ids));
+    Ok(Window { first_day, first_hour, count, days, parts, at_hours, reads, stretches, theatres })
+}
 
-    let chosen_theatres = params.theatres.as_deref().filter(|ids| !ids.is_empty());
-    let theatres: Option<Vec<Option<Result<HashSet<u32>, ()>>>> = chosen_theatres.map(|ids| theatre_days(&query, &stretches, &reads, &days, ids));
-    let composer = Days { index: &index, holders: &query.holders, days: &reads, rows: &charted, params, theatres: theatres.as_deref() };
+#[derive(Clone)]
+struct Totals {
+    through: i32,
+    totals: HashMap<u32, u128>,
+}
+
+#[derive(Default)]
+struct HeldTotals(HashMap<String, Totals>);
+
+const HELD_TOTALS: usize = 32;
+
+fn completed_totals(source: &Source, query: &Query<'_>, index: &AirIndex, params: &AirTimelineParams, from: i32, through: i32, cancelled: &AtomicBool) -> io::Result<HashMap<u32, u128>> {
+    let key = serde_json::to_string(&(&params.branch_id, params.mode, &params.viewpoint, params.viewpoint_country, &params.sides, &params.regions, &params.theatres, from)).map_err(|error| dashboard_core::invalid(error.to_string()))?;
+    let state = source.state::<HeldTotals>();
+    let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key).filter(|held| held.through <= through).cloned();
+    let (start, mut totals) = held.map_or((from, HashMap::new()), |held| (held.through + 1, held.totals));
+    if start <= through {
+        let mut ignored = Vec::new();
+        let added = window(query, params, start, through, &mut ignored, cancelled)?;
+        let candidates: Vec<u32> = added.candidates().into_iter().collect();
+        let charted = added.charted();
+        let composer = Days { index, holders: &query.holders, days: &added.reads, rows: &charted, params, theatres: added.theatres.as_deref() };
+        for (region, amount) in candidates.iter().zip(composer.totals(&candidates, added.count, cancelled)?) {
+            *totals.entry(*region).or_default() += amount;
+        }
+        let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.0.len() >= HELD_TOTALS && !state.0.contains_key(&key) {
+            state.0.clear();
+        }
+        state.0.insert(key, Totals { through, totals: totals.clone() });
+    }
+    Ok(totals)
+}
+
+fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<AirTimelineReply> {
+    let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid air branch"))?;
+    let query = dashboard_base::queries::query(source, branch)?;
+    let index = index::index(source, branch).map_err(|error| dashboard_core::refused(format!("Air sides are not known: {error}")))?;
+    dashboard_text::metadata::check_cancel(cancelled)?;
+    let (view_first, view_last) = (params.first_hour, params.last_hour);
+    let names = names(source, load);
+    let mut warnings = names.warnings.clone();
+    let shown_window = window(&query, params, view_first, view_last, &mut warnings, cancelled)?;
+    let (first_hour, count) = (shown_window.first_hour, shown_window.count);
+    let gaps: Vec<HourSpan> = query
+        .timeline
+        .unheld
+        .iter()
+        .filter_map(|gap| {
+            let a = gap.first.max(first_hour);
+            let b = gap.last.min(view_last);
+            (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
+        })
+        .collect();
+    let pinned_set: HashSet<u32> = params.pinned_regions.iter().flatten().copied().collect();
+    let hidden_set: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+    let pinned_list: Vec<u32> = {
+        let mut seen = HashSet::new();
+        params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect()
+    };
+    let named = |regions: &[u32], cells: Vec<Vec<(u32, Option<AirDayCell>)>>, readouts: Vec<Option<AirReadout>>| -> Vec<AirTimelineRow> {
+        regions
+            .iter()
+            .zip(cells.into_iter().chain(std::iter::repeat_with(Vec::new)))
+            .zip(readouts.into_iter().chain(std::iter::repeat(None)))
+            .map(|((&region, cells), readout)| {
+                let (name, name_missing) = region_name(&names, region);
+                let pinned = params.regions.is_some() || pinned_set.contains(&region);
+                AirTimelineRow { region, name, name_missing, pinned, readout, cells }
+            })
+            .collect()
+    };
+    let every = params.every == Some(true);
+    let top = (params.regions.is_none() && !every).then(|| params.top.unwrap_or(TOP));
+    let charted = shown_window.charted();
+    let composer = Days { index: &index, holders: &query.holders, days: &shown_window.reads, rows: &charted, params, theatres: shown_window.theatres.as_deref() };
 
     let mut candidates: BTreeSet<u32> = match &params.regions {
         Some(regions) => regions.iter().copied().collect(),
-        None => parts.iter().flat_map(|part| part.regions.keys().copied()).chain(at_hours.values().flat_map(|(rows, ..)| rows.iter().map(|row| row.region))).collect(),
+        None => shown_window.candidates(),
     };
-    if let Some(theatres) = &theatres {
+    let completed = params.rank_from.filter(|&from| !every && params.regions.is_none() && from < first_hour).map(|from| completed_totals(source, &query, &index, params, from, first_hour - 1, cancelled)).transpose()?;
+    if let Some(totals) = &completed {
+        candidates.extend(totals.keys().copied());
+    }
+    if let Some(theatres) = &shown_window.theatres {
         let known: Vec<&HashSet<u32>> = theatres.iter().flatten().filter_map(|read| read.as_ref().ok()).collect();
         if known.len() == theatres.iter().flatten().count() {
             let allowed: HashSet<u32> = known.into_iter().flatten().copied().collect();
             candidates.retain(|region| allowed.contains(region));
         }
     }
-    let candidates: Vec<u32> = candidates.into_iter().filter(|region| params.regions.is_some() || (!pinned_set.contains(region) && !hidden_set.contains(region))).collect();
-    let shown = match want {
-        Want::Tile(_) => params.regions.clone().ok_or_else(|| dashboard_core::invalid("An air timeline tile names its regions"))?,
-        _ => {
-            let counted = if count <= 1 || view_last.rem_euclid(DAY) == DAY - 1 { count } else { count - 1 };
-            let viewpoint = params.mode == Some(AirMode::Viewpoint);
-            let bounds = top.and_then(|_| bounds(&query, &stretches, viewpoint));
-            let mut ranked = composer.rank(&candidates, bounds.as_ref(), counted, top, cancelled)?;
-            if params.regions.is_none() && !pinned_list.is_empty() {
-                let mut combined = pinned_list.clone();
-                combined.append(&mut ranked);
-                combined
-            } else {
-                ranked
+    let candidates: Vec<u32> = candidates.into_iter().filter(|region| every || params.regions.is_some() || (!pinned_set.contains(region) && !hidden_set.contains(region))).collect();
+    let shown = if every {
+        let mut shown = candidates;
+        shown.push(ABSENT);
+        shown
+    } else {
+        let mut ranked = match &completed {
+            Some(totals) => {
+                let mut order: Vec<(u32, u128)> = candidates.iter().map(|&region| (region, totals.get(&region).copied().unwrap_or(0))).collect();
+                order.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                order.truncate(top.unwrap_or(usize::MAX));
+                order.into_iter().map(|(region, _)| region).collect()
             }
+            None => {
+                let counted = if count <= 1 || view_last.rem_euclid(DAY) == DAY - 1 { count } else { count - 1 };
+                let viewpoint = params.mode == Some(AirMode::Viewpoint);
+                let bounds = top.and_then(|_| bounds(&query, &shown_window.stretches, viewpoint));
+                composer.rank(&candidates, bounds.as_ref(), counted, top, cancelled)?
+            }
+        };
+        if params.regions.is_none() && !pinned_list.is_empty() {
+            let mut combined = pinned_list.clone();
+            combined.append(&mut ranked);
+            combined
+        } else {
+            ranked
         }
     };
-    let mut resolver = RecordedSideResolver::new(source, &query, branch, load, cancelled, &mut warnings)?;
-    let cells = composer.shown_with_resolver(&shown, &index, &mut resolver, cancelled)?;
-    let viewpoint_country_style = (params.mode == Some(AirMode::Viewpoint) && params.viewpoint_country == Some(true)).then(|| {
-        let tag = super::viewpoint_name(params.viewpoint.as_ref(), true, &query.holders, view_last);
-        (!tag.is_empty()).then(|| country_style_at(tag, view_last, &mut resolver))
-    }).flatten();
-    let rows = named(&shown, cells.cells, cells.readouts.into_iter().map(Some).collect());
+    let mut resolver = RecordedSideResolver::new(source, &query, load, cancelled, &mut warnings)?;
+    let mut cells = composer.shown_with_resolver(&shown, &index, &mut resolver, cancelled)?;
+    let absent = every.then(|| cells.cells.pop().unwrap_or_default());
+    if every {
+        cells.readouts.pop();
+    }
+    let shown = &shown[..cells.cells.len()];
+    let rows = named(shown, cells.cells, cells.readouts.into_iter().map(Some).collect());
     Ok(AirTimelineReply {
         first_hour,
         last_hour: view_last,
         day_hours: DAY,
-        days: reads.iter().map(|read| read.as_ref().map(|read| read.hour)).collect(),
+        days: shown_window.reads.iter().map(|read| read.as_ref().map(|read| read.hour)).collect(),
         excluded: cells.excluded,
         sides: cells.sides,
         legend: cells.legend,
         viewpoint: cells.viewpoint,
-        viewpoint_country_style,
         gaps,
         rows,
+        absent,
         scale: SCALE,
         bad_below: BAD_BELOW,
         good_above: GOOD_ABOVE,
@@ -901,12 +963,12 @@ impl Product for AirSuperiorityTimeline {
     const KEY: &'static str = "air-superiority-timeline";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirTimelineParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, mode, viewpoint, viewpointCountry, sides, regions, pinnedRegions, hiddenRegions, theatres, top, tile, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, rankFrom: Start, every, mode, viewpoint, viewpointCountry, sides, regions, pinnedRegions, hiddenRegions, theatres, top, "regions[]", "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = AirTimelineReply;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![AirTimelineParams::decl(), AirTimelineReply::decl(), AirTimelineRow::decl(), AirDayCell::decl(), AirDaySides::decl(), AirDayPart::decl(), AirReadout::decl(), AirCountryStyle::decl(), HourSpan::decl()]
+        vec![AirTimelineParams::decl(), AirTimelineReply::decl(), AirTimelineRow::decl(), AirDayCell::decl(), AirDaySides::decl(), AirDayPart::decl(), AirReadout::decl(), HourSpan::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -914,6 +976,6 @@ impl Product for AirSuperiorityTimeline {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        timeline(source, params, context, cancelled, params.tile.map_or(Want::Whole, Want::Tile))
+        timeline(source, params, context, cancelled)
     }
 }

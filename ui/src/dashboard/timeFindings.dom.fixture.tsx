@@ -81,7 +81,7 @@ const pushPanels = (hour: number, only?: number) => {
 const followLog: string[] = [];
 const state = {
   asks: [] as Ask[], options: [] as [string, unknown][], pins: [] as unknown[], replies: {} as Record<string, Reply>, failures: new Set<string>(),
-  groups: null as unknown, trade: undefined as unknown, raids: undefined as unknown, props: {} as Record<string, Record<string, unknown>>, accept: true,
+  groups: null as unknown, raids: undefined as unknown, props: {} as Record<string, Record<string, unknown>>, accept: true,
   shown: [] as (number | null)[],
 };
 const reportShown = (hour: number | null) => { state.shown.push(hour); };
@@ -93,9 +93,6 @@ Object.assign(globalThis, { __finding: {
   useRaidLog: (_widget: unknown, runtime: WidgetRuntime) => state.raids === undefined ? undefined
     : state.raids === 'failed' ? { track: runtime.tracks[0], data: undefined, error: new Error('raids failed'), retry() {} }
     : { track: runtime.tracks[0], data: state.raids, error: undefined, retry() {} },
-  useTradeFlows: (_widget: unknown, runtime: WidgetRuntime) => state.trade === undefined ? undefined
-    : { track: runtime.tracks[0], all: true, resolved: null, groups: { data: state.groups ?? undefined, complete: true, error: undefined, retry() {} }, scope: null,
-      data: state.trade, error: undefined, retry() {}, extent: [100, 109] },
 } });
 
 const pending = new Promise<never>(() => {});
@@ -190,7 +187,7 @@ const read = () => {
 };
 
 export interface Scene { kind: string; time: WidgetSpec['time']; options?: Record<string, unknown>; countries?: WidgetSpec['countries']; hour: number;
-  replies?: Record<string, string>; failures?: string[]; groups?: unknown; trade?: unknown; raids?: unknown; gaps?: { firstHour: number; lastHour: number; reason: string }[];
+  replies?: Record<string, string>; failures?: string[]; groups?: unknown; raids?: unknown; gaps?: { firstHour: number; lastHour: number; reason: string }[];
   accept?: boolean; last?: number; requestsWhilePlaying?: boolean }
 
 const dated = new Map<string, boolean | undefined>();
@@ -219,7 +216,7 @@ Object.assign(window, { findings: {
     forgetProducts(client as never, 'findings');
     document.body.replaceChildren();
     Object.assign(state, { asks: [], options: [], pins: [], shown: [], props: {}, replies: Object.fromEntries(Object.entries(scene.replies ?? {}).map(([name, body]) => [name, replyOf(body)])),
-      failures: new Set(scene.failures ?? []), groups: scene.groups ?? null, trade: scene.trade, raids: scene.raids, accept: scene.accept ?? true });
+      failures: new Set(scene.failures ?? []), groups: scene.groups ?? null, raids: scene.raids, accept: scene.accept ?? true });
     clock.setPlaying(false);
     clock.setBounds({ firstHour: 0, lastHour: Math.max(200, (scene.last ?? LAST) + 100) });
     clock.seek(scene.hour);

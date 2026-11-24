@@ -25,7 +25,8 @@ import {
   NOT_APPLICABLE_LABEL,
   notRecordedLabel,
 } from '../families/valueFormat.ts';
-import { luminance, mix, parseColor } from '../shell/appearance/color.ts';
+import { CHART_MEASURE_COLOURS } from '../charts/palette.ts';
+import { luminance, mix, parseColor, rgbaColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
 import type { KitRaster, PathBuilder, PathPaint } from './path';
 
@@ -109,13 +110,32 @@ function isDarkTheme(theme: Pick<FamilyTheme, 'surface' | 'dark'>): boolean {
   return 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b < 128;
 }
 
-function rgba(color: string, alpha: number, fallback: string): string {
-  const rgb = parseColor(color);
-  if (!rgb) return fallback;
-  return `rgba(${Math.round(rgb.r)}, ${Math.round(rgb.g)}, ${Math.round(rgb.b)}, ${alpha})`;
-}
+export const DEFAULT_FAMILY_THEME: FamilyTheme = {
+  surface: '#111111',
+  raised: '#262626',
+  dark: true,
+  text: '#f5f5f5',
+  muted: '#929292',
+  line: 'rgba(245, 245, 245, 0.18)',
+  lineSoft: 'rgba(245, 245, 245, 0.055)',
+  accent: '#4f86f7',
+  blue: '#4f86f7',
+  red: CHART_MEASURE_COLOURS.short,
+  shortage: CHART_MEASURE_COLOURS.shortInk,
+  amber: CHART_MEASURE_COLOURS.politicalPower,
+  green: CHART_MEASURE_COLOURS.supplyOk,
+  grey: '#929292',
+  hatch: 'rgba(245, 245, 245, 0.17)',
+  hatchEdge: 'rgba(245, 245, 245, 0.12)',
+  font: "'Segoe UI', system-ui, sans-serif",
+  fontSize: { small: 11, body: 12 },
+  lineWidth: 1,
+  hatchSpacing: 5,
+};
 
-export function resolveKitTokens(theme: FamilyTheme) {
+export function resolveKitTokens(
+  theme: Pick<FamilyTheme, 'surface' | 'text' | 'muted' | 'accent'> & Partial<FamilyTheme>,
+) {
   const dark = isDarkTheme(theme);
   const ink = dark ? '255, 255, 255' : '15, 23, 42';
   return {
@@ -126,20 +146,27 @@ export function resolveKitTokens(theme: FamilyTheme) {
     bandDivider: theme.bandDivider ?? `rgba(${ink}, ${dark ? 0.12 : 0.15})`,
     headerBand: theme.headerBand ?? `rgba(${ink}, ${dark ? 0.025 : 0.03})`,
     rowHover: theme.rowHover ?? `rgba(${ink}, ${dark ? 0.045 : 0.05})`,
-    rowSelected: theme.rowSelected ?? rgba(theme.accent, 0.14, dark ? 'rgba(96, 165, 250, 0.14)' : 'rgba(37, 99, 235, 0.14)'),
+    rowSelected: theme.rowSelected ?? rgbaColor(theme.accent, 0.14, dark ? 'rgba(96, 165, 250, 0.14)' : 'rgba(37, 99, 235, 0.14)'),
     childTint: theme.childTint ?? `rgba(${ink}, ${dark ? 0.018 : 0.025})`,
     shortage: theme.shortage ?? (dark ? '#ff6b6f' : '#e5484d'),
     barMuted: theme.barMuted ?? `rgba(${ink}, ${dark ? 0.085 : 0.095})`,
     barTrack: theme.barTrack ?? `rgba(${ink}, ${dark ? 0.08 : 0.1})`,
     gridLine: theme.gridLine ?? `rgba(${ink}, ${dark ? 0.055 : 0.07})`,
     zeroLine: theme.zeroLine ?? `rgba(${ink}, ${dark ? 0.18 : 0.22})`,
-    tailLine: theme.tailLine ?? rgba(theme.muted, 0.22, `rgba(${ink}, 0.22)`),
+    tailLine: theme.tailLine ?? rgbaColor(theme.muted, 0.22, `rgba(${ink}, 0.22)`),
     playhead: theme.playhead ?? `rgba(${ink}, ${dark ? 0.28 : 0.34})`,
     crosshair: theme.crosshair ?? `rgba(${ink}, ${dark ? 0.5 : 0.52})`,
     dateTabBg: theme.dateTabBg ?? (theme.raised ?? theme.surface),
     dateTabText: theme.dateTabText ?? theme.text,
     hoverTabBg: theme.hoverTabBg ?? theme.text,
     hoverTabText: theme.hoverTabText ?? theme.surface,
+    textSecondary: dark ? '#d4d4d4' : theme.muted,
+    childText: dark ? '#d4d4d4' : theme.text,
+    barNeutral: dark ? '#cfcfcf' : '#64748b',
+    trackGrey: dark ? '#c4c4c4' : '#64748b',
+    twoWayNeutral: dark ? 'rgba(245, 245, 245, 0.28)' : 'rgba(15, 23, 42, 0.25)',
+    markerTick: dark ? 'rgba(245, 245, 245, 0.42)' : 'rgba(15, 23, 42, 0.42)',
+    partsTrack: dark ? 'rgba(245, 245, 245, 0.045)' : 'rgba(15, 23, 42, 0.05)',
   };
 }
 
@@ -261,7 +288,7 @@ export function drawScrollFade(
   ctx.save();
   const gradient = ctx.createLinearGradient(x0, y0, x1, y1);
   gradient.addColorStop(0, theme.surface);
-  gradient.addColorStop(1, rgba(theme.surface, 0, 'rgba(0, 0, 0, 0)'));
+  gradient.addColorStop(1, rgbaColor(theme.surface, 0, 'rgba(0, 0, 0, 0)'));
   ctx.fillStyle = gradient;
   ctx.fillRect(x, y, width, height);
   ctx.restore();
@@ -989,7 +1016,7 @@ export function drawSeriesMissingStrip(
 ): void {
   if (width <= 0 || height <= 0) return;
   ctx.save();
-  ctx.fillStyle = rgba(color, 0.16, color);
+  ctx.fillStyle = rgbaColor(color, 0.16, color);
   ctx.fillRect(x, y, width, height);
   drawHatchRect(ctx, x, y, width, height, 0, {
     hatch: color,
@@ -1145,7 +1172,7 @@ function fadeFill(ctx: Canvas2D, x: number, width: number, fill: string, fadeSta
   if ((!fadeStart && !fadeEnd) || width <= 2) return fill;
   const grad = ctx.createLinearGradient(x, 0, x + width, 0);
   const stop = Math.min(0.45, TIMELINE_FADE_WIDTH / width);
-  const clear = rgba(fill, 0, 'rgba(0,0,0,0)');
+  const clear = rgbaColor(fill, 0, 'rgba(0,0,0,0)');
   grad.addColorStop(0, fadeStart ? clear : fill);
   if (fadeStart) grad.addColorStop(stop, fill);
   if (fadeEnd) grad.addColorStop(1 - stop, fill);
@@ -1546,24 +1573,10 @@ export function drawIconStrip(
       countW = textWidth(ctx, countText) + 3;
       ctx.restore();
     }
-    const needW = size + countW;
-    const moreAfter = i < items.length - 1;
-    const reserve = moreAfter ? 26 : 0;
-    if (cursor + needW + reserve > right && drawnCount > 0) {
-      const overflowCount = items.length - drawnCount;
-      ctx.save();
-      ctx.font = `500 11.5px ${theme.font}`;
-      ctx.fillStyle = theme.muted;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`+${overflowCount}`, cursor, middleY);
-      ctx.restore();
-      return { drawnCount, overflowCount };
-    }
-    if (cursor + size > right) break;
+    if (cursor + size + countW > right) break;
     drawArtSlot(ctx, cursor, y, size, size, item.state, theme, { radius: 3 });
     cursor += size;
-    if (countText && cursor + countW <= right) {
+    if (countText) {
       ctx.save();
       ctx.font = `600 11px ${theme.font}`;
       ctx.fillStyle = theme.text;

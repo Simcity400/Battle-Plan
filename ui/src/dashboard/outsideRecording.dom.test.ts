@@ -36,9 +36,6 @@ const STUBS: Record<string, string> = {
   '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__fixture.groups, complete: true, retry() {} });',
   '/charts/sunburst/Sunburst.tsx': 'export default () => null;',
   '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
-  '/widgets/trade-flows/useTradeFlows.ts': `export const tradeFlowsRequest = () => null; export const useTradeWindows = () => ({ data: undefined, retry() {} });
-    export const useTradeFlows = (_widget, runtime) => ({ track: runtime.tracks[0], all: true, resolved: null, groups: {}, scope: null, data: globalThis.__fixture.trade, error: undefined, retry() {}, extent: [100, 109] });`,
-  '/charts/flow/FlowDiagram.tsx': `import { createElement } from 'react'; export default props => createElement('p', null, 'Diagram at ' + (props.live ? props.live.read().hour : props.hour));`,
 };
 const stubs = { name: 'outside-widgets', enforce: 'pre' as const, transform(_code: string, id: string) {
   return Object.entries(STUBS).find(([suffix]) => id.replaceAll('\\', '/').split('?')[0].endsWith(suffix))?.[1];
@@ -47,13 +44,6 @@ const stubs = { name: 'outside-widgets', enforce: 'pre' as const, transform(_cod
 const onPage = (run: (act: <T>(expression: string) => Promise<T>) => Promise<void>) => withNativePage('outside-widgets', '/ui/src/dashboard/outsideWidgets.dom.fixture.tsx',
   page => page.stage('outside widgets', () => run(expression => page.evaluate(`window.outsideWidgets.${expression}`)), 120_000), [stubs]);
 const outside = OUTSIDE.split(': ')[1];
-
-test('Trade flows kept mounted and stepped from 109 to 110, past its track, shows no diagram of 109 as current', () => onPage(async act => {
-  const atEnd = await act<string>("mount('trade', 109)");
-  assert.match(atEnd, /Diagram at 109/, `at 109 the current diagram is drawn: ${atEnd}`);
-  const stepped = await act<{ hour: number; text: string }>("step('trade')");
-  assert.ok(stepped.hour === 110 && stepped.text.includes(outside) && !/Diagram at/.test(stepped.text), `stepped to 110: ${JSON.stringify(stepped)}`);
-}));
 
 test('Equipment losses mounted at 99, before a country recorded 100–109, is outside the recording, and binds the country once the clock enters the track', () => onPage(async act => {
   const before = await act<string>("mount('losses', 99)");

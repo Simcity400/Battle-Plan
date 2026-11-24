@@ -6,8 +6,6 @@ import type { Artwork, HourSpan, IdeaHistoryReply, IdeaInfo, IdeaSpan } from '..
 
 export const NATIONAL_SPIRIT_TYPE = 'national_spirit';
 
-export type SpiritSort = 'gained' | 'ended' | 'name';
-
 export interface Spirit {
   token: string;
   name: string;
@@ -60,10 +58,6 @@ export function endedBy(spirit: Spirit, hour: number, unobserved: readonly HourS
 
 export { startUnseen };
 
-export function spiritsShown(list: readonly Spirit[], hour: number, sort: SpiritSort, showEnded: boolean, unobserved: readonly HourSpan[] = []): Spirit[] {
-  const seen = list.filter(spirit => firstGained(spirit) <= hour && (showEnded || endedBy(spirit, hour, unobserved) == null));
-  const key = (spirit: Spirit) => endedBy(spirit, hour, unobserved) ?? Infinity;
-  return seen.sort(sort === 'name' ? (a, b) => a.name.localeCompare(b.name)
-    : sort === 'ended' ? (a, b) => key(a) - key(b) || firstGained(a) - firstGained(b)
-      : (a, b) => firstGained(a) - firstGained(b) || a.name.localeCompare(b.name));
+export function spiritsShown(list: readonly Spirit[], hour: number, showEnded: boolean, unobserved: readonly HourSpan[] = []): Spirit[] {
+  return list.filter(spirit => firstGained(spirit) <= hour && (showEnded || endedBy(spirit, hour, unobserved) == null));
 }

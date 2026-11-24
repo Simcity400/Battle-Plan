@@ -7,6 +7,7 @@ import {
   resolveActiveView,
   scopedOptionFields,
   viewKey,
+  viewOwnedFields,
   type FamilyViewEntry,
   type FamilyViewModule,
   type LegacyWidgetEntry,
@@ -37,15 +38,12 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'industrial-organisations': { load: () => import('./industrial-organisations') },
   'international-market': { load: () => import('./international-market') },
   'minefields': { load: () => import('./minefields') },
-  'national-focus': { load: () => import('./national-focus') },
-  'national-spirits': { load: () => import('./national-spirits') },
-  'occupied-states': { load: () => import('./occupied-states') },
+  'navy-size': { load: () => import('./navy-size') },
   'political-power': { load: () => import('./political-power'), slots: ['render', 'countryChip'] },
   'production-lines': { load: () => import('./production-lines') },
   'scoreboard': { load: () => import('./scoreboard') },
   'special-projects': { load: () => import('./special-projects/current.ts') },
   'stability': { load: () => import('./stability') },
-  'war-goals': { load: () => import('./war-goals') },
   'convoy-health': { load: () => import('./convoy-health'), slots: ['render', 'countryChip'] },
   'air-superiority-timeline': { load: () => import('./air-superiority-timeline'), slots: ['render', 'countryChip'] },
   'weather-by-region': { load: () => import('./weather-by-region') },
@@ -84,6 +82,26 @@ export function legacyEntriesForKind(kind: string): readonly LegacyWidgetEntry[]
 
 export function manifestFamilyView(kind: string, view?: string): FamilyViewEntry | undefined {
   return familyByPair.get(viewKey(kind, view));
+}
+
+const viewFields = new Map<string, readonly OptionField[]>();
+
+export function familyViewOptionFields(kind: string, view?: string): readonly OptionField[] {
+  const key = viewKey(kind, view);
+  const held = viewFields.get(key);
+  if (held) return held;
+  const definition = widgetDefinition(kind);
+  const fields = new Map<string, OptionField>();
+  for (const field of definition?.options ?? []) fields.set(field.key, field);
+  for (const field of familyByPair.get(key)?.options ?? []) fields.set(field.key, field);
+  const owned = viewOwnedFields([...fields.values()], view);
+  if (definition) viewFields.set(key, owned);
+  return owned;
+}
+
+export function widgetOptionFields(kind: string, storedOptions?: WidgetOptions): readonly OptionField[] {
+  const view = resolveWidgetActiveView(kind, storedOptions);
+  return familyByPair.has(viewKey(kind, view)) ? familyViewOptionFields(kind, view) : widgetDefinition(kind)?.options ?? [];
 }
 
 export function manifestLegacyEntry(kind: string, view?: string): LegacyWidgetEntry | undefined {

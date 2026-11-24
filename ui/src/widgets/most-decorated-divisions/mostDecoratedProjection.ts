@@ -4,12 +4,13 @@ import type { DeclaredCountryFilter, TableWidgetDeclaration } from '../../famili
 import { declareTableProjection, type DeclarativeColumnSpec, type TableCellIconItem, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { CELL_INSET, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
+import { ICON_STRIP_GAP, MEDAL_ICON_SIZE } from '../../draw/kit.ts';
 import { knownValue, textValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import type { CareerMedal, CareerRow, CareerTemplate, DivisionCareersReply } from '../../generated/dashboard';
 import { artState } from '../../families/table/identityCell.ts';
 import { validateDivisionCareers } from '../division-service-record/careersData.ts';
-import { COLUMNS, TABLE_BASE, OPTIONS } from './definition.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 
 export interface DecoratedOptions { readonly filter: DeclaredCountryFilter }
 
@@ -76,13 +77,15 @@ const [KIND, COUNTRY, DIVISION, MEDALS, EXPERIENCE, CASUALTIES] = COLUMNS;
 
 export const CASUALTIES_TAKEN_NOTE = 'The game’s own count of the men this division has lost, as shown on its history tab in the game. It leaves out the men lost when a division is destroyed and losses from paradrop landings.';
 
+const MEDALS_SHOWN = 4;
+
 const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedOptions>[] = [
   { ...KIND!, priority: 5, sortable: false, cellKind: 'kind', extra: () => ({ artShape: 'counter' }), iconSlot: true, icon: item => item.kind.icon, iconPending: item => item.kind.pending,
     value: item => textValue(item.template?.name ?? null, 'Template name unavailable') },
   { ...COUNTRY!, priority: 1, iconSlot: true, icon: item => item.flag.icon, iconPending: item => item.flag.pending, country: item => item.row.tag, value: item => item.country },
   { ...DIVISION!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['175 Guangxi Juntuán'],
     value: item => textValue(item.row.name, item.row.nameMissing ?? 'Division name unavailable') },
-  { ...MEDALS!, priority: 2, numeric: true, cellKind: 'icons', format: 'integer', widest: ['■ ■ ■ ■'],
+  { ...MEDALS!, priority: 2, numeric: true, cellKind: 'icons', format: 'integer', minWidth: MEDALS_SHOWN * MEDAL_ICON_SIZE + (MEDALS_SHOWN - 1) * ICON_STRIP_GAP + CELL_INSET * 2,
     extra: item => ({ iconStripKind: 'medals', icons: item.strip }),
     value: item => count(item.row.facts.medals, item.row.facts.historyMissing ?? 'Medals not recorded') },
   { ...EXPERIENCE!, priority: 4, text: true, widest: ['Veterans'],
@@ -130,7 +133,6 @@ export const mostDecoratedDeclaration: TableWidgetDeclaration<DecoratedOptions> 
   subject: 'divisions',
   emptyCampaign: 'Load a campaign to see divisions.',
   icon: 'star',
-  optionFields: OPTIONS,
   countries: { mode: 'filter' },
   sources: ctx => ({
     owner: `most-decorated-divisions:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,

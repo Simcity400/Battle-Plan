@@ -161,14 +161,13 @@ test('one army View preserves every saved chart/breakdown and only shows relevan
   assert.deepEqual(normaliseArmyOptions(), { view: 'race' });
   assert.deepEqual(normaliseArmyOptions({ view: 'breakdown' }), { view: 'breakdown' });
   for (const view of ['race', 'lines', 'mix', 'breakdown']) {
-    const options = resolveOptions(OPTIONS, { view, measure: 'battalions', byType: true, dateOverlay: true, endLabels: false });
+    const options = resolveOptions(OPTIONS, { view, measure: 'battalions', byType: true, dateOverlay: true });
     const fields = sectionFields(OPTIONS, 'options', options).map(field => field.key);
     assert.equal(fields.includes('show'), false);
     assert.equal(fields.filter(key => key === 'view').length, 1);
     assert.equal(fields.includes('measure'), view !== 'mix');
     assert.equal(fields.includes('byType'), view === 'race');
     assert.equal(fields.includes('dateOverlay'), view === 'race');
-    assert.equal(fields.includes('endLabels'), view === 'lines');
     assert.equal(sectionFields(OPTIONS, 'interaction', options).some(field => field.key === 'drill'), view !== 'breakdown');
     assert.equal(options.byType, true, 'hidden battalion grouping remains saved');
     assert.equal(options.dateOverlay, true);

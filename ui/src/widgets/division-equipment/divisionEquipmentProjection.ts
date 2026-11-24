@@ -1,14 +1,14 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { declareTableProjection, type DeclarativeColumnSpec, type TableColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
+import { declareTableProjection, type DeclarativeColumnSpec, type TableProjection, type TooltipExtraRow } from '../../families/table/model.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { registerTableProjection } from '../../families/table/registry.ts';
-import { encodeTableSettings, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, textValue, zeroValue, type Value } from '../../families/value.ts';
-import { formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { DivisionEquipmentReply, EquipmentTemplate, EquipmentType, StockpileArtworkReply } from '../../generated/dashboard';
-import { artState, urlArtHandle, type ArtState } from '../../families/table/identityCell.ts';
-import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY, OPTIONS } from './definition.ts';
+import { urlArtHandle } from '../../families/art/provider.ts';
+import { artState, type ArtState } from '../../families/table/identityCell.ts';
+import { TEMPLATE_BASE, TEMPLATE_COLUMNS, TEMPLATE_TABLE_KEY, TYPE_BASE, TYPE_COLUMNS, TYPE_TABLE_KEY } from './definition.ts';
 import { validateDivisionEquipment } from './divisionEquipmentData.ts';
 
 const NO_OPTIONS: Record<string, never> = {};
@@ -44,11 +44,11 @@ export function missingValue(raw: string | null): Value<number> {
 
 const summary = (reply: DivisionEquipmentReply): string | null => reply.divisionsShort === null
   ? null
-  : `${reply.divisionsShort.toLocaleString('en-US')} ${reply.divisionsShort === 1 ? 'division' : 'divisions'} short`;
+  : `${formatScalar(reply.divisionsShort, 'integer')} ${reply.divisionsShort === 1 ? 'division' : 'divisions'} short`;
 
 const partial = (reply: DivisionEquipmentReply): string | null => reply.unknownDivisions === null
   ? 'Divisions not recorded'
-  : reply.unknownDivisions > 0 ? `${reply.unknownDivisions.toLocaleString('en-US')} ${reply.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : null;
+  : reply.unknownDivisions > 0 ? `${formatScalar(reply.unknownDivisions, 'integer')} ${reply.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : null;
 
 function bodyState(reply: DivisionEquipmentReply): { readonly empty?: string; readonly emptyKind?: 'empty' | 'unavailable' } | null {
   if (reply.missing !== null) return { empty: reply.missing, emptyKind: 'unavailable' };
@@ -119,7 +119,7 @@ function typeTooltip(row: EquipmentType): TooltipExtraRow[] {
   return rows;
 }
 
-const typeProjection: TableProjection<Record<string, never>> = declareTableProjection<DivisionEquipmentReply, TypeRow, Record<string, never>>({
+export const equipmentTypeProjection: TableProjection<Record<string, never>> = registerTableProjection(declareTableProjection<DivisionEquipmentReply, TypeRow, Record<string, never>>({
     kind: 'division-equipment',
     validate: validateDivisionEquipment,
     columns: TYPE_SPEC,
@@ -134,7 +134,7 @@ const typeProjection: TableProjection<Record<string, never>> = declareTableProje
     rowName: row => row.name ?? 'Equipment name unavailable',
     tooltipExtra: row => typeTooltip(row),
     tooltipNote: (_row, reply) => asOf(reply),
-  });
+  }), 'equipment');
 
 interface TemplateRow { readonly template: EquipmentTemplate; readonly icon: string | undefined; readonly pending: boolean }
 
@@ -164,7 +164,7 @@ const TEMPLATE_SPEC: readonly DeclarativeColumnSpec<TemplateRow, Record<string, 
   { ...TYPES_SHORT!, priority: 5, numeric: true, format: 'integer', widest: ['99'], value: row => count(row.template.typesShort, 'Types short not recorded') },
 ];
 
-const templateProjection: TableProjection<Record<string, never>> = declareTableProjection<DivisionEquipmentReply, TemplateRow, Record<string, never>>({
+export const equipmentTemplateProjection: TableProjection<Record<string, never>> = registerTableProjection(declareTableProjection<DivisionEquipmentReply, TemplateRow, Record<string, never>>({
     kind: 'division-equipment',
     validate: validateDivisionEquipment,
     columns: TEMPLATE_SPEC,
@@ -184,21 +184,7 @@ const templateProjection: TableProjection<Record<string, never>> = declareTableP
       ? [{ label: 'Divisions not recorded', value: count(row.template.unknownDivisions, 'Divisions not recorded'), divider: true }]
       : undefined,
     tooltipNote: (_row, reply) => asOf(reply),
-  });
-
-export type EquipmentView = 'equipment' | 'template';
-export interface DivisionEquipmentOptions { readonly view: EquipmentView }
-
-const viewOf = (raw: unknown): EquipmentView => raw === 'template' ? 'template' : 'equipment';
-const OPTIONS_BY_VIEW: Readonly<Record<EquipmentView, DivisionEquipmentOptions>> = { equipment: { view: 'equipment' }, template: { view: 'template' } };
-
-const combinedProjection: TableProjection<DivisionEquipmentOptions> = {
-  kind: 'division-equipment',
-  family: 'table',
-  project: (readView, options) => (options.view === 'template' ? templateProjection : typeProjection).project(readView, NO_OPTIONS),
-};
-
-export const divisionEquipmentProjection = registerTableProjection(registerTableProjection(combinedProjection, 'equipment'), 'template');
+  }), 'template');
 
 function sources(ctx: FamilyPlanContext): SourcePlan {
   const params = ctx.countryTag
@@ -240,31 +226,26 @@ function sources(ctx: FamilyPlanContext): SourcePlan {
   };
 }
 
-const VIEW_TABLE = {
-  equipment: { key: TYPE_TABLE_KEY, base: TYPE_BASE, columns: TYPE_SPEC as readonly TableColumnSpec[] },
-  template: { key: TEMPLATE_TABLE_KEY, base: TEMPLATE_BASE, columns: TEMPLATE_SPEC as readonly TableColumnSpec[] },
-} as const;
-
-export const divisionEquipmentDeclaration: TableWidgetDeclaration<DivisionEquipmentOptions> = {
+export const equipmentTypeDeclaration: TableWidgetDeclaration<Record<string, never>> = {
   family: 'table',
   kind: 'division-equipment',
-  label: 'Division equipment',
+  label: 'Division equipment by equipment',
   subject: 'division equipment',
   emptyCampaign: 'Load a campaign to see division equipment.',
   icon: 'cube',
-  optionFields: OPTIONS,
   countries: { mode: 'single', choose: 'Choose a country to see its division equipment.' },
   sources: ctx => sources(ctx),
-  projection: divisionEquipmentProjection,
-  columns: ctx => VIEW_TABLE[viewOf(ctx.options.view)].columns,
-  settings: {
-    kind: 'custom',
-    resolve: (ctx, columns) => {
-      const table = VIEW_TABLE[viewOf(ctx.options.view)];
-      return tableSettingsOf(ctx.options[table.key], columns, table.base);
-    },
-    onChange: (next, _current, ctx, setOption) => setOption(VIEW_TABLE[viewOf(ctx.options.view)].key, encodeTableSettings(next)),
-  },
-  projectionOptions: ctx => OPTIONS_BY_VIEW[viewOf(ctx.options.view)],
+  projection: equipmentTypeProjection,
+  columns: TYPE_SPEC,
+  settings: { kind: 'table', key: TYPE_TABLE_KEY, base: TYPE_BASE },
+  projectionOptions: () => NO_OPTIONS,
   jumpToDate: true,
+};
+
+export const equipmentTemplateDeclaration: TableWidgetDeclaration<Record<string, never>> = {
+  ...equipmentTypeDeclaration,
+  label: 'Division equipment by template',
+  projection: equipmentTemplateProjection,
+  columns: TEMPLATE_SPEC,
+  settings: { kind: 'table', key: TEMPLATE_TABLE_KEY, base: TEMPLATE_BASE },
 };

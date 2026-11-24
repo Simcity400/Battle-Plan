@@ -22,8 +22,7 @@ import {
 } from '../../draw/kit.ts';
 import { mix } from '../../shell/appearance/color.ts';
 import { toFlagSlotState } from '../art/adapters.ts';
-import type { LaneArtCache } from '../art/laneCache.ts';
-import { artUrlForHandle } from '../art/provider.ts';
+import { collectArtUrls } from '../art/provider.ts';
 import type { ArtProvider, FamilyTheme } from '../contract.ts';
 import type { IdentityIndex } from '../identity/index.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
@@ -38,14 +37,6 @@ import {
 import type { HeatLaneRow, HeatLanesModel } from './lanesModel.ts';
 import { marginColour, splitStripes } from './scale.ts';
 
-export interface HeatLanesPicture {
-  signature: string;
-}
-
-export function createLanesPicture(): HeatLanesPicture {
-  return { signature: '' };
-}
-
 export interface DrawHeatLanesInput {
   readonly model: HeatLanesModel;
   readonly layout: HeatLanesLayout;
@@ -56,7 +47,6 @@ export interface DrawHeatLanesInput {
   readonly selectedRowId: string | null;
   readonly focusedRowId: string | null;
   readonly artProvider?: ArtProvider;
-  readonly artCache?: LaneArtCache;
   readonly identityIndex?: IdentityIndex | null;
 }
 
@@ -65,14 +55,12 @@ export function collectVisibleLaneArt(
   layout: HeatLanesLayout,
   identityIndex?: IdentityIndex | null,
 ): readonly string[] {
-  const urls = new Set<string>();
+  const handles = [];
   for (let i = layout.firstRow; i < layout.endRow; i++) {
     const row = model.rows[i];
-    if (!row?.flag) continue;
-    const url = artUrlForHandle(row.flag, identityIndex);
-    if (url) urls.add(url);
+    if (row?.flag) handles.push(row.flag);
   }
-  return [...urls];
+  return collectArtUrls(handles, identityIndex);
 }
 
 function drawRowFlag(
@@ -218,36 +206,9 @@ function drawInRunLabel(
   ctx.restore();
 }
 
-export function drawHeatLanes(
-  ctx: Canvas2D,
-  input: DrawHeatLanesInput,
-  picture?: HeatLanesPicture,
-): { readonly drew: boolean } {
-  const { model, layout, theme, scrollTop, hoveredRow, hoveredHour, selectedRowId, focusedRowId, artProvider, artCache } = input;
+export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
+  const { model, layout, theme, scrollTop, hoveredRow, hoveredHour, selectedRowId, focusedRowId, artProvider } = input;
   const tokens = resolveKitTokens(theme);
-
-  const artRev = artCache ? `${artCache.revision}:${artCache.cachedCount}:${artCache.failedCount}` : '';
-  const sig = JSON.stringify([
-    model.hour,
-    layout.width,
-    layout.height,
-    layout.firstRow,
-    layout.endRow,
-    Math.round(scrollTop),
-    hoveredRow ?? -1,
-    hoveredHour ?? -1,
-    selectedRowId ?? '',
-    focusedRowId ?? '',
-    model.playhead ?? -1,
-    theme.surface,
-    theme.text,
-    theme.accent,
-    artRev,
-  ]);
-  if (picture && picture.signature === sig) {
-    return { drew: false };
-  }
-  if (picture) picture.signature = sig;
 
   ctx.save();
   ctx.fillStyle = theme.surface;
@@ -436,5 +397,4 @@ export function drawHeatLanes(
   });
 
   ctx.restore();
-  return { drew: true };
 }

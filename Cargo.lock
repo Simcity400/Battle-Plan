@@ -5438,7 +5438,6 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
- "dashboard-effects",
  "dashboard-follow",
  "dashboard-intelligence",
  "dashboard-query",

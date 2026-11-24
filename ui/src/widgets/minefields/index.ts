@@ -3,8 +3,8 @@ import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboa
 import type { WidgetSpec } from '../../dashboard/model';
 import { setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
-import MinefieldsWidget from './MinefieldsWidget';
 import { validateMinefields } from './minefieldsData';
+import { minefieldsDeclaration } from './minefieldsProjection.ts';
 import { productRequest } from '../../dashboard/request.ts';
 
 function useMinefieldChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
@@ -15,4 +15,4 @@ function useMinefieldChoices(widget: WidgetSpec, runtime: WidgetRuntime): Option
   return { regions: (data?.choices ?? []).map(region => ({ value: setToken(region.id), label: region.name })) };
 }
 
-export default { render: MinefieldsWidget, useOptionChoices: useMinefieldChoices } satisfies WidgetRenderer;
+export default { declaration: minefieldsDeclaration, useOptionChoices: useMinefieldChoices } satisfies WidgetRenderer;
