@@ -13,15 +13,15 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
   const reads = new Map<string, CountryPickerRead | null>(tags.map((tag, index) => [tag, { tag: `read ${index}`, branchId: '1', hour: 100 + index % 2 }]));
   reads.set(tags[1], null); reads.set(tags[2], { tag: 'foreign', branchId: '2', hour: 100 });
   reads.set(tags[3], { tag: 'outside', branchId: '1', hour: 99 }); reads.delete(tags[4]);
-  const state = { hooks: [] as unknown[], cursor: 0, effects: [] as (() => void)[], open: true, content: '1',
+  const state = { hooks: [] as unknown[], cursor: 0, effects: [] as (() => void)[], open: true, content: 1,
     names: new Map([[nameKey(100, 'read 0'), ''], [nameKey(101, 'read 4999'), 'Selected historical name']]),
-    wanted: [] as { tag: string; hour: number }[], listReads: [] as { tag: string; branchId: string; hour: number }[][],
+    wanted: [] as { tag: string; hour: number }[],
     headerReads: [] as { tag: string; hour: number }[],
     rows: [] as { children: any[]; onClick: () => void; 'aria-label'?: string; 'data-tooltip'?: string }[],
     scroll: undefined as ((event: { currentTarget: { scrollTop: number; clientHeight: number } }) => void) | undefined,
     search: undefined as ((event: { currentTarget: { value: string } }) => void) | undefined,
     changed: [] as (string | null)[], rosterLoads: 0, rosterError: null as Error | null,
-    rosterReply: null as unknown, retryAction: undefined as (() => void) | undefined, flagCall: 0, drawn: new WeakMap<object, Set<string>>() };
+    rosterReply: null as unknown, retryAction: undefined as (() => void) | undefined, drawn: new WeakMap<object, Set<number>>() };
   const globals = globalThis as typeof globalThis & { __pickerWitness?: typeof state };
   globals.__pickerWitness = state;
   const hooks = `const cell = init => { const s = globalThis.__pickerWitness, i = s.cursor++; return s.hooks[i] ??= init(); };
@@ -32,6 +32,8 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     export const useMemo = (make, deps) => { const saved = cell(() => ({ deps, value: make() }));
       if (saved.deps.length !== deps.length || saved.deps.some((dep, i) => !Object.is(dep, deps[i]))) { saved.deps = deps; saved.value = make(); }
       return saved.value; };
+    export const useCallback = (fn, deps) => useMemo(() => fn, deps);
+    export const useSyncExternalStore = (_sub, getSnapshot) => getSnapshot();
     export const useLayoutEffect = () => {};
     export const useEffect = (effect, deps) => { const saved = cell(() => ({ deps: null, cleanup: null }));
       if (!saved.deps || saved.deps.length !== deps.length || saved.deps.some((dep, i) => !Object.is(dep, deps[i]))) {
@@ -50,10 +52,6 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     '/components/CountryFlag.tsx': `import { createElement } from 'react'; export const CountryFlag = ({ image }) => createElement('span', { 'data-flag': image?.tag });`,
     '/components/Icons.tsx': `import { createElement } from 'react'; export const Icon = ({ name }) => createElement('i', { 'data-icon': name });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__pickerWitness.content;',
-    '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]);
-      export const useCountryNamesAt = (_client, _track, wanted) => { const s = globalThis.__pickerWitness; s.wanted.push(...wanted);
-        return new Map(wanted.map(({ tag, hour }) => { const key = nameKey(hour, tag); return [key, s.names.has(key)
-          ? { kind: 'value', value: s.names.get(key) } : { kind: 'loading' }]; })); };`,
     '/dashboard/products.ts': `export const loadProduct = (_client, request) => {
         const s = globalThis.__pickerWitness;
         s.rosterLoads++;
@@ -61,14 +59,50 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
         if (!s.rosterReply) throw Error('authoritative choices must not request metadata fallback');
         return Promise.resolve(s.rosterReply);
       };`,
-    '/dashboard/countryFlags.ts': `export const flagReadKey = read => JSON.stringify([read.branchId, read.hour, read.tag]);
-      export const retryFlags = () => {};
-      export const useFlagReads = (client, _source, reads) => { const s = globalThis.__pickerWitness, header = s.flagCall++ === 1;
-        if (!header) { s.listReads.push(reads); return new Map(); }
-        for (const read of reads) if (!s.headerReads.some(seen => seen.tag === read.tag && seen.hour === read.hour)) s.headerReads.push({ tag: read.tag, hour: read.hour });
+    '/families/identity/broker.ts': 'export const identityBrokerFor = () => ({ retry() {} });',
+    '/families/identity/react.ts': `const nameKey = (hour, tag) => JSON.stringify([hour, tag]);
+      export const countryTagKey = tag => ({ kind: 'country', by: 'tag', tag });
+      export const useIdentityScope = (_client, recording, branchId, active = true) => active && recording && branchId
+        ? { sourceId: recording.id, revision: recording.revision, branchId, content: globalThis.__pickerWitness.content } : null;
+      const resolveKey = (key, hour) => {
+        const s = globalThis.__pickerWitness;
+        const k = nameKey(hour, key.tag);
+        if (!s.names.has(k)) return { kind: 'pending' };
+        return {
+          kind: 'known',
+          holder: { kind: 'known', value: null },
+          tag: { kind: 'known', value: key.tag },
+          name: { kind: 'known', value: s.names.get(k) },
+          color: { kind: 'missing', reason: 'none' },
+          flagChoice: { kind: 'known', value: { keys: [key.tag, key.tag, key.tag], reasons: [null, null, null] } },
+          valid: [hour, hour],
+          nextBoundary: hour + 1,
+        };
+      };
+      export const useIdentities = (_client, _rec, scope, asks, opts = {}) => {
+        const s = globalThis.__pickerWitness;
+        if (opts.active && scope) {
+          for (const ask of asks) s.wanted.push({ tag: ask.key.tag, hour: ask.hour });
+        }
+        return {
+          index: null,
+          version: s.content,
+          resolve: (key, hour) => (scope ? resolveKey(key, hour) : { kind: 'pending' }),
+          flagFor: () => undefined,
+          flagArtFor: () => ({ status: 'pending' }),
+          retry() {},
+        };
+      };
+      export const useIdentity = (client, _rec, scope, key, hour, opts = {}) => {
+        const s = globalThis.__pickerWitness;
+        if (!opts.active || !scope || !key || hour === null) return { result: null, flag: undefined, flagArt: { status: 'pending' } };
+        if (!s.headerReads.some(seen => seen.tag === key.tag && seen.hour === hour)) s.headerReads.push({ tag: key.tag, hour });
         const drawn = s.drawn.get(client) ?? new Set();
         if (!drawn.has(s.content)) s.effects.push(() => { s.drawn.set(client, drawn.add(s.content)); });
-        return new Map(drawn.has(s.content) ? reads.map(read => [flagReadKey(read), { image: { tag: read.tag } }]) : []); };`,
+        const res = resolveKey(key, hour);
+        const flag = res.kind === 'known' && drawn.has(s.content) ? { image: { tag: key.tag } } : undefined;
+        return { result: res, flag, flagArt: flag ? { status: 'ready' } : { status: 'pending' } };
+      };`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'picker-witness-fixture', enforce: 'pre',
@@ -87,14 +121,13 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
       source: { id: 'synthetic', revision: '1', metadata: { countries, branches: [{ id: '1', firstHour: 100, lastHour: 120 }] } },
       client: {}, flagAt: { branchId: '1', hour: 110 }, choiceReads: reads, onChange: (tag: string | null) => state.changed.push(tag),
     } as unknown as ComponentProps<typeof CountryPicker>;
-    const render = () => { state.cursor = 0; state.flagCall = 0; state.rows = []; state.wanted = []; return renderToStaticMarkup(createElement(Picker, props)); };
+    const render = () => { state.cursor = 0; state.rows = []; state.wanted = []; return renderToStaticMarkup(createElement(Picker, props)); };
     const flush = async () => { const effects = state.effects.splice(0); effects.forEach(effect => effect()); await Promise.resolve(); await Promise.resolve(); };
     let html = render(); await flush(); html = render();
     assert.ok(state.rows.length < 30, '5000 choices draw only the viewport');
     assert.ok(state.wanted.length < 30, 'names request the viewport plus the selected trigger');
     assert.ok(state.wanted.some(read => read.tag === 'read 4999' && read.hour === 101));
     assert.ok(state.wanted.every(read => read.tag.startsWith('read ')), 'null, missing, wrong-branch and out-of-range witnesses never fall back');
-    assert.ok(state.listReads.flat().every(read => read.tag.startsWith('read ') && read.hour <= 101));
     assert.match(html, /Selected historical name/); assert.doesNotMatch(html, /Metadata belongs/);
     assert.doesNotMatch(html, /no recorded read|Name and flag unavailable|data-icon="alert"/);
     assert.equal(state.rows[1]['aria-label'], undefined, 'missing looks leave the fallback country name visible');
@@ -107,7 +140,8 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     assert.deepEqual(state.headerReads, [{ tag: 'read 4999', hour: 101 }]);
     state.rows[0].onClick(); assert.deepEqual(state.changed, [tags[0]], 'a mapped alias never replaces the pickable actor');
     state.open = true; props.selectedTag = tags[0]; render(); await flush(); html = render();
-    assert.match(html, /<span class="country-picker-unnamed">actor 0000<small>name not recorded<\/small><\/span>/, 'a proved empty name falls back to the tag, marked as not recorded'); assert.match(html, /data-flag="read 0"/);
+    assert.match(html, /<span class="country-picker-unnamed">actor 0000<small>name not recorded<\/small><\/span>/, 'a proved empty name falls back to the tag, marked as not recorded');
+    assert.match(html, /data-flag="read 0"/);
     props.choiceReads = new Map(reads).set(tags[0], null);
     html = render(); assert.doesNotMatch(html, /data-flag="read 0"/); assert.match(html, /Country name unavailable/); await flush();
     assert.ok(!state.wanted.some(read => read.tag === 'read 0'), 'changed witnesses release old names immediately');
@@ -117,7 +151,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     props.client = {} as never; state.names.clear(); html = render();
     assert.doesNotMatch(html, /Successor name|data-flag="successor"/, 'a new client cannot show the old client\'s looks');
     state.names.set(nameKey(102, 'successor'), 'New client name'); await flush(); render(); await flush();
-    state.content = '2'; state.names.clear(); html = render(); assert.doesNotMatch(html, /New client name|data-flag="successor"/);
+    state.content = 2; state.names.clear(); html = render(); assert.doesNotMatch(html, /New client name|data-flag="successor"/);
     state.scroll!({ currentTarget: { scrollTop: 36000, clientHeight: 340 } }); render(); await flush();
     assert.ok(state.wanted.length < 30); assert.ok(state.wanted.some(read => read.tag === 'read 1000'));
     state.search!({ currentTarget: { value: 'Searched name' } }); render(); await flush();
@@ -159,6 +193,8 @@ test('the listbox names its active option only while that row is drawn, and is m
     export const useMemo = (make, deps) => { const saved = cell(() => ({ deps, value: make() }));
       if (saved.deps.length !== deps.length || saved.deps.some((dep, i) => !Object.is(dep, deps[i]))) { saved.deps = deps; saved.value = make(); }
       return saved.value; };
+    export const useCallback = (fn, deps) => useMemo(() => fn, deps);
+    export const useSyncExternalStore = (_sub, getSnapshot) => getSnapshot();
     export const useLayoutEffect = () => {};
     export const useEffect = () => {};`;
   const replacements: Record<string, string> = {
@@ -173,10 +209,12 @@ test('the listbox names its active option only while that row is drawn, and is m
     '/components/CountryFlag.tsx': `import { createElement } from 'react'; export const CountryFlag = () => createElement('span');`,
     '/components/Icons.tsx': `import { createElement } from 'react'; export const Icon = ({ name }) => createElement('i', { 'data-icon': name });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
     '/dashboard/products.ts': 'export const loadProduct = () => new Promise(() => {});',
-    '/dashboard/countryFlags.ts': `export const flagReadKey = read => JSON.stringify([read.branchId, read.hour, read.tag]);
-      export const retryFlags = () => {}; export const useFlagReads = () => new Map();`,
+    '/families/identity/broker.ts': 'export const identityBrokerFor = () => ({ retry() {} });',
+    '/families/identity/react.ts': `export const countryTagKey = tag => ({ kind: 'country', by: 'tag', tag });
+      export const useIdentityScope = () => null;
+      export const useIdentities = () => ({ index: null, version: 0, resolve: () => ({ kind: 'pending' }), flagFor: () => undefined, flagArtFor: () => ({ status: 'pending' }), retry() {} });
+      export const useIdentity = () => ({ result: null, flag: undefined, flagArt: { status: 'pending' } });`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'picker-list-fixture', enforce: 'pre',

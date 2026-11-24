@@ -212,13 +212,84 @@ export interface ArtHandle {
   readonly scale?: number;
 }
 
-export type ArtResult =
-  | { readonly status: 'none' }
+export type ArtOrigin =
+  | { readonly kind: 'baseGame' }
+  | { readonly kind: 'dlc'; readonly id: string; readonly name: string }
+  | { readonly kind: 'mod'; readonly id: string; readonly name: string }
+  | { readonly kind: 'visualMod'; readonly id: string; readonly name: string }
+  | { readonly kind: 'builtin'; readonly id: string };
+
+export interface ArtFrame {
+  readonly frameIndex: number;
+  readonly frameCount: number;
+  readonly frameWidth: number;
+  readonly frameHeight: number;
+  readonly textureWidth: number;
+  readonly textureHeight: number;
+  readonly outputWidth: number;
+  readonly outputHeight: number;
+}
+
+export interface ArtProvenance {
+  readonly fromCurrentInstall: boolean;
+  readonly label: string;
+  readonly scopeKey: string;
+}
+
+export type ArtResolution =
+  | { readonly status: 'noArtExpected' }
   | { readonly status: 'pending' }
-  | { readonly status: 'ready'; readonly assetId: string; readonly origin: string; readonly frame?: number; readonly bitmap?: ImageBitmap }
-  | { readonly status: 'missing'; readonly reason: string; readonly label?: string }
-  | { readonly status: 'refused'; readonly reason: string }
-  | { readonly status: 'failed'; readonly reason: string };
+  | {
+      readonly status: 'ready';
+      readonly assetId: string;
+      readonly url: string;
+      readonly origin: ArtOrigin;
+      readonly file: string;
+      readonly frame: ArtFrame;
+      readonly provenance: ArtProvenance;
+    }
+  | {
+      readonly status: 'confirmedMissing';
+      readonly reason: string;
+      readonly origin?: ArtOrigin | null;
+      readonly file?: string | null;
+    }
+  | {
+      readonly status: 'refused';
+      readonly reason: string;
+      readonly construct: string;
+      readonly origin?: ArtOrigin | null;
+      readonly file?: string | null;
+    }
+  | { readonly status: 'failed'; readonly reason: string; readonly retryable: boolean };
+
+export type ArtResult<TBitmap = ImageBitmap> =
+  | { readonly status: 'noArtExpected' }
+  | { readonly status: 'pending' }
+  | {
+      readonly status: 'ready';
+      readonly assetId: string;
+      readonly url: string;
+      readonly origin: ArtOrigin;
+      readonly file: string;
+      readonly frame: ArtFrame;
+      readonly provenance: ArtProvenance;
+      readonly bitmap?: TBitmap;
+    }
+  | {
+      readonly status: 'confirmedMissing';
+      readonly reason: string;
+      readonly origin?: ArtOrigin | null;
+      readonly file?: string | null;
+    }
+  | {
+      readonly status: 'refused';
+      readonly reason: string;
+      readonly construct: string;
+      readonly origin?: ArtOrigin | null;
+      readonly file?: string | null;
+    }
+  | { readonly status: 'failed'; readonly reason: string; readonly retryable: boolean; readonly retry?: () => void };
 
 export type IdentityDemand = (kind: EntityKind, key: string, atHour: DisplayedHour) => void;
 export type ArtDemand = (handle: ArtHandle) => void;

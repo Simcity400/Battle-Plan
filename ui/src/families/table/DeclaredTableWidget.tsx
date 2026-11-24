@@ -172,6 +172,8 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     pin={plan.pin}
     bounds={plan.bounds}
     countryLooks={plan.displayedCountryLooks}
+    identitySnapshot={plan.identitySnapshot}
+    onIdentityDemands={plan.onIdentityDemands}
     selectedKey={selectedKey}
     onActivate={onActivate}
     contextMenuItems={declaration.jumpToDate ? contextMenuItems : undefined}

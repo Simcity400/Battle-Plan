@@ -8,8 +8,10 @@ import type { BoundWindow, GatedHour } from '../dashboard/regionTime';
 import { forwardRequest, productRequest } from '../dashboard/request.ts';
 import { createBoundedReadView, displayedHour } from './boundedView.ts';
 import type {
+  ArtProvider,
   BoundedReadView,
   CompiledFollowSubscription,
+  IdentityProvider,
   SourceCoverage,
   SourceEntry,
   SourcePlan,
@@ -327,6 +329,8 @@ export interface ExactReadOptions {
   readonly staticSpan: readonly [number, number] | null;
   readonly gate: FrozenGate;
   readonly exactOnce?: <T>(key: string, load: () => Promise<T>) => Promise<T>;
+  readonly identity?: IdentityProvider;
+  readonly art?: ArtProvider;
 }
 
 export async function readPlanExact(
@@ -345,6 +349,11 @@ export async function readPlanExact(
     return options.exactOnce ? options.exactOnce(JSON.stringify(request), load) : load();
   };
 
+  const sharedProviders = {
+    ...(options.identity ? { identity: options.identity } : {}),
+    ...(options.art ? { art: options.art } : {}),
+  };
+
   if (read.shape === 'point') {
     const params = producePointParams(read, recorded, 'exact');
     if (!params) return null;
@@ -360,6 +369,7 @@ export async function readPlanExact(
       hour: displayedHour(recorded),
       panels: new Map([[entry.name, raw]]),
       live,
+      ...sharedProviders,
     });
   }
 
@@ -388,6 +398,7 @@ export async function readPlanExact(
     return createBoundedReadView({
       hour: displayedHour(clampedSpan.lastHour),
       panels: new Map([[entry.name, raw]]),
+      ...sharedProviders,
     });
   }
 
@@ -402,6 +413,7 @@ export async function readPlanExact(
     return createBoundedReadView({
       hour: displayedHour(span.lastHour),
       panels: new Map([[entry.name, raw]]),
+      ...sharedProviders,
     });
   }
 
@@ -414,6 +426,7 @@ export async function readPlanExact(
     return createBoundedReadView({
       hour: displayedHour(recorded),
       panels: new Map([[entry.name, raw]]),
+      ...sharedProviders,
     });
   }
 
@@ -425,6 +438,7 @@ export async function readPlanExact(
     return createBoundedReadView({
       hour: displayedHour(recorded),
       hovers: new Map([[entry.name, { hour: recorded, data: raw }]]),
+      ...sharedProviders,
     });
   }
 
