@@ -4290,18 +4290,26 @@ location: number, locationName: string | null, locationMissing: string | null, c
  */
 exile: string | null, divisions: Array<TrainingDivision>,
 /**
- * The divisions' available and needed manpower, added.
+ * The divisions' available and needed manpower, added; none when any division's is not known.
  */
-manpower: number, manpowerNeeded: number, };
+manpower: number | null, manpowerNeeded: number | null, };
 export type TrainingDivision = { line: string, ordinal: number, name: string | null, nameMissing: string | null,
 /**
  * Fixed-point training and its maximum, five decimals.
  */
 trainingRaw: string, maxTrainingRaw: string,
 /**
- * Signed sums of the available and needed entries, as the game adds them.
+ * Signed sums of the available and needed entries, as the game adds them; none with `manpower_missing` when the entries were not read whole.
  */
-manpower: number, manpowerNeeded: number, maxManpower: number, contributors: Array<TrainingManpower>, equipment: Array<TrainingEquipment>,
+manpower: number | null, manpowerNeeded: number | null, manpowerMissing: string | null, maxManpower: number,
+/**
+ * The manpower entries that were read.
+ */
+contributors: Array<TrainingManpower>,
+/**
+ * The held equipment that was read; `comparison_missing` says when it is not all of it.
+ */
+equipment: Array<TrainingEquipment>,
 /**
  * What the template needs; empty with `need_missing` when unknown.
  */
@@ -5241,9 +5249,13 @@ export type RepairPort = { province: number, name: string | null, priority: numb
  */
 policy: string | null, dockyards: number | null,
 /**
- * The ships queued, in queue order; a ship queued twice is listed twice.
+ * The ships queued that were read, in queue order; a ship queued twice is listed twice.
  */
-queue: Array<YardShip>, };
+queue: Array<YardShip>,
+/**
+ * Why the queue may hold more ships than listed: the queue was not read whole.
+ */
+queueMissing: string | null, };
 export type NavalRepairsReply = { ports: Array<RepairPort>, usedDockyards: number | null, repairLimit: number | null,
 /**
  * Distinct ships queued, where every one is recorded.
@@ -5266,7 +5278,15 @@ cost: string | null, dockyards: number | null,
 /**
  * Cost less work done, where both are finite and the cost positive.
  */
-remaining: string | null, ships: Array<YardShip>, };
+remaining: string | null,
+/**
+ * The linked ships that were read.
+ */
+ships: Array<YardShip>,
+/**
+ * Why the line may link more ships than listed: the ship links were not read whole.
+ */
+shipsMissing: string | null, };
 export type NavalRefitsReply = { lines: Array<RefitLine>, ships: number | null, dockyards: number | null,
 /**
  * The hour the daily line metadata (cost, target, dockyards) was read.

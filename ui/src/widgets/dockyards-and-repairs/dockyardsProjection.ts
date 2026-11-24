@@ -6,7 +6,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
-import { fraction, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
+import { childCount, fraction, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
 import type { ArtState } from '../../families/table/identityCell.ts';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -79,11 +79,11 @@ export const dockyardsProjection: TableProjection<Record<string, never>> = regis
     rowName: row => row.kind === 'port' ? (row.port.name ?? 'Port name unavailable') : shipLabel(row.ship).name,
     children: row => row.kind === 'port' && row.children.length ? row.children : undefined,
     initiallyOpen: () => false,
-    tooltipExtra: (row): TooltipExtraRow[] => row.kind === 'ship'
-      ? shipTooltip(row.ship)
+    tooltipExtra: (row, _reply, live): TooltipExtraRow[] => row.kind === 'ship'
+      ? shipTooltip(row.ship, live)
       : [
           { label: 'Repair priority', value: textValue(row.port.policy, 'Repair priority name not localised'), divider: true },
-          { label: 'Ships waiting', value: knownValue(formatScalar(row.port.queue.length, 'integer')) },
+          { label: 'Ships waiting', value: childCount(row.port.queue.length, row.port.queueMissing) },
         ],
   }),
 );
