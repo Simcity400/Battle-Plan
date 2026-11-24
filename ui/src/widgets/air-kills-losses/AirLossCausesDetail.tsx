@@ -37,7 +37,7 @@ export function AirLossCausesDetail({ runtime, trackId, row, hour, from, active 
   if (data.missing !== null) return <WidgetState kind="unavailable" message={data.missing} />;
   const held = data.rows.find(item => item.identity === row.identity);
   if (!held) return <WidgetState kind="unavailable" message="This country is not present at this date." />;
-  const text = (raw: string) => formatBarsValueField(militaryAirAmount(raw, held.partial, AIR_LOSSES_AT)).text;
+  const text = (raw: string) => formatBarsValueField(militaryAirAmount(raw, held.partial, AIR_LOSSES_AT)).exact;
   return (
     <div className="navy-management-content">
       <p>Own aircraft lost by cause on {formatDateOnly(hour)}: {text(held.taken)} in all.</p>

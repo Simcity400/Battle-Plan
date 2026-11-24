@@ -218,11 +218,11 @@ function eventItemAndSubtext(
     case 'nuclearStrike': {
       const targetState = stateLabel(event.strike?.state);
       const losses: string[] = [];
-      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(Math.round(event.strike.manpowerLost), 'integer')} casualties`);
+      if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(event.strike.manpowerLost, 'integer')} casualties`);
       if (event.strike?.buildingLevels != null) losses.push(`${formatScalar(event.strike.buildingLevels, 'decimal1')} building levels`);
-      if (event.strike?.warSupport != null) losses.push(`${formatRecordedPercent(event.strike.warSupport, { signed: true, decimals: 1 })} war support`);
+      if (event.strike?.warSupport != null) losses.push(`${formatRecordedPercent(event.strike.warSupport, { signed: true })} war support`);
       if (event.strike?.units != null) losses.push(`${formatScalar(event.strike.units, 'integer')} ${event.strike.units === 1 ? 'unit' : 'units'}`);
-      if (event.strike?.equipmentLost != null) losses.push(`${formatScalar(Math.round(event.strike.equipmentLost), 'integer')} equipment`);
+      if (event.strike?.equipmentLost != null) losses.push(`${formatScalar(event.strike.equipmentLost, 'integer')} equipment`);
       const detailCell: TableCell | undefined = losses.length
         ? { value: knownValue(losses.join(' · ')) }
         : event.strike?.notRecorded.length
@@ -392,11 +392,11 @@ function buildFeedTableRow(
     if (secondary) out.push({ label: 'Detail', value: knownValue(plainScripted(secondary)) });
     if (event.cause?.how) out.push({ label: 'Cause', value: knownValue(event.cause.how) });
     if (event.strike) {
-      if (event.strike.manpowerLost != null) out.push({ label: 'Casualties', value: knownValue(formatScalar(Math.round(event.strike.manpowerLost), 'integer')) });
+      if (event.strike.manpowerLost != null) out.push({ label: 'Casualties', value: knownValue(formatScalar(event.strike.manpowerLost, 'integer')) });
       if (event.strike.buildingLevels != null) out.push({ label: 'Building levels', value: knownValue(formatScalar(event.strike.buildingLevels, 'decimal1')) });
-      if (event.strike.warSupport != null) out.push({ label: 'War support', value: knownValue(formatRecordedPercent(event.strike.warSupport, { signed: true, decimals: 1 })) });
+      if (event.strike.warSupport != null) out.push({ label: 'War support', value: knownValue(formatRecordedPercent(event.strike.warSupport, { signed: true })) });
       if (event.strike.units != null) out.push({ label: 'Units', value: knownValue(formatScalar(event.strike.units, 'integer')) });
-      if (event.strike.equipmentLost != null) out.push({ label: 'Equipment lost', value: knownValue(formatScalar(Math.round(event.strike.equipmentLost), 'integer')) });
+      if (event.strike.equipmentLost != null) out.push({ label: 'Equipment lost', value: knownValue(formatScalar(event.strike.equipmentLost, 'integer')) });
       for (const reason of event.strike.notRecorded) {
         out.push({ label: 'Effect not recorded', value: notRecorded(reason) });
       }
