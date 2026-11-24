@@ -46,6 +46,7 @@ function regionRows(model: HeatLanesModel, layout: HeatLanesLayout): RegionRowsF
     }])),
     add: layout.addTop === null ? null : { top: layout.plotTop + layout.addTop, height: layout.rowHeight },
     nameLeft: LANE_PAD,
+    nameRight: layout.plotLeft,
     ...(model.regions.active ? { active: model.regions.active } : {}),
   };
 }
