@@ -121,6 +121,7 @@ export interface FamilyGridMetrics {
   readonly rows: number;
   readonly columns: number;
   readonly cellSize: number;
+  readonly cellWidth?: number;
   readonly gridLeft: number;
   readonly gridTop: number;
   readonly rowLabel?: (row: number) => string;
@@ -135,6 +136,7 @@ export interface FamilyMetaState {
   readonly emptyDetail: string | null;
   readonly emptyKind: 'empty' | 'unavailable';
   readonly summaryText: string | null;
+  readonly summaryPartial: string | null;
   readonly notes: readonly string[];
   readonly warnings: readonly string[];
 }
@@ -160,7 +162,7 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly staticAnswers?: Readonly<Record<string, FollowedAnswer>>;
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly extent: readonly [number, number] | null;
   readonly plan: SourcePlan | null;
   readonly viewport: FamilyViewportState;

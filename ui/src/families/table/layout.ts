@@ -37,6 +37,8 @@ export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
 }
 
 const SORT_ARROW_WIDTH = 16;
+const KIND_COLUMN_ART = 32;
+const TWO_WAY_SLOT = 72;
 const DEFAULT_TEXT_MIN_WIDTH = 128;
 const DEFAULT_TEXT_MAX_WIDTH = 260;
 
@@ -119,6 +121,10 @@ export function measureFixedColumnWidths(
       out[column.key] = column.minWidth ?? 76;
       continue;
     }
+    if (column.cellKind === 'kind') {
+      out[column.key] = column.minWidth ?? KIND_COLUMN_ART + CELL_INSET * 2;
+      continue;
+    }
     if (column.cellKind === 'stockpileSum') {
       out[column.key] = column.minWidth ?? 210;
       continue;
@@ -152,7 +158,7 @@ export function measureFixedColumnWidths(
     for (const sample of samples) {
       widest = Math.max(widest, measure(sample, bodyFont));
     }
-    const extra = column.cellKind === 'track' ? 64 : displayExtra(column);
+    const extra = column.cellKind === 'track' ? 64 : column.cellKind === 'twoWay' ? TWO_WAY_SLOT + 8 : displayExtra(column);
     const contentWidth = widest + extra + CELL_INSET * 2;
     let computed = Math.ceil(Math.max(contentWidth, headerWidth));
     if (column.minWidth !== undefined) computed = Math.max(column.minWidth, computed);
@@ -177,11 +183,14 @@ function withEdgeInsets(shown: readonly FamilyColumnLayout[]): FamilyColumnLayou
 
 export function growWeight(column: FamilyColumnLayout): number {
   if (column.grow !== undefined) return Math.max(0, column.grow);
-  if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill') return 0;
+  if (column.display === 'flag' || column.cellKind === 'action' || column.cellKind === 'track' || column.cellKind === 'skill'
+    || column.cellKind === 'kind' || column.cellKind === 'twoWay') return 0;
   return column.width;
 }
 
 function growColumns(shown: readonly FamilyColumnLayout[], spare: number): FamilyColumnLayout[] {
+  const item = shown.findIndex(col => col.cellKind === 'item' && col.grow === undefined);
+  if (item >= 0) return shown.map((col, idx) => (idx === item ? { ...col, width: col.width + spare } : col));
   let total = 0;
   for (const col of shown) total += growWeight(col);
   if (total <= 0) {

@@ -76,8 +76,8 @@ pub struct CareerFacts {
     #[doc = " Zero-based experience level, and the level's in-game name."]
     pub level: Option<i32>,
     pub level_name: Option<String>,
-    #[doc = " The game's career kill counter."]
-    pub kills: Option<i32>,
+    #[doc = " The game's count of the men this division has lost (its panel's Casualties taken); excludes men lost at destruction and in paradrop disruption."]
+    pub casualties_taken: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -332,7 +332,7 @@ struct Facts<'a> {
 
 impl Facts<'_> {
     fn of(&mut self, history: &[SharedDivisionHistoryRow], status: Option<&DivisionStatusRow>, manpower: Option<i32>, refusals: &mut Refusals) -> CareerFacts {
-        let mut out = CareerFacts { medals: None, awards: Vec::new(), history_missing: None, experience_raw: None, level: None, level_name: None, kills: status.and_then(|row| row.career_counter()) };
+        let mut out = CareerFacts { medals: None, awards: Vec::new(), history_missing: None, experience_raw: None, level: None, level_name: None, casualties_taken: status.and_then(|row| row.casualties_taken()) };
         match history.first().filter(|row| row.list == DivisionHistoryRow::SUMMARY) {
             None => {
                 refusals.note("A division's history was not read");

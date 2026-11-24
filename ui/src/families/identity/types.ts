@@ -3,10 +3,12 @@ import type { Failure } from '../../dashboard/queryError';
 import type {
   CountryFactsReply,
   CountryFlagChoice,
+  ArtResolution,
   CountryFlagImage,
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyle,
+  HourSpan,
 } from '../../generated/dashboard';
 
 export type HourInterval = readonly [firstHour: number, lastHour: number];
@@ -57,6 +59,13 @@ export interface RegionIdentityKey {
   readonly kind: 'region';
   readonly id: number | string;
 }
+
+export type EntityIdentityKey =
+  | LeaderIdentityKey
+  | DesignIdentityKey
+  | StateIdentityKey
+  | ProvinceIdentityKey
+  | RegionIdentityKey;
 
 export type IdentityKey =
   | CountryIdentityKey
@@ -175,8 +184,22 @@ export interface EntityRunEntry {
 export interface DrawnFlagEntry {
   readonly url?: string;
   readonly image?: CountryFlagImage;
+  readonly resolution?: ArtResolution;
   readonly reason?: string;
   readonly failed?: Failure;
+}
+
+export interface SnapshotFailure {
+  readonly message: string;
+  readonly refused: boolean;
+}
+
+export interface SnapshotFailures {
+  readonly facts?: SnapshotFailure;
+  readonly identities?: SnapshotFailure;
+  readonly groups?: SnapshotFailure;
+  readonly styles?: Readonly<Record<string, SnapshotFailure>>;
+  readonly entities?: Readonly<Record<string, SnapshotFailure>>;
 }
 
 export interface IdentitySnapshot {
@@ -189,7 +212,10 @@ export interface IdentitySnapshot {
   readonly styles?: Readonly<Record<string, readonly StyleIntervalEntry[]>>;
   readonly entities?: Readonly<Record<string, readonly EntityRunEntry[]>>;
   readonly drawnFlags?: Readonly<Record<string, DrawnFlagEntry>>;
+  readonly failures?: SnapshotFailures;
 }
+
+export type { HourSpan };
 
 export interface IdentityAsk {
   readonly key: IdentityKey;

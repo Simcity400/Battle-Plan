@@ -134,6 +134,7 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
         scrollTop: ctx.viewport.scrollTop,
         theme: ctx.theme,
         ...(ctx.identitySnapshot ? { identitySnapshot: ctx.identitySnapshot } : {}),
+        ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
         selectedKey: ctx.selectedKey,
         focusedKey: ctx.focusedKey,
         expanded: ctx.expanded,

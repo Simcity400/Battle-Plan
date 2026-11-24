@@ -1,4 +1,5 @@
 
+pub mod breakdown;
 pub mod day;
 mod naming;
 #[cfg(test)]
@@ -1386,7 +1387,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     for named in &named {
         if let Some((info, description)) = &named.idea {
             ideas.entry(info.token.clone()).or_insert_with(|| {
-                let art = Artwork { token: info.token.clone(), name: named.name.clone(), description: description.clone(), base_duration_days: None, icon: None };
+                let art = Artwork { token: info.token.clone(), name: named.name.clone(), description: description.clone(), base_duration_days: None, icon: None, sprite: None };
                 (info.clone(), art)
             });
         }

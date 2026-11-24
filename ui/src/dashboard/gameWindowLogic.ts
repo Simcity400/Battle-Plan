@@ -44,6 +44,20 @@ export function normalizeGameWindowRequest(request: GameWindowRequest): GameWind
   };
 }
 
+export function gameWindowSubjectKey(request: GameWindowRequest, contentRevision: number): string {
+  const normalized = normalizeGameWindowRequest(request);
+  return JSON.stringify([
+    normalized.sourceId,
+    normalized.revision,
+    normalized.branchId,
+    normalized.kind,
+    normalized.target,
+    normalized.scale,
+    normalized.subView,
+    contentRevision,
+  ]);
+}
+
 export function gameWindowRequestKey(request: GameWindowRequest, contentRevision: number): string {
   const normalized = normalizeGameWindowRequest(request);
   return JSON.stringify([
@@ -57,6 +71,38 @@ export function gameWindowRequestKey(request: GameWindowRequest, contentRevision
     normalized.subView,
     contentRevision,
   ]);
+}
+
+export interface GameWindowWant {
+  key: string;
+  subject: string;
+  active: boolean;
+}
+
+export interface GameWindowFlight {
+  key: string;
+  subject: string;
+}
+
+export type GameWindowStep = 'idle' | 'reuse' | 'wait' | 'start';
+
+export function planGameWindowRender(
+  want: GameWindowWant,
+  flight: GameWindowFlight | null,
+  completedKey: string | null,
+): { step: GameWindowStep; abort: boolean } {
+  if (!want.active) return { step: 'idle', abort: flight !== null };
+  if (completedKey === want.key) return { step: 'reuse', abort: flight !== null };
+  if (flight && flight.subject === want.subject) return { step: 'wait', abort: false };
+  return { step: 'start', abort: flight !== null };
+}
+
+export function followGameWindowRender(
+  settled: GameWindowFlight,
+  want: GameWindowWant,
+  completedKey: string | null,
+): boolean {
+  return want.active && want.subject === settled.subject && want.key !== settled.key && completedKey !== want.key;
 }
 
 function inRect(rect: readonly [number, number, number, number], x: number, y: number): boolean {
@@ -103,7 +149,13 @@ export function isActivatableClose(region: GameWindowRegion | null): boolean {
   return Boolean(region && region.close && !region.disabled);
 }
 
-export function hitTestRegion(
+function contains(region: GameWindowRegion, x: number, y: number): boolean {
+  return inRect(region.rect, x, y)
+    && (!region.clip || inRect(region.clip, x, y))
+    && alphaHit(region, x, y);
+}
+
+export function hitTestHover(
   regions: readonly GameWindowRegion[],
   x: number,
   y: number,
@@ -111,10 +163,20 @@ export function hitTestRegion(
   for (let index = regions.length - 1; index >= 0; index--) {
     const region = regions[index];
     if (!region.close && !region.tooltip) continue;
-    if (!inRect(region.rect, x, y)) continue;
-    if (region.clip && !inRect(region.clip, x, y)) continue;
-    if (!alphaHit(region, x, y)) continue;
-    return region;
+    if (contains(region, x, y)) return region;
+  }
+  return null;
+}
+
+export function hitTestClick(
+  regions: readonly GameWindowRegion[],
+  x: number,
+  y: number,
+): GameWindowRegion | null {
+  for (let index = regions.length - 1; index >= 0; index--) {
+    const region = regions[index];
+    if (region.passthrough) continue;
+    if (contains(region, x, y)) return region;
   }
   return null;
 }

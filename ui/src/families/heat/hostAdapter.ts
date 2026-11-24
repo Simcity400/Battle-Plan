@@ -6,7 +6,7 @@ import type { FamilyHeatLanesBinding } from './lanesLaneView.ts';
 import {
   deriveLanesAudit,
   parseLaneInspectKey,
-  type HeatLaneRow,
+  type HeatLaneIdentity,
   type HeatLanesModel,
 } from './lanesModel.ts';
 import type { MatrixActivation } from './matrixDeclaration.ts';
@@ -23,6 +23,7 @@ interface MatrixExtentField {
   readonly totalWidth: number;
   readonly totalHeight: number;
   readonly cellSize: number;
+  readonly cellWidth?: number;
   readonly gridLeft: number;
   readonly gridTop: number;
   readonly rows: readonly MatrixAxisEntity[];
@@ -34,7 +35,7 @@ interface LanesExtentField {
   readonly rowStride: number;
   readonly plotTop: number;
   readonly plotHeight: number;
-  readonly rows: readonly HeatLaneRow[];
+  readonly rows: readonly HeatLaneIdentity[];
 }
 
 export function parseHeatMatrixHit(hitKey: string | null): ParsedFamilyHit | null {
@@ -77,6 +78,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
       rows: ext.rows.length,
       columns: ext.columns.length,
       cellSize: ext.cellSize,
+      ...(ext.cellWidth !== undefined ? { cellWidth: ext.cellWidth } : {}),
       gridLeft: ext.gridLeft,
       gridTop: ext.gridTop,
       rowLabel: r => ext.rows[r]?.label ?? '',
@@ -132,6 +134,7 @@ export const heatMatrixHostAdapter: FamilyHostAdapter<HeatMatrixModel, unknown, 
 
 export const heatLanesHostAdapter: FamilyHostAdapter<HeatLanesModel, unknown, FamilyHeatLanesBinding> = {
   family: 'heat-lanes',
+  pointerMode: 'continuous',
   scroll: 'vertical',
   navigation: 'rows',
   mirror: 'table',

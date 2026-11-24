@@ -156,7 +156,7 @@ export default function DeclaredFamilyWidget<
   const { theme } = useFamilyTheme(undefined, plan.displayedCountryLooks);
 
   const { resolutions: demandedResolutions, onArtDemands: handleArtDemands } = useArtHandleResolutions(runtime, plan.track, active, externalArtDemands);
-  const spriteResolutions = useMemo(
+  const shownArtResolutions = useMemo(
     () => (artResolutions ? { ...artResolutions, ...demandedResolutions } : demandedResolutions),
     [artResolutions, demandedResolutions],
   );
@@ -291,7 +291,7 @@ export default function DeclaredFamilyWidget<
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
       tiledRevision={hasPixelBinned ? plan.tiledRevision : 0}
       hovers={plan.hovers}
-      spriteResolutions={spriteResolutions}
+      artResolutions={shownArtResolutions}
       extent={extent}
       plan={plan.plan}
       exactReadView={displayedCtx && perfLog && !blockedState ? plan.exactReadView : undefined}

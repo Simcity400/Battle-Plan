@@ -83,6 +83,7 @@ interface RawMeta {
   readonly emptyDetail?: string | null;
   readonly emptyKind?: 'empty' | 'unavailable';
   readonly summaryText?: string | null;
+  readonly summaryPartial?: string | null;
   readonly notes?: readonly string[];
   readonly warnings?: readonly string[];
   readonly transform?: InstalledTransform;
@@ -189,7 +190,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly tiledSeries?: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly tiledRevision?: number;
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly spriteResolutions?: Readonly<Record<string, ArtResolution>>;
+  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly extent?: readonly [number, number] | null;
   readonly plan?: SourcePlan | null;
   readonly exactReadView?: (hour: number) => Promise<BoundedReadView | null>;
@@ -237,7 +238,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   tiledSeries,
   tiledRevision = 0,
   hovers,
-  spriteResolutions,
+  artResolutions,
   extent = null,
   plan = null,
   exactReadView,
@@ -340,6 +341,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     emptyDetail: null,
     emptyKind: 'empty',
     summaryText: null,
+    summaryPartial: null,
     notes: NO_STRINGS,
     warnings: NO_STRINGS,
   }));
@@ -404,7 +406,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     staticSources,
     tiledSeries,
     hovers,
-    spriteResolutions,
+    artResolutions,
     extent,
     plan,
     exactReadView,
@@ -542,7 +544,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       ...(staticAnswers && Object.keys(staticAnswers).length ? { staticAnswers } : {}),
       ...(cur.tiledSeries ? { tiledSeries: cur.tiledSeries } : {}),
       ...(cur.hovers ? { hovers: cur.hovers } : {}),
-      ...(cur.spriteResolutions ? { spriteResolutions: cur.spriteResolutions } : {}),
+      ...(cur.artResolutions ? { artResolutions: cur.artResolutions } : {}),
       extent: cur.extent,
       plan: cur.plan,
       viewport,
@@ -695,7 +697,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const node = bodyRef.current;
     if (node && metrics) {
       const vp = viewportRef.current;
-      const nextLeft = revealGridAxis(column, metrics.cellSize, node.scrollLeft, Math.max(1, vp.width - metrics.gridLeft));
+      const nextLeft = revealGridAxis(column, metrics.cellWidth ?? metrics.cellSize, node.scrollLeft, Math.max(1, vp.width - metrics.gridLeft));
       const nextTop = revealGridAxis(row, metrics.cellSize, node.scrollTop, Math.max(1, vp.height - metrics.gridTop));
       if (nextLeft !== node.scrollLeft) node.scrollLeft = vp.scrollLeft = nextLeft;
       if (nextTop !== node.scrollTop) node.scrollTop = vp.scrollTop = nextTop;
@@ -766,15 +768,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const emptyDetail = raw?.emptyDetail ?? null;
       const emptyKind = raw?.emptyKind ?? 'empty';
       const summaryText = raw?.summaryText ?? null;
+      const summaryPartial = raw?.summaryPartial ?? null;
       const notes = raw?.notes ?? NO_STRINGS;
       const warnings = raw?.warnings ?? NO_STRINGS;
       const shown = metaRef.current;
       if (
         shown.mode === mode && shown.reason === reason && shown.failureOrigin === failureOrigin
         && shown.empty === empty && shown.emptyDetail === emptyDetail && shown.emptyKind === emptyKind
-        && shown.summaryText === summaryText && sameStrings(shown.notes, notes) && sameStrings(shown.warnings, warnings)
+        && shown.summaryText === summaryText && shown.summaryPartial === summaryPartial && sameStrings(shown.notes, notes) && sameStrings(shown.warnings, warnings)
       ) return;
-      const next: FamilyMetaState = { mode, reason, failureOrigin, empty, emptyDetail, emptyKind, summaryText, notes, warnings };
+      const next: FamilyMetaState = { mode, reason, failureOrigin, empty, emptyDetail, emptyKind, summaryText, summaryPartial, notes, warnings };
       metaRef.current = next;
       setMeta(next);
     };
@@ -1066,7 +1069,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     tiledSeries,
     tiledRevision,
     hovers,
-    spriteResolutions,
+    artResolutions,
     extent,
     plan,
     identitySnapshot,
@@ -1221,7 +1224,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   });
 
   const summary = meta.mode === 'picture' && !meta.empty && meta.summaryText
-    ? <span className="fh-summary">{meta.summaryText}</span>
+    ? <span className="fh-summary">{meta.summaryText}{meta.summaryPartial ? <span className="fh-summary-hatch" role="img" aria-label={meta.summaryPartial} title={meta.summaryPartial} /> : null}</span>
     : null;
   const rowsFocus = (adapter.mirrorFocus ?? 'body') === 'rows';
   const bodyRole = mirrorKind === 'listbox' ? 'listbox' : adapter.navigation === 'grid' ? 'grid' : 'region';
