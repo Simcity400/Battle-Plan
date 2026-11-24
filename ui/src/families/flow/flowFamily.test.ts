@@ -235,3 +235,19 @@ test('a faction is sent as the group, resolved in Rust at the hour, never as the
   assert.match(tradeFlowDeclaration.unavailable!(ctx('end'), 0) ?? '', /end of the recording/);
   assert.equal(tradeFlowDeclaration.unavailable!(ctx('hour'), 0), null);
 });
+
+test('a recorded 0.04 a day is drawn as under one tenth and read exactly with its unit, never as 0', () => {
+  const small: CountryFlowReply = {
+    ...base,
+    endpoints: [endpoint(1, 'USA'), endpoint(2, 'HOL')],
+    subject: 0,
+    incoming: side([{ from: 1, to: 0, others: null, amounts: [{ part: 0, amount: '4000' }], total: '4000', missing: null }], '4000'),
+    largest: '4000',
+    largestLink: '4000',
+  };
+  const model = projectCountryFlow(view(small), { ...TEXT, unit: 'per day' });
+  const node = model.left[0]!;
+  assert.equal(node.figure, '<0.1');
+  assert.equal(node.audit, '0.04 per day');
+  assert.equal(findFlowTooltip(model, 'node:left:2')?.items?.[0]?.value, '0.04 per day');
+});
