@@ -4,7 +4,7 @@ import { countryRowPresentation } from '../../families/bars/model.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
-import type { HeatMatrixModel, HeatMatrixProjection, MatrixAxisEntity, MatrixCell, MatrixMarginCell } from '../../families/heat/matrixModel.ts';
+import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell, type MatrixMarginCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
@@ -53,7 +53,7 @@ function plan(ctx: FamilyPlanContext, subject: string | null): SourcePlan {
 }
 
 function blank(hour: number, extra: Partial<HeatMatrixModel>): HeatMatrixModel {
-  return { hour, rows: [], columns: [], cell: () => ({ kind: 'empty' }), ...extra };
+  return { hour, rows: [], columns: [], cells: NO_CELLS, ...extra };
 }
 
 export function projectCasualtyMatrix(readView: BoundedReadView): HeatMatrixModel {
@@ -86,14 +86,16 @@ export function projectCasualtyMatrix(readView: BoundedReadView): HeatMatrixMode
   const largest = Number(BigInt(reply.largestDealt)) || 1;
   const hasMissing = reply.cells.some(cell => cell.dealt === null) || reply.order.some(index => reply.countries[index]!.missing !== null);
 
-  const cell = (r: number, c: number): MatrixCell => {
-    if (r === c) return { kind: 'diagonal', text: '—' };
-    const found = byPair.get(r * width + c);
-    if (!found) return { kind: 'empty', label: 'Not at war: no casualties', audit: '0' };
-    if (found.dealt === null) return { kind: 'missing', reason: found.missing ?? NOT_RECORDED };
-    if (found.dealt === '0') return { kind: 'empty', label: '0 casualties', audit: '0' };
-    return { kind: 'value', intensity: Number(BigInt(found.dealt)) / most, text: compact(found.dealt), value: BigInt(found.dealt), audit: found.dealt, selectable: true };
-  };
+  const present = new Map<number, MatrixCell>();
+  for (const [at, found] of byPair) {
+    if (Math.floor(at / width) === at % width) continue;
+    present.set(at, found.dealt === null
+      ? { kind: 'missing', reason: found.missing ?? NOT_RECORDED }
+      : found.dealt === '0'
+        ? { kind: 'empty', label: '0 casualties', audit: '0' }
+        : { kind: 'value', intensity: Number(BigInt(found.dealt)) / most, text: compact(found.dealt), value: BigInt(found.dealt), audit: found.dealt, selectable: true });
+  }
+  const cells = { present, absent: { kind: 'empty', label: 'Not at war: no casualties', audit: '0' } as MatrixCell, self: { kind: 'diagonal', text: '—' } as MatrixCell };
 
   const margin = (r: number): MatrixMarginCell => {
     const country = reply.countries[reply.order[r]!]!;
@@ -105,7 +107,7 @@ export function projectCasualtyMatrix(readView: BoundedReadView): HeatMatrixMode
     hour,
     rows: entities,
     columns: entities,
-    cell,
+    cells,
     shape: 'wide',
     ramp: 'red',
     corner: 'Dealt by ↓ · to →',
