@@ -3,6 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { columnsControl } from '../../families/settingsControls.ts';
 import {
   LOG_TABLE_BASE,
+  logActionColumn,
   logCountryColumn,
   logDateColumn,
   logItemColumn,
@@ -13,7 +14,7 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const MARKET_LEDGER_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn({ minWidth: 92, maxWidth: 98 }),
+  logDateColumn(),
   logKindColumn({ minWidth: 34, maxWidth: 42 }),
   logCountryColumn(),
   logItemColumn({ label: 'Equipment', minWidth: 180 }),
@@ -41,6 +42,7 @@ export const MARKET_LEDGER_COLUMNS: readonly TableColumnSpec[] = [
     widest: ['−9,999.9 CIC'],
   },
   logStatusColumn({ minWidth: 136, widest: ['Contract started'] }),
+  logActionColumn({ minWidth: 26, maxWidth: 32 }),
 ];
 
 export const OPTIONS: readonly OptionField[] = [

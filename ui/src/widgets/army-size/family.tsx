@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { OptionChoices, WidgetProps, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer, OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
@@ -29,7 +29,7 @@ function useArmyChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoic
 }
 
 function ArmyAtDetail({ runtime, trackId, tag, hour, countFor, active }: {
-  readonly runtime: WidgetProps['runtime'];
+  readonly runtime: FamilyViewProps['runtime'];
   readonly trackId: string | undefined;
   readonly tag: string;
   readonly hour: GatedHour;
@@ -71,10 +71,10 @@ function ArmyAtDetail({ runtime, trackId, tag, hour, countFor, active }: {
   );
 }
 
-function ArmySizeFamilyWidget(props: WidgetProps) {
-  const { widget, runtime, active, view, manifestDeclaration } = props;
+function ArmySizeFamilyWidget(props: FamilyViewProps) {
+  const { widget, runtime, active, view, options, manifestDeclaration } = props;
   const isLines = manifestDeclaration?.family === 'time-chart';
-  const countFor = (widget.options?.countFor === 'host' ? 'host' : 'owner') as ArmyAttribution;
+  const countFor: ArmyAttribution = options.countFor === 'host' ? 'host' : 'owner';
   const anchorRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
   const gate = useGate(runtime, widget, SPEC, active);
@@ -123,4 +123,4 @@ function ArmySizeFamilyWidget(props: WidgetProps) {
   );
 }
 
-export default { render: ArmySizeFamilyWidget, useOptionChoices: useArmyChoices } satisfies WidgetRenderer;
+export default { render: ArmySizeFamilyWidget, useOptionChoices: useArmyChoices } satisfies FamilyViewRenderer;

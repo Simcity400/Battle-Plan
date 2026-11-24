@@ -1095,12 +1095,17 @@ fn balance_at(runs: &[SpendBalanceRun], hour: i32) -> (Option<i128>, Option<Stri
     }
 }
 
-pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i32, i32) -> i64) -> Option<String> {
-    let unheld = |first: i32, last: i32| first <= last && recorded(first, last) > 0;
+pub(super) const HOLDER_UNRESOLVED: &str = "The country's holder was not resolved during this span";
+
+pub(super) fn continuity(from: i32, to: i32, held: &[Piece], nobody: impl Fn(i32, i32) -> i64, unresolved: impl Fn(i32, i32) -> bool) -> Option<String> {
+    let unheld = |first: i32, last: i32| first <= last && nobody(first, last) > 0;
+    let unknown = |first: i32, last: i32| first <= last && unresolved(first, last);
     let Some((first, last)) = held.first().zip(held.last()) else {
-        let hours = if from <= to { recorded(from, to) } else { 0 };
+        let hours = if from <= to { nobody(from, to) } else { 0 };
         return Some(
-            if hours == i64::from(to) - i64::from(from) + 1 {
+            if unknown(from, to) {
+                HOLDER_UNRESOLVED
+            } else if hours == i64::from(to) - i64::from(from) + 1 {
                 "Country was not held during this span"
             } else if hours > 0 {
                 "Country was not held for the entire span"
@@ -1110,8 +1115,15 @@ pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i
             .to_owned(),
         );
     };
-    if unheld(from, first.first.saturating_sub(1)) || unheld(last.last.saturating_add(1), to) || held.windows(2).any(|pair| unheld(pair[0].last.saturating_add(1), pair[1].first.saturating_sub(1))) {
+    let gaps = || {
+        [(from, first.first.saturating_sub(1)), (last.last.saturating_add(1), to)]
+            .into_iter()
+            .chain(held.windows(2).map(|pair| (pair[0].last.saturating_add(1), pair[1].first.saturating_sub(1))))
+    };
+    if gaps().any(|(a, b)| unheld(a, b)) {
         Some("Country was not held for the entire span".to_owned())
+    } else if gaps().any(|(a, b)| unknown(a, b)) {
+        Some(HOLDER_UNRESOLVED.to_owned())
     } else if first.first > from || last.last < to || held.windows(2).any(|pair| pair[0].run != pair[1].run || pair[1].baseline != pair[1].first.checked_sub(1)) {
         Some("Continuity broke across a load or recording gap during this span".to_owned())
     } else if held.len() > 1 {
@@ -1121,9 +1133,9 @@ pub(super) fn continuity(from: i32, to: i32, held: &[Piece], recorded: impl Fn(i
     }
 }
 
-fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, recorded: impl Fn(i32, i32) -> i64) -> SpendReconciliation {
+fn reconcile(params: &PowerSpendingParams, held: &[Piece], reply: &PowerSpendingReply, allocations: &AllocationTotals, nobody: impl Fn(i32, i32) -> i64, unresolved: impl Fn(i32, i32) -> bool) -> SpendReconciliation {
     let (from, to) = (params.from, params.to);
-    let continuity_reason = continuity(from, to, held, recorded);
+    let continuity_reason = continuity(from, to, held, nobody, unresolved);
 
     let spend_coverage_reason = full_coverage_reason(&reply.coverage, from, to, "Spending coverage was not recorded");
     let gain_coverage_reason = full_coverage_reason(&reply.gain_coverage, from, to, "Power changes were not recorded");
@@ -1366,7 +1378,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut unmatched = 0_u64;
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
-    reply.tag = query.holders.tag_at(&params.country, params.to.min(query.timeline.last)).map_or_else(|| params.country.key().into_owned(), str::to_owned);
+    reply.tag = query.holders.tag_at(&params.country, params.to).map_or_else(|| params.country.key().into_owned(), str::to_owned);
     for piece in &held {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
@@ -1445,7 +1457,26 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             unmatched: bucket.unmatched,
         })
         .collect();
-    reply.reconciliation = reconcile(params, &held, &reply, &allocations, |first, last| query.timeline.within(first, last).map(|stretch| i64::from(stretch.last) - i64::from(stretch.first) + 1).sum());
+    let runs: Vec<&dashboard_query::identity::HolderRun> = match &params.country {
+        Country::Slot(_) => query.holders.tags.values().flatten().collect(),
+        Country::Tag(_) => query.holders.runs(&params.country).iter().collect(),
+    };
+    let mut unknown: Vec<(i32, i32)> = runs.into_iter().filter(|run| run.holder == dashboard_query::identity::Holder::Unresolved).map(|run| (run.first, run.last)).collect();
+    unknown.sort_unstable();
+    unknown.dedup_by(|next, held| {
+        let joined = next.0 <= held.1.saturating_add(1);
+        if joined {
+            held.1 = held.1.max(next.1);
+        }
+        joined
+    });
+    let overlap = |first: i32, last: i32, spans: &mut dyn Iterator<Item = (i32, i32)>| -> i64 {
+        spans.map(|(a, b)| i64::from(b.min(last)) - i64::from(a.max(first)) + 1).filter(|&hours| hours > 0).sum()
+    };
+    let recorded = |first: i32, last: i32| overlap(first, last, &mut query.timeline.within(first, last).map(|stretch| (stretch.first, stretch.last)));
+    let unresolved = |first: i32, last: i32| overlap(first, last, &mut unknown.iter().copied()) > 0;
+    let nobody = |first: i32, last: i32| recorded(first, last) - overlap(first, last, &mut unknown.iter().copied());
+    reply.reconciliation = reconcile(params, &held, &reply, &allocations, nobody, unresolved);
     let asked = &items.asked;
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let mut icons = BTreeMap::new();

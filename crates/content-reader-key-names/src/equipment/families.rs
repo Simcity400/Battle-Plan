@@ -105,6 +105,13 @@ pub fn category_families() -> Result<&'static CategoryFamilies, String> {
     FAMILIES.get().map_err(ToString::to_string)
 }
 
+pub fn modular_categories(dlc_mask: u32) -> Result<u64, String> {
+    if dlc_mask & (MAN_THE_GUNS | NO_STEP_BACK | BY_BLOOD_ALONE) == 0 {
+        return Ok(0);
+    }
+    Ok(category_families()?.modular_categories(dlc_mask))
+}
+
 impl CategoryFamilies {
     pub fn modular_categories(&self, dlc_mask: u32) -> u64 {
         self.designers(dlc_mask)

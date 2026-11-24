@@ -1,7 +1,6 @@
 import { fitLabelWidth } from '../../charts/labels.ts';
 import { measureCanvasText } from '../../charts/textWidth.ts';
-import type { LaneView } from '../../draw/lane.ts';
-import { createLaneView, type LaneBinding, type LaneFamily, type LaneRuntimeOptions } from '../laneRuntime.ts';
+import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import { hitHeatMatrix, layoutHeatMatrix, matrixWindow, type HeatMatrixLayout } from './matrixLayout.ts';
 import {
   deriveMatrixAudit,
@@ -56,7 +55,7 @@ function shown(frame: { readonly model: HeatMatrixModel; readonly layout: HeatMa
   return layout;
 }
 
-const heatMatrixLane: LaneFamily<FamilyHeatMatrixBinding, HeatMatrixModel, HeatMatrixLayout> = {
+export const heatMatrixLane: LaneFamily<FamilyHeatMatrixBinding, HeatMatrixModel, HeatMatrixLayout> = {
   family: 'heat-matrix',
   boundary: () => Infinity,
   redraw: () => Infinity,
@@ -140,7 +139,3 @@ const heatMatrixLane: LaneFamily<FamilyHeatMatrixBinding, HeatMatrixModel, HeatM
   },
   visibleArt: frame => collectVisibleMatrixArt(frame.model, shown(frame), frame.index),
 };
-
-export function familyHeatMatrixLaneView(wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
-  return createLaneView(heatMatrixLane, wake, options);
-}

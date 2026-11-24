@@ -70,6 +70,8 @@ export interface PinnedAsk {
   readonly countriesKnown?: (first: number, last: number) => boolean;
 }
 
+export type PinnedTrack = (entry: SourceEntry) => Pick<PinnedAsk, 'branch' | 'gate'>;
+
 export type UnitAsk =
   | {
       readonly following: true;
@@ -83,6 +85,7 @@ export type UnitAsk =
       readonly trackOffset: number;
       readonly displayHour: number;
       readonly pinned: PinnedAsk;
+      readonly track?: PinnedTrack;
       readonly content: number;
     };
 
@@ -113,7 +116,8 @@ export function askUnits(entries: readonly SourceEntry[], ask: UnitAsk): readonl
         end: options.effectiveEndHour,
       };
     }
-    const pinned = ask.pinned;
+    const own = ask.track?.(entry);
+    const pinned = own ? { ...ask.pinned, branch: own.branch, gate: own.gate } : ask.pinned;
     const pinHour = pinned.pinHour === null ? null : shift === 0 ? pinned.pinHour : pinned.gate.recorded(pinned.pinHour + shift);
     const window = pinned.window && shift !== 0
       ? { firstHour: pinned.window.firstHour + shift, lastHour: pinned.window.lastHour + shift }
@@ -396,7 +400,7 @@ interface TargetCommon {
 
 export type TargetConfig = TargetCommon & (
   | { readonly following: true; readonly subscribed: boolean; readonly playback: (entry: SourceEntry) => Omit<PlaybackBoundedOptions, 'currentHour'> }
-  | { readonly following: false; readonly displayHour: number; readonly pinned: PinnedAsk }
+  | { readonly following: false; readonly displayHour: number; readonly pinned: PinnedAsk; readonly track?: PinnedTrack }
 );
 
 export interface TargetBundle {
@@ -434,7 +438,7 @@ export function shownView(view: TargetView, inputs: string, units: boolean): Tar
 function sameConfig(a: TargetConfig, b: TargetConfig): boolean {
   if (a.inputs !== b.inputs || a.entries !== b.entries || a.active !== b.active || a.content !== b.content || a.trackOffset !== b.trackOffset) return false;
   if (a.following && b.following) return a.subscribed === b.subscribed && a.playback === b.playback;
-  if (!a.following && !b.following) return a.displayHour === b.displayHour && a.pinned === b.pinned;
+  if (!a.following && !b.following) return a.displayHour === b.displayHour && a.pinned === b.pinned && a.track === b.track;
   return false;
 }
 
@@ -555,7 +559,7 @@ export class ReadTarget {
     this.hour = hour;
     if (!config.entries.length) this.units = [];
     else if (!config.following) {
-      this.units = askUnits(config.entries, { following: false, trackOffset: config.trackOffset, displayHour: config.displayHour, pinned: config.pinned, content: config.content });
+      this.units = askUnits(config.entries, { following: false, trackOffset: config.trackOffset, displayHour: config.displayHour, pinned: config.pinned, ...(config.track ? { track: config.track } : {}), content: config.content });
     } else {
       const asked = askUnits(config.entries, { following: true, trackOffset: config.trackOffset, hour, playback: config.playback, content: config.content });
       this.units = keep ? this.keepProven(asked, hour) : asked;
@@ -627,7 +631,13 @@ export class ReadTarget {
 
   private arm(results: ReadonlyMap<string, UnitResult>, now: number, failed: boolean): void {
     let watch: Interval | null;
-    if (failed) watch = [this.hour, this.hour];
+    if (failed) {
+      if (this.units.some(unit => unitEvidence(unit, results.get(unit.name), true).kind === 'pending')) {
+        this.disarm();
+        return;
+      }
+      watch = [this.hour, this.hour];
+    }
     else {
       watch = jointProof(this.units, results);
       if (watch === null) {

@@ -1,4 +1,5 @@
-import { familyLaneView } from '../../widgets/familyManifest.ts';
+import { lazyLaneView } from '../../families/laneRuntime.ts';
+import { FAMILY_MANIFESTS } from '../../widgets/familyManifest.ts';
 import type { LaneView, Painted, PaintInput } from '../lane.ts';
 import { panelViews, readingStructure } from '../panels/views.ts';
 import { fieldsOf, liveValues, sameLive, type LiveMap } from './fields.ts';
@@ -40,8 +41,8 @@ function panelTexts(): LaneView {
 }
 
 export function drawnViews(kind: string, wake: (widget: number) => void): LaneView | undefined {
-  const family = familyLaneView(kind, wake);
-  if (family) return family;
+  const family = FAMILY_MANIFESTS.find(entry => entry.family === kind);
+  if (family) return lazyLaneView(family.family, family.lane, wake);
   if (kind === 'panel') return panelTexts();
   return undefined;
 }

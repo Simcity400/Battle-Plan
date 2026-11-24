@@ -12,7 +12,7 @@ const leaf = (extra: Partial<Leaf> = {}): Leaf => ({ tag: 'mod country', identit
   points: [[9, 10, '300000'], [8, 11, '200000']], ...extra });
 const part = (item: Leaf): MilitaryAirPart => ({ tag: item.tag, identity: item.identity, dealt: item.dealt, cause: item.cause,
   opponentKnown: item.opponent !== null, buildingToken: null, buildingId: null, state: null, points: item.points });
-const reply = ({ leaves = [leaf()], ...extra }: Partial<MilitaryAirLedger> & { leaves?: Leaf[] } = {}): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 14,
+const reply = ({ leaves = [leaf()], ...extra }: Partial<MilitaryAirLedger> & { leaves?: Leaf[] } = {}): MilitaryAirLedger => ({ family: 'airLosses', firstHour: 10, lastHour: 14, causes: [{ cause: 1, name: 'Aircraft combat', missing: null }, { cause: 3, name: 'Air accidents', missing: null }], 
   available: true, observed: [span(10, 11), span(13, 14)], incomplete: [],
   countries: [{ tag: 'mod country', identity: '3:9', present: [span(10, 11), span(13, 14)], membership: null }],
   parts: leaves.map(part), regions: [{ id: '40001', name: null, missing: 'The recorded mod did not define this region.' }], buildings: [], warnings: [], ...extra });
