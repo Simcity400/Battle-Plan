@@ -51,13 +51,3 @@ export function slotValues(reply: ResearchSlotsReply, hour: number, progress?: (
 
 const effectiveHour = (read: ResearchSlotNow, hour: number) =>
   hour < read.state.firstHour ? hour : read.state.firstHour + Math.floor((hour - read.state.firstHour) / 24) * 24;
-
-export function estimateHour(shown: { texts: ReadonlyMap<string, string>; hour: number; data: ResearchSlotsReply | undefined } | undefined, asked: ResearchSlotsReply & { hour: number },
-  slot: number, token: string): number {
-  if (shown) {
-    const painted = shown.texts.get(slot + ':estimate');
-    return shown.data?.slots.find(held => held.index === slot)?.state.token === token && painted ? Number(painted) : shown.hour;
-  }
-  const read = asked.slots.find(held => held.index === slot);
-  return !read || read.state.token !== token || read.state.details?.remainingDays == null ? asked.hour : effectiveHour(read, asked.hour);
-}

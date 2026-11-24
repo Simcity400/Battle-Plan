@@ -11,7 +11,7 @@ import { tableHostAdapter } from '../../families/table/hostAdapter.ts';
 import type { TableModel, TableProjection } from '../../families/table/model.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, type TableSettings } from '../../families/table/settings.ts';
 import type { AgencyComparisonReply, MarketLendLeaseReply } from '../../generated/dashboard';
-import { registerGameWindow, unregisterGameWindow } from '../../dashboard/gameWindows.ts';
+import { registerGameWindow } from '../../dashboard/gameWindows.ts';
 import { TABLE_VIEWS } from './table.ts';
 
 const identity: IdentityProvider = {
@@ -142,9 +142,27 @@ test('agency comparison opens the agency window by country id, and only for a cr
   assert.deepEqual(view(draw()).map(([key, status]) => [key, status]), [['7', 'notApplicable'], ['9', 'notApplicable']],
     'no View while no agency window is registered');
   registerGameWindow('intelligenceAgency', () => null);
-  try {
-    assert.deepEqual(view(draw()), [['7', 'known', 'Open its agency window'], ['9', 'notApplicable', null]]);
-  } finally {
-    unregisterGameWindow('intelligenceAgency');
-  }
+  assert.deepEqual(view(draw()), [['7', 'known', 'Open its agency window'], ['9', 'notApplicable', null]]);
+});
+
+test('governments in exile does not report none when an exile with a known other country has an unknown host', async () => {
+  const table = await hosted('governments-in-exile');
+  const reply = { branchId: '1', view: 'exiles', exiles: [{ id: '9', tag: 'XXX', host: null }], exilesMissing: null, balances: [], current: null, unavailable: [], warnings: [] };
+  const readView = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity });
+  const ctx = context(table.options({}));
+  const onlyHost = { passing: { HHH: [[0, 1000]] as [number, number][] }, unrecorded: [], bounds: [] };
+  const filtered = { ...ctx, countries: { ...ctx.countries, filter: onlyHost } } as DeclaredTableContext;
+  const model = table.projection.project(readView, table.declaration.projectionOptions(filtered));
+  assert.equal(model.rows.length, 0);
+  assert.equal(model.emptyKind, 'unavailable', 'the exile may be hosted by the selected country');
+  assert.notEqual(model.empty, 'No governments in exile');
+});
+
+test('territory transfers keeps the product order and no rank when its counts are only those observed', async () => {
+  const table = await hosted('territory-transfers');
+  const country = (key: string, gained: number) => ({ key, tag: key, hour: 10, gained, lost: 0, net: null, netVictoryPoints: null, victoryPointsMissing: 'gap' });
+  const reply = { branchId: '1', through: 500, transfers: 3, countries: [country('AAA', 1), country('BBB', 2)], nextChange: null, partial: 'gap', warnings: [] };
+  const readView = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity });
+  const model = table.projection.project(readView, table.declaration.projectionOptions(context(table.options({}))));
+  assert.equal(model.populationPartial, 'gap', 'the rows are not table-sorted or ranked as exact');
 });

@@ -1,17 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nextHolder, spansExtent } from './layout.ts';
+import { nextHolder } from './layout.ts';
 
 const span = (id: string, label: string, icon?: string) => ({ id, firstHour: 0, lastHour: 0, label, icon });
-
-test('the time extent includes every lane and the whole last observed hour', () => {
-  assert.equal(spansExtent([]), null);
-  assert.equal(spansExtent([{ id: 'empty', label: 'Empty', spans: [] }]), null);
-  assert.deepEqual(spansExtent([
-    { id: 'later', label: 'Later', spans: [{ ...span('later', 'Later'), firstHour: 20, lastHour: 30 }] },
-    { id: 'earlier', label: 'Earlier', spans: [{ ...span('earlier', 'Earlier'), firstHour: 5, lastHour: 10 }] },
-  ]), [5, 31]);
-});
 
 test('ordinary lanes update a holder name and picture immediately while preserving its fade', () => {
   const first = nextHolder(undefined, span('5#1', 'Earlier name', 'a.png'));

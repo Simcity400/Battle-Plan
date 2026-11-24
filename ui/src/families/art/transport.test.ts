@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SPRITE_BATCH, SpriteCaches, spriteFrames, spriteHandle, spriteResolutions, type SpriteFrame } from './transport.ts';
+import { MAX_ART_CALLS, SPRITE_BATCH, SpriteCaches, spriteFrames, spriteHandle, spriteResolutions, type SpriteFrame } from './transport.ts';
 import { artHandleKey, readyArt, type ArtResolution } from './types.ts';
 import type { ArtHandle } from '../plan.ts';
 
@@ -13,6 +13,9 @@ const spriteIcons = (reply: unknown, asked: readonly SpriteFrame[]) => {
 };
 
 const png = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
+
+const asCall = (fetch: (batch: readonly ArtHandle[], signal: AbortSignal) => Promise<ReadonlyMap<string, ArtResolution>>) =>
+  (batch: readonly ArtHandle[], signal: AbortSignal) => [{ handles: batch, run: () => fetch(batch, signal) }];
 
 test('sprite frames are asked once each, in a stable order, without missing keys', () => {
   assert.deepEqual(spriteFrames([{ key: 'GFX_b', frame: 0 }, null, { key: 'GFX_a', frame: 2 }, undefined, { key: '', frame: 0 },
@@ -94,15 +97,15 @@ test('sprite requests from multiple callers in the same tick coalesce into bound
   const first = Array.from({ length: 10 }, (_, i) => ({ key: `GFX_${i}`, frame: 0 }));
   const second = Array.from({ length: 10 }, (_, i) => ({ key: `GFX_${i + 5}`, frame: 0 }));
   const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
-  caches.request('s', first.map(spriteHandle), fetcher);
-  caches.request('s', second.map(spriteHandle), fetcher);
+  caches.request('s', first.map(spriteHandle), asCall(fetcher));
+  caches.request('s', second.map(spriteHandle), asCall(fetcher));
   await flush();
   assert.deepEqual(calls, [15]);
   assert.equal(aborted, 0);
   assert.equal(urlOf(caches.resolutions('s').get(spriteId({ key: 'GFX_14', frame: 0 }))), png);
   assert.equal(caches.resolutions('s').get(spriteId({ key: 'GFX_14', frame: 0 }))?.status, 'ready');
   const large = Array.from({ length: SPRITE_BATCH + 10 }, (_, i) => ({ key: `GFX_L_${i}`, frame: 0 }));
-  caches.request('s', large.map(spriteHandle), fetcher);
+  caches.request('s', large.map(spriteHandle), asCall(fetcher));
   await flush();
   assert.deepEqual(calls, [15, SPRITE_BATCH, 10]);
   release();
@@ -114,12 +117,38 @@ test('failed sprite batches record errors without marking sprites as missing and
   let notified = 0;
   const stop = caches.watch('err', () => { notified++; });
   const failing = async () => { throw new Error('disk offline'); };
-  caches.request('err', [spriteHandle({ key: 'GFX_fail', frame: 0 })], failing);
+  caches.request('err', [spriteHandle({ key: 'GFX_fail', frame: 0 })], asCall(failing));
   for (let i = 0; i < 6; i++) await Promise.resolve();
   const id = spriteId({ key: 'GFX_fail', frame: 0 });
   assert.deepEqual(caches.failures('err').get(id), { reason: 'disk offline', retryable: false, count: 1, at: Infinity });
   assert.equal(caches.resolutions('err').has(id), false);
   assert.equal(notified, 1);
   stop();
+  release();
+});
+
+test('every batch in a scope shares four product calls, and each call is published as it settles while a slow sibling waits', async () => {
+  const caches = new SpriteCaches();
+  const release = caches.hold('calls');
+  let open = 0;
+  let most = 0;
+  const slow = artHandleKey(spriteHandle({ key: 'GFX_slow', frame: 0 }));
+  const fetch = (batch: readonly ArtHandle[]) => batch.map(handle => ({
+    handles: [handle],
+    run: async () => {
+      open++;
+      most = Math.max(most, open);
+      if (artHandleKey(handle) === slow) await new Promise(() => {});
+      await Promise.resolve();
+      open--;
+      return new Map([[artHandleKey(handle), readyArt(`art://${artHandleKey(handle)}`)]]);
+    },
+  }));
+  const handles = [spriteHandle({ key: 'GFX_slow', frame: 0 }), ...Array.from({ length: 2 * SPRITE_BATCH }, (_, i) => spriteHandle({ key: `GFX_${i}`, frame: 0 }))];
+  caches.request('calls', handles, fetch);
+  for (let i = 0; i < 2_000; i++) await Promise.resolve();
+  assert.ok(most <= MAX_ART_CALLS, `at most ${MAX_ART_CALLS} product calls at once across batches, saw ${most}`);
+  assert.equal(caches.resolutions('calls').size, 2 * SPRITE_BATCH, 'every sibling of the slow call is published without waiting for it');
+  assert.equal(caches.resolutions('calls').has(slow), false);
   release();
 });

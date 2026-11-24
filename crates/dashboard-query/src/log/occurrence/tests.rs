@@ -111,6 +111,22 @@ fn a_selection_matches_every_role_at_its_own_date_through_dated_membership() {
 }
 
 #[test]
+fn a_role_known_only_after_the_hour_asked_does_not_admit_its_row() {
+    let entries = vec![Occurrence { roles: Box::new([Role { slot: Some(7), at: 100 }, Role { slot: Some(8), at: 120 }]), ..occurrence(1, 100, 100) }];
+    let index = Index::new(entries, Vec::new(), &[]).unwrap();
+    let span = |tag: &str| CountrySpan { country: Country::Tag(tag.to_owned()), first_hour: 0, last_hour: 1_000 };
+    let poland = Selection { membership: vec![span("POL")], unobserved: Vec::new() };
+    let at_110 = index.ask(&holders(), &Ask { selection: Some(&poland), ..ask(110) }).unwrap();
+    assert_eq!((at_110.total, at_110.next_change), (0, Some(120)), "Poland's role is first known at 120: the row is not Poland's before it");
+    assert_eq!(index.ask(&holders(), &Ask { selection: Some(&poland), ..ask(120) }).unwrap().total, 1);
+    let germany = Selection { membership: vec![span("GER")], unobserved: Vec::new() };
+    assert_eq!(index.ask(&holders(), &Ask { selection: Some(&germany), ..ask(110) }).unwrap().total, 1, "a role known at the observation admits from it");
+    let untagged = Index::new(vec![Occurrence { roles: Box::new([Role { slot: Some(40), at: 100 }]), ..occurrence(2, 100, 100) }], Vec::new(), &[]).unwrap();
+    let slot = Selection { membership: vec![CountrySpan { country: Country::Slot(40), first_hour: 0, last_hour: 1_000 }], unobserved: Vec::new() };
+    assert_eq!(untagged.ask(&holders(), &Ask { selection: Some(&slot), ..ask(110) }).unwrap().total, 1, "a selected slot holding no tag still names its own rows");
+}
+
+#[test]
 fn a_figure_orders_known_values_first_and_search_and_kinds_narrow_before_counting() {
     let figured = |id: u128, figure: Option<i64>, kind: u16, text: &str| Occurrence { figures: Box::new([figure]), kind, text: text.into(), ..occurrence(id, id as i32, id as i32) };
     let index = Index::new(vec![figured(1, Some(5), 0, "Battle of Gdynia"), figured(2, None, 0, "Battle of Derna"), figured(3, Some(9), 1, "Battle of Kalamata"), figured(4, Some(1), 0, "battle of gdynia")], Vec::new(), &[]).unwrap();

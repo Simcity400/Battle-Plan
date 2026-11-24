@@ -7,7 +7,7 @@ import type { MapPlayback } from '../dashboard/mapPlayback';
 
 export type ReplayMetadata = GeneratedReplayMetadata & { revision: string };
 
-export type { BranchMetadata, CountryMetadata } from '../generated/dashboard';
+export type { CountryMetadata } from '../generated/dashboard';
 
 export const desktopAvailable = isTauri();
 

@@ -33,6 +33,7 @@ viewer-unit-reads.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true
 dashboard-intelligence.workspace = true
+dashboard-effects.workspace = true
 dashboard-land.workspace = true
 dashboard-politics.workspace = true
 viewer-aircraft.workspace = true

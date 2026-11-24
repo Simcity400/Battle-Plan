@@ -305,14 +305,63 @@ impl Evaluator<'_, '_> {
             return Ok(Eval::False);
         };
         let block = item.value.items().unwrap_or_default();
+        self.trait_availability(
+            reference,
+            wanted,
+            read_bool_field(block, PARENTS, true),
+            read_bool_field(block, EXCLUSIVE, true),
+        )
+    }
+
+    pub fn trait_condition(
+        &self,
+        reference: u64,
+        token: &str,
+        condition: OrganisationCondition,
+    ) -> Result<bool, Undecided> {
+        let value = match condition {
+            OrganisationCondition::Available => {
+                self.trait_availability(reference, token.as_bytes(), true, true)
+            }
+            OrganisationCondition::Visible => (|| {
+                let (template, catalog) = self.organisation_definition(reference)?;
+                let Some(definition) = ordinary_trait(catalog, &template, token.as_bytes())? else {
+                    return Ok(Eval::False);
+                };
+                Ok(self.conditions(
+                    reference,
+                    [(
+                        format!(
+                            "trait {} of industrial organisation {reference:#x}'s visible",
+                            definition.token
+                        ),
+                        definition.visible(),
+                    )],
+                ))
+            })(),
+        };
+        let decided = value.unwrap_or_else(|why| Eval::unknown(why)).decided();
+        match self.divergence() {
+            Some(why) => Err(Undecided::Diverged(why.to_string())),
+            None => decided.map_err(Undecided::Unknown),
+        }
+    }
+
+    fn trait_availability(
+        &self,
+        reference: u64,
+        wanted: &[u8],
+        parents: bool,
+        exclusive: bool,
+    ) -> Result<Eval, Failure> {
         let (template, catalog) = self.organisation_definition(reference)?;
         let Some(definition) = ordinary_trait(catalog, &template, wanted)? else {
             return Ok(Eval::False);
         };
-        if read_bool_field(block, PARENTS, true) && !self.parents_completed(definition, reference)? {
+        if parents && !self.parents_completed(definition, reference)? {
             return Ok(Eval::False);
         }
-        if read_bool_field(block, EXCLUSIVE, true) {
+        if exclusive {
             for exclusive in &definition.mutually_exclusive {
                 if self.unlocked(reference, exclusive.as_bytes())? {
                     return Ok(Eval::False);

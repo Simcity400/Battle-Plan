@@ -19,12 +19,15 @@ export interface LiveSection { groups: LiveGroupSpec[]; rows: string[]; kinds: L
 
 const OPS = new Set<LiveOp>(['value', 'sum', 'difference', 'ratio']);
 const RAW_INT = /^-?\d+$/;
+const COUNT_STRING = /^\d+$/;
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 
 export function liveSection(reply: unknown): LiveSection | null {
-  const live = reply && typeof reply === 'object' ? (reply as { live?: unknown }).live : undefined;
+  const obj = reply && typeof reply === 'object' ? (reply as Record<string, unknown>) : null;
+  const live = obj?.live;
   if (live === undefined || live === null) return null;
+  if (typeof live === 'string' && COUNT_STRING.test(live) && typeof obj!.total === 'string' && Array.isArray(obj!.rows)) return null;
   const section = live as LiveSection;
   if (typeof live !== 'object' || !Array.isArray(section.groups) || !texts(section.rows) || !Array.isArray(section.kinds) || !Array.isArray(section.cells))
     throw new Error('A reply\'s live cells are malformed.');
@@ -269,5 +272,3 @@ export function repliedCells(reply: unknown): Live<LiveValues<number>> {
 export function reporting<T>(live: Live<T>, report: () => void): Live<T> {
   return { read: () => { report(); return live.read(); }, subscribe: live.subscribe };
 }
-
-export const NO_ROW = 'No live row has this key';

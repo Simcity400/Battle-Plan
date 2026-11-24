@@ -34,6 +34,7 @@ pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Opt
         "faction-totals-at" => dashboard_wars::registrations::EXACT_FACTIONTOTALSAT(source, load, asked),
         "log-tail" => dashboard_politics::products::logs::dated_panel(source, load, asked),
         "market-ledger-tail" => dashboard_economy::products::economy::market::ledger::dated_panel(source, load, asked),
+        "raid-log-tail" => dashboard_intelligence::products::raids::tail::dated_panel(source, load, asked),
         "event-feed-tail" => dashboard_politics::products::feed::event_feed_dated_panel(source, load, asked),
         "event-choices-tail" => dashboard_politics::products::feed::event_choices_dated_panel(source, load, asked),
         "decisions-tail" => dashboard_politics::products::feed::decisions_dated_panel(source, load, asked),

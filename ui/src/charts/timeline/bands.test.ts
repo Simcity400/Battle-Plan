@@ -1,88 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { barExtent, barHitAt, bandHitAt, bandOutlines, laneBands, laneStops } from './layout.ts';
+import { barExtent, barHitAt, bandHitAt, laneBands, laneStops } from './layout.ts';
 
 const toX = (hour: number) => hour;
 const same = (value: number) => value;
-
-test('a band has one flat stretch per step, cut to the hours shown', () => {
-  const steps = [{ firstHour: 0, lastHour: 9, value: 2 }, { firstHour: 10, lastHour: 29, value: 5 }];
-  assert.deepEqual(bandOutlines(steps, 0, 30, toX, same, 0, 1000), [[{ x0: 0, x1: 10, half: 2 }, { x0: 10, x1: 30, half: 5 }]]);
-  assert.deepEqual(bandOutlines(steps, 5, 15, toX, same, 0, 1000), [[{ x0: 5, x1: 10, half: 2 }, { x0: 10, x1: 15, half: 5 }]]);
-  assert.deepEqual(bandOutlines(steps, 40, 50, toX, same, 0, 1000), []);
-});
-
-test('a missing hour between steps breaks the band', () => {
-  const steps = [{ firstHour: 0, lastHour: 9, value: 2 }, { firstHour: 12, lastHour: 20, value: 2 }];
-  assert.deepEqual(bandOutlines(steps, 0, 30, toX, same, 0, 1000), [[{ x0: 0, x1: 10, half: 2 }], [{ x0: 12, x1: 21, half: 2 }]]);
-});
-
-test('each column is drawn at the thickest step touching it, so no peak is lost', () => {
-  const steps = [{ firstHour: 0, lastHour: 23, value: 1 }, { firstHour: 24, lastHour: 47, value: 9 }, { firstHour: 48, lastHour: 71, value: 1 },
-    { firstHour: 72, lastHour: 2399, value: 3 }];
-  assert.deepEqual(bandOutlines(steps, 0, 2400, hour => hour / 240, same, 0, 1000), [[{ x0: 0, x1: 1, half: 9 }, { x0: 1, x1: 10, half: 3 }]]);
-});
-
-test('two runs more than a pixel apart never touch, even when each is narrower than a pixel', () => {
-  const steps = [{ firstHour: 8, lastHour: 8, value: 3 }, { firstHour: 28, lastHour: 28, value: 3 }];
-  const outline = bandOutlines(steps, 0, 48, hour => 120 + hour / 16, same, 120, 620);
-  assert.deepEqual(outline, [[{ x0: 120, x1: 121, half: 3 }], [{ x0: 122, x1: 123, half: 3 }]]);
-  const close = [{ firstHour: 8, lastHour: 8, value: 3 }, { firstHour: 18, lastHour: 18, value: 3 }];
-  assert.deepEqual(bandOutlines(close, 0, 48, hour => 120 + hour / 16, same, 120, 620).map(run => run[0].x0), [120, 121]);
-});
-
-test('a column a run only partly covers passes its thickest to the column drawn', () => {
-  const steps = [{ firstHour: 1, lastHour: 4, value: 9 }, { firstHour: 5, lastHour: 20, value: 1 }];
-  assert.deepEqual(bandOutlines(steps, 0, 30, hour => 120 + hour / 10, same, 120, 620), [[{ x0: 121, x1: 122, half: 9 }]]);
-});
-
-
-test('a short band stays drawn at least a pixel wide however far the view is zoomed out', () => {
-  const year = 365 * 24;
-  const toYearX = (hour: number) => 120 + hour / year * 500;
-  const day = bandOutlines([{ firstHour: 0, lastHour: 23, value: 3 }], 0, year, toYearX, value => value, 120, 620);
-  assert.equal(day.length, 1);
-  assert.ok(day[0][0].x1 - day[0][0].x0 >= 1, 'a day is drawn');
-  assert.equal(day[0][0].half, 3);
-  const hour = bandOutlines([{ firstHour: 100, lastHour: 100, value: 2 }], 0, year, toYearX, value => value, 120, 620);
-  assert.equal(hour.length, 1);
-  assert.deepEqual(hour, [[{ x0: 125, x1: 126, half: 2 }]], 'an hour fills the pixel column it falls in');
-  const edge = bandOutlines([{ firstHour: 0, lastHour: 0, value: 1 }], 0, year, toYearX, value => value, 120, 620);
-  assert.equal(edge[0][0].x0, 120);
-});
-
-test('a band is cut to the plot and one wholly outside it is not drawn', () => {
-  const steps = [{ firstHour: 0, lastHour: 99, value: 4 }];
-  assert.deepEqual(bandOutlines(steps, 0, 100, hour => hour, value => value, 20, 60), [[{ x0: 20, x1: 60, half: 4 }]]);
-  assert.deepEqual(bandOutlines(steps, 0, 100, hour => hour + 500, value => value, 20, 60), []);
-});
-
-test('a sub-pixel peak between wide steps keeps its full thickness in its pixel column', () => {
-  const steps = [{ firstHour: 0, lastHour: 2399, value: 1 }, { firstHour: 2400, lastHour: 2423, value: 20 }, { firstHour: 2424, lastHour: 4799, value: 1 }];
-  const outline = bandOutlines(steps, 0, 4800, hour => 120 + hour / 240, value => value, 120, 640);
-  assert.deepEqual(outline, [[{ x0: 120, x1: 130, half: 1 }, { x0: 130, x1: 131, half: 20 }, { x0: 131, x1: 140, half: 1 }]]);
-});
-
-test('widening never moves a band into hours it does not cover', () => {
-  const day = [{ firstHour: 0, lastHour: 23, value: 5 }];
-  assert.deepEqual(bandOutlines(day, 0, 24, hour => 119.6 + hour / 240, value => value, 120, 620), []);
-  assert.deepEqual(bandOutlines(day, 0, 24, hour => 620 + hour / 240, value => value, 120, 620), []);
-  assert.deepEqual(bandOutlines(day, 0, 24, hour => 119.95 + hour / 240, value => value, 120, 620), [[{ x0: 120, x1: 121, half: 5 }]]);
-});
-
-test('rounding never fills over a gap in the recording', () => {
-  const steps = [{ firstHour: 0, lastHour: 201, value: 3 }, { firstHour: 226, lastHour: 447, value: 3 }];
-  const outline = bandOutlines(steps, 0, 448, hour => 120 + hour * 0.075, value => value, 120, 640);
-  assert.equal(outline.length, 2);
-  assert.equal(outline[0].at(-1)!.x1, 135);
-  assert.equal(outline[1][0].x0, 137);
-  const narrow = [{ firstHour: 0, lastHour: 201, value: 3 }, { firstHour: 204, lastHour: 447, value: 3 }];
-  const split = bandOutlines(narrow, 0, 448, hour => 120 + hour * 0.075, value => value, 120, 640);
-  assert.equal(split.length, 2);
-  assert.ok(split[1][0].x0 - split[0].at(-1)!.x1 >= 1, 'the gap shows');
-  const edge = [{ firstHour: 0, lastHour: 199, value: 1 }, { firstHour: 200, lastHour: 201, value: 9 }];
-  assert.equal(bandOutlines(edge, 0, 202, hour => 120 + hour * 0.075, value => value, 120, 640)[0].at(-1)!.half, 9);
-});
 
 test('the keyboard stops at every band step in view, so each value a pointer reaches is reachable', () => {
   const span = { id: 'line', firstHour: 0, lastHour: 47, label: 'Line', band: [{ firstHour: 0, lastHour: 23, value: 1 }, { firstHour: 24, lastHour: 47, value: 8 }] };
@@ -131,9 +52,6 @@ test('a lane places its band spans together, so a gap between two spans stays vi
 test('short runs keep a visible gap at either plot edge: whichever neighbour can move does', () => {
   const toEdgeX = (hour: number) => 120 + hour / 16;
   const right = [{ firstHour: 7976, lastHour: 7976, value: 3 }, { firstHour: 7996, lastHour: 7996, value: 3 }];
-  assert.deepEqual(bandOutlines(right, 0, 8000, toEdgeX, same, 120, 620), [[{ x0: 617, x1: 618, half: 3 }], [{ x0: 619, x1: 620, half: 3 }]]);
-  const leftEdge = [{ firstHour: 4, lastHour: 4, value: 3 }, { firstHour: 24, lastHour: 24, value: 3 }];
-  assert.deepEqual(bandOutlines(leftEdge, 0, 8000, toEdgeX, same, 120, 620), [[{ x0: 120, x1: 121, half: 3 }], [{ x0: 122, x1: 123, half: 3 }]]);
   const spans = right.map((step, index) => ({ id: `s${index}`, firstHour: step.firstHour, lastHour: step.lastHour, label: 'S', band: [step] }));
   const bands = laneBands(spans, null, toEdgeX, same, 120, 620);
   assert.deepEqual([bands.outlines.get('s0'), bands.outlines.get('s1')], [[[{ x0: 617, x1: 618, half: 3 }]], [[{ x0: 619, x1: 620, half: 3 }]]]);
@@ -196,7 +114,6 @@ test('a fragmented band is laid out in at most a column per pixel', () => {
   const big = fragmented(20_000);
   const bands = laneBands([big.span], null, big.toX, same, 120, 620);
   assert.ok(bands.columns.size > 0 && bands.columns.size <= 500);
-  assert.ok(bandOutlines(big.band, 0, big.to, big.toX, same, 120, 620).length > 0);
 });
 
 

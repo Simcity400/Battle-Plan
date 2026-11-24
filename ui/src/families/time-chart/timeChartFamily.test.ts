@@ -24,16 +24,18 @@ import { assertFreshPaint, assertQuietFrames, LANE_THEME, LaneTransport } from '
 import { SceneTiles } from '../sceneTiles.ts';
 import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
-import { buildLineSubpaths } from './painter.ts';
-import { parseFollowed } from '../../dashboard/follow/message.ts';
+import { buildLineSubpaths, collectVisibleChartArt, fitTimeChartLegend } from './painter.ts';
+import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildBoundedStack, headReading, headValueOf } from './seriesHelpers.ts';
+import { timeAxisLabels } from '../../draw/kit.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';
 import { politicalPowerDeclaration, politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
 import { navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
 import { armyLinesProjection } from '../../widgets/army-size/armyLinesProjection.ts';
 import { occupationLinesDeclaration } from '../../widgets/occupation-trend/occupationLinesProjection.ts';
-import { supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
+import { supplyHealthDeclaration, supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
+import { readPlanExact } from '../broker.ts';
 import { rulingPartyProjection } from '../../widgets/ruling-party/rulingPartyProjection.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { drawTimeChart } from './painter.ts';
@@ -234,11 +236,11 @@ describe('time-chart layout & rules C1-C12', () => {
       }],
     };
     const wide = layoutTimeChart(model, 958, 314, FONT, measure);
-    assert.equal(wide.axisTicks[0]?.label, '1936');
+    assert.equal(wide.rawAxisTicks[0]?.label, '1936');
     assert.deepEqual(wide.yTicks, [0, 50, 100, 150, 200]);
 
     const min = layoutTimeChart(model, 476, 186, FONT, measure);
-    assert.equal(min.axisTicks[0]?.label, '1936');
+    assert.equal(min.rawAxisTicks[0]?.label, '1936');
     assert.deepEqual(min.yTicks, [0, 100, 200]);
   });
 
@@ -378,9 +380,28 @@ describe('time-chart layout & rules C1-C12', () => {
     const bopTicks = [-1, -0.5, 0, 0.5, 1];
     assert.deepEqual(
       bopTicks.map(v => formatChartAxisValue(v, 'signed1', bopTicks)),
-      ['\u22121.0', '\u22120.5', '0', '+0.5', '+1.0'],
-      'K4: all non-zero signed axis labels carry the same decimal count',
+      ['\u22121.0', '\u22120.5', '0.0', '+0.5', '+1.0'],
+      'R2-K10: every signed axis label, zero included, carries the one precision',
     );
+    const fine = [0, 0.0025, 0.005, 0.0075, 0.01];
+    assert.deepEqual(fine.map(v => formatChartAxisValue(v, 'percent', fine)), ['0.0000%', '0.0025%', '0.0050%', '0.0075%', '0.0100%'],
+      'R2-K10: the precision distinguishes every tick');
+    const implicitFull = layoutTimeChart({ kind: 'percent-test', measureTitle: 'Percent', mode: 'lines', hour: H1936 + 2000, extent: [H1936, H1936 + 2000], yAxis: { format: 'percent' }, series: [] }, 958, 314, FONT, measure);
+    assert.deepEqual(implicitFull.yTicks, [0, 25, 50, 75, 100], 'R2-K10: the implicit full 0 to 100 domain steps by 25');
+  });
+});
+
+describe('time-chart legend art', () => {
+  it('R2-K12: legend flags are asked only for the entries the one fit draws, and none when the legend is hidden at the small size', () => {
+    const legend = Array.from({ length: 40 }, (_, i) => ({ id: `c${i}`, label: `Country number ${i}`, color: '#4f86f7', flag: { art: readyArt(`flag://${i}`), label: `C${i}` } }));
+    const model: TimeChartModel = { kind: 'legend-test', measureTitle: 'Legend', mode: 'lines', hour: H1936 + 2000, extent: [H1936, H1936 + 2000], yAxis: { format: 'number' }, series: [], legend };
+    const wide = layoutTimeChart(model, 958, 314, FONT, measure);
+    const fit = fitTimeChartLegend(model, wide, LANE_THEME, measure)!;
+    assert.ok(fit.shown.length > 0 && fit.hidden === 40 - fit.shown.length, 'every omitted entry is counted');
+    assert.deepEqual(collectVisibleChartArt(model, wide, fit), fit.shown.map((_, i) => `flag://${i}`));
+    const small = layoutTimeChart({ ...model, mode: 'columns', columns: { foldUnrecorded: false, months: [] } }, 300, 150, FONT, measure);
+    assert.equal(small.legendTop, null);
+    assert.deepEqual(collectVisibleChartArt(model, small, fitTimeChartLegend(model, small, LANE_THEME, measure)), [], 'a hidden legend asks for no art');
   });
 });
 
@@ -764,15 +785,14 @@ describe('time-chart picture authority', () => {
       bounded: boundTiledSeries(line, displayedHour(hour), { headValue: knownValue(value) }), headValue: value, headHour: hour, endLabel: { value: String(value) } });
     const model = pictureModel(hour, { series: [series('a', 10), series('b', 20)] });
     const laid = layoutTimeChart(model, 600, 260, FONT, measure);
-    let measured = 0;
-    const counting = (text: string, font: string) => { measured++; return measure(text, font); };
-    const tick = laid.axisTicks.find(item => item.label !== null && item.hour < hour - 200)!;
-    const hovered = hoverTimeChartLayout(laid, model.hour, FONT, counting, tick.hour, 'a');
-    assert.equal(measured, 1, 'only the hover tab is measured; no series, bucket or label is laid out again');
-    for (const field of ['yTicks', 'markers', 'gaps', 'columns', 'axisCandidates', 'toX'] as const) assert.equal(hovered[field], laid[field], `${field} is the base layout's`);
-    assert.equal(hovered.axisTicks.find(item => item.hour === tick.hour)!.label, null, 'the axis label under the hover tab is hidden');
+    const hovered = hoverTimeChartLayout(laid, 'a');
+    for (const field of ['yTicks', 'rawAxisTicks', 'markers', 'gaps', 'columns', 'toX'] as const) assert.equal(hovered[field], laid[field], `${field} is the base layout's`);
+    const frame = { plotLeft: laid.left, plotRight: laid.left + laid.plotWidth, startHour: laid.xDomain[0], endHour: laid.xDomain[1], toX: laid.toX, playhead: model.hour, playheadLabel: laid.dateTabText };
+    const tick = timeAxisLabels(laid.rawAxisTicks, frame, text => measure(text, FONT)).find(item => item.hour < hour - 200)!;
+    const underHover = timeAxisLabels(laid.rawAxisTicks, { ...frame, hover: tick.hour, hoverLabel: formatDateOnly(tick.hour) }, text => measure(text, FONT));
+    assert.equal(underHover.some(item => item.hour === tick.hour), false, 'the axis label under the hover tab is hidden, by the one placement paint uses');
     assert.deepEqual(Object.fromEntries(hovered.endLabels.map(label => [label.seriesId, label.faded])), { a: false, b: true }, 'the other series fades');
-    assert.equal(hoverTimeChartLayout(laid, model.hour, FONT, counting, null, null), laid, 'no hover is the base layout itself');
+    assert.equal(hoverTimeChartLayout(laid, null), laid, 'no hover is the base layout itself');
   });
   it('scales and draws a historical zoom from its own window, never from the current head', () => {
     const base = Math.floor(H1936 / 96) * 96;
@@ -1309,6 +1329,38 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     const share = (raw: string) => ({ decimals: 5, states: [{ country: 7, hour, run: { valueRaw: raw }, missing: null }] });
     const audited = supplyHealthProjection.project(createBoundedReadView({ hour, panels: new Map([['noSupply', share('7000')], ['strained', share('66000')], ['inSupply', share('27000')]]) }), options);
     assert.deepEqual(audited.auditRows?.map(row => `${row.row}=${row.value}`), ['noSupply=7.0%', 'strained=66%', 'inSupply=27%'], 'the audit reads the exact panels, not tiles');
+  });
+
+  it('audits every exact measure a chart declares through the exact read, not only the first', async () => {
+    const hour = H1936 + 200;
+    const raws: Readonly<Record<string, string>> = { noSupplyShare: '7000', strainedShare: '66000', inSupplyShare: '27000', commandPower: '2260000', maxCommandPower: '10000000' };
+    const client = {
+      product: async (request: { product: string; params: { family?: { measure?: string }; reads?: readonly { country: unknown }[] } }) => {
+        const raw = raws[request.params.family?.measure ?? ''];
+        const states = (request.params.reads ?? []).map(asked => ({ country: asked.country, hour, run: raw ? { valueRaw: raw } : null, missing: raw ? null : 'Not asked' }));
+        return { data: { decimals: 5, states } };
+      },
+    } as unknown as Parameters<typeof readPlanExact>[2]['client'];
+    const gate = {
+      recorded: (h: number | null | undefined) => (typeof h === 'number' ? h : null) as never,
+      span: (firstHour: number, lastHour: number) => ({ firstHour, lastHour } as never),
+    };
+    const exactOf = (plan: Parameters<typeof readPlanExact>[0]) =>
+      readPlanExact(plan, hour, { client, following: false, timeMode: 'pin', branch: { firstHour: H1936, lastHour: hour }, window: null, staticSpan: null, gate });
+    const ctx = {
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: '1', gaps: [] }, following: false,
+      countries: { tags: ['GER'], membership: null }, countrySubject: 'GER', options: { spendTicks: false },
+    } as unknown as Parameters<typeof supplyHealthDeclaration.sources>[0];
+    const VIEW = { width: 800, height: 300 } as Parameters<typeof supplyHealthDeclaration.sources>[1];
+    const drawn = { extent: [H1936, hour] as const, surface: '#111111' } as Parameters<typeof supplyHealthDeclaration.projectionOptions>[1];
+
+    const supply = await exactOf(supplyHealthDeclaration.sources(ctx, VIEW));
+    assert.deepEqual(supplyHealthProjection.project(supply!, supplyHealthDeclaration.projectionOptions(ctx, drawn)).auditRows?.map(row => `${row.row}=${row.value}`),
+      ['noSupply=7.0%', 'strained=66%', 'inSupply=27%'], 'each drawn band is audited from its own exact read');
+
+    const power = await exactOf(commandPowerDeclaration.sources(ctx, VIEW));
+    assert.deepEqual(commandPowerProjection.project(power!, commandPowerDeclaration.projectionOptions(ctx, drawn)).auditRows?.map(row => `${row.row}=${row.value}`),
+      ['GER=22', 'GER:ceiling=100'], 'the drawn ceiling is audited from its exact read, never reported missing');
   });
 
   it('projects ruling party in the product’s order with dated part ownership, witnessed elections, leader note, exact hover and audit', () => {

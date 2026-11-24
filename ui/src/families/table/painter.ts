@@ -109,7 +109,7 @@ export interface DrawFamilyTableInput {
   readonly theme: TableTheme;
   readonly now: number;
   readonly glideDuration: number;
-  readonly glide: ReadonlyMap<string, GlideOffset>;
+  readonly glide: TableGlide;
   readonly markers?: ReadonlyMap<string, RankMarker>;
   readonly inspectedKey?: string | null;
   readonly selectedKey?: string | null;
@@ -125,7 +125,6 @@ export interface DrawFamilyTableInput {
   readonly staticRowLooks?: boolean;
   readonly rowHeightMode?: 'standard' | 'media';
   readonly rowGeom?: RowLayoutGeometry | null;
-  readonly rowIndex?: ReadonlyMap<string, number>;
   readonly clockSummary?: ClockSummaryData;
 }
 
@@ -269,7 +268,6 @@ export function drawFamilyTable(
     dateGrouped = false,
     rowHeightMode = 'standard',
     rowGeom = null,
-    rowIndex,
     clockSummary,
   } = input;
 
@@ -287,7 +285,7 @@ export function drawFamilyTable(
   const bounds = scrollBounds(layout, width, scrollLeft);
   const rank = rankShown ? rankWidth : 0;
   const rowWidth = Math.max(width, layout.totalWidth);
-  const moving = glideDuration > 0 && glide.size > 0;
+  const moving = glideDuration > 0 && glide.offsets.size > 0;
 
   let first = 0;
   let last = rows.length;
@@ -834,7 +832,7 @@ export function drawFamilyTable(
   const topAt = (index: number) => (variableHeights ? rowGeom.tops[index]! : index * uniformRowHeight);
   const heightAt = (index: number) => (variableHeights ? rowGeom.heights[index]! : uniformRowHeight);
   const rowY = (item: FlatTableRow, index: number) =>
-    topAt(index) - scrollTop + (moving && item.kind === 'data' ? glideOffset(glide.get(item.key), now, glideDuration) : 0);
+    topAt(index) - scrollTop + (moving && item.kind === 'data' ? glideOffset(glide.offsets.get(item.key), now, glideDuration) : 0);
 
   const visibleIndices: number[] = [];
   if (moving) {
@@ -842,7 +840,7 @@ export function drawFamilyTable(
       const y = rowY(rows[index]!, index);
       return y + heightAt(index) > 0 && y < height;
     };
-    for (const index of glidingIndices(rows, glide, rowIndex, first, last)) {
+    for (const index of glidingIndices(glide, first, last, scrollTop, scrollTop + height)) {
       if (onScreen(index)) visibleIndices.push(index);
     }
   } else {
@@ -931,24 +929,50 @@ export function drawFamilyTable(
   return { drew: true, paintedCells, measurements };
 }
 
-function glidingIndices(
-  rows: readonly FlatTableRow[],
-  glide: ReadonlyMap<string, GlideOffset>,
-  rowIndex: ReadonlyMap<string, number> | undefined,
-  first: number,
-  last: number,
-): number[] {
-  if (!rowIndex) {
-    const all: number[] = [];
-    for (let index = 0; index < rows.length; index++) all.push(index);
-    return all;
+export interface TableGlide {
+  readonly offsets: ReadonlyMap<string, GlideOffset>;
+  readonly movers: readonly { readonly index: number; readonly lo: number; readonly hi: number }[];
+  readonly reach: number;
+}
+
+export const NO_GLIDE: TableGlide = { offsets: new Map(), movers: [], reach: 0 };
+
+export function tableGlide(offsets: ReadonlyMap<string, GlideOffset>, rows: readonly FlatTableRow[], rowIndex: ReadonlyMap<string, number>, rowGeom: RowLayoutGeometry | null, rowHeight: number): TableGlide {
+  if (offsets.size === 0) return NO_GLIDE;
+  const movers: { index: number; lo: number; hi: number }[] = [];
+  let reach = 0;
+  for (const [key, offset] of offsets) {
+    const index = rowIndex.get(key);
+    if (index === undefined || rows[index]?.kind !== 'data') continue;
+    const top = rowGeom ? rowGeom.tops[index]! : index * rowHeight;
+    const lo = top + Math.min(offset.from, offset.to, 0);
+    const hi = top + Math.max(offset.from, offset.to, 0) + (rowGeom ? rowGeom.heights[index]! : rowHeight);
+    movers.push({ index, lo, hi });
+    if (hi - lo > reach) reach = hi - lo;
+  }
+  movers.sort((x, y) => x.lo - y.lo);
+  return { offsets, movers, reach };
+}
+
+export function glideCrossing(glide: TableGlide, top: number, bottom: number): number[] {
+  const { movers } = glide;
+  let lo = 0;
+  let hi = movers.length;
+  const from = top - glide.reach;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (movers[mid]!.lo < from) lo = mid + 1;
+    else hi = mid;
   }
   const out: number[] = [];
+  for (let at = lo; at < movers.length && movers[at]!.lo < bottom; at++) if (movers[at]!.hi > top) out.push(movers[at]!.index);
+  return out;
+}
+
+function glidingIndices(glide: TableGlide, first: number, last: number, top: number, bottom: number): number[] {
+  const out: number[] = [];
   for (let index = first; index < last; index++) out.push(index);
-  for (const key of glide.keys()) {
-    const index = rowIndex.get(key);
-    if (index !== undefined && (index < first || index >= last) && rows[index]?.kind === 'data' && rows[index]!.key === key) out.push(index);
-  }
+  for (const index of glideCrossing(glide, top, bottom)) if (index < first || index >= last) out.push(index);
   out.sort((a, b) => a - b);
   return out;
 }
@@ -962,32 +986,15 @@ export function hitFamilyTable(
   scrollTop: number,
   rankShown: boolean,
   rankWidth: number,
-  glide?: ReadonlyMap<string, GlideOffset>,
+  glide?: TableGlide,
   now?: number,
   glideDuration?: number,
   rowGeom?: RowLayoutGeometry | null,
-  rowIndex?: ReadonlyMap<string, number>,
-  viewportHeight?: number,
 ): { readonly kind: 'row' | 'empty'; readonly rowKey?: string; readonly column?: string; readonly toggle?: boolean; readonly action?: boolean } {
   let item: FlatTableRow | undefined;
-  const useGlide = Boolean(glide && glide.size > 0 && glideDuration && glideDuration > 0 && now !== undefined);
-  if (useGlide) {
-    const candidates = rowIndex && viewportHeight !== undefined && !rowGeom
-      ? glidingIndices(rows, glide!, rowIndex, Math.max(0, Math.floor(scrollTop / rowHeight) - 2), Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + 2))
-      : glidingIndices(rows, glide!, undefined, 0, rows.length);
-    for (let c = candidates.length - 1; c >= 0; c--) {
-      const i = candidates[c]!;
-      const candidate = rows[i]!;
-      const top = rowGeom ? rowGeom.tops[i]! : i * rowHeight;
-      const h = rowGeom ? rowGeom.heights[i]! : rowHeight;
-      const y = top - scrollTop + (candidate.kind === 'data' ? glideOffset(glide!.get(candidate.key), now!, glideDuration) : 0);
-      if (point.y >= y && point.y < y + h) {
-        item = candidate;
-        break;
-      }
-    }
-  } else if (rowGeom) {
-    const absY = point.y + scrollTop;
+  const absY = point.y + scrollTop;
+  let at = -1;
+  if (rowGeom) {
     let lo = 0;
     let hi = rows.length;
     while (lo < hi) {
@@ -995,12 +1002,26 @@ export function hitFamilyTable(
       if (rowGeom.tops[mid]! + rowGeom.heights[mid]! <= absY) lo = mid + 1;
       else hi = mid;
     }
-    if (lo < rows.length && absY >= rowGeom.tops[lo]! && absY < rowGeom.tops[lo]! + rowGeom.heights[lo]!) {
-      item = rows[lo];
+    if (lo < rows.length && absY >= rowGeom.tops[lo]! && absY < rowGeom.tops[lo]! + rowGeom.heights[lo]!) at = lo;
+  } else {
+    at = Math.floor(absY / rowHeight);
+  }
+  if (glide && glide.offsets.size > 0 && glideDuration && glideDuration > 0 && now !== undefined) {
+    const candidates = glideCrossing(glide, absY, absY + 1);
+    if (at >= 0 && at < rows.length) candidates.push(at);
+    candidates.sort((a, b) => b - a);
+    for (const i of candidates) {
+      const candidate = rows[i]!;
+      const top = rowGeom ? rowGeom.tops[i]! : i * rowHeight;
+      const h = rowGeom ? rowGeom.heights[i]! : rowHeight;
+      const y = top - scrollTop + (candidate.kind === 'data' ? glideOffset(glide.offsets.get(candidate.key), now, glideDuration) : 0);
+      if (point.y >= y && point.y < y + h) {
+        item = candidate;
+        break;
+      }
     }
   } else {
-    const index = Math.floor((point.y + scrollTop) / rowHeight);
-    item = rows[index];
+    item = rows[at];
   }
   if (!item) return { kind: 'empty' };
   if (item.kind === 'gap' || item.kind === 'refused') return { kind: 'row', rowKey: item.key };
@@ -1044,7 +1065,7 @@ export function hitPanes(
     const x0 = geometry.xs[p]!;
     if (point.x < x0 || point.x >= x0 + geometry.width) continue;
     const pane = panes[p]!;
-    const at = hitFamilyTable(layout, pane.rows, { x: point.x - x0, y: point.y }, rowHeight, scroll.left, scrollTop, false, 0, undefined, undefined, undefined, pane.geom, pane.rowIndex);
+    const at = hitFamilyTable(layout, pane.rows, { x: point.x - x0, y: point.y }, rowHeight, scroll.left, scrollTop, false, 0, undefined, undefined, undefined, pane.geom);
     if (at.kind !== 'row' || !at.rowKey) return null;
     return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
   }

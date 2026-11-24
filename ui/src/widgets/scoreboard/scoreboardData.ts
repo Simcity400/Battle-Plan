@@ -86,8 +86,6 @@ export function rankedTags(answer: FollowedAnswer | undefined): string[] {
   return out;
 }
 
-export const isPartial = (mark: bigint | undefined) => mark !== undefined && mark !== 0n;
-
 export function scoreboardColumnNote(column: ScoreboardColumn): string | undefined {
   if (!column.available) return column.reason ?? 'Unavailable';
   return column.note;
