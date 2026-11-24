@@ -1,4 +1,4 @@
-import type { Failure } from '../../dashboard/queryError';
+import { classifyFailure, RefusedError, type Failure } from '../../dashboard/queryError.ts';
 import type {
   CountryFactsReply,
   CountryFlagChoice,
@@ -33,6 +33,8 @@ import {
   type IdentityResult,
   type IdentityScope,
   type IdentitySnapshot,
+  type SnapshotFailure,
+  type SnapshotFailures,
   type StyleIntervalEntry,
 } from './types.ts';
 
@@ -49,6 +51,21 @@ const FACTION_ABSENT = 'Faction does not exist at this hour';
 
 export function drawnFlagKey(size: CountryFlagSize, choice: CountryFlagChoice): string {
   return artHandleKey({ kind: 'flag', choice: flagChoiceKey(choice), size });
+}
+
+function sentFailure(failure: Failure): SnapshotFailure {
+  return { message: failure.message, refused: classifyFailure(failure)?.kind === 'refused' };
+}
+
+function keptFailure(sent: SnapshotFailure): Failure {
+  return sent.refused ? new RefusedError(sent.message) : new Error(sent.message);
+}
+
+function sentFailures(failures: ReadonlyMap<string, Failure>): Record<string, SnapshotFailure> | undefined {
+  if (!failures.size) return undefined;
+  const out: Record<string, SnapshotFailure> = {};
+  for (const [key, failure] of failures) out[key] = sentFailure(failure);
+  return out;
 }
 
 function nextBoundaryOf(lastHour: number): number {
@@ -198,6 +215,12 @@ export class IdentityIndex {
         index.drawnFlags.set(key, entry);
       }
     }
+    const failures = snapshot.failures;
+    if (failures?.facts) index.factsFailure = keptFailure(failures.facts);
+    if (failures?.identities) index.identitiesFailure = keptFailure(failures.identities);
+    if (failures?.groups) index.groupsFailure = keptFailure(failures.groups);
+    for (const [key, sent] of Object.entries(failures?.styles ?? {})) index.styleFailures.set(key, keptFailure(sent));
+    for (const [key, sent] of Object.entries(failures?.entities ?? {})) index.entityFailures.set(key, keptFailure(sent));
     return index;
   }
 
@@ -208,6 +231,15 @@ export class IdentityIndex {
     for (const [key, entries] of this.entityRuns) entities[key] = entries;
     const drawnFlags: Record<string, DrawnFlagEntry> = {};
     for (const [key, entry] of this.drawnFlags) drawnFlags[key] = entry;
+    const styleFailures = sentFailures(this.styleFailures);
+    const entityFailures = sentFailures(this.entityFailures);
+    const failures: SnapshotFailures = {
+      ...(this.factsFailure ? { facts: sentFailure(this.factsFailure) } : {}),
+      ...(this.identitiesFailure ? { identities: sentFailure(this.identitiesFailure) } : {}),
+      ...(this.groupsFailure ? { groups: sentFailure(this.groupsFailure) } : {}),
+      ...(styleFailures ? { styles: styleFailures } : {}),
+      ...(entityFailures ? { entities: entityFailures } : {}),
+    };
     return {
       scope: this.scope,
       ...(Number.isFinite(this.branchBounds[0]) && Number.isFinite(this.branchBounds[1]) ? { branchBounds: this.branchBounds } : {}),
@@ -217,6 +249,7 @@ export class IdentityIndex {
       ...(this.styleRuns.size ? { styles } : {}),
       ...(this.entityRuns.size ? { entities } : {}),
       ...(this.drawnFlags.size ? { drawnFlags } : {}),
+      ...(Object.keys(failures).length ? { failures } : {}),
     };
   }
 
