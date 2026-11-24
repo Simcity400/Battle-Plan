@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
 import type { AirSide, AirTimelineReply } from '../../generated/dashboard';
 import { projectAirTimeline } from './airTimelineProjection.ts';
 
@@ -46,7 +47,7 @@ function reply(lastHour: number, extra: Partial<AirTimelineReply> = {}): AirTime
 }
 
 const view = (hour: number, data: AirTimelineReply) => createBoundedReadView({ hour, panels: new Map([['timeline', data]]) });
-const OPTIONS = { viewpoint: false, surface: SURFACE };
+const OPTIONS = { viewpointCountry: null, surface: SURFACE };
 
 test('the readout names the leading side by the product and paints it in its own colour', () => {
   const model = projectAirTimeline(view(50, reply(50)), OPTIONS);
@@ -60,21 +61,42 @@ test('the readout names the leading side by the product and paints it in its own
 
 test('two sides founded by one tag at different hours keep their own colours', () => {
   const model = projectAirTimeline(view(50, reply(50)), OPTIONS);
-  const items = model.rows[0]!.runs[0]!.tooltip!.items!;
+  const items = deriveLanesTooltip(model, 0, 10)!.items!;
   assert.notEqual(items[0]!.swatch, items[1]!.swatch);
 });
 
 test('an unnamed side says its name was not recorded, never a later name', () => {
   const model = projectAirTimeline(view(50, reply(50)), OPTIONS);
-  const last = model.rows[0]!.runs.at(-1)!;
-  assert.equal(last.tooltip!.items!.find(item => item.label === 'Name not recorded')?.value, '50%');
-  assert.deepEqual(last.tooltip!.items![0], { label: 'Contested' });
+  const items = deriveLanesTooltip(model, 0, 50)!.items!;
+  assert.equal(items.find(item => item.label === 'Name not recorded')?.value, '50%');
+  assert.deepEqual(items[0], { label: 'Contested' });
+});
+
+test('a hit is answered from its own day, and a painted gap or the readout before any run', () => {
+  const contested = (side: number, tag: string) => ({ kind: 'sides' as const, parts: [{ side, tag, friendly: '50' }, { side: 1, tag: 'ENG', friendly: '50' }], viewpoints: [], unknown: [], noAirObject: [], filtered: false });
+  const data = reply(71, {
+    days: [23, 47, 71],
+    rows: [{ ...reply(71).rows[0]!, cells: [[1, contested(0, 'GER')], [2, contested(2, 'ITA')]] }],
+  });
+  const model = projectAirTimeline(view(71, data), OPTIONS);
+  assert.equal(model.rows[0]!.runs[0]!.cell.kind === 'solid' && model.rows[0]!.runs[1]!.cell.kind === 'solid'
+    && model.rows[0]!.runs[0]!.cell.color === model.rows[0]!.runs[1]!.cell.color, true, 'both days paint as contested');
+  const dayOne = deriveLanesTooltip(model, 0, 10)!;
+  const dayTwo = deriveLanesTooltip(model, 0, 30)!;
+  assert.equal(dayOne.hour, 23);
+  assert.ok(dayOne.items!.some(item => item.label === 'Axis'));
+  assert.equal(dayTwo.hour, 47, 'the second day is read at its own hour');
+  assert.ok(dayTwo.items!.some(item => item.label === 'Name not recorded') && !dayTwo.items!.some(item => item.label === 'Axis'));
+  const gapped = projectAirTimeline(view(71, { ...data, gaps: [{ firstHour: 24, lastHour: 47 }] }), OPTIONS);
+  assert.equal(deriveLanesTooltip(gapped, 0, 30)!.missingReason, 'The recording holds no hour here');
+  assert.equal(deriveLanesTooltip(model, 0, null)!.exactValue, '71%', 'the readout is answered by the readout, not by the run under the playhead');
 });
 
 test('a day the recording holds no hour of is the hatch, and the lane ends at the displayed hour', () => {
   const model = projectAirTimeline(view(50, reply(50)), OPTIONS);
   const runs = model.rows[0]!.runs;
   assert.deepEqual(runs[1]!.cell, { kind: 'missing', reason: 'Not recorded on this day' });
+  assert.equal(deriveLanesTooltip(model, 0, 30)!.missingReason, 'Not recorded on this day');
   assert.equal(runs.at(-1)!.lastHour, 50);
   assert.equal(model.lastHour, 50);
 });

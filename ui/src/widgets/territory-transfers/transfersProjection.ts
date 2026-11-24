@@ -6,6 +6,7 @@ import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { TerritoryTransfersReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 
@@ -87,7 +88,7 @@ export const transfersProjection: TableProjection<TransfersProjectionOptions> = 
       hour,
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      titleSummary: `${reply.transfers.toLocaleString('en-US')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
+      titleSummary: `${formatScalar(reply.transfers, 'integer')} ${reply.transfers === 1 ? 'transfer' : 'transfers'}`,
       ...(rows.length === 0 ? { empty: 'No territory transfers yet', emptyKind: 'empty' as const } : {}),
       warnings: reply.unobserved.length ? [...reply.warnings, 'Some settlements or ownership were not recorded before this date: the totals may be partial.'] : reply.warnings,
     };

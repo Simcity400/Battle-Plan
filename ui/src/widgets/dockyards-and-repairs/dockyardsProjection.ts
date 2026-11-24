@@ -4,6 +4,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, textValue, notApplicable, valueFromNullable, type Value } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { NavalRepairsReply, RepairPort, YardShip } from '../../generated/dashboard';
 import { fraction, shipLabel, shipPicture, shipPictureCell, shipStrength, shipTooltip, validateRepairs } from '../refits/yardsData.ts';
 import type { ArtState } from '../../families/table/identityCell.ts';
@@ -25,7 +26,7 @@ const [NAME, STRENGTH, PRIORITY, DOCKYARDS] = COLUMNS;
 const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never>>[] = [
   { ...NAME!, priority: 0, text: true, cellKind: 'item', hideable: false, widest: ['Wilhelmshaven harbour'],
     value: row => row.kind === 'port' ? portName(row.port) : knownValue(shipLabel(row.ship).name),
-    iconSlot: true, extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
+    extra: row => (row.kind === 'ship' ? shipPictureCell(row.ship, row.picture) : {}) },
   { ...STRENGTH!, priority: 1, numeric: true, format: PERCENT, widest: ['100.0%'],
     value: (row, live) => row.kind === 'ship' ? shipStrength(row.ship, live) : notApplicable(ON_SHIP),
     extra: row => (row.kind === 'port' ? { blank: true } : {}),
@@ -44,9 +45,9 @@ const DOCK_COLUMNS: readonly DeclarativeColumnSpec<DockRow, Record<string, never
 
 function summary(reply: NavalRepairsReply): string | null {
   const parts: string[] = [];
-  if (reply.queuedShips !== null) parts.push(`${reply.queuedShips.toLocaleString('en-US')} ${reply.queuedShips === 1 ? 'ship' : 'ships'} waiting`);
+  if (reply.queuedShips !== null) parts.push(`${formatScalar(reply.queuedShips, 'integer')} ${reply.queuedShips === 1 ? 'ship' : 'ships'} waiting`);
   if (reply.usedDockyards !== null && reply.repairLimit !== null) {
-    parts.push(`${reply.usedDockyards.toLocaleString('en-US')} / ${reply.repairLimit.toLocaleString('en-US')} repair dockyards in use`);
+    parts.push(`${formatScalar(reply.usedDockyards, 'integer')} / ${formatScalar(reply.repairLimit, 'integer')} repair dockyards in use`);
   }
   return parts.length ? parts.join(' · ') : null;
 }
@@ -82,7 +83,7 @@ export const dockyardsProjection: TableProjection<Record<string, never>> = regis
       ? shipTooltip(row.ship)
       : [
           { label: 'Repair priority', value: textValue(row.port.policy, 'Repair priority name not localised'), divider: true },
-          { label: 'Ships waiting', value: knownValue(row.port.queue.length.toLocaleString('en-US')) },
+          { label: 'Ships waiting', value: knownValue(formatScalar(row.port.queue.length, 'integer')) },
         ],
   }),
 );
