@@ -1,8 +1,11 @@
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import { AREA_UNIT, measureOf, type TerritoryMeasure } from '../../dashboard/territoryMeasure.ts';
 import { flagChoiceArt } from '../../families/art/provider.ts';
 import type { BreakdownWidgetSpec } from '../../families/breakdown/declaration.ts';
 import type { BreakdownModel, BreakdownPart, BreakdownProjection } from '../../families/breakdown/model.ts';
 import { breakdownParts, breakdownTotal, type BreakdownWords } from '../../families/breakdown/product.ts';
+import { groupSelection, groupUnavailable } from '../../families/groupSelection.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { TerritoryBreakdownReply } from '../../generated/dashboard';
@@ -23,13 +26,15 @@ export function validateTerritoryBreakdown(raw: unknown): TerritoryBreakdownRepl
   return reply as TerritoryBreakdownReply;
 }
 
+const SLOT = 'slot:';
+
 function country(readView: BoundedReadView, part: BreakdownPart): BreakdownPart {
-  if (part.key.startsWith('~') || part.key.startsWith('slot:')) return part;
-  const identity = readView.who('country', part.key);
+  if (part.neutral || !part.key.startsWith(SLOT)) return part;
+  const identity = readView.who('country', countryKey(Number(part.key.slice(SLOT.length))));
   return {
     ...part,
     name: identity.name.status === 'ready' ? identity.name.value : part.name,
-    flag: part.key,
+    flag: identity.tag.status === 'ready' ? identity.tag.value : part.name,
     flagArt: flagChoiceArt(readView, identity.flagChoice),
     ...(identity.colour?.status === 'ready' ? { color: identity.colour.value } : {}),
   };
@@ -62,12 +67,20 @@ export const territoryBreakdownProjection: BreakdownProjection<TerritoryBreakdow
   },
 };
 
+function chosen(ctx: FamilyPlanContext): Readonly<Record<string, unknown>> {
+  const selection = ctx.widget.countries;
+  if (selection.kind === 'all') return {};
+  const group = groupSelection(selection);
+  if (group) return { group };
+  return { countries: selectedCountryKeys(selection, ctx.track).map(countryFromKey) };
+}
+
 function sources(ctx: FamilyPlanContext): SourcePlan {
   const measure = measureOf(ctx.options.measure);
   const rule = ctx.options.rule === 'owned' ? 'owned' : 'controlled';
-  const params = { branchId: ctx.branch.id, measure, rule, ...(ctx.countries.all ? {} : { tags: [...ctx.countries.tags] }) };
+  const params = { branchId: ctx.branch.id, measure, rule, ...chosen(ctx) };
   return {
-    owner: `territory-breakdown:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${measure}:${rule}:${ctx.countries.all ? '*' : ctx.countries.tags.join(',')}`,
+    owner: `territory-breakdown:${ctx.track.source.id}:${ctx.track.source.revision}:${JSON.stringify(params)}`,
     entries: [{
       name: 'main',
       source: ctx.track.source,
@@ -94,6 +107,11 @@ export const territoryBreakdown: BreakdownWidgetSpec<TerritoryBreakdownOptions> 
   icon: 'sunburst',
   countries: { mode: 'filter' },
   projection: territoryBreakdownProjection,
-  projectionOptions: ctx => ({ measure: measureOf(ctx.options.measure), rule: ctx.options.rule === 'owned' ? 'owned' : 'controlled', chosen: !ctx.countries.all }),
+  projectionOptions: ctx => ({
+    measure: measureOf(ctx.options.measure),
+    rule: ctx.options.rule === 'owned' ? 'owned' : 'controlled',
+    chosen: ctx.widget.countries.kind !== 'all',
+  }),
+  unavailable: ctx => groupUnavailable(ctx.widget.countries),
   sources,
 };
