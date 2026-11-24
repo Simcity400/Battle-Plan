@@ -103,8 +103,8 @@ function sampleGroups(): CountryGroupReply {
         name: 'Axis Pact',
         nameReason: null,
         names: [
-          { firstHour: 50, lastHour: 149, name: 'Berlin Pact', reason: null },
-          { firstHour: 150, lastHour: 300, name: 'Axis Pact', reason: null },
+          { firstHour: 50, lastHour: 149, name: 'Berlin Pact', reason: null, token: null },
+          { firstHour: 150, lastHour: 300, name: 'Axis Pact', reason: null, token: null },
         ],
         recordedName: 'AXIS',
         firstHour: 50,
@@ -119,7 +119,7 @@ function sampleGroups(): CountryGroupReply {
     capitulations: [],
     identityChanges: [],
     countryIdentities: [],
-    unobserved: { humans: [], factions: [{ firstHour: 350, lastHour: 360 }], wars: [] },
+    unobserved: { humans: [], factions: [{ firstHour: 350, lastHour: 360 }], wars: [], unattributed: [] },
     warnings: [],
   };
 }

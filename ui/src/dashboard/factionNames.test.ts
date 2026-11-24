@@ -6,9 +6,9 @@ import { factionChoiceLabel, factionNameAt, factionNameLabel, latestFactionSumma
 const faction: FactionGroup = {
   id: '9001', name: 'Later pact', nameReason: null, recordedName: '', firstHour: 10, lastHour: 40,
   names: [
-    { firstHour: 10, lastHour: 19, name: 'Opening pact', reason: null },
-    { firstHour: 25, lastHour: 29, name: null, reason: 'Faction template new_pact is not in the recorded content' },
-    { firstHour: 30, lastHour: 40, name: 'Later pact', reason: null },
+    { firstHour: 10, lastHour: 19, name: 'Opening pact', reason: null, token: null },
+    { firstHour: 25, lastHour: 29, name: null, reason: 'Faction template new_pact is not in the recorded content', token: null },
+    { firstHour: 30, lastHour: 40, name: 'Later pact', reason: null, token: null },
   ], members: [], leaders: [], incomplete: [],
 };
 
@@ -42,7 +42,7 @@ test('missing or refused content keeps its exact reason and a display name wins'
 
 test('campaign summaries choose the newest branch read even when its name is unavailable', () => {
   const reply = (faction: FactionGroup): CountryGroupReply => ({ branchId: '1', factions: [faction], humans: [], wars: [],
-    warStarts: [], capitulations: [], identityChanges: [], countryIdentities: [], unobserved: { humans: [], factions: [], wars: [] }, warnings: [] });
+    warStarts: [], capitulations: [], identityChanges: [], countryIdentities: [], unobserved: { humans: [], factions: [], wars: [], unattributed: [] }, warnings: [] });
   const first = { ...faction, lastHour: 19, names: [faction.names[0]], name: 'Opening pact', recordedName: 'Original literal' };
   const latest = { ...faction, lastHour: 18, name: null, nameReason: 'Template missing', recordedName: '' };
   const [summary] = latestFactionSummaries([reply(first), reply(latest)]);

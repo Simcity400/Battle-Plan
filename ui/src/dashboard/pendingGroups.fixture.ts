@@ -15,7 +15,7 @@ export function pendingGroups(options: { final?: boolean; humans?: CountryGroupR
   const through = options.final ? BRANCH.lastHour : PREPARED_THROUGH;
   const reply: CountryGroupReply = {
     branchId: BRANCH.id, warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [],
-    unobserved: { humans: [], factions: [], wars: [] },
+    unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     humans: options.humans ?? [{ tag: 'GER', firstHour: BRANCH.firstHour, lastHour: PREPARED_THROUGH }],
     countryIdentities: (options.tags ?? ['GER', 'ENG']).map((tag, index) => ({ tag,
       identities: [{ firstHour: BRANCH.firstHour, lastHour: through, slot: index + 1, countryId: index + 101 }] })),
@@ -24,7 +24,7 @@ export function pendingGroups(options: { final?: boolean; humans?: CountryGroupR
 }
 
 export const gapGroups = (): CountryGroupReply =>
-  ({ ...pendingGroups({ humans: [] }), unobserved: { humans: [{ firstHour: 140, lastHour: 150 }], factions: [], wars: [] } });
+  ({ ...pendingGroups({ humans: [] }), unobserved: { humans: [{ firstHour: 140, lastHour: 150 }], factions: [], wars: [], unattributed: [] } });
 
 export async function mountModule<T = Record<string, unknown>>(entry: string, replacements: Record<string, string>,
   mode?: string): Promise<{ module: T; close: () => Promise<void> }> {
