@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import type { WidgetProps } from '../../dashboard/definitions';
+import type { FamilyViewProps } from '../../dashboard/definitions';
 import { FAMILY_MANIFESTS } from '../../widgets/familyManifest.ts';
 import type { FamilyViewModule } from '../manifest.ts';
 import type { FamilyId } from '../plan.ts';
@@ -8,9 +8,9 @@ import type { FamilyHostAdapter } from './adapter.ts';
 import DeclaredFamilyWidget, { type DeclaredFamilyWidgetDeclaration, type DeclaredFamilyWidgetProps } from './DeclaredFamilyWidget.tsx';
 import type { FamilyChromeProps } from './FamilyHost.tsx';
 
-export interface FamilyHostProps extends WidgetProps {
+export type FamilyHostProps = FamilyViewProps & {
   readonly spec: FamilyViewModule;
-}
+};
 
 const CHROME: Readonly<Record<string, ComponentType<FamilyChromeProps<any>>>> = {
   table: TableChrome,

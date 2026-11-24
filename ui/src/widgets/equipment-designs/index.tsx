@@ -1,7 +1,7 @@
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import type { EquipmentDesignerSelection } from '../../dashboard/gameWindows';
 import GameWindowTable, { type GameWindowRow } from '../../families/table/GameWindowTable';
-import { designsDeclaration, type DesignMeta } from './designsProjection';
+import type { DesignMeta } from './designsProjection';
 
 const DESIGNER: GameWindowRow<EquipmentDesignerSelection> = {
   kind: 'equipmentDesigner',
@@ -12,8 +12,8 @@ const DESIGNER: GameWindowRow<EquipmentDesignerSelection> = {
   label: 'Equipment design',
 };
 
-function EquipmentDesignsWidget(props: WidgetProps) {
-  return <GameWindowTable {...props} declaration={designsDeclaration} window={DESIGNER} />;
+function EquipmentDesignsWidget(props: FamilyViewProps) {
+  return <GameWindowTable {...props} window={DESIGNER} />;
 }
 
-export default { render: EquipmentDesignsWidget } satisfies WidgetRenderer;
+export default { render: EquipmentDesignsWidget } satisfies FamilyViewRenderer;

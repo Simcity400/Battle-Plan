@@ -10,7 +10,7 @@ import { IdentityIndex } from './identity/index.ts';
 import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
 import type { FamilyId } from './plan.ts';
-import { ensureBoundProjection, familyProjectionFailure, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
+import { ensureBoundProjection, familyProjectionFailure, forgetProjectionWaiter, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
 import { SceneTiles, type TiledSources } from './sceneTiles.ts';
 import type { PagedRowsSnapshot, RowWindow } from './table/rowSource.ts';
@@ -159,12 +159,18 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   structureKey: readonly unknown[];
   structureFields: Record<string, Field>;
   kept: Map<string, { readonly text: string; readonly content: string }>;
+  frameKey: readonly unknown[];
+  frameRevision: number;
   mirrorGate: CadenceGate;
   mirrorField: Field | null;
-  tipGate: CadenceGate;
+  mirrorFrame: number;
+  mirrorView: string;
   tipField: Field | null;
-  focusGate: CadenceGate;
+  tipFrame: number;
+  tipKey: string;
   focusField: Field | null;
+  focusFrame: number;
+  focusKey: string;
   flusher: TrailingFlushScheduler;
   auditKey: readonly unknown[];
   auditField: Field | null;
@@ -207,8 +213,8 @@ function releaseIndex(revision: number | null): void {
 }
 
 const MIRROR_CADENCE_MS = 1000;
-const TOOLTIP_CADENCE_MS = 250;
 const EMPTY: Painted = { surfaces: [], fields: {}, motion: false };
+const WAITING: Painted = { ...EMPTY, waiting: true };
 
 function sameKey(a: readonly unknown[], b: readonly unknown[]): boolean {
   if (a.length !== b.length) return false;
@@ -260,6 +266,63 @@ function backing(surface: Surface): readonly [number, number, number] {
   return [Math.max(1, Math.round(surface.width * dpr)), Math.max(1, Math.round(surface.height * dpr)), dpr];
 }
 
+function retryOrThrow(failed: Map<number, number>, input: PaintInput, reason: string, retry: () => Painted): Painted {
+  const failedAt = failed.get(input.widget);
+  if (failedAt !== undefined && failedAt !== input.binding.generation) {
+    failed.delete(input.widget);
+    return retry();
+  }
+  failed.set(input.widget, input.binding.generation);
+  throw new Error(reason);
+}
+
+export type LaneFamilyLoad = () => Promise<LaneFamily<any, any, any>>;
+
+export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget: number) => void, options?: LaneRuntimeOptions): LaneView {
+  let view: LaneView | null = null;
+  let loading = false;
+  let failure: string | null = null;
+  const waiting = new Set<number>();
+  const failedGenerations = new Map<number, number>();
+  const ready = (widget: number): LaneView | null => {
+    if (view || failure !== null) return view;
+    waiting.add(widget);
+    if (!loading) {
+      loading = true;
+      load().then(
+        lane => { view = createLaneView(lane, wake, options); },
+        (error: unknown) => { failure = error instanceof Error ? error.message : String(error); },
+      ).finally(() => {
+        loading = false;
+        const woken = [...waiting];
+        waiting.clear();
+        for (const widget of woken) wake(widget);
+      });
+    }
+    return null;
+  };
+  return {
+    next(scene, hour, state) {
+      const loaded = ready(scene.widget);
+      return loaded?.next ? loaded.next(scene, hour, state) : null;
+    },
+    unmount(widget, state) {
+      waiting.delete(widget);
+      failedGenerations.delete(widget);
+      view?.unmount?.(widget, state);
+    },
+    paint(input, state, content) {
+      const loaded = ready(input.widget);
+      if (loaded) return loaded.paint(input, state, content);
+      if (failure === null) return WAITING;
+      return retryOrThrow(failedGenerations, input, `The ${family} lane did not load: ${failure}`, () => {
+        failure = null;
+        return ready(input.widget)?.paint(input, state, content) ?? WAITING;
+      });
+    },
+  };
+}
+
 export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   family: LaneFamily<TBinding, TModel, TLayout>,
   wake: (widget: number) => void,
@@ -305,8 +368,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       ...(options?.fetchBitmap ? { fetchBitmap: options.fetchBitmap } : {}),
     });
     const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
-    const tipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
-    const focusGate = new CadenceGate(TOOLTIP_CADENCE_MS);
     const held: Held<TBinding, TModel, TLayout> = {
       canvas, ctx, art,
       wake: wakerOf(widget),
@@ -322,8 +383,10 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       drawKey: [], content: '', motion: false, artKey: '',
       structureKey: [], structureFields: {},
       kept: new Map(),
-      mirrorGate, mirrorField: null, tipGate, tipField: null, focusGate, focusField: null,
-      flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusGate], options?.timers),
+      frameKey: [], frameRevision: 0,
+      mirrorGate, mirrorField: null, mirrorFrame: -1, mirrorView: '',
+      tipField: null, tipFrame: -1, tipKey: '', focusField: null, focusFrame: -1, focusKey: '',
+      flusher: new TrailingFlushScheduler([mirrorGate], options?.timers),
       auditKey: [], auditField: null,
       tiles: new SceneTiles(),
     };
@@ -345,6 +408,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     },
 
     unmount(widget: number, state: Map<string, unknown>): void {
+      const waker = wakers.get(widget);
+      if (waker) forgetProjectionWaiter(waker);
       wakers.delete(widget);
       failedGenerations.delete(widget);
       const held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
@@ -362,19 +427,14 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (!isBinding(binding) || !surface || !binding.theme) return waiting;
       const theme = binding.theme;
       const projection = projectionOf(binding, input.widget);
-      if (projection === 'loading') return waiting;
+      if (projection === 'loading') return WAITING;
       if (projection === 'unknown') {
         const failure = familyProjectionFailure(family.family, binding.kind, binding.view);
         if (!failure) return { ...EMPTY, mode: 'refused', reason: unknownProjectionReason(binding) };
-        const failedAt = failedGenerations.get(input.widget);
-        if (failedAt !== undefined && failedAt !== input.binding.generation) {
-          failedGenerations.delete(input.widget);
+        return retryOrThrow(failedGenerations, input, unknownProjectionReason(binding), () => {
           retryFamilyProjection(family.family, binding.kind, binding.view);
-          projectionOf(binding, input.widget);
-          return waiting;
-        }
-        failedGenerations.set(input.widget, input.binding.generation);
-        throw new Error(unknownProjectionReason(binding));
+          return projectionOf(binding, input.widget) === 'loading' ? WAITING : EMPTY;
+        });
       }
 
       let held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
@@ -503,7 +563,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         readNow: () => readNow ??= sceneReadView(input, binding, drawn, readers),
       };
 
-      const drawKey = [layout, binding.scrollTop, input.inspect, binding.selectedKey, binding.focusedKey, keep.index, keep.artProvider, keep.artRevision, width, height];
+      const drawKey = [layout, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.index, keep.artProvider, keep.artRevision, width, height];
       if (keep.motion || input.now >= keep.expiry || !sameKey(keep.drawKey, drawKey)) {
         const shown = [...family.visibleArt(frame)];
         const artKey = `${shown.join('\u0000')}\u0001${projected.artUrls.join('\u0000')}`;
@@ -531,48 +591,55 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         const next: Record<string, Field> = {};
         for (const [slot, value] of Object.entries(family.structure(frame))) next[slot] = field(keep, slot, value, content);
         keep.structureFields = next;
-        keep.mirrorGate.invalidate();
-        keep.tipGate.invalidate();
-        keep.focusGate.invalidate();
       }
       Object.assign(fields, keep.structureFields);
+      const frameKey = [model, layout, drawn];
+      if (!sameKey(keep.frameKey, frameKey)) {
+        keep.frameKey = frameKey;
+        keep.frameRevision++;
+        keep.mirrorGate.invalidate();
+      }
+      const frameRevision = keep.frameRevision;
 
       const now = input.now;
-      const mirrorKey = `${binding.focusedKey ?? ''}\u0000${binding.scrollLeft ?? 0}\u0000${binding.scrollTop}`;
-      if (!keep.mirrorField || keep.mirrorGate.due(now, input.speed, mirrorKey)) {
+      const mirrorView = `${binding.focusedKey ?? ''}\u0000${binding.scrollLeft ?? 0}\u0000${binding.scrollTop}`;
+      const mirrorStale = keep.mirrorFrame !== frameRevision || keep.mirrorView !== mirrorView;
+      if (mirrorStale && (!keep.mirrorField || keep.mirrorGate.due(now, input.speed, mirrorView))) {
         keep.mirrorField = field(keep, 'mirror', family.mirror(frame), content);
-        keep.mirrorGate.record(now, mirrorKey);
+        keep.mirrorFrame = frameRevision;
+        keep.mirrorView = mirrorView;
+        keep.mirrorGate.record(now, mirrorView);
       }
-      if (keep.mirrorField.value !== null) fields.mirror = keep.mirrorField;
+      if (keep.mirrorField && keep.mirrorFrame === frameRevision && keep.mirrorView === mirrorView && keep.mirrorField.value !== null) fields.mirror = keep.mirrorField;
 
       if (input.inspect) {
-        if (!keep.tipField || keep.tipGate.due(now, input.speed, input.inspect)) {
+        if (!keep.tipField || keep.tipFrame !== frameRevision || keep.tipKey !== input.inspect) {
           const tip: FamilyTooltipField = { key: input.inspect, text: family.tooltip(frame, input.inspect, false) };
           keep.tipField = field(keep, 'tooltip', tip, content);
-          keep.tipGate.record(now, input.inspect);
+          keep.tipFrame = frameRevision;
+          keep.tipKey = input.inspect;
         }
         fields.tooltip = keep.tipField;
       } else {
-        keep.tipGate.reset();
         keep.tipField = null;
       }
       const focused = binding.focusedKey;
       if (focused) {
-        if (!keep.focusField || keep.focusGate.due(now, input.speed, focused)) {
+        if (!keep.focusField || keep.focusFrame !== frameRevision || keep.focusKey !== focused) {
           const tip: FamilyTooltipField = { key: `focus:${focused}`, text: family.tooltip(frame, focused, true) };
           keep.focusField = field(keep, 'focusTooltip', tip, content);
-          keep.focusGate.record(now, focused);
+          keep.focusFrame = frameRevision;
+          keep.focusKey = focused;
         }
         fields.focusTooltip = keep.focusField;
       } else {
-        keep.focusGate.reset();
         keep.focusField = null;
       }
       keep.flusher.sync(now, input.speed, () => keep.wake(), keep.expiry);
       const tFields = timed ? performance.now() : 0;
 
       if (binding.audit) {
-        const auditKey = [model, layout, binding.auditId ?? -1];
+        const auditKey = [model, layout, binding.scrollTop, binding.scrollLeft ?? 0, binding.auditId ?? -1];
         if (!keep.auditField || !sameKey(keep.auditKey, auditKey)) {
           keep.auditKey = auditKey;
           keep.auditField = field(keep, 'audit', { id: binding.auditId ?? -1, rows: family.audit(frame) }, content);

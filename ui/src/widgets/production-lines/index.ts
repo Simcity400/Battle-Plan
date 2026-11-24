@@ -1,4 +1,4 @@
-import type { WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewRenderer } from '../../dashboard/definitions';
 import ProductionLinesWidget from './ProductionLinesWidget';
 
-export default { render: ProductionLinesWidget } satisfies WidgetRenderer;
+export default { render: ProductionLinesWidget } satisfies FamilyViewRenderer;

@@ -1,11 +1,10 @@
 import { useCallback, useRef, useState } from 'react';
-import type { WidgetProps, WidgetRenderer } from '../../dashboard/definitions';
+import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import DecisionDetailWindow, { type DecisionDetailSubject } from './DecisionDetailWindow.tsx';
-import { decisionsDeclaration } from './decisionsProjection.ts';
 
-function DecisionsView(props: WidgetProps) {
+function DecisionsView(props: FamilyViewProps) {
   const anchor = useRef<HTMLDivElement>(null);
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
@@ -20,16 +19,16 @@ function DecisionsView(props: WidgetProps) {
 
   return (
     <div ref={anchor} className="fh-detail-anchor">
-      <FamilyWidget
+      {props.manifestDeclaration ? <FamilyWidget
         {...props}
-        family="table"
-        declaration={decisionsDeclaration}
+        family={props.manifestDeclaration.family}
+        declaration={props.manifestDeclaration}
         selectedKey={shown?.key ?? null}
         onActivate={onActivate}
-      />
+      /> : null}
       <DecisionDetailWindow subject={shown} anchor={anchor} onClose={() => setOpened(null)} />
     </div>
   );
 }
 
-export default { render: DecisionsView } satisfies WidgetRenderer;
+export default { render: DecisionsView } satisfies FamilyViewRenderer;

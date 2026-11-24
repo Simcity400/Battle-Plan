@@ -11,6 +11,7 @@ import { useProduct } from './products';
 import { availabilityReason, availabilityRequest, scopeReason, validateWidgetAvailability } from './widgetAvailability';
 import WidgetPreview from './WidgetPreview';
 import { catalogueEntries, matchesWidget, placedCount, widgetGroups } from './widgetCategories';
+import { widgetViewOptions } from '../widgets/manifest';
 import type { CatalogueEntry, WidgetGroup } from './widgetCategories';
 
 type Add = (kind: string, initial?: Pick<WidgetSpec, 'title' | 'options'>) => void;
@@ -94,7 +95,8 @@ function Catalogue({ open, placed, ...shared }: Shared & { open: boolean; placed
   for (const definition of definitions) if (definition.usePresets) presets.set(definition.kind, definition.usePresets(definition, shared.runtime, shared.track, shared.active));
   const byGroup = catalogueEntries(groups, presets).map(entries => entries.filter(entry =>
     matchesWidget(query, entry.title, entry.definition.title, entry.definition.description, entry.group.label)));
-  const count = (entry: Entry) => placedCount(entry, placed);
+  const resolvedPlaced = useMemo(() => placed.map(widget => ({ kind: widget.kind, options: widgetViewOptions(widget.kind, widget.options) })), [placed]);
+  const count = (entry: Entry) => placedCount(entry, resolvedPlaced);
   const visible = byGroup.flatMap((entries, index) => category === null || category === ON_PAGE || groups[index].label === category ? entries : [])
     .filter(entry => category !== ON_PAGE || count(entry) > 0);
   const selected = visible.find(entry => entry.key === chosen) ?? visible[0];

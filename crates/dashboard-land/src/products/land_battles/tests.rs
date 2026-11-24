@@ -86,6 +86,7 @@ fn every_written_end_row_is_an_end_of_its_own() {
         to: 13,
         texts: Vec::new(),
         keys: vec![(battle, vec![step(12, row(59))]), (alone, vec![step(10, row(60)), step(11, row(61)), step(12, None)])],
+        ..Default::default()
     };
     let found: Vec<(Key, i32, Option<i64>)> = written_ends(&ended).map(|(key, _, hour, cells)| (key, hour, match cells[2] { Cell::Number(id) => Some(id), _ => None })).collect();
     assert_eq!(found, [((7, 10, None), 12, Some(59)), ((7, 10, Some(10)), 10, Some(60)), ((7, 10, Some(11)), 11, Some(61))]);
@@ -195,6 +196,7 @@ fn unread_end_kind_hour_and_side_lists_stay_unknown_and_survive_country_filters(
                 }],
             ),
         ],
+        ..Default::default()
     };
     let mut decoded = BTreeMap::new();
     decode_ended_rows(&ended, &mut decoded);

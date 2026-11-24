@@ -1,7 +1,6 @@
 import { clipToSpans, runAt } from '../charts/series.ts';
 import type { Span } from '../charts/series';
-import { airCauseName } from '../widgets/air-kills-losses/lossCauses.ts';
-import { ledgerRuns, ledgerScale, ledgerTotals } from './militaryAirLedger.ts';
+import { ledgerCauseName, ledgerRuns, ledgerScale, ledgerTotals } from './militaryAirLedger.ts';
 import type { LedgerIndex } from './militaryAirLedger';
 import type { MilitaryAirPart } from '../generated/dashboard';
 
@@ -34,6 +33,6 @@ export function airLossDrillHistory(index: LedgerIndex, identity: string, from: 
     const parts = causes.get(part.cause) ?? [];
     parts.push(part); causes.set(part.cause, parts);
   }
-  return [...causes].sort(([a], [b]) => a - b).map(([cause, parts]) => ({ id: String(cause), cause, label: airCauseName(cause), parts,
+  return [...causes].sort(([a], [b]) => a - b).map(([cause, parts]) => ({ id: String(cause), cause, label: ledgerCauseName(index.reply, cause), parts,
     runs: ledgerRuns({ country, parts, points: ledgerTotals(parts), openings: [] }, from, end, dealt, ledgerScale('airLosses')) }));
 }

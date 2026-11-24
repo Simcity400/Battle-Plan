@@ -1178,7 +1178,7 @@ fn command_power_ground_crews_capped_refunds_and_allocation_clamps_reconcile() {
 }
 
 #[test]
-fn a_payment_whose_item_is_not_witnessed_at_the_spans_end_keeps_its_amount_with_an_unrecorded_item() {
+fn a_payments_item_is_read_at_its_charge_not_at_a_spans_end_whose_items_are_not_recorded() {
     let frames = (FIRST..=LAST)
         .map(|hour| {
             let mut frame = frame(hour);
@@ -1206,9 +1206,9 @@ fn a_payment_whose_item_is_not_witnessed_at_the_spans_end_keeps_its_amount_with_
     let reads: Vec<_> = reply.payments.iter().map(|payment| (payment.read, payment.known_raw.clone())).collect();
     assert_eq!(reads, [(104, Some("5000000".into())), (120, Some("7500000".into()))], "witnessed spending keeps its amount");
     let item = &reply.items[reply.payments[1].item as usize];
-    assert_eq!((item.category.as_str(), item.name.as_deref()), ("notIdentified", None));
-    assert!(item.unknown.as_deref().is_some_and(|why| why.starts_with("Power items")), "{:?}", item.unknown);
-    assert!(reply.categories.iter().any(|category| category.id == "notIdentified" && !category.identified));
+    assert_eq!((item.category.as_str(), item.name.as_deref()), ("decisions", None));
+    assert!(item.unknown.as_deref().is_some_and(|why| !why.starts_with("Power items")), "{:?}", item.unknown);
+    assert!(!reply.categories.iter().any(|category| category.id == "notIdentified"));
 }
 
 #[test]
@@ -1218,8 +1218,8 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
     let held = [piece(FIRST, 140, None), piece(144, 168, Some(144))];
     let unrecorded_gap = |first: i32, last: i32| i64::from(!(first >= 141 && last <= 143));
     let every = |first: i32, last: i32| i64::from(last - first + 1);
-    assert_eq!(continuity(FIRST, 168, &held, unrecorded_gap).as_deref(), Some("Continuity broke across a load or recording gap during this span"));
-    assert_eq!(continuity(FIRST, 168, &held, every).as_deref(), Some("Country was not held for the entire span"), "recorded hours between pieces are hours not held");
+    assert_eq!(continuity(FIRST, 168, &held, unrecorded_gap, |_, _| false).as_deref(), Some("Continuity broke across a load or recording gap during this span"));
+    assert_eq!(continuity(FIRST, 168, &held, every, |_, _| false).as_deref(), Some("Country was not held for the entire span"), "recorded hours between pieces are hours not held");
 
     use dashboard_query::{
         Query,
@@ -1249,6 +1249,12 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
     let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.tag, params.country.key(), "a slot held by no one at the statement's end is the slot, never its earlier holder");
 
+    let through = Holders::new([("GER".to_owned(), vec![run(FIRST, LAST, GER)])].into(), Vec::new());
+    let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(through) };
+    let params = PowerSpendingParams { to: LAST + 1, ..params };
+    let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.tag, params.country.key(), "rv5-12b: a statement ending after the branch's last hour is named at its own end, where the slot holds no tag");
+
     let gap = |first: i32, last: i32| dashboard_query::timeline::Unheld { first, last, reason: "not recorded".into() };
     let stretches = vec![Stretch { run: 0, first: FIRST, last: 140, join: Join::Start }, Stretch { run: 0, first: 144, last: 160, join: Join::Break }];
     let timeline = Timeline { id: 1, first: FIRST, last: LAST, stretches, unheld: vec![gap(141, 143), gap(161, LAST)] };
@@ -1270,4 +1276,44 @@ fn pieces_apart_only_across_unrecorded_hours_break_continuity_and_the_statement_
         let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.reconciliation.reason.as_deref(), Some(why), "no holder in {from}..{to}: absence for the whole span needs every hour recorded");
     }
+    let unread = HolderRun { first: 140, last: 140, holder: Holder::Unresolved, starts_segment: true };
+    let unresolved = Holders::new([("GER".to_owned(), vec![run(FIRST, 139, GER), unread, run(144, LAST, GER)])].into(), Vec::new());
+    let query = Query { replay: &replay, timeline: query.timeline, holders: Arc::new(unresolved) };
+    for (from, to) in [(140, 140), (140, 143)] {
+        let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
+        let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.reconciliation.reason.as_deref(), Some(super::HOLDER_UNRESOLVED), "R4-S6: an unresolved holder in {from}..{to} is not \"not held\"");
+    }
+}
+
+#[test]
+fn spending_markers_are_payments_at_their_own_hour_shown_once_read_with_the_next_read_as_their_change() {
+    let source = recording();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let span = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, to: LAST };
+    let held = super::markers::build(&source, &query, &span, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+
+    let before = held.at(103);
+    assert!(before.markers.is_empty(), "the decision paid at 103 is read at 104: not shown before");
+    assert_eq!(before.next_change, Some(104));
+
+    let first = held.at(110);
+    let shown: Vec<_> = first.markers.iter().map(|marker| (marker.hour, marker.dated, marker.since, marker.payments, marker.charge_raw.clone())).collect();
+    assert_eq!(shown, [(103, true, None, 1, Some("5000000".into()))], "one marker at the payment's own hour, never at a bin's closing hour");
+    assert_eq!(first.next_change, Some(120));
+    let gaps: Vec<_> = first.unrecorded.iter().map(|gap| (gap.first_hour, gap.last_hour)).collect();
+    assert_eq!(gaps, [(FIRST, FIRST)], "an hour whose spending was not counted is said, never left as no spending");
+
+    let last = held.at(LAST);
+    assert_eq!(last.markers.iter().map(|marker| marker.hour).collect::<Vec<_>>(), [103, 120]);
+    assert_eq!(last.next_change, None);
+
+    let mut whole = asked(&source, FIRST, LAST);
+    let item = whole.payments[0].item;
+    whole.payments[1].item = item;
+    whole.payments[1].payments = 3;
+    whole.payments[0].hour = None;
+    let undated = super::markers::index(&whole, Vec::new()).at(LAST);
+    let shown: Vec<_> = undated.markers.iter().map(|marker| (marker.hour, marker.dated, marker.since, marker.payments)).collect();
+    assert_eq!(shown, [(104, false, None, 1), (120, true, Some(105), 3)], "an undated payment is placed by its read; several in one read say the interval they fall in and their count");
 }

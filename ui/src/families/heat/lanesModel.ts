@@ -1,3 +1,4 @@
+import type { ActiveRegions } from '../../generated/dashboard';
 import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import type { ArtHandle, BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
@@ -100,6 +101,7 @@ export interface HeatLaneRegions {
   readonly pickedHeading: string;
   readonly automaticHeading: string;
   readonly addLabel: string;
+  readonly active?: ActiveRegions;
 }
 
 export interface HeatLaneGap {

@@ -6,6 +6,7 @@ import { liveKey } from '../../charts/live.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import { groupSelection } from '../../families/groupSelection.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import {
   type TimeChartProjection,
@@ -66,7 +67,7 @@ function scaleDecimals(scale: number): number | null {
 }
 
 function formatEndPct(value: number, mode: 'share' | 'recorded'): string {
-  return mode === 'share' ? formatShare(value / 100) : formatRecordedPercent(value);
+  return mode === 'share' && value >= 0 && value <= 100 ? formatShare(value / 100) : formatRecordedPercent(value);
 }
 
 function formatRawPct(raw: string, scale: number, signed = true): string | null {
@@ -269,6 +270,19 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         series: [],
       };
     }
+    if (reply.refused) {
+      return {
+        kind: 'world-tension',
+        measureTitle: 'World tension',
+        mode: 'stack',
+        hour,
+        extent: options.extent,
+        yAxis: { format: 'percent', fixed: options.values === 'share' ? [0, 100] : null, min: 0 },
+        series: [],
+        warnings: reply.warnings,
+        empty: { message: reply.refused, kind: 'unavailable' },
+      };
+    }
     const gaps: ChartGap[] = [
       ...options.gaps,
       ...reply.missing.map(m => ({ firstHour: m.firstHour, lastHour: m.lastHour, reason: m.reason })),
@@ -384,6 +398,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       stack: {
         hours: reply.hours,
         bands: orderedBands,
+        bandFormat: 'signedPercent',
         step: true,
         total: {
           color: CHART_MEASURE_COLOURS.lightInk,
@@ -411,8 +426,12 @@ export const worldTensionDeclaration: TimeChartWidgetDeclaration<WorldTensionCha
   sources(ctx: FamilyPlanContext, view): SourcePlan {
     const layers = Math.max(1, Math.min(20, Number(ctx.options.layers) || 5));
     const values = ctx.options.values === 'recorded' ? 'recorded' : 'share';
-    const countries = ctx.countries.all ? null : [...ctx.countries.tags];
+    const top = ctx.countries.top ?? null;
+    const keyed = !ctx.countries.all && top == null;
+    const group = keyed ? groupSelection(ctx.widget.countries) : null;
+    const countries = keyed && !group ? [...ctx.countries.tags] : null;
     const width = Math.max(240, Math.min(2400, Math.ceil(view.width ?? 1024)));
+    const includeEvents = ctx.options.markers !== false;
     return {
       owner: `world-tension:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
       entries: [
@@ -431,7 +450,11 @@ export const worldTensionDeclaration: TimeChartWidgetDeclaration<WorldTensionCha
               layers,
               values,
               countries,
+              top,
+              group,
               width,
+              includeStack: true,
+              includeEvents,
             },
             dynamicKeys: ['firstHour', 'lastHour', 'width'],
             validate: validateWorldTensionStack,

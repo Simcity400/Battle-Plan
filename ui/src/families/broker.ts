@@ -1,3 +1,4 @@
+import { countryFromKey } from '../dashboard/countryKey.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import { canonical } from '../dashboard/follow/canonical.ts';
 import type { Channel } from '../dashboard/follow/facts';
@@ -74,7 +75,7 @@ function readSignature(read: SourceTimeShape): unknown {
     case 'trailing-window':
       return ['trailing-window', read.coverage, read.product, read.windowHours, read.followQuery, read.params, read.dynamicKeys ?? []];
     case 'pixel-binned':
-      return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.marks === true, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null, read.top ?? null];
+      return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null, read.top ?? null];
     case 'exact-hover':
       return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params];
     case 'paged-rows':
@@ -209,7 +210,7 @@ export function primaryExactEntry(plan: SourcePlan): SourceEntry | null {
   return plan.entries[0] ?? null;
 }
 
-function producePointParams(
+export function producePointParams(
   read: Extract<SourceTimeShape, { shape: 'point' }>,
   hour: GatedHour,
   mode: 'static' | 'exact',
@@ -222,7 +223,7 @@ function producePointParams(
   return { ...read.params, [read.hourParam ?? 'hour']: hour };
 }
 
-function produceSpanParams(
+export function produceSpanParams(
   base: Readonly<Record<string, unknown>> | null,
   span: BoundWindow,
   builder?: (base: Readonly<Record<string, unknown>>, span: BoundWindow) => Readonly<Record<string, unknown>> | null,
@@ -250,14 +251,14 @@ function tailQueryParams(
   return {
     branchId: query.branchId,
     ...(query.log !== undefined ? { log: query.log } : {}),
-    facets: query.facets,
+    ...(query.facets !== undefined ? { facets: query.facets } : {}),
     from: query.from,
     hour,
     offset: String(Math.max(0, Math.floor(offset))),
     limit: Math.max(1, Math.floor(limit)),
     ...(query.columns !== undefined ? { columns: query.columns } : {}),
     ...(query.countFacets && query.countFacets.length ? { countFacets: query.countFacets } : {}),
-    ...(query.scope !== undefined ? { scope: query.scope } : {}),
+    ...query.ask,
   };
 }
 
@@ -759,14 +760,20 @@ export interface HeldHover {
   readonly data: unknown;
 }
 
-export function hoverAsks(plan: SourcePlan, hoverHour: number | null | undefined): readonly HoverAsk[] {
+export function hoverAsks(
+  plan: SourcePlan,
+  hoverHour: number | null | undefined,
+  displayed: (entry: string) => readonly string[] | undefined = () => undefined,
+): readonly HoverAsk[] {
   if (hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) return NO_HOVER_ASKS;
   const hour = Math.floor(hoverHour);
   const asks: HoverAsk[] = [];
   for (const entry of plan.entries) {
     const read = entry.read;
     if (read.shape !== 'exact-hover' || !read.params) continue;
-    const reads = (read.params as { reads?: unknown }).reads;
+    const shown = read.readsOf === undefined ? null : displayed(read.readsOf);
+    if (shown !== null && !shown?.length) continue;
+    const reads = shown ? shown.map(key => ({ country: countryFromKey(key) })) : (read.params as { reads?: unknown }).reads;
     const params = Array.isArray(reads)
       ? { ...read.params, reads: reads.map(asked => ({ ...(asked as Record<string, unknown>), [read.hourParam ?? 'hour']: hour })) }
       : { ...read.params, [read.hourParam ?? 'hour']: hour };

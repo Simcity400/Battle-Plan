@@ -30,7 +30,7 @@ fn assignment(first: i32, after: Option<i32>, last: Option<i32>, ended: Option<i
 }
 
 fn assignments(keys: Vec<(u128, Vec<Step>)>) -> History {
-    History { columns: all_columns(TableId::ResearchAssignments), to: 400, texts: vec![b"radio".to_vec().into_boxed_slice()], keys }
+    History { columns: all_columns(TableId::ResearchAssignments), to: 400, texts: vec![b"radio".to_vec().into_boxed_slice()], keys, ..Default::default() }
 }
 
 #[test]
@@ -46,6 +46,7 @@ fn coverage_is_each_stretch_a_row_lives_and_adjacent_stretches_join() {
             (holder | 1, vec![step(160, since(160)), step(200, None)]),
             (holder | u128::from(ResearchCoverageRow::HOLDER), vec![step(100, since(100)), step(124, since(124)), step(140, None), step(150, since(150))]),
         ],
+        ..Default::default()
     };
     let mut covered = Vec::new();
     let mut slots = BTreeMap::new();
@@ -188,6 +189,7 @@ fn a_breakdown_follows_one_assignment_read_by_read_and_stops_where_its_slot_hold
         to: 400,
         texts: Vec::new(),
         keys: vec![(slice_key(INPUTS, 11), vec![step(100, sample(100)), step(124, sample(124)), step(148, sample(148)), step(172, sample(172))])],
+        ..Default::default()
     };
     let cells = |row: &ResearchInputRow| {
         let mut cells = vec![Cell::Missing; TableId::ResearchInputs.field_count()];
@@ -216,8 +218,9 @@ fn a_breakdown_follows_one_assignment_read_by_read_and_stops_where_its_slot_hold
             step(148, cells(&input(0, 31, 9, b"radio", 500_000))),
             step(172, cells(&input(0, 32, 10, b"radar", 0))),
         ])],
+        ..Default::default()
     };
-    let empty = || History { columns: Vec::new(), to: 400, texts: Vec::new(), keys: Vec::new() };
+    let empty = || History { columns: Vec::new(), to: 400, texts: Vec::new(), keys: Vec::new(), ..Default::default() };
     let histories = Histories { samples, inputs, slot_modifiers: empty(), shared_modifiers: empty(), bonuses: empty() };
     let (states, progress) = breakdown::assignment(&histories, 11, 0, 100, 400, true, &|_| None).unwrap();
     let days = |state: &ResearchSlotState| state.details.as_ref().unwrap().remaining_days;

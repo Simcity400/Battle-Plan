@@ -84,7 +84,7 @@ pub fn enabled_module_slots<'f>(
         .map_err(|why| why.to_string())?
         .ok_or("simulation features lacks the DLC mask")?
         .dlc_mask;
-    let mask = content_reader_key_names::equipment::category_families()?.modular_categories(dlc);
+    let mask = content_reader_key_names::equipment::modular_categories(dlc)?;
     Ok(database.category(kind) & mask != 0)
 }
 

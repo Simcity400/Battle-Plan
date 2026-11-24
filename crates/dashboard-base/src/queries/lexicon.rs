@@ -23,7 +23,7 @@ impl RunLexicon {
         let mut open: HashMap<u32, (u32, i32)> = HashMap::default();
         let mut spans: Vec<(u32, Held)> = Vec::new();
         let (_, texts) = dashboard_query::cost::storage(|| {
-            points::cells(recording, run, TableId::LexicalTokens, &[0], Keys::All, first, last, &mut |hour, key, cells| {
+            points::cells(recording, run, TableId::LexicalTokens, &[0], Keys::All, first, last, None, &mut |hour, key, cells| {
                 let token = key as u32;
                 if let Some((text, since)) = open.remove(&token) {
                     spans.push((text, Held { token, first: since, last: hour - 1 }));

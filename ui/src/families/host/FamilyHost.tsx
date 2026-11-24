@@ -1,9 +1,9 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
-import type { WidgetSpec } from '../../dashboard/model';
+import type { WidgetBase } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { useWidgetSkeleton, WidgetCaption } from '../../dashboard/widgetFrame.tsx';
@@ -46,18 +46,19 @@ import {
   type ParsedFamilyHit,
 } from './adapter.ts';
 import { createPlanAuditVerifier, type FamilyAuditVerifier, type PlanAuditSnapshot } from './auditBinding.ts';
-import { boundDated, type BoundDated } from './dated.ts';
+import { boundDated, ownProof, StaticSupply } from './dated.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
 import {
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
   handleFamilyPointsKeyDown,
-  navPageStep,
+  navPageSteps,
+  usableRowHeight,
   type FamilyNavTuple,
 } from './keyboard.ts';
 import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
 import { BoundSelections, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
-import { syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
+import { mirrorRowSelector, mirrorToSync, syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
 import { regionDropAt, regionRowOf, type RegionCommand, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
 import { computeScrollGeometry, physicalToLogicalTop, scrollRangeIntoView, type ScrollGeometry } from './scroll.ts';
@@ -174,7 +175,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly options: TOptions;
   readonly label: string;
   readonly subject: string;
-  readonly widget: WidgetSpec;
+  readonly widget: WidgetBase;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
   readonly subscriptions: readonly FamilySourceSubscription[];
@@ -203,7 +204,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
   readonly onRegions?: (command: RegionCommand) => string | null;
-  readonly emptyAction?: ReactNode;
+  readonly emptyAction?: ReactNode | ((openRegions: (anchor: { readonly x: number; readonly y: number }) => void) => ReactNode);
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
   readonly headerSlot?: HTMLElement | null;
   readonly onDiagnostics?: (warnings: string[]) => void;
@@ -444,6 +445,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     captureActive: audit.captureActive,
   };
   const latestRef = useRef(latest);
+  const openRegionsAt = (anchor: { readonly x: number; readonly y: number }) => {
+    const field = fieldsNow().regions as RegionRowsField | undefined;
+    latestRef.current.onRegions?.({ op: 'open', x: anchor.x, y: anchor.y, rows: field?.rows ?? [], ...(field?.active ? { active: field.active } : {}) });
+  };
   latestRef.current = latest;
 
   const publishHoverHour = useCallback((nextHour: number | null) => {
@@ -511,12 +516,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const cur = latestRef.current;
     return boundDated(
       cur.staticSources,
-      cur.staticProof?.read()?.proof ?? null,
+      ownProof(cur.staticSources, cur.staticProof?.read() ?? null),
       Object.keys(sourceIdsRef.current).length > 0,
       cur.allowEmptyFollow || (!!cur.tiledSeries && Object.keys(cur.tiledSeries).length > 0),
       cur.bounds,
-    );
+    ) ?? null;
   }, [sourceIdsRef]);
+
+  const supply = useMemo(() => (pipeline && pipe !== null ? new StaticSupply(change => pipeline.supply(pipe, change)) : null), [pipeline, pipe]);
+  const supplyDated = useCallback(() => supply?.date(latestRef.current.staticSources, datedNow()), [supply, datedNow]);
 
   const bind = useCallback(() => {
     const mounted = surfaceRef.current;
@@ -593,14 +601,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     if (mounted.canvas.style.width !== widthPx) mounted.canvas.style.width = widthPx;
     if (mounted.canvas.style.height !== heightPx) mounted.canvas.style.height = heightPx;
     pipeline.present(pipe, curAdapter.family);
-    const dated = datedNow();
-    suppliedDatedRef.current = dated ?? null;
-    pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }], ...(dated ? { dated } : {}) }, {}, binding);
+    pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }] }, {}, binding);
     const bound = pipeline.view(pipe)?.binding;
     if (bound !== undefined) selectionsRef.current.bound(bound, cur.selectedKey);
-  }, [pipeline, pipe, audit.capture, sourceIdsRef, datedNow, reportWindow]);
+    supplyDated();
+  }, [pipeline, pipe, audit.capture, sourceIdsRef, supplyDated, reportWindow]);
 
-  const suppliedDatedRef = useRef<BoundDated | null>(null);
   const bindRef = useRef(bind);
   bindRef.current = bind;
   const clearHoverRef = useRef<() => void>(() => {});
@@ -653,7 +659,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         const at = field.add
           ? { x: (box?.left ?? 0) + field.nameLeft, y: (box?.top ?? 0) + field.add.top + field.add.height - viewportRef.current.scrollTop }
           : focusAnchorRef.current;
-        cur.onRegions!({ op: 'open', x: at.x, y: at.y, rows: field.rows });
+        cur.onRegions!({ op: 'open', x: at.x, y: at.y, rows: field.rows, ...(field.active ? { active: field.active } : {}) });
         return true;
       }
       case 'region-remove': {
@@ -682,7 +688,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const top = entry[6];
     const height = entry[7];
     if (top === undefined || height === undefined) return false;
-    return scrollRangeIntoView(bodyRef.current, viewportRef.current, top, height, scrollGeometryRef.current);
+    const vp = viewportRef.current;
+    const rows = { scrollTop: vp.scrollTop, height: usableRowHeight(fieldsNow(), vp.height) };
+    const moved = scrollRangeIntoView(bodyRef.current, rows, top, height, scrollGeometryRef.current);
+    vp.scrollTop = rows.scrollTop;
+    return moved;
   }, []);
 
   const focusRowByKey = useCallback((key: string) => {
@@ -691,7 +701,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     focusedKeyRef.current = key;
     revealRow(entry);
     if ((latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows') {
-      const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(key)}"]`);
+      const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(mirrorRowSelector(key));
       if (tr) {
         for (const sibling of mirrorBodyRef.current!.querySelectorAll<HTMLTableRowElement>('tr[tabindex="0"]')) {
           if (sibling !== tr) sibling.tabIndex = -1;
@@ -914,11 +924,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         if (entry && revealRow(entry)) queueMicrotask(() => bindRef.current());
       }
 
-      const mirror = fields.mirror as MirrorModel | undefined;
-      const selectedNow = record.selectedKey;
-      if (mirror && (mirror !== lastMirrorObjRef.current || selectedNow !== lastMirrorSelectedRef.current)) {
+      const mirror = mirrorToSync(fields.mirror as MirrorModel | undefined, lastMirrorObjRef.current, record.selectedKey, lastMirrorSelectedRef.current);
+      if (mirror !== undefined) {
         lastMirrorObjRef.current = mirror;
-        lastMirrorSelectedRef.current = selectedNow;
+        lastMirrorSelectedRef.current = record.selectedKey;
         syncMirrorRef.current(mirror);
       }
 
@@ -937,7 +946,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const hoverTip = inspected ? (fields.tooltip as FamilyTooltipField | undefined) : undefined;
       const focusTip = focusInside ? (fields.focusTooltip as FamilyTooltipField | undefined) : undefined;
       if (focusTip?.text && (activeAdapter.mirrorFocus ?? 'body') === 'rows' && focusTip.text.rowKey === focusedKeyRef.current) {
-        const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(`tr[data-row-key="${CSS.escape(focusTip.text.rowKey)}"]`);
+        const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(mirrorRowSelector(focusTip.text.rowKey));
         tr?.setAttribute('aria-description', tooltips.describeFocused(focusTip.text, installedHour, cur.viewportHeight));
       }
       const inspectedHit = inspectedHitRef.current;
@@ -1121,20 +1130,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     settings,
   ]);
 
-  const supplyDated = useCallback(() => {
-    if (!pipeline || pipe === null) return;
-    const dated = datedNow() ?? null;
-    const was = suppliedDatedRef.current;
-    if (was === dated || (was && dated && was.h === dated.h && was.c === dated.c)) return;
-    suppliedDatedRef.current = dated;
-    pipeline.supply(pipe, { dated });
-  }, [pipeline, pipe, datedNow]);
-
   useLayoutEffect(() => {
-    if (!pipeline || pipe === null) return;
-    pipeline.supply(pipe, { statics: staticSources ? { staticPanels: staticSources.panels, staticAnswers: staticSources.answers, ...(staticSources.shifts ? { staticShifts: staticSources.shifts } : {}) } : null });
-    supplyDated();
-  }, [pipeline, pipe, staticSources, supplyDated]);
+    supply?.statics(staticSources, datedNow());
+  }, [supply, staticSources, resolvedOwner, datedNow]);
 
   useLayoutEffect(() => {
     if (!pipeline || pipe === null) return;
@@ -1225,7 +1223,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     handleFamilyKeyDown(event, {
       nav: keyNav,
       focusedKey: focusedKeyRef.current,
-      pageStep: navPageStep(keyNav, focusedKeyRef.current, viewportRef.current.height),
+      pageStep: navPageSteps(keyNav, focusedKeyRef.current, usableRowHeight(fields, viewportRef.current.height)),
       blocked,
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),
@@ -1294,7 +1292,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     pipe,
     onRetryStream: retryStream,
     onRetryLocal,
-    emptyAction,
+    emptyAction: typeof emptyAction === 'function' ? emptyAction(openRegionsAt) : emptyAction,
   });
 
   const summary = meta.mode === 'picture' && !meta.empty && meta.summaryText

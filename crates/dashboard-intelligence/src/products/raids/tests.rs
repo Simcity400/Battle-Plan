@@ -1,9 +1,10 @@
 use super::{
-    RaidEpisode, pieces, prepare,
+    RaidEpisode, episode_at, pieces, prepare,
     RaidEndedSource, RaidLog, RaidLogParams, RaidPreparationRun, RaidVictimSource,
     StretchRun, coalesce_spans, date_bounds, disappearance, exact_at, outcome_label,
     outcome_missing, phase_label, province_of, scope_of, victim_source,
 };
+use dashboard_base::products::Country;
 use dashboard_base::{
     Source, SourceKey,
     products::{LoadContext, Product},
@@ -243,15 +244,14 @@ fn phase_dates_require_same_stretch_complete_reads_and_lower_bound_from_the_raid
 }
 
 #[test]
-fn disappearance_requires_same_stretch_complete_reads_and_an_hour_its_key_was_not_seen() {
+fn disappearance_is_the_next_whole_read_without_the_key_and_exact_only_the_hour_after_it_was_seen() {
     let complete = vec![vec![(10, 20), (25, 30)]];
-    assert_eq!(disappearance(true, 19, 0, None, None, &complete), (None, false));
-    assert_eq!(disappearance(false, 19, 0, Some((20, 0)), None, &complete), (Some(20), true));
-    assert_eq!(disappearance(false, 20, 0, None, None, &complete), (Some(25), false));
-    assert_eq!(disappearance(false, 20, 0, None, Some(25), &complete), (None, false), "the key read again at 25 under another raid proves no absence");
-    assert_eq!(disappearance(false, 30, 0, None, None, &complete), (None, false));
+    assert_eq!(disappearance(19, 0, None, &complete), Some((20, true)));
+    assert_eq!(disappearance(20, 0, None, &complete), Some((25, false)));
+    assert_eq!(disappearance(20, 0, Some(25), &complete), None, "the key read again at 25 under another raid proves no absence");
+    assert_eq!(disappearance(30, 0, None, &complete), None);
     let cross_load = vec![vec![(10, 19)], vec![(20, 25)]];
-    assert_eq!(disappearance(false, 19, 0, None, None, &cross_load), (Some(20), false));
+    assert_eq!(disappearance(19, 0, None, &cross_load), Some((20, false)));
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn product_rejects_exactness_from_truncated_reads_and_keeps_exactness_at_range_s
     ]);
     let reply = load_product(std::slice::from_ref(&truncated_run), "1", None, None);
     assert_eq!(reply.episodes.len(), 1);
-    assert!(!reply.episodes[0].ended_exact);
+    assert!(!reply.episodes[0].ends[0].exact);
     assert_eq!(reply.episodes[0].runs[1].first_exact, false);
     assert_eq!(reply.episodes[0].runs[1].after_hour, Some(10), "lower bound is the raid's last prior read, not the truncated hour");
     assert!(
@@ -315,7 +315,7 @@ fn product_resolves_raider_tag_per_event() {
     assert_eq!(changed.episodes.len(), 1);
     assert_eq!(changed.episodes[0].raider.as_deref(), Some("GER"));
     assert_eq!(changed.episodes[0].launched_raider.as_deref(), Some("DDR"));
-    assert_eq!(changed.episodes[0].ended_raider.as_deref(), Some("DDR"));
+    assert_eq!(changed.episodes[0].ends[0].raider.as_deref(), Some("DDR"));
     assert_eq!(changed.episodes[0].runs[0].raider.as_deref(), Some("GER"));
     assert_eq!(changed.episodes[0].runs[1].raider.as_deref(), Some("DDR"));
 }
@@ -339,7 +339,8 @@ fn product_prefers_native_end_hour_and_completion_country_and_distinguishes_know
     withheld_row.completion_country = None;
     withheld_row.completion_recorded = 0;
 
-    let run = records(1, vec![
+    let mut frames: Vec<DecodedFrame> = (4..20).map(|hour| make_frame(1, hour, countries.clone(), 30, TableView::Complete(TableRows::Raids(vec![])), vec![])).collect();
+    frames.push(
         make_frame(
             1,
             20,
@@ -352,29 +353,24 @@ fn product_prefers_native_end_hour_and_completion_country_and_distinguishes_know
                 target_row(3, scope, 40),
             ],
         ),
-    ]);
-    let reply = load_product(&[run], "1", None, None);
+    );
+    let reply = load_product(&[records(1, frames)], "1", None, None);
     assert_eq!(reply.episodes.len(), 3);
 
     let native_ep = &reply.episodes[0];
-    assert_eq!(native_ep.ended_hour, Some(5));
+    assert_eq!(native_ep.ends.iter().map(|end| (end.hour, end.ended_hour, end.exact, end.source)).collect::<Vec<_>>(), [(20, 5, true, RaidEndedSource::NativeEndDate)], "a native end date is exact, and known from the read that holds it");
     assert_eq!(native_ep.succeeded_hour, Some(20), "the success is first seen at the read that found it ended");
-    assert!(native_ep.ended_exact, "native end_hour is exact even on a baseline-ended raid");
-    assert_eq!(native_ep.ended_source, Some(RaidEndedSource::NativeEndDate));
     assert_eq!(native_ep.victim.as_deref(), Some("POL"), "native completion_country beats current controller GER");
     assert_eq!(native_ep.victim_source, Some(RaidVictimSource::CompletionCountry));
 
     let absent_ep = &reply.episodes[1];
-    assert_eq!(absent_ep.ended_hour, Some(7));
-    assert!(absent_ep.ended_exact);
+    assert_eq!(absent_ep.ends.iter().map(|end| (end.ended_hour, end.exact)).collect::<Vec<_>>(), [(7, true)]);
     assert_eq!(absent_ep.victim, None, "known-absent completion_country must not fall back to controller");
     assert_eq!(absent_ep.victim_missing.as_deref(), Some("The raid's target resolved to no country at completion"));
     assert_eq!(absent_ep.victim_source, None);
 
     let withheld_ep = &reply.episodes[2];
-    assert_eq!(withheld_ep.ended_hour, Some(20));
-    assert!(!withheld_ep.ended_exact);
-    assert_eq!(withheld_ep.ended_source, Some(RaidEndedSource::ObservedEndedRead));
+    assert_eq!(withheld_ep.ends.iter().map(|end| (end.ended_hour, end.exact, end.source)).collect::<Vec<_>>(), [(20, true, RaidEndedSource::ObservedEndedRead)], "absent from the whole read at 19, seen ended at 20");
     assert_eq!(withheld_ep.victim.as_deref(), Some("GER"));
     assert_eq!(withheld_ep.victim_source, Some(RaidVictimSource::ControllerAtFirstEndedRead));
 }
@@ -390,11 +386,13 @@ struct At {
     raids: Raids,
     controller: u32,
     spelled: bool,
+    targeted: bool,
+    provinces_part: bool,
     slot1: &'static [u8],
 }
 
 fn at(hour: i32, raids: Raids, controller: u32) -> At {
-    At { hour, raids, controller, spelled: true, slot1: b"ENG" }
+    At { hour, raids, controller, spelled: true, targeted: true, provinces_part: false, slot1: b"ENG" }
 }
 
 fn raid(id: u32, slot: u32, phase: i32, outcome: i32) -> RaidRow {
@@ -408,10 +406,15 @@ fn frame_at(branch: u64, at: &At) -> DecodedFrame {
         Raids::Part(rows) => (TableView::Truncated { rows: TableRows::Raids(rows.clone()), missing: 1 }, rows),
         Raids::Unread(rows) => (TableView::Unavailable { reason: "not read this hour".into() }, rows),
     };
-    let targets = rows.iter().map(|row| target_row(row.id, RaidScope { province: 10, ..Default::default() }, 40)).collect();
+    let targets = if at.targeted { rows.iter().map(|row| target_row(row.id, RaidScope { province: 10, ..Default::default() }, 40)).collect() } else { Vec::new() };
     let mut frame = make_frame(branch, at.hour, countries, at.controller, view, targets);
     if !at.spelled {
         *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 41, literal: b"dam_raid".to_vec() }]));
+    }
+    if at.provinces_part
+        && let TableView::Complete(rows) = std::mem::replace(&mut *frame.tables[TableId::Provinces.index()], TableView::Unavailable { reason: String::new() })
+    {
+        *frame.tables[TableId::Provinces.index()] = TableView::Truncated { rows, missing: 1 };
     }
     frame
 }
@@ -429,6 +432,7 @@ fn recording(stretches: &[Vec<At>]) -> Vec<Vec<Record>> {
 }
 
 type Victim = (i32, Option<String>, Option<RaidVictimSource>);
+type EndSeen = (i32, i32, bool, Option<String>);
 
 #[derive(Clone, Debug, PartialEq)]
 struct Seen {
@@ -436,10 +440,12 @@ struct Seen {
     first: i32,
     slot: Option<u32>,
     victims: Vec<Victim>,
+    type_hour: Option<i32>,
+    launched: Option<i32>,
+    ends: Vec<EndSeen>,
     succeeded: Option<i32>,
-    disappeared: Option<i32>,
+    disappeared: Option<(i32, bool)>,
     outcome_known: bool,
-    ended_by: Option<String>,
 }
 
 fn seen(episode: &RaidEpisode) -> Seen {
@@ -448,150 +454,264 @@ fn seen(episode: &RaidEpisode) -> Seen {
         first: episode.first_hour,
         slot: episode.raider_slot,
         victims: episode.victims.iter().map(|v| (v.hour, v.tag.clone(), v.source)).collect(),
+        type_hour: episode.raid_type_hour,
+        launched: episode.launched_hour,
+        ends: episode.ends.iter().map(|end| (end.hour, end.ended_hour, end.source == RaidEndedSource::NativeEndDate, end.raider.clone())).collect(),
         succeeded: episode.succeeded_hour,
-        disappeared: episode.disappeared_hour,
+        disappeared: episode.disappeared_hour.map(|hour| (hour, episode.disappeared_exact)),
         outcome_known: episode.outcome_missing.is_none(),
-        ended_by: episode.ended_raider.clone(),
     }
 }
 
-type Cut = (String, i32, Option<u32>, Vec<Victim>, Option<i32>, Option<i32>);
-
-fn cut_of(episode: &Seen, to: i32) -> Cut {
-    let victims = episode.victims.iter().filter(|v| v.0 <= to).cloned().collect();
-    (episode.id.clone(), episode.first, episode.slot, victims, episode.succeeded.filter(|&h| h <= to), episode.disappeared.filter(|&h| h <= to))
-}
-
-fn ep(raid: u32, nth: u32, slot: u32, ended_by: Option<&str>, succeeded: Option<i32>, victims: &[(i32, &str, RaidVictimSource)]) -> Seen {
+fn ep(raid: u32, nth: u32, slot: u32, victims: &[(i32, &str, RaidVictimSource)]) -> Seen {
     let key = (u128::from(raid) << 32 | 84).to_string();
     Seen {
         id: if nth == 1 { key } else { format!("{key}#{nth}") },
         first: victims[0].0,
         slot: Some(slot),
         victims: victims.iter().map(|&(hour, tag, source)| (hour, Some(tag.to_owned()), Some(source))).collect(),
-        succeeded,
+        type_hour: Some(victims[0].0),
+        launched: None,
+        ends: Vec::new(),
+        succeeded: None,
         disappeared: None,
         outcome_known: true,
-        ended_by: ended_by.map(str::to_owned),
     }
 }
 
+impl Seen {
+    fn done(mut self, hour: i32, tag: &str) -> Self {
+        self.launched = Some(hour);
+        self.ends.push((hour, hour, false, Some(tag.to_owned())));
+        self
+    }
+
+    fn native(mut self, hour: i32, ended: i32, tag: &str) -> Self {
+        self.ends.push((hour, ended, true, Some(tag.to_owned())));
+        self
+    }
+
+    fn won(mut self, hour: i32) -> Self {
+        self.succeeded = Some(hour);
+        self
+    }
+
+    fn launched(mut self, hour: i32) -> Self {
+        self.launched = Some(hour);
+        self
+    }
+
+    fn typed(mut self, hour: Option<i32>) -> Self {
+        self.type_hour = hour;
+        self
+    }
+
+    fn untargeted(mut self) -> Self {
+        let hour = self.first;
+        self.victims = vec![(hour, None, None)];
+        self
+    }
+
+    fn unknown_outcome(mut self) -> Self {
+        self.outcome_known = false;
+        self
+    }
+
+    fn gone(mut self, hour: i32, exact: bool) -> Self {
+        self.disappeared = Some((hour, exact));
+        self.unknown_outcome()
+    }
+}
+
+fn malformed(reply: &super::RaidLogReply) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in &reply.episodes {
+        let mut bad = |rule: &str| out.push(format!("{}: {rule}", e.id));
+        let increasing = |hours: Vec<i32>| hours.windows(2).all(|pair| pair[0] < pair[1]);
+        if e.first_hour > e.last_hour {
+            bad("first hour after the last");
+        }
+        if e.victim.is_none() == e.victim_missing.is_none() || (e.victim.is_none() && e.victim_source.is_some()) {
+            bad("victim");
+        }
+        if e.victims.is_empty() || !increasing(e.victims.iter().map(|v| v.hour).collect()) || e.victims.iter().any(|v| v.tag.is_none() == v.missing.is_none() || (v.tag.is_none() && v.source.is_some())) {
+            bad("victim witnesses");
+        }
+        if !increasing(e.ends.iter().map(|end| end.hour).collect()) {
+            bad("end witnesses not strictly increasing");
+        }
+        if e.runs.iter().any(|run| run.first_hour > run.last_hour) || e.runs.windows(2).any(|pair| pair[0].last_hour >= pair[1].first_hour) {
+            bad("runs");
+        }
+        if e.preparation.iter().any(|run| run.0 > run.1) || e.preparation.windows(2).any(|pair| pair[0].1 >= pair[1].0) {
+            bad("preparation");
+        }
+        if (e.launched_hour.is_some() && !e.launched) || (e.launched_exact && e.launched_hour.is_none()) {
+            bad("launch");
+        }
+        if e.disappeared_exact && e.disappeared_hour.is_none() {
+            bad("disappearance");
+        }
+        if e.succeeded_hour.is_some() && e.ends.is_empty() {
+            bad("a success without an end");
+        }
+    }
+    out
+}
+
 #[test]
-fn every_raid_episode_case_gives_the_same_episodes_in_the_full_reply_and_in_every_cut_and_clip() {
+fn every_raid_episode_case_gives_the_full_reply_cut_at_each_hour_as_the_reply_through_that_hour() {
     use RaidVictimSource::{CompletionCountry as DONE, ControllerAtFirstEndedRead as ENDED, ControllerAtObservedRead as SEEN};
-    use native::{OUTCOME_FAILURE as LOST, OUTCOME_NONE as NONE, OUTCOME_SUCCESS as WON, PHASE_ENDED as END, PHASE_PREPARING as PREP};
+    use native::{OUTCOME_CRITICAL_SUCCESS as CRITICAL, OUTCOME_FAILURE as LOST, OUTCOME_NONE as NONE, OUTCOME_SUCCESS as WON, PHASE_ENDED as END, PHASE_IN_PROGRESS as FLYING, PHASE_PREPARING as PREP};
     let (ger, fra) = (20, 30);
     let whole = |rows: Vec<RaidRow>| Raids::Whole(rows);
     let won = |id, slot| raid(id, slot, END, WON);
     let prep = |id, slot| raid(id, slot, PREP, NONE);
-    let mut dated = won(3, 1);
-    dated.end_hour = Some(5);
-    dated.completion_recorded = RaidRow::END_HOUR_RECORDED;
+    let dated = |id, end_hour| {
+        let mut row = won(id, 1);
+        row.end_hour = Some(end_hour);
+        row.completion_recorded = RaidRow::END_HOUR_RECORDED;
+        row
+    };
     let mut completed = raid(5, 1, END, LOST);
     completed.completion_country = Some(fra);
     completed.completion_recorded = RaidRow::COMPLETION_COUNTRY_RECORDED;
-    let gone = |mut episode: Seen, hour| {
-        episode.disappeared = Some(hour);
-        episode.outcome_known = false;
-        episode
-    };
     let cases: Vec<(&str, Vec<Vec<At>>, Vec<Seen>)> = vec![
         (
             "R2-S1: a complete absence ends a raid; the key's return is another",
             vec![vec![at(10, whole(vec![won(7, 1)]), fra), at(11, whole(vec![]), fra), at(12, whole(vec![won(7, 1)]), ger), at(13, whole(vec![won(7, 1)]), ger), at(14, whole(vec![won(7, 1)]), ger)]],
-            vec![ep(7, 1, 1, Some("ENG"), Some(10), &[(10, "FRA", ENDED)]), ep(7, 2, 1, Some("ENG"), Some(12), &[(12, "GER", ENDED)])],
+            vec![ep(7, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").won(10), ep(7, 2, 1, &[(12, "GER", ENDED)]).done(12, "ENG").won(12)],
         ),
         (
             "rv5-6: a raid already ended at the first hour names the controller of that hour",
             vec![vec![at(10, whole(vec![won(5, 1)]), fra), at(11, whole(vec![won(5, 1)]), ger), at(12, whole(vec![won(5, 1)]), ger)]],
-            vec![ep(5, 1, 1, Some("ENG"), Some(10), &[(10, "FRA", ENDED)])],
+            vec![ep(5, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").won(10)],
         ),
         (
             "rv5-6: a raid carried over a load with the same identity keeps its controller",
             vec![(10..=12).map(|h| at(h, whole(vec![won(9, 1)]), fra)).collect(), (13..=16).map(|h| at(h, whole(vec![won(9, 1)]), ger)).collect()],
-            vec![ep(9, 1, 1, Some("ENG"), Some(10), &[(10, "FRA", ENDED)])],
+            vec![ep(9, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").won(10)],
         ),
         (
             "rv5-3a: a success counts from the read that first shows it",
             vec![(10..=21).map(|h| at(h, whole(vec![raid(5, 1, END, if h < 20 { NONE } else { WON })]), fra)).collect()],
-            vec![ep(5, 1, 1, Some("ENG"), Some(20), &[(10, "FRA", ENDED)])],
+            vec![ep(5, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").won(20)],
         ),
         (
             "R2-S2: the owner is the slot's tag at the native end, the success where it was read",
-            vec![(4..=20).map(|h| At { slot1: if h < 20 { b"GER" } else { b"DDR" }, ..at(h, whole(if h < 20 { vec![] } else { vec![dated.clone()] }), fra) }).collect()],
-            vec![ep(3, 1, 1, Some("GER"), Some(20), &[(20, "FRA", ENDED)])],
+            vec![(4..=20).map(|h| At { slot1: if h < 20 { b"GER" } else { b"DDR" }, ..at(h, whole(if h < 20 { vec![] } else { vec![dated(3, 5)] }), fra) }).collect()],
+            vec![ep(3, 1, 1, &[(20, "FRA", ENDED)]).launched(20).native(20, 5, "GER").won(20)],
         ),
         (
             "a raid joins over a load when raider, target and type match at the join hour",
             vec![vec![at(10, whole(vec![prep(9, 1)]), ger)], vec![at(11, whole(vec![won(9, 1)]), ger)]],
-            vec![ep(9, 1, 1, Some("ENG"), Some(11), &[(10, "GER", SEEN), (11, "GER", ENDED)])],
+            vec![ep(9, 1, 1, &[(10, "GER", SEEN), (11, "GER", ENDED)]).done(11, "ENG").won(11)],
         ),
         (
-            "a truncated read proves no absence",
+            "a truncated read proves no absence, and the raid resumes on a matching identity",
             vec![vec![at(10, whole(vec![prep(1, 1)]), ger), at(11, Raids::Part(vec![]), ger), at(12, whole(vec![won(1, 1)]), ger)]],
-            vec![ep(1, 1, 1, Some("ENG"), Some(12), &[(10, "GER", SEEN), (12, "GER", ENDED)])],
+            vec![ep(1, 1, 1, &[(10, "GER", SEEN), (12, "GER", ENDED)]).done(12, "ENG").won(12)],
         ),
         (
             "an unread hour with the same identity on both sides keeps one raid",
             vec![vec![at(10, whole(vec![prep(7, 1)]), ger), at(11, Raids::Unread(vec![prep(7, 1)]), ger), at(12, whole(vec![won(7, 1)]), ger)]],
-            vec![ep(7, 1, 1, Some("ENG"), Some(12), &[(10, "GER", SEEN), (12, "GER", ENDED)])],
+            vec![ep(7, 1, 1, &[(10, "GER", SEEN), (12, "GER", ENDED)]).done(12, "ENG").won(12)],
         ),
         (
-            "R3-S1: a type not spelled at the join hour is no match, whatever is spelled later",
+            "R3-S1, R4-S3: a type not spelled at the join hour is no match, and is shown only from the hour it is spelled",
             vec![vec![at(10, whole(vec![prep(7, 1)]), ger)], vec![At { spelled: false, ..at(11, whole(vec![prep(7, 1)]), ger) }, at(12, whole(vec![prep(7, 1)]), ger)]],
-            vec![ep(7, 1, 1, None, None, &[(10, "GER", SEEN)]), ep(7, 2, 1, None, None, &[(11, "GER", SEEN)])],
+            vec![ep(7, 1, 1, &[(10, "GER", SEEN)]), ep(7, 2, 1, &[(11, "GER", SEEN)]).typed(Some(12))],
         ),
         (
-            "R3-S2: a deletion belongs to the raid holding the hour before it",
+            "R3-S2: a raid by another raider after a complete absence is another raid, and its absence read whole is its disappearance",
             vec![vec![at(10, whole(vec![won(7, 1)]), fra), at(11, whole(vec![]), fra), at(12, whole(vec![prep(7, 2)]), ger), at(13, whole(vec![]), ger)]],
-            vec![ep(7, 1, 1, Some("ENG"), Some(10), &[(10, "FRA", ENDED)]), gone(ep(7, 2, 2, None, None, &[(12, "GER", SEEN)]), 13)],
+            vec![ep(7, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").won(10), ep(7, 2, 2, &[(12, "GER", SEEN)]).gone(13, true)],
         ),
         (
             "R3-S3: another raider and a phase going back split across an unread hour",
             vec![vec![at(10, whole(vec![won(7, 1)]), fra), at(11, Raids::Unread(vec![]), fra), at(12, whole(vec![prep(7, 2)]), ger)]],
-            vec![ep(7, 1, 1, Some("ENG"), Some(10), &[(10, "FRA", ENDED)]), ep(7, 2, 2, None, None, &[(12, "GER", SEEN)])],
+            vec![ep(7, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").won(10), ep(7, 2, 2, &[(12, "GER", SEEN)])],
         ),
         (
             "R3-S4: an unknown outcome becomes known over a load and keeps the first victim",
             vec![vec![at(10, whole(vec![prep(5, 1)]), fra), at(11, whole(vec![raid(5, 1, END, NONE)]), fra)], vec![at(12, whole(vec![won(5, 1)]), ger)]],
-            vec![ep(5, 1, 1, Some("ENG"), Some(12), &[(10, "FRA", SEEN), (11, "FRA", ENDED)])],
+            vec![ep(5, 1, 1, &[(10, "FRA", SEEN), (11, "FRA", ENDED)]).done(11, "ENG").won(12)],
         ),
         (
-            "R3-S5: an end logged with no outcome is filled by the success read later",
+            "R3-S5: an end read with no outcome is filled by the success read later",
             vec![std::iter::once(at(9, whole(vec![prep(5, 1)]), fra)).chain((10..=20).map(|h| at(h, whole(vec![raid(5, 1, END, if h < 20 { NONE } else { WON })]), fra))).collect()],
-            vec![ep(5, 1, 1, Some("ENG"), Some(20), &[(9, "FRA", SEEN), (10, "FRA", ENDED)])],
+            vec![ep(5, 1, 1, &[(9, "FRA", SEEN), (10, "FRA", ENDED)]).done(10, "ENG").won(20)],
         ),
         (
             "R3-S6: a completion country first read later is a victim from that hour",
             vec![(10..=20).map(|h| at(h, whole(vec![if h < 20 { raid(5, 1, END, LOST) } else { completed.clone() }]), ger)).collect()],
-            vec![ep(5, 1, 1, Some("ENG"), None, &[(10, "GER", ENDED), (20, "FRA", DONE)])],
+            vec![ep(5, 1, 1, &[(10, "GER", ENDED), (20, "FRA", DONE)]).done(10, "ENG")],
         ),
         (
             "a phase going back in place is another raid",
             vec![vec![at(10, whole(vec![won(7, 1)]), fra), at(11, whole(vec![prep(7, 1)]), fra)]],
-            vec![ep(7, 1, 1, Some("ENG"), Some(10), &[(10, "FRA", ENDED)]), ep(7, 2, 1, None, None, &[(11, "FRA", SEEN)])],
+            vec![ep(7, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").won(10), ep(7, 2, 1, &[(11, "FRA", SEEN)])],
+        ),
+        (
+            "R4-S1: after an unread hour a raid resumes only on a matching identity; an unread target is no match",
+            vec![vec![at(10, whole(vec![raid(5, 1, END, NONE)]), fra), at(11, Raids::Unread(vec![raid(5, 1, END, NONE)]), fra), At { targeted: false, ..at(12, whole(vec![won(5, 1)]), fra) }]],
+            vec![ep(5, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").unknown_outcome(), ep(5, 2, 1, &[(12, "-", ENDED)]).untargeted().typed(None).done(12, "ENG").won(12)],
+        ),
+        (
+            "R4-S2: a launch belongs to the raid that was seen launched, never to the key's next raid",
+            vec![vec![at(10, whole(vec![raid(7, 1, FLYING, NONE)]), fra), at(11, whole(vec![prep(7, 2)]), fra), at(12, whole(vec![won(7, 2)]), fra)]],
+            vec![ep(7, 1, 1, &[(10, "FRA", SEEN)]).launched(10), ep(7, 2, 2, &[(11, "FRA", SEEN), (12, "FRA", ENDED)]).done(12, "GER").won(12)],
+        ),
+        (
+            "R4-S4: the end tag is the observed end's until the native end date is read",
+            vec![(4..=20).map(|h| At { slot1: if h < 10 { b"GER" } else { b"DDR" }, ..at(h, whole(match h { 4..=9 => vec![], 10..=19 => vec![won(5, 1)], _ => vec![dated(5, 5)] }), fra) }).collect()],
+            vec![ep(5, 1, 1, &[(10, "FRA", ENDED)]).done(10, "DDR").native(20, 5, "GER").won(10)],
+        ),
+        (
+            "R4-S5: a controller read from a partly read province table is the victim",
+            vec![vec![at(10, whole(vec![prep(5, 1)]), fra), At { provinces_part: true, ..at(11, whole(vec![won(5, 1)]), fra) }]],
+            vec![ep(5, 1, 1, &[(10, "FRA", SEEN), (11, "FRA", ENDED)]).done(11, "ENG").won(11)],
+        ),
+        (
+            "R4-S11: a known outcome that changes under the same identity is the same raid",
+            vec![vec![at(10, whole(vec![won(7, 1)]), fra), at(11, whole(vec![raid(7, 1, END, CRITICAL)]), fra)]],
+            vec![ep(7, 1, 1, &[(10, "FRA", ENDED)]).done(10, "ENG").won(10)],
+        ),
+        (
+            "R4-S12: a truncated read without the key is no disappearance",
+            vec![vec![at(10, whole(vec![prep(7, 1)]), ger), at(11, Raids::Part(vec![]), ger)]],
+            vec![ep(7, 1, 1, &[(10, "GER", SEEN)])],
+        ),
+        (
+            "R4-S12: an absence read whole after an unread hour is a disappearance by that hour",
+            vec![vec![at(10, whole(vec![prep(7, 1)]), ger), at(11, Raids::Unread(vec![]), ger), at(12, whole(vec![]), ger)]],
+            vec![ep(7, 1, 1, &[(10, "GER", SEEN)]).gone(12, false)],
         ),
     ];
     let mut failed = Vec::new();
     for (name, stretches, want) in cases {
         let segments = recording(&stretches);
-        let full_reply = load_product(&segments, "1", None, None);
-        let full: Vec<Seen> = full_reply.episodes.iter().map(seen).collect();
-        if full != want {
-            failed.push(format!("{name}: full reply\n  got  {full:?}\n  want {want:?}"));
+        let full = load_product(&segments, "1", None, None);
+        let shown: Vec<Seen> = full.episodes.iter().map(seen).collect();
+        if shown != want {
+            failed.push(format!("{name}: full reply\n  got  {shown:?}\n  want {want:?}"));
         }
         let hours: Vec<i32> = stretches.iter().flatten().map(|at| at.hour).collect();
         for &to in &hours {
-            let cut: Vec<Cut> = load_product(&segments, "1", None, Some(to)).episodes.iter().map(|e| cut_of(&seen(e), to)).collect();
-            let expected: Vec<Cut> = full.iter().filter(|e| e.first <= to).map(|e| cut_of(e, to)).collect();
-            if cut != expected {
-                failed.push(format!("{name}: the reply through {to} is not the full history cut there\n  got  {cut:?}\n  want {expected:?}"));
+            let through = load_product(&segments, "1", None, Some(to));
+            failed.extend(malformed(&through).into_iter().map(|fault| format!("{name}: the reply through {to} is malformed: {fault}")));
+            let actual = through.episodes;
+            let expected: Vec<RaidEpisode> = full.episodes.iter().filter_map(|episode| episode_at(episode, to)).collect();
+            if actual != expected {
+                failed.push(format!("{name}: the reply through {to} is not the full reply at {to}\n  got  {actual:?}\n  want {expected:?}"));
             }
         }
-        let clip = |e: &RaidEpisode| (e.id.clone(), e.raider_slot, e.succeeded_hour, e.ended_raider.clone(), e.victims.last().and_then(|v| v.tag.clone()));
+        let clip = |e: &RaidEpisode| (e.id.clone(), e.raider_slot, e.succeeded_hour, e.ends.last().and_then(|end| end.raider.clone()), e.victims.last().and_then(|v| v.tag.clone()));
         for &from in &hours {
-            let got: Vec<_> = load_product(&segments, "1", Some(from), None).episodes.iter().map(clip).collect();
-            let expected: Vec<_> = full_reply.episodes.iter().filter(|e| e.last_hour >= from).map(clip).collect();
+            let ranged = load_product(&segments, "1", Some(from), None);
+            failed.extend(malformed(&ranged).into_iter().map(|fault| format!("{name}: the reply from {from} is malformed: {fault}")));
+            let got: Vec<_> = ranged.episodes.iter().map(clip).collect();
+            let expected: Vec<_> = full.episodes.iter().filter(|e| e.last_hour >= from).map(clip).collect();
             if got != expected {
                 failed.push(format!("{name}: the reply from {from} is not the full reply clipped there\n  got  {got:?}\n  want {expected:?}"));
             }
@@ -616,4 +736,9 @@ fn a_narrow_range_counts_only_its_own_raids_and_raids_are_available_only_once_on
     assert_eq!(icons(&load_product(&segments, "1", Some(13), None)).iter().map(|w| w.ends_with("(count: 1)")).collect::<Vec<_>>(), [true], "a raid ended before the range is not counted");
     assert_eq!(load_product(&segments, "1", None, Some(9)).available, None, "no raid was recorded by hour 9");
     assert_eq!(load_product(&segments, "1", None, Some(10)).available, Some(true));
+
+    let untagged = vec![(20, 2, b"GER".as_slice())];
+    let frames = (10..=11).map(|hour| make_frame(1, hour, untagged.clone(), 20, TableView::Complete(TableRows::Raids(vec![raid(7, 1, native::PHASE_PREPARING, native::OUTCOME_NONE)])), vec![target_row(7, scope.clone(), 40)])).collect();
+    let chosen = load_with(&[records(1, frames)], RaidLogParams { branch_id: "1".into(), from: None, to: None, countries: vec![Country::Slot(1)], catalogue: false });
+    assert_eq!(chosen.episodes.len(), 1, "R4-S13: a raid by a chosen slot is kept though no tag names its raider");
 }

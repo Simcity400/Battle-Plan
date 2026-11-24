@@ -202,12 +202,10 @@ export function driveLane(view: LaneView, canvases: RecordedCanvas[], surface = 
   };
 }
 
-const GATED = new Set(['mirror', 'tooltip', 'focusTooltip']);
-
-function fieldValues(painted: Painted, speed: number): Record<string, unknown> {
+function fieldValues(painted: Painted, withheld: Painted | null): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [name, entry] of Object.entries(painted.fields)) {
-    if (speed > 0 && GATED.has(name)) continue;
+    if (name === 'mirror' && withheld && !withheld.fields.mirror) continue;
     out[name] = JSON.parse(JSON.stringify(entry.value, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v)));
   }
   return out;
@@ -226,7 +224,8 @@ export function assertFreshPaint(makeView: () => LaneView, steps: readonly LaneS
       const freshPainted = fresh.paint(step);
       assert.ok(fresh.picture().length > 0, `${step.label}: a fresh paint draws something`);
       assert.deepEqual(played.picture(), fresh.picture(), `${step.label}: the picture equals a fresh paint`);
-      assert.deepEqual(fieldValues(painted, step.speed ?? 0), fieldValues(freshPainted, step.speed ?? 0), `${step.label}: the fields equal a fresh paint`);
+      const withheld = (step.speed ?? 0) > 0 ? painted : null;
+      assert.deepEqual(fieldValues(painted, null), fieldValues(freshPainted, withheld), `${step.label}: every field equals a fresh paint, a cadence-gated one or is withheld until due, never stale`);
       assert.equal(painted.mode, freshPainted.mode, `${step.label}: the mode equals a fresh paint`);
       assert.equal(painted.nextChangeAt, freshPainted.nextChangeAt, `${step.label}: the proven interval equals a fresh paint`);
     }
@@ -255,6 +254,24 @@ export function assertQuietFrames(makeView: () => LaneView, step: LaneStep, hour
     }
     assert.equal(recording.canvases.reduce((sum, canvas) => sum + canvas.frames.length, 0), drawn, `${step.label}: quiet, steady and paused frames draw nothing`);
     return boundary;
+  } finally {
+    recording.restore();
+  }
+}
+
+const VIEW_FIELDS = new Set(['mirror', 'tooltip', 'focusTooltip', 'audit']);
+
+export function assertScrollKeepsStructure(makeView: () => LaneView, step: LaneStep, scrolled: LaneStep, surface?: { width: number; height: number; dpr: number }): void {
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(makeView(), recording.canvases, surface);
+    const first = lane.paint(step);
+    const moved = lane.paint(scrolled);
+    for (const [name, entry] of Object.entries(first.fields)) {
+      if (VIEW_FIELDS.has(name)) continue;
+      assert.equal(moved.fields[name], entry, `${scrolled.label}: ${name} is not derived again for a scroll`);
+    }
+    assert.notEqual(moved.surfaces[0]?.content, first.surfaces[0]?.content, `${scrolled.label}: the scroll is drawn`);
   } finally {
     recording.restore();
   }
