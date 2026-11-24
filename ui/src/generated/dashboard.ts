@@ -3283,10 +3283,6 @@ unavailable: string | null, shown: ProjectsShown, warnings: Array<string>, };
 export type AirChoice = { id: string, name: string, };
 export type AirChoicesReply = {
 /**
- * Every strategic region of the recorded stack, by id.
- */
-regions: Array<AirChoice>,
-/**
  * Every side the timeline assigns, as last assigned.
  */
 sides: Array<AirSide>,
@@ -5143,21 +5139,29 @@ export type MinefieldsParams = { branchId: string,
  */
 countries: Array<CountryRef> | null,
 /**
- * The sea regions shown; every mined region when none.
+ * The user's sea regions, shown first in this order whether mined or not.
  */
-regions?: Array<number>,
+pinnedRegions?: Array<number>,
+/**
+ * Mined regions the user removed from the automatic set.
+ */
+hiddenRegions?: Array<number>,
 /**
  * Region ordering; defaults to most mines.
  */
 order?: MinefieldOrder, };
 export type MineOwner = { tag: string, };
-export type MinedRegion = { region: number, owners: Array<MineOwner>, unknownOwners: number, };
-export type UnknownRegion = { region: number, unknownOwners: number, };
-export type MinefieldsReply = { regions: Array<MinedRegion>, unknown: Array<UnknownRegion>,
+export type MinedRegion = { region: number, owners: Array<MineOwner>, unknownOwners: number,
 /**
- * Every sea region the content names and every region mined, for the region setting.
+ * One of the user's regions.
  */
-choices: Array<SeaRegionChoice>, scale: number, warnings: Array<string>, };
+pinned: boolean,
+/**
+ * Why a chosen region's mines are not known at the hour.
+ */
+missing: string | null, };
+export type UnknownRegion = { region: number, unknownOwners: number, };
+export type MinefieldsReply = { regions: Array<MinedRegion>, unknown: Array<UnknownRegion>, scale: number, warnings: Array<string>, };
 export type MinefieldsParamsAtHour = MinefieldsParams & { hour: number };
 export type NavalYardsParams = { branchId: string, country: CountryRef, };
 export type YardShip = { handle: string, name: string | null, nameRebuilt: string | null, design: string | null, class: string | null,
@@ -6205,9 +6209,13 @@ viewpoint?: CountryRef, viewpointCountry?: boolean,
  */
 sides?: Array<string>,
 /**
- * The regions shown; all active when none.
+ * The user's regions, shown first in this order whether active or not.
  */
-regions?: Array<number>,
+pinnedRegions?: Array<number>,
+/**
+ * Regions the user removed from the automatic set.
+ */
+hiddenRegions?: Array<number>,
 /**
  * The air theatres whose regions are shown; all when none.
  */
@@ -6277,7 +6285,11 @@ nameMissing: string | null,
 /**
  * Any country scores in it.
  */
-active: boolean, cell: AirCell, wings: AirWings, };
+active: boolean,
+/**
+ * One of the user's regions.
+ */
+pinned: boolean, cell: AirCell, wings: AirWings, };
 export type AirSuperiorityParamsAtHour = AirSuperiorityParams & { hour: number };
 export type LossHeadParams = { branchId: string, country: CountryRef, identity?: LossCountry | null, };
 export type LossHeadReply = { leaves: Array<string>, warnings: Array<string>, };
@@ -6536,7 +6548,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "air-missions": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "air-statistics": { "branchId": "leaf", "channel": "leaf", "country": "any", "hour": "leaf" },
   "air-statistics-regions": { "branchId": "leaf", "country": "any" },
-  "air-superiority": { "branchId": "leaf", "hour": "leaf", "mode": "leaf", "order": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
+  "air-superiority": { "branchId": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "hour": "leaf", "mode": "leaf", "order": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "air-superiority-choices": { "branchId": "leaf" },
   "air-superiority-timeline": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "mode": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "sides": "node", "sides[]": "leaf", "theatres": "node", "theatres[]": "leaf", "top": "leaf", "viewpoint": "any", "viewpointCountry": "leaf" },
   "aircraft-catalogue": { "count": "leaf", "first": "leaf", "origin": "node", "origin.mod": "leaf", "query": "leaf" },
@@ -6629,7 +6641,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "only": "leaf" },
   "military-air-at": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "countries": "node", "countries[]": "any", "family": "leaf", "fromHour": "leaf", "hour": "leaf", "metric": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf" },
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },
-  "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "order": "leaf", "regions": "node", "regions[]": "leaf" },
+  "minefields": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "hour": "leaf", "order": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf" },
   "national-focus": { "branchId": "leaf", "country": "any" },
   "naval-battle-details": { "battles": "node", "battles[]": "node", "battles[].hour": "leaf", "battles[].id": "leaf", "branchId": "leaf" },
   "naval-battles": { "branchId": "leaf", "window": "leaf" },

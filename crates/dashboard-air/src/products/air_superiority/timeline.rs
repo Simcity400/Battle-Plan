@@ -72,7 +72,8 @@ impl AirTimelineParams {
             viewpoint: self.viewpoint.clone(),
             viewpoint_country: self.viewpoint_country,
             sides: self.sides.clone(),
-            regions: self.regions.clone(),
+            pinned_regions: None,
+            hidden_regions: None,
             theatres: self.theatres.clone(),
             order: None,
         }

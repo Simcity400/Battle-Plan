@@ -11,7 +11,8 @@ import type {
   HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
-import { regionIds } from '../../families/regionTokens.ts';
+import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
+import { countrySubject, regionLanes } from '../../families/regions/regionRows.ts';
 import type { ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
 import { OPTIONS } from './definition.ts';
@@ -21,6 +22,7 @@ export const CONVOY_TOP_DEFAULT = 7;
 export interface ConvoyProjectionOptions {
   readonly view: ConvoyView;
   readonly surface: string;
+  readonly country: string | null;
 }
 
 export function convoyView(options: Readonly<Record<string, unknown>>): ConvoyView {
@@ -79,6 +81,7 @@ function regionRows(readView: BoundedReadView, reply: ConvoyHealthReply, through
       label,
       ...(nameMissing ? { nameMissing } : {}),
       pinned: region.pinned,
+      region: region.region,
       runs,
       ...(readout ? { readout } : {}),
     };
@@ -169,6 +172,7 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
   if (!reply || !options.surface || reply.lastHour > hour || reply.view !== options.view) return emptyModel(hour, {});
   const through = reply.lastHour;
   const rows = reply.view === 'regions' ? regionRows(readView, reply, through, options.surface) : tradeRows(reply, through, options.surface);
+  const subject = countrySubject(readView, options.country);
   return {
     hour: through,
     firstHour: reply.firstHour,
@@ -177,7 +181,8 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
-    ...(rows.length ? {} : { empty: reply.view === 'regions' ? 'No convoys for this country at this date.' : 'No convoyed trade for this country at this date.' }),
+    ...(reply.view === 'regions' ? { regions: regionLanes(subject) } : {}),
+    ...(rows.length ? {} : { empty: `${reply.view === 'regions' ? 'No convoys' : 'No convoyed trade'} for ${subject ?? 'this country'} at this date.` }),
     warnings: reply.warnings,
   };
 }
@@ -201,7 +206,6 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
   sources: (ctx): SourcePlan => {
     const view = convoyView(ctx.options);
     if (!ctx.countryTag) return { owner: `convoy-health:${ctx.branch.id}:none`, entries: [], unavailable: 'Choose a country in widget settings.' };
-    const pinned = view === 'regions' ? regionIds(ctx.options.regions) : [];
     const top = typeof ctx.options.rowCount === 'number' ? ctx.options.rowCount : CONVOY_TOP_DEFAULT;
     const params = {
       branchId: ctx.branch.id,
@@ -209,7 +213,7 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
       country: countryFromKey(ctx.countryTag),
       from: null,
       to: null,
-      ...(view === 'regions' ? { top, ...(pinned.length ? { pinnedRegions: pinned } : {}) } : {}),
+      ...(view === 'regions' ? { top, ...regionParams(readRegionChoice(ctx.options.regions)) } : {}),
     };
     const firstHour = ctx.branch.firstHour;
     return {
@@ -233,6 +237,6 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
     };
   },
   projection: convoyHealthProjection,
-  projectionOptions: (ctx, extra) => ({ view: convoyView(ctx.options), surface: extra.surface }),
+  projectionOptions: (ctx, extra) => ({ view: convoyView(ctx.options), surface: extra.surface, country: ctx.countryTag }),
   jumpToDate: true,
 };

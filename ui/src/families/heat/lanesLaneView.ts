@@ -10,7 +10,7 @@ import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, stringifyTooltipPayload } from '../scene.ts';
 import { nextLookChange } from '../looks.ts';
-import { hitHeatLanes, layoutHeatLanes, type HeatLanesLayout } from './lanesLayout.ts';
+import { hitHeatLanes, LANE_PAD, layoutHeatLanes, type HeatLanesLayout } from './lanesLayout.ts';
 import {
   deriveLanesAudit,
   deriveLanesMirror,
@@ -23,6 +23,7 @@ import {
 } from './lanesModel.ts';
 import { collectVisibleLaneArt, createLanesPicture, drawHeatLanes, type HeatLanesPicture } from './lanesPainter.ts';
 import { ensureHeatLanesProjection } from './lanesRegistry.ts';
+import { parseRegionHitKey, REGION_ADD_KEY, regionHitKey, type RegionRowsField } from '../regions/regionRows.ts';
 
 export interface FamilyHeatLanesBinding<TOptions = unknown> {
   readonly family: 'heat-lanes';
@@ -84,6 +85,7 @@ interface HeldHeatLanes {
   extentField: FieldEntry | null;
   navField: FieldEntry | null;
   navSig: string;
+  regionsField: FieldEntry | null;
   mirrorGate: CadenceGate;
   mirrorField: FieldEntry | null;
   tipGate: CadenceGate;
@@ -193,6 +195,7 @@ export function familyHeatLanesLaneView(
           extentField: null,
           navField: null,
           navSig: '',
+          regionsField: null,
           mirrorGate,
           mirrorField: null,
           tipGate,
@@ -283,6 +286,7 @@ export function familyHeatLanesLaneView(
         lastHour: model.lastHour,
         displayedHour: model.hour,
         rows: model.rows,
+        regions: model.regions,
         legend: model.legend,
         requestedReadoutWidth: model.readoutWidth,
         requestedRowHeight: model.rowHeight,
@@ -293,8 +297,11 @@ export function familyHeatLanesLaneView(
       held.art.requestVisible(held.demandedArtUrls.length ? [...visibleArt, ...held.demandedArtUrls] : visibleArt);
 
       const inspectedRaw = typeof input.inspect === 'string' && input.inspect.startsWith('lane:') ? input.inspect.slice(5) : null;
-      const inspected = parseLaneInspectKey(inspectedRaw);
+      const regionInspect = typeof input.inspect === 'string' ? parseRegionHitKey(input.inspect) : null;
+      const regionRow = regionInspect && regionInspect.part !== 'add' ? model.rows.findIndex(row => row.id === regionInspect.key) : -1;
+      const inspected = parseLaneInspectKey(inspectedRaw) ?? (regionRow >= 0 ? { rowIndex: regionRow, hour: null } : null);
       const hoveredRow = inspected?.rowIndex ?? null;
+      const hoveredAdd = regionInspect?.part === 'add';
       const hoveredHour = inspected?.hour ?? null;
       const selectedRowId = bound.selectedRowId ?? null;
       const focusedRowId = bound.focusedRowId ?? null;
@@ -307,6 +314,7 @@ export function familyHeatLanesLaneView(
           theme: bound.theme,
           scrollTop: bound.scrollTop,
           hoveredRow,
+          hoveredAdd,
           hoveredHour,
           selectedRowId,
           focusedRowId,
@@ -360,12 +368,39 @@ export function familyHeatLanesLaneView(
       }
       fields.extent = held.extentField;
 
-      const nSig = JSON.stringify(model.rows.map(row => [row.id, row.label]));
+      const nSig = JSON.stringify([
+        model.rows.map(row => [row.id, row.label, row.region ?? null, row.pinned === true, row.readout?.kind === 'value' ? [row.readout.primary, row.readout.secondary ?? '', row.readout.swatch ?? ''] : null]),
+        model.regions?.addLabel ?? null,
+        layout.plotTop,
+        layout.rowHeight,
+        layout.addTop,
+        layout.rowTops,
+      ]);
       if (nSig !== held.navSig || !held.navField) {
         held.navSig = nSig;
-        const navItems: FamilyNavTuple[] = model.rows.map((row, idx) => [row.id, row.label, idx, -1, '', row.meta ?? null]);
+        const navItems: FamilyNavTuple[] = model.rows.map((row, idx) => [row.id, row.label, idx, -1, '', row.meta ?? null, layout.plotTop + layout.rowTops[idx]!, layout.rowHeight]);
+        if (model.regions && layout.addTop !== null) {
+          navItems.push([REGION_ADD_KEY, model.regions.addLabel, model.rows.length, -1, '', null, layout.plotTop + layout.addTop, layout.rowHeight]);
+        }
         held.navField = { value: navItems, content: content() };
+        const regions: RegionRowsField | null = model.regions
+          ? {
+              rows: model.rows.flatMap((row, idx) => row.region === undefined ? [] : [{
+                key: row.id,
+                id: row.region,
+                label: row.label,
+                picked: row.pinned === true,
+                top: layout.plotTop + layout.rowTops[idx]!,
+                height: layout.rowHeight,
+                ...(row.readout?.kind === 'value' ? { activity: { ...(typeof row.readout.swatch === 'string' && row.readout.swatch !== 'hollow' ? { color: row.readout.swatch } : {}), text: [row.readout.primary, row.readout.secondary].filter(Boolean).join(' ') } } : {}),
+              }]),
+              add: layout.addTop === null ? null : { top: layout.plotTop + layout.addTop, height: layout.rowHeight },
+              nameLeft: LANE_PAD,
+            }
+          : null;
+        held.regionsField = regions ? { value: regions, content: content() } : null;
       }
+      if (held.regionsField) fields.regions = held.regionsField;
       fields.nav = held.navField;
 
       const mirrorKey = `${layout.firstRow}:${layout.endRow}:${model.hour}`;
@@ -428,14 +463,17 @@ export function familyHeatLanesLaneView(
       }
 
       const scrollTop = bound.scrollTop;
-      const rowCount = model.rows.length;
+      const focusedIndex = focusedRowId ? model.rows.findIndex(row => row.id === focusedRowId) : -1;
+      const toolsRow = hoveredRow ?? (focusedIndex >= 0 ? focusedIndex : null);
       return {
         surfaces: [{ source: held.canvas, content: held.content }],
         fields,
         motion: false,
         hit: point => {
-          const h = hitHeatLanes(point[0], point[1], scrollTop, layout, rowCount);
+          const h = hitHeatLanes(point[0], point[1], scrollTop, layout, model.rows, toolsRow);
           if (!h) return null;
+          if (h.kind === 'add') return regionHitKey('add', REGION_ADD_KEY);
+          if (h.kind === 'remove' || h.kind === 'grip') return regionHitKey(h.kind, model.rows[h.rowIndex]!.id);
           if (h.kind === 'lane') return `lane:${laneInspectKey(h.rowIndex, h.hour)}`;
           return `lane:${laneInspectKey(h.rowIndex, null)}`;
         },

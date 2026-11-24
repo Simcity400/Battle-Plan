@@ -27,6 +27,8 @@ import {
   type BarsGlideOffset,
 } from './painter.ts';
 import { ensureBarsProjection } from './registry.ts';
+import { barsRegionRows } from './shareRows.ts';
+import { regionHitKey } from '../regions/regionRows.ts';
 
 export interface FamilyBarsBinding<TOptions = unknown> {
   readonly family: 'bars';
@@ -89,6 +91,7 @@ interface HeldFamilyBars {
   metaField: FieldEntry | null;
   navField: FieldEntry | null;
   boundsField: FieldEntry | null;
+  regionsField: FieldEntry | null;
   mirrorGate: CadenceGate;
   mirrorField: FieldEntry | null;
   tipGate: CadenceGate;
@@ -214,6 +217,7 @@ export function familyBarsLaneView(
           metaField: null,
           navField: null,
           boundsField: null,
+          regionsField: null,
           mirrorGate,
           mirrorField: null,
           tipGate,
@@ -397,10 +401,13 @@ export function familyBarsLaneView(
         ));
         held.navField = { value: navItems, content: content() };
         held.boundsField = { value: { tops: layout.rowTops, heights: layout.rowHeights, bodyTop: layout.bodyTop }, content: content() };
+        const regions = barsRegionRows(model, layout);
+        held.regionsField = regions ? { value: regions, content: content() } : null;
       }
       fields.meta = held.metaField;
       fields.nav = held.navField;
       fields.rowBounds = held.boundsField;
+      if (held.regionsField) fields.regions = held.regionsField;
 
       const shown = visibleBarsRange(layout, bound.scrollTop);
       const mirrorWindow = bound.window ?? { first: shown.first, count: Math.max(0, shown.last - shown.first) };
@@ -467,8 +474,9 @@ export function familyBarsLaneView(
       const hit = (point: readonly [number, number]) => {
         const res = hitFamilyBars(layout, model, { x: point[0], y: point[1] }, scrollSnapshot, glideSnapshot, now, glideMs, removeShown);
         if (res.kind === 'none' || !res.rowKey) return null;
-        if (res.kind === 'add-region') return `add:${res.rowKey}`;
-        if (res.kind === 'remove-region') return `remove:${res.rowKey}`;
+        if (res.kind === 'add-region') return regionHitKey('add', res.rowKey);
+        if (res.kind === 'remove-region') return regionHitKey('remove', res.rowKey);
+        if (res.kind === 'grip-region') return regionHitKey('grip', res.rowKey);
         if (res.kind === 'right-row') return `right:${res.rowKey}`;
         return `row:${res.rowKey}`;
       };

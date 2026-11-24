@@ -14,7 +14,9 @@ import type {
 } from '../../families/heat/lanesModel.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
-import { regionIds } from '../../families/regionTokens.ts';
+import { readRegionChoice, regionParams, type RegionChoice } from '../../families/regions/regionChoice.ts';
+import { regionLanes } from '../../families/regions/regionRows.ts';
+import { regionLabel } from '../../families/heat/scale.ts';
 import type { AirDayCell, AirReadout, AirSide, AirTimelineReply, AirTimelineRow } from '../../generated/dashboard';
 import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { mix, surfaceMix } from '../../shell/appearance/color.ts';
@@ -31,7 +33,7 @@ interface AirMode {
   readonly mode: 'sides' | 'viewpoint';
   readonly viewpoint: string;
   readonly sides: readonly string[];
-  readonly regions: readonly number[];
+  readonly regions: RegionChoice;
   readonly theatres: readonly string[];
 }
 
@@ -45,7 +47,7 @@ export function airTimelineMode(ctx: Pick<FamilyPlanContext, 'options' | 'track'
     : chosen
       ? contentKey(chosen).startsWith('country:') ? contentKey(chosen) : airChoiceKey(campaign, chosen) ?? ''
       : ctx.countryTag ? `country:${ctx.countryTag}` : '';
-  const regions = regionIds(options.regions);
+  const regions = readRegionChoice(options.regions);
   return {
     mode,
     viewpoint,
@@ -67,7 +69,7 @@ export function airTimelineParams(ctx: FamilyPlanContext, mode: AirMode): Record
       : {}),
     ...(mode.sides.length ? { sides: mode.sides } : {}),
     ...(mode.theatres.length ? { theatres: mode.theatres } : {}),
-    ...(mode.regions.length ? { pinnedRegions: mode.regions } : {}),
+    ...regionParams(mode.regions),
     top,
   };
 }
@@ -210,15 +212,16 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     unknownSide: surfaceMix(options.surface, 0.45),
     viewpointColour: style?.color ? readableColour(authoredHex(style.color), options.surface) : sideColour(viewpointSide, options.surface, readableColour(CHART_MEASURE_COLOURS.bopRight, options.surface)),
   };
+  const subject = options.viewpoint ? style?.name ?? null : null;
   const rows: HeatLaneRow[] = reply.rows.map(row => {
-    const label = row.name ?? 'Region name not recorded';
-    const nameMissing = row.name === null ? row.nameMissing ?? 'Region name not recorded' : undefined;
+    const { label, nameMissing } = regionLabel(readView, row.region, row.name);
     const readout = readoutOf(row.readout, reply, look, options.surface);
     return {
       id: String(row.region),
       label,
       ...(nameMissing ? { nameMissing } : {}),
       pinned: row.pinned,
+      region: row.region,
       runs: lane(row, reply, label, through, look, options.surface),
       ...(readout ? { readout } : {}),
     };
@@ -231,8 +234,9 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    regions: regionLanes(subject),
     readoutWidth: LANE_READOUT_MAX_WIDTH,
-    ...(rows.length ? {} : { empty: 'No air activity at this date.' }),
+    ...(rows.length ? {} : { empty: `No air activity${subject ? ` for ${subject}` : ''} at this date.` }),
     warnings: reply.warnings,
   };
 }

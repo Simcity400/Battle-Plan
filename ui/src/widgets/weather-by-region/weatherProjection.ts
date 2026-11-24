@@ -12,7 +12,8 @@ import type {
 } from '../../families/heat/lanesModel.ts';
 import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
-import { regionIds } from '../../families/regionTokens.ts';
+import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
+import { regionLanes } from '../../families/regions/regionRows.ts';
 import { formatDateParts } from '../../families/valueFormat.ts';
 import type {
   RegionalWeatherColumn,
@@ -222,6 +223,7 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
       label,
       ...(nameMissing ? { nameMissing } : {}),
       pinned: region.pinned,
+      region: Number(region.id),
       runs: lane(reply, region, label, through, options, modifier, colours),
       ...(readout ? { readout } : {}),
     };
@@ -234,6 +236,7 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    regions: regionLanes(null, 'Most active this week'),
     ...(rows.length ? {} : { empty: 'No weather recorded for these regions at this date.' }),
     warnings: reply.temperature === 'available' || options.show !== 'temperature' ? reply.warnings : [...reply.warnings, reply.temperature],
   };
@@ -257,7 +260,7 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
   sources: (ctx, view): SourcePlan => {
     const show = weatherShow(ctx.options);
     const modifier = show === 'modifiers' && ctx.options.modifier ? contentKey(String(ctx.options.modifier)) : null;
-    const pinned = regionIds(ctx.options.regions);
+    const chosen = regionParams(readRegionChoice(ctx.options.regions));
     const firstHour = ctx.branch.firstHour;
     const width = Math.ceil(Math.max(1, view.width ?? WIDTH_STEP) / WIDTH_STEP) * WIDTH_STEP;
     const params = {
@@ -266,11 +269,11 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
       show: show === 'modifiers' ? 'modifier' : show,
       modifier,
       regions: null,
-      ...(pinned.length ? { pinnedRegions: pinned } : {}),
+      ...chosen,
       top: WEATHER_TOP,
     };
     return {
-      owner: `weather-by-region:${ctx.branch.id}:${show}:${modifier ?? ''}:${pinned.join(',')}:${width}`,
+      owner: `weather-by-region:${ctx.branch.id}:${show}:${modifier ?? ''}:${JSON.stringify(chosen)}:${width}`,
       entries: [{
         name: 'weather',
         source: ctx.track.source,

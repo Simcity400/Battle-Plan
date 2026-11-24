@@ -8,7 +8,8 @@ import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclar
 import type { HeatLaneCell, HeatLaneReadout, HeatLaneRow, HeatLaneRun, HeatLanesModel, HeatLanesProjection } from '../../families/heat/lanesModel.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
-import { regionIds } from '../../families/regionTokens.ts';
+import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
+import { ADD_REGION_LABEL, mostActiveHeading, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
 import type { MissionShips, NavalSupremacyReply, SupremacyRegion, SupremacyRun } from '../../generated/dashboard';
 import { OPTIONS } from './definition.ts';
@@ -74,7 +75,7 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
   const look = lookOf(reply, options.surface);
   const entry = (region: SupremacyRegion): ShareRowEntry => {
     const named = regionLabel(readView, region.id, region.name);
-    const base = { key: region.id, subject: region.id, label: named.label, ...(named.nameMissing ? { labelMissing: true } : {}), countText: shipsText(region.ownShips, region.enemyShips) };
+    const base = { key: region.id, subject: region.id, region: Number(region.id), label: named.label, ...(named.nameMissing ? { labelMissing: true } : {}), countText: shipsText(region.ownShips, region.enemyShips) };
     const readout = region.readout;
     if (!readout || readout.kind === 'notRecorded') {
       const reason = readout?.reason ?? 'Naval region control was not recorded';
@@ -109,8 +110,12 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
   const automatic = reply.regions.filter(region => !region.pinned).map(entry);
   return buildShareRowsModel({
     hour,
-    ...(picked.length ? { picked, automatic, automaticHeading: 'Most active' } : { rows: automatic }),
-    ...(reply.regions.length ? {} : { empty: 'No naval activity for this country at this date.' }),
+    picked,
+    automatic,
+    pickedHeading: PICKED_REGIONS_HEADING,
+    automaticHeading: mostActiveHeading(look.viewer),
+    addRegionLabel: ADD_REGION_LABEL,
+    ...(reply.regions.length ? {} : { empty: `No naval activity for ${look.viewer} at this date.` }),
     warnings: reply.warnings,
   });
 }
@@ -178,7 +183,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
         ? { kind: 'value', form: 'value', primary: '', secondary: 'Contested', swatch: color, audit: 'Contested' }
         : { kind: 'value', form: 'value', primary: share === null ? '' : `${Math.round((readout.control > 0 ? share : 1 - share) * 100)}%`, secondary: readout.control > 0 ? look.friendlyLabel : look.enemyLabel, swatch: color };
     }
-    return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, runs, ...(shown ? { readout: shown } : {}) };
+    return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
   });
   return {
     hour: through,
@@ -188,17 +193,17 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
     playhead: through,
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
+    regions: { pickedHeading: PICKED_REGIONS_HEADING, automaticHeading: mostActiveHeading(look.viewer), addLabel: ADD_REGION_LABEL },
     readoutWidth: 204,
-    ...(rows.length ? {} : { empty: 'No naval activity for this country at this date.' }),
+    ...(rows.length ? {} : { empty: `No naval activity for ${look.viewer} at this date.` }),
     warnings: reply.warnings,
   };
 }
 
 function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
   if (!ctx.countryTag) return { owner: `naval-supremacy:${ctx.branch.id}:none`, entries: [], unavailable: 'Choose a country in the widget’s header.' };
-  const pinned = regionIds(ctx.options.regions);
   const top = typeof ctx.options.rowCount === 'number' ? ctx.options.rowCount : SUPREMACY_TOP_DEFAULT;
-  const params = { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), top, ...(pinned.length ? { pinnedRegions: pinned } : {}) };
+  const params = { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag), top, ...regionParams(readRegionChoice(ctx.options.regions)) };
   const firstHour = ctx.branch.firstHour;
   return {
     owner: `naval-supremacy:${shares ? 'shares' : 'timeline'}:${JSON.stringify(params)}`,
