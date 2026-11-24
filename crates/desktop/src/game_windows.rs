@@ -1,7 +1,7 @@
 use crate::dashboard_service::{DashboardService, host_config};
 use dashboard_core::QueryError;
 use std::sync::Arc;
-use tauri::{State, WebviewWindow};
+use tauri::{Manager, State, WebviewWindow};
 use viewer::game_windows::{GameWindowRender, GameWindowRequest, Service};
 
 #[derive(Default)]

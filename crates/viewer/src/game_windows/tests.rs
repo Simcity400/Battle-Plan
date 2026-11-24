@@ -179,7 +179,7 @@ fn offscreen_render_draws_synthetic_window_at_exact_dpr_without_game_files() {
         masked: false,
         animated: false,
         kind: SpriteKind::Plain,
-        anchor: None,
+        anchor: [0.0, 0.0],
         effect: Ok(viewer_native_gui::native_effects::synthetic::buttonstate()),
         hit: Hit::Frame,
         missing: None,
