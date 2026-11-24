@@ -18,9 +18,10 @@ import {
   buildBoundedStack,
   headReading,
   type HeadReading,
+  type KnownHeadReading,
   type StackPart,
 } from '../../families/time-chart/seriesHelpers.ts';
-import { formatShare } from '../../families/valueFormat.ts';
+import { formatShare, formatShareRatio } from '../../families/valueFormat.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import {
   bandKeys,
@@ -38,7 +39,7 @@ import {
 } from './partyData.ts';
 
 const PERCENT_TICKS = [0, 50, 100] as const;
-const Y_AXIS = { format: 'percent', fixed: [0, 100], ticks: PERCENT_TICKS } as const;
+const Y_AXIS = { format: 'share', fixed: [0, 100], ticks: PERCENT_TICKS } as const;
 
 export interface RulingPartyOptions {
   readonly subject: string | null;
@@ -72,6 +73,13 @@ function stackParts(band: Band, subject: string, readView: BoundedReadView): Sta
     const bounded = series?.get(keyId(partKey(subject, part)));
     return bounded ? { series: bounded, within } : { within };
   });
+}
+
+function formatPopularityReading(reading: KnownHeadReading): string {
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    return formatShareRatio(reading.raw, reading.denominator * 100n);
+  }
+  return formatShare(reading.value / 100);
 }
 
 function bandHead(band: Band, subject: string, readView: BoundedReadView, hour: number, decimals: number): HeadReading | null | undefined {
@@ -112,7 +120,7 @@ function rulingHoverDetail(readView: BoundedReadView, history: PartyHistoryReply
     const divider = first ? { divider: true } : {};
     first = false;
     items.push(state?.run
-      ? { label, swatch: band.color, value: formatShare(Number(state.run.valueRaw) / 10 ** decimals / 100), ...divider }
+      ? { label, swatch: band.color, value: formatShareRatio(BigInt(state.run.valueRaw), 100n * (10n ** BigInt(decimals))), ...divider }
       : { label, swatch: band.color, missingReason: state?.missing ?? 'Not recorded', tone: 'muted', ...divider });
   }
   return { hour: at, items, replacesSeries: true };
@@ -166,7 +174,6 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
     const heads = list.map(band => bandHead(band, subject, readView, hour, history.decimals));
     const stack = buildBoundedStack(list.map((band, idx) => {
       const head = heads[idx];
-      const value = head && 'value' in head ? head.value : null;
       return {
         id: band.token,
         key: band.token,
@@ -175,9 +182,9 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
         opacity: 0.84,
         parts: stackParts(band, subject, readView),
         head: head ?? null,
-        endLabel: value === null
+        endLabel: !head || !('value' in head)
           ? null
-          : { colorBar: band.color, name: band.name, fullName: band.token === ruling ? `${band.name} (ruling)` : band.name, value: formatShare(value / 100) },
+          : { colorBar: band.color, name: band.name, fullName: band.token === ruling ? `${band.name} (ruling)` : band.name, value: formatPopularityReading(head) },
       };
     }), hour);
 
@@ -192,7 +199,7 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
       const head = heads[idx];
       if (head === undefined) return [];
       if (head === null) return [auditRow(band.token, 'Not read')];
-      return [auditRow(band.token, 'value' in head ? formatShare(head.value / 100) : head.missing)];
+      return [auditRow(band.token, 'value' in head ? formatPopularityReading(head) : head.missing)];
     });
 
     return {

@@ -84,6 +84,10 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       ? { label: part?.label ?? '', missingReason: link.missing ?? text.notRecorded }
       : { label: part?.label ?? '', value: exact(amount.amount) };
   });
+  const detail = (link: FlowLink) => {
+    const said = link.amounts.map(amount => `${parts[amount.part]?.label ?? ''}: ${amount.amount === null ? `Not recorded (${link.missing ?? text.notRecorded})` : exact(amount.amount)}`);
+    return `${exact(link.total)} · ${said.join('; ')}`;
+  };
   const bands = (link: FlowLink): FlowBand[] => link.amounts.filter(amount => amount.amount !== null).map(amount => ({ part: amount.part, numeric: scaledAmount(amount.amount!, decimals) }));
   const endpoints = reply.endpoints.map(endpoint => presentFlowEndpoint(readView, endpoint));
   const keyOf = (index: number | null, side: FlowSide) => `${side}:${index === null ? 'others' : endpoints[index]!.key}`;
@@ -106,8 +110,8 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
         numeric: value(amount),
         figure: figure(amount),
         others: others ?? 0,
-        spoken: `${label}: ${exact(amount)}`,
-        audit: exact(amount),
+        spoken: `${label}: ${detail(link)}`,
+        audit: detail(link),
         tooltip: { title: label, hour, items: items(link) },
       };
     }
@@ -123,8 +127,8 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
       ...(shown.unknown ? { unknown: shown.unknown } : {}),
       numeric: value(amount),
       figure: figure(amount),
-      spoken: `${shown.label}: ${exact(amount)}`,
-      audit: exact(amount),
+      spoken: `${shown.label}: ${detail(link)}${missingReason && link.missing === null ? ` (${missingReason})` : ''}`,
+      audit: detail(link),
       ...(shown.subject ? { subject: shown.subject } : {}),
       tooltip: { title: shown.label, hour, items: items(link), ...(missingReason ? { missingReason } : {}) },
     };
@@ -135,8 +139,9 @@ export function projectCountryFlow(readView: BoundedReadView, text: CountryFlowT
     from: from.key,
     to: to.key,
     bands: bands(link),
+    ...(from.others !== undefined || to.others !== undefined ? { others: true } : {}),
     numeric: value(link.total),
-    audit: exact(link.total),
+    audit: detail(link),
     tooltip: { title: text.ribbonTitle(from.label, to.label), hour, items: items(link), ...(link.missing ? { missingReason: link.missing } : {}) },
   });
 

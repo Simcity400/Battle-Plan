@@ -11,7 +11,7 @@ import {
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { OFFERED, TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
-import { formatDateOnly, formatRecordedPercent } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatScaledPercent } from '../../families/valueFormat.ts';
 import type { TensionStackEvent, WorldTensionStackReply } from '../../generated/dashboard';
 import { EVENTS_TABLE_BASE } from './definition.ts';
 import { validateWorldTensionStack } from './worldTensionProjection.ts';
@@ -40,24 +40,9 @@ function parseEvents(raw: unknown): ParsedEvents {
   };
 }
 
-function scaleDecimals(scale: number): number | null {
-  if (!Number.isInteger(scale) || scale <= 0) return null;
-  let d = 0;
-  let v = scale;
-  while (v > 1 && v % 10 === 0) {
-    v /= 10;
-    d++;
-  }
-  return v === 1 ? d : null;
-}
-
 function formatAddedPercent(raw: string, scale: number): Value<string> {
-  if (!/^-?\d+$/.test(raw) || scale <= 0) return notRecorded('Tension amount not recorded');
-  const decimals = scaleDecimals(scale);
-  if (decimals !== null) return knownValue(formatRecordedPercent(BigInt(raw), { decimals, signed: true }));
-  const num = Number(raw);
-  if (!Number.isFinite(num)) return notRecorded('Tension amount not recorded');
-  return knownValue(formatRecordedPercent(num / scale, { signed: true }));
+  if (!/^-?\d+$/.test(raw) || !Number.isSafeInteger(scale) || scale <= 0) return notRecorded('Tension amount not recorded');
+  return knownValue(formatScaledPercent(BigInt(raw), BigInt(scale), { signed: true }));
 }
 
 export function worldTensionEventsColumns(): readonly TableColumnSpec[] {

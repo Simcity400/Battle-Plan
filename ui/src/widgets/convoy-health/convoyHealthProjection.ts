@@ -15,7 +15,7 @@ import {
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { readableOn, regionLabel } from '../../families/heat/scale.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
-import { countrySubject, regionLanes } from '../../families/regions/regionRows.ts';
+import { countrySubject, noRegionsBody, regionLanes } from '../../families/regions/regionRows.ts';
 import { formatProgress } from '../../families/valueFormat.ts';
 import type { ConvoyCellRun, ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color.ts';
@@ -346,9 +346,10 @@ export function projectConvoyHealth(readView: BoundedReadView, options: ConvoyPr
     playhead: through,
     gaps: [...gaps.values()],
     rows,
-    ...(now.view === 'regions' ? { regions: regionLanes(subject) } : {}),
+    ...(now.view === 'regions' ? { regions: { ...regionLanes(subject), active: now.activeUnlisted } } : {}),
     inspect: (rowIndex, at) => built[rowIndex]?.inspect(at) ?? null,
-    ...(rows.length ? {} : now.rankMissing ? { empty: now.rankMissing, emptyKind: 'unavailable' as const } : { empty: `${now.view === 'regions' ? 'No convoys' : 'No convoyed trade'} for ${subject ?? 'this country'} at this date.` }),
+    ...(now.empty ? noRegionsBody(now.empty, { one: 'region with convoys', many: 'regions with convoys', none: `No convoys for ${subject ?? 'this country'} at this date.` })
+      : rows.length ? {} : now.rankMissing ? { empty: now.rankMissing, emptyKind: 'unavailable' as const } : { empty: `${now.view === 'regions' ? 'No convoys' : 'No convoyed trade'} for ${subject ?? 'this country'} at this date.` }),
     warnings: [...new Set([...tiles, now].flatMap(reply => reply.warnings).concat(rows.length && now.rankMissing ? [now.rankMissing] : []))],
   };
 }

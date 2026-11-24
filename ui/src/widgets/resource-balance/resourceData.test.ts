@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import type { ResourceBalanceReply } from '../../generated/dashboard';
-import { POOL_CELLS, automaticResource, balanceOf, barStructure, breakdownRows, campaignScale, dealAccounting, dealAt, dealsOf, momentScale, orderResources, partWidth, poolsAt, poolsMissing, poolsOf, resourceName, resourcePartGroups, resourceParts, resourceTimeLayers, validateResourceBalance, validateResourceSizes } from './resourceData.ts';
+import { POOL_CELLS, automaticResource, balanceOf, breakdownRows, dealAccounting, dealAt, dealsOf, poolsAt, poolsMissing, resourcePartGroups, resourceParts, resourceTimeLayers, validateResourceSizes } from './resourceData.ts';
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { ResourcePools } from './resourceData';
 
@@ -22,7 +22,9 @@ const reply = (): ResourceBalanceReply => ({
     { id: 3, token: 'steel', ordinal: 2, name: null, icon: null },
   ],
   pools: [1, 2],
-  shown: [2, 1, 3],
+  rows: [],
+  short: 0,
+  unrecorded: 0,
   deals: [
     { deal: '6', resource: 2, direction: 'export', partner: 'BBB', factories: 1, convoysAssigned: 2, convoysRequired: 3 },
     { deal: '7', resource: 2, direction: 'export', partner: 'CCC', factories: 1, convoysAssigned: 0, convoysRequired: 0 },
@@ -39,25 +41,12 @@ test('pools are read from their live cells, exactly, and a missing cell leaves t
   assert.deepEqual(poolsAt(values, 2), pools(2, '900000', '-100000'));
   assert.equal(poolsAt(values, 3), null);
   assert.equal(poolsMissing(values, 3), 'No live row has this key');
-  assert.deepEqual(poolsOf(reply(), values).map(item => item.id), [1, 2]);
   const gone = valuesOf(new Map([[liveKey('1', 'produced'), 5]]), 'Not recorded at this hour');
   assert.equal(poolsAt(gone, 1), null, 'one pool unknown is the resource unknown, never zero');
 });
 
-test('the bars keep the product order; a render follows which resources show and in which order, the amounts are painted', () => {
-  const data = validateResourceBalance(reply());
-  assert.deepEqual(orderResources(data).map(item => item.id), [2, 1, 3]);
-  assert.equal(resourceName(data.resources[2]), 'Resource name unavailable (2)', 'a missing name is said, never the token');
-  assert.equal(barStructure({ ...data, deals: [] }), barStructure(data), 'deals are not the bars');
-  assert.notEqual(barStructure({ ...data, shown: [1, 2, 3] }), barStructure(data), 'a new order renders');
-  assert.notEqual(barStructure({ ...data, pools: [1] }), barStructure(data), 'a row leaving renders');
-});
-
-test('the campaign scale is the longest bar over the span, the moment scale the longest shown', () => {
+test('the automatic resource over time is the one with the longest bar over the span', () => {
   const sizes = validateResourceSizes({ tag: 'AAA', sizes: [{ id: 1, longestRaw: '5' }, { id: 2, longestRaw: '1200000' }, { id: 3, longestRaw: null }], missing: [], warnings: [] });
-  assert.equal(campaignScale(sizes), 1200000n);
-  assert.equal(momentScale([pools(1, '200000'), pools(2, '900000', '-100000')]), 900000n);
-  assert.equal(partWidth(-600000n, 1200000n), '50%');
   assert.equal(automaticResource(reply().resources, sizes), 'steel');
 });
 
@@ -86,12 +75,6 @@ test('deals unknown at the hour are said so, never shown as none', () => {
   assert.deepEqual(dealsOf(data, 2, delivered)?.exports.map(deal => deal.deliveredRaw), ['100000', '-250000']);
   const rows = breakdownRows(balanceOf(pools(2, '900000', '-100000')), dealsOf({ ...data, dealsMissing: 'not recorded' }, 2, delivered), 5, tag => ({ name: tag }) as never);
   assert.ok(rows.some(row => row.label === 'Trade partners not recorded at this hour'));
-});
-
-test('a malformed reply is refused', () => {
-  assert.throws(() => validateResourceBalance({ ...reply(), pools: [9] }), /malformed/);
-  assert.throws(() => validateResourceBalance({ ...reply(), shown: [9] }), /malformed/);
-  assert.throws(() => validateResourceBalance({ ...reply(), resources: [...reply().resources].reverse() }), /malformed/);
 });
 
 test('resource time layers report supply and demand extents so the chart scales to recorded values', () => {

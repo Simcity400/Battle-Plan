@@ -1,4 +1,4 @@
-use super::super::spending::{Facts, LineFacts, SpentStep};
+use super::super::spending::{Facts, LineFacts, SpentStep, unread_spans};
 use super::super::SpendingGap;
 use super::index;
 use dashboard_base::products::breakdown::BreakdownState;
@@ -44,17 +44,36 @@ fn hours_with_neither_queue_read_are_not_an_exact_zero() {
     held.spent.clear();
     held.unrecorded.push((0, 4, "The construction queues were not read, so output in those hours is not counted".into()));
     let early = index(&held).at(3);
-    assert_eq!((early.breakdown.total.state, early.breakdown.unrecorded_hours), (BreakdownState::Partial, 4));
+    assert_eq!((early.breakdown.total.state, early.breakdown.total.raw.as_deref(), early.breakdown.unrecorded_hours), (BreakdownState::NotRecorded, None, 4), "no hour witnessed is no figure at all");
     assert_eq!(early.through, 3, "the count of unread hours grows each hour");
     let later = index(&held).at(50);
     assert_eq!((later.breakdown.total.state, later.breakdown.total.raw.as_deref()), (BreakdownState::Partial, Some("0")), "an unread stretch keeps every later zero partial");
 }
 
 #[test]
+fn an_empty_queue_read_in_full_certifies_only_itself() {
+    let mut gaps = Vec::new();
+    unread_spans(0, 100, vec![(0, 100)], "buildings", &mut gaps);
+    unread_spans(0, 100, vec![(0, 39), (60, 100)], "railways", &mut gaps);
+    assert_eq!(gaps, [(40, 59, "railways".to_owned())], "a railway queue unread at 40 to 59 is unread then, whatever the building queue shows");
+    let mut held = facts();
+    held.unrecorded = gaps;
+    let at = index(&held).at(50);
+    assert_eq!((at.breakdown.total.state, at.breakdown.unrecorded_hours), (BreakdownState::Partial, 11), "no witness of the railway queue is never a recorded zero");
+    assert!(at.breakdown.total.reason.as_deref().is_some_and(|reason| reason.contains("railways")));
+    let mut both = facts();
+    both.unrecorded = vec![(40, 59, "buildings".to_owned()), (45, 59, "railways".to_owned())];
+    let at = index(&both).at(59);
+    assert_eq!(at.breakdown.unrecorded_hours, 20, "an hour neither queue was read is one unread hour, not two");
+    let reason = at.breakdown.total.reason.unwrap_or_default();
+    assert!(reason.contains("buildings") && reason.contains("railways"), "each queue names its own gap: {reason}");
+}
+
+#[test]
 fn an_output_gap_is_dated_at_the_read_that_shows_it_and_stays() {
     let mut held = facts();
     held.lines.push(LineFacts { leaf: (false, 7, 1, NONE), building: Some(7), new_from: Some(5), repair_from: None, gaps: vec![(12, SpendingGap::InexactOutput), (40, SpendingGap::FinalOutputMissing)], before_first_read: Some(5) });
-    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), gaps: vec![(61, SpendingGap::LinkedOutput)], before_first_read: None });
+    held.lines.push(LineFacts { leaf: (false, 9, 2, NONE), building: Some(9), new_from: Some(60), repair_from: Some(70), gaps: vec![(61, SpendingGap::LinkedOutput), (80, SpendingGap::InexactOutput)], before_first_read: None });
     held.unattributed.push(35);
     let index = index(&held);
     let state_of = |hour: i32| index.at(hour).breakdown.parts[0].children.iter().find(|part| part.name == "Workshop").map(|part| part.state);
@@ -68,8 +87,12 @@ fn an_output_gap_is_dated_at_the_read_that_shows_it_and_stays() {
     assert_eq!(after.unattributed, 1);
     assert!(after.breakdown.total.reason.as_deref().is_some_and(|reason| reason.contains("not traced to a country")), "output no country can be given leaves the total partial");
     assert!(index.at(65).breakdown.parts.iter().all(|part| part.key != "repair" || part.children.iter().all(|child| child.name != "Building name unavailable")));
-    let repairs = |hour: i32| index.at(hour).breakdown.parts.iter().find(|part| part.key == "repair").map(|part| part.children.len());
-    assert_eq!((repairs(65), repairs(75)), (Some(1), Some(2)), "repair work's gap is dated from the repair, never from the project's first read");
+    let ninth = |hour: i32, kind: &str| {
+        index.at(hour).breakdown.parts.iter().find(|part| part.key == kind).and_then(|part| part.children.iter().find(|child| child.key == "type:9")).map(|child| child.state)
+    };
+    assert_eq!(ninth(65, "new"), Some(BreakdownState::Partial), "the gap read at 61 belongs to the new work witnessed then");
+    assert_eq!(ninth(75, "repair"), None, "a new-build gap at 61 never qualifies repairs first seen at 70");
+    assert_eq!(ninth(85, "repair"), Some(BreakdownState::Partial), "a gap read during the repair is the repair's");
 }
 
 #[test]

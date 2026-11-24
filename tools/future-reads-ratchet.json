@@ -1,4 +1,3 @@
 {
-  "balance-of-power/default/history": "time-chart: a branch-to-hour read that asks the same history at every hour",
-  "research/default/main": "timeline: a branch-to-hour read that asks the same history at every hour"
+  "balance-of-power/default/history": "time-chart: a branch-to-hour read that asks the same history at every hour"
 }

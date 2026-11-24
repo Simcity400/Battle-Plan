@@ -198,7 +198,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
 
   const warnings = useMemo(() => [...(merged?.warnings ?? []), ...(types.data?.warnings ?? []), ...(groups.data?.warnings ?? [])],
     [merged, types.data, groups.data]);
-  const none = coverage.outside ? null : noMembersAt(widget.countries, resolved, groups.data, moment, lastHour);
+  const none = coverage.outside ? null : noMembersAt(widget.countries, resolved, groups.data, moment);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see the equipment it produced." />;
     if (gate.outside && (view === 'race' || widget.time.mode !== 'follow')) return <GateState gate={gate} loading="Loading equipment produced…" />;
