@@ -96,6 +96,8 @@ pub struct GameWindowRequest {
     pub scale: f32,
     #[serde(default)]
     pub sub_view: Option<String>,
+    #[serde(default)]
+    pub scroll: BTreeMap<String, f32>,
 }
 
 fn default_scale() -> f32 {
@@ -120,6 +122,14 @@ pub struct RegionAlphaMask {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GameWindowScroll {
+    pub position: f32,
+    pub range: f32,
+    pub wheel: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameWindowRegion {
     pub path: String,
     pub rect: [f32; 4],
@@ -133,6 +143,8 @@ pub struct GameWindowRegion {
     pub tooltip: Option<GameWindowTooltip>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha_mask: Option<RegionAlphaMask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<GameWindowScroll>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -867,6 +879,107 @@ pub struct ComposedPlan {
     pub read_hour: Option<i32>,
     pub art_label: Option<String>,
     pub view_links: BTreeMap<String, String>,
+    scroll: BTreeMap<String, f32>,
+    scrollbars: Vec<ComposedSubWindow>,
+}
+
+impl ComposedPlan {
+    pub fn scrolled(scroll: BTreeMap<String, f32>) -> Self {
+        Self {
+            scroll,
+            ..Self::default()
+        }
+    }
+
+    pub fn list_rows(
+        &mut self,
+        list: &Element,
+        holder: &native_gui::Holder,
+        sizes: &[[i32; 2]],
+        resources: &dyn Resources,
+    ) -> Result<Vec<Option<[i32; 2]>>, GameWindowError> {
+        let mut bindings = native_gui::Bindings::default();
+        bindings.viewport = Some(DEFAULT_VIEWPORT.map(|value| value as i32));
+        let lay = |current: Option<f32>| {
+            native_gui::widgets::list_box_rows(list, sizes, current, resources, &bindings)
+                .map_err(|refusals| GameWindowError::failed(format_refusals(&refusals)))
+        };
+        let mut rows = lay(None)?;
+        let range = rows.range.max(0) as f32;
+        let position = self
+            .scroll
+            .get(&list.path)
+            .copied()
+            .filter(|position| position.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, range);
+        if position > 0.0 {
+            rows = lay(Some(position))?;
+        }
+        let [left, top, right, bottom] = holder.clip.unwrap_or([
+            holder.logical[0],
+            holder.logical[1],
+            holder.logical[0] + holder.content[0],
+            holder.logical[1] + holder.content[1],
+        ]);
+        if rows.range > 0 {
+            self.scrollbars.push(ComposedSubWindow {
+                before_part: holder.before,
+                parts: holder.place_scrollbar(&rows),
+                regions: Vec::new(),
+                diagnostics: std::mem::take(&mut rows.diagnostics),
+                root_window: list.path.clone(),
+                path_prefix: format!("{}:scrollbar/", list.path),
+                close_paths: Vec::new(),
+                tooltip_overrides: BTreeMap::new(),
+            });
+            self.extra_regions.push(GameWindowRegion {
+                path: list.path.clone(),
+                rect: [
+                    left as f32,
+                    top as f32,
+                    (right - left).max(0) as f32,
+                    (bottom - top).max(0) as f32,
+                ],
+                clip: None,
+                disabled: false,
+                close: false,
+                passthrough: true,
+                view: None,
+                tooltip: None,
+                alpha_mask: None,
+                scroll: Some(GameWindowScroll {
+                    position,
+                    range,
+                    wheel: list_row_step(list, sizes),
+                }),
+            });
+        }
+        Ok(rows
+            .places
+            .iter()
+            .zip(sizes)
+            .map(|(place, &[width, height])| {
+                place.filter(|&[x, y]| {
+                    let x = holder.logical[0] + x;
+                    let y = holder.logical[1] + y;
+                    x < right && x + width > left && y < bottom && y + height > top
+                })
+            })
+            .collect())
+    }
+}
+
+fn list_row_step(list: &Element, sizes: &[[i32; 2]]) -> f32 {
+    let native::Fields::ListBox(fields) = &list.fields else {
+        return 1.0;
+    };
+    match (list.kind, sizes.first()) {
+        (native::Kind::SmoothListBox, Some(&[width, height])) => {
+            (if fields.horizontal != 0 { width } else { height }).max(1) as f32
+        }
+        _ => 1.0,
+    }
 }
 
 pub fn container_holder(layout: &Layout, container_path: &str) -> Option<native_gui::Holder> {
@@ -1311,6 +1424,7 @@ pub fn regions_from_layout(
                 view: None,
                 tooltip,
                 alpha_mask,
+                scroll: None,
             });
         }
     }
@@ -1407,6 +1521,7 @@ fn frame_fingerprint(
     read_hour: Option<i32>,
     art_from_current_install: bool,
     warnings: &[String],
+    scroll: &BTreeMap<String, f32>,
 ) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
@@ -1419,6 +1534,11 @@ fn frame_fingerprint(
     for warning in warnings {
         hash.update((warning.len() as u64).to_le_bytes());
         hash.update(warning.as_bytes());
+    }
+    for (list, position) in scroll {
+        hash.update((list.len() as u64).to_le_bytes());
+        hash.update(list.as_bytes());
+        hash.update(position.to_bits().to_le_bytes());
     }
     hash.finalize().into()
 }
@@ -1531,6 +1651,7 @@ pub struct RenderParams<'a> {
     pub tooltip_overrides: &'a BTreeMap<String, GameWindowTooltip>,
     pub extra_warnings: Vec<String>,
     pub admitted_gen: Option<(u64, u64)>,
+    pub scroll: &'a BTreeMap<String, f32>,
 }
 
 struct WindowLoadRequest<'a> {
@@ -1775,13 +1896,14 @@ impl Service {
             &S,
         ),
         compose: impl FnOnce(
+            &mut ComposedPlan,
             &Layout,
             &Element,
             &native::Guis,
             &dyn Resources,
             &Localisation,
             &S,
-        ) -> Result<ComposedPlan, GameWindowError>,
+        ) -> Result<(), GameWindowError>,
     ) -> Result<GameWindowRender, GameWindowError> {
         if cancel.load(Ordering::SeqCst) {
             return Err(GameWindowError::Cancelled);
@@ -1795,6 +1917,7 @@ impl Service {
             tooltip_overrides,
             extra_warnings,
             admitted_gen,
+            scroll,
         } = params;
         let interface_key = key.interface_key();
         let (expected_gen, cached_interface, cached_window) = {
@@ -1867,6 +1990,7 @@ impl Service {
                 read_hour,
                 art_from_current_install,
                 &extra_warnings,
+                scroll,
             ),
         });
         if let Some(frame_key) = &frame_key
@@ -1966,7 +2090,9 @@ impl Service {
                         "Game window '{window_name}' did not produce a layout."
                     ))
                 })?;
-            let plan = compose(
+            let mut plan = ComposedPlan::scrolled(scroll.clone());
+            compose(
+                &mut plan,
                 &layout,
                 root,
                 cached.guis.as_ref(),
@@ -1974,6 +2100,8 @@ impl Service {
                 cached.localisation.as_ref(),
                 &state,
             )?;
+            let mut scrollbars = std::mem::take(&mut plan.scrollbars);
+            plan.sub_windows.append(&mut scrollbars);
             if cancel.load(Ordering::SeqCst) {
                 return Err(GameWindowError::Cancelled);
             }
