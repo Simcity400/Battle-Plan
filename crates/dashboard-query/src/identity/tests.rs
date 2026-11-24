@@ -85,3 +85,15 @@ fn a_slot_names_the_tag_it_holds_at_each_hour_and_none_between() {
     assert_eq!(holders.slot_tag(5, 199), Some("SPA"));
     assert_eq!(holders.slot_tag(6, 120), None);
 }
+
+#[test]
+fn the_next_holder_change_is_the_first_run_edge_after_the_hour() {
+    let holders = Holders::new(
+        [("SPR".to_owned(), vec![run(100, 149, GER)]), ("SPA".to_owned(), vec![run(160, 199, GER_AFTER)])].into(),
+        vec![(150, 159, "not read".to_owned())],
+    );
+    assert_eq!(holders.next_change(120), Some(150), "the stretch with no holder starts at 150");
+    assert_eq!(holders.next_change(150), Some(160));
+    assert_eq!(holders.next_change(199), Some(200), "the last run ends");
+    assert_eq!(holders.next_change(200), None);
+}

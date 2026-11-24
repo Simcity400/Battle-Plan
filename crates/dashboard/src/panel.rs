@@ -12,14 +12,8 @@ pub fn panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Re
 #[cfg(test)]
 mod registry_tests;
 
-pub const PANEL_ALIASES: &[(&str, &str)] = &[("special-projects-history", "special-projects")];
-
-pub fn panel_product(panel: &str) -> &str {
-    PANEL_ALIASES.iter().find(|(alias, _)| *alias == panel).map_or(panel, |(_, product)| product)
-}
-
 pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Result<Box<dyn Panel>, String>> {
-    Some(match panel_product(asked["panel"].as_str()?) {
+    Some(match asked["panel"].as_str()? {
         "special-projects" => dashboard_research::products::special_projects::dated_panel(source, load, asked),
         "special-project-details" => dashboard_research::registrations::EXACT_SPECIALPROJECTDETAILSAT(source, load, asked),
         "doctrine-mastery" => dashboard_land::registrations::EXACT_DOCTRINEMASTERY(source, load, asked),

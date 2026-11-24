@@ -193,9 +193,18 @@ function chartView(measure: LossMeasure, ledger: LossLedger): LossView {
   return measure === 'manpower' ? { kind: 'manpower' } : { kind: 'equipment', ledgers: [...LEDGERS[ledger]] };
 }
 
-function partColor(key: string, index: number): string {
-  if (key === 'other') return OTHER_COLOR;
-  return CHANNEL_COLORS[key] ?? CATEGORY_COLORS[index % CATEGORY_COLORS.length]!;
+function stableKeyIndex(key: string, count: number): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) % count;
+}
+
+function partColor(key: string): string {
+  if (key === 'other' || key === 'unresolved' || key === 'unclassified') return OTHER_COLOR;
+  return CHANNEL_COLORS[key] ?? CATEGORY_COLORS[stableKeyIndex(key, CATEGORY_COLORS.length)]!;
 }
 
 function toPlotted(raw: bigint, unitScale: number): number {
@@ -258,7 +267,7 @@ function resolveBar(
     segments.push({
       id: part.key,
       label: part.label,
-      color: partColor(part.key, i),
+      color: partColor(part.key),
       value: toPlotted(raw, unitScale),
       exactText: formatLossRaw(raw, measure),
     });
@@ -420,7 +429,7 @@ export const armyLossesProjection: TimeChartProjection<ArmyLossesChartOptions> =
     }
     const hasQuietOrMissing = slots.some(s => s.status !== 'recorded');
     const legend: ChartLegendEntry[] = [
-      ...rollup.parts.map((part, idx) => ({ id: part.key, label: part.label, color: partColor(part.key, idx) })),
+      ...rollup.parts.map(part => ({ id: part.key, label: part.label, color: partColor(part.key) })),
       ...(hasQuietOrMissing ? [{ id: '__unrecorded__', label: 'Not recorded', hatch: true }] : []),
     ];
     const auditRows = slots

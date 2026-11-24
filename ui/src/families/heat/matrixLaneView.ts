@@ -50,7 +50,7 @@ const heatMatrixLane: LaneFamily<FamilyHeatMatrixBinding, HeatMatrixModel, HeatM
   boundary: () => Infinity,
   redraw: () => Infinity,
   status: model => (model.refused !== undefined ? { refused: model.refused } : 'scene'),
-  view: binding => [binding.scrollLeft, binding.scrollTop],
+  view: ['scrollLeft', 'scrollTop'],
   layout(model, binding, surface, theme, measure) {
     const widest = widestOf(model, `500 ${theme.fontSize.small}px ${theme.font}`, measure);
     return layoutHeatMatrix({

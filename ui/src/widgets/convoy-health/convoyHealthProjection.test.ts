@@ -8,7 +8,7 @@ const SURFACE = '#161616';
 
 function reply(lastHour: number): ConvoyHealthReply {
   return {
-    branchId: '1', view: 'regions', tag: 'GER', firstHour: 0, lastHour, scale: 100000,
+    branchId: '1', view: 'regions', tag: 'GER', firstHour: 0, lastHour, scale: 100000, rankMissing: null,
     known: [[{ firstHour: 0, lastHour }], [], []], unheld: [], gaps: [{ firstHour: 30, lastHour: 39 }],
     regions: [{
       region: 17, name: 'English Channel', missing: null, pinned: false, efficiency: [],

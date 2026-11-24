@@ -114,6 +114,8 @@ pub struct OpinionOwner {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomaticRelationsReply {
+    #[doc = " Why the asked top countries are not known: factories, which rank them, were not read whole, or a row names an unresolved country. No owners then."]
+    pub top_missing: Option<String>,
     pub owners: Vec<OpinionOwner>,
     pub cells: Vec<OpinionMatrixCell>,
     pub domain: [i32; 2],
@@ -227,7 +229,7 @@ pub(crate) fn opinions(frame: &DecodedFrame, ids: &[(&str, Option<(u32, u32)>)],
     opinions_matrix(frame, ids, live).map(|(owners, ..)| owners)
 }
 
-fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u32) -> Vec<Country> {
+fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u32) -> Result<Vec<Country>, String> {
     let mut slot_to_tag: HashMap<u32, &str> = HashMap::new();
     let mut raw_to_slot: HashMap<u32, u32> = HashMap::new();
     for (tag, _) in &holders.tags {
@@ -242,21 +244,19 @@ fn top_countries_at(frame: &DecodedFrame, holders: &Holders, hour: i32, limit: u
         }
     }
     let mut scores: HashMap<&str, i64> = slot_to_tag.values().map(|&tag| (tag, 0)).collect();
-    if let Ok(factories) = frame.complete::<tables::CountryFactories>() {
-        for row in factories {
-            if let Some(&slot) = raw_to_slot.get(&row.country)
-                && let Some(&tag) = slot_to_tag.get(&slot)
-            {
-                let total = i64::from(row.military_levels) + i64::from(row.naval_levels) + i64::from(row.civilian_levels);
-                let entry = scores.entry(tag).or_insert(0);
-                *entry = (*entry).max(total);
-            }
-        }
+    let factories = dashboard_query::coverage::population::<tables::CountryFactories>(frame, &replay_frame::frame::Keys::All)?;
+    for row in factories {
+        let Some(&tag) = raw_to_slot.get(&row.country).and_then(|slot| slot_to_tag.get(slot)) else {
+            return Err("Country factories name a country not known at this hour, so the largest countries are not known".into());
+        };
+        let total = i64::from(row.military_levels) + i64::from(row.naval_levels) + i64::from(row.civilian_levels);
+        let entry = scores.entry(tag).or_insert(0);
+        *entry = (*entry).max(total);
     }
     let mut ranked: Vec<(&str, i64)> = scores.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     ranked.truncate(limit as usize);
-    ranked.into_iter().map(|(tag, _)| Country::from(tag)).collect()
+    Ok(ranked.into_iter().map(|(tag, _)| Country::from(tag)).collect())
 }
 
 pub struct DiplomacyContext {
@@ -308,7 +308,7 @@ impl AtHour for DiplomaticRelations {
             _ => return Vec::new(),
         }
         let chosen: Vec<Country> = if params.countries.is_empty() {
-            params.top.map_or_else(Vec::new, |limit| top_countries_at(held, at.holders, at.hour, limit))
+            params.top.map_or_else(Vec::new, |limit| top_countries_at(held, at.holders, at.hour, limit).unwrap_or_default())
         } else {
             params.countries.clone()
         };
@@ -344,10 +344,13 @@ impl AtHour for DiplomaticRelations {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let chosen: Vec<Country> = if params.countries.is_empty() {
-            params.top.map_or_else(Vec::new, |limit| top_countries_at(frame, at.holders, at.hour, limit))
-        } else {
-            params.countries.clone()
+        let (chosen, top_missing): (Vec<Country>, Option<String>) = match (params.countries.is_empty(), params.top) {
+            (true, Some(limit)) => match top_countries_at(frame, at.holders, at.hour, limit) {
+                Ok(chosen) => (chosen, None),
+                Err(why) => (Vec::new(), Some(why)),
+            },
+            (true, None) => (Vec::new(), None),
+            (false, _) => (params.countries.clone(), None),
         };
         let mut warnings = at.context.warnings.clone();
         let mut metadata: HashMap<String, (Option<String>, Option<String>, Option<[u8; 3]>, Option<String>, Option<String>)> = HashMap::new();
@@ -408,7 +411,7 @@ impl AtHour for DiplomaticRelations {
         if unresolved > 0 {
             warnings.push(format!("{unresolved} chosen countries have no holder at this hour; their opinions are not known."));
         }
-        Ok(DiplomaticRelationsReply { owners, cells, domain, warnings })
+        Ok(DiplomaticRelationsReply { top_missing, owners, cells, domain, warnings })
     }
 }
 

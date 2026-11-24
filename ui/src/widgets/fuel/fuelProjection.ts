@@ -1,4 +1,3 @@
-import { auditRow } from '../../families/auditRow.ts';
 import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { FutureDataError, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../../families/contract.ts';
@@ -10,8 +9,11 @@ import {
   branchGapsOf,
   cardItems,
   missingSpansOf,
-  seriesHeadValue,
   withinMapOf,
+  auditReading,
+  headReading,
+  headValueOf,
+  type HeadReading,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { formatCompactScalar, formatDateOnly } from '../../families/valueFormat.ts';
 import type { CountryFuelReply } from '../../generated/dashboard';
@@ -44,7 +46,10 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
     const hour = readView.hour;
     const tag = options.tag;
     const fuel = tag ? readView.series('fuel')?.get(tag) ?? null : null;
-    const fuelHead = tag ? seriesHeadValue(fuel, readView.answer('fuel'), 0, 0, FUEL_SCALE) : null;
+    const readings: [string, HeadReading | null][] = [];
+    const fuelReading = tag ? headReading(readView, 'fuel', { tag }, 0, FUEL_SCALE) : null;
+    if (tag) readings.push(['fuel', fuelReading]);
+    const fuelHead = headValueOf(fuelReading);
     const icon = { art: readView.art(measureArtHandle('fuel')), label: 'Fuel' };
     const series: TimeChartSeriesModel[] = [{
       id: 'fuel',
@@ -65,7 +70,9 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
     }];
     if (options.capacity) {
       const capacity = tag ? readView.series('capacity')?.get(tag) ?? null : null;
-      const capacityHead = tag ? seriesHeadValue(capacity, readView.answer('capacity'), 0, 0, FUEL_SCALE) : null;
+      const capacityReading = tag ? headReading(readView, 'capacity', { tag }, 0, FUEL_SCALE) : null;
+      if (tag) readings.push(['capacity', capacityReading]);
+      const capacityHead = headValueOf(capacityReading);
       series.push({
         id: 'capacity',
         key: 'capacity',
@@ -97,9 +104,7 @@ export const fuelProjection: TimeChartProjection<FuelOptions> = registerFamilyPr
       series,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       hoverDetail: fuelHoverDetail(readView, options.digits),
-      auditRows: series.flatMap(s => (s.headValue === null || s.headValue === undefined
-        ? []
-        : [auditRow(s.id, formatFuelAmount(s.headValue))])),
+      auditRows: readings.map(([row, reading]) => auditReading(row, reading, formatFuelAmount)),
     };
   },
 });

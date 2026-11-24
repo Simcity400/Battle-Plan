@@ -2996,9 +2996,13 @@ fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
     steps.clear();
     let all_wakes = Arc::new(AtomicUsize::new(0));
     let control_wakes = Arc::new(AtomicUsize::new(0));
+    let (woke, wakes) = std::sync::mpsc::channel();
     let _all = playhead.watch({
         let all_wakes = Arc::clone(&all_wakes);
-        Arc::new(move || { all_wakes.fetch_add(1, Ordering::AcqRel); })
+        Arc::new(move || {
+            all_wakes.fetch_add(1, Ordering::AcqRel);
+            let _ = woke.send(());
+        })
     });
     let _ctrl = playhead.watch_control({
         let control_wakes = Arc::clone(&control_wakes);
@@ -3008,6 +3012,12 @@ fn watch_control_ignores_publications_and_rows_notifying_wakes_on_completion() {
     let act_before = playhead.activity();
     consumer.advance(23);
     playhead.wait_until(|| playhead.newest() == Some(23));
+    loop {
+        wakes.recv().unwrap();
+        if playhead.activity() > act_before {
+            break;
+        }
+    }
     let _ = consumer.take(23, &mut steps);
     assert!(playhead.activity() > act_before && all_wakes.load(Ordering::Acquire) > 0, "publications bump activity and wake watch");
     assert_eq!(playhead.control_seq(), seq_before, "publications must not bump control_seq");

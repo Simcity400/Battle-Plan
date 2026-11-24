@@ -436,6 +436,7 @@ export function drawFamilyTable(
     sortedColumn: settings.sort.column,
     treeColumn: treeColumnOf(layout.columns),
     treeLevels,
+    hasActionColumn: layout.columns.some(col => col.cellKind === 'action'),
     icons,
     artCache,
     measure,
@@ -1015,8 +1016,14 @@ export function hitFamilyTable(
   for (let colIndex = 0; colIndex < layout.columns.length; colIndex++) {
     const col = layout.columns[colIndex]!;
     if (bodyX >= x && bodyX < x + col.width) {
-      const toggle = colIndex === treeColumnOf(layout.columns) && item.isTreeGroup && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + treeTextStart(item.level, treeLevelsOf(rows)) + 8;
-      const action = col.cellKind === 'action';
+      const actionCell = item.row.cells[col.key];
+      const hasAction = col.cellKind === 'action' && actionCell && !actionCell.blank && actionCell.actionLabel !== '';
+      const toggle = item.isTreeGroup && (
+        (col.cellKind === 'action' && !hasAction)
+        || (colIndex === treeColumnOf(layout.columns) && bodyX - x <= CELL_INSET + (col.leadInset ?? 0) + treeTextStart(item.level, treeLevelsOf(rows)) + 8)
+        || (item.row.meta === undefined && layout.columns.some(c => c.cellKind === 'action'))
+      );
+      const action = col.cellKind === 'action' && !toggle;
       return { kind: 'row', rowKey: item.key, column: col.key, toggle, action };
     }
     x += col.width;

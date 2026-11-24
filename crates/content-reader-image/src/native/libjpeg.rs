@@ -1729,7 +1729,7 @@ pub(super) fn decode(data: &[u8]) -> Result<Decoded, Stop> {
         return fatal("Unsupported color conversion request");
     }
     super::oversized(jpeg.width as u32, jpeg.height as u32).map_err(|failure| match failure {
-        Failure::Undefined(why) | Failure::Undecodable(why) => Stop::Undefined(why),
+        Failure::Undefined(why) | Failure::Undecodable(why) | Failure::Unsupported(why) => Stop::Undefined(why),
         Failure::Device(why) => Stop::Device(why),
         Failure::OverBudget(why) => Stop::OverBudget(why),
     })?;
