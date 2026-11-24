@@ -4,7 +4,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
-import { knownValue, notApplicable, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notApplicable, notRecorded, valueFromNullable, type Value } from '../../families/value.ts';
 import type { NavalRefitsReply, RefitLine, YardShip } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
 import { fixedText, fraction, refitProgress, shipLabel, shipStrength, shipTooltip, validateRefits } from './yardsData.ts';
@@ -19,7 +19,7 @@ const ON_LINE = 'Shown on the refit line';
 const ON_SHIP = 'Shown on each ship';
 const PERCENT = { decimals: 0, maxDecimals: 1, percent: true } as const;
 
-const lineName = (line: RefitLine): Value<string> => valueFromNullable(line.target, { kind: 'notRecorded', reason: 'Refit design name unavailable' });
+const lineName = (line: RefitLine): Value<string> => textValue(line.target, 'Refit design name unavailable');
 
 const icText = (raw: string | null, reason: string): Value<string> => raw === null ? notRecorded(reason) : knownValue(`${fixedText(raw)} IC`);
 

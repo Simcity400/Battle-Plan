@@ -4,7 +4,7 @@ import { declareTableProjection, type DeclarativeColumnSpec, type TableProjectio
 import { registerTableProjection } from '../../families/table/registry.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import type { BoundedReadView } from '../../families/plan.ts';
-import { knownValue, notApplicable, notRecorded, valueFromNullable, zeroValue, type Value } from '../../families/value.ts';
+import { knownValue, textValue, notApplicable, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TrainingDivision, TrainingOrder, TrainingQueueReply } from '../../generated/dashboard';
 import { COLUMNS, TABLE_BASE } from './definition.ts';
@@ -58,8 +58,8 @@ const QUEUE_COLUMNS: readonly DeclarativeColumnSpec<QueueRow, Record<string, nev
   { ...DIVISION!, priority: 0, text: true, hideable: false, widest: ['Motorized Infantry Division 1941 B'], iconSlot: true,
     icon: row => row.kind === 'order' ? row.icon : undefined,
     value: row => row.kind === 'order'
-      ? valueFromNullable(row.order.templateName, { kind: 'notRecorded', reason: row.order.templateMissing ?? 'Template name unavailable' })
-      : valueFromNullable(row.division.name, { kind: 'notRecorded', reason: row.division.nameMissing ?? 'Division name unavailable' }) },
+      ? textValue(row.order.templateName, row.order.templateMissing ?? 'Template name unavailable')
+      : textValue(row.division.name, row.division.nameMissing ?? 'Division name unavailable') },
   { ...TRAINING!, priority: 1, numeric: true, format: PERCENT, widest: ['100%'],
     value: row => row.kind === 'division' ? trainingShare(row.division) : notApplicable(ON_DIVISION),
     bar: row => row.kind === 'division' ? { fraction: fraction(trainingShare(row.division)) } : null },
@@ -81,8 +81,8 @@ function orderTooltip(order: TrainingOrder): TooltipExtraRow[] {
   return [
     { label: 'Divisions in training', value: knownValue(count(order.divisions.length)), divider: true },
     { label: 'Ordered', value: knownValue(count(order.amount)) },
-    { label: 'Location', value: valueFromNullable(order.locationName, { kind: 'notRecorded', reason: order.locationMissing ?? 'Location not recorded' }) },
-    { label: 'Equipment priority', value: valueFromNullable(order.priorityName, { kind: 'notRecorded', reason: order.priorityMissing ?? 'Priority not recorded' }) },
+    { label: 'Location', value: textValue(order.locationName, order.locationMissing ?? 'Location not recorded') },
+    { label: 'Equipment priority', value: textValue(order.priorityName, order.priorityMissing ?? 'Priority not recorded') },
     ...(order.exile ? [{ label: 'Government in exile', value: knownValue(order.exile) }] : []),
     ...(order.closed ? [{ label: 'Closed', value: knownValue('Yes') }] : []),
   ];
