@@ -424,14 +424,25 @@ window.tableFamilyDom = {
   async mirrorSyncsOverFrames(frames: number) {
     const body = hostNode?.querySelector('table tbody');
     if (!body) throw new Error('No accessible mirror body');
+    const fac: [bigint, bigint, bigint, bigint] = [15n, 95n, 30n, -1n];
+    const cas: [bigint, bigint, bigint, bigint] = [1n, 2n, 0n, 0n];
+    let hour = pipeline.view(pipeId)?.h ?? 0;
+    const step = async () => {
+      hour++;
+      sendHour(hour, fac, cas);
+      const before = installs;
+      clock.step(1);
+      return until(() => installs > before && pipeline.view(pipeId)?.h === hour && !pipeline.view(pipeId)?.dim && body.children.length > 0, 2000);
+    };
+    await step();
     let mutations = 0;
     const observer = new MutationObserver(records => { mutations += records.length; });
     observer.observe(body, { subtree: true, childList: true, attributes: true, characterData: true });
     const installsBefore = installs;
-    const paintsBefore = pipeline.view(pipeId)?.id ?? null;
-    for (let i = 0; i < frames; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    let stepped = 0;
+    for (let i = 0; i < frames; i++) if (await step()) stepped++;
     observer.disconnect();
-    return { mutations, installs: installs - installsBefore, samePicture: (pipeline.view(pipeId)?.id ?? null) === paintsBefore };
+    return { mutations, installs: installs - installsBefore, stepped };
   },
 
   async focusAcrossWithheldMirror() {
