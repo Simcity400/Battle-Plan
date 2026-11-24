@@ -8,12 +8,6 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'joined', label: 'Date joined' }, { value: 'name', label: 'Name' }] },
   { key: 'ended', section: 'options', label: 'Dissolved factions and former members', kind: 'choice', default: 'shown',
     choices: [{ value: 'shown', label: 'Shown' }, { value: 'hidden', label: 'Hidden' }] },
-  { key: 'legend', section: 'options', label: 'Faction colours above the timeline', hint: 'Click a swatch to change a faction’s colour',
-    kind: 'toggle', default: true },
-  { key: 'colourScope', section: 'options', label: 'A colour changed from a swatch applies to', kind: 'choice', default: 'all',
-    choices: [{ value: 'all', label: 'All campaigns' }, { value: 'campaign', label: 'This campaign only' }],
-    visibleWhen: options => options.legend === true },
-  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false },
 ];
 
 export const definition = {

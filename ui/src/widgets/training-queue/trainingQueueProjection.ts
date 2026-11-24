@@ -120,7 +120,7 @@ export const trainingQueueProjection: TableProjection<Record<string, never>> = r
       return {
         rows,
         ...(!rows.length ? { empty: 'No divisions in training', emptyKind: 'empty' as const } : {}),
-        summaryPill: reply.inTraining === null ? null : `${count(reply.inTraining)} in training`,
+        titleSummary: reply.inTraining === null ? null : `${count(reply.inTraining)} in training`,
         warnings: reply.warnings,
       };
     },

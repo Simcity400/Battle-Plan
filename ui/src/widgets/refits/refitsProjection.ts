@@ -63,7 +63,7 @@ export const refitsProjection: TableProjection<Record<string, never>> = register
             ? { empty: 'No refits at this date', emptyKind: 'empty' as const }
             : { empty: 'Refits were not fully recorded at this date', emptyKind: 'unavailable' as const }
           : {}),
-        summaryPill: reply.dockyards === null ? null : `${reply.dockyards.toLocaleString('en-US')} ${reply.dockyards === 1 ? 'dockyard' : 'dockyards'}`,
+        titleSummary: reply.dockyards === null ? null : `${reply.dockyards.toLocaleString('en-US')} ${reply.dockyards === 1 ? 'dockyard' : 'dockyards'}`,
         warnings: reply.warnings,
       };
     },

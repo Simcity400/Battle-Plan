@@ -6,7 +6,7 @@ import { setToken } from '../../dashboard/options';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useProduct } from '../../dashboard/products';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
-import DoctrineMasteryWidget from './DoctrineMasteryWidget';
+import DoctrineMasteryView from './DoctrineMasteryView';
 import { doctrineSprite, folderName, validateDoctrineMastery } from './doctrineMasteryData';
 import type { DoctrineMasteryReply } from '../../generated/dashboard';
 import { productRequest } from '../../dashboard/request.ts';
@@ -21,4 +21,4 @@ function useDoctrineChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionC
   return { folders: (data?.folders ?? []).map(folder => ({ value: setToken(folder.id), label: folderName(folder), icon: image(doctrineSprite(folder.icon)) })) };
 }
 
-export default { render: DoctrineMasteryWidget, useOptionChoices: useDoctrineChoices } satisfies WidgetRenderer;
+export default { render: DoctrineMasteryView, useOptionChoices: useDoctrineChoices } satisfies WidgetRenderer;

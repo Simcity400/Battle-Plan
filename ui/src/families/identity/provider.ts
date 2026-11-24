@@ -291,11 +291,13 @@ export function createBrokerIdentityProvider(
   const flushDemands = () => {
     scheduled = false;
     if (!demanded.size) return;
+    const asks = [...demanded.values()];
+    demanded.clear();
     broker.setDemand(
       owner,
       scope,
       {
-        asks: [...demanded.values()],
+        asks,
         needFlags: options.needFlags ?? true,
         flagSize: 'panel',
       },

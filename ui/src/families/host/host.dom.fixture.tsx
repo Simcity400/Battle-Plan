@@ -102,7 +102,10 @@ function createLane(): LaneWorker {
         const paint = view.paint.bind(view);
         view.paint = (input, state, content) => {
           paintsByWidget.set(input.widget, (paintsByWidget.get(input.widget) ?? 0) + 1);
-          return paint(input, state, content);
+          const painted = paint(input, state, content);
+          return painted.mode === undefined || painted.mode === 'picture'
+            ? { ...painted, fields: { ...painted.fields, accessibleDescription: { value: 'Four countries ranked by factories', content: 'description' } } }
+            : painted;
         };
         return view;
       },
@@ -208,6 +211,7 @@ function fixtureTableAdapter(): FamilyHostAdapter<unknown, typeof OPTIONS, Famil
     buildBinding: ctx => ({
       family: 'table',
       kind: ctx.kind,
+      view: ctx.view,
       options: ctx.options,
       settings: SETTINGS,
       sources: ctx.sources,
@@ -228,6 +232,13 @@ const GENERIC_ADAPTER = fixtureTableAdapter();
 let root: Root | null = null;
 let genericCommits = 0;
 let genericActivated: InstalledAction[] = [];
+let genericViewports: number[] = [];
+const installCalls = new Map<number, number>();
+const origOnInstall = pipeline.onInstall.bind(pipeline);
+pipeline.onInstall = ((id: number, listener: () => void) => origOnInstall(id, () => {
+  installCalls.set(id, (installCalls.get(id) ?? 0) + 1);
+  listener();
+})) as typeof pipeline.onInstall;
 let container: HTMLDivElement | null = null;
 let commits = 0;
 let bindCount = 0;
@@ -239,6 +250,7 @@ let currentState = {
   frameToken: 1,
   secondMounted: false,
   genericMounted: false,
+  genericBlocked: false,
 };
 
 const origBind = pipeline.bind.bind(pipeline);
@@ -322,6 +334,7 @@ function renderApp() {
                 <FamilyHost
                   adapter={GENERIC_ADAPTER}
                   declaration={scoreboardProjection}
+                  view="default"
                   options={OPTIONS}
                   label="Scoreboard Generic"
                   subject="scoreboard"
@@ -333,6 +346,8 @@ function renderApp() {
                   pin={null}
                   bounds={BOUNDS}
                   onActivate={action => { genericActivated.push(action); }}
+                  blockedState={currentState.genericBlocked ? <div data-blocked="true">Not yet</div> : null}
+                  onViewportChange={viewport => { genericViewports.push(viewport.width); }}
                 />
               </div>
             </Profiler>
@@ -538,6 +553,8 @@ window.hostDom = {
       paints: (paintsByWidget.get(pipeG) ?? 0) - settledPaints,
     };
 
+    sendHour(subsG, clock.getSnapshot().hour, [factories, 70n, 50n, 30n]);
+    await until(() => pipeline.view(pipeG)?.dim === false && pipeline.view(pipeG)?.h === clock.getSnapshot().hour, 2000);
     genericActivated = [];
     const box = container!.querySelector<HTMLElement>('[data-slot="generic"] .fh-body')!;
     box.focus();
@@ -555,6 +572,76 @@ window.hostDom = {
       paused,
       activatedSubject: activated?.subject ?? null,
       activatedMatchesInstalled: !!activated && activated.installedId === installed?.id,
+    };
+  },
+
+  async testGenericInstalledTuple() {
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    genericViewports = [];
+    currentState = { ...currentState, genericMounted: true, genericBlocked: true };
+    renderApp();
+    await frames(3);
+    const blockedMeasured = genericViewports.some(width => width > 0);
+    const blockedShown = !!container!.querySelector('[data-slot="generic"] [data-blocked="true"]');
+
+    currentState = { ...currentState, genericBlocked: false };
+    renderApp();
+    let pipeG = -1;
+    await until(() => {
+      const canvas = container!.querySelector<HTMLCanvasElement>('[data-slot="generic"] canvas.fh-canvas');
+      if (!canvas?.dataset.placement) return false;
+      pipeG = Number(canvas.dataset.placement);
+      return pipeG > 0;
+    });
+    const subsG = subsForPipe(pipeG);
+    await until(() => subsG.length === 2 && subsG.every(id => pipeline.status(id).status === 'followed'));
+    clock.seek(200);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subsG, 200, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeG)?.mode === 'picture' && !pipeline.view(pipeG)?.dim);
+    await frames(4);
+    const body = container!.querySelector<HTMLElement>('[data-slot="generic"] .fh-body')!;
+    const describedBy = body.getAttribute('aria-describedby');
+    const description = describedBy ? document.getElementById(describedBy)?.textContent ?? null : null;
+
+    body.focus();
+    await frames(2);
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    let dateOnly = false;
+    for (let i = 0; i < 40 && !dateOnly; i++) {
+      const idBefore = pipeline.view(pipeG)?.id;
+      const installsBefore = installCalls.get(pipeG) ?? 0;
+      sendHour(subsG, clock.getSnapshot().hour, [90n, 70n, 50n, 30n]);
+      await frames(1);
+      const now = pipeline.view(pipeG);
+      dateOnly = now?.id !== idBefore && now?.dim === false && (installCalls.get(pipeG) ?? 0) === installsBefore;
+    }
+    genericActivated = [];
+    body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const view = pipeline.view(pipeG);
+    const activated = genericActivated[0] ?? null;
+    clock.setPlaying(false);
+
+    currentState = { ...currentState, genericBlocked: true };
+    renderApp();
+    await frames(2);
+    const clearedDescription = body.getAttribute('aria-describedby') === null;
+
+    currentState = { ...currentState, genericMounted: false, genericBlocked: false };
+    renderApp();
+    return {
+      blockedMeasured,
+      blockedShown,
+      description,
+      clearedDescription,
+      dateOnly,
+      activatedId: activated?.installedId ?? null,
+      activatedHour: activated?.hour ?? null,
+      viewId: view?.id ?? null,
+      viewHour: view?.painted ?? null,
     };
   },
 
