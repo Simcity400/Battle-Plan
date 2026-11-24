@@ -5,7 +5,7 @@ import type { ArtHandle, ArtResult } from '../../families/contract.ts';
 import type { HourRanges } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import type { BoundedReadView, DeclaredCountryFilter, FamilyPlanContext, SourcePlan } from '../../families/plan.ts';
-import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateHover, formatDateOnly, formatProgress } from '../../families/valueFormat.ts';
 import type { CipherCounts, CipherPair, CipherStatus, Country, DecryptionReply, Observation } from '../../generated/dashboard';
 import {
   activeBonusDays,
@@ -123,7 +123,7 @@ export function pairTooltipItems(
       label: 'Progress',
       ...(percent === null
         ? { missingReason: pair.thresholdUnknown ?? (numbers.missing || 'Progress not recorded') }
-        : { value: `${percent}%` }),
+        : { value: formatProgress(percent / 100) }),
     },
     ...(percent === null && numbers.amount !== undefined ? [{ label: 'Recorded amount', value: amountText(numbers) }] : []),
     ...(pair.broken === true ? [] : [{
