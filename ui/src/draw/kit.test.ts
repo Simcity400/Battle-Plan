@@ -20,12 +20,14 @@ import {
   drawMissingMark,
   drawNameSlot,
   drawPartialTab,
+  drawProgressRing,
   drawRowHairline,
   drawRowHover,
   drawRowSelected,
   drawSeriesMissingStrip,
   drawSplitBar,
   drawStatusMark,
+  drawThresholdMeter,
   drawTrackBar,
   drawTwoWayBar,
   resolveKitTokens,
@@ -238,4 +240,20 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   const tab = drawDateTab(chromeCtx.ctx, '14 Sep 1941', 5, 120, THEME, 'playhead', { left: 10, right: 200 });
   assert.equal(tab.x, 10);
   assert.equal(resolveKitTokens(THEME).shortage, '#ff6b6f');
+
+  const meterCtx = makeFakeCtx();
+  drawThresholdMeter(meterCtx.ctx, 10, 18, 100, 8, 0.5, [
+    { at: 0.25, reached: true },
+    { at: 0.5, reached: true },
+    { at: 0.75, reached: false },
+    { at: 1.0, reached: false },
+  ], '#4f86f7', THEME);
+  assert.equal(meterCtx.ops.filter(op => op.op === 'moveTo').length, 3);
+  const missingMeter = makeFakeCtx();
+  drawThresholdMeter(missingMeter.ctx, 10, 18, 100, 8, null, [{ at: 0.5, reached: false }], '#4f86f7', THEME);
+  assert.equal(missingMeter.ops.filter(op => op.op === 'moveTo').length > 0, true);
+
+  const ringCtx = makeFakeCtx();
+  drawProgressRing(ringCtx.ctx, 12, 12, 6.2, 0.75, '#d0607c', THEME);
+  assert.equal(ringCtx.ops.filter(op => op.op === 'arc').length, 2);
 });

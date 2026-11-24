@@ -12,6 +12,8 @@ import type { Failure } from './queryError';
 import type { PinnedSpec } from './regionTime';
 import type { DeclaredProduct } from './request';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration';
+import type { AnyMeterWidgetDeclaration } from '../families/meter/declaration';
+import type { FamilyId } from '../families/plan';
 
 export interface WidgetRuntime {
   campaignTracks: TrackSpec[];
@@ -53,6 +55,7 @@ export type WidgetSkeletonKind = 'generic' | 'table' | 'chart' | 'log' | 'sunbur
 
 export interface WidgetMeta {
   kind: string;
+  family?: FamilyId;
   version: number;
   title: string;
   subject?: string;
@@ -100,7 +103,7 @@ export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime' | 'a
 
 export interface WidgetDefinition extends WidgetMeta {
   render?: ComponentType<WidgetProps>;
-  declaration?: AnyTableWidgetDeclaration;
+  declaration?: AnyTableWidgetDeclaration | AnyMeterWidgetDeclaration;
   usePresets?: (definition: WidgetMeta, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) => WidgetPresets;
   useOptionChoices?: (widget: WidgetSpec, runtime: WidgetRuntime) => OptionChoices;
   countryChip?: ComponentType<WidgetCountryChipProps>;

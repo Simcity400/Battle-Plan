@@ -652,6 +652,76 @@ export function drawTrackBar(
   }
 }
 
+export interface ThresholdTick {
+  readonly at: number;
+  readonly reached: boolean;
+}
+
+export function drawThresholdMeter(
+  ctx: Canvas2D,
+  x: number,
+  middleY: number,
+  width: number,
+  height: number,
+  fraction: number | null,
+  ticks: readonly ThresholdTick[],
+  fill: string,
+  theme: FamilyTheme,
+): void {
+  if (width <= 0 || height <= 0) return;
+  const y = Math.round(middleY - height / 2);
+  if (fraction === null) {
+    drawHatchRect(ctx, x, y, width, height, barCornerRadius(height), theme);
+    return;
+  }
+  drawTrackBar(ctx, x, middleY, width, height, fraction, fill, theme);
+  if (!ticks.length) return;
+  ctx.save();
+  ctx.lineWidth = 1.2;
+  for (let i = 0; i < ticks.length; i++) {
+    const tick = ticks[i]!;
+    if (tick.at <= 0 || tick.at >= 1) continue;
+    const tx = Math.round(x + width * tick.at) + 0.5;
+    ctx.strokeStyle = tick.reached ? theme.muted : theme.line;
+    ctx.beginPath();
+    ctx.moveTo(tx, y - 3);
+    ctx.lineTo(tx, y + height + 3);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+export function drawProgressRing(
+  ctx: Canvas2D,
+  cx: number,
+  cy: number,
+  radius: number,
+  fraction: number,
+  stroke: string,
+  theme: FamilyTheme,
+  lineWidth = 2.4,
+): void {
+  if (radius <= 0) return;
+  const tokens = resolveKitTokens(theme);
+  const clamped = Math.max(0, Math.min(1, fraction));
+  ctx.save();
+  ctx.lineWidth = lineWidth;
+  ctx.strokeStyle = tokens.barTrack;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  if (clamped > 0) {
+    const start = -Math.PI / 2;
+    const end = start + clamped * Math.PI * 2;
+    ctx.strokeStyle = stroke;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, start, end);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export type StatusMarkKind = 'running' | 'waiting' | 'succeeded' | 'finished' | 'ended';
 
 export const STATUS_MARK_LABELS: Readonly<Record<StatusMarkKind, string>> = {

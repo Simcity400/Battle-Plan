@@ -3,17 +3,22 @@ import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
 import type { WidgetProps, WidgetRenderer } from '../dashboard/definitions';
 import DeclaredTableWidget from '../families/table/DeclaredTableWidget';
+import DeclaredMeterWidget from '../families/meter/DeclaredMeterWidget';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration';
+import { isMeterWidgetDeclaration, type AnyMeterWidgetDeclaration } from '../families/meter/declaration';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
 type Slot = 'render' | 'countryChip';
+type AnyDeclared = AnyTableWidgetDeclaration | AnyMeterWidgetDeclaration;
 const nothing = () => null;
-const declaredRenderers = new WeakMap<AnyTableWidgetDeclaration, ComponentType<WidgetProps>>();
+const declaredRenderers = new WeakMap<AnyDeclared, ComponentType<WidgetProps>>();
 
-function rendererForDeclaration(declaration: AnyTableWidgetDeclaration): ComponentType<WidgetProps> {
+function rendererForDeclaration(declaration: AnyDeclared): ComponentType<WidgetProps> {
   let held = declaredRenderers.get(declaration);
   if (!held) {
-    held = (props: WidgetProps) => <DeclaredTableWidget declaration={declaration} {...props} />;
+    held = isMeterWidgetDeclaration(declaration)
+      ? (props: WidgetProps) => <DeclaredMeterWidget declaration={declaration} {...props} />
+      : (props: WidgetProps) => <DeclaredTableWidget declaration={declaration} {...props} />;
     declaredRenderers.set(declaration, held);
   }
   return held;

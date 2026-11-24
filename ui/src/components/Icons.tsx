@@ -89,6 +89,7 @@ const paths = {
   'users-minus': <><circle cx="9" cy="8" r="3.25" /><path d="M3 19.5c.6-3.3 3-5.3 6-5.3s5.4 2 6 5.3" /><path d="M16 10.5h5" /></>,
   'shield-check': <><path d="M12 3.5 19 6v5.5c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6l7-2.5Z" /><path d="m8.75 12 2.25 2.25 4.25-4.5" /></>,
   ballot: <><path d="M4 11h16v9.5H4z" /><path d="M8.5 11 9 3.5h6l.5 7.5" /><path d="m10 7.5 1.5 1.5 3-3" /><path d="M8.5 14.5h7" /></>,
+  lock: <><rect x="5" y="11" width="14" height="9.5" rx="2" /><path d="M8 11V7.5a4 4 0 0 1 8 0V11" /></>,
 } satisfies Record<IconName, ReactNode>;
 
 export function Icon({ name, ...props }: SVGProps<SVGSVGElement> & { name: IconName }) {
