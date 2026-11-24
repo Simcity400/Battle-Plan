@@ -1,16 +1,31 @@
-import type { TableProjection } from './model.ts';
+import {
+  DEFAULT_VIEW,
+  ensureFamilyProjection,
+  familyProjection,
+  registerFamilyProjection,
+  registeredFamilyProjections,
+} from '../registry.ts';
+import type { TableModel, TableProjection } from './model.ts';
 
-const projections = new Map<string, TableProjection<any>>();
-
-export function registerTableProjection<TOptions>(projection: TableProjection<TOptions>): TableProjection<TOptions> {
-  projections.set(projection.kind, projection as TableProjection<any>);
-  return projection;
+export function registerTableProjection<TOptions>(
+  projection: TableProjection<TOptions>,
+  view = DEFAULT_VIEW,
+): TableProjection<TOptions> {
+  return registerFamilyProjection(projection, view) as TableProjection<TOptions>;
 }
 
-export function tableProjection(kind: string): TableProjection<any> | undefined {
-  return projections.get(kind);
+export function tableProjection(kind: string, view?: string): TableProjection<any> | undefined {
+  return familyProjection<TableModel, any>('table', kind, view) as TableProjection<any> | undefined;
+}
+
+export function ensureTableProjection(
+  kind: string,
+  view: string | undefined,
+  onReady: () => void,
+): TableProjection<any> | 'loading' | 'unknown' {
+  return ensureFamilyProjection<TableModel, any>('table', kind, view, onReady) as TableProjection<any> | 'loading' | 'unknown';
 }
 
 export function registeredTableKinds(): string[] {
-  return [...projections.keys()];
+  return [...new Set(registeredFamilyProjections('table').map(entry => entry.kind))];
 }
