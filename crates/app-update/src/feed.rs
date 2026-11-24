@@ -157,17 +157,39 @@ pub async fn download(
         return Err(format!("the download answered HTTP {status}"));
     }
     let total = response.content_length();
-    let mut package = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut body = Body::new(total)?;
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|error| format!("the download was cut off: {error}"))?
     {
-        package.extend_from_slice(&chunk);
-        progress(package.len() as u64, total);
+        body.take(&chunk)?;
+        progress(body.bytes.len() as u64, total);
     }
+    let package = body.finish()?;
     verify(&package, &release.signature, &release.version)?;
     Ok(package)
+}
+
+struct Body {
+    bytes: Vec<u8>,
+}
+
+impl Body {
+    fn new(declared: Option<u64>) -> Result<Self, String> {
+        Ok(Self {
+            bytes: Vec::with_capacity(declared.unwrap_or(0) as usize),
+        })
+    }
+
+    fn take(&mut self, chunk: &[u8]) -> Result<(), String> {
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Vec<u8>, String> {
+        Ok(self.bytes)
+    }
 }
 
 fn minisign_text(encoded: &str, what: &str) -> Result<String, String> {
@@ -202,7 +224,23 @@ fn verify(package: &[u8], signature: &str, version: &str) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{ReleaseNotes, listed, offered};
+    use super::{Body, ReleaseNotes, listed, offered};
+
+    #[test]
+    fn a_body_is_held_to_the_length_its_response_declares() {
+        let read = |declared: Option<u64>, chunks: &[&[u8]]| -> Result<Vec<u8>, String> {
+            let mut body = Body::new(declared)?;
+            for chunk in chunks {
+                body.take(chunk)?;
+            }
+            body.finish()
+        };
+        assert_eq!(read(Some(6), &[b"abc", b"def"]), Ok(b"abcdef".to_vec()));
+        assert!(read(Some(4), &[b"abc", b"def"]).is_err());
+        assert!(read(Some(5), &[b"abc"]).is_err());
+        assert!(read(None, &[b"abc"]).is_err());
+        assert!(read(Some(u64::MAX), &[b"abc"]).is_err());
+    }
 
     #[test]
     fn a_channel_switch_offers_the_chosen_channels_release_even_when_it_is_older() {
