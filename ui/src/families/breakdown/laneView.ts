@@ -296,6 +296,7 @@ export function familyBreakdownLaneView(
               emptyKind: model.emptyKind ?? 'empty',
               warnings: model.warnings ?? [],
               contentHeight,
+              view: bound.options.view,
             },
             content: revision,
           },

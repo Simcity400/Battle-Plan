@@ -105,7 +105,7 @@ test('colours follow the recorded ordinal, so a reordered breakdown keeps them',
   }
 });
 
-test('a partly known whole is drawn as at least, with parts not recorded never as zero', () => {
+test('a partly known whole is the figure with its partial mark and no shares, with parts not recorded never as zero', () => {
   const read = model(partlyKnown());
   assert.equal(read.total.atLeast, true);
   assert.equal(read.total.text, '211');
@@ -118,9 +118,9 @@ test('a partly known whole is drawn as at least, with parts not recorded never a
   assert.ok(parts.rows.every(row => row.shareText === ''), 'no shares beside a lower bound');
 
   const ring = layoutBreakdown({ view: 'ring', level: breakdownLevel(read), width: 1111, height: 346, theme: THEME, namesInRing: true, userExpanded: {}, measure }) as RingViewLayout;
-  assert.equal(ring.center.verb, 'At least');
+  assert.equal(ring.center.verb, 'Spent', 'no lower-bound wording');
   assert.ok(ring.innerSlices.every(slice => slice.label === null), 'no names on a hatched ring');
-  assert.deepEqual(deriveBreakdownAudit(read).map(row => row.value), ['atLeast:211', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
+  assert.deepEqual(deriveBreakdownAudit(read).map(row => row.value), ['partial:211', '211', 'notRecorded:New ships was not recorded', 'notRecorded:Refits was not recorded']);
 });
 
 test('the three views lay out the same parts', () => {

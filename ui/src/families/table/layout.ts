@@ -10,6 +10,7 @@ import {
   type TableTheme,
 } from './settings.ts';
 import { defaultWidestSamples, type ValueFormat } from '../valueFormat.ts';
+import { TWO_WAY_GAP, TWO_WAY_SLOT } from './cellPainters.ts';
 import type { TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
 
 export type MeasureText = (text: string, font: string) => number;
@@ -37,7 +38,6 @@ export interface FamilyTableLayout extends Omit<TableLayout, 'columns'> {
 
 const SORT_ARROW_WIDTH = 16;
 const KIND_COLUMN_ART = 32;
-const TWO_WAY_SLOT = 72;
 const DEFAULT_TEXT_MIN_WIDTH = 128;
 const DEFAULT_TEXT_MAX_WIDTH = 260;
 
@@ -178,7 +178,7 @@ export function measureFixedColumnWidths(
     for (const sample of samples) {
       widest = Math.max(widest, measure(sample, bodyFont));
     }
-    const extra = column.cellKind === 'track' ? 64 : column.cellKind === 'twoWay' ? TWO_WAY_SLOT + 8 : displayExtra(column);
+    const extra = column.cellKind === 'track' ? 64 : column.cellKind === 'twoWay' ? TWO_WAY_SLOT + TWO_WAY_GAP : displayExtra(column);
     const contentWidth = widest + extra + CELL_INSET * 2;
     let computed = Math.ceil(Math.max(contentWidth, headerWidth));
     if (column.minWidth !== undefined) computed = Math.max(column.minWidth, computed);
